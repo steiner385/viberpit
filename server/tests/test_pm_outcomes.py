@@ -7,10 +7,13 @@ drift into its own idea of "the same issue body, bounced too often".
 """
 from __future__ import annotations
 
-from server.db.models import DISPATCH_OUTCOMES
+import pytest
+
+from server.db import db_session, init_db
+from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
 from server.pm.outcomes import (
     FINALISED_BOUNCE_OUTCOMES, TierStats, body_fingerprint, bounced_out, bounces_stmt,
-    rows_to_bounces, tier_floor_from_stats)
+    last_attempt_model, prior_attempts, rows_to_bounces, tier_floor_from_stats)
 
 
 def test_fingerprint_is_stable_and_body_sensitive():
@@ -46,6 +49,24 @@ def test_rows_to_bounces_matches_only_the_current_fingerprint():
 def test_bounces_stmt_filters_on_finalised_outcomes():
     sql = str(bounces_stmt([("o/r#1", "fp")]))
     assert "dispatch_outcomes" in sql and "outcome" in sql and "count" in sql.lower()
+    assert "dispatch_kind" in sql
+
+
+@pytest.mark.asyncio
+async def test_bounces_stmt_excludes_investigate_dispatches(tmp_path):
+    """An ``investigate`` dispatch never opens a PR by design (series item 4b), so
+    it must not count as a bounce — only the ``None``/``implement`` row does
+    (spec 2026-09-18 §3/§5)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'bounces.db'}"
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               dispatch_kind="investigate"))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               dispatch_kind=None))
+    async with db_session() as db:
+        rows = (await db.execute(bounces_stmt([("o/r#1", "fp")]))).all()
+    assert rows_to_bounces(rows, [("o/r#1", "fp")]) == {"o/r#1": 1}
 
 
 # --- D9 tier floor (phase 4) -------------------------------------------------
@@ -94,3 +115,117 @@ def test_floor_orders_by_the_catalog_not_by_input_order():
 
 def test_empty_stats_have_no_floor():
     assert tier_floor_from_stats([]) is None
+
+
+# --- The model ladder (spec 2026-09-18 §4, decision 2) -----------------------
+
+
+def test_next_rung_climbs_one_tier_from_the_previous_attempt():
+    from server.pm.outcomes import next_rung
+    assert next_rung("sonnet", floor=None, default_model="auto", top="fable") == "opus"
+    assert next_rung("claude-opus-4-1", floor=None, default_model="auto", top="fable") == "fable"
+    # unresolvable previous → climb from sonnet
+    assert next_rung("auto", floor=None, default_model="auto", top="fable") == "opus"
+    assert next_rung(None, floor=None, default_model="auto", top="fable") == "opus"
+    # never below the capability floor or a pinned default
+    assert next_rung("haiku", floor="opus", default_model="auto", top="fable") == "opus"
+    assert next_rung("haiku", floor=None, default_model="fable", top="fable") == "fable"
+    # bounced at the top
+    assert next_rung("fable", floor=None, default_model="auto", top="fable") is None
+    assert next_rung("opus", floor=None, default_model="auto", top="opus") is None
+    assert next_rung("sonnet", floor=None, default_model="auto", top="best") is None
+
+
+def test_top_tier_reads_the_policy_and_defaults_to_the_last_tier():
+    from server.pm.outcomes import top_tier
+    from server.sessions.model_catalog import TIER_ORDER
+    assert top_tier({}) == TIER_ORDER[-1]
+    assert top_tier({"ladder_top": "opus"}) == "opus"
+    assert top_tier({"ladder_top": "bogus"}) == TIER_ORDER[-1]
+
+
+def test_clamp_ladder_top_walks_down_to_the_first_allowed_tier():
+    """Spec §4 decision 2 amendment: the ladder's top is the strongest tier the
+    model-approval gate ALLOWS, so a rung can never park a dispatch for approval."""
+    from server.pm.outcomes import clamp_ladder_top
+    assert clamp_ladder_top("fable", lambda t: t != "fable") == "opus"
+    assert clamp_ladder_top("fable", lambda t: True) == "fable"
+    assert clamp_ladder_top("opus", lambda t: t == "haiku") == "haiku"
+    # Nothing allowed → the cheapest tier: hand off after the first bounce, never
+    # climb onto a tier that would park.
+    assert clamp_ladder_top("fable", lambda t: False) == "haiku"
+    # A tier ABOVE the configured top being gated changes nothing.
+    assert clamp_ladder_top("opus", lambda t: t != "fable") == "opus"
+    # An unrecognised configured value reads as the strongest tier (top_tier's rule).
+    assert clamp_ladder_top("bogus", lambda t: t != "fable") == "opus"
+
+
+def test_gated_ladder_top_names_the_configured_tier_only_when_it_was_clamped():
+    from server.pm.outcomes import gated_ladder_top
+    assert gated_ladder_top({"ladder_top": "opus", "ladder_top_configured": "fable"}) == "fable"
+    assert gated_ladder_top({"ladder_top": "fable", "ladder_top_configured": "fable"}) is None
+    assert gated_ladder_top({"ladder_top": "opus"}) is None   # un-annotated snapshot
+    assert gated_ladder_top({}) is None
+
+
+@pytest.mark.asyncio
+async def test_last_attempt_model_reads_the_newest_finalised_implement_row(tmp_path):
+    """The ladder climbs from the newest finalised ``implement`` dispatch's model:
+    an older bounce doesn't win over a newer one, an unfinished ``running`` row
+    carries no verdict yet, and a newer ``investigate`` dispatch is not an attempt
+    at all — none of the three may outrank the newer ``no_pr`` on ``opus``."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'last_attempt.db'}"
+    await init_db(db_url=db_url)
+    from datetime import datetime, timedelta, timezone
+    # Relative to now, never an absolute date literal (spec §11): a fixed calendar
+    # date is a time bomb the day something starts comparing it to ``now()``.
+    base = datetime.now(timezone.utc) - timedelta(days=1)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", ended_at=base))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="opus", ended_at=base + timedelta(hours=1)))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="running",
+                               model="fable"))
+    async with db_session() as db:
+        assert await last_attempt_model(db, "o/r#1") == "opus"
+
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="fable", dispatch_kind="investigate",
+                               ended_at=base + timedelta(hours=2)))
+    async with db_session() as db:
+        assert await last_attempt_model(db, "o/r#1") == "opus"
+
+
+@pytest.mark.asyncio
+async def test_prior_attempts_counts_the_same_rows_last_attempt_model_reads(tmp_path):
+    """The ladder's ``attempt_no`` seed: every bounce deletes the runner's claim
+    row, so the count of past attempts lives here, not on the claim. It counts
+    exactly what ``last_attempt_model`` considers an attempt — finalised
+    ``implement`` dispatches for this ref — so the two ladder readers can never
+    disagree: unfinished (``running``/``superseded``) rows, ``investigate``
+    dispatches and other refs are all excluded. 0-based: a ref never dispatched
+    has 0 prior attempts."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prior_attempts.db'}"
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        assert await prior_attempts(db, "o/r#1") == 0
+
+    async with db_session() as db:
+        for outcome in ("no_pr", "merged"):
+            db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                                   outcome=outcome, model="sonnet"))
+        # Neither of these is a finished attempt.
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                               outcome="running", model="sonnet"))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                               outcome="superseded", model="sonnet"))
+        # Not an attempt at all, and not this ref.
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", dispatch_kind="investigate"))
+        db.add(DispatchOutcome(target_ref="o/r#2", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet"))
+    async with db_session() as db:
+        assert await prior_attempts(db, "o/r#1") == 2
+        assert await prior_attempts(db, "o/r#2") == 1

@@ -16,6 +16,8 @@ from server.tests.test_backlog_runner_loop import (
 
 import asyncio
 
+import pytest
+
 from server.db import db_session, init_db
 from server.db.models import (AuditEvent, AutomationEvent, GhProject, GhProjectItem,
                               Project, ProjectRepo, WorkItem)
@@ -429,15 +431,15 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         raw = {"enabled_repos": ["o/a", "o/b"], "repo_caps": {"o/a": 4},
                "repo_weights": {"o/a": 3}, "queue_min_status": "Backlog",
-               "max_attempts": 5, "default_model": "opus",
-               "respect_dependencies": False}
+               "default_model": "opus", "respect_dependencies": False}
         assert await orch._backlog_seed_policies(raw, "auto") == 2
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
         # Only legacy choices persist; new schema defaults are not invented intent.
+        # ``max_attempts`` is retired (plan 4a task 2) and is no longer carried over.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
-                         "max_in_flight": 4, "weight": 3, "max_attempts": 5,
+                         "max_in_flight": 4, "weight": 3,
                          "default_model": "opus", "respect_dependencies": False}
         assert stamp is not None
         beta, _ = policies["beta"]
@@ -646,8 +648,7 @@ def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp
 
         # A garbage stored value is "never set" too — it must not be coerced.
         assert await orch._backlog_seed_policies(
-            {"enabled_repos": ["o/a"], "repo_caps": {"o/a": "lots"},
-             "max_attempts": None}, "auto") == 1
+            {"enabled_repos": ["o/a"], "repo_caps": {"o/a": "lots"}}, "auto") == 1
 
         from server.automations.product_policy import effective_policy
         defaults = effective_policy(None)
@@ -655,7 +656,6 @@ def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp
         assert raw_alpha == {"dispatch": "auto"}
         alpha = effective_policy(raw_alpha)
         assert alpha["max_in_flight"] == defaults["max_in_flight"]
-        assert alpha["max_attempts"] == defaults["max_attempts"]
         assert alpha["queue_min_status"] == defaults["queue_min_status"]
         assert alpha["respect_dependencies"] == defaults["respect_dependencies"]
         assert alpha["default_model"] == defaults["default_model"]
@@ -731,18 +731,18 @@ def test_seed_once_runs_for_an_enabled_row_with_a_stored_mode(tmp_path):
 
 
 def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_path):
-    """A legacy value below one of the phase-1 minimums (``max_attempts: 0`` was
-    legal pre-flip; so was a negative per-repo cap) must cost that ONE field its
-    legacy value — never make ``effective_policy`` raise and reset the product to
-    an all-defaults policy with ``dispatch: off``, which would be the migration
-    silently stopping a product that was running while still consuming the marker."""
+    """A legacy value below one of the phase-1 minimums (a negative per-repo cap
+    was legal pre-flip) must cost that ONE field its legacy value — never make
+    ``effective_policy`` raise and reset the product to an all-defaults policy
+    with ``dispatch: off``, which would be the migration silently stopping a
+    product that was running while still consuming the marker."""
     async def run():
         await _init(tmp_path, "seedbelowmin.db")
         await _seed_product("alpha", "o/a")
         orch = _orch_with_ctx()
         await _set_runner_row(enabled=True, mode="auto", config={
             "enabled_repos": ["o/a"], "repo_caps": {"o/a": -1},
-            "repo_weights": {"o/a": 4}, "max_attempts": 0})
+            "repo_weights": {"o/a": 4}})
 
         assert await orch._backlog_seed_policies_once() == 1
         from server.automations.product_policy import effective_policy
@@ -751,7 +751,6 @@ def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_pa
         policy = effective_policy(raw_policy)
         assert policy["dispatch"] == "auto"
         assert policy["weight"] == 4                    # the in-range value survives
-        assert policy["max_attempts"] == 2              # schema default, not 0
         assert policy["max_in_flight"] == 1             # schema default, not -1
 
     asyncio.run(run())
@@ -1013,4 +1012,170 @@ def test_human_edit_between_migration_read_and_write_wins(tmp_path, monkeypatch)
         assert await _orch_with_ctx()._backlog_seed_policies({"enabled_repos": ["o/a"]}, "auto") == 0
         policy, stamp = (await _policies())["alpha"]
         assert policy is None and stamp is not None
+    asyncio.run(run())
+
+
+# --- The ladder top is clamped to the model-approval gate (spec §4, decision 2
+# amendment) ------------------------------------------------------------------
+
+
+async def _set_denylist(denylist: str) -> None:
+    """Pin the install-level model-approval denylist (the ``AppSettings`` singleton
+    ``resolve_model_policy`` reads before the env default)."""
+    from server.db.models import AppSettings
+    async with db_session() as db:
+        db.add(AppSettings(id="singleton", model_approval_denylist=denylist))
+
+
+def test_policy_snapshots_clamp_the_ladder_top_to_the_approval_gate(tmp_path):
+    """A ``ladder_top`` the approval gate would park is lowered to the strongest
+    ALLOWED tier — on both runner policy reads — and the configured value survives
+    as ``ladder_top_configured`` so the hand-off can name the gate."""
+    from server.automations.product_policy import NO_PRODUCT_POLICY_KEY
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+        orch = _orch_with_ctx()
+
+        policies = await orch._backlog_load_policies()
+        assert policies["alpha"]["ladder_top"] == "opus"
+        assert policies["alpha"]["ladder_top_configured"] == "fable"
+        # The no-product default rides along on the SAME read — that is how the
+        # clamp reaches the loop's fallback without a second implementation.
+        assert policies[NO_PRODUCT_POLICY_KEY]["ladder_top"] == "opus"
+        assert policies[NO_PRODUCT_POLICY_KEY]["dispatch"] == "off"   # still fail-safe
+
+        # The queue read's tick snapshot (what the SPAWN's rung reads) is clamped too.
+        products: dict = {}
+        await orch._backlog_query_queue(_config(), products_out=products)
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "opus"
+        # …and the default is not a product, so it never becomes a counts row.
+        assert NO_PRODUCT_POLICY_KEY not in products
+
+    asyncio.run(run())
+
+
+def test_an_ungated_ladder_top_is_left_where_the_operator_set_it(tmp_path):
+    async def run():
+        await _init(tmp_path, "ladder_noclamp.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _set_denylist("none")          # gates no real tier
+        policies = await _orch_with_ctx()._backlog_load_policies()
+        assert policies["alpha"]["ladder_top"] == "fable"
+        assert policies["alpha"]["ladder_top_configured"] == "fable"
+
+    asyncio.run(run())
+
+
+def test_a_failed_verdict_read_raises_on_the_loader_and_degrades_on_the_queue_read(
+        tmp_path, monkeypatch):
+    """Review r1 F4: the two snapshot reads want OPPOSITE handling. The loader
+    documents that a failed read raises (the loop then keeps its previous clamped
+    snapshot or skips refill); the queue read has no such escape, so it degrades to
+    the last successful verdicts rather than handing the spawn an UNCLAMPED top."""
+    from server.sessions import model_policy as mp
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp_fail.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+        orch = _orch_with_ctx()
+        assert (await orch._backlog_load_policies())["alpha"]["ladder_top"] == "opus"
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("verdict read down (injected)")
+        monkeypatch.setattr(mp, "resolve_model_policy", boom)
+
+        with pytest.raises(RuntimeError):
+            await orch._backlog_load_policies()
+
+        await orch._backlog_query_queue(_config())
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "opus"
+        assert orch._backlog_last_policies["alpha"]["ladder_top_configured"] == "fable"
+
+    asyncio.run(run())
+
+
+def test_a_tap_before_the_first_queue_read_still_gets_a_clamped_ladder_top(tmp_path):
+    """Final review M4: ``_backlog_last_policies`` is filled only by
+    ``_backlog_query_queue``, so a manual "Implement now" on a daemon whose backlog
+    loop has not taken a queue read — runner off, or the first tap after a restart
+    — used to fall back to a bare ``effective_policy(None)``: ``ladder_top =
+    fable``, UNCLAMPED. On an item whose last attempt ran on ``opus`` that pinned
+    ``fable`` and parked the session as a driverless ``pending_approval`` row,
+    exactly what the clamp exists to prevent. The seam now clamps on the spot."""
+    from datetime import datetime, timezone
+
+    from server.db.models import DispatchOutcome
+    from server.pm.holds import set_runner_stronger_hold
+
+    async def run():
+        await _init(tmp_path, "ladder_tap_cold.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _set_denylist("fable")
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            wi = WorkItem(repo="o/a", number=2, kind="issue", state="open",
+                          title="T", body="B")
+            set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+            db.add(wi)
+            db.add(DispatchOutcome(target_ref="o/a#2", outcome="no_pr", model="opus",
+                                   attempt_no=1, ended_at=now))
+
+        orch = _orch_with_ctx()
+        assert orch._backlog_last_policies == {}      # no tick has run in this process
+        rung = await orch._backlog_ladder_rung("alpha", "o/a#2",
+                                               default_model="auto", floor=None)
+        assert rung is None        # the climb from opus would pass the CLAMPED top
+        # …and the tap's snapshot is not cached onto the loop's tick snapshot.
+        assert orch._backlog_last_policies == {}
+
+        # The same seam on a product whose top is not gated still climbs.
+        await _seed_product("beta", "o/b",
+                            policy={"dispatch": "auto", "ladder_top": "opus"})
+        async with db_session() as db:
+            wi = WorkItem(repo="o/b", number=3, kind="issue", state="open",
+                          title="T", body="B")
+            set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+            db.add(wi)
+            db.add(DispatchOutcome(target_ref="o/b#3", outcome="no_pr", model="sonnet",
+                                   attempt_no=0, ended_at=now))
+        assert await orch._backlog_ladder_rung(
+            "beta", "o/b#3", default_model="auto", floor=None) == "opus"
+
+    asyncio.run(run())
+
+
+def test_a_verdict_read_that_never_succeeded_leaves_the_queue_snapshot_unclamped(
+        tmp_path, monkeypatch):
+    """The one case the queue read cannot improve on: no verdict has ever been
+    read in this process, so there is nothing to degrade to. The snapshot stays as
+    the operator configured it (and carries no annotation, so no hand-off claims a
+    gate that was never observed) — the tick still runs."""
+    from server.sessions import model_policy as mp
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp_cold.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("verdict read down (injected)")
+        monkeypatch.setattr(mp, "resolve_model_policy", boom)
+
+        orch = _orch_with_ctx()
+        await orch._backlog_query_queue(_config())
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "fable"
+        assert "ladder_top_configured" not in orch._backlog_last_policies["alpha"]
+
     asyncio.run(run())

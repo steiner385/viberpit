@@ -19,7 +19,10 @@ from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
-from .product_policy import ImplementationDecision, effective_policy, is_on
+from .product_policy import (
+    NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
+from server.pm.outcomes import bounced_out, gated_ladder_top, next_rung, top_tier
+from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
 
@@ -275,12 +278,14 @@ class BacklogRunner:
     ]
     # ``eligible_label`` gated the old GitHub label search; the runner now selects
     # from the board-mirror queue (spec 003 §7a), where board status — not a label
-    # — says what is workable, so the key has no equivalent to migrate to. The rest
-    # moved to the PRODUCT policy (``server/automations/product_policy.py``): which
-    # products to work, each one's board reach, in-flight cap, weight, attempt cap,
-    # session model and dependency rule. Listed here so the rows that still carry
-    # them keep the rest of their settings (and so the one-shot seed can read the
-    # old values off the raw blob once).
+    # — says what is workable, so the key has no equivalent to migrate to. Most of
+    # the rest moved to the PRODUCT policy (``server/automations/product_policy.py``):
+    # which products to work, each one's board reach, in-flight cap, weight,
+    # session model and dependency rule. ``max_attempts`` alone did not move —
+    # it was retired outright, replaced by ``ladder_top`` + the model ladder
+    # (spec 2026-09-18 §4, plan 4a task 2). Listed here so the rows that still
+    # carry them keep the rest of their settings (and so the one-shot seed can
+    # read the old values off the raw blob once).
     retired_config_keys: tuple[str, ...] = (
         "eligible_label", "enabled_repos", "repo_weights", "repo_caps",
         "queue_min_status", "max_attempts", "default_model", "respect_dependencies",
@@ -451,10 +456,22 @@ ReadPolicies = Callable[[], Awaitable["dict[str, dict]"]]
 # gate on the sweep that frees slots and escalates stuck work.
 SeedPolicies = Callable[[], Awaitable[int]]
 # GIVE-UP path: announce the handoff (the reason is what a human needs in order
-# to pick the target up). Used only when a target has exhausted ``max_attempts``
-# or PR Doctor gave up on it. The SIGNAL itself is the durable ``gave_up`` row
-# ``_give_up`` writes — this seam only tells the outside world about it.
+# to pick the target up). Used only for the ``abandoned`` outcome (a person closed
+# the PR unmerged) and the merged-but-unclosed human gate. The SIGNAL itself is
+# the durable ``gave_up`` row ``_give_up`` writes — this seam only tells the
+# outside world about it.
 NeedsHuman = Callable[[str, str], Awaitable[None]]
+# THE model-ladder path (spec 2026-09-18 §4): ``escalate(target, reason, rung)``.
+# ``rung`` is ALWAYS a tier — the next attempt's pin, written as a
+# ``stronger_model`` hold (agent-settable, queue-eligible) so the next refill
+# re-claims the item. A climb that passes the product's ``ladder_top`` is NOT
+# this seam: it routes through the existing ``_give_up`` (owner_action hold +
+# comment + the retried ``held`` handoff), same as any other give-up (review R1
+# I2/I4). Called BEFORE the row is released (never after — review R1 C1): the
+# caller awaits this first and only deletes the claim once it returns without
+# raising, so a raise here leaves the claim untouched for the next sweep to
+# retry the whole branch.
+Escalate = Callable[[str, str, str], Awaitable[None]]
 # Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
 # runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
 # §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
@@ -517,6 +534,12 @@ async def _stub_needs_human(_target: str, _reason: str) -> None:
     return None
 
 
+async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
+    # LADDER fallback: unwired seam, nothing is held — the row deletion still
+    # returns the item to the pool with no hold behind it.
+    return None
+
+
 async def _stub_held_targets() -> "frozenset[str]":
     # Unwired seam: nothing reads as held, so no gave_up row is ever released.
     return frozenset()
@@ -555,6 +578,7 @@ class BacklogRunnerLoop:
         seed_policies: SeedPolicies | None = None,
         announce: Announce | None = None,
         needs_human: NeedsHuman | None = None,
+        escalate: Escalate | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
         session_work_stopped: SessionEnded | None = None,
@@ -593,6 +617,7 @@ class BacklogRunnerLoop:
         # they cannot ride the monotonic clock the backoffs use.
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
+        self._escalate = escalate or _stub_escalate  # the model-ladder path
         self._held_targets = held_targets or _stub_held_targets  # what backs a gave_up row
         self._session_ended = session_ended         # (session_id) -> bool | None
         # (session_id) -> True when the session row is terminal OR no longer exists.
@@ -642,25 +667,31 @@ class BacklogRunnerLoop:
     def _policy_for(self, product: "str | None") -> dict:
         """The policy this batch / claim is governed by.
 
-        ONE lookup for every per-product decision in the loop (dispatch, attempt
-        cap, model), so they cannot disagree about which product owns a target.
+        ONE lookup for every per-product decision in the loop (dispatch, model,
+        the ladder's ``ladder_top``), so they cannot disagree about which product
+        owns a target.
 
-        A product the map does not know falls back to the pure schema defaults
-        (``effective_policy(None)``), i.e. dispatch ``off``. That is deliberately
-        fail-SAFE on the one decision where being wrong inverts an operator's
-        instruction: ``propose`` means "do not start a session without me", and a
-        fallback of ``auto`` would spawn for every proposing product the moment a
-        policy read hiccuped. Nothing legitimate is stranded by it — the QUEUE is
-        the off-gate, so a refill batch always carries a real ON slug — and the
-        two OTHER decisions this feeds keep working for a pre-flip claim that
-        carries no product: the defaults ARE the old global ``max_attempts`` (2)
-        and ``default_model`` (``auto``) those claims used to run under.
+        A product the map does not know falls back to the snapshot's own no-product
+        default (``NO_PRODUCT_POLICY_KEY``) — the schema defaults with the SAME
+        approval-gate clamp on ``ladder_top`` every product's policy got, so the
+        ladder for a product-less claim stops where the gate says and not one tier
+        above it. Only a snapshot from a seam that carries no default (a test's, a
+        pre-clamp one) reaches the pure ``effective_policy(None)``.
+
+        Either way the fallback is dispatch ``off``, deliberately fail-SAFE on the
+        one decision where being wrong inverts an operator's instruction:
+        ``propose`` means "do not start a session without me", and a fallback of
+        ``auto`` would spawn for every proposing product the moment a policy read
+        hiccuped. Nothing legitimate is stranded by it — the QUEUE is the off-gate,
+        so a refill batch always carries a real ON slug — and the two OTHER
+        decisions this feeds keep working for a pre-flip claim that carries no
+        product: the defaults hand back ``default_model`` (``auto``) those claims
+        used to run under, and the ladder's top applies the same way.
+
+        The chain itself is ``product_policy.policy_for_product`` — shared with the
+        spawn's ladder rung and the tap's model read so the three cannot disagree.
         """
-        if product:
-            policy = self._policies.get(product)
-            if policy is not None:
-                return policy
-        return effective_policy(None)
+        return policy_for_product(self._policies, product)
 
     async def _maybe_seed_policies(self) -> None:
         """Run the D10 migration once per process, on the first tick.
@@ -714,7 +745,11 @@ class BacklogRunnerLoop:
             try:
                 self._policies = await self._read_policies()
             except Exception:
-                policies_known = bool(self._policies)
+                # PRODUCT entries only: a snapshot also carries the no-product
+                # default (``NO_PRODUCT_POLICY_KEY``), and counting that as "we
+                # have policies" would run refill — including the ~10-minute
+                # grouping refresh — on an effectively empty snapshot.
+                policies_known = any(slug != NO_PRODUCT_POLICY_KEY for slug in self._policies)
                 log.warning("backlog_runner.policy_read_failed (refill %s)",
                             "on the previous snapshot" if policies_known else "skipped",
                             exc_info=True)
@@ -1199,8 +1234,16 @@ class BacklogRunnerLoop:
         batch = replace(batch, product=decision.product_slug)
         default_model = policy["default_model"]
         propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")
+        # Every bounce deletes the claim row now (spec 2026-09-18 §4), so
+        # ``previous`` carries no ``attempts`` for a re-queued item — the
+        # dispatch-history count (review R1 I3) is what seeds it instead. A
+        # LIVE previous claim (propose / waiting-account retry) still carries
+        # its own ``attempts`` and is trusted as-is, no extra query.
+        prior_count = previous.get("attempts")
+        if prior_count is None:
+            prior_count = await self._ctx.prior_attempts(batch.primary)
         state = {"repo": batch.repo, "product": batch.product,
-                 "attempts": previous.get("attempts", 0), "issues": batch.issues,
+                 "attempts": prior_count, "issues": batch.issues,
                  "titles": batch.titles,
                  "claimed": True, "claimed_at": self._wall_clock().isoformat()}
         if propose:
@@ -1302,7 +1345,10 @@ class BacklogRunnerLoop:
         session = await tx.db.get(DbSession, sid) if sid else None
         model = (session.model if session is not None else None) or model or intent["model"]
         state = dict(intent["expected"])
-        state.update(session_id=sid, branch=branch)
+        # The APPLIED model, not the policy's ``default_model``: the ladder's
+        # ``next_rung`` (spec 2026-09-18 §4) climbs from what this attempt
+        # actually ran on, read back off the sweep's ``st.get("model")``.
+        state.update(session_id=sid, branch=branch, model=model)
         state.pop("proposed", None)
         try:
             async with tx.db.begin_nested():
@@ -1424,10 +1470,11 @@ class BacklogRunnerLoop:
         """The claim's own facts, for spec §13's recovery insert: when the
         spawn-time ``record_outcome`` failed there is no row to finalise, and the
         context inserts one from these instead of losing the bounce. The claim is
-        the only surviving account of that dispatch — ``model`` is not stored on it
-        today, so it recovers as None rather than as a guess, and ``attempts`` is
-        the count at spawn (the sweep charges its increment after this call), which
-        is exactly what ``record_outcome`` would have written.
+        the only surviving account of that dispatch — ``model`` is the APPLIED
+        model ``_settle_dispatch`` wrote onto the row (spec 2026-09-18 §4: the
+        ladder climbs from what this attempt actually ran on, not a guess), and
+        ``attempts`` is the count at spawn (the sweep charges its increment after
+        this call), which is exactly what ``record_outcome`` would have written.
 
         ``None`` for a claim that never dispatched (no ``session_id``: a propose
         claim, or one the reaper caught before the spawn record). Nothing ran, so
@@ -1565,6 +1612,30 @@ class BacklogRunnerLoop:
             detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
                     "issues": st.get("issues")})
 
+    async def _dial_stops_the_ladder(self, target: str, policy: dict) -> "str | None":
+        """The operator's ``give_up_after_bounces`` hand-off reason for the bounce
+        being charged right now, or ``None`` to keep climbing.
+
+        The ladder's own length is the cap (spec 2026-09-18 §4, decision 2), so this
+        dial is an optional STRICTER stop. It has to be consulted BEFORE a rung hold
+        is written: the queue's ``skip_reason`` applies ``bounced_out`` to the same
+        count, so a rung hold written past the dial is one nothing will ever consume
+        — the item sits ``needs_spec`` with no owner hand-off, no comment and no
+        ``gave_up`` row (final review I1).
+
+        ``bounced_out`` is THE comparison (``server/pm/outcomes.py``), shared with
+        the queue and the roadmap, applied to the queue's OWN count plus the bounce
+        this sweep is about to finalise. A zero dial short-circuits before the query:
+        ``bounced_out`` answers False for it anyway, and the default path must not
+        pay a read per bounce."""
+        cap = int(policy["give_up_after_bounces"])
+        if cap <= 0:
+            return None
+        bounces = await self._ctx.bounces_for(target) + 1
+        if not bounced_out(bounces, cap):
+            return None
+        return f"give_up_after_bounces={cap} reached"
+
     async def _sweep_one(self, target: str, st: dict,
                          gave_up_targets: set[str]) -> None:
         if st.get("proposed"):
@@ -1629,13 +1700,55 @@ class BacklogRunnerLoop:
                     "fallback": fallback}):
                 await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             return
-        if target in gave_up_targets or (info is not None and info.state == "closed"):
-            doctor_gave_up = target in gave_up_targets
-            reason = "pr-doctor gave up" if doctor_gave_up else "PR closed unmerged"
-            await self._give_up(target, st, reason, outcome={
-                "outcome": "pr_gave_up" if doctor_gave_up else "abandoned", "cause": reason,
+        if target in gave_up_targets:
+            # PR Doctor gave up: the same ladder path as a no-PR bounce (spec
+            # 2026-09-18 §4) — this is still an implement attempt that failed to
+            # land, not a person's decision, so it climbs a rung rather than
+            # going straight to the owner.
+            cause = "pr-doctor gave up"
+            previous = st.get("model")
+            ladder_policy = self._policy_for(st.get("product"))
+            rung = next_rung(previous, floor=None,
+                             default_model=ladder_policy["default_model"],
+                             top=top_tier(ladder_policy))
+            pd_outcome = {
+                "outcome": "pr_gave_up", "cause": cause,
                 "pr_number": info.number if info else None,
-                "pr_url": info.url if info else None, "fallback": fallback})
+                "pr_url": info.url if info else None, "fallback": fallback}
+            if rung is None:
+                # Bounced at the top: the EXISTING give-up path (review R1 I2
+                # item 1) — owner_action hold + comment + the retried ``held``
+                # handoff, not the (now rung-only) escalate seam.
+                gated = gated_ladder_top(ladder_policy)
+                await self._give_up(target, st, "PR Doctor gave up at the top" + (
+                    f"; {gated} needs approval" if gated else ""), outcome=pd_outcome)
+                return
+            dial = await self._dial_stops_the_ladder(target, ladder_policy)
+            if dial is not None:
+                # The operator's stricter dial ends the climb here (final review
+                # I1): hand off rather than write a rung the queue will refuse.
+                await self._give_up(target, st,
+                                    f"PR Doctor gave up at {model_tier(previous) or 'sonnet'}; "
+                                    f"{dial}", outcome=pd_outcome)
+                return
+            # Escalate FIRST, release the row SECOND (review R1 I2 item 2): if
+            # the hold write raises, the durable trigger (this same
+            # pr-doctor-gave-up event) re-fires next tick and the claim is
+            # untouched meanwhile. If the release fails (stale ownership /
+            # native work not yet observed stopped), stop — nothing else.
+            await self._escalate(target, f"PR Doctor gave up; next attempt on {rung}", rung)
+            if not await self._write_state(target, st, None, outcome=pd_outcome):
+                return  # release lost the fence — leave it for the next sweep
+            return
+        if info is not None and info.state == "closed":
+            # A PERSON closed the PR unmerged: their decision, not a failed
+            # attempt — hands straight to the owner with the PR link (spec §4),
+            # never climbs the ladder.
+            reason = "PR closed unmerged"
+            give_up_reason = f"{reason}: {info.url}" if info.url else reason
+            await self._give_up(target, st, give_up_reason, outcome={
+                "outcome": "abandoned", "cause": reason,
+                "pr_number": info.number, "pr_url": info.url, "fallback": fallback})
             return
         if info is not None:
             active = await self._pr_doctor_active(target.split("#", 1)[0])
@@ -1647,24 +1760,71 @@ class BacklogRunnerLoop:
             return
         if st.get("handed_off") or await self._session_alive(st):
             return
+        # No attempt cap (spec 2026-09-18 §4): a no-PR bounce climbs one model
+        # tier instead. ``attempts`` survives only on the outcome rows
+        # (``attempt_no``) now, never on the row itself — the row is deleted on
+        # every bounce and the item returns to the pool under whichever hold
+        # was written for it.
         attempts = st.get("attempts", 0) + 1
-        if attempts >= self._policy_for(st.get("product"))["max_attempts"]:
-            if not await self._session_ever_ran(st):
-                if await self._write_state(target, st, None, outcome={
-                        "outcome": "abandoned", "cause": "session never ran a turn",
-                        "upgrade_from": ("no_pr",), "fallback": fallback}):
-                    await self._ctx.emit("info", f"released {target} (session never ran a turn)",
-                                         kind="unclaimed", target=target)
-                return
-            reason = f"max attempts ({attempts}) reached with no mergeable PR"
-            await self._give_up(target, st, reason, outcome={
-                "outcome": "needs_human", "cause": reason,
-                "upgrade_from": ("no_pr",), "fallback": fallback})
+        if not await self._session_ever_ran(st):
+            # No ``upgrade_from`` here (final review M3). It was the "the verdict
+            # arrives a sweep late" fallback from the attempt-cap era; now that the
+            # check runs on EVERY bounce it fires on the first sweep after the
+            # session ends, when this dispatch has no ``no_pr`` row of its own — so
+            # the newest upgradable row it found could only ever belong to a
+            # PREVIOUS claim cycle, whose bounce survives re-queueing and would be
+            # rewritten as this dispatch's "never ran a turn". With the running row
+            # missing (§13) the fallback insert is the right recovery: it is guarded
+            # by THIS dispatch's session id, so it can add at most one row.
+            if await self._write_state(target, st, None, outcome={
+                    "outcome": "abandoned", "cause": "session never ran a turn",
+                    "fallback": fallback}):
+                await self._ctx.emit("info", f"released {target} (session never ran a turn)",
+                                     kind="unclaimed", target=target)
             return
-        await self._write_state(target, st, {**st, "attempts": attempts, "_ended": True},
-                                outcome={"outcome": "no_pr",
-                                         "cause": "session ended without a mergeable PR",
-                                         "fallback": fallback})
+        previous = st.get("model")
+        ladder_policy = self._policy_for(st.get("product"))
+        top = top_tier(ladder_policy)
+        rung = next_rung(previous, floor=None,
+                         default_model=ladder_policy["default_model"], top=top)
+        no_pr_outcome = {"outcome": "no_pr", "cause": "session ended without a mergeable PR",
+                         "fallback": fallback}
+        if rung is None:
+            # Bounced at the top: the EXISTING give-up path (review R1 I2
+            # item 1), not the (now rung-only) escalate seam. A top the
+            # model-approval gate lowered says so, so the owner reads why the
+            # ladder stopped below the tier they configured rather than
+            # concluding the strongest model already failed.
+            gated = gated_ladder_top(ladder_policy)
+            # ONE fallback for "which tier did it bounce at": an unresolvable
+            # previous model can only reach this branch when the top IS the tier
+            # ``next_rung`` would have climbed from, so the top names it.
+            bounced_at = model_tier(previous) or top
+            reason = (f"bounced at {bounced_at}; {gated} needs approval" if gated else
+                      f"bounced at {bounced_at}: "
+                      f"no mergeable PR after {attempts} attempts")
+            await self._give_up(target, st, reason, outcome=no_pr_outcome)
+            return
+        # ``next_rung`` climbs from sonnet when the previous model resolves to no
+        # tier, so that is the fallback for every reason below the top.
+        climbed_from = model_tier(previous) or "sonnet"
+        dial = await self._dial_stops_the_ladder(target, ladder_policy)
+        if dial is not None:
+            # The operator set a stricter stop than the ladder's top (final review
+            # I1). The queue would skip the next dispatch as ``needs_spec``, so a
+            # rung hold here could never be consumed — hand off instead, with the
+            # same owner_action hold + comment + ``gave_up`` row a top bounce gets.
+            await self._give_up(target, st, f"bounced at {climbed_from}; {dial}",
+                                outcome=no_pr_outcome)
+            return
+        # Escalate FIRST, release the row SECOND (review R1 I2 item 2): a raise
+        # here leaves the claim untouched — the trigger (session ended, no PR)
+        # is durable, so the next sweep retries the whole branch. A failed
+        # release (stale fence) also leaves things exactly as they are.
+        reason = f"bounced at {climbed_from}; next attempt on {rung}"
+        await self._escalate(target, reason, rung)
+        if not await self._write_state(target, st, None, outcome=no_pr_outcome):
+            return  # release lost the fence — leave it for the next sweep
 
     async def _session_ever_ran(self, st: dict) -> bool:
         """Whether this target's session ever started turn one.

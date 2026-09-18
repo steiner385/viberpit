@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.sql import Select
 
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem
 from server.pm.refs import split_ref
-from server.sessions.model_catalog import TIER_ORDER, model_tier
+from server.sessions.model_catalog import TIER_ORDER, model_tier, tier_rank
 
 log = logging.getLogger(__name__)
 
@@ -44,14 +44,29 @@ def bounced_out(bounces: int, give_up_after_bounces: int) -> bool:
     return give_up_after_bounces > 0 and bounces >= give_up_after_bounces
 
 
+def _implement_only():
+    """THE ``implement``-dispatch predicate: NULL predates the ``dispatch_kind``
+    column and reads as ``implement`` (spec 2026-09-18 §3/§5). Shared by
+    ``bounces_stmt`` and ``last_attempt_model`` so an ``investigate`` dispatch
+    (series item 4b, never opens a PR by design) cannot count as a bounce in one
+    reader and as an attempt to climb the ladder from in the other."""
+    return or_(DispatchOutcome.dispatch_kind.is_(None),
+               DispatchOutcome.dispatch_kind == "implement")
+
+
 def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
-    """Grouped counts of FINALISED non-merged outcomes for the given
+    """Grouped counts of FINALISED non-merged ``implement`` outcomes for the given
     ``(target_ref, fingerprint)`` pairs. Callers execute it in their own
-    session (sync or async) and hand the rows to ``rows_to_bounces``."""
+    session (sync or async) and hand the rows to ``rows_to_bounces``.
+
+    An ``investigate`` dispatch (series item 4b) never opens a PR by design, so it
+    must never count as a bounce; NULL predates the column and reads as
+    ``implement`` (spec 2026-09-18 §3/§5)."""
     wanted = list(pairs)
     return (select(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint,
                    func.count(DispatchOutcome.id))
             .where(DispatchOutcome.outcome.in_(FINALISED_BOUNCE_OUTCOMES),
+                   _implement_only(),
                    tuple_(DispatchOutcome.target_ref,
                           DispatchOutcome.body_fingerprint).in_(wanted))
             .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))
@@ -145,7 +160,11 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
     and so are ``merged`` rows whose ``first_pass_merge`` is NULL: the merge
     happened but nothing knows whether it was first pass, and counting it as an
     outcome with no first pass would read a tier that DID merge as one that cannot
-    do the work. Emitted one entry per tier present, in ``TIER_ORDER``.
+    do the work — and so are ``investigate`` dispatches (``_implement_only()``,
+    the same predicate ``bounces_stmt`` / ``last_attempt_model`` / ``prior_attempts``
+    apply): one never opens a PR by design, so every one of them would land as a
+    first-pass-less outcome at its tier and drag the capability floor down.
+    Emitted one entry per tier present, in ``TIER_ORDER``.
     """
     refs = [f"{repo}#{number}" for repo, number in (await db.execute(
         select(WorkItem.repo, WorkItem.number).where(
@@ -158,7 +177,8 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
                DispatchOutcome.outcome).where(
             DispatchOutcome.project_id == project_id,
             DispatchOutcome.target_ref.in_(refs),
-            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES)))).all()
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only()))).all()
     counts: dict[str, list[int]] = {}
     for model, first_pass, outcome in rows:
         tier = model_tier(model)
@@ -214,3 +234,102 @@ async def tier_floor_for_dispatch(db, product_slug: str | None,
         log.warning("pm.outcomes.tier_floor_for_dispatch_failed product=%s ref=%s",
                     product_slug, primary_ref, exc_info=True)
         return None
+
+
+# --- The model ladder (spec 2026-09-18 §4, decision 2) -----------------------
+
+
+def top_tier(policy: dict) -> str:
+    """The strongest tier the ladder climbs to for this product (spec §4, decision 2)."""
+    top = str((policy or {}).get("ladder_top") or "")
+    return top if top in TIER_ORDER else TIER_ORDER[-1]
+
+
+def clamp_ladder_top(configured: str, allowed: Callable[[str], bool]) -> str:
+    """THE ladder-top clamp (spec 2026-09-18 §4, decision 2 amendment): the strongest
+    tier at or below *configured* that *allowed* accepts.
+
+    ``SessionOrchestrator.create_session`` gates every requested model through
+    ``server/sessions/model_policy.py:resolve_model_policy``, and a gated tier parks
+    the session as a driverless ``pending_approval`` row. A ladder rung on such a
+    tier would therefore hold a runner slot behind a human and never run — the
+    opposite of "no approval step for ladder dispatches". So the ladder treats the
+    highest ALLOWED tier as its top and hands the issue to the owner there.
+
+    Walks ``TIER_ORDER`` downward from *configured* (an unrecognised value reads as
+    the strongest tier, mirroring ``top_tier``). With nothing allowed it returns the
+    cheapest tier: the ladder then hands off after the first bounce, which is the
+    safe direction — a stalled item beats an item parked for approval forever.
+    """
+    start = tier_rank(configured)
+    if start is None:
+        start = len(TIER_ORDER) - 1
+    for tier in reversed(TIER_ORDER[:start + 1]):
+        if allowed(tier):
+            return tier
+    return TIER_ORDER[0]
+
+
+def gated_ladder_top(policy: dict) -> str | None:
+    """The CONFIGURED ``ladder_top`` the approval gate clamped away, or ``None``.
+
+    THE reader of the ``ladder_top_configured`` annotation ``clamp_ladder_top``'s
+    caller leaves on the runner's in-memory policy snapshot (never persisted, never
+    in ``PRODUCT_POLICY_SCHEMA``), so every hand-off reason that has to explain why
+    the ladder stopped below the operator's setting says it the same way.
+    """
+    configured = str((policy or {}).get("ladder_top_configured") or "")
+    return configured if configured and configured != top_tier(policy) else None
+
+
+def next_rung(previous_model: str | None, *, floor: str | None, default_model: str | None,
+              top: str) -> str | None:
+    """THE ladder rule (spec 2026-09-18 §4): one tier above the previous attempt,
+    never below the capability floor or a pinned product default, ``None`` when
+    the climb would pass ``top`` — a bounce at the top is the owner's.
+
+    An unresolvable previous model (``auto``, ``default``, ``best``, unknown) climbs
+    from ``sonnet``, so a first bounce under ``auto`` lands on ``opus``."""
+    start = tier_rank(previous_model)
+    if start is None:
+        start = TIER_ORDER.index("sonnet")
+    candidate = start + 1
+    for bound in (floor, default_model):
+        r = tier_rank(bound)
+        if r is not None and r > candidate:
+            candidate = r
+    top_rank = tier_rank(top)
+    if top_rank is None or candidate > top_rank:
+        return None
+    return TIER_ORDER[candidate]
+
+
+async def last_attempt_model(db, target_ref: str) -> str | None:
+    """The model the newest finalised implement dispatch for *target_ref* ran on
+    (the ladder climbs from here). ``superseded`` and ``running`` rows carry no
+    verdict and are skipped; investigate rows are not attempts."""
+    row = (await db.execute(
+        select(DispatchOutcome.model).where(
+            DispatchOutcome.target_ref == target_ref,
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only())
+        .order_by(DispatchOutcome.ended_at.desc().nullslast(), DispatchOutcome.created_at.desc())
+        .limit(1))).first()
+    return row[0] if row else None
+
+
+async def prior_attempts(db, target_ref: str) -> int:
+    """The ladder's ``attempt_no`` seed (spec 2026-09-18 §4, review R1 I3): the
+    count of finalised, non-superseded ``implement`` dispatches already recorded
+    for *target_ref*. Every bounce now deletes the runner's claim row (the
+    ladder's hold, not the claim, carries the item forward), so the claim can no
+    longer count its own attempts — a fresh claim reads this instead. Mirrors
+    ``last_attempt_model``'s filter (``_implement_only()`` + excludes
+    ``UNFINISHED_OUTCOMES``) so the two readers can never disagree about what
+    counts as a past attempt. 0-based: an issue dispatched for the first time
+    has 0 prior attempts, matching today's ``attempt_no`` semantics."""
+    return int((await db.execute(
+        select(func.count()).select_from(DispatchOutcome).where(
+            DispatchOutcome.target_ref == target_ref,
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only()))).scalar_one())

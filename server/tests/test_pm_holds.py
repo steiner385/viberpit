@@ -222,6 +222,17 @@ def test_runner_and_reconciler_are_system_actors():
     assert wi.hold_set_at == NOW and wi.hold_fingerprint
 
 
+def test_set_runner_stronger_hold_sets_kind_by_and_reason():
+    """Spec 2026-09-18 §4: a ladder rung climb parks the issue ``stronger_model``
+    (agent-settable, queue-eligible), as the runner system actor."""
+    from server.pm.holds import RUNNER_ACTOR, set_runner_stronger_hold
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    set_runner_stronger_hold(wi, reason="bounced at sonnet; next attempt on opus", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("stronger_model", RUNNER_ACTOR)
+    assert wi.hold_reason == "bounced at sonnet; next attempt on opus"
+    assert wi.hold_set_at == NOW and wi.hold_fingerprint
+
+
 def _sync_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
@@ -273,10 +284,37 @@ def test_release_by_signals_board_edit_and_body_edit():
     # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
     # not one of them.
-    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session", "implement"}
+    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
+                                    "implement", "dispatch"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
     assert all(r.detail["actorClass"] == "system" and r.detail["kind"] == "owner_action" for r in rows)
     # idempotent: a second pass releases nothing
     assert release_by_signals(db, human_edits=edits, now=NOW) == []
+
+
+def test_release_on_dispatch_clears_stronger_model_holds_only():
+    """Spec 2026-09-18 §4: the dispatch CONSUMES the ``stronger_model`` hold it was
+    climbing for — and nothing else. A person's ``owner_action`` and an agent's
+    ``evidence`` hold are other people's parks; a spawn is not their release
+    signal."""
+    from server.pm.holds import RELEASE_SIGNALS, release_on_dispatch
+    db = _sync_db()
+    a = _held(db, 1, kind="stronger_model")
+    b = _held(db, 2, kind="owner_action")
+    c = _held(db, 3, kind="evidence")
+    db.commit()
+    assert "dispatch" in RELEASE_SIGNALS
+    released = release_on_dispatch(db, ["o/r#1", "o/r#2", "o/r#3", "o/r#9"], now=NOW)
+    db.commit()
+    assert released == ["o/r#1"]
+    assert a.hold_kind is None and b.hold_kind == "owner_action" and c.hold_kind == "evidence"
+    from server.db.models import AuditEvent
+    rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
+    assert [r.detail["signal"] for r in rows] == ["dispatch"]
+    assert rows[0].detail["actorClass"] == "system" and rows[0].detail["kind"] == "stronger_model"
+    assert rows[0].identity == "runner" and rows[0].via == "runner"
+    # Idempotent, and blind to a malformed ref: the hold is gone, so a re-run of
+    # the same batch releases nothing.
+    assert release_on_dispatch(db, ["o/r#1", "not-a-ref"], now=NOW) == []

@@ -113,8 +113,8 @@ RUNNER_ACTOR = "runner"
 RECONCILER_ACTOR = "reconciler"
 SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
 
-#: Every way an owner_action hold ends (spec §7), as ONE tuple so the two API paths
-#: and the reconcile pass cannot audit a release in different shapes. Time is not one
+#: Every way a hold ends (spec §7), as ONE tuple so the two API paths, the reconcile
+#: pass and the runner cannot audit a release in different shapes. Time is not one
 #: of them. ``board_edit`` / ``body_edit`` are detected by ``release_by_signals``;
 #: ``retry`` is the Retry endpoint; ``overlay`` is an explicit clear through the
 #: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
@@ -122,8 +122,13 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: ``classified_by``; ``session`` is a coding session clearing its own hold through
 #: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``);
 #: ``implement`` is Implement now from the roadmap dialog: released and dispatched
-#: in one tap.
-RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session", "implement")
+#: in one tap; and ``dispatch`` is the one signal that ends no ``owner_action`` hold
+#: at all — the Backlog Runner's spawn CONSUMING the ``stronger_model`` hold it
+#: climbed for (``release_on_dispatch``, spec §4). It belongs in this tuple because
+#: it audits through the same ``pm.hold.release`` shape, and a reader asking "how
+#: can a hold end?" must find every answer in one place.
+RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
+                                    "implement", "dispatch")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -134,6 +139,13 @@ def set_runner_hold(wi: WorkItem, *, reason: str, now: datetime) -> None:
     """The Backlog Runner's give-up (spec §3): the hold IS the handoff; the runner's
     own ``gave_up`` row survives only for slot accounting."""
     set_hold(wi, kind="owner_action", reason=reason, actor=RUNNER_ACTOR, now=now)
+
+
+def set_runner_stronger_hold(wi: WorkItem, *, reason: str, now: datetime) -> None:
+    """The Backlog Runner's ladder climb (spec 2026-09-18 §4): a bounce below the
+    top tier parks the item as ``stronger_model`` — agent-settable, queue-eligible —
+    so the next refill re-claims it and the spawn pins the next rung."""
+    set_hold(wi, kind="stronger_model", reason=reason, actor=RUNNER_ACTOR, now=now)
 
 
 def held_refs(db: "Session") -> frozenset[str]:
@@ -149,10 +161,14 @@ def held_refs(db: "Session") -> frozenset[str]:
     return frozenset(f"{repo}#{number}" for repo, number in rows)
 
 
-def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor: str) -> None:
+def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor: str,
+                   via: str = "reconciler") -> None:
+    """ONE ``pm.hold.release`` row shape for every sync release path. *via* is the
+    surface that released it — the reconcile pass by default, ``"runner"`` for the
+    spawn's ``dispatch`` consumption."""
     from server.audit import redact_detail
     from server.db.models import AuditEvent
-    db.add(AuditEvent(type="pm.hold.release", identity=actor, via="reconciler",
+    db.add(AuditEvent(type="pm.hold.release", identity=actor, via=via,
                       detail=redact_detail({"workItemId": wi.id, "kind": kind,
                                             "actorClass": actor_class(actor), "signal": signal})))
 
@@ -187,6 +203,40 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
         clear_hold(wi, actor=RECONCILER_ACTOR)
         _audit_release(db, wi, kind="owner_action", signal=signal, actor=RECONCILER_ACTOR)
         released.append((wi, signal))
+    db.flush()
+    return released
+
+
+def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) -> list[str]:
+    """A dispatch CONSUMES the ``stronger_model`` hold it was climbing for (spec
+    §4): clear it on every issue of the batch that carries one, audited as
+    ``dispatch``, and answer the refs that were released.
+
+    Only ``stronger_model``: a person's ``owner_action`` and an agent's
+    ``evidence`` hold are other parks, and a spawn is not their release signal
+    (the batch can carry an issue held for a reason of its own). Idempotent — a
+    re-run finds no hold to release — and blind to a malformed ref, like every
+    other reader of ``split_ref``. Sync, like ``release_by_signals``: the
+    orchestrator calls it under ``db.run_sync``.
+
+    *now* is accepted for symmetry with ``release_by_signals`` (a release writes
+    no timestamp — it BLANKS ``hold_set_at``), so both release rules keep one
+    call shape.
+    """
+    from sqlalchemy import select, tuple_
+
+    from server.pm.refs import split_ref
+    parts = [p for p in (split_ref(r) for r in refs) if p is not None]
+    if not parts:
+        return []
+    released: list[str] = []
+    for wi in db.scalars(select(WorkItem).where(
+            WorkItem.kind == "issue", WorkItem.hold_kind == "stronger_model",
+            tuple_(WorkItem.repo, WorkItem.number).in_(parts))).all():
+        clear_hold(wi, actor=RUNNER_ACTOR)
+        _audit_release(db, wi, kind="stronger_model", signal="dispatch",
+                       actor=RUNNER_ACTOR, via="runner")
+        released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released
 

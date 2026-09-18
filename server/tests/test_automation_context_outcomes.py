@@ -191,6 +191,24 @@ async def test_finalize_without_a_running_row_is_a_no_op(db_env):
 
 
 @pytest.mark.asyncio
+async def test_prior_attempts_reads_the_finished_dispatch_history(db_env):
+    """The runner seeds a fresh claim's ``attempt_no`` from this (spec 2026-09-18
+    §4): every bounce deletes the claim row, so the count of past attempts is
+    read back off the outcome history instead of carried on the row. A dispatch
+    still ``running`` is not a past attempt — the row this claim is about to
+    write must not count itself."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    assert await ctx.prior_attempts("o/r#7") == 0
+
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
+                             model="sonnet", attempt_no=0)
+    assert await ctx.prior_attempts("o/r#7") == 0      # still running: not yet an attempt
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="session ended")
+    assert await ctx.prior_attempts("o/r#7") == 1
+
+
+@pytest.mark.asyncio
 async def test_finalize_rejects_an_unknown_outcome(db_env):
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
@@ -229,6 +247,9 @@ async def test_writes_are_best_effort(db_env, monkeypatch):
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
                              model="sonnet", attempt_no=0)
     await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="session ended")
+    # The ladder's history READ sits on the claim path and is best-effort the
+    # same way: a dead history table answers 0, it never stops a dispatch.
+    assert await ctx.prior_attempts("o/r#7") == 0
     monkeypatch.undo()
     assert await _rows() == []
 
@@ -400,3 +421,28 @@ async def test_a_fallback_row_survives_an_unknown_product_and_missing_mirror(db_
     (row,) = await _rows()
     assert row.project_id is None and row.body_fingerprint is None
     assert row.outcome == "no_pr" and row.target_ref == "o/r#999"
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_writes_dispatch_kind_default_implement(db_env):
+    """``dispatch_kind`` defaults to ``implement`` when the caller does not pass it
+    (spec §3/§5) — an ``investigate`` dispatch must say so explicitly."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.record_outcome("o/r#1", product_slug=None, session_id="s1",
+                             model="sonnet", attempt_no=0)
+    await ctx.record_outcome("o/r#2", product_slug=None, session_id="s2",
+                             model="sonnet", attempt_no=0,
+                             dispatch_kind="investigate")
+    rows = {r.target_ref: r for r in await _rows()}
+    assert rows["o/r#1"].dispatch_kind == "implement"
+    assert rows["o/r#2"].dispatch_kind == "investigate"
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_rejects_an_unknown_dispatch_kind(db_env):
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    with pytest.raises(ValueError):
+        await ctx.record_outcome("o/r#1", product_slug=None, session_id="s1",
+                                 model="sonnet", attempt_no=0, dispatch_kind="bogus")

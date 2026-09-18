@@ -144,7 +144,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
                pr_doctor_attempts_fn=None, session_gone=None,
-               held: "set[str] | None" = None):
+               held: "set[str] | None" = None, escalate_raises=False):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -164,6 +164,13 @@ def build_loop(*, mode="on", config=None, clock=None,
             # The give-up seam's failure is a per-tick fact, not a per-loop one:
             # a test flips this to model a gh/DB outage that later clears.
             self.needs_human_raises = needs_human_raises
+            # (target, reason, rung) for every ladder-path call (spec 2026-09-18
+            # §4) — rung climbs ONLY; a bounce at the top routes through
+            # needs_human/give_up instead (review R1 I2 item 1).
+            self.escalations: list = []
+            # Same per-tick-flip shape as needs_human_raises: the escalate seam
+            # opens its own DB write and can fail transiently (review R1 I2/M8).
+            self.escalate_raises = escalate_raises
             self.close_outs: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
@@ -212,6 +219,15 @@ def build_loop(*, mode="on", config=None, clock=None,
         rec.needs_humans.append((target, reason))
         if rec.needs_human_raises:
             raise RuntimeError("gh comment failed (injected)")
+
+    async def escalate(target, reason, rung):
+        if rec.escalate_raises:
+            # Fails BEFORE recording: a raise must look, from the caller's side,
+            # exactly like the write never happened (review R1 C1/I2) — the
+            # sweep awaits this FIRST and only releases the claim once it
+            # returns without raising.
+            raise RuntimeError("hold write failed (injected)")
+        rec.escalations.append((target, reason, rung))
 
     async def _held():
         return frozenset(held or ())
@@ -290,6 +306,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         admission=admission,
         clock=clk,
         needs_human=needs_human,
+        escalate=escalate,
         session_ran=session_ran_probe if session_ran is not None else None,
         pr_doctor_attempts_for=attempts_seam,
         close_out=close_out,
@@ -801,6 +818,9 @@ def test_handoff_frees_slot_next_tick(tmp_path):
 
 
 def test_terminal_watch_gave_up_unclaims_and_needs_human(tmp_path):
+    """PR Doctor giving up is still a failed implement attempt (spec 2026-09-18
+    §4): the runner climbs the ladder for it exactly like a no-PR bounce, and
+    the row is freed — not parked as a ``gave_up`` row — so the item re-queues."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'g.db'}"
 
     async def run():
@@ -814,58 +834,51 @@ def test_terminal_watch_gave_up_unclaims_and_needs_human(tmp_path):
                 automation_id="pr-doctor", level="warn", summary="gave up",
                 kind="gave_up", target="r#1", detail={"origin_ref": "r#1"}))
 
-        # ``held`` simulates the owner_action hold the real ``needs_human`` seam
-        # (``_backlog_needs_human``) writes synchronously as part of the give-up —
-        # this fake seam only records the call, so the test holds the ref itself
-        # to keep the row past the give-up tick's own ``_release_give_ups``.
         loop, rec, ctx = build_loop(
             config=make_config(max_concurrent=1),
             candidates=[batch("r#1")],
             pr_status={},  # no live PR status
-            held={"r#1"},
         )
         await loop.tick()  # spawn r#1, record handoff state
         assert len(rec.spawns) == 1
         # The same tick's sweep already sees the pr-doctor gave_up for r#1 (the
-        # event predates the tick) → the runner gives up too, same tick.
+        # event predates the tick) → the runner climbs the ladder, same tick.
         await loop.tick()
-        assert [t for t, _ in rec.needs_humans] == ["r#1"]  # GIVE-UP seam called
-        gave = await ctx.list_events(kind="gave_up")
-        assert len(gave) >= 1
-        st = await ctx.get_target_state("r#1")
-        # Spec 2026-09-18 §3: the row SURVIVES for slot accounting, but the hold
-        # (not a timestamp on this row) is the handoff now.
-        assert st["gave_up"] is True and "needs_human_at" not in st
-        assert "pr-doctor gave up" in st["reason"]
+        assert rec.needs_humans == []
+        assert rec.escalations == [
+            ("r#1", "PR Doctor gave up; next attempt on opus", "opus")]
+        assert not await ctx.get_target_state("r#1")   # row gone: back in the pool
 
     asyncio.run(run())
 
 
 def test_give_up_keeps_a_row_with_no_needs_human_at(tmp_path):
-    """Spec 2026-09-18 §3: exhausting ``max_attempts`` no longer deletes the row
-    and writes a label — it keeps the row (for slot accounting) with the reason,
-    but the row itself carries no timestamp. The hold the runner writes on the
-    issue IS the handoff now; a human releases it, never a timer."""
+    """Spec 2026-09-18 §3: a give-up (a PERSON's decision, e.g. closing the PR
+    unmerged — spec §4) no longer deletes the row and writes a label — it keeps
+    the row (for slot accounting) with the reason, but the row itself carries no
+    timestamp. The hold the runner writes on the issue IS the handoff now; a
+    human releases it, never a timer."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu1.db'}"
 
     async def run():
+        from server.github.pr_status import PullRequestInfo
         await init_db(db_url=db_url)
         await _seed_row()
         at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
-        loop, rec, ctx = build_loop(candidates=[], pr_status={},
+        closed = PullRequestInfo(number=9, url="", state="closed", checks="none", title="")
+        loop, rec, ctx = build_loop(candidates=[], pr_status={"o/r#7": closed},
                                     wall_clock=lambda: at,
                                     config=make_config())
-        # A spawned target whose session ended with no PR, one attempt short of max.
         await _set_owned_state(ctx, "o/r#7", {
             "session_id": "s1", "repo": "o/r", "issues": ["o/r#7", "o/r#8"],
             "claimed": True, "attempts": 1, "_ended": True})
 
-        await loop.tick()          # attempts → 2 == max → give up
+        await loop.tick()          # PR closed unmerged → give up
 
         st = await ctx.get_target_state("o/r#7")
         assert st["gave_up"] is True and "needs_human_at" not in st
         assert st["issues"] == ["o/r#7", "o/r#8"] and st["repo"] == "o/r"
-        assert "max attempts" in st["reason"]
+        assert "PR closed unmerged" in st["reason"]
         assert rec.needs_humans == [("o/r#7", st["reason"])]
         # A give-up row is terminal, not a claim: it must not read as in flight.
         assert not st.get("claimed")
@@ -887,11 +900,13 @@ def test_a_failed_hold_write_parks_the_row_unheld_and_is_retried_until_it_lands(
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu2.db'}"
 
     async def run():
+        from server.github.pr_status import PullRequestInfo
         await init_db(db_url=db_url)
         await _seed_row()
         at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+        closed = PullRequestInfo(number=9, url="", state="closed", checks="none", title="")
         # ``held=set()``: the fake seam raised, so no hold exists on the item.
-        loop, rec, ctx = build_loop(candidates=[], pr_status={}, held=set(),
+        loop, rec, ctx = build_loop(candidates=[], pr_status={"o/r#7": closed}, held=set(),
                                     wall_clock=lambda: at, needs_human_raises=True,
                                     config=make_config())
         await _set_owned_state(ctx, "o/r#7", {
@@ -1475,6 +1490,48 @@ def test_a_failed_policy_read_falls_back_to_the_last_good_snapshot(tmp_path):
     asyncio.run(run())
 
 
+def test_a_snapshot_of_only_the_no_product_default_is_not_a_known_snapshot(tmp_path):
+    """Review r1 F3: every snapshot carries the no-product default
+    (``NO_PRODUCT_POLICY_KEY``), so "do we have policies?" must count PRODUCT
+    entries. A read failure after a successful read that found no product still
+    skips refill — running it (including the grouping refresh) on an effectively
+    empty snapshot is the guessing this branch exists to prevent."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'policydefaultonly.db'}"
+
+    async def run():
+        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
+        await init_db(db_url=db_url)
+        await _seed_row()
+        default_only = {NO_PRODUCT_POLICY_KEY: effective_policy(None)}  # no product opted in
+        fail = {"now": False}
+
+        async def maybe_boom():
+            if fail["now"]:
+                raise RuntimeError("policy read down (injected)")
+            return dict(default_only)
+
+        loop, rec, ctx = build_loop(candidates=[batch("r#1", product="p1")],
+                                    policies=default_only)
+        loop._read_policies = maybe_boom
+        selections: list[dict] = []
+
+        async def counting_select(config):
+            selections.append(config)
+            return batch("r#1", product="p1")
+        loop._select_batch = counting_select
+
+        await loop.tick()        # good read: refill RAN (and refused — no product is on)
+        assert rec.spawns == []
+        after_good = len(selections)
+        assert after_good > 0     # the snapshot WAS known: the plan seam was consulted
+
+        fail["now"] = True
+        await loop.tick()        # failed read → refill SKIPPED, not retried blind
+        assert len(selections) == after_good and rec.spawns == []
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # max_in_flight is a PRODUCT ceiling, enforced in refill                       #
 # --------------------------------------------------------------------------- #
@@ -1599,29 +1656,33 @@ def test_a_proposed_claim_holds_its_products_slot(tmp_path):
     asyncio.run(run())
 
 
-def test_max_attempts_is_read_from_the_products_policy(tmp_path):
-    """Two claims, two products, two attempt caps: the one-attempt product gives
-    up after its first failed session while the two-attempt product does not."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'attempts.db'}"
+def test_ladder_top_is_read_from_the_products_policy(tmp_path):
+    """Two claims, two products, two ladder ceilings: the product whose
+    ``ladder_top`` is already the previous attempt's tier hands off to the owner
+    while the other one climbs a rung (spec 2026-09-18 §4)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ladder_top.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
         loop, rec, ctx = build_loop(
             candidates=[], pr_status={},
-            policies={"p1": policy(max_attempts=1), "p2": policy(max_attempts=2)})
+            policies={"p1": policy(ladder_top="sonnet"), "p2": policy(ladder_top="opus")})
         for target, product in (("o/r#1", "p1"), ("o/k#2", "p2")):
             await _set_owned_state(ctx, target, {
                 "session_id": f"s-{target}", "repo": target.split("#")[0],
                 "issues": [target], "claimed": True, "attempts": 0,
-                "product": product, "_ended": True})
+                "product": product, "model": "sonnet", "_ended": True})
 
         await loop.tick()
 
+        # Bounced AT the top (o/r#1): the existing give-up path, not escalate
+        # (review R1 I2 item 1 — the escalate seam is rung-only).
+        assert rec.escalations == [
+            ("o/k#2", "bounced at sonnet; next attempt on opus", "opus")]
         assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
         assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
-        st2 = await ctx.get_target_state("o/k#2")
-        assert not st2.get("gave_up") and st2["attempts"] == 1
+        assert not await ctx.get_target_state("o/k#2")
 
     asyncio.run(run())
 
@@ -1707,10 +1768,10 @@ def test_a_failed_count_read_publishes_unknown_not_an_empty_product_map(tmp_path
     asyncio.run(run())
 
 
-def test_a_pre_flip_claim_without_a_product_keeps_the_default_attempt_cap(tmp_path):
+def test_a_pre_flip_claim_without_a_product_still_climbs_the_ladder(tmp_path):
     """A claim written before the flip carries no ``product``. The sweep must
-    still charge and cap its attempts — at the pure schema default (2), which IS
-    the global ``max_attempts`` those claims ran under."""
+    still climb it — at the pure schema defaults (``default_model="auto"``,
+    ``ladder_top="fable"``), which is what those claims ran under."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'preflipattempts.db'}"
 
     async def run():
@@ -1723,8 +1784,8 @@ def test_a_pre_flip_claim_without_a_product_keeps_the_default_attempt_cap(tmp_pa
 
         await loop.tick()
 
-        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
-        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+        assert [(t, rung) for t, _r, rung in rec.escalations] == [("o/r#1", "opus")]
+        assert not await ctx.get_target_state("o/r#1")
 
     asyncio.run(run())
 
@@ -2784,33 +2845,47 @@ def test_the_propose_path_records_no_outcome(tmp_path):
 
 def test_session_ended_without_pr_finalises_no_pr(tmp_path):
     """The session is over and there is no PR — that attempt is finished, and the
-    row says so (this is the bounce the queue's ``needs_spec`` skip counts)."""
+    row says so (this is the bounce the queue's ``needs_spec`` skip counts). Spec
+    2026-09-18 §4: the row itself is freed on every bounce now (the ladder climb
+    lives on the hold, not the claim), and — review R1 I3 — the claim can no
+    longer carry its own attempt count forward (it never survives a bounce), so
+    a fresh claim's ``attempt_no`` is seeded from the dispatch-history count
+    (two prior finalised rows here → this one is attempt 2, 0-based)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_nopr.db'}"
 
     async def run():
         from types import SimpleNamespace
 
+        from server.db.models import DispatchOutcome
+
         await init_db(db_url=db_url)
         await _seed_row()
         await _seed_product()
-        loop, _rec, ctx = build_loop(
+        async with db_session() as db:
+            for i in range(2):
+                db.add(DispatchOutcome(automation_id="backlog-runner", target_ref="o/r#1",
+                                       outcome="no_pr", attempt_no=i,
+                                       dispatch_kind="implement"))
+        loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"))
 
-        await loop.tick()                      # spawn → running
+        await loop.tick()                      # spawn → running, attempt_no seeded at 2
         await _mark_session_ended(ctx, "o/r#1")
         await loop.tick()                      # sweep charges the attempt
 
         rows = await _outcomes("o/r#1")
-        assert len(rows) == 1
-        row = rows[0]
+        assert len(rows) == 3
+        row = rows[-1]
         assert row.outcome == "no_pr"
         assert row.cause == "session ended without a mergeable PR"
         assert row.ended_at is not None and row.duration_s is not None
         assert row.pr_number is None and row.first_pass_merge is None
-        # The claim row is still there, one attempt poorer — the outcome row is
-        # history, not the state machine.
-        assert (await ctx.get_target_state("o/r#1"))["attempts"] == 1
+        assert row.attempt_no == 2
+        # The row is freed — the bounce lives on the hold ``_escalate`` wrote, not
+        # on the claim.
+        assert not await ctx.get_target_state("o/r#1")
+        assert [t for t, _r, _rung in rec.escalations] == ["o/r#1"]
 
     asyncio.run(run())
 
@@ -2999,21 +3074,23 @@ def test_pr_doctor_gave_up_finalises_pr_gave_up(tmp_path):
                 automation_id="pr-doctor", level="warn", summary="gave up",
                 kind="gave_up", target="o/r#1", detail={"origin_ref": "o/r#1"}))
 
-        # ``held`` simulates the owner_action hold the real ``needs_human`` seam
-        # writes synchronously as part of the give-up (see the sibling test above).
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
-            spawn_result=SimpleNamespace(id="sess-1"), held={"o/r#1"})
+            spawn_result=SimpleNamespace(id="sess-1"))
 
         await loop.tick()
         await loop.tick()
 
-        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        # PR Doctor giving up is still a failed implement attempt, not a person's
+        # decision (spec 2026-09-18 §4) — it climbs the ladder like a no-PR bounce.
+        assert rec.escalations == [
+            ("o/r#1", "PR Doctor gave up; next attempt on opus", "opus")]
+        assert rec.needs_humans == []
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1
         assert rows[0].outcome == "pr_gave_up"
         assert rows[0].cause == "pr-doctor gave up"
-        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+        assert not await ctx.get_target_state("o/r#1")
 
     asyncio.run(run())
 
@@ -3047,43 +3124,301 @@ def test_pr_closed_unmerged_finalises_abandoned(tmp_path):
     asyncio.run(run())
 
 
-def test_max_attempts_give_up_finalises_needs_human(tmp_path):
-    """The PRODUCTION walk to the cap, sweep by sweep: nothing re-dispatches
-    between them, so the sweep that charges the last attempt is escalating the
-    very dispatch the previous sweep already closed as ``no_pr``. That row is
-    UPGRADED in place — one row for one session, ending ``needs_human``. Jumping
-    the state row straight to the cap hid this: the escalation then found a live
-    ``running`` row that production never has (R3-7)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_needs_human.db'}"
+def test_a_no_pr_bounce_climbs_one_rung_and_frees_the_row(tmp_path):
+    """Spec 2026-09-18 §4: no attempt cap; a bounce writes a stronger_model hold
+    (via the escalate seam) and deletes the runner row so the item re-queues."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder1.db'}"
 
     async def run():
-        from types import SimpleNamespace
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        await loop.tick()                       # spawn on sonnet
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # sweep: bounce
 
+        assert rec.escalations == [("r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert rec.needs_humans == []           # no owner hand-off
+        assert not await ctx.get_target_state("r#1")   # row gone: back in the pool
+        rows = await _outcomes("r#1")
+        assert rows[-1].outcome == "no_pr"
+
+    asyncio.run(run())
+
+
+def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_path):
+    """Review R1 C1/I2/M8: escalate happens BEFORE the row is released. A raise
+    must leave the claim exactly as it was — still claimed, no outcome
+    finalised — so the durable trigger (session already ended, no PR) retries
+    the whole branch next tick instead of the row vanishing with no hold behind
+    it. Once escalate stops raising, the SAME bounce completes: one escalation,
+    one finalised outcome row — never two."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_retry.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"),
+                                    escalate_raises=True)
+        await loop.tick()                       # spawn on sonnet
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # sweep: escalate raises → nothing released
+
+        assert rec.escalations == []            # the raising call never recorded
+        st = await ctx.get_target_state("r#1")
+        assert st.get("claimed") is True         # NOT released — still ours to retry
+        rows = await _outcomes("r#1")
+        assert len(rows) == 1 and rows[0].outcome == "running"   # not finalised yet
+
+        rec.escalate_raises = False
+        await loop.tick()                       # sweep retries: escalate succeeds now
+
+        assert rec.escalations == [("r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert not await ctx.get_target_state("r#1")
+        rows = await _outcomes("r#1")
+        assert len(rows) == 1 and rows[0].outcome == "no_pr"   # the SAME row, finalised once
+
+    asyncio.run(run())
+
+
+def test_the_give_up_dial_hands_off_instead_of_writing_a_rung_nothing_can_consume(tmp_path):
+    """Final review I1: ``give_up_after_bounces`` is an optional STRICTER stop than
+    ``ladder_top``, and it has to hand off rather than climb.
+
+    The queue's ``skip_reason`` applies ``bounced_out`` to the same count, so a rung
+    hold written AT the dial is one the next refill would never consume: the item
+    would sit ``needs_spec`` with a ``stronger_model`` hold, no owner hand-off, no
+    comment and no ``gave_up`` row. With the dial at 2 the first bounce still
+    climbs; the second routes through ``_give_up`` and leaves ``escalations``
+    exactly where the first bounce left it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_dial.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()          # a mirrored body, so bounces are countable
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000,
+                                              give_up_after_bounces=2)},
+            spawn_result=spawned)
+
+        await loop.tick()                       # dispatch 1, on sonnet
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: bounce 1 → climbs to opus
+
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert rec.needs_humans == []
+
+        rec.in_flight = 0                       # the freed slot
+        spawned.id, spawned.model = "sess-2", "opus"
+        await loop.tick()                       # dispatch 2, on opus
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: bounce 2 → the dial is reached
+
+        assert len(rec.escalations) == 1        # unchanged since the first bounce
+        assert rec.needs_humans == [
+            ("o/r#1", "bounced at opus; give_up_after_bounces=2 reached")]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert [r.outcome for r in await _outcomes("o/r#1")] == ["no_pr", "no_pr"]
+
+    asyncio.run(run())
+
+
+def test_the_default_dial_never_stops_the_ladder_below_the_top(tmp_path):
+    """The shipped default is 0 ("never"), so the LADDER's length is the cap: a
+    product that says nothing about the dial climbs sonnet → opus → fable and only
+    hands off above the top. Before final review I1 the default of 2 skipped the
+    item as ``needs_spec`` on the very bounce that wrote the fable rung."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_no_dial.db'}"
+
+    async def run():
+        from server.automations.product_policy import effective_policy
+
+        assert effective_policy(None)["give_up_after_bounces"] == 0
         await init_db(db_url=db_url)
         await _seed_row()
         await _seed_product()
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
         loop, rec, ctx = build_loop(
-            candidates=[batch("o/r#1")], pr_status={},
-            spawn_result=SimpleNamespace(id="sess-1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+            spawn_result=spawned)
 
-        await loop.tick()                       # spawn → running
+        await loop.tick()
         await _mark_session_ended(ctx, "o/r#1")
-        await loop.tick()                       # sweep: attempt 1 of 2 → no_pr
-        rows = await _outcomes("o/r#1")
-        assert len(rows) == 1 and rows[0].outcome == "no_pr"
+        await loop.tick()                       # bounce 1 → opus
+
+        rec.in_flight = 0
+        spawned.id, spawned.model = "sess-2", "opus"
+        await loop.tick()
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # bounce 2 → fable, still no hand-off
+
+        assert [rung for _t, _r, rung in rec.escalations] == ["opus", "fable"]
         assert rec.needs_humans == []
-        ended_at = rows[0].ended_at
 
-        await loop.tick()                       # sweep: attempt 2 = the cap → give up
+    asyncio.run(run())
 
-        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
-        rows = await _outcomes("o/r#1")
-        assert len(rows) == 1                   # never two bounce rows for one session
-        assert rows[0].outcome == "needs_human"
-        assert "max attempts" in (rows[0].cause or "")
-        assert rows[0].ended_at == ended_at     # the dispatch ended when the session did
-        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+
+def test_a_bounce_at_the_top_hands_the_issue_to_the_owner(tmp_path):
+    """A bounce AT ``ladder_top`` (default ``fable``) is the owner's: the
+    EXISTING give-up path (owner_action hold + comment), never the (rung-only)
+    escalate seam (review R1 I2 item 1)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="fable"))
+        await loop.tick()                       # spawn on fable — already the top
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # sweep: bounced at the top
+
+        assert rec.escalations == []            # never the escalate seam
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        reason = rec.needs_humans[0][1]
+        assert reason == "bounced at fable: no mergeable PR after 1 attempts"
+        st = await ctx.get_target_state("r#1")
+        assert st["gave_up"] is True and st["reason"] == reason
+
+    asyncio.run(run())
+
+
+def test_a_bounce_at_an_approval_clamped_top_names_the_gate(tmp_path):
+    """Spec §4 decision 2 amendment: when the model-approval gate lowered the
+    product's top, the hand-off says so — the owner must not read "bounced at opus"
+    as "the strongest model I configured already failed"."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_clamped.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        # The shape the clamped loader hands the loop: the effective top plus the
+        # configured value it was lowered from.
+        clamped = {**policy(max_in_flight=1000, ladder_top="opus"),
+                   "ladder_top_configured": "fable"}
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: clamped},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="opus"))
+        await loop.tick()                       # spawn on opus — the clamped top
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # sweep: bounced at the clamped top
+
+        assert rec.escalations == []            # never climbs onto the gated tier
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        assert rec.needs_humans[0][1] == "bounced at opus; fable needs approval"
+
+    asyncio.run(run())
+
+
+def test_pr_doctor_give_up_climbs_the_ladder_too(tmp_path):
+    """PR Doctor giving up on the PR is still a failed implement attempt (spec
+    §4): the same ladder path as a no-PR bounce, never a straight hand-off."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder3.db'}"
+
+    async def run():
+        from server.db.models import Automation, AutomationEvent
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            db.add(AutomationEvent(
+                automation_id="pr-doctor", level="warn", summary="gave up",
+                kind="gave_up", target="r#1", detail={"origin_ref": "r#1"}))
+
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")], pr_status={},
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        await loop.tick()                       # spawn r#1
+        # The same tick's sweep already sees the pr-doctor gave_up for r#1 (the
+        # event predates the tick) → the runner climbs the ladder, same tick.
+        await loop.tick()
+
+        assert rec.escalations[0][2] == "opus"
+        assert rec.needs_humans == []
+        assert not await ctx.get_target_state("r#1")
+
+    asyncio.run(run())
+
+
+def test_pr_doctor_give_up_at_an_approval_clamped_top_names_the_gate(tmp_path):
+    """Review r1 F5: the PR-Doctor give-up is the same ladder path, so its
+    top-of-ladder hand-off names the gate the same way a no-PR bounce does —
+    otherwise the owner reads "gave up at the top" as the strongest model having
+    been tried when the ladder never reached it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder3_clamped.db'}"
+
+    async def run():
+        from server.db.models import Automation, AutomationEvent
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            db.add(AutomationEvent(
+                automation_id="pr-doctor", level="warn", summary="gave up",
+                kind="gave_up", target="r#1", detail={"origin_ref": "r#1"}))
+        clamped = {**policy(max_in_flight=1000, ladder_top="opus"),
+                   "ladder_top_configured": "fable"}
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")], pr_status={},
+                                    policies={DEFAULT_PRODUCT: clamped},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="opus"))
+        await loop.tick()                       # spawn r#1 on the clamped top
+        await loop.tick()                       # sweep sees the pr-doctor gave_up
+
+        assert rec.escalations == []            # never climbs onto the gated tier
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        assert rec.needs_humans[0][1] == (
+            "PR Doctor gave up at the top; fable needs approval")
+
+    asyncio.run(run())
+
+
+def test_pr_closed_unmerged_still_hands_off_with_the_pr_link(tmp_path):
+    """A person closing the PR unmerged is their decision, not a failed attempt
+    (spec §4): straight to the owner via ``_give_up``, with the PR link in the
+    reason — never the ladder."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder4.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        closed = PullRequestInfo(number=9, url="https://example/pr/9",
+                                 state="closed", checks="none", title="")
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")], pr_status={"r#1": closed},
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        # The PR is already closed when the batch is claimed, so the SAME tick's
+        # sweep sees it (refill and sweep both run inside one tick).
+        await loop.tick()
+
+        assert rec.escalations == []            # never the ladder
+        assert len(rec.needs_humans) == 1
+        target, reason = rec.needs_humans[0]
+        assert target == "r#1" and "http" in reason
+        assert (await ctx.get_target_state("r#1"))["gave_up"] is True
 
     asyncio.run(run())
 
@@ -3091,7 +3426,9 @@ def test_max_attempts_give_up_finalises_needs_human(tmp_path):
 def test_release_after_never_ran_finalises_abandoned(tmp_path):
     """A session that never ran a turn is released rather than escalated (#1100);
     the dispatch still happened, so its row closes as ``abandoned``, not
-    ``needs_human`` — it is no evidence the issue needs a human."""
+    ``needs_human`` — it is no evidence the issue needs a human. This check runs
+    on every bounce now (no cap to wait for), so ONE sweep after the session ends
+    is enough — never a ``no_pr`` row first."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_never_ran.db'}"
 
     async def run():
@@ -3104,23 +3441,67 @@ def test_release_after_never_ran_finalises_abandoned(tmp_path):
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"),
             session_ran=False,
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
 
         await loop.tick()                       # spawn → running
         await _mark_session_ended(ctx, "o/r#1")
-        await loop.tick()                       # sweep: attempt 1 of 2 → no_pr
-        rows = await _outcomes("o/r#1")
-        assert len(rows) == 1 and rows[0].outcome == "no_pr"
-
-        await loop.tick()                       # sweep: the cap → release
+        await loop.tick()                       # sweep: never ran a turn → release
 
         assert rec.needs_humans == []                 # released, not escalated
+        assert rec.escalations == []                  # never charged as a bounce
         assert await ctx.get_target_state("o/r#1") == {}
-        # The same row this dispatch already bounced, upgraded — not a second one.
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1
         assert rows[0].outcome == "abandoned"
         assert rows[0].cause == "session never ran a turn"
+
+    asyncio.run(run())
+
+
+def test_a_never_ran_release_never_rewrites_a_previous_dispatchs_bounce(tmp_path):
+    """Final review M3: the never-ran branch dropped ``upgrade_from=("no_pr",)``.
+
+    It ran on every bounce, one sweep after the session ended, when this dispatch
+    has no ``no_pr`` row of its own — so with the spawn-time row lost (§13) the
+    newest upgradable row it found could only belong to a PREVIOUS claim cycle,
+    whose bounce survives re-queueing. Rewriting it as "session never ran a turn"
+    would erase a real bounce from D8's count. The §13 fallback insert, guarded by
+    THIS dispatch's session id, is the right recovery."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_never_ran_prev.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")], pr_status={},
+            spawn_result=spawned,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
+
+        await loop.tick()                       # dispatch 1
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: a real no_pr bounce
+        assert [r.outcome for r in await _outcomes("o/r#1")] == ["no_pr"]
+
+        # Dispatch 2 loses its spawn-time row and never runs a turn.
+        rec.in_flight = 0
+        spawned.id = "sess-2"
+        loop._session_ran = AsyncMock(return_value=False)
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("spawn-time outcome write blew up (injected)")
+
+        record_outcome, ctx.record_outcome = ctx.record_outcome, boom  # type: ignore[method-assign]
+        await loop.tick()                       # dispatch 2, no history written
+        ctx.record_outcome = record_outcome     # type: ignore[method-assign]
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: never ran a turn → release
+
+        rows = await _outcomes("o/r#1")
+        assert [(r.outcome, r.session_id) for r in rows] == [
+            ("no_pr", "sess-1"), ("abandoned", "sess-2")]
 
     asyncio.run(run())
 
@@ -3170,7 +3551,7 @@ def test_handoff_does_not_finalise(tmp_path):
 
 def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
     """Spec §13: history is best-effort, dispatch is not. A seam that raises must
-    leave the give-up path byte-for-byte what it was before outcomes existed."""
+    leave the ladder path byte-for-byte what it was before outcomes existed."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_boom.db'}"
 
     async def run():
@@ -3182,7 +3563,7 @@ def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
 
         await loop.tick()
 
@@ -3194,9 +3575,9 @@ def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
         await _mark_session_ended(ctx, "o/r#1", attempts=1)
         await loop.tick()                    # must not raise out of the sweep
 
-        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
-        st = await ctx.get_target_state("o/r#1")
-        assert st["gave_up"] is True and "needs_human_at" not in st
+        assert [t for t, _r, _rung in rec.escalations] == ["o/r#1"]
+        assert rec.needs_humans == []
+        assert not await ctx.get_target_state("o/r#1")
         # The row stayed ``running``: unfinalised history is the acceptable loss.
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1 and rows[0].outcome == "running"
@@ -3253,7 +3634,7 @@ def test_a_lost_spawn_time_write_is_recovered_at_finalisation(tmp_path):
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1", branch="b1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=3)})
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
 
         async def boom(*_a, **_kw):
             raise RuntimeError("spawn-time outcome write blew up (injected)")

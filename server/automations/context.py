@@ -13,13 +13,20 @@ from sqlalchemy import delete, select
 from ccswitch import brand
 from server.db import db_session
 from server.db.models import (
+    DISPATCH_KINDS,
     DISPATCH_OUTCOMES,
     AutomationEvent,
     AutomationTargetState,
     DispatchOutcome,
     WorkItem,
 )
-from server.pm.outcomes import body_fingerprint, project_id_for_slug
+from server.pm.outcomes import (
+    body_fingerprint,
+    bounces_stmt,
+    prior_attempts as _prior_attempts,
+    project_id_for_slug,
+    rows_to_bounces,
+)
 from server.pm.refs import split_ref
 
 from .base import AutomationStatus
@@ -414,11 +421,74 @@ class AutomationContext:
                 AutomationTargetState.automation_id == self.automation_id))).scalars().all()
         return {r.target: dict(r.state) for r in rows}
 
+    async def prior_attempts(self, target_ref: str) -> int:
+        """THE ladder's ``attempt_no`` seed (spec 2026-09-18 §4, review R1 I3):
+        finalised implement-dispatch history for *target_ref*, read fresh on
+        every claim since the claim row itself is deleted on every bounce and
+        can no longer carry the count forward on its own. The count itself lives
+        in ``server/pm/outcomes.py`` beside ``last_attempt_model`` — the two
+        ladder readers share one definition of "a past attempt"; this is only
+        the automation-facing session wrapper.
+
+        Best-effort by §13, exactly like ``record_outcome`` below and
+        ``outcomes.tier_floor_for_dispatch``: this read sits on the CLAIM path,
+        so a history failure must never stop a dispatch. A failed read answers
+        0 — the attempt is still recorded and the ladder still climbs off the
+        model the attempt ran on; only the human-readable count is short."""
+        try:
+            async with db_session() as db:
+                return await _prior_attempts(db, target_ref)
+        except Exception:
+            log.warning("automation_context.prior_attempts_failed target=%s", target_ref,
+                        exc_info=True)
+            return 0
+
+    async def bounces_for(self, target_ref: str) -> int:
+        """How many bounces the QUEUE currently counts against *target_ref*'s body
+        (spec 2026-09-12 D8), for the sweep's ``give_up_after_bounces`` decision.
+
+        The same ``bounces_stmt`` + ``rows_to_bounces`` composition the queue loader
+        runs, over this one ref: the sweep has to predict whether the NEXT dispatch
+        would be skipped as ``needs_spec``, and predicting it off a DIFFERENT count
+        (the claim's ``attempts``, which is neither fingerprint-scoped nor
+        merge-excluding) would make a body edit — the documented way to re-arm the
+        dial — stop re-arming the hand-off half of it.
+
+        Counts only FINALISED rows, so the bounce currently being charged (still
+        ``running`` at sweep time) is not in it: the caller adds its own.
+
+        Best-effort by §13, like ``prior_attempts``: a failed read answers 0, which
+        keeps the item on the ladder rather than handing it to a human on a DB blip.
+        An unmirrored ref has no fingerprint and therefore no countable bounce."""
+        try:
+            async with db_session() as db:
+                fingerprint = await _fingerprint_for(db, target_ref)
+                if fingerprint is None:
+                    return 0
+                pairs = [(target_ref, fingerprint)]
+                # Row -> plain tuple: ``Result.all()`` is typed ``Sequence[Row[Any]]``,
+                # not structurally a ``tuple[str, str, int]`` (mypy), though it
+                # unpacks as one — the same conversion ``queue_store`` makes.
+                rows = [(ref, fp, n)
+                        for ref, fp, n in (await db.execute(bounces_stmt(pairs))).all()]
+            return rows_to_bounces(rows, pairs)[target_ref]
+        except Exception:
+            log.warning("automation_context.bounces_for_failed target=%s", target_ref,
+                        exc_info=True)
+            return 0
+
     async def record_outcome(self, target: str, *, product_slug: str | None,
                              session_id: str | None, model: str | None,
-                             attempt_no: int, _db=None) -> None:
-        """Insert the ``running`` outcome row for a dispatch (spec §6). Best-effort:
+                             attempt_no: int, dispatch_kind: str = "implement",
+                             _db=None) -> None:
+        """Insert the ``running`` outcome row for a dispatch (spec §6, §3/§5). Best-effort:
         history must never block a spawn (§13).
+
+        *dispatch_kind* records what the dispatch was FOR (``DISPATCH_KINDS``): an
+        ``investigate`` dispatch never opens a PR by design, so it must never count
+        as a bounce (``bounces_stmt`` filters it out). An unknown kind is a
+        programming error and raises even though the rest of the write is
+        best-effort — the ``try`` below only guards the DB half.
 
         A new dispatch first closes any row still ``running`` for this target as
         ``superseded``: AT MOST ONE running row per (automation, target) is the
@@ -431,6 +501,8 @@ class AutomationContext:
         Every import this needs sits at module scope: an ImportError raised inside
         the method would escape the ``try`` below, and "best effort" has to mean
         the whole write."""
+        if dispatch_kind not in DISPATCH_KINDS:
+            raise ValueError(f"unknown dispatch kind {dispatch_kind!r}")
         try:
             async with (db_session() if _db is None else nullcontext(_db)) as db:
                 now = datetime.now(timezone.utc)
@@ -448,7 +520,7 @@ class AutomationContext:
                 db.add(DispatchOutcome(
                     automation_id=self.automation_id, project_id=project_id,
                     target_ref=target, body_fingerprint=fingerprint, session_id=session_id,
-                    model=model, attempt_no=attempt_no,
+                    model=model, attempt_no=attempt_no, dispatch_kind=dispatch_kind,
                     started_at=datetime.now(timezone.utc), outcome="running"))
         except Exception:
             if _db is not None:

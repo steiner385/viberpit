@@ -708,6 +708,11 @@ DISPATCH_OUTCOMES: tuple[str, ...] = (
     "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned",
     "superseded")
 
+# What a dispatch was for (spec 2026-09-18 §3/§5). ``implement`` opens a PR;
+# ``investigate`` (series item 4b) reproduces or correlates and never counts as a
+# bounce. NULL on rows written before the column existed reads as ``implement``.
+DISPATCH_KINDS: tuple[str, ...] = ("implement", "investigate")
+
 
 class DispatchOutcome(Base):
     """One row per Backlog Runner dispatch (spec §6, D5): inserted ``running`` at
@@ -740,6 +745,7 @@ class DispatchOutcome(Base):
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
     first_pass_merge: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dispatch_kind: Mapped[str | None] = mapped_column(String, nullable=True)  # DISPATCH_KINDS
 
 
 class BacklogGroup(Base):

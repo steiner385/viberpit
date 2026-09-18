@@ -24,7 +24,7 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config, *, policies=None, tier_floor=None):
+def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=None):
     """A bare orchestrator whose runner config is *config*.
 
     The session model is NOT read here since the fix wave: ``_backlog_spawn``
@@ -35,7 +35,9 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None):
 
     *tier_floor* stubs the ``_backlog_tier_floor`` seam (phase 4): the spawn asks
     it for the primary issue's capability floor, and every test here would
-    otherwise reach for a DB."""
+    otherwise reach for a DB. *ladder_rung* stubs ``_backlog_ladder_rung`` the
+    same way (spec 2026-09-18 §4): the rung this dispatch is pinned to because
+    the primary issue is parked ``stronger_model``, or ``None`` when it is not."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
@@ -52,6 +54,10 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None):
     async def floor(product_slug, primary_ref):
         return tier_floor
     orch._backlog_tier_floor = floor  # type: ignore[method-assign]
+
+    async def rung(product_slug, primary_ref, *, default_model, floor):
+        return ladder_rung
+    orch._backlog_ladder_rung = rung  # type: ignore[method-assign]
     return orch
 
 
@@ -402,6 +408,233 @@ async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
         outcome = await db.scalar(select(DispatchOutcome).where(
             DispatchOutcome.target_ref == "o/r#7"))
         assert outcome is not None and outcome.model == "opus"
+
+
+# --------------------------------------------------------------------------- #
+# backlog-runner model ladder at the spawn (spec 2026-09-18 §4)                #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_pins_the_ladder_rung_over_an_auto_pick(tmp_path, monkeypatch):
+    """Spec 2026-09-18 §4: a ``stronger_model`` hold makes the spawn run at the
+    rung, even though the product says ``auto`` and the assessor would pick
+    ``sonnet``. The ladder is the DECISION, not a floor under a fresh guess — so
+    the rung is pinned (``model_source: pinned``) rather than handed to
+    ``pick_model`` as a floor, which only ever raises an ``auto`` assessment."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({}, tier_floor=None, ladder_rung="opus")
+    seen: dict = {}
+
+    async def rung(product_slug, primary_ref, *, default_model, floor):
+        seen.update(product=product_slug, ref=primary_ref,
+                    default_model=default_model, floor=floor)
+        return "opus"
+    orch._backlog_ladder_rung = rung  # type: ignore[method-assign]
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
+
+    # Asked for the PRIMARY issue, in the batch's product, with the floor the
+    # step before it resolved (the rung never climbs below it).
+    assert seen == {"product": "widget", "ref": "o/r#7",
+                    "default_model": "auto", "floor": None}
+    assert captured["model"] == "opus"
+    assert captured["detail"] == {
+        "issues": ["o/r#7"], "engine": "claude_code", "model": "opus",
+        "model_source": "pinned", "ladder_rung": "opus"}
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_without_a_rung_is_unchanged(tmp_path, monkeypatch):
+    """No hold, no rung: the ordinary ``auto`` pick stands and the spawn record
+    says nothing about a ladder it is not on."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({}, tier_floor=None, ladder_rung=None)
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
+
+    assert captured["model"] == "sonnet"
+    assert "ladder_rung" not in captured["detail"]
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_survives_a_failing_rung_lookup(tmp_path, monkeypatch):
+    """§13, exactly as for the floor: a seam that RAISES costs the RUNG, never
+    the spawn — the item keeps its hold and the next tick tries again."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({})
+
+    async def boom(product_slug, primary_ref, *, default_model, floor):
+        raise RuntimeError("ladder read down (injected)")
+    orch._backlog_ladder_rung = boom  # type: ignore[method-assign]
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
+
+    assert captured["model"] == "sonnet"
+    assert "ladder_rung" not in captured["detail"]
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_consumes_the_stronger_model_hold(isolated_db, tmp_path,
+                                                              monkeypatch):
+    """The dispatch the hold was asking for has happened, so the hold is spent
+    (spec §4) — on every issue of the batch, not just the primary. Left in place
+    it would re-park the item the moment the session ended."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        for number in (7, 8):
+            wi = WorkItem(repo="o/r", number=number, kind="issue", state="open",
+                          title="t", body="b")
+            set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+            db.add(wi)
+
+    batch = Batch(primary="o/r#7", issues=["o/r#7", "o/r#8"], repo="o/r",
+                  titles={"o/r#7": "fix the frobnicator"}, product="widget")
+    orch = _build_backlog_orch({}, ladder_rung="opus")
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(batch, "acct", default_model="auto", ownership_token="test-token")
+
+    assert captured["model"] == "opus"
+    async with db_session() as db:
+        held = (await db.execute(select(WorkItem.hold_kind))).scalars().all()
+        assert held == [None, None]
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all()
+        assert [r.detail["signal"] for r in rows] == ["dispatch", "dispatch"]
+        assert all(r.identity == "runner" and r.via == "runner" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_without_a_rung_keeps_the_hold(isolated_db, tmp_path, monkeypatch):
+    """Review F1: only a dispatch that actually CLIMBED consumes the hold. A spawn
+    with no rung ran at the ordinary pick — the hold read failed, ``ladder_top``
+    was lowered under the hold, or the engine has no ladder — so spending the hold
+    would buy a re-run at the same tier and a bounce counted against
+    ``give_up_after_bounces`` for nothing."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=7, kind="issue", state="open", title="t", body="b")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet",
+                                 now=datetime.now(timezone.utc))
+        db.add(wi)
+
+    orch = _build_backlog_orch({}, ladder_rung=None)
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
+
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem.hold_kind))).scalars().all() == [
+            "stronger_model"]
+        assert (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_that_dedupes_onto_an_existing_session_keeps_the_hold(
+        isolated_db, tmp_path, monkeypatch):
+    """Final review M1: the release is guarded on ``deduped`` exactly like the pick
+    audit beside it. On the re-join path ``create_session`` hands back the session
+    that already held the dedupe key — it is running at whatever model it was
+    started with, NOT at the rung — so nothing climbed and the hold is not spent."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=7, kind="issue", state="open", title="t", body="b")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet",
+                                 now=datetime.now(timezone.utc))
+        db.add(wi)
+
+    orch = _build_backlog_orch({}, ladder_rung="opus")
+    _patch_git(monkeypatch, tmp_path)
+    existing = SimpleNamespace(id="already-running", model="sonnet")
+    orch._backlog_ctx._existing_session = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+
+    async def dedupe(**_kw):
+        return existing
+    orch._backlog_ctx.spawn_session = dedupe  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="auto",
+                                    ownership_token="test-token")
+
+    assert rec is existing
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem.hold_kind))).scalars().all() == [
+            "stronger_model"]
+        assert (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_that_produces_no_session_keeps_the_hold(
+        isolated_db, tmp_path, monkeypatch):
+    """A refused spawn never dispatched anything, so the hold it was climbing
+    for is NOT consumed: the claim is released and the next refill re-claims the
+    item at the same rung. Releasing here would silently drop the ladder's
+    memory of the bounce."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=7, kind="issue", state="open", title="t", body="b")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet",
+                                 now=datetime.now(timezone.utc))
+        db.add(wi)
+
+    orch = _build_backlog_orch({}, ladder_rung="opus")
+    _patch_git(monkeypatch, tmp_path)
+
+    async def refuse(**kw):
+        return None
+    orch._backlog_ctx.spawn_session = refuse  # type: ignore[method-assign]
+    assert await orch._backlog_spawn(
+        _BATCH, "acct", default_model="auto", ownership_token="test-token") is None
+
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem.hold_kind))).scalars().all() == [
+            "stronger_model"]
 
 
 # --------------------------------------------------------------------------- #

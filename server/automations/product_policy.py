@@ -40,6 +40,7 @@ from server.time_iso import iso_utc, parse_iso_utc
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS
 from server.sdlc.gates import RISK_TOLERANCES
+from server.sessions.model_catalog import TIER_ORDER
 from server.sessions.model_request import MODEL_TIERS
 
 log = logging.getLogger(__name__)
@@ -65,19 +66,32 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
-    # At least one attempt: a 0 cap gives up on the first sweep of every issue it
-    # ever claims, escalating the whole product to needs-human.
-    ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2,
-                min=1),
+    # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt
+    # cap: a bounce climbs one tier (``server/pm/outcomes.py:next_rung``) rather
+    # than counting toward a fixed number, and a bounce AT this tier is the one
+    # that hands the issue to the owner.
+    ConfigField(key="ladder_top", label="Ladder top tier", type="enum", default="fable",
+                choices=list(TIER_ORDER),
+                help="The strongest model the Backlog Runner climbs to on repeated "
+                     "bounces; a bounce at this tier hands the issue to the owner."),
     # Phase 3 (spec §6/§7, D8): THE bounce threshold, compared through
     # ``server/pm/outcomes.py:bounced_out`` by both consumers. ``min=0`` because 0 is
     # meaningful ("never give up"); a NEGATIVE threshold is what is rejected, since
     # ``bounced_out`` would then fire on the very first finalised outcome.
+    #
+    # Default 0 since the model ladder landed (spec 2026-09-18 §4, decision 2: "park
+    # only above the top tier"): the LADDER's length is the cap now, and the old
+    # default of 2 made ``ladder_top`` unreachable — the queue skipped the item as
+    # ``needs_spec`` on the very bounce that wrote the rung hold, so nothing ever
+    # consumed it and the owner hand-off never fired. Kept as an optional STRICTER
+    # dial: when an operator sets it, the sweep hands the issue to the owner at that
+    # bounce instead of writing a rung hold nothing can redeem.
     ConfigField(key="give_up_after_bounces", label="Give up after bounces", type="int",
-                default=2, min=0,
-                help="Finalised non-merged outcomes on the same issue body before the "
-                     "queue skips it as needs_spec and the roadmap flags it; 0 never "
-                     "gives up. Editing the issue body restarts the count."),
+                default=0, min=0,
+                help="Stop short of the model ladder's top: hand the issue to its owner "
+                     "after this many finalised non-merged outcomes on the same body "
+                     "(the queue then skips it as needs_spec). 0 (the default) lets the "
+                     "ladder run its full length. Editing the issue body restarts the count."),
     ConfigField(key="default_model", label="Session model", type="enum", default="auto",
                 choices=AUTOMATION_MODEL_CHOICES,
                 help="Model for this product's sessions; 'auto' assesses each job."),
@@ -114,6 +128,26 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "be merged or accepted without a human read. Inert under cautious."),
 ]
 
+# Keys this schema USED to have and deliberately dropped (spec 2026-09-18 §4, plan
+# 4a task 2): ``max_attempts`` retired in favour of ``ladder_top`` + the model
+# ladder. A row a product's policy was already stored with still carries it, and
+# ``validate_config`` rejects unknown keys, so without this list every hand-edited
+# or pre-flip row would 422/fall back to all-defaults the moment it was read.
+PRODUCT_POLICY_RETIRED_KEYS: tuple[str, ...] = ("max_attempts",)
+
+# In-memory ANNOTATIONS a reader may hang on a validated policy: never stored, never
+# schema fields, never accepted from a client (``merge_policy_patch`` validates
+# directly and still rejects them, so no patch can persist one). ``ladder_top_configured``
+# is the Backlog Runner's record of the ``ladder_top`` the model-approval gate clamped
+# away (spec 2026-09-18 §4, decision 2 amendment).
+#
+# ``effective_policy`` STRIPS them before validating so that re-reading an annotated
+# snapshot stays idempotent. Without that, ``validate_config``'s unknown-key rule would
+# read an annotation as a corrupt row and degrade the whole product to defaults —
+# dispatch ``off`` — which is exactly the silent failure the retired-key list exists to
+# prevent.
+PRODUCT_POLICY_ANNOTATIONS: frozenset[str] = frozenset({"ladder_top_configured"})
+
 # Logged once per process, not once per bad row: a corrupt policy is a per-deploy fact
 # ("something upstream needs fixing"), not a per-request one, and every dispatch-loop tick
 # would otherwise re-log the same row.
@@ -123,17 +157,23 @@ _warned_bad_policy = False
 def effective_policy(raw: dict | None) -> dict:
     """The validated policy with every key present. ``None`` (never opted in) and an
     unparseable blob both read as the defaults — dispatch ``off`` — and the latter logs once
-    per process. Never raises."""
+    per process. Never raises.
+
+    Reading an already-validated policy back is idempotent, including one carrying an
+    in-memory annotation (``PRODUCT_POLICY_ANNOTATIONS``): the annotation is dropped,
+    never mistaken for a corrupt row."""
     global _warned_bad_policy
     if raw is not None:
+        if isinstance(raw, dict) and not PRODUCT_POLICY_ANNOTATIONS.isdisjoint(raw):
+            raw = {k: v for k, v in raw.items() if k not in PRODUCT_POLICY_ANNOTATIONS}
         try:
-            return validate_config(PRODUCT_POLICY_SCHEMA, raw)
+            return validate_config(PRODUCT_POLICY_SCHEMA, raw, retired=PRODUCT_POLICY_RETIRED_KEYS)
         except (ValueError, TypeError):
             if not _warned_bad_policy:
                 log.warning("product_policy.invalid_stored_policy: falling back to defaults",
                             exc_info=True)
                 _warned_bad_policy = True
-    return validate_config(PRODUCT_POLICY_SCHEMA, {})
+    return validate_config(PRODUCT_POLICY_SCHEMA, {}, retired=PRODUCT_POLICY_RETIRED_KEYS)
 
 
 def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
@@ -141,16 +181,21 @@ def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
 
     Null is a deliberate reset, including recovery from corrupt stored policy.
     Default filling belongs to readers and must never turn into persisted intent.
+    A retired key surviving in ``current`` (a pre-retirement row) or ``patch`` (a
+    stale client) is dropped here rather than carried forward — ``validate_config``
+    never puts it in its output, so re-persisting it would resurrect exactly the
+    key retirement means to stop writing.
     """
     if patch is None:
         return None
     if not isinstance(patch, dict) or (current is not None and not isinstance(current, dict)):
         raise ValueError("policy must be an object or null")
     current = {} if current is None else current
-    validate_config(PRODUCT_POLICY_SCHEMA, current)
-    validate_config(PRODUCT_POLICY_SCHEMA, patch)
-    merged = {**current, **patch}
-    validated = validate_config(PRODUCT_POLICY_SCHEMA, merged)
+    validate_config(PRODUCT_POLICY_SCHEMA, current, retired=PRODUCT_POLICY_RETIRED_KEYS)
+    validate_config(PRODUCT_POLICY_SCHEMA, patch, retired=PRODUCT_POLICY_RETIRED_KEYS)
+    merged = {k: v for k, v in {**current, **patch}.items()
+              if k not in PRODUCT_POLICY_RETIRED_KEYS}
+    validated = validate_config(PRODUCT_POLICY_SCHEMA, merged, retired=PRODUCT_POLICY_RETIRED_KEYS)
     return {key: validated[key] for key in merged}
 
 
@@ -205,6 +250,35 @@ def policies_by_slug(db: Session) -> dict[str, dict]:
     """slug -> effective policy for every Project (sync session; the queue loader's session)."""
     rows = db.execute(select(Project.slug, Project.automation_policy)).all()
     return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+
+
+# The reserved key a runner policy SNAPSHOT carries its no-product default under
+# (spec 2026-09-18 §4, decision 2 amendment). A target with no product still needs a
+# policy — pre-flip claims carry none — and since the Backlog Runner's snapshot has
+# its ``ladder_top`` clamped to the model-approval gate, that default cannot be
+# rebuilt with a bare ``effective_policy(None)`` on the far side of the seam without
+# a SECOND clamp. Carrying it in the mapping keeps one. Empty because no ``Project``
+# lookup can ever reach it: every per-product read guards on a truthy slug.
+NO_PRODUCT_POLICY_KEY = ""
+
+
+def policy_for_product(policies: "dict[str, dict]", product: "str | None") -> dict:
+    """THE "which policy governs this target" fallback chain over a runner policy
+    SNAPSHOT: the product's own entry, else the snapshot's no-product default
+    (``NO_PRODUCT_POLICY_KEY`` — carrying the same approval-gate clamp on
+    ``ladder_top`` that every product's entry got), else the pure schema defaults.
+
+    One implementation for all three readers — the loop's ``_policy_for``, the
+    spawn's ``_backlog_ladder_rung`` and the tap's ``_backlog_policy_model`` — so a
+    product-less claim cannot end up with a ladder one tier higher on one side of
+    the seam than the other. Only a snapshot from a seam that carries no default (a
+    test's, or a pre-clamp one) reaches the pure ``effective_policy(None)``.
+    """
+    if product:
+        policy = policies.get(product)
+        if policy is not None:
+            return policy
+    return policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None)
 
 
 async def load_policies(db: AsyncSession) -> dict[str, dict]:

@@ -66,8 +66,18 @@ converted the surviving rows. Only `owner_action` and a pending `decision` deriv
 "Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
 write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
 may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
-OVERWRITE a hold they could not clear, since replacing a kind releases the old one. The ladder, evidence
+OVERWRITE a hold they could not clear, since replacing a kind releases the old one. Evidence
 dispatch, decision proposals, and the rename to "Held" are the later series items of that spec.
+**The ladder has landed (item 4a, spec §4).** `stronger_model` is the Backlog Runner's own climb
+marker: a bounce below the product's `ladder_top` writes it (`server/pm/holds.py:
+set_runner_stronger_hold`, actor `runner`) on every issue of the batch, BEFORE the runner releases
+its claim on the row, through the same writer the give-up path uses so a person's hold is never
+overwritten and a retried write is a no-op, not a re-stamp; a bounce AT `ladder_top` writes
+`owner_action` instead (the ordinary give-up). It is agent-settable and queue-eligible, so the next
+refill re-claims the item, and it is released only by the dispatch that actually climbed
+(`server/pm/holds.py:release_on_dispatch`, `signal: "dispatch"` — the one entry in
+`RELEASE_SIGNALS` that ends no `owner_action` hold at all, since a `stronger_model` hold is not one).
+See `docs/product/features/autopilot-backlog-runner.md` § The model ladder for the full rule.
 An `owner_action` hold ends only on a human signal (spec 2026-09-18 §7): a board edit to Ready or
 Backlog, an issue body edit (the fingerprint no longer matches), or
 `POST /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
@@ -225,12 +235,18 @@ runner's refill loop rather than translated into a per-repo cap, so a product ow
 still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
 no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
-its share when a freed slot is contested under the `weighted` selection strategy), `max_attempts`
-(default 2, minimum 1 — attempts per issue before the runner gives up), `give_up_after_bounces`
-(default 2, minimum 0 — landed in phase 3, D8: the bounce threshold both the queue's `needs_spec`
+its share when a freed slot is contested under the `weighted` selection strategy), `ladder_top`
+(enum over the model tiers, default `fable` — the strongest model the runner climbs to on a
+repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
+Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see
+`docs/product/features/autopilot-backlog-runner.md` § The model ladder), `give_up_after_bounces`
+(default 0, minimum 0 — landed in phase 3, D8: the bounce threshold both the queue's `needs_spec`
 skip and the roadmap's `needs_spec` reason compare against through the one predicate
-`server/pm/outcomes.py:bounced_out`; `0` means never give up, and editing the issue's title/body
-changes its `body_fingerprint` and restarts the count — see "Dispatch outcomes" below),
+`server/pm/outcomes.py:bounced_out`; `0` — the default since the model ladder landed — means never
+give up, leaving the ladder's own length as the cap, and a non-zero value is an optional stricter
+stop that makes the runner hand the issue to its owner at that bounce instead of writing a rung
+hold the queue would then refuse. Editing the issue's title/body changes its `body_fingerprint` and
+restarts the count — see "Dispatch outcomes" below),
 `default_model` (default
 `auto` — the session model; `auto` assesses each job), `respect_dependencies` (default `true`), and,
 landed in phase 2, `triage_auto_accept` (`off | high | medium`, default `off` — the PM Triage loop's
@@ -272,8 +288,11 @@ the products that owned them so the flip changed no behaviour: the prior global 
 seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
 primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
 — or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
-globals are copied onto every seeded product, but only the keys the legacy config actually set: a
-key it left unset is left at the schema default rather than pinned to a made-up value. A non-empty
+globals (`queue_min_status`, `default_model`, `respect_dependencies`) are copied onto every seeded
+product, but only the keys the legacy config actually set: a key it left unset is left at the schema
+default rather than pinned to a made-up value. `max_attempts` is NOT among them — it was retired in
+favour of `ladder_top` and the model ladder (spec 2026-09-18 §4), and a tier ceiling synthesized
+from a legacy attempt count would be invented intent, not a migration. A non-empty
 `enabled_repos` seeded exactly the products owning those repos; the empty list — which meant "every
 onboarded product" — seeded every product with a linked board. The seed CONSUMES its own input: in
 the same transaction it strips every retired key off the runner row's config and normalises a stored
@@ -283,7 +302,7 @@ exactly once in history — durably, unlike the earlier "does any product have a
 re-armed the moment an operator cleared the last policy. A runner-card config save strips those keys
 too (the config PATCH validates against the phase-1 schema); a row left that way is never seeded
 from — its repo list is gone — but its legacy mode is still folded to `on`. A legacy value below a
-field's phase-1 minimum (`max_attempts: 0`, a negative per-repo cap) costs that one field its legacy
+field's phase-1 minimum (a negative per-repo cap) costs that one field its legacy
 value, never the whole policy. A product that already carries one is
 skipped individually, so a human-set policy is never overwritten and never blocks the rest of the
 migration.
@@ -339,14 +358,16 @@ target even when a tap races the loop's own claim.
 
 `finalize_outcome` closes the row at whichever branch of `BacklogRunnerLoop._sweep_one` ends the
 dispatch: a merged PR with a clean close-out → `merged` (with `first_pass_merge`); a merged PR that
-still needs a human close-out → `needs_human`; PR Doctor giving up → `pr_gave_up`; the PR closing
-unmerged → `abandoned`; the session ending with no mergeable PR and attempts still left →
-`no_pr` (a bounce); reaching the attempt cap with the session having never run a turn → `abandoned`;
-reaching the attempt cap with a real attempt behind it → `needs_human`. The two attempt-cap branches
-pass `upgrade_from=("no_pr",)`: the cap is discovered a sweep AFTER the bounce that carried the
-dispatch to it, with nothing re-dispatched in between, so rather than leaving a stray second row for
-one session, `finalize_outcome` re-finalises the newest matching row in place (`ended_at`/
-`duration_s` kept, outcome/cause replaced) — one dispatch, one row.
+still needs a human close-out → `needs_human`; PR Doctor giving up → `pr_gave_up`; a PERSON closing
+the PR unmerged → `abandoned`; the session ending with no mergeable PR → `no_pr` (a bounce — the row
+still reads `no_pr` even when that bounce lands at the model ladder's top and hands off to the
+owner, spec 2026-09-18 §4, since the recorded OUTCOME was still "no PR"; see
+`docs/product/features/autopilot-backlog-runner.md` § The model ladder); the session never having
+run a single turn → `abandoned`. There is no fixed attempt cap any more: a bounce climbs the model
+ladder (the `ladder_top` policy field, above) instead of counting toward one. The one surviving
+`upgrade_from=("no_pr",)` fires on the session-never-ran branch: rather than leaving a stray second
+row for one session, `finalize_outcome` re-finalises the newest matching `no_pr` row in place
+(`ended_at`/`duration_s` kept, outcome/cause replaced) — one dispatch, one row.
 
 `first_pass_merge` is `True`/`False` only when PR Doctor's recovery count for that PR is knowable at
 the moment the merge is swept, and `None` otherwise — never guessed. The seam is

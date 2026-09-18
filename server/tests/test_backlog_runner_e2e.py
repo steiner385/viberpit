@@ -17,8 +17,8 @@ announce / spawn seams (grouping-plan refresh → ``store_plan`` → ``select_ba
 - a fake ``create_session`` that writes a DB row — no real PTY / SDK session.
 
 Acceptance criterion: the full path (select→claim→spawn, in-flight cap,
-spawn-failure row release, ended-without-PR give-up, PR-Doctor handoff give-up,
-de-dup) runs with NO network and NO real sessions. Phase D (#994) retired the
+spawn-failure row release, ended-without-PR ladder climb, PR-Doctor handoff
+ladder climb, de-dup) runs with NO network and NO real sessions. Phase D (#994) retired the
 ``in-progress``/``needs-human`` labels, so no assertion here may expect one: the
 claim is the durable row, and the only GitHub writes are comments.
 """
@@ -135,6 +135,7 @@ class Harness:
             admission=self._admission,
             clock=clock,
             needs_human=self._needs_human,
+            escalate=self._escalate,
             session_ended=self._session_ended,
             session_work_stopped=self._session_ended,
             handoff=self._handoff,
@@ -142,6 +143,7 @@ class Harness:
         )
         self.needs_humaned: list[str] = []
         self.needs_human_reasons: list[str] = []
+        self.escalated: list[tuple[str, str, str]] = []
 
     async def _admission(self, batch, **_kwargs):
         from types import SimpleNamespace
@@ -212,6 +214,15 @@ class Harness:
         batch = await self._batch_for(target)
         await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
                                 gh_run=self.gh)
+
+    async def _escalate(self, target: str, reason: str, rung: str) -> None:
+        """LADDER path (spec 2026-09-18 §4): mirrors ``_backlog_escalate`` — a
+        rung climb is silent (the ``stronger_model`` hold IS the signal), and
+        the seam is rung-only: a bounce at the top goes through ``_give_up`` /
+        ``_needs_human`` instead (review R1 I2/I4). What the real seam writes is
+        pinned by ``test_pm_orchestrator_seams.py::test_backlog_escalate_writes_a_stronger_model_hold_and_never_comments``
+        — this stand-in only records the call."""
+        self.escalated.append((target, reason, rung))
 
     async def _spawn(self, batch, account: str, **_kw):
         if self.spawn_raises:
@@ -355,10 +366,13 @@ def test_spawn_failure_releases_the_row_and_no_attempt(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Ended-without-PR → attempts++ → give-up at max                               #
+# Ended-without-PR → climbs the ladder (spec 2026-09-18 §4)                    #
 # --------------------------------------------------------------------------- #
 
-def test_ended_without_pr_increments_then_gives_up(tmp_path):
+def test_ended_without_pr_climbs_the_ladder_and_frees_the_row(tmp_path):
+    """No attempt cap: a no-PR bounce climbs one model tier via the escalate
+    seam and the row is freed — it re-queues under the ``stronger_model`` hold
+    the real orchestrator seam (``_backlog_escalate``) would write."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu.db'}"
 
     async def go():
@@ -367,35 +381,26 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
         h = Harness(config=make_config(max_concurrent=1),
                     clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")], pr_status={})
-        await h.loop.tick()                  # spawn o/r#1, attempts=0
+        await h.loop.tick()                  # spawn o/r#1
         await h.end_session("o/r#1")         # session ends, no PR
-        await h.loop.tick()                  # sweep: attempts -> 1 (< max), keep row
-        st = await h.ctx.get_target_state("o/r#1")
-        assert st.get("attempts") == 1
-        assert st.get("_ended") is True
-        await h.loop.tick()                  # sweep again: attempts -> 2 == max → give up
-        st2 = await h.ctx.get_target_state("o/r#1")
-        # Spec 2026-09-18 §3: the row survives the give-up, for slot accounting
-        # only — the hold on the issue IS the handoff now, not a stamp on this row.
-        assert st2["gave_up"] is True and st2["issues"] == ["o/r#1"]
-        assert "needs_human_at" not in st2
-        assert "o/r#1" in h.needs_humaned    # GIVE-UP path escalated
-        assert "max attempts" in h.needs_human_reasons[0]
-        # The handoff announced itself as a comment carrying the reason.
-        handoffs = [b for _ref, b in h.gh.comments if "Handed to a human" in b]
-        assert handoffs and "max attempts" in handoffs[0]
+        await h.loop.tick()                  # sweep: bounce → climbs a rung
+
+        assert h.escalated == [("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert h.needs_humaned == []         # no owner hand-off — not the top
         assert not any("--add-label" in c or "--remove-label" in c for c in h.gh.calls)
-        gave = await _events("gave_up")
-        assert gave
+        st = await h.ctx.get_target_state("o/r#1")
+        assert st == {}
 
     run(go())
 
 
 # --------------------------------------------------------------------------- #
-# PR-Doctor gave_up on a handed-off target → needs-human                       #
+# PR-Doctor gave_up on a handed-off target → climbs the ladder (spec §4)       #
 # --------------------------------------------------------------------------- #
 
-def test_pr_doctor_gave_up_target_needs_human(tmp_path):
+def test_pr_doctor_gave_up_target_climbs_the_ladder(tmp_path):
+    """PR Doctor giving up is still a failed implement attempt: the same ladder
+    path as a no-PR bounce, not a straight hand-off to the owner."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'pd.db'}"
 
     async def go():
@@ -411,11 +416,13 @@ def test_pr_doctor_gave_up_target_needs_human(tmp_path):
                     candidate_refs=[("o/r", 1, "one")], pr_status={})
         await h.loop.tick()                  # spawn o/r#1
         await h.end_session("o/r#1")          # observed native work has stopped
-        await h.loop.tick()                  # sweep sees pr-doctor gave_up → give up
-        assert "o/r#1" in h.needs_humaned
-        assert [b for _ref, b in h.gh.comments if "Handed to a human" in b]
+        await h.loop.tick()                  # sweep sees pr-doctor gave_up → climbs
+
+        assert h.needs_humaned == []
+        assert h.escalated == [
+            ("o/r#1", "PR Doctor gave up; next attempt on opus", "opus")]
         st = await h.ctx.get_target_state("o/r#1")
-        assert st["gave_up"] is True and st["reason"] == "pr-doctor gave up"
+        assert st == {}
 
     run(go())
 

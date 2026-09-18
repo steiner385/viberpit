@@ -1055,6 +1055,7 @@ class SessionOrchestrator:
             seed_policies=self._backlog_seed_policies_once,
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
+            escalate=self._backlog_escalate,
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
@@ -5821,6 +5822,13 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             rows, policies, repos_by_slug = await db.run_sync(_rows)
+            # The spawn's ladder rung reads its ``ladder_top`` off this snapshot, so
+            # it gets the SAME approval-gate clamp the sweep's snapshot gets —
+            # otherwise the two halves of one rule could answer differently about
+            # where the ladder ends (and the spawn's half is the one that parks).
+            # Best-effort here and NOT on the loader seam: this read has no
+            # skip-refill escape, so it degrades to the last verdicts instead.
+            policies = await self._backlog_clamp_ladder_tops(db, policies, best_effort=True)
         # Cached for the other seams in this same tick (selection's weights/caps/
         # order, the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
@@ -5960,14 +5968,95 @@ class SessionOrchestrator:
         caller and it has the context to fail safely — keep the previous snapshot,
         else skip refill this tick — whereas ``{}`` here is indistinguishable from
         "no product has ever opted in", which would silently drop every product's
-        dispatch, cap and model to a guess."""
+        dispatch, cap and model to a guess. A failed approval-gate verdict raises for
+        the same reason (``best_effort=False``): an UNCLAMPED snapshot is likewise
+        indistinguishable from a good one, and it is the direction that parks."""
         from server.automations.product_policy import load_policies
         try:
             async with db_session() as db:
-                return await load_policies(db)
+                return await self._backlog_clamp_ladder_tops(
+                    db, await load_policies(db), best_effort=False)
         except Exception:
             log.warning("orchestrator._backlog_load_policies_failed", exc_info=True)
             raise
+
+    async def _backlog_clamp_ladder_tops(self, db, policies: dict[str, dict], *,
+                                         best_effort: bool) -> dict[str, dict]:
+        """THE ladder-top clamp for a policy snapshot (spec 2026-09-18 §4, decision 2
+        amendment): every product's ``ladder_top`` lowered to the strongest tier the
+        model-approval gate ALLOWS, plus the same treatment for the no-product default
+        (carried under ``NO_PRODUCT_POLICY_KEY``, which is how the clamp reaches
+        ``BacklogRunnerLoop._policy_for``'s fallback without a second implementation).
+
+        The ladder must never climb onto a tier ``create_session`` would park for
+        approval: that dispatch holds a runner slot behind a human and never runs.
+        Both runner policy reads (this seam and the queue read's tick snapshot) come
+        through here, so the sweep that writes a ladder hold and the spawn that pins
+        its rung cannot disagree about where the top is.
+
+        The configured value survives as ``ladder_top_configured`` — an in-memory
+        annotation ONLY (never persisted, never a ``PRODUCT_POLICY_SCHEMA`` field),
+        read back through ``gated_ladder_top`` so a hand-off at a clamped top can name
+        the gate instead of silently stopping below the operator's setting.
+
+        Each tier is judged ONCE per load, not once per product, with
+        ``account=None``: a stricter per-account ``modelApprovalAction`` in the ledger
+        can still park a tier this clamp allowed, because the account is not picked
+        until the spawn (a re-check there is a follow-up, review r1 F2).
+
+        The two callers want OPPOSITE handling of a failed verdict read, so
+        *best_effort* is required rather than defaulted (review r1 F4):
+
+        * the loader seam passes ``False`` — it documents that a failed read RAISES,
+          and the loop then keeps its previous (already clamped) snapshot or skips
+          refill. An UNCLAMPED snapshot is the unsafe direction for this feature, and
+          it is the one answer the loop cannot tell apart from a good one.
+        * the queue read passes ``True`` — it has no skip-refill escape, so it falls
+          back to the verdicts of the last successful clamp (stale gate, current
+          policies) and only leaves the snapshot unclamped when this process has
+          never had a verdict at all."""
+        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
+        from server.pm.outcomes import clamp_ladder_top
+        from server.sessions.model_catalog import TIER_ORDER
+        from server.sessions.model_policy import resolve_model_policy
+        snapshot = {**policies, NO_PRODUCT_POLICY_KEY: effective_policy(None)}
+        verdicts: dict[str, str] | None
+        try:
+            verdicts = {tier: await resolve_model_policy(db, model=tier, account=None)
+                        for tier in TIER_ORDER}
+        except Exception:
+            if not best_effort:
+                raise
+            verdicts = getattr(self, "_backlog_ladder_verdicts", None)
+            log.warning("backlog_runner.ladder_top_clamp_failed (%s)",
+                        "reusing the last verdicts" if verdicts else "snapshot left unclamped",
+                        exc_info=True)
+            if verdicts is None:
+                return snapshot
+        else:
+            self._backlog_ladder_verdicts = verdicts
+
+        def _allowed(tier: str) -> bool:
+            return verdicts.get(tier) == "allow"
+
+        # Lazily attached, so a snapshot read on an orchestrator built without
+        # ``__init__`` (the seam tests) works the same way.
+        logged: dict[str, str] = getattr(self, "_backlog_ladder_clamp_logged", None) or {}
+        self._backlog_ladder_clamp_logged = logged
+        out: dict[str, dict] = {}
+        for slug, policy in snapshot.items():
+            configured = str(policy["ladder_top"])
+            effective = clamp_ladder_top(configured, _allowed)
+            out[slug] = {**policy, "ladder_top": effective,
+                         "ladder_top_configured": configured}
+            # One line per CHANGE of a product's effective top, not one per tick:
+            # this runs on every tick of the loop.
+            if logged.get(slug) != effective:
+                logged[slug] = effective
+                if effective != configured:
+                    log.info("backlog_runner.ladder_top_clamped slug=%s configured=%s "
+                             "effective=%s", slug or "(no product)", configured, effective)
+        return out
 
     def _backlog_credential_alerts(self) -> list[dict]:
         """Stale-credential seam for the loop's dashboard notification (#670).
@@ -6071,17 +6160,42 @@ class SessionOrchestrator:
         return Batch(primary=target, issues=list(issues),
                      repo=target.split("#", 1)[0], product=st.get("product"))
 
-    async def _backlog_needs_human(self, target: str, reason: str) -> None:
-        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
-        issue of the batch — the hold IS the handoff — then comment it (best-effort).
-        The runner's ``gave_up`` row survives for slot accounting only and is
-        dropped by ``_release_give_ups`` once the hold is gone."""
+    async def _backlog_write_runner_hold(self, target: str, *, kind: str, reason: str,
+                                         log_key: str):
+        """THE shared runner-hold writer (review R1 I5) behind both
+        ``_backlog_needs_human`` (``kind="owner_action"``) and
+        ``_backlog_escalate`` (``kind="stronger_model"``): resolves the batch,
+        writes ``kind`` as the runner's hold on every mirrored issue, and audits
+        it — except:
+
+        - a held item (``HELD_KINDS``: ``owner_action``/``decision``) is left
+          untouched (review R1 I6), and the ``hold_by == RUNNER_ACTOR`` exemption
+          that lets a retried give-up re-stamp its OWN hold belongs to the
+          ``owner_action`` writer ALONE (final review I2). For the
+          ``stronger_model`` writer, replacing a hand-off — even the runner's own
+          — would end it: ``stronger_model`` is not in ``HELD_KINDS``, so the item
+          becomes queue-eligible again and ``_release_give_ups`` drops the parked
+          ``gave_up`` row, a machine ending a hold spec decision 6 reserves for a
+          human signal. That happens whenever a grouping plan built before the
+          hand-off still names the issue as a non-primary member of a later batch
+          that bounces below the top. Kept, logged, no audit row;
+        - an IDENTICAL hold already in place (same kind/actor/reason) is a
+          no-op retry, not a re-stamp (review R1 I2 item 3) — a retried
+          give-up or a re-tick while the row release keeps failing must not
+          keep bumping ``hold_set_at``/``hold_fingerprint`` (that would lose a
+          pending body-edit release) or double-audit.
+
+        Unmirrored refs are logged and skipped. Returns the resolved ``Batch`` —
+        the give-up caller's comment step needs it, and it is the only thing either
+        caller reads (final review M6)."""
         from datetime import datetime, timezone
         from sqlalchemy import select, tuple_
         from server.audit import record_audit
-        from server.automations import backlog_github
         from server.db.models import WorkItem
-        from server.pm.holds import RUNNER_ACTOR, actor_class, set_runner_hold
+        from server.pm.desired_state import HELD_KINDS
+        from server.pm.holds import (
+            RUNNER_ACTOR, actor_class, set_runner_hold, set_runner_stronger_hold,
+        )
         from server.pm.refs import split_ref
         batch = await self._backlog_batch_for(target)
         parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
@@ -6092,13 +6206,34 @@ class SessionOrchestrator:
                     WorkItem.kind == "issue",
                     tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
                 for wi in items:
-                    set_runner_hold(wi, reason=reason, now=now)
+                    if wi.hold_kind in HELD_KINDS and not (
+                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR):
+                        log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
+                                 wi.repo, wi.number, wi.hold_kind, wi.hold_by)
+                        continue
+                    if (wi.hold_kind == kind and wi.hold_by == RUNNER_ACTOR
+                            and wi.hold_reason == reason):
+                        continue  # identical retry: nothing changed, nothing to re-stamp
+                    if kind == "owner_action":
+                        set_runner_hold(wi, reason=reason, now=now)
+                    else:
+                        set_runner_stronger_hold(wi, reason=reason, now=now)
                     await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
-                        "workItemId": wi.id, "kind": "owner_action", "reason": reason,
+                        "workItemId": wi.id, "kind": kind, "reason": reason,
                         "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
                 missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
                 if missing:
-                    log.warning("backlog_runner.give_up_unmirrored refs=%s", sorted(missing))
+                    log.warning("backlog_runner.%s_unmirrored refs=%s", log_key, sorted(missing))
+        return batch
+
+    async def _backlog_needs_human(self, target: str, reason: str) -> None:
+        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
+        issue of the batch — the hold IS the handoff — then comment it (best-effort).
+        The runner's ``gave_up`` row survives for slot accounting only and is
+        dropped by ``_release_give_ups`` once the hold is gone."""
+        from server.automations import backlog_github
+        batch = await self._backlog_write_runner_hold(
+            target, kind="owner_action", reason=reason, log_key="give_up")
         try:
             await asyncio.to_thread(
                 backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
@@ -6109,6 +6244,19 @@ class SessionOrchestrator:
             # seam, so this is belt and suspenders, not the only backstop.
             log.warning("backlog_needs_human.announce_failed target=%s", target,
                         exc_info=True)
+
+    async def _backlog_escalate(self, target: str, reason: str, rung: str) -> None:
+        """LADDER path (spec 2026-09-18 §4): a bounce below the top tier parks
+        every issue of the batch as ``stronger_model`` — agent-settable,
+        queue-eligible, so the next refill re-claims it and the spawn pins
+        ``rung``. Never comments: a rung climb is silent, only the final
+        hand-off (routed through ``_give_up``/``_backlog_needs_human`` — review
+        R1 I2/I4, this seam is never called with "no rung") does. The runner's
+        caller awaits this BEFORE releasing the claim row, so raising here
+        (e.g. a DB hiccup) leaves the claim intact for the next sweep to
+        retry — no two-phase gap where the item is neither claimed nor held."""
+        await self._backlog_write_runner_hold(
+            target, kind="stronger_model", reason=reason, log_key="escalate")
 
     async def _backlog_held_targets(self) -> "frozenset[str]":
         from server.pm.holds import held_refs
@@ -6227,8 +6375,12 @@ class SessionOrchestrator:
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
             return 0, 0, 0, None
         # Include off products so existing claims remain attributable after a
-        # policy change. The loop adds live counts from ONE shared snapshot.
+        # policy change. The loop adds live counts from ONE shared snapshot. The
+        # snapshot's no-product default (``NO_PRODUCT_POLICY_KEY``) is not a product
+        # and never becomes a counts row.
         for slug, policy in self._backlog_last_policies.items():
+            if not slug:
+                continue
             row = per_product.setdefault(slug, {
                 "dispatch": policy["dispatch"], "eligible": 0,
                 "blocked": 0, "untriaged": 0, "bounced": 0,
@@ -6245,8 +6397,11 @@ class SessionOrchestrator:
         product's ``dispatch`` (``auto`` stayed ``auto``, anything else proposes),
         the product's PRIMARY repo's entry in ``repo_caps``/``repo_weights`` becomes
         its ``max_in_flight``/``weight``, and the remaining globals
-        (``queue_min_status``, ``max_attempts``, ``default_model``,
-        ``respect_dependencies``) are copied to every seeded product.
+        (``queue_min_status``, ``default_model``, ``respect_dependencies``) are
+        copied to every seeded product. ``max_attempts`` is NOT carried over — it
+        was retired in favour of ``ladder_top`` + the model ladder (spec
+        2026-09-18 §4, plan 4a task 2), and a made-up tier ceiling from a legacy
+        attempt count would be invented intent, not a migration.
 
         Only keys the legacy config ACTUALLY SET are carried over; the rest are left
         to the schema default rather than pinned to a made-up value. That matters
@@ -6375,8 +6530,6 @@ class SessionOrchestrator:
                     legacy["max_in_flight"] = cap
                 if (weight := _int("weight", weights.get(repo))) is not None:
                     legacy["weight"] = weight
-                if (attempts := _int("max_attempts", raw.get("max_attempts"))) is not None:
-                    legacy["max_attempts"] = attempts
                 if "default_model" in raw:
                     legacy["default_model"] = _enum(
                         "default_model", raw.get("default_model"))
@@ -6452,15 +6605,46 @@ class SessionOrchestrator:
         policy snapshot its dispatch decision was made on. A failed read costs the
         model PREFERENCE, never the spawn: by the time a spawn path runs, the
         decision that this batch may run has already been taken, and ``auto`` (the
-        schema default) is exactly what a pre-flip claim ran under."""
-        from server.automations.product_policy import effective_policy
+        schema default) is exactly what a pre-flip claim ran under.
+
+        The no-product fallback goes through the shared ``policy_for_product`` chain
+        (final review M4 / ledger nit 3), so it reads the snapshot's own clamped
+        default rather than a second bare ``effective_policy(None)``."""
+        from server.automations.product_policy import policy_for_product
         try:
             policies = await self._backlog_load_policies()
         except Exception:
             log.warning("backlog_runner.spawn_policy_read_failed", exc_info=True)
             policies = {}
-        policy = (policies.get(product) if product else None) or effective_policy(None)
-        return str(policy["default_model"])
+        return str(policy_for_product(policies, product)["default_model"])
+
+    async def _backlog_policy_snapshot(self) -> dict[str, dict]:
+        """The tick's CLAMPED policy snapshot, or a freshly clamped one when this
+        process has not taken a queue read yet (final review M4).
+
+        ``_backlog_last_policies`` is only filled by ``_backlog_query_queue``, so a
+        manual "Implement now" / dispatch tap on a daemon whose backlog loop has not
+        run one — the runner off, or the first tap after a restart — used to fall
+        back to a bare ``effective_policy(None)``: ``ladder_top = fable``,
+        UNCLAMPED. On an item whose last attempt ran on ``opus`` that pins ``fable``
+        and parks the session as a driverless ``pending_approval`` row, precisely
+        what the clamp exists to prevent.
+
+        Clamping on the spot is best-effort (``best_effort=True``): this is a tap
+        path with no skip-refill escape, and it must never take a dispatch down with
+        it. The result is deliberately NOT cached onto ``_backlog_last_policies`` —
+        that snapshot belongs to the loop's tick and a tap must not age it."""
+        from server.automations.product_policy import load_policies
+        policies = getattr(self, "_backlog_last_policies", None) or {}
+        if policies:
+            return policies
+        try:
+            async with db_session() as db:
+                return await self._backlog_clamp_ladder_tops(
+                    db, await load_policies(db), best_effort=True)
+        except Exception:
+            log.warning("backlog_runner.policy_snapshot_read_failed", exc_info=True)
+            return {}
 
     async def _backlog_tier_floor(self, product_slug: "str | None",
                                   primary_ref: str) -> str | None:
@@ -6473,6 +6657,91 @@ class SessionOrchestrator:
         from server.pm.outcomes import tier_floor_for_dispatch
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
+
+    async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
+                                   default_model: str, floor: str | None) -> str | None:
+        """The tier this dispatch is PINNED to because its primary issue is parked
+        as ``stronger_model`` (spec 2026-09-18 §4), or ``None`` when it is not on
+        the ladder at all.
+
+        The climb starts from the model the newest finalised ``implement``
+        dispatch for this issue actually ran on, never drops below a pinned
+        product *default_model*, and stops at the product's ``ladder_top`` — all
+        of which is ``next_rung``'s rule, composed here with the hold that says
+        the runner asked for a climb. The product's policy comes off the tick
+        snapshot (``_backlog_last_policies``, the same one selection's weights
+        read), so the spawn cannot answer from a policy the dispatch decision was
+        never taken on.
+
+        ``next_rung`` is called with the SAME inputs the sweep used when it wrote
+        the hold (``backlog_runner.py``'s ``floor=None``, review F4), so the two
+        halves of one rule cannot answer differently — the hold reason names the
+        rung this pins. The D9 capability *floor* is applied AFTER the climb
+        instead of as a bound inside it: as an input it would end the ladder
+        (``next_rung`` → ``None``) for any capability whose floor sits above
+        ``ladder_top``, which is an ordinary configuration, not a lowered top.
+
+        That raise is itself bounded by the top (review r1 F1): the rung returned
+        here is PINNED into the spawn's ``default_model``, so a floor above the top
+        is not the harmless "``pick_model`` floors the pick anyway" case it would be
+        for an ``auto`` spawn — on a top the approval gate clamped it would pin the
+        gated tier and park the dispatch as a driverless ``pending_approval`` row,
+        which is exactly what the clamp exists to prevent. A floor above the top
+        therefore leaves the rung AT the top.
+
+        The spawn's one door to the ladder, and an injectable seam so the spawn
+        tests need neither a seeded hold nor an outcome history. Best-effort like
+        ``_backlog_tier_floor``: a failed read costs the RUNG, never the spawn —
+        the item keeps its hold and the next tick tries again.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.automations.product_policy import policy_for_product
+        from server.db.models import WorkItem
+        from server.pm.outcomes import last_attempt_model, next_rung, top_tier
+        from server.pm.refs import split_ref
+        from server.sessions.model_catalog import TIER_ORDER, tier_rank
+        parts = split_ref(primary_ref)
+        if parts is None:
+            return None
+        repo, number = parts
+        try:
+            async with db_session() as db:
+                held = (await db.execute(sa_select(WorkItem.hold_kind).where(
+                    WorkItem.repo == repo, WorkItem.number == number,
+                    WorkItem.kind == "issue"))).scalars().first()
+                if held != "stronger_model":
+                    return None
+                previous = await last_attempt_model(db, primary_ref)
+        except Exception:
+            log.warning("backlog_runner.ladder_rung_read_failed target=%s", primary_ref,
+                        exc_info=True)
+            return None
+        # A dispatch with no product takes the snapshot's no-product default, which
+        # carries the same approval-gate clamp every product's does (the sweep's
+        # ``_policy_for`` falls back to that same entry, through the same helper).
+        policy = policy_for_product(await self._backlog_policy_snapshot(), product_slug)
+        top = top_tier(policy)
+        rung = next_rung(previous, floor=None, default_model=default_model, top=top)
+        if rung is None:
+            # Unreachable by construction: a bounce that would climb past the top
+            # is handed to the owner (``_give_up``) and never writes this hold. Now
+            # that the inputs match the sweep's, this can only mean ``ladder_top``
+            # was lowered after the hold was written — loud, because the item then
+            # holds at a rung nothing will ever climb, and spawns at the product's
+            # default meanwhile.
+            log.warning("backlog_runner.ladder_rung_missing target=%s previous=%s top=%s",
+                        primary_ref, previous, top)
+            return None
+        # Then raise the climb to the capability floor, by ``tier_rank`` — the one
+        # tier ordering, compared exactly as ``model_pick.pick_model`` compares it,
+        # so a floor with no fixed tier (``best``, an unknown id) is ignored rather
+        # than compared by name — but never past ``top``, because this rung is
+        # pinned and a top the approval gate clamped would otherwise park the spawn.
+        floor_rank, rung_rank, top_rank = tier_rank(floor), tier_rank(rung), tier_rank(top)
+        if floor_rank is not None and rung_rank is not None and floor_rank > rung_rank:
+            return TIER_ORDER[floor_rank if top_rank is None else min(floor_rank, top_rank)]
+        return rung
 
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
                              ownership_token: str):
@@ -6512,12 +6781,31 @@ class SessionOrchestrator:
         # §13: a failed history read costs the FLOOR, never the spawn. Claude-only
         # input, but computed here because only this origin has the evidence.
         floor = None
+        rung = None
         if engine is AgentEngine.CLAUDE_CODE:
             try:
                 floor = await self._backlog_tier_floor(batch.product, batch.primary)
             except Exception:
                 log.warning("backlog_runner.tier_floor_failed target=%s",
                             batch.primary, exc_info=True)
+            # The LADDER (spec §4) outranks the floor AND the assessor: an issue
+            # its last bounce parked as ``stronger_model`` is dispatched at the
+            # next rung. Claude-only for the same reason the floor is — the rungs
+            # are Claude tiers, and a Codex dispatch has no ladder to climb.
+            try:
+                rung = await self._backlog_ladder_rung(
+                    batch.product, batch.primary, default_model=default_model, floor=floor)
+            except Exception:
+                log.warning("backlog_runner.ladder_rung_failed target=%s",
+                            batch.primary, exc_info=True)
+        if rung:
+            # PINNED, not floored: ``pick_model``'s floor only raises an ``auto``
+            # assessment, and the rung is not a bound on a fresh guess — it IS the
+            # decision this dispatch exists to act on. A pinned alias is read as
+            # an operator's choice, which is exactly the standing the runner's
+            # climb has.
+            config = {**config, "default_model": rung}
+            detail["ladder_rung"] = rung
         choice = await self._resolve_spawn_model(engine, account, config, summary,
                                                  floor=floor)
         model, reasoning_effort = choice.model, choice.reasoning_effort
@@ -6549,6 +6837,44 @@ class SessionOrchestrator:
         # a record whose id matches the pre-spawn holder is not a new session.
         deduped = (rec is not None and existing_before is not None
                    and getattr(rec, "id", None) == getattr(existing_before, "id", None))
+        if rec is not None and rung and not deduped:
+            # The dispatch the hold asked for has happened, so the hold is spent
+            # (spec §4): every issue of the batch parked ``stronger_model`` is
+            # released as the runner, audited ``dispatch``.
+            #
+            # Guarded on a real record, a real rung and a NEW session — the hold is
+            # consumed only by a dispatch that actually CLIMBED (review F1, final
+            # review M1):
+            # - a refused spawn (``rec is None``) dispatched nothing;
+            # - no rung means this spawn ran at the ordinary pick, because the hold
+            #   read failed, the seam raised, ``ladder_top`` was lowered under the
+            #   hold, or the engine is Codex. Releasing then would spend the hold
+            #   for a re-run at the SAME tier, and the bounce that follows would
+            #   count toward ``give_up_after_bounces`` with zero ladder progress;
+            # - a DE-DUPED spawn handed back the session that already existed,
+            #   which is running at whatever model it was started with, not at the
+            #   rung — the same "no climb happened" case, and the same guard the
+            #   pick audit below applies.
+            # Keeping it costs one stale flag for a cycle: ``stronger_model`` is not
+            # in ``HELD_KINDS``, so the item stays queue-eligible either way.
+            #
+            # Best-effort in its own session like the pick audit below: the session
+            # is already running, and a failed release leaves the hold for the next
+            # tick to consume.
+            from datetime import datetime, timezone
+
+            from server.pm.holds import release_on_dispatch
+            issues, now = list(batch.issues), datetime.now(timezone.utc)
+            try:
+                async with db_session() as db:
+                    released = await db.run_sync(
+                        lambda s: release_on_dispatch(s, issues, now=now))
+                if released:
+                    log.info("backlog_runner.ladder_hold_released target=%s refs=%s",
+                             batch.primary, released)
+            except Exception:
+                log.warning("backlog_runner.ladder_hold_release_failed target=%s",
+                            batch.primary, exc_info=True)
         if audit_pick is not None and rec is not None and not deduped:
             # One durable row per auto pick that actually ran: `assessed` vs
             # `applied` is the metric for whether the assessor and the history
