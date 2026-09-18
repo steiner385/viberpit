@@ -1560,9 +1560,9 @@ async def patch_overlay(
             clear_hold(wi, actor=actor)
             if released is not None:
                 applied.append("clearHold")
-                # ONE release audit shape for every path that ends a hold: the same
-                # ``signal`` key the reconcile pass and the Retry route write, from
-                # the same ``RELEASE_SIGNALS`` tuple.
+                # The same ``signal`` key every other path that ends a hold writes
+                # (the reconcile pass, the Retry route, the session tool), from the
+                # one ``RELEASE_SIGNALS`` tuple in ``server/pm/holds.py``.
                 await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
                     "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
                     "signal": "overlay"}, via="api")

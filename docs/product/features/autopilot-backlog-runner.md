@@ -267,8 +267,12 @@ PR linkage, never on labels alone.
   held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and its
   `gave_up` row survives only until the hold is gone (spec 2026-09-18 §7, `server/pm/holds.py`).
   Because the row and the hold are two transactions, the row carries `held`: false until the hold
-  write returns, and a row that is still `held: false` is re-announced every tick and never
-  dropped — dropping it would re-dispatch the issue with no handoff at all.
+  write returns, and a row that is still `held: false` is never dropped — dropping it would
+  re-dispatch the issue with no handoff at all. Such a row is re-announced every tick until the
+  hold write lands, with two exceptions: if the item is already held the row adopts that hold
+  instead (re-announcing would re-stamp `hold_set_at`/`hold_fingerprint` and lose a pending
+  body-edit release), and a pre-ownership row (#1648, no `ownership_token`) is left inert, since
+  it can never record `held` and would otherwise re-announce forever.
   A human takes an issue back from a give-up either by one of the hold-release signals —
   moving the board card to Ready or Backlog, editing the issue body (the fingerprint no longer
   matches), or the Retry tap (`POST /api/pm/work-items/{id}/hold/release`) — or by **dispatching

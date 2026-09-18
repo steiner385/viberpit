@@ -139,6 +139,11 @@ async def test_set_hold_clearing_audits_release(isolated_db):
         # already cleared them; apply_session_hold's returned `released` is what saves it.
         assert rows[0].detail["kind"] == "evidence"
         assert rows[0].detail["reason"] == "found the cause"
+        # ONE release audit shape across every path that ends a hold: the signal
+        # names which one it was, from the shared RELEASE_SIGNALS tuple.
+        from server.pm.holds import RELEASE_SIGNALS
+        assert rows[0].detail["signal"] == "session" and "session" in RELEASE_SIGNALS
+        assert rows[0].via == "session"
 
 
 @pytest.mark.asyncio

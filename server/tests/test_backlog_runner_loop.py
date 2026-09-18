@@ -933,12 +933,13 @@ def test_a_failed_hold_write_parks_the_row_unheld_and_is_retried_until_it_lands(
     asyncio.run(run())
 
 
-def test_an_unheld_gave_up_row_is_kept_when_the_retry_fails_even_if_a_ref_is_held(tmp_path):
+def test_an_unheld_gave_up_row_adopts_a_hold_that_is_already_on_the_item(tmp_path):
     """A row whose ``held`` flag is missing entirely (written before the flag
     existed) must not be re-announced when the item IS already parked: the hold is
-    the handoff and it is there, so the row simply adopts it. Re-announcing would
-    re-stamp ``hold_set_at``/``hold_fingerprint`` and lose a pending body-edit
-    release, and would comment the issue again on every tick."""
+    the handoff and it is there, so the row simply adopts it — the retry is never
+    attempted. Re-announcing would re-stamp ``hold_set_at``/``hold_fingerprint`` and
+    lose a pending body-edit release, and would comment the issue again every tick.
+    (The seam is wired to raise here to prove it is not called at all.)"""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu3.db'}"
 
     async def run():
@@ -954,6 +955,36 @@ def test_an_unheld_gave_up_row_is_kept_when_the_retry_fails_even_if_a_ref_is_hel
         st = await ctx.get_target_state("o/r#7")
         assert st["gave_up"] is True and st["held"] is True
         assert rec.needs_humans == []                       # no duplicate announce
+        assert await ctx.list_events(kind="hold_released") == []
+
+    asyncio.run(run())
+
+
+def test_a_token_less_gave_up_row_is_left_inert_not_re_announced(tmp_path):
+    """A pre-ownership ``gave_up`` row (#1648: no ``ownership_token``) can never
+    record ``held``: ``compare_target_state`` refuses to touch a token-less row, so
+    the flag write is dropped on the floor. Retrying the announce for it would
+    livelock — every tick after a human released the hold would comment the issue
+    again and write a FRESH ``set_runner_hold``, undoing that release and destroying
+    the body-edit signal. Such a row stays exactly as inert as it was before the
+    retry path existed; ``reconcile_legacy_targets`` owns it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[], pr_status={}, held=set(),
+                                    config=make_config())
+        # Deliberately NOT ``_set_owned_state``: this row has no ownership token.
+        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+                                             "gave_up": True, "reason": "max attempts"})
+
+        await loop.tick()
+        await loop.tick()
+
+        assert rec.needs_humans == []                      # never announced
+        st = await ctx.get_target_state("o/r#7")
+        assert st.get("gave_up") is True and "held" not in st   # still there, untouched
         assert await ctx.list_events(kind="hold_released") == []
 
     asyncio.run(run())

@@ -1347,6 +1347,8 @@ class BacklogRunnerLoop:
         This is also where the give-up's two-transaction handoff is made whole: a row
         whose ``held`` flag is falsy has no proof its hold was ever written, so it is
         NEVER dropped here — the seam is retried instead, every tick, until it lands.
+        Two exceptions, both below: a row whose item is already parked adopts that
+        hold rather than re-announcing it, and a token-less legacy row is left inert.
         """
         states = await self._ctx.list_target_states()
         held = await self._held_targets()
@@ -1362,6 +1364,17 @@ class BacklogRunnerLoop:
                 # ``hold_set_at``/``hold_fingerprint``, losing a pending body-edit
                 # release, and comment the issue again. Otherwise retry the seam and
                 # keep the row whatever happens.
+                #
+                # EXCEPT for a pre-ownership row (#1648, no ``ownership_token``):
+                # ``compare_target_state`` refuses to touch one, so ``held`` could
+                # never be recorded and the retry would fire forever — every tick
+                # after a human released the hold would comment again and write a
+                # fresh hold, undoing that release. Leave it exactly as inert as it
+                # was before this path existed; ``reconcile_legacy_targets`` owns it.
+                if not backed and not st.get("ownership_token"):
+                    log.warning("backlog_runner.needs_human_retry_skipped_legacy_row "
+                                "target=%s", target)
+                    continue
                 if not backed:
                     try:
                         await self._needs_human(target, st.get("reason") or "")
