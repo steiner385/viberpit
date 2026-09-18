@@ -294,3 +294,6 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   in-process), so its transcript card reads like the other SIGNAL tools' inert misuse case while
   the hold is real. Bounded to the two agent-settable kinds and audited with the session id; gate
   or mark it when the tool context gains the caller's agent id.
+- `actor_for_request` can return a system-class string if a request presents an identity literally
+  named `runner`/`migration` (dev or LAN-open only); take the system class only from in-process
+  callers.
