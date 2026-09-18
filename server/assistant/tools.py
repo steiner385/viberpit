@@ -1326,7 +1326,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "Claim the given backlog issues and start work on them NOW, without "
                "waiting for the backlog runner's next pass. refs are 'owner/repo#123' "
                "strings from list_backlog_candidates; they are bundled into one session "
-               "and one PR, with the first as the primary. This launches a coding "
+               "and one PR, with the first as the primary. It is refused for an issue "
+               "a person has held for the owner; only they can release that hold. This "
+               "launches a coding "
                "session that will act on its own; there is no undo. The user confirms "
                "via the permission card this call raises — call it directly once the "
                "user has asked for the dispatch, don't ask again in chat.",

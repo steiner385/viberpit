@@ -1691,15 +1691,21 @@ async def get_work_item_issue(item_id: str, _identity: str = Depends(current_ide
     wi = await db.get(WorkItem, item_id)
     if wi is None or wi.kind != "issue":
         raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
-    policy = effective_policy(None)
-    if wi.repo:
-        slug_by_repo = {repo: owner.slug for repo, owner
-                        in (await owning_projects_by_repo(db, {wi.repo})).items()}
-        slug = slug_by_repo.get(wi.repo)
-        if slug:
-            policies = await load_policies(db)
-            policy = policies.get(slug) or policy
-    return {**detail(wi), "guidance": hold_guidance(hold_kind=wi.hold_kind, policy=policy)}
+    # Guidance exists for owner_action alone (`hold_guidance` returns None for every
+    # other kind), so the owning-product lookup and the policy load — two queries on
+    # the common, unheld read — run only when there is guidance to compute.
+    guidance = None
+    if wi.hold_kind == "owner_action":
+        policy = effective_policy(None)
+        if wi.repo:
+            slug_by_repo = {repo: owner.slug for repo, owner
+                            in (await owning_projects_by_repo(db, {wi.repo})).items()}
+            slug = slug_by_repo.get(wi.repo)
+            if slug:
+                policies = await load_policies(db)
+                policy = policies.get(slug) or policy
+        guidance = hold_guidance(hold_kind=wi.hold_kind, policy=policy)
+    return {**detail(wi), "guidance": guidance}
 
 
 @router.post("/work-items/{item_id}/issue")

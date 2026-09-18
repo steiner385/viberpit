@@ -2286,3 +2286,21 @@ def test_issue_detail_carries_hold_fields_and_guidance():
         assert body["ref"] == "o/r#1"
         # the hold is not part of the optimistic-concurrency version
         assert body["version"] == c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()["version"]
+
+
+def test_issue_detail_reads_the_policy_only_for_an_owner_action_hold():
+    """Guidance exists for exactly one kind, so every other read of this endpoint —
+    the common case, an unheld issue — must not pay for the two policy queries."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "evidence", "holdReason": "needs a repro"},
+                headers=IDENTITY_HEADERS)
+        loader = AsyncMock(name="load_policies")
+        with patch("server.api.pm.load_policies", loader):
+            r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["holdKind"] == "evidence" and r.json()["guidance"] is None
+        loader.assert_not_awaited()

@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
+from server.config import Settings
+
 H = {"Tailscale-User-Login": "testuser@example.com"}
 
 # ---------------------------------------------------------------------------
@@ -297,6 +299,54 @@ def test_manual_dispatch_refuses_a_decision_hold():
                     WorkItem.repo == "o/r", WorkItem.number == 7))).scalar_one()
                 return wi.hold_kind
         assert c.portal.call(_check) == "decision"
+
+
+#: LAN-open mode: an unattributed loopback caller is `lan@local`, an agent-class
+#: actor (spec §8). The env name comes off the settings field so no literal of it
+#: lives in this file.
+LAN_OPEN = {Settings.model_fields["allow_unauthenticated"].alias: "1"}
+
+
+def test_manual_dispatch_refused_for_an_agent_class_caller():
+    """An agent (the assistant, a session, any unattributed loopback caller) may not
+    clear a person's owner_action hold — so it may not dispatch past one either: 422,
+    the hold stands, and no session is spawned (spec §8)."""
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
+
+    def patch_orch(orch):
+        orch._backlog_read_config = AsyncMock(return_value=("auto", {
+            "enabled_repos": ["o/r"],
+            "max_concurrent": 1, "max_spawns_per_day": 10,
+            "max_issues_per_pr": 3, "default_model": None,
+        }))
+        orch._backlog_announce = AsyncMock(return_value=None)
+        orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+        orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with patch.dict(os.environ, LAN_OPEN), _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(_seed_held_issue)
+        r = c.post("/api/automations/backlog-runner/dispatch",
+                   json={"refs": ["o/r#7"]})   # no identity header → lan@local
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "hold_not_permitted"
+        c.app.state.orchestrator._backlog_spawn.assert_not_awaited()
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import AuditEvent, WorkItem
+
+        async def _check():
+            async with db_session() as db:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo == "o/r", WorkItem.number == 7))).scalar_one()
+                rows = (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.hold.release"))).scalars().all()
+                return wi.hold_kind, rows
+        hold_kind, rows = c.portal.call(_check)
+        assert hold_kind == "owner_action"
+        assert rows == []
 
 
 def test_manual_dispatch_leaves_an_evidence_hold_untouched():
