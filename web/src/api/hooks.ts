@@ -1262,6 +1262,16 @@ export function useDispatchBacklogGroup() {
       qc.invalidateQueries({ queryKey: QK.backlogGroups })
       qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
       qc.invalidateQueries({ queryKey: QK.backlogCandidates })
+      // A dispatch RELEASES an owner_action hold on its refs server-side (spec
+      // 2026-09-18 §7, signal "implement") and that happens before the spawn, so
+      // it holds for a refusal too. Every surface that asserts the hold has to
+      // refetch, or the roadmap keeps its chip and the dialog keeps offering to
+      // release a hold that is already gone. `['pm', 'issue']` is the prefix of
+      // `QK.workItemIssue(id)` — the dispatch does not know which id is open.
+      qc.invalidateQueries({ queryKey: ['pm', 'issue'] })
+      qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      qc.invalidateQueries({ queryKey: QK.queue })
     },
   })
 }

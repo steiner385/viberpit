@@ -1,4 +1,5 @@
 import { useId, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
 import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup } from '@/api/hooks'
@@ -37,6 +38,11 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
     if (!issue.data) return
     setDraft(issue.data)
     setFailure(null)
+    // The outcome of the last Implement now belongs to the issue as it was; an
+    // edit or a decision starts from a clean panel rather than re-showing a
+    // stale refusal or a link the user has already followed.
+    setSpawned(null)
+    setDispatchError(null)
     setMode(next)
   }
   const submit = async () => {
@@ -150,14 +156,17 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
             {release.isError && <p role="alert" className="text-sm text-danger">
               {extractMutationErrorMessage(release.error, 'Could not release this hold.')}
             </p>}
-            {dispatchError && <Banner tone="danger" role="alert" title={dispatchError} />}
-            {spawned && <a href={sessionPath(spawned.id)} className="inline-block text-sm text-accent hover:underline">Open session</a>}
             {data.guidance && <div className="grid gap-3 sm:grid-cols-2">
               <ConsequenceList heading="Retry" consequence={data.guidance.retry} />
               <ConsequenceList heading="Implement now" consequence={data.guidance.implement} />
             </div>}
           </>}
         </div>}
+        {/* Outside the hold panel on purpose: a dispatch RELEASES the hold, so the
+            panel disappears on the refetch that follows — and the session it just
+            started, or the reason it could not, has to outlive it. */}
+        {dispatchError && <Banner tone="danger" role="alert" title={dispatchError} />}
+        {spawned && <Link to={sessionPath(spawned.id)} className="inline-block text-sm text-accent hover:underline">Open session</Link>}
         {(mode === 'resolve' || mode === 'dismiss') && <div className="rounded-md border border-edge p-3 space-y-2">
           <p className="font-medium">{mode === 'resolve' ? 'Mark this issue as resolved?' : 'Close this issue as won’t do?'}</p>
           <p className="text-sm text-ink-muted">This closes the tracking issue on GitHub and removes it from open Roadmap work. It does not repair an account or change code. {mode === 'resolve' ? 'Confirm only if the underlying work is complete.' : 'Confirm if this work is no longer needed or will not be pursued.'}</p>

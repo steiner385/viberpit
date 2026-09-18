@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { IssueDispositionDialog } from './IssueDispositionDialog'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -15,7 +16,7 @@ function reply(data: unknown, status = 200) { return { ok: status < 400, status,
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const onClose = vi.fn()
-  render(<QueryClientProvider client={qc}><IssueDispositionDialog itemId="w1" onClose={onClose} /></QueryClientProvider>)
+  render(<MemoryRouter><QueryClientProvider client={qc}><IssueDispositionDialog itemId="w1" onClose={onClose} /></QueryClientProvider></MemoryRouter>)
   return { onClose, qc }
 }
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
@@ -119,20 +120,26 @@ describe('IssueDispositionDialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('dispatches a session on Implement now and links to it', async () => {
+  it('dispatches a session on Implement now, links to it, and stops asserting the released hold', async () => {
     fetchMock.mockResolvedValueOnce(reply(held))
       .mockResolvedValueOnce(reply({ status: 'spawned', session_id: 's-9', session_name: 'Fix keyring' }))
+      // the dispatch released the hold server-side, so the invalidated issue query
+      // refetches and comes back unheld
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
     mount()
     await screen.findByRole('region', { name: 'Hold' })
     click('Implement now')
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
     expect(fetchMock.mock.calls[1][0]).toMatch(/\/api\/automations\/backlog-runner\/dispatch$/)
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ refs: ['o/r#1'] })
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hold' })).toBeNull())
     expect(await screen.findByRole('link', { name: 'Open session' })).toHaveAttribute('href', expect.stringMatching(/\/s-9$/))
   })
 
   it('shows a refusal inline and renders no buttons for an evidence hold', async () => {
-    fetchMock.mockResolvedValueOnce(reply(held)).mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
     mount()
     await screen.findByRole('region', { name: 'Hold' })
     click('Implement now')
@@ -144,5 +151,17 @@ describe('IssueDispositionDialog', () => {
     expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for evidence')
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
+  it('clears the last dispatch outcome when an edit starts', async () => {
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    click('Implement now')
+    expect(await screen.findByText(/Dispatch failed: no_account/)).toBeInTheDocument()
+    click('Edit details')
+    expect(screen.queryByText(/Dispatch failed: no_account/)).toBeNull()
   })
 })
