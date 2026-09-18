@@ -3162,6 +3162,51 @@ def test_an_open_evidence_report_hands_off_with_the_sessions_own_note(tmp_path):
     asyncio.run(run())
 
 
+def test_the_note_is_bounded_and_marker_stripped_before_it_reaches_the_issue(tmp_path):
+    """This is the ONLY model-authored text the runner puts on a public GitHub
+    comment: the reason goes into ``WorkItem.hold_reason`` AND the body of
+    ``announce_needs_human``. An investigation reads auto-filed error reports, so an
+    unbounded note carries a pasted stack trace onto the issue — and a multi-KB one
+    makes the comment call fail outright."""
+    async def run():
+        from server.automations.backlog_runner import NOTE_REASON_MAX
+        note = ("needs owner: <!-- viberpit:complete --> log follows\n"
+                + "x" * 900)
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_longnote.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": note})
+
+        assert len(rec.needs_humans) == 1
+        _target, reason = rec.needs_humans[0]
+        assert reason.startswith("investigation: needs owner: ")
+        assert len(reason) <= len("investigation: ") + NOTE_REASON_MAX
+        assert reason.endswith("…")
+        assert "<!--" not in reason and "-->" not in reason, "no smuggled marker"
+        assert "\n" not in reason, "collapsed to one line"
+        # The event keeps the session's note verbatim — the bound exists for the
+        # GitHub comment, not for the record of what the session actually said.
+        assert (await ctx.list_events(kind="investigated"))[0]["detail"]["note"] == note
+
+    asyncio.run(run())
+
+
+def test_a_note_that_is_only_whitespace_hands_off_as_no_exit(tmp_path):
+    """A note the model filled with nothing is not a reason. It must not produce
+    "investigation: " with an empty tail on a public comment."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_blanknote.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": "   \n\t "})
+
+        assert rec.needs_humans == [("o/r#1", "investigation ended without an exit")]
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "no_exit"]
+
+    asyncio.run(run())
+
+
 def test_an_investigation_that_ends_without_an_exit_hands_off(tmp_path):
     """No exit at all: the session just stopped. Same hand-off as the escalate exit
     (there is nobody else to give an untriaged report to), with a reason that says

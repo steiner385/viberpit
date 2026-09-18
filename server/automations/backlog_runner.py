@@ -562,6 +562,43 @@ async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
     return None
 
 
+#: Longest a session-authored no-PR note may be once it becomes a hand-off reason.
+#: Room for the one sentence the tool asks for; anything past it is pasted context.
+NOTE_REASON_MAX = 400
+
+
+def _reason_from_note(note: "str | None") -> "str | None":
+    """Make a session's ``mark_no_pr`` note safe to use as a hand-off reason, or
+    ``None`` when there is nothing left of it.
+
+    This is the ONLY model-authored text the runner puts on a public GitHub comment:
+    ``_give_up`` writes the reason into ``WorkItem.hold_reason`` AND into
+    ``announce_needs_human``'s comment body, and every other give-up reason is
+    runner-authored constant text. An investigation reads auto-filed error reports,
+    so an unbounded note can carry a pasted stack trace straight onto the issue —
+    and a multi-KB one makes the comment call fail outright.
+
+    Three bounds, applied once, here, where the reason is built:
+
+    - whitespace collapsed to single spaces, so a multi-line paste becomes one line;
+    - HTML-comment delimiters broken by ``issue_filing.neutralize_markers`` — the
+      same defence the error filer already applies to quoted log text, so a note
+      cannot smuggle a ``<!-- viberpit:… -->`` marker (or hide content) into the
+      comment. Imported, never re-implemented;
+    - capped at ``NOTE_REASON_MAX`` with an ellipsis.
+    """
+    from .issue_filing import neutralize_markers
+
+    if not note:
+        return None
+    collapsed = neutralize_markers(" ".join(str(note).split()))
+    if not collapsed:
+        return None
+    if len(collapsed) <= NOTE_REASON_MAX:
+        return collapsed
+    return collapsed[:NOTE_REASON_MAX - 1].rstrip() + "…"
+
+
 async def _stub_investigation_state(_target: str, _session_id: "str | None") -> dict:
     # Unwired seam: every field unknown. ``_settle_investigation`` reads that as
     # "cannot tell yet" and retries on the next tick, so an unwired deployment
@@ -1966,9 +2003,11 @@ class BacklogRunnerLoop:
         4.   **escalated** — and its twin, **no exit at all**: the issue is open and
              still holds ``evidence``, so nothing was resolved. Hand it to the owner
              through the existing ``_give_up`` (owner_action hold + comment +
-             ``gave_up`` row + retry), carrying the session's own note as the reason
-             when it left one. That hold REPLACES the evidence hold, which is exactly
-             what the escalate exit means.
+             ``gave_up`` row + retry), carrying the session's own note — bounded and
+             marker-stripped by ``_reason_from_note``, because this is the one
+             give-up reason that is model-authored text on a public comment — as the
+             reason when it left one. That hold REPLACES the evidence hold, which is
+             exactly what the escalate exit means.
 
         Two non-exits still have to release the claim, and NEITHER may be read as a
         conversion — that event is the metric for whether investigating pays, and a
@@ -2073,10 +2112,11 @@ class BacklogRunnerLoop:
                 return
             await self._investigated(target, "held", note)
             return
-        reason = f"investigation: {note}" if note else "investigation ended without an exit"
+        safe = _reason_from_note(note)
+        reason = f"investigation: {safe}" if safe else "investigation ended without an exit"
         if await self._give_up(target, st, reason, outcome={
                 "outcome": "no_pr", "cause": reason, "fallback": fallback}):
-            await self._investigated(target, "escalated" if note else "no_exit", note)
+            await self._investigated(target, "escalated" if safe else "no_exit", note)
 
     async def _investigated(self, target: str, exit_: str, note: "str | None") -> None:
         """One ``investigated`` event per settled investigation — the only durable
