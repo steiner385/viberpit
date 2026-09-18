@@ -527,6 +527,40 @@ async def test_backlog_spawn_consumes_the_stronger_model_hold(isolated_db, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_backlog_spawn_without_a_rung_keeps_the_hold(isolated_db, tmp_path, monkeypatch):
+    """Review F1: only a dispatch that actually CLIMBED consumes the hold. A spawn
+    with no rung ran at the ordinary pick — the hold read failed, ``ladder_top``
+    was lowered under the hold, or the engine has no ladder — so spending the hold
+    would buy a re-run at the same tier and a bounce counted against
+    ``give_up_after_bounces`` for nothing."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=7, kind="issue", state="open", title="t", body="b")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet",
+                                 now=datetime.now(timezone.utc))
+        db.add(wi)
+
+    orch = _build_backlog_orch({}, ladder_rung=None)
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
+
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem.hold_kind))).scalars().all() == [
+            "stronger_model"]
+        assert (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_backlog_spawn_that_produces_no_session_keeps_the_hold(
         isolated_db, tmp_path, monkeypatch):
     """A refused spawn never dispatched anything, so the hold it was climbing

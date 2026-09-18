@@ -6679,15 +6679,25 @@ class SessionOrchestrator:
         # a record whose id matches the pre-spawn holder is not a new session.
         deduped = (rec is not None and existing_before is not None
                    and getattr(rec, "id", None) == getattr(existing_before, "id", None))
-        if rec is not None:
+        if rec is not None and rung:
             # The dispatch the hold asked for has happened, so the hold is spent
             # (spec §4): every issue of the batch parked ``stronger_model`` is
-            # released as the runner, audited ``dispatch``. Guarded on a real
-            # record — a REFUSED spawn dispatched nothing, and clearing the hold
-            # then would drop the ladder's memory of the bounce and re-dispatch
-            # the item at its old tier. Best-effort in its own session like the
-            # pick audit below: the session is already running, and a failed
-            # release leaves the hold for the next tick to consume.
+            # released as the runner, audited ``dispatch``.
+            #
+            # Guarded on BOTH a real record and a real rung — the hold is consumed
+            # only by a dispatch that actually CLIMBED (review F1):
+            # - a refused spawn (``rec is None``) dispatched nothing;
+            # - no rung means this spawn ran at the ordinary pick, because the hold
+            #   read failed, the seam raised, ``ladder_top`` was lowered under the
+            #   hold, or the engine is Codex. Releasing then would spend the hold
+            #   for a re-run at the SAME tier, and the bounce that follows would
+            #   count toward ``give_up_after_bounces`` with zero ladder progress.
+            # Keeping it costs one stale flag for a cycle: ``stronger_model`` is not
+            # in ``HELD_KINDS``, so the item stays queue-eligible either way.
+            #
+            # Best-effort in its own session like the pick audit below: the session
+            # is already running, and a failed release leaves the hold for the next
+            # tick to consume.
             from datetime import datetime, timezone
 
             from server.pm.holds import release_on_dispatch
