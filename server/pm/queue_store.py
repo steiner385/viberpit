@@ -2,9 +2,9 @@
 across every onboarded product with a linked Projects v2 board, into ``queue.QueueRow`` — the
 shape ``queue.rank`` ranks against. No ranking here; that stays in the pure core (``queue.py``).
 
-Three readers, one composition: the backlog runner's candidate pool
-(``SessionOrchestrator._backlog_query_queue``), the operator's ``GET /api/pm/queue``, and —
-for ``parse_iso_utc`` — the reconciler's inputs (``reconcile_inputs``). The board's "held" source
+Two readers, one composition: the backlog runner's candidate pool
+(``SessionOrchestrator._backlog_query_queue``) and the operator's ``GET /api/pm/queue``.
+The board's "held" source
 is the hold on the item itself (``WorkItem.hold_kind``, spec 2026-09-18 §3), threaded straight
 onto each ``QueueRow``; the queue's own claim source is ``runner_claims``, which both queue
 readers call, so what the operator sees is what agents will do next."""
@@ -18,8 +18,6 @@ from sqlalchemy.orm import Session
 
 from server.db.models import (AutomationTargetState, GhProjectItem, Session as DbSession,
                               WorkItem, WorkItemDep)
-from server.time_iso import parse_iso_utc  # noqa: F401 — re-exported, see module docstring
-
 from .desired_state import LIVE_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
 from .outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
@@ -27,19 +25,10 @@ from .queue import QueueRow
 from .reconcile_inputs import _aware
 from .refs import split_ref
 
-# ``BacklogRunner.id``, as a literal: ``backlog_runner`` imports this module for
-# ``parse_iso_utc``, so importing it back would be a cycle.
+# ``BacklogRunner.id``, as a literal: importing ``server.automations.backlog_runner``
+# from ``server.pm`` to read it would drag the whole automation registry into the
+# queue loader. ``test_pm_queue_store`` pins the two together.
 RUNNER_AUTOMATION_ID = "backlog-runner"
-
-
-# ``parse_iso_utc`` is THE parser for the runner's durable row timestamps — the
-# orchestrator's queue read, the runner's expiry sweep and the reconciler all call
-# it, so they can never disagree about what a stamp means. It is re-exported from
-# ``server.time_iso`` (the app's ISO boundary, constitution VI) rather than
-# reimplemented here: the two had already drifted, since only that one tolerates
-# GitHub's trailing ``Z``. Importers keep this name; direct importers of
-# ``server.time_iso`` (e.g. the pure ``label_retirement`` planner, which must not
-# drag the ORM in) get the identical function.
 
 
 def runner_claims(db: Session) -> frozenset[str]:

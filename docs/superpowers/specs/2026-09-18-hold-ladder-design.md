@@ -297,3 +297,8 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
 - `actor_for_request` can return a system-class string if a request presents an identity literally
   named `runner`/`migration` (dev or LAN-open only); take the system class only from in-process
   callers.
+- §7's "newer than `hold_set_at`" guard on the board-edit signal is not implemented:
+  `HumanEdit` carries no timestamp and the mirror fetch time is not threaded into
+  `release_by_signals`. A hold written during the fetch that follows a human's move to Ready can
+  therefore be released by that pre-hold edit. Thread the edit's (or the fetch's) time through and
+  compare it against `hold_set_at`.

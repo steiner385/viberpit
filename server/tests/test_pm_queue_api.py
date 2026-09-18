@@ -142,8 +142,10 @@ def _seed_runner_row(c, target: str, state: dict) -> None:
     one is garbage the runner is designed to collect, so the assertion below
     passes or fails on whether the tick happened to win the race (it usually
     loses locally and wins on a loaded CI runner). A ``gave_up`` row needs no
-    such guard: the reconciler skips it and ``_expire_give_ups`` only deletes it
-    once the cooldown window has passed.
+    such guard: the reconciler skips it, and it parks nothing by itself — the
+    hold on the ITEM is what parks the issue (spec 2026-09-18 §3). The row
+    survives only for slot accounting, and ``_release_give_ups`` drops it on the
+    next tick once none of its refs is held any more.
 
     That ``session_id`` must name a session row that EXISTS and is not terminal,
     so this seeds one alongside. A claim the runner holds without an ownership
