@@ -65,9 +65,14 @@ def test_failed_turn_is_not_a_human_wait():
     assert "needs_attention" not in HUMAN_WAIT_SESSION_STATUSES
     assert FAILED_TURN_SESSION_STATUSES == frozenset({"needs_attention"})
     assert "needs_attention" in LIVE_SESSION_STATUSES
-    # a failed runner turn is a bounce the sweep handles, not a parked card
-    assert derive_status(_f(session_status="needs_attention", session_at=T2,
-                            triage_state="classified", classified_at=T1)) == Decision(STATUS_READY, T1)
+    # A failed runner turn is a bounce the sweep handles, not a parked card — and
+    # not a card the reconciler pushes back to Ready either: the session is still
+    # live, so the board says In progress. ``pm.tree.issue_tier`` reads exactly the
+    # same union as in-flight, so the two surfaces cannot disagree (F1).
+    d = derive_status(_f(session_status="needs_attention", session_at=T2,
+                         triage_state="classified", classified_at=T1))
+    assert d == Decision(STATUS_IN_PROGRESS, T2)
+    assert d.value != STATUS_NEEDS_HUMAN
 
 
 def test_derive_bundles_score_and_stage():

@@ -83,7 +83,11 @@ def derive_status(f: ItemFacts) -> Decision:
         return Decision(STATUS_DONE, f.issue_closed_at)
     if f.session_status in HUMAN_WAIT_SESSION_STATUSES:
         return Decision(STATUS_NEEDS_HUMAN, f.session_at)
-    if f.session_status in ACTIVE_SESSION_STATUSES:
+    # A failed turn is in-flight, not Ready: the session is still live, the runner's
+    # sweep owns the bounce, and ``pm.tree.issue_tier`` reads this exact union for
+    # its ``in-flight`` tier. Letting it fall through would push a dying session's
+    # card back to Ready while the queue still skips the ref as ``live_session``.
+    if f.session_status in (ACTIVE_SESSION_STATUSES | FAILED_TURN_SESSION_STATUSES):
         return Decision(STATUS_IN_PROGRESS, f.session_at)
     if f.hold_kind in HELD_KINDS:
         return Decision(STATUS_NEEDS_HUMAN, f.hold_set_at or f.classified_at)
