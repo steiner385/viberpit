@@ -241,6 +241,7 @@ add-repo form; the onboarding-state chip uses the wizard's friendly labels.
 | Remove issue dependency | `Remove` beside each blocker on the leaf row | GitHub native `removeBlockedBy` through the reconciler journal (`DELETE /api/pm/work-items/{id}/deps?blocker=`); add stays a GitHub-side edit for now; an initiative's epic-blocked count reads the board Status and lags the leaf by one reconcile cycle |
 | Product dependency | Chip editor on the product's Dependencies tab | ccswitch DB (endpoints exist) |
 | Advance / step back / unblock | Header buttons with confirm; Advance and Step back refuse a blocked row, Unblock returns it to awaiting-human without moving the gate | ccswitch DB (`/advance`, `/step-back`, `/unblock`); back-synced to the board Stage field |
+| Retry / Implement now on an owner-action hold | Hold panel buttons in the detail pane, each with server-computed consequence copy | Retry: `POST /api/pm/work-items/{id}/hold/release`; Implement now: `POST /api/automations/backlog-runner/dispatch`, which releases the hold with `signal = implement` first |
 
 All writes are optimistic with rollback and toast, as the triage hooks do today.
 Every mutation records an audit row with the acting identity.
