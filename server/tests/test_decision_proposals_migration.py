@@ -14,7 +14,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect, text
 
-MIGRATION = Path("server/db/migrations/versions/0052_decision_proposals.py")
+MIGRATION = Path("server/db/migrations/versions/0053_decision_proposals.py")
 
 EXPECTED_COLUMNS = {
     "id", "work_item_id", "session_id", "options", "recommended_key", "rationale",

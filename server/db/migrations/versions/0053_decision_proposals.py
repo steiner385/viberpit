@@ -1,7 +1,7 @@
 """Decision proposals (spec 2026-09-18 §6).
 
-Revision ID: 0052_decision_proposals
-Revises: 0051_pr_resolution_source_observed
+Revision ID: 0053_decision_proposals
+Revises: 0052_pr_resolution_note
 
 Adds the ``decision_proposals`` table: the options a coding session drafted for a
 product decision it could not take, the one it recommended, the rationale, and the
@@ -17,8 +17,8 @@ boot. Guarded so a re-run against a database that already has the table (built b
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0052_decision_proposals"
-down_revision = "0051_pr_resolution_source_observed"
+revision = "0053_decision_proposals"
+down_revision = "0052_pr_resolution_note"
 branch_labels = None
 depends_on = None
 
