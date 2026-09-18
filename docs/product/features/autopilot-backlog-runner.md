@@ -361,6 +361,13 @@ PR linkage, never on labels alone.
   the pre-family behaviour, never a lost tick. Sibling reports are bundled only up to
   `max_issues_per_pr`, which defaults to 1 — raise it to investigate a family in one session.
 
+  **Plan order.** The two halves are interleaved, not concatenated: evidence groups are ranked
+  among the other groups by their best member's queue rank
+  (`backlog_grouping.order_by_pool_rank`, over the pool the global priority queue already ordered),
+  and urgent work still leads. An investigation therefore competes for a dispatch slot exactly like
+  any other candidate at its score — a `Ready`, high-score implement issue is not made to wait
+  behind the day's auto-filed error reports, and an incident still goes first.
+
   **Still classified.** An `evidence` (or `stronger_model`) hold parks the WORK, not the FILING:
   `server/sessions/orchestrator.py:_classifiable_hold_clause` excludes only `HELD_KINDS`
   (`owner_action`, `decision`) from the classify-candidate set, so an auto-filed error report born

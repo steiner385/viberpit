@@ -166,6 +166,41 @@ def float_urgent_first(groups: list[dict], candidates: list[dict]) -> list[dict]
     return sorted(groups, key=lambda g: not urgent_refs.intersection(g.get("refs") or ()))
 
 
+def order_by_pool_rank(groups: list[dict], candidates: list[dict]) -> list[dict]:
+    """Order an assembled plan by each group's BEST member's queue rank. Stable,
+    pure, and the one place two independently-built halves of a plan are merged.
+
+    The evidence half (:func:`family_groups`) and the model's half are built
+    separately and then concatenated, which made the concatenation itself a
+    priority decision: every evidence group led every implement group, so a
+    ``Ready`` score-9 issue waited behind a day's worth of auto-filed error
+    reports (one per dispatch cycle at the ``max_issues_per_pr`` default of 1).
+    Spec 2026-09-18 §5 dispatches an evidence hold "as an ordinary candidate
+    (same capacity, ranking, policy)" — ranking included, so the two halves
+    INTERLEAVE here instead.
+
+    *candidates* arrives in the queue's own ranking
+    (``server.pm.queue.rank_key``: urgency, then score, then age, then ref), so a
+    ref's index in it IS its rank; a group takes the lowest index it holds. Groups
+    are disjoint, so the keys are distinct and the sort is a total order; a group
+    whose refs are all unknown sorts last rather than first. This deliberately
+    subordinates the grouping model's own "implementation priority" ordering to the
+    queue's rank — the same call ``parse_group_plan``'s leftovers already make, and
+    the reason a human score is not re-decided by a consumer.
+
+    Apply :func:`float_urgent_first` AFTER this: urgent work leads the plan
+    whatever the ranking says.
+    """
+    rank = {c["ref"]: i for i, c in enumerate(candidates)}
+    last = len(rank)
+
+    def key(g: dict) -> int:
+        ranks = [rank[r] for r in (g.get("refs") or ()) if r in rank]
+        return min(ranks) if ranks else last
+
+    return sorted(groups, key=key)
+
+
 def family_groups(candidates: list[dict], *,
                   max_k: int) -> "tuple[list[dict], list[dict]]":
     """Pure: split *candidates* into ``(evidence groups, everything else)``.

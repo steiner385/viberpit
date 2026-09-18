@@ -12,6 +12,7 @@ import pytest
 from server.automations.backlog_grouping import (
     family_groups,
     float_urgent_first,
+    order_by_pool_rank,
     parse_group_plan,
     plan_to_batch,
     propose_groups,
@@ -421,3 +422,60 @@ def test_float_urgent_first_leads_with_the_urgent_group_and_is_stable():
 
     assert [g["refs"] for g in float_urgent_first(plan, candidates)] == [
         ["o/r#900"], ["o/r#1", "o/r#3"], ["o/r#4"]]
+
+
+# --------------------------------------------------------------------------- #
+# order_by_pool_rank (pure): the two halves interleave, never concatenate       #
+# --------------------------------------------------------------------------- #
+
+def test_order_by_pool_rank_interleaves_the_evidence_and_model_halves():
+    """Spec 2026-09-18 §5 dispatches an evidence hold as an ordinary candidate —
+    ranking included. Concatenating the halves made the concatenation itself the
+    priority decision: every auto-filed report led every implement group. Each
+    group takes its best member's rank in the (already rank-ordered) pool instead."""
+    candidates = [
+        _plain("o/r#100"),                     # rank 0
+        _evidence("o/r#201", None),            # rank 1
+        _plain("o/r#101"),                     # rank 2
+        _evidence("o/r#202", None),            # rank 3
+        _plain("o/r#102"),                     # rank 4
+        _evidence("o/r#203", None),            # rank 5
+    ]
+    # Three evidence singletons (ranks 1, 3, 5) in front of two model groups whose
+    # best members are ranks 0 and 2 — the concatenated order.
+    plan = [{"refs": ["o/r#201"]}, {"refs": ["o/r#202"]}, {"refs": ["o/r#203"]},
+            {"refs": ["o/r#100", "o/r#102"]}, {"refs": ["o/r#101"]}]
+
+    assert [g["refs"] for g in order_by_pool_rank(plan, candidates)] == [
+        ["o/r#100", "o/r#102"],   # rank 0 (best member of the bundle)
+        ["o/r#201"],              # rank 1
+        ["o/r#101"],              # rank 2
+        ["o/r#202"],              # rank 3
+        ["o/r#203"],              # rank 5
+    ]
+
+
+def test_order_by_pool_rank_sorts_a_group_with_no_live_ref_last():
+    """A group whose refs all left the pool has no rank to take. It must sort LAST
+    — a missing key that defaulted to 0 would put stale work at the head of the
+    plan, ahead of everything the queue actually ranked."""
+    candidates = [_plain("o/r#1"), _plain("o/r#2")]
+    plan = [{"refs": ["o/r#404"]}, {"refs": ["o/r#2"]}, {"refs": ["o/r#1"]}]
+
+    assert [g["refs"] for g in order_by_pool_rank(plan, candidates)] == [
+        ["o/r#1"], ["o/r#2"], ["o/r#404"]]
+
+
+def test_order_by_pool_rank_then_urgent_float_keeps_urgent_first():
+    """The two orderings compose in one direction only: rank first, urgency on top.
+    An incident is ranked first by the queue anyway, but the float is what
+    GUARANTEES it — and it must survive the rank sort, not be undone by it."""
+    candidates = [_evidence("o/r#1", "f"),
+                  {**_plain("o/r#900"), "urgent": True},
+                  _evidence("o/r#2", "f")]
+    plan = [{"refs": ["o/r#1"]}, {"refs": ["o/r#2"]}, {"refs": ["o/r#900"]}]
+
+    ranked = order_by_pool_rank(plan, candidates)
+    assert [g["refs"] for g in ranked] == [["o/r#1"], ["o/r#900"], ["o/r#2"]]
+    assert [g["refs"] for g in float_urgent_first(ranked, candidates)] == [
+        ["o/r#900"], ["o/r#1"], ["o/r#2"]]
