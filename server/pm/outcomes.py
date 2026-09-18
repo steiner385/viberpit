@@ -44,6 +44,20 @@ def bounced_out(bounces: int, give_up_after_bounces: int) -> bool:
     return give_up_after_bounces > 0 and bounces >= give_up_after_bounces
 
 
+def dispatch_kind_for_hold(hold_kind: str | None) -> str:
+    """THE hold → dispatch-kind rule (spec 2026-09-18 §5): an ``evidence``-held
+    primary is an auto-filed error report nobody has triaged, so the runner
+    INVESTIGATES it; everything else is the implementation the runner has always
+    dispatched.
+
+    One function because the answer is needed twice per dispatch and the two must
+    agree: the loop stamps it onto the claim intent at claim time (so a recovery
+    settle, which has only the intent, still knows what the dispatch was for), and
+    the spawn reads it to pick the seed prompt. Returns a ``DISPATCH_KINDS`` value.
+    """
+    return "investigate" if hold_kind == "evidence" else "implement"
+
+
 def _implement_only():
     """THE ``implement``-dispatch predicate: NULL predates the ``dispatch_kind``
     column and reads as ``implement`` (spec 2026-09-18 §3/§5). Shared by

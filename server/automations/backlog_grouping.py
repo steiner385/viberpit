@@ -358,6 +358,11 @@ def plan_to_batch(
         # board — and where it is not, the primary is the issue the session is
         # actually for, so its product is the right owner.
         product=by_ref[primary].get("product"),
+        # Same reason the product rides along: the dispatch KIND is the primary's
+        # question (spec 2026-09-18 §5), and the candidate dict is all the loop
+        # receives across this hand-off. A secondary's hold does not travel — the
+        # session is for the primary, and it is the primary's prompt that is seeded.
+        primary_hold_kind=by_ref[primary].get("hold_kind"),
     ), group.get("id")
 
 

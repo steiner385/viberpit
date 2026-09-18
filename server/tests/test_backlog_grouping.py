@@ -145,6 +145,21 @@ def test_plan_to_batch_skips_fully_stale_groups():
     assert gid == 2 and batch is not None and batch.primary == "o/r#2"
 
 
+def test_plan_to_batch_carries_the_primarys_hold_kind():
+    """Spec 2026-09-18 §5: the dispatch KIND is the primary's hold, and the
+    candidate dict is all that crosses this hand-off — so the hold rides onto the
+    batch, and a SECONDARY's hold does not (the session is for the primary)."""
+    cands = [
+        {"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "a", "hold_kind": "evidence"},
+        {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "b", "hold_kind": "owner_action"},
+        {"ref": "o/r#2", "number": 2, "repo": "o/r", "title": "c"},
+    ]
+    held, _ = plan_to_batch([{"id": 1, "refs": ["o/r#9", "o/r#5"]}], cands)
+    assert held is not None and held.primary_hold_kind == "evidence"
+    unheld, _ = plan_to_batch([{"id": 2, "refs": ["o/r#2"]}], cands)
+    assert unheld is not None and unheld.primary_hold_kind is None
+
+
 def test_plan_to_batch_empty_plan_waits():
     assert plan_to_batch([], C) == (None, None)
 

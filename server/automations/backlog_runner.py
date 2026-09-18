@@ -21,7 +21,13 @@ from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import (
     NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
-from server.pm.outcomes import bounced_out, gated_ladder_top, next_rung, top_tier
+from server.pm.outcomes import (
+    bounced_out,
+    dispatch_kind_for_hold,
+    gated_ladder_top,
+    next_rung,
+    top_tier,
+)
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
@@ -1278,6 +1284,13 @@ class BacklogRunnerLoop:
                  "attempts": prior_count, "issues": batch.issues,
                  "titles": batch.titles,
                  "claimed": True, "claimed_at": self._wall_clock().isoformat()}
+        if batch.primary_hold_kind:
+            # Persisted so a claim the queue no longer offers can still be
+            # dispatched for what it IS: the propose tap and manual dispatch build
+            # their batch from the live candidate pool, which excludes claimed
+            # refs, so without this a proposed investigation would be tapped into
+            # an implementation (the pool is the only other place the hold is read).
+            state["primary_hold_kind"] = batch.primary_hold_kind
         if propose:
             state["proposed"] = True
         elif account is None:
@@ -1306,7 +1319,14 @@ class BacklogRunnerLoop:
         token = state["ownership_token"]
         async with owned(token) as tx:
             tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
-                "expected": state, "model": default_model, "source": source, "accounted_at": None}}
+                "expected": state, "model": default_model, "source": source,
+                # Seeded at CLAIM time, exactly like ``model``: the reconciler's
+                # replay settles a dispatch whose process died before the first
+                # settle, and the intent is all it has. Without this seed every
+                # recovered investigation was recorded as an implementation and
+                # its by-design missing PR counted as a bounce (spec §5).
+                "dispatch_kind": dispatch_kind_for_hold(batch.primary_hold_kind),
+                "accounted_at": None}}
         try:
             rec = await self._spawn(batch, account, default_model=default_model,
                                     ownership_token=token)
@@ -1371,9 +1391,12 @@ class BacklogRunnerLoop:
         2026-09-18 §5) — the spawn hands it back on its record and it is written
         onto the claim row AND the dispatch-history row, so a later reader (and
         the recovery path below, which has only the row) knows an investigation
-        from an implementation. Unknown falls back to the intent's own record and
-        then to ``implement``: the dispatch the runner has always made, and what
-        ``record_outcome`` defaults to."""
+        from an implementation. Without a record it falls back to the kind the
+        CLAIM seeded onto the intent, which is the reconciler's replay path: that
+        settle never saw a spawn record, so the intent is the only account of what
+        the dispatch was for. Both derive from ``batch.primary_hold_kind`` through
+        ``dispatch_kind_for_hold``, so they cannot disagree. ``implement`` remains
+        the last resort for an intent written before the kind existed."""
         from server.db.models import AutomationTargetState, Session as DbSession
 
         intent = tx.operation.provenance.get("runner_dispatch")
@@ -1388,7 +1411,7 @@ class BacklogRunnerLoop:
         model = (session.model if session is not None else None) or model or intent["model"]
         # The reconciler's replay (``_reconcile_operations``) settles from the
         # intent alone — it never saw the spawn record — so an investigation it
-        # recovers is read off the intent this call is about to stamp.
+        # recovers is read off the kind the CLAIM seeded there.
         kind = dispatch_kind or intent.get("dispatch_kind") or "implement"
         state = dict(intent["expected"])
         # The APPLIED model, not the policy's ``default_model``: the ladder's

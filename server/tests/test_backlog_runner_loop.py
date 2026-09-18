@@ -351,8 +351,11 @@ def build_loop(*, mode="on", config=None, clock=None,
     return loop, rec, ctx
 
 
-def batch(primary: str, issues=None, product=DEFAULT_PRODUCT) -> Batch:
-    return Batch(primary=primary, issues=issues or [primary], product=product)
+def batch(primary: str, issues=None, product=DEFAULT_PRODUCT, hold_kind=None) -> Batch:
+    # ``hold_kind`` is the hold the candidate pool mirrored onto the PRIMARY, which
+    # is what decides the dispatch KIND (spec 2026-09-18 §5).
+    return Batch(primary=primary, issues=issues or [primary], product=product,
+                 primary_hold_kind=hold_kind)
 
 
 # --------------------------------------------------------------------------- #
@@ -2860,7 +2863,7 @@ def test_an_investigate_dispatch_carries_its_kind_to_the_row_and_the_outcome(tmp
         await _seed_row()
         await _seed_product()
         loop, rec, ctx = build_loop(
-            candidates=[batch("o/r#1")],
+            candidates=[batch("o/r#1", hold_kind="evidence")],
             spawn_result=SimpleNamespace(id="sess-1", branch="b1",
                                          dispatch_kind="investigate"),
             policies={DEFAULT_PRODUCT: policy(max_in_flight=1000,
@@ -2869,9 +2872,103 @@ def test_an_investigate_dispatch_carries_its_kind_to_the_row_and_the_outcome(tmp
         await loop.tick()
 
         assert len(rec.spawns) == 1
-        assert (await ctx.get_target_state("o/r#1"))["dispatch_kind"] == "investigate"
+        st = await ctx.get_target_state("o/r#1")
+        assert st["dispatch_kind"] == "investigate"
+        # The hold itself is persisted too: the propose tap and manual dispatch
+        # rebuild their batch from the live pool, which excludes claimed refs, so
+        # the claim row is the only place the kind survives for them.
+        assert st["primary_hold_kind"] == "evidence"
         rows = await _outcomes("o/r#1")
         assert [row.dispatch_kind for row in rows] == ["investigate"]
+
+    asyncio.run(run())
+
+
+def test_a_recovered_investigation_is_not_settled_as_an_implementation(tmp_path):
+    """Review r1 F1: the kind is seeded onto the claim INTENT at claim time, the
+    way ``model`` always has been, so the one settle that has no spawn record —
+    ``_reconcile_dangling``'s, for a dispatch whose process died between the spawn
+    and its first settle — still records what the dispatch was FOR.
+
+    Without the seed this path could only ever write ``implement``, and the
+    investigation's by-design missing PR would then be counted as a bounce
+    (``bounces_stmt`` reads NULL/``implement`` as an implementation)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_recovered.db'}"
+
+    async def run():
+        from server.automations.ownership import begin_session_execution, owned
+        from server.db.models import Session as DbSession
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        started: list[str] = []
+
+        async def crashed(batch_, account, *, default_model, ownership_token):
+            """A launch that persists its session and then loses the binding
+            response — the dispatch happened, nothing acknowledged it."""
+            async with owned(ownership_token) as tx:
+                sid = tx.reserve_session()
+            async with owned(ownership_token) as tx:
+                tx.db.add(DbSession(id=sid, name="reserved", cwd="/tmp", account_name="a",
+                                    origin="backlog-runner", origin_ref=batch_.primary,
+                                    repo="o/r", branch="b1", status="working"))
+            await begin_session_execution(sid)
+            started.append(sid)
+            raise TimeoutError("native launch persisted; binding response lost")
+
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1", hold_kind="evidence")],
+            spawn=crashed,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
+
+        await loop.tick()
+        assert not (await ctx.get_target_state("o/r#1")).get("session_id"), (
+            "the first settle must not have run — that is the whole scenario")
+        assert await _outcomes("o/r#1") == []
+
+        await loop._reconcile_dangling()
+
+        state = await ctx.get_target_state("o/r#1")
+        assert state["session_id"] == started[0]
+        assert state["dispatch_kind"] == "investigate"
+        assert [row.dispatch_kind for row in await _outcomes("o/r#1")] == ["investigate"]
+
+    asyncio.run(run())
+
+
+def test_a_recovered_implementation_is_still_settled_as_an_implementation(tmp_path):
+    """The other side of the same seed: an unheld primary recovers as the
+    ``implement`` dispatch the runner has always made."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_recovered_impl.db'}"
+
+    async def run():
+        from server.automations.ownership import begin_session_execution, owned
+        from server.db.models import Session as DbSession
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+
+        async def crashed(batch_, account, *, default_model, ownership_token):
+            async with owned(ownership_token) as tx:
+                sid = tx.reserve_session()
+            async with owned(ownership_token) as tx:
+                tx.db.add(DbSession(id=sid, name="reserved", cwd="/tmp", account_name="a",
+                                    origin="backlog-runner", origin_ref=batch_.primary,
+                                    repo="o/r", branch="b1", status="working"))
+            await begin_session_execution(sid)
+            raise TimeoutError("native launch persisted; binding response lost")
+
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], spawn=crashed,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
+
+        await loop.tick()
+        await loop._reconcile_dangling()
+
+        assert (await ctx.get_target_state("o/r#1"))["dispatch_kind"] == "implement"
+        assert [row.dispatch_kind for row in await _outcomes("o/r#1")] == ["implement"]
 
     asyncio.run(run())
 

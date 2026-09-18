@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import types
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -24,8 +25,7 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=None,
-                        primary_hold=None):
+def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=None):
     """A bare orchestrator whose runner config is *config*.
 
     The session model is NOT read here since the fix wave: ``_backlog_spawn``
@@ -40,9 +40,9 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
     same way (spec 2026-09-18 §4): the rung this dispatch is pinned to because
     the primary issue is parked ``stronger_model``, or ``None`` when it is not.
 
-    *primary_hold* stubs ``_backlog_primary_hold_kind`` (spec 2026-09-18 §5): the
-    hold kind mirrored on the primary issue, which decides the dispatch KIND —
-    ``evidence`` makes this an investigation, anything else an implementation."""
+    The dispatch KIND has no seam: it is read off ``Batch.primary_hold_kind``
+    (spec 2026-09-18 §5), which the candidate pool put there and the loop stamped
+    onto the claim intent, so a test picks it by building the batch it wants."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
@@ -64,9 +64,6 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
         return ladder_rung
     orch._backlog_ladder_rung = rung  # type: ignore[method-assign]
 
-    async def hold_kind(primary_ref):
-        return primary_hold
-    orch._backlog_primary_hold_kind = hold_kind  # type: ignore[method-assign]
     return orch
 
 
@@ -86,6 +83,9 @@ def _patch_git(monkeypatch, tmp_path):
 
 _BATCH = Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r",
                titles={"o/r#7": "fix the frobnicator"}, product="widget")
+# The same batch as it arrives when the primary is parked pending evidence: the
+# candidate pool carries ``hold_kind`` onto the batch (spec 2026-09-18 §5).
+_EVIDENCE_BATCH = replace(_BATCH, primary_hold_kind="evidence")
 
 
 @pytest.mark.asyncio
@@ -581,11 +581,17 @@ async def test_backlog_spawn_investigates_an_evidence_held_primary(tmp_path, mon
     prompt, ``dispatch_kind="investigate"`` on the spawn record and on the value
     the loop reads back, and no ladder rung (an evidence item never climbs, so the
     rung seam's answer is never even asked for, let alone pinned)."""
-    orch = _build_backlog_orch({}, primary_hold="evidence", ladder_rung="opus")
+    orch = _build_backlog_orch({}, ladder_rung="opus")
     _patch_git(monkeypatch, tmp_path)
+
+    async def no_branch_listing(repo):
+        raise AssertionError("an investigation must not resolve a default branch")
+    # Review r1 F4: only the implement prompt takes a branch, and resolving one is
+    # a remote branch listing — an investigation must not pay for it.
+    orch._sdlc_default_branch = no_branch_listing  # type: ignore[method-assign]
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
+    rec = await orch._backlog_spawn(_EVIDENCE_BATCH, "acct", default_model="sonnet",
                                     ownership_token="test-token")
 
     assert "Investigate; do not implement" in captured["initial_prompt"]
@@ -599,7 +605,7 @@ async def test_backlog_spawn_investigates_an_evidence_held_primary(tmp_path, mon
 async def test_backlog_spawn_without_an_evidence_hold_implements(tmp_path, monkeypatch):
     """The other side of the same switch: no evidence hold, so the batch is
     implemented exactly as before and the dispatch records itself as such."""
-    orch = _build_backlog_orch({}, primary_hold=None)
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
@@ -613,20 +619,19 @@ async def test_backlog_spawn_without_an_evidence_hold_implements(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_backlog_spawn_survives_a_failing_hold_kind_lookup(tmp_path, monkeypatch):
-    """§13, exactly as for the floor and the rung: a seam that RAISES costs the
-    KIND, never the spawn. The fallback is ``implement`` — the dispatch the runner
-    has always made — and the next tick reads the hold again."""
-    orch = _build_backlog_orch({})
-
-    async def boom(primary_ref):
-        raise RuntimeError("hold read down (injected)")
-    orch._backlog_primary_hold_kind = boom  # type: ignore[method-assign]
+async def test_backlog_spawn_of_a_batch_built_outside_the_queue_implements(
+        tmp_path, monkeypatch):
+    """A hold this runner never saw is not a kind: a batch reconstructed without a
+    candidate row (``primary_hold_kind`` unset, the dataclass default) dispatches
+    as the implementation the runner has always made, never as an investigation
+    whose prompt tells the session not to fix anything."""
+    orch = _build_backlog_orch({}, ladder_rung=None)
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
-                                    ownership_token="test-token")
+    rec = await orch._backlog_spawn(
+        Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"), "acct",
+        default_model="sonnet", ownership_token="test-token")
 
     assert captured["detail"]["dispatch_kind"] == "implement"
     assert rec.dispatch_kind == "implement"

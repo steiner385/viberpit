@@ -6754,32 +6754,6 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
-    async def _backlog_primary_hold_kind(self, primary_ref: str) -> str | None:
-        """The hold kind mirrored on the batch's primary issue, or ``None``.
-
-        The spawn's one door to the dispatch KIND (spec 2026-09-18 §5), and an
-        injectable seam so the spawn tests need no seeded row. Deliberately raw —
-        it answers what the mirror says, and ``_backlog_spawn`` alone decides what
-        a given kind means for a dispatch.
-
-        Reads the same column ``_backlog_ladder_rung`` does, in its own session,
-        because the two answer different questions and only one of them is asked
-        per spawn: an ``evidence`` primary skips the ladder entirely, and a
-        ``stronger_model`` one is not an investigation.
-        """
-        from sqlalchemy import select as sa_select
-
-        from server.db.models import WorkItem
-        from server.pm.refs import split_ref
-        parts = split_ref(primary_ref)
-        if parts is None:
-            return None
-        repo, number = parts
-        async with db_session() as db:
-            return (await db.execute(sa_select(WorkItem.hold_kind).where(
-                WorkItem.repo == repo, WorkItem.number == number,
-                WorkItem.kind == "issue"))).scalars().first()
-
     async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
                                    default_model: str, floor: str | None) -> str | None:
         """The tier this dispatch is PINNED to because its primary issue is parked
@@ -6885,6 +6859,7 @@ class SessionOrchestrator:
             build_implement_prompt,
             build_investigate_prompt,
         )
+        from server.pm.outcomes import dispatch_kind_for_hold
         # Engine FIRST, before any network or disk work: the seed prompt states a
         # commit trailer so it has to be built for the engine that will actually
         # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
@@ -6893,13 +6868,6 @@ class SessionOrchestrator:
         if plan is None:                       # out of policy — the ctx recorded why
             return None
         engine, _launch_config = plan
-        default_branch = await self._sdlc_default_branch(batch.repo)
-        _mode, config = await self._backlog_read_config()
-        # The session model is the PRODUCT's (policy phase 1): overlay the caller's
-        # answer onto the config the resolvers already take, so ``pick_model`` /
-        # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
-        # instead of growing a second way to be told which model to use.
-        config = {**config, "default_model": default_model}
         # WHAT this dispatch is FOR (spec §5), decided before anything acts on it:
         # an ``evidence``-held primary is an auto-filed error report nobody has
         # triaged, so it is INVESTIGATED, not implemented. The kind picks the seed
@@ -6907,17 +6875,26 @@ class SessionOrchestrator:
         # an investigation opens no PR by design and must never be read back as an
         # implementation that failed to.
         #
-        # Best-effort like the floor and the rung below (§13): a failed read costs
-        # the KIND, never the spawn. The fallback is the dispatch the runner has
-        # always made, and the next tick reads the hold again.
-        primary_hold = None
-        try:
-            primary_hold = await self._backlog_primary_hold_kind(batch.primary)
-        except Exception:
-            log.warning("backlog_runner.primary_hold_read_failed target=%s",
-                        batch.primary, exc_info=True)
-        investigate = primary_hold == "evidence"
-        dispatch_kind = "investigate" if investigate else "implement"
+        # Read off the BATCH, which carried the primary's hold from the candidate
+        # pool the dispatch decision was taken on, and through the same
+        # ``dispatch_kind_for_hold`` the loop stamped onto the claim intent: one
+        # read, one rule, so the claim row and the running session can never
+        # describe different dispatches.
+        dispatch_kind = dispatch_kind_for_hold(batch.primary_hold_kind)
+        investigate = dispatch_kind == "investigate"
+        # The seed prompt, built here because only the implement one takes a branch
+        # and resolving one is a remote branch listing — the same reason the refusal
+        # check runs first: an investigation must not pay for work it has no use for.
+        initial_prompt = (
+            build_investigate_prompt(batch, engine=engine) if investigate
+            else build_implement_prompt(
+                batch, await self._sdlc_default_branch(batch.repo), engine=engine))
+        _mode, config = await self._backlog_read_config()
+        # The session model is the PRODUCT's (policy phase 1): overlay the caller's
+        # answer onto the config the resolvers already take, so ``pick_model`` /
+        # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
+        # instead of growing a second way to be told which model to use.
+        config = {**config, "default_model": default_model}
         # Stamped on every spawn, exactly like ``engine``: a backlog that mixes
         # implementations and investigations is unreadable after the fact if only
         # one of the two says which it was.
@@ -6984,9 +6961,7 @@ class SessionOrchestrator:
             account=account,
             engine=engine,
             name=f"backlog {batch.primary}",
-            initial_prompt=(
-                build_investigate_prompt(batch, engine=engine) if investigate
-                else build_implement_prompt(batch, default_branch, engine=engine)),
+            initial_prompt=initial_prompt,
             model=model,
             reasoning_effort=reasoning_effort,
             detail=detail,
@@ -7093,7 +7068,13 @@ class SessionOrchestrator:
         batch = Batch(primary=primary,
                       issues=(st.get("issues") or [primary]) if pending_batch else [primary],
                       repo=candidate.get("repo") or st.get("repo") or primary.split("#")[0],
-                      titles=titles, product=candidate.get("product") or st.get("product"))
+                      titles=titles, product=candidate.get("product") or st.get("product"),
+                      # A pending claim is no longer in the pool, so the claim row
+                      # is where its hold survives — same fallback chain as repo
+                      # and product. Without it a proposed investigation would be
+                      # tapped into an implementation (spec 2026-09-18 §5).
+                      primary_hold_kind=(candidate.get("hold_kind")
+                                         or st.get("primary_hold_kind")))
         result = await self._backlog_dispatch_batch(batch, source="proposal")
         return result["status"]
 
@@ -7143,7 +7124,13 @@ class SessionOrchestrator:
         titles.update({r: by_ref[r]["title"]
                        for r in refs if r in by_ref and by_ref[r].get("title")})
         batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles,
-                      product=by_ref.get(primary, {}).get("product") or previous.get("product"))
+                      product=by_ref.get(primary, {}).get("product") or previous.get("product"),
+                      # Same fallback chain as repo/product: a ref the picker
+                      # offers may already be claimed and therefore out of the
+                      # pool, and the claim row is the only other account of its
+                      # hold — which is what the dispatch KIND is read from (§5).
+                      primary_hold_kind=(by_ref.get(primary, {}).get("hold_kind")
+                                         or previous.get("primary_hold_kind")))
         return await self._backlog_dispatch_batch(batch, source="manual")
 
     async def _backlog_admission(self, batch, *, source: str, existing_slot: bool,
