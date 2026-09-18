@@ -10,8 +10,8 @@ from sqlalchemy import false, or_, update
 from sqlalchemy.orm import Session
 
 from server.db.models import (
-    INITIATIVE_STAGES, GhProject, GhProjectItem, Initiative, Project, ProjectRepo,
-    TriageProposal, WorkItem, WorkItemDep)
+    INITIATIVE_STAGES, DecisionProposal, GhProject, GhProjectItem, Initiative, Project,
+    ProjectRepo, TriageProposal, WorkItem, WorkItemDep)
 from server.sdlc.slug import normalize_epic_title, slugify
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
@@ -499,8 +499,17 @@ def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
             w.parent_work_item_id = twin_of[w.parent_work_item_id or ""]
         for it in db.query(GhProjectItem).filter(GhProjectItem.work_item_id.in_(alias_ids)).all():
             it.work_item_id = twin_of[it.work_item_id or ""]
+        # EVERY child FK of work_items.id must be re-pointed before the alias row
+        # is deleted below: on Postgres the DELETE violates the constraint and
+        # aborts the whole rename; on SQLite (no PRAGMA foreign_keys) the child is
+        # silently orphaned — a pending decision proposal would keep rendering an
+        # inbox card for an issue that no longer exists. When a new table hangs off
+        # work_items, it belongs in this loop.
         for tp in db.query(TriageProposal).filter(TriageProposal.work_item_id.in_(alias_ids)).all():
             tp.work_item_id = twin_of[tp.work_item_id]
+        for dp in db.query(DecisionProposal).filter(
+                DecisionProposal.work_item_id.in_(alias_ids)).all():
+            dp.work_item_id = twin_of[dp.work_item_id]
         for d in db.query(WorkItemDep).filter(or_(
                 WorkItemDep.src_work_item_id.in_(alias_ids),
                 WorkItemDep.dst_work_item_id.in_(alias_ids))).all():

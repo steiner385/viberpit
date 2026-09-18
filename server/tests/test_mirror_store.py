@@ -162,6 +162,35 @@ def test_rename_repo_merges_into_an_existing_canonical_twin():
     assert dep.dst_work_item_id == twin.id and dep.src_work_item_id == child.id
 
 
+def test_rename_repo_repoints_a_decision_proposal_onto_the_twin():
+    """``decision_proposals`` is a child FK of ``work_items`` (hold ladder spec §6),
+    so the alias merge must re-point it like every other child: on Postgres the
+    alias DELETE would otherwise violate the constraint and abort the rename, and on
+    SQLite the proposal would be orphaned — still ``pending``, so the inbox keeps
+    showing a card for an issue that no longer exists."""
+    from server.db.models import DecisionProposal
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    db.add(DecisionProposal(
+        work_item_id=alias.id, options=[{"key": "a", "label": "A", "detail": None},
+                                        {"key": "b", "label": "B", "detail": None}],
+        recommended_key="a", rationale="which way?", status="pending",
+        proposed_by="session:s1"))
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    proposal = db.query(DecisionProposal).one()
+    assert proposal.work_item_id == twin.id
+    assert proposal.status == "pending"
+    assert db.query(WorkItem).filter_by(number=950).one().id == twin.id
+
+
 def test_relations_under_the_canonical_name_link_after_rename():
     """Issue #999 acceptance: once the mirror is canonical, a relations pass
     keyed by GitHub's nameWithOwner links parents and resolves native edges."""
