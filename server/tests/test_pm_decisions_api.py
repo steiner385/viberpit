@@ -154,6 +154,43 @@ def test_propose_validation_is_422_and_a_missing_item_is_404():
         assert missing.status_code == 404
 
 
+def test_a_wrongly_typed_options_body_is_a_422_not_a_500():
+    """The caller most likely to get the SHAPE wrong is a model driving
+    ``propose_decision``; the types are pinned at the boundary so a bad one never
+    reaches ``normalize_options`` (whose ``for raw in options`` would raise
+    ``TypeError`` out of the route as a 500)."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        for bad in (5, True, "sqlite", {"key": "sqlite"}, ["sqlite", "pg"],
+                    [{"key": "sqlite"}]):
+            r = c.post(f"/api/pm/work-items/{wid}/decisions", json={
+                "options": bad, "recommended_key": "sqlite", "rationale": "why"},
+                headers=IDENTITY_HEADERS)
+            assert r.status_code == 422, f"{bad!r} answered {r.status_code}: {r.text}"
+        assert _hold_of(c, wid)[0] is None
+
+
+def test_a_racing_second_proposal_is_the_same_409_as_the_friendly_path(monkeypatch):
+    """``ux_decision_proposals_pending`` is what actually enforces one pending
+    proposal per item; a proposer that passes the SELECT and loses at the flush is
+    a conflict, not a 500."""
+    from sqlalchemy.exc import IntegrityError
+
+    async def _racing(db, wi, **kwargs):
+        raise IntegrityError("INSERT INTO decision_proposals", {},
+                             Exception("UNIQUE constraint failed"))
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        monkeypatch.setattr("server.pm.decisions.propose", _racing)
+        r = _propose(c, wid)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {"error": "decision_conflict",
+                                      "message": "a decision is already pending"}
+
+
 def test_accept_rejects_an_unknown_key_and_a_resolved_proposal(monkeypatch):
     calls = _stub_announce(monkeypatch)
     with _client() as c:

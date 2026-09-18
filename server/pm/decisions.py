@@ -53,6 +53,12 @@ HOLD_REASON_RATIONALE_CHARS = 120
 #: prefix a test (or a later parser) matches are one string.
 HOLD_REASON_PREFIX = "decision pending: "
 
+#: Why a second proposal is refused. ONE wording, because two paths reach it: the
+#: friendly SELECT below, and the ``ux_decision_proposals_pending`` index that
+#: catches a genuinely concurrent proposer at the flush (the route maps that
+#: ``IntegrityError`` to the same 409).
+PENDING_CONFLICT_MESSAGE = "a decision is already pending"
+
 
 class DecisionError(ValueError):
     """The proposal is malformed. Every route that calls this module maps it to 422."""
@@ -170,7 +176,7 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
         DecisionProposal.work_item_id == wi.id,
         DecisionProposal.status == STATUS_PENDING))).scalars().first()
     if existing is not None:
-        raise DecisionConflict("a decision is already pending")
+        raise DecisionConflict(PENDING_CONFLICT_MESSAGE)
     if wi.hold_kind in HELD_KINDS and wi.hold_by and holds.actor_class(wi.hold_by) == "person":
         raise DecisionConflict(
             f"{wi.hold_by} has parked this item ({wi.hold_kind}); a decision cannot replace it")

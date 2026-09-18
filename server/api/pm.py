@@ -1879,11 +1879,35 @@ def _decision_http_error(exc: Exception) -> HTTPException:
         "error": "bad_decision", "message": str(exc)})
 
 
+class DecisionOptionBody(BaseModel):
+    """One proposed option as it arrives on the wire. Typed at the boundary so a
+    wrongly-shaped ``options`` (a number, a list of strings — exactly what a
+    model-driven ``propose_decision`` call gets wrong) is FastAPI's 422 and never
+    reaches ``normalize_options``, whose ``for raw in options`` would raise
+    ``TypeError`` out of the route as a 500. The SEMANTIC rules (2–6 options,
+    unique non-empty keys, a recommendation among them) stay in the service —
+    this only pins the types."""
+
+    key: str
+    label: str
+    detail: str | None = None
+
+
+class DecisionProposalBody(BaseModel):
+    options: list[DecisionOptionBody] = []
+    recommended_key: str = ""
+    rationale: str = ""
+
+
+class DecisionAcceptBody(BaseModel):
+    chosen_key: str = ""
+
+
 @router.post("/work-items/{item_id}/decisions", status_code=status.HTTP_201_CREATED)
 async def propose_work_item_decision(
     item_id: str,
     request: Request,
-    body: dict | None = Body(default=None),
+    body: DecisionProposalBody,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1897,23 +1921,31 @@ async def propose_work_item_decision(
     agent may set AND only THROUGH THIS ROUTE (spec §8): the proposal is the
     authority for the park, and accepting it is the only thing that lifts it.
     """
+    from sqlalchemy.exc import IntegrityError
+
     from server.pm import decisions
     from server.pm.holds import actor_for_request
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    payload = body if isinstance(body, dict) else {}
     try:
         prop = await decisions.propose(
             db, wi,
-            options=payload.get("options") or [],
-            recommended_key=str(payload.get("recommended_key") or ""),
-            rationale=str(payload.get("rationale") or ""),
+            options=[o.model_dump() for o in body.options],
+            recommended_key=body.recommended_key,
+            rationale=body.rationale,
             actor=actor_for_request(request),
             now=datetime.now(timezone.utc))
     except decisions.DecisionError as e:
         raise _decision_http_error(e) from e
+    except IntegrityError as e:
+        # ``ux_decision_proposals_pending`` is what actually enforces "one pending
+        # proposal per item" — the SELECT above it is only the friendly path, and a
+        # genuinely concurrent second proposer passes it and fails at the flush.
+        # Same outcome, same message: a race is a conflict, not a server fault.
+        raise _decision_http_error(
+            decisions.DecisionConflict(decisions.PENDING_CONFLICT_MESSAGE)) from e
     return _decision_to_dict(prop, wi, await _owning_slug(db, wi))
 
 
@@ -1952,7 +1984,7 @@ async def list_decisions(
 async def accept_decision(
     proposal_id: str,
     request: Request,
-    body: dict | None = Body(default=None),
+    body: DecisionAcceptBody = Body(default_factory=DecisionAcceptBody),
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1973,9 +2005,8 @@ async def accept_decision(
     from server.pm.holds import actor_for_request
     prop = await _load_decision(db, proposal_id)
     actor = actor_for_request(request)
-    payload = body if isinstance(body, dict) else {}
     try:
-        await decisions.accept(db, prop, chosen_key=str(payload.get("chosen_key") or ""),
+        await decisions.accept(db, prop, chosen_key=body.chosen_key,
                                actor=actor, now=datetime.now(timezone.utc))
     except decisions.DecisionError as e:
         raise _decision_http_error(e) from e
