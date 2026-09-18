@@ -7583,11 +7583,26 @@ class SessionOrchestrator:
                 lambda s: mirror_store.adopt_epics(s, project_id, now=now))
 
     async def _pm_sync_upsert_items(self, items: list) -> None:
-        """Idempotent upsert into work_items keyed by (repo, number, kind)."""
+        """Idempotent upsert into work_items keyed by (repo, number, kind).
+
+        Also the BIRTH of an auto-filed error report's ``evidence`` hold (spec
+        2026-09-18 §5): an ``auto-error`` issue is a stack trace, not a diagnosis,
+        so it enters the mirror already parked for investigation instead of
+        falling into the queue as ordinary work. This is the only seam that can
+        write it — it is the one place that knows a row is NEW; a tick that
+        re-held an existing row would undo the very investigation that cleared
+        the hold, so the write lives strictly on the new-row branch.
+        """
         from datetime import datetime, timezone
         from sqlalchemy import select
+        from server.audit import record_audit
+        from server.automations.error_triage import LABEL as AUTO_ERROR_LABEL
         from server.db.models import WorkItem
+        from server.pm.holds import (
+            ERROR_TRIAGE_ACTOR, EVIDENCE_BIRTH_REASON, actor_class, set_evidence_hold,
+        )
         async with db_session() as db:
+            born_held: list[WorkItem] = []
             for item in items:
                 existing = (await db.execute(
                     select(WorkItem).where(
@@ -7597,6 +7612,7 @@ class SessionOrchestrator:
                     )
                 )).scalar_one_or_none()
                 now = datetime.now(timezone.utc)
+                is_new = existing is None
                 if existing is None:
                     existing = WorkItem(repo=item.repo, number=item.number,
                                        kind=item.kind)
@@ -7614,6 +7630,24 @@ class SessionOrchestrator:
                 existing.gh_updated_at = item.gh_updated_at
                 existing.gh_closed_at = item.gh_closed_at
                 existing.last_synced_at = now
+                if (is_new and item.kind == "issue" and item.state == "open"
+                        and AUTO_ERROR_LABEL in (item.labels or ())):
+                    # After the field copy on purpose: set_hold fingerprints
+                    # title/body, and the fingerprint is what makes a later body
+                    # edit a release signal for this hold.
+                    set_evidence_hold(existing, reason=EVIDENCE_BIRTH_REASON,
+                                      actor=ERROR_TRIAGE_ACTOR, now=now)
+                    born_held.append(existing)
+            if born_held:
+                # ``WorkItem.id`` is a Python-side default, so it exists only once
+                # the INSERT is flushed — and the audit row must name it.
+                await db.flush()
+                for wi in born_held:
+                    await record_audit(db=db, type="pm.hold.set",
+                                       identity=ERROR_TRIAGE_ACTOR, via="pm_sync",
+                                       detail={"workItemId": wi.id, "kind": "evidence",
+                                               "reason": EVIDENCE_BIRTH_REASON,
+                                               "actorClass": actor_class(ERROR_TRIAGE_ACTOR)})
 
     async def _pm_sync_save_state(self, view, **updates) -> None:
         """Map keyword updates onto the ProjectRepo row for *view*."""
@@ -7913,17 +7947,35 @@ class SessionOrchestrator:
             PmTriage, modes=("propose",),
             log_key="pm_triage")
 
-    async def _pm_triage_list_pending(self) -> list:
-        """Open, UNHELD, unclassified work items with NO pending proposal — the
-        classify candidate set.
+    @staticmethod
+    def _classifiable_hold_clause():
+        """THE hold half of the classify-candidate predicate, shared by
+        ``_pm_triage_list_pending`` and ``_pm_triage_count_state`` so the list and the
+        count can never disagree about who is a candidate.
 
-        ``hold_kind IS NULL`` is what carries "rejection is signal, never blind-retry
-        it" (design §6) since the hold ladder removed the ``needs_human`` triage state
-        (spec 2026-09-18 §3): a rejected proposal parks its item under an
-        ``owner_action`` hold and leaves it ``unclassified``, and the legacy conversion
-        does the same to every pre-ladder row. Filtering on ``triage_state`` alone
-        would put all of them back in the candidate set, spend a classify session each
-        and re-raise an inbox card for work a person already rejected."""
+        Only ``HELD_KINDS`` (``owner_action`` / ``decision``) disqualify an item. Those
+        two carry "a person stopped this, never blind-retry it" (design §6) since the
+        hold ladder removed the ``needs_human`` triage state (spec 2026-09-18 §3): a
+        rejected proposal parks its item under an ``owner_action`` hold and leaves it
+        ``unclassified``, and the legacy conversion does the same to every pre-ladder
+        row. Filtering on ``triage_state`` alone would put all of them back in the
+        candidate set, spend a classify session each and re-raise an inbox card for
+        work a person already rejected.
+
+        An ``evidence`` or ``stronger_model`` hold parks the WORK, not the filing: it
+        says nothing about where the item belongs. And since every auto-filed error
+        report is now BORN under an ``evidence`` hold (spec §5,
+        ``_pm_sync_upsert_items``), excluding that kind would leave the entire
+        auto-error stream permanently unclassified."""
+        from sqlalchemy import or_
+        from server.db.models import WorkItem
+        from server.pm.desired_state import HELD_KINDS
+        return or_(WorkItem.hold_kind.is_(None),
+                   WorkItem.hold_kind.not_in(sorted(HELD_KINDS)))
+
+    async def _pm_triage_list_pending(self) -> list:
+        """Open, unclassified, not parked by a HELD_KINDS hold, and with NO pending
+        proposal — the classify candidate set (see ``_classifiable_hold_clause``)."""
         from sqlalchemy import select
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
@@ -7936,7 +7988,7 @@ class SessionOrchestrator:
                 select(WorkItem).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
-                    WorkItem.hold_kind.is_(None))
+                    self._classifiable_hold_clause())
             )).scalars().all()
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
@@ -8158,11 +8210,10 @@ class SessionOrchestrator:
         return tuple(sorted(latched))
 
     async def _pm_triage_count_state(self):
-        """Build the pure engine view from DB counts (design §6). Excludes HELD
-        (``hold_kind IS NOT NULL``) and already-proposed items from
-        ``unclassified_count`` — the same predicate ``_pm_triage_list_pending``
-        applies, and for the same reason: since the hold ladder removed the
-        ``needs_human`` triage state, the hold is what keeps a rejected item out.
+        """Build the pure engine view from DB counts (design §6). Excludes
+        HELD_KINDS-parked and already-proposed items from ``unclassified_count`` —
+        literally the same ``_classifiable_hold_clause`` ``_pm_triage_list_pending``
+        applies, so the count and the list cannot disagree.
 
         ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
         sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
@@ -8184,7 +8235,7 @@ class SessionOrchestrator:
                 select(WorkItem.id).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
-                    WorkItem.hold_kind.is_(None))
+                    self._classifiable_hold_clause())
             )).scalars().all()
             unclassified = sum(1 for wid in open_unclassified
                                if wid not in pending_ids)

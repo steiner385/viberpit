@@ -148,6 +148,28 @@ def set_runner_stronger_hold(wi: WorkItem, *, reason: str, now: datetime) -> Non
     set_hold(wi, kind="stronger_model", reason=reason, actor=RUNNER_ACTOR, now=now)
 
 
+#: The error-triage automation's actor. System class via ``SYSTEM_PREFIXES``, so the
+#: hold it writes is attributed to the machine that filed the issue and never to a
+#: person — spelled once here because the mirror writes it and every reader of a
+#: birth hold (inbox, evidence dispatch) compares against it.
+ERROR_TRIAGE_ACTOR = "automation:error-triage"
+
+#: The one wording of why an auto-filed error report is born parked (spec §5). An
+#: automation's stack trace is a symptom, not a diagnosis: the report must be
+#: investigated before anyone implements against it, so the row enters the mirror
+#: already holding rather than falling into the queue as ordinary work.
+EVIDENCE_BIRTH_REASON = "auto-filed error report: investigate before implementing"
+
+
+def set_evidence_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -> None:
+    """Park ``wi`` pending evidence, as ``actor``. Named — and taking ``actor`` rather
+    than pinning one the way ``set_runner_hold`` does — because ``evidence`` is the one
+    kind every class of actor writes: the mirror's birth hold (``ERROR_TRIAGE_ACTOR``),
+    a session parking its own work, a person. Goes through ``set_hold``, so the
+    permission gate and the fingerprint stay identical for all of them."""
+    set_hold(wi, kind="evidence", reason=reason, actor=actor, now=now)
+
+
 def held_refs(db: "Session") -> frozenset[str]:
     """``owner/repo#N`` of every open issue parked by an owner_action or decision
     hold — what the runner's sweep reads to drop ``gave_up`` rows that are no longer

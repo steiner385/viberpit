@@ -339,7 +339,10 @@ async def test_unclassified_excludes_held_and_proposed(db_env):
     """Since the ladder replaced the ``needs_human`` triage state, the HOLD is the
     carrier of "a person rejected this, never blind-retry it" — a rejected item is
     ``unclassified`` again, so a count that filters only on triage_state would spend a
-    classify session on it and re-raise the inbox card (final-review F3)."""
+    classify session on it and re-raise the inbox card (final-review F3).
+
+    Only ``HELD_KINDS`` carry that meaning, though: an ``evidence`` hold says the work
+    is waiting on a repro, which is no reason to leave the item unfiled."""
     await _seed(db_env)
     async with db_session() as db:
         db.add(WorkItem(repo=REPO, number=1, kind="issue", title="fresh",
@@ -348,6 +351,8 @@ async def test_unclassified_excludes_held_and_proposed(db_env):
                         state="open", triage_state="unclassified",
                         hold_kind="owner_action", hold_by="tony@example.com",
                         hold_reason="classification proposal rejected"))
+        # An evidence hold parks the WORK, not the classification: a report still
+        # waiting on a repro is exactly the item triage should file (spec §5).
         db.add(WorkItem(repo=REPO, number=5, kind="issue", title="needs evidence",
                         state="open", triage_state="unclassified",
                         hold_kind="evidence", hold_by="session:s1",
@@ -361,7 +366,7 @@ async def test_unclassified_excludes_held_and_proposed(db_env):
         db.add(TriageProposal(work_item_id=proposed.id, status="pending"))
     orch = _triage_orch()
     state, _ = await _clusters(orch)
-    assert state.unclassified_count == 1
+    assert state.unclassified_count == 2
     assert state.mode == "off"  # no automation row → never proposes
     # The loop owns the spawn ledger; the seam must not pre-spend the budget.
     assert state.day_spawns == 0
@@ -379,12 +384,15 @@ async def test_list_pending_filters_the_candidate_set(db_env):
         db.add(WorkItem(repo=REPO, number=1, kind="pr", title="a pr",
                         state="open", triage_state="unclassified",
                         labels=["bug"], linked_issue_numbers=[42]))
-        # Held items are out of the candidate set whatever the kind: the hold is the
-        # carrier of "do not blind-retry this" now that needs_human is gone (F3).
+        # A HELD_KINDS item is out of the candidate set: the hold is the carrier of
+        # "do not blind-retry this" now that needs_human is gone (F3).
         db.add(WorkItem(repo=REPO, number=2, kind="issue", title="rejected",
                         state="open", triage_state="unclassified",
                         hold_kind="owner_action", hold_by="tony@example.com",
                         hold_reason="classification proposal rejected"))
+        # An evidence hold is not one of those: it parks the WORK pending a repro,
+        # and a just-born auto-filed error report wears one from its first sync
+        # tick (spec §5) — excluding it would leave every such report unfiled.
         db.add(WorkItem(repo=REPO, number=4, kind="issue", title="needs evidence",
                         state="open", triage_state="unclassified",
                         hold_kind="evidence", hold_by="session:s1",
@@ -396,8 +404,33 @@ async def test_list_pending_filters_the_candidate_set(db_env):
         db.add(TriageProposal(work_item_id=proposed.id, status="pending"))
     orch = _triage_orch()
     out = await orch._pm_triage_list_pending()
-    assert [(i.number, i.kind) for i in out] == [(1, "pr")]
-    assert out[0].labels == ("bug",) and out[0].linked_issue_numbers == (42,)
+    assert sorted((i.number, i.kind) for i in out) == [(1, "pr"), (4, "issue")]
+    pr = next(i for i in out if i.number == 1)
+    assert pr.labels == ("bug",) and pr.linked_issue_numbers == (42,)
+
+
+@pytest.mark.asyncio
+async def test_evidence_held_items_stay_classify_candidates(db_env):
+    """The two triage predicates must agree, and both must let an ``evidence`` hold
+    through: item 4b births every auto-filed error report under one, and a predicate
+    that excluded it would silently stop classifying the whole auto-error stream."""
+    await _seed(db_env)
+    async with db_session() as db:
+        db.add(WorkItem(repo=REPO, number=1, kind="issue", title="unheld",
+                        state="open", triage_state="unclassified"))
+        db.add(WorkItem(repo=REPO, number=2, kind="issue", title="auto-filed",
+                        state="open", triage_state="unclassified",
+                        hold_kind="evidence", hold_by="automation:error-triage",
+                        hold_reason="auto-filed error report"))
+        db.add(WorkItem(repo=REPO, number=3, kind="issue", title="parked",
+                        state="open", triage_state="unclassified",
+                        hold_kind="owner_action", hold_by="tony@example.com",
+                        hold_reason="not now"))
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_pending()
+    assert sorted(i.number for i in out) == [1, 2]
+    state, _ = await _clusters(orch)
+    assert state.unclassified_count == 2
 
 
 # --------------------------------------------------------------------------- #
