@@ -36,6 +36,27 @@ from .base import retired_config_keys_of, validate_config
 log = logging.getLogger(__name__)
 
 
+def _validated_config(automation: Any, raw: dict, *, log_key: str | None = None) -> dict:
+    """The I/O-free half of :func:`read_automation_config`: *raw* merged onto the
+    engine-policy-resolved schema and validated, or pure defaults when it no longer
+    validates. Shared with the sync reader below so both answer identically.
+
+    Fail SAFE (pure defaults) but never fail SILENT: defaults can differ from the
+    operator's settings in ways that read as "working but idle" on the card, so a
+    rejected row has to be loud enough to find without a database session.
+    """
+    from .engine_policy import effective_config_schema
+
+    schema = effective_config_schema(automation)
+    retired = retired_config_keys_of(automation)
+    try:
+        return validate_config(schema, raw, retired=retired)
+    except ValueError as exc:
+        log.warning("%s.config.invalid — falling back to schema defaults: %s",
+                    log_key or getattr(automation, "id", None) or automation, exc)
+        return validate_config(schema, {}, retired=retired)
+
+
 async def read_automation_config(automation: Any, *,
                                  modes: Sequence[str],
                                  default_mode: str | None = None,
@@ -54,10 +75,7 @@ async def read_automation_config(automation: Any, *,
     mode an ENABLED row with no explicit mode resolves to — leave it ``None`` for
     automations whose UI always writes an explicit mode.
     """
-    from .engine_policy import effective_config_schema
-
     automation_id = getattr(automation, "id", None) or str(automation)
-    schema = effective_config_schema(automation)
     enabled, mode, raw = False, None, {}
     try:
         async with db_session() as db:
@@ -67,16 +85,7 @@ async def read_automation_config(automation: Any, *,
                 enabled, mode, raw = bool(row.enabled), row.mode, dict(row.config or {})
     except Exception:
         log.debug("%s.config.load_failed", log_key or automation_id, exc_info=True)
-    retired = retired_config_keys_of(automation)
-    try:
-        config = validate_config(schema, raw, retired=retired)
-    except ValueError as exc:
-        # Fail SAFE (pure defaults) but never fail SILENT: defaults can differ from the
-        # operator's settings in ways that read as "working but idle" on the card, so a
-        # rejected row has to be loud enough to find without a database session.
-        log.warning("%s.config.invalid — falling back to schema defaults: %s",
-                    log_key or automation_id, exc)
-        config = validate_config(schema, {}, retired=retired)
+    config = _validated_config(automation, raw, log_key=log_key or automation_id)
     if not enabled:
         return "off", config
     if mode is not None and mode in modes:
@@ -103,6 +112,34 @@ async def read_effective_config(automation_id: str) -> dict:
         return {}
     _mode, config = await read_automation_config(automation, modes=automation.modes)
     return config
+
+
+def read_effective_config_sync(db: Any, automation_id: str) -> dict:
+    """:func:`read_effective_config` for a caller already INSIDE ``db.run_sync``.
+
+    Same answer, same fail-safe: an unregistered id or an unreadable row resolves to
+    pure schema defaults (``{}`` for an id the registry does not know). It exists
+    because some readers of an automation's settings are sync helpers running in a
+    mirror session — the family grouper asks error-triage which repo it files into
+    while it is already holding the session it needs for the join
+    (``server/pm/error_family.py``) — and opening a second, async session there would
+    read the automation's config out from under the rows it is matching.
+    """
+    from .registry import registry
+
+    try:
+        automation = registry.get(automation_id)
+    except KeyError:
+        return {}
+    raw: dict = {}
+    try:
+        row = db.execute(select(AutomationRow).where(
+            AutomationRow.id == automation_id)).scalar_one_or_none()
+        if row is not None:
+            raw = dict(row.config or {})
+    except Exception:
+        log.debug("%s.config.load_failed", automation_id, exc_info=True)
+    return _validated_config(automation, raw, log_key=automation_id)
 
 
 async def reconcile_enabled_repos(*, gh_run=None) -> int:

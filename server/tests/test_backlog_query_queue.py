@@ -376,3 +376,132 @@ def test_refresh_groups_groups_the_queue_pool(tmp_path, monkeypatch):
         assert [c["ref"] for c in seen["candidates"]] == ["o/r#1"]
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Evidence dispatch: family on the candidate, evidence out of the model's pool  #
+# --------------------------------------------------------------------------- #
+
+TRIAGE_REPO = "steiner385/viberpit"  # error-triage's schema default target repo
+
+
+async def _seed_signature(number: int | None, logger: str, event: str) -> None:
+    from server.db.models import ErrorSignature
+    async with db_session() as db:
+        db.add(ErrorSignature(fingerprint=f"fp{logger}{number}", source="edge",
+                              level="ERROR", logger=logger, event=event,
+                              issue_number=number))
+        await db.flush()
+
+
+def test_query_queue_attaches_the_family_to_evidence_candidates(tmp_path):
+    """Sibling auto-error reports carry the same family across the hand-off; an
+    ordinary candidate carries no family key at all."""
+    async def run():
+        await _init(tmp_path, "family.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 102, score=8.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 103, score=7.0)
+        await _seed_signature(101, "server.a", "boom")
+        await _seed_signature(102, "server.a", "boom")
+        orch = _orch_with_ctx()
+
+        cands = await orch._backlog_query_queue(_config())
+
+        by_ref = {c["ref"]: c for c in cands}
+        assert by_ref[f"{TRIAGE_REPO}#101"]["family"] == "server.a:boom"
+        assert by_ref[f"{TRIAGE_REPO}#102"]["family"] == "server.a:boom"
+        assert "family" not in by_ref[f"{TRIAGE_REPO}#103"]
+
+    asyncio.run(run())
+
+
+def test_query_queue_leaves_an_unmatched_evidence_candidate_familyless(tmp_path):
+    async def run():
+        await _init(tmp_path, "nofamily.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        orch = _orch_with_ctx()
+
+        cands = await orch._backlog_query_queue(_config())
+
+        assert cands[0]["family"] is None
+
+    asyncio.run(run())
+
+
+def test_refresh_groups_keeps_evidence_out_of_the_model_pool(tmp_path, monkeypatch):
+    """An evidence item never shares a batch with implement work: its family group
+    is built here and leads the plan, and the model only ever sees the rest."""
+    async def run():
+        await _init(tmp_path, "evgroups.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 102, score=8.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 103, score=7.0)
+        await _seed_signature(101, "server.a", "boom")
+        await _seed_signature(102, "server.a", "boom")
+        orch = _orch_with_ctx()
+
+        async def _healthy():
+            return None
+        orch._backlog_healthy_account = _healthy
+        seen: dict = {}
+
+        async def _propose(cands, config, _config_dir=None):
+            seen["proposed"] = [c["ref"] for c in cands]
+            return [{"refs": [c["ref"] for c in cands], "rationale": "model"}]
+
+        async def _store(groups, cands):
+            seen["stored"] = groups
+            seen["pool"] = [c["ref"] for c in cands]
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 2
+        assert seen["proposed"] == [f"{TRIAGE_REPO}#103"]
+        assert [g["refs"] for g in seen["stored"]] == [
+            [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#102"],
+            [f"{TRIAGE_REPO}#103"],
+        ]
+        # store_plan still receives the WHOLE pool, so every stored ref resolves
+        # its repo/title.
+        assert sorted(seen["pool"]) == sorted(
+            [f"{TRIAGE_REPO}#{n}" for n in (101, 102, 103)])
+
+    asyncio.run(run())
+
+
+def test_refresh_groups_stores_an_evidence_only_plan_without_a_model_call(tmp_path,
+                                                                          monkeypatch):
+    """Nothing left for the model to partition must not mean a refresh failure —
+    the old code raised when a plan came back empty over a non-empty pool."""
+    async def run():
+        await _init(tmp_path, "evonly.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        orch = _orch_with_ctx()
+
+        async def _healthy():  # pragma: no cover - must not be reached
+            raise AssertionError("no model call for an evidence-only pool")
+
+        orch._backlog_healthy_account = _healthy
+        seen: dict = {}
+
+        async def _propose(cands, config, _config_dir=None):  # pragma: no cover
+            raise AssertionError("no model call for an evidence-only pool")
+
+        async def _store(groups, cands):
+            seen["stored"] = groups
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 1
+        assert [g["refs"] for g in seen["stored"]] == [[f"{TRIAGE_REPO}#101"]]
+
+    asyncio.run(run())

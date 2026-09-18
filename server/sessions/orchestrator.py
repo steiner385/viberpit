@@ -5897,8 +5897,38 @@ class SessionOrchestrator:
         entries.sort(key=rank_key)
         if skipped_out is not None:
             skipped_out.update(skipped)
-        self._backlog_last_queue = [to_candidate(e) for e in entries]
+        candidates = [to_candidate(e) for e in entries]
+        await self._backlog_attach_families(candidates)
+        self._backlog_last_queue = candidates
         return list(self._backlog_last_queue)
+
+    async def _backlog_attach_families(self, candidates: list[dict]) -> None:
+        """Stamp the error-triage fingerprint family onto the ``evidence``-held
+        candidates, in place (spec 2026-09-18 §5).
+
+        Only the evidence half is annotated: the family exists to make sibling
+        error reports ONE investigation, and an implement candidate has no
+        signature row to derive one from. It rides the candidate dict because that
+        dict is all the grouping refresh receives across the hand-off — the same
+        reason ``urgent`` and ``hold_kind`` do.
+
+        Fails OPEN: a lookup that blows up leaves every evidence candidate
+        familyless, which groups each one alone. That is the pre-family behaviour,
+        not a lost tick — this read must not be able to cost the runner its pool.
+        """
+        refs = [c["ref"] for c in candidates if c.get("hold_kind") == "evidence"]
+        if not refs:
+            return
+        families: dict[str, str] = {}
+        try:
+            from server.pm.error_family import families_for_refs
+            async with db_session() as db:
+                families = await db.run_sync(lambda s: families_for_refs(s, refs))
+        except Exception:
+            log.warning("orchestrator._backlog_family_lookup_failed", exc_info=True)
+        for c in candidates:
+            if c.get("hold_kind") == "evidence":
+                c["family"] = families.get(c["ref"])
 
     def _backlog_queue_tail(self) -> list[dict]:
         """Status-card queue-provenance seam (#990): a cheap COPY of the last
@@ -6106,22 +6136,39 @@ class SessionOrchestrator:
         old inline ranking used); with no healthy account the SDK default
         applies. A failed model call propagates as ``GroupingModelError`` with
         the SDK's message (so the runner's ``groups_refresh_failed`` event can
-        name it); a model that answered with nothing parseable raises below."""
-        from server.automations.backlog_grouping import propose_groups, store_plan
+        name it); a model that answered with nothing parseable raises below.
+
+        The ``evidence``-held candidates are bucketed by fingerprint family HERE
+        (``family_groups``, spec 2026-09-18 §5) and never reach the model: they
+        dispatch as investigations, so one of them sharing a batch with implement
+        work would hand a session two incompatible prompts. Their groups lead the
+        stored plan; the model partitions only what is left."""
+        from server.automations.backlog_grouping import (
+            family_groups, propose_groups, store_plan)
         candidates = await self._backlog_query_queue(config)
         if not candidates:
             return await store_plan([], [])
-        config_dir = None
-        acct = await self._backlog_healthy_account()
-        if acct is not None:
-            from ccswitch import paths
-            config_dir = str(paths.account_cfg_dir(acct))
-        groups = await propose_groups(candidates, config, _config_dir=config_dir)
-        if not groups:
-            raise RuntimeError(
-                f"grouping model returned no parseable plan for {len(candidates)} candidate(s)")
-        await store_plan(groups, candidates)
-        return len(groups)
+        evidence, rest = family_groups(
+            candidates, max_k=max(1, int(config.get("max_issues_per_pr") or 1)))
+        groups: list[dict] = []
+        # An evidence-only pool has nothing for the model to partition — asking
+        # would burn a call to be told so, and an empty answer is the shape this
+        # seam treats as a refresh FAILURE.
+        if rest:
+            config_dir = None
+            acct = await self._backlog_healthy_account()
+            if acct is not None:
+                from ccswitch import paths
+                config_dir = str(paths.account_cfg_dir(acct))
+            groups = await propose_groups(rest, config, _config_dir=config_dir)
+            if not groups:
+                raise RuntimeError(
+                    f"grouping model returned no parseable plan for {len(rest)} candidate(s)")
+        plan = evidence + groups
+        # The WHOLE pool, not ``rest``: ``store_plan`` resolves each stored ref's
+        # repo and title through it.
+        await store_plan(plan, candidates)
+        return len(plan)
 
     async def _backlog_repo_load(self) -> dict[str, int]:
         """Per-repo pipeline pressure, derived from durable target states — the

@@ -157,6 +157,53 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     return groups
 
 
+def family_groups(candidates: list[dict], *,
+                  max_k: int) -> "tuple[list[dict], list[dict]]":
+    """Pure: split *candidates* into ``(evidence groups, everything else)``.
+
+    Two rules of spec 2026-09-18 §5, and they are the same rule seen from two
+    sides. An ``evidence``-held item dispatches as an INVESTIGATION, not as an
+    implementation, so it can never ride a batch with implement work — one session
+    cannot be given both prompts. And sibling reports of one error-triage
+    fingerprint family (``server/pm/error_family.py``) are one defect, so they
+    become one investigation instead of N sessions racing to close each other as
+    duplicates.
+
+    Bucketing is by ``family``; a candidate with none groups alone (a missing key
+    is the absence of evidence of relatedness). Buckets keep the pool's order — the
+    queue's own ranking — and a bucket larger than *max_k* spills into further
+    groups of the same family right behind the first, so the per-dispatch issue cap
+    still applies. The primary is each group's first ref, exactly as everywhere
+    else in the plan.
+
+    Returns groups in the SAME ``{"refs", "rationale"}`` shape ``parse_group_plan``
+    produces and ``store_plan`` persists: the caller concatenates the two halves
+    into one plan, so a second shape here would be a second plan format.
+    """
+    max_k = max(1, int(max_k))
+    evidence = [c for c in candidates if c.get("hold_kind") == "evidence"]
+    rest = [c for c in candidates if c.get("hold_kind") != "evidence"]
+
+    buckets: dict[Any, tuple[str | None, list[str]]] = {}
+    for i, c in enumerate(evidence):
+        family = c.get("family") or None
+        # A familyless item gets a key nothing else can collide with, so "no
+        # family" never becomes a family of its own.
+        key: Any = ("family", family) if family else ("solo", i)
+        buckets.setdefault(key, (family, []))[1].append(c["ref"])
+
+    groups: list[dict] = []
+    for family, refs in buckets.values():
+        for start in range(0, len(refs), max_k):
+            groups.append({
+                "refs": refs[start:start + max_k],
+                "rationale": (f"error-triage family {family}: sibling reports "
+                              f"investigated together" if family else
+                              "auto-filed error report: investigated on its own"),
+            })
+    return groups, rest
+
+
 class GroupingModelError(RuntimeError):
     """The grouping model call itself failed (SDK/transport/auth), as opposed to
     the model answering with an unparseable plan. Carries the SDK's own message so

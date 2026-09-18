@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from server.automations.backlog_grouping import (
+    family_groups,
     parse_group_plan,
     plan_to_batch,
     propose_groups,
@@ -313,3 +314,94 @@ def test_parse_preserves_relative_order_among_equally_urgent_groups():
     plan = parse_group_plan(_plan_json([{"refs": ["o/r#5"], "rationale": "b"},
                                         {"refs": ["o/r#2"], "rationale": "a"}]), C, 1)
     assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+
+
+# --------------------------------------------------------------------------- #
+# family_groups (pure): sibling error reports become one investigation         #
+# --------------------------------------------------------------------------- #
+
+def _evidence(ref: str, family: str | None) -> dict:
+    return {"ref": ref, "number": int(ref.rpartition("#")[2]), "repo": "o/r",
+            "title": f"[auto-error] {ref}", "body": "", "hold_kind": "evidence",
+            "family": family}
+
+
+def _plain(ref: str) -> dict:
+    return {"ref": ref, "number": int(ref.rpartition("#")[2]), "repo": "o/r",
+            "title": f"Fix {ref}", "body": "", "hold_kind": None}
+
+
+def test_family_groups_bundles_siblings_and_overflows_at_max_k():
+    candidates = [
+        _evidence("o/r#1", "server.a:boom"),
+        _evidence("o/r#2", "server.b:crash"),
+        _evidence("o/r#3", "server.a:boom"),
+        _evidence("o/r#4", "server.a:boom"),
+        _plain("o/r#5"),
+        _evidence("o/r#6", "server.b:crash"),
+        _plain("o/r#7"),
+    ]
+
+    groups, rest = family_groups(candidates, max_k=2)
+
+    assert [g["refs"] for g in groups] == [
+        ["o/r#1", "o/r#3"],   # family A, capped at max_k…
+        ["o/r#4"],            # …and its overflow, still family A
+        ["o/r#2", "o/r#6"],   # family B, after A because #1 outranks #2
+    ]
+    assert [c["ref"] for c in rest] == ["o/r#5", "o/r#7"]
+
+
+def test_family_groups_name_the_family_in_the_rationale():
+    groups, _ = family_groups([_evidence("o/r#1", "server.a:boom"),
+                               _evidence("o/r#3", "server.a:boom")], max_k=5)
+    assert len(groups) == 1
+    assert "server.a:boom" in (groups[0]["rationale"] or "")
+
+
+def test_family_groups_keep_familyless_evidence_apart():
+    """No family key means no evidence of relatedness — the same rule the model
+    prompt states. Two unrelated reports must not merge just by both lacking one."""
+    groups, rest = family_groups(
+        [_evidence("o/r#1", None), _evidence("o/r#2", None)], max_k=5)
+
+    assert [g["refs"] for g in groups] == [["o/r#1"], ["o/r#2"]]
+    assert rest == []
+
+
+def test_family_groups_pass_non_evidence_holds_through_to_the_model():
+    """Only an ``evidence`` hold dispatches as an investigation; a stronger-model
+    hold is still ordinary implement work and stays in the model's pool."""
+    candidates = [{**_plain("o/r#1"), "hold_kind": "stronger_model"},
+                  _plain("o/r#2")]
+
+    groups, rest = family_groups(candidates, max_k=2)
+
+    assert groups == []
+    assert [c["ref"] for c in rest] == ["o/r#1", "o/r#2"]
+
+
+def test_family_groups_treat_max_k_below_one_as_one():
+    groups, _ = family_groups([_evidence("o/r#1", "f"), _evidence("o/r#2", "f")],
+                              max_k=0)
+    assert [g["refs"] for g in groups] == [["o/r#1"], ["o/r#2"]]
+
+
+def test_family_groups_produce_the_shape_store_plan_persists(tmp_path):
+    """The evidence groups are concatenated with the model's plan and stored by the
+    same ``store_plan``, so they must be the same dict shape — not a second one."""
+    from server.db import init_db
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'fam-plan.db'}")
+        candidates = [_evidence("o/r#1", "server.a:boom"),
+                      _evidence("o/r#3", "server.a:boom")]
+        groups, _ = family_groups(candidates, max_k=2)
+        assert await store_plan(groups, candidates) == 1
+        plan = await load_plan()
+        assert plan[0]["refs"] == ["o/r#1", "o/r#3"]
+        assert plan[0]["repo"] == "o/r"
+        assert plan[0]["titles"] == {"o/r#1": "[auto-error] o/r#1",
+                                     "o/r#3": "[auto-error] o/r#3"}
+
+    asyncio.run(run())
