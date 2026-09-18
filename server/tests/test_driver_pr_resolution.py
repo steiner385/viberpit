@@ -52,7 +52,7 @@ class _NoPRToolTurnClient(PerQueryScript, FakeSDKClient):
 
 
 class _NoPRToolThenPlainClient(PerQueryScript, FakeSDKClient):
-    """Turn 1 calls `mark_no_pr`; turn 2 carries no resolution at all."""
+    """Turn 1 calls `mark_no_pr` with a note; turn 2 carries no resolution at all."""
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._turns = 0
@@ -61,7 +61,9 @@ class _NoPRToolThenPlainClient(PerQueryScript, FakeSDKClient):
         self._turns += 1
         if self._turns == 1:
             yield f.stream_start(uuid="t1")
-            yield f.tool_use("tc1", MARK_NO_PR, {"resolution": "not-needed"}, uuid="t1")
+            yield f.tool_use("tc1", MARK_NO_PR,
+                             {"resolution": "not-needed", "note": "converted to a fix: x"},
+                             uuid="t1")
             yield f.result(session_id="sess-1", uuid="t1")
         else:
             yield f.stream_start(uuid="t2")
@@ -125,9 +127,29 @@ async def test_the_driver_reports_the_source_alongside_the_resolution():
 
 
 @pytest.mark.asyncio
-async def test_a_marker_turn_still_reports_a_marker_source():
+async def test_the_driver_reports_the_note_the_tool_carried():
+    """The session's one-line reason for finishing without a PR. Latched with the
+    resolution, so a later resolution-free turn cannot leave them describing
+    different turns — the Backlog Runner settles an ended investigation from the
+    pair (spec 2026-09-18 §5)."""
+    d = _make_driver(_NoPRToolThenPlainClient)
+    await d.start()
+    await d.send_prompt("go")
+    if d._pump:
+        await d._pump
+    await d.send_prompt("and again")
+    if d._pump:
+        await d._pump
+    await d.aclose()
+
+    assert d.last_pr_resolution_note == "converted to a fix: x"
+
+
+@pytest.mark.asyncio
+async def test_a_marker_turn_reports_a_marker_source_and_no_note():
     d = await _run_one_turn(_NoPRTurnClient)
     assert d.last_pr_resolution_source == "marker"
+    assert d.last_pr_resolution_note is None, "the marker carries no argument"
 
 
 @pytest.mark.asyncio

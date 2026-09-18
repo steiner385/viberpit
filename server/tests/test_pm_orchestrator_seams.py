@@ -1234,6 +1234,83 @@ async def test_escalate_never_replaces_an_evidence_hold_but_the_handoff_does(db_
 
 
 @pytest.mark.asyncio
+async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note(db_env):
+    """Spec 2026-09-18 §5: an ended investigation is settled from the ISSUE (live
+    GitHub, because the mirror lags a sync interval), the hold still on it, and the
+    session's own ``mark_no_pr`` note — the note the tool has always asked for and
+    nothing recorded until now."""
+    from datetime import datetime, timezone
+
+    from server.db.models import Session as DbSession, WorkItem
+    from server.pm.holds import ERROR_TRIAGE_ACTOR, set_evidence_hold
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
+        set_evidence_hold(wi, reason="auto-filed error report", actor=ERROR_TRIAGE_ACTOR,
+                          now=datetime.now(timezone.utc))
+        db.add(wi)
+        db.add(DbSession(id="sess-1", name="x", account_name="a", cwd="/tmp",
+                         status="ended", pr_resolution="not-needed",
+                         pr_resolution_source="tool",
+                         pr_resolution_note="converted to a fix: the counter never resets"))
+
+    with patch("server.automations.backlog_github.issue_state_live", return_value="open"):
+        info = await orch._backlog_investigation_state("o/r#1", "sess-1")
+    assert info == {"issue_state": "open", "hold_kind": "evidence",
+                    "hold_by": ERROR_TRIAGE_ACTOR,
+                    "no_pr_note": "converted to a fix: the counter never resets"}
+
+    # Unknown stays unknown, and a dispatch with no session id still answers the
+    # issue/hold half rather than raising.
+    with patch("server.automations.backlog_github.issue_state_live", return_value=None):
+        info = await orch._backlog_investigation_state("o/r#1", None)
+    assert info == {"issue_state": None, "hold_kind": "evidence",
+                    "hold_by": ERROR_TRIAGE_ACTOR, "no_pr_note": None}
+
+
+@pytest.mark.asyncio
+async def test_backlog_release_investigation_hold_clears_only_an_evidence_hold(db_env):
+    """The convert-to-a-fix exit: the runner clears the ``evidence`` hold itself
+    (engine-neutral — Codex has no hold-setting tool), audited as ``investigation``
+    so the release is traceable to the exit that caused it. A person's park is not
+    this signal's to end, and a second call has nothing left to release."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import (
+        ERROR_TRIAGE_ACTOR, RUNNER_ACTOR, set_evidence_hold, set_runner_hold,
+    )
+    await init_db(db_env)
+    orch = _bare_orch()
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        evidence = WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                            title="T", body="B")
+        set_evidence_hold(evidence, reason="auto-filed error report",
+                          actor=ERROR_TRIAGE_ACTOR, now=now)
+        owned = WorkItem(repo="o/r", number=2, kind="issue", state="open",
+                         title="T", body="B")
+        set_runner_hold(owned, reason="handed over", now=now)
+        db.add_all([evidence, owned])
+
+    assert await orch._backlog_release_investigation_hold("o/r#1") is True
+    assert await orch._backlog_release_investigation_hold("o/r#1") is False  # idempotent
+    assert await orch._backlog_release_investigation_hold("o/r#2") is False  # not evidence
+    assert await orch._backlog_release_investigation_hold("not-a-ref") is False
+
+    async with db_session() as db:
+        rows = (await db.execute(select(WorkItem).order_by(WorkItem.number))).scalars().all()
+        assert [r.hold_kind for r in rows] == [None, "owner_action"]
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all()
+        assert [(e.detail["kind"], e.detail["signal"], e.identity, e.via) for e in events] == [
+            ("evidence", "investigation", RUNNER_ACTOR, "runner")]
+
+
+@pytest.mark.asyncio
 async def test_escalate_never_replaces_the_runners_own_owner_action_handoff(db_env):
     """Final review I2: the ``hold_by == RUNNER_ACTOR`` exemption exists so a
     RETRIED give-up can re-stamp its own hold. It must not extend to the

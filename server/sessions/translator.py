@@ -278,9 +278,14 @@ class Translator:
             signals = self._turn_signals
             no_pr = signals.get("mark_no_pr")
             inferred = resolution_from_text(self._turn_text)
+            # The note travels with the resolution it explains and only with it —
+            # the marker path has no argument to carry one, so a marker turn's note
+            # is None rather than a guess scraped out of the prose.
+            pr_note: str | None = None
             if no_pr is not None:
                 pr_resolution = no_pr["resolution"]
                 pr_source: str | None = "tool"
+                pr_note = no_pr.get("note")
                 if inferred is not None and inferred != pr_resolution:
                     # Spec §8: the declared value against what the prose heuristic
                     # would have guessed. Emitted here because this is the only place
@@ -311,7 +316,7 @@ class Translator:
                              "mark_complete" in signals or has_completion_marker(self._turn_text),
                              pr_resolution)
                 outcome = "hand_back"
-                pr_resolution, pr_source = None, None
+                pr_resolution, pr_source, pr_note = None, None, None
             elif completed:
                 outcome = "complete"
             else:
@@ -331,6 +336,7 @@ class Translator:
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
                                   outcome=outcome, pr_resolution=pr_resolution,
                                   pr_resolution_source=pr_source,
+                                  pr_resolution_note=pr_note,
                                   model_request=model_request,
                                   hand_back_reason=(hand_back.get("reason")
                                                     if outcome == "hand_back" and hand_back else None)))

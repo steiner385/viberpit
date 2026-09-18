@@ -126,9 +126,12 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: at all — the Backlog Runner's spawn CONSUMING the ``stronger_model`` hold it
 #: climbed for (``release_on_dispatch``, spec §4). It belongs in this tuple because
 #: it audits through the same ``pm.hold.release`` shape, and a reader asking "how
-#: can a hold end?" must find every answer in one place.
+#: can a hold end?" must find every answer in one place. ``investigation`` is the
+#: Backlog Runner settling an ended INVESTIGATION on its convert-to-a-fix exit (spec
+#: §5): the session found the root cause, so the ``evidence`` hold that made the
+#: report an investigation instead of an implementation is spent.
 RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch")
+                                    "implement", "dispatch", "investigation")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -261,6 +264,42 @@ def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) 
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released
+
+
+def release_on_investigation(db: "Session", ref: str) -> bool:
+    """An ended investigation took the CONVERT-TO-A-FIX exit (spec 2026-09-18 §5):
+    clear the ``evidence`` hold on *ref* so the next refill re-claims the report as
+    an ordinary implement candidate, audited as ``investigation``.
+
+    The runner's third hold-release rule, deliberately alongside the other two
+    rather than hand-rolled at the call site: same ``clear_hold`` +
+    ``_audit_release(via="runner")`` shape, so "how can a hold end?" still has one
+    answer per signal in one file.
+
+    Only ``evidence``, and only the investigated issue itself — a batch sibling is
+    closed as a duplicate by the exit that touched it, and a person's
+    ``owner_action`` park is not this signal's to end. Returns whether a hold was
+    actually released: idempotent (a re-run finds nothing) and blind to a malformed
+    ref, exactly like :func:`release_on_dispatch`. Sync — the orchestrator calls it
+    under ``db.run_sync``.
+    """
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        return False
+    repo, number = parts
+    wi = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.hold_kind == "evidence")).first()
+    if wi is None:
+        return False
+    clear_hold(wi, actor=RUNNER_ACTOR)
+    _audit_release(db, wi, kind="evidence", signal="investigation",
+                   actor=RUNNER_ACTOR, via="runner")
+    db.flush()
+    return True
 
 
 def clear_hold(wi: WorkItem, *, actor: str) -> None:

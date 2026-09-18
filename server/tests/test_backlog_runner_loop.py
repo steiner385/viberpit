@@ -144,7 +144,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
                pr_doctor_attempts_fn=None, session_gone=None,
-               held: "set[str] | None" = None, escalate_raises=False):
+               held: "set[str] | None" = None, escalate_raises=False,
+               investigation_state=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -172,6 +173,11 @@ def build_loop(*, mode="on", config=None, clock=None,
             # opens its own DB write and can fail transiently (review R1 I2/M8).
             self.escalate_raises = escalate_raises
             self.close_outs: list = []
+            # (target, session_id) for every investigation-settle read, and the
+            # targets whose ``evidence`` hold the converted exit cleared (spec
+            # 2026-09-18 §5).
+            self.investigation_reads: list = []
+            self.hold_releases: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
             self.in_flight = 0
@@ -231,6 +237,18 @@ def build_loop(*, mode="on", config=None, clock=None,
 
     async def _held():
         return frozenset(held or ())
+
+    async def investigation_state_seam(target, session_id):
+        # ``investigation_state`` is a dict (one shape for every target) or a
+        # callable; unwired, the loop's own stub answers "unknown".
+        rec.investigation_reads.append((target, session_id))
+        if callable(investigation_state):
+            return investigation_state(target, session_id)
+        return dict(investigation_state or {})
+
+    async def release_investigation_hold(target):
+        rec.hold_releases.append(target)
+        return True
 
     async def close_out(target, info):
         rec.close_outs.append((target, info))
@@ -307,6 +325,9 @@ def build_loop(*, mode="on", config=None, clock=None,
         clock=clk,
         needs_human=needs_human,
         escalate=escalate,
+        investigation_state=(investigation_state_seam
+                             if investigation_state is not None else None),
+        release_investigation_hold=release_investigation_hold,
         session_ran=session_ran_probe if session_ran is not None else None,
         pr_doctor_attempts_for=attempts_seam,
         close_out=close_out,
@@ -2851,6 +2872,209 @@ def test_an_investigate_dispatch_carries_its_kind_to_the_row_and_the_outcome(tmp
         assert (await ctx.get_target_state("o/r#1"))["dispatch_kind"] == "investigate"
         rows = await _outcomes("o/r#1")
         assert [row.dispatch_kind for row in rows] == ["investigate"]
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Settling an ended INVESTIGATION (spec 2026-09-18 §5)                          #
+# --------------------------------------------------------------------------- #
+
+def _investigation_row(target: str = "o/r#1") -> dict:
+    """A claim row for an in-flight investigation whose session has ended."""
+    return {"session_id": "sess-1", "repo": target.split("#")[0], "issues": [target],
+            "claimed": True, "attempts": 0, "product": DEFAULT_PRODUCT,
+            "model": "sonnet", "dispatch_kind": "investigate", "_ended": True}
+
+
+async def _sweep_investigation(tmp_path, name: str, info, **kw):
+    """Run one sweep over a single ended investigation and hand back the recorders.
+
+    ``info`` is what the ``investigation_state`` seam answers — the issue's live
+    state, the hold still on it, and the session's ``mark_no_pr`` note."""
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
+    await _seed_row()
+    await _seed_product()
+    loop, rec, ctx = build_loop(candidates=[], investigation_state=info, **kw)
+    await _set_owned_state(ctx, "o/r#1", _investigation_row())
+    await loop.tick()
+    return loop, rec, ctx
+
+
+def test_a_closed_issue_settles_the_investigation_as_done(tmp_path):
+    """Exits 1 and 2 (closed as noise / consolidated into a sibling) are both just
+    "the issue is closed": finalise the outcome as ``no_pr`` — an investigation
+    opening no PR is the SUCCESS case — release the claim, and charge nobody."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_closed.db", {"issue_state": "closed", "hold_kind": "evidence",
+                                        "no_pr_note": "closed as noise: a retry storm"})
+
+        assert rec.investigation_reads == [("o/r#1", "sess-1")]
+        assert not await ctx.get_target_state("o/r#1")          # claim released
+        rows = await _outcomes("o/r#1")
+        assert [(r.outcome, r.cause, r.dispatch_kind) for r in rows] == [
+            ("no_pr", "investigation: issue closed", "investigate")]
+        assert rec.needs_humans == [] and rec.escalations == [] and rec.hold_releases == []
+        events = await ctx.list_events(kind="investigated")
+        assert [e["detail"]["exit"] for e in events] == ["closed"]
+        assert events[0]["detail"]["note"] == "closed as noise: a retry storm"
+
+    asyncio.run(run())
+
+
+def test_the_converted_note_clears_the_evidence_hold(tmp_path):
+    """Exit 3 is engine-neutral: the session writes Findings and says so in its
+    ``mark_no_pr`` note, and the RUNNER clears the ``evidence`` hold — Codex has no
+    hold-setting tool. The item re-enters the queue as an implement candidate."""
+    async def run():
+        from server.automations.backlog_prompt import CONVERTED_NOTE_PREFIX
+        note = f"{CONVERTED_NOTE_PREFIX}: the retry loop never resets its counter"
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_converted.db",
+            {"issue_state": "open", "hold_kind": "evidence", "no_pr_note": note})
+
+        assert rec.hold_releases == ["o/r#1"]
+        assert not await ctx.get_target_state("o/r#1")
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: converted to a fix")]
+        assert rec.needs_humans == []
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "converted"]
+
+    asyncio.run(run())
+
+
+def test_an_already_cleared_hold_reads_as_converted_without_a_second_release(tmp_path):
+    """The hold is gone — a Claude session cleared it through ``set_hold``, or a
+    person did. The conversion already happened, so there is nothing to release and
+    nothing to hand off."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_cleared.db",
+            {"issue_state": "open", "hold_kind": None, "no_pr_note": None})
+
+        assert rec.hold_releases == []
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: converted to a fix")]
+        assert rec.needs_humans == []
+
+    asyncio.run(run())
+
+
+def test_an_open_evidence_report_hands_off_with_the_sessions_own_note(tmp_path):
+    """Exit 4: only the owner can supply what is needed. The issue is still open and
+    still holds ``evidence``, so nothing was resolved — hand it over through the
+    existing give-up path, carrying the session's note as the reason."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_escalate.db",
+            {"issue_state": "open", "hold_kind": "evidence",
+             "no_pr_note": "needs owner: the production log for 09-12"})
+
+        assert rec.needs_humans == [
+            ("o/r#1", "investigation: needs owner: the production log for 09-12")]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert [(r.outcome, r.cause, r.dispatch_kind) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: needs owner: the production log for 09-12",
+             "investigate")]
+        assert rec.escalations == [], "an investigation never climbs the ladder"
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "escalated"]
+
+    asyncio.run(run())
+
+
+def test_an_investigation_that_ends_without_an_exit_hands_off(tmp_path):
+    """No exit at all: the session just stopped. Same hand-off as the escalate exit
+    (there is nobody else to give an untriaged report to), with a reason that says
+    so rather than inventing one the session never gave."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_noexit.db",
+            {"issue_state": "open", "hold_kind": "evidence", "no_pr_note": None})
+
+        assert rec.needs_humans == [("o/r#1", "investigation ended without an exit")]
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "no_exit"]
+
+    asyncio.run(run())
+
+
+def test_an_unknown_issue_state_leaves_the_investigation_row_untouched(tmp_path):
+    """``gh`` was down. Unknown is not an exit: nothing is finalised, nothing is
+    handed off, and the next tick asks again — a hand-off written now would be
+    indistinguishable afterwards from an investigation that really gave up."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_unknown.db", {"issue_state": None, "hold_kind": "evidence"})
+
+        assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
+                if k != "ownership_token"} == _investigation_row()
+        assert await _outcomes("o/r#1") == []
+        assert rec.needs_humans == [] and rec.hold_releases == []
+        assert await ctx.list_events(kind="investigated") == []
+
+    asyncio.run(run())
+
+
+def test_an_investigation_is_settled_from_the_issue_not_from_pr_state(tmp_path):
+    """The one rule the whole branch exists for. A PR that merely MENTIONS the
+    report would otherwise drive the sweep: merged → close-out, closed → "PR closed
+    unmerged" → hand-off, absent → a no-PR bounce up the ladder. An investigation
+    opens no PR by design, so PR state is never its verdict."""
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        merged = PullRequestInfo(number=42, url="", state="merged", checks="none",
+                                 title="", merged=True)
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_pr.db", {"issue_state": "closed", "hold_kind": "evidence"},
+            pr_status={"o/r#1": merged})
+
+        assert rec.close_outs == [], "the merged PR is not this dispatch's outcome"
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: issue closed")]
+        assert rec.escalations == [] and rec.needs_humans == []
+
+    asyncio.run(run())
+
+
+def test_an_investigation_whose_session_never_ran_is_released_without_penalty(tmp_path):
+    """#1100 applies to every dispatch kind: a session that never started turn one
+    investigated nothing, so the item goes back in the pool with no hand-off — and
+    the settle's GitHub read is never paid for."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_neverran.db",
+            {"issue_state": "open", "hold_kind": "evidence"}, session_ran=False)
+
+        assert rec.investigation_reads == []
+        assert not await ctx.get_target_state("o/r#1")
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("abandoned", "session never ran a turn")]
+        assert [e["kind"] for e in await ctx.list_events(kind="unclaimed")] == ["unclaimed"]
+        assert rec.needs_humans == []
+
+    asyncio.run(run())
+
+
+def test_an_unwired_investigation_seam_settles_nothing(tmp_path):
+    """The default stub answers ``{}`` — every field unknown — so a deployment that
+    has not wired the seam leaves investigation rows exactly where they are instead
+    of handing every one of them to a human."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'inv_unwired.db'}")
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(candidates=[])       # no investigation_state
+        await _set_owned_state(ctx, "o/r#1", _investigation_row())
+
+        await loop.tick()
+
+        assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
+                if k != "ownership_token"} == _investigation_row()
+        assert rec.needs_humans == [] and await _outcomes("o/r#1") == []
 
     asyncio.run(run())
 

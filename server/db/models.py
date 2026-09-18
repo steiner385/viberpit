@@ -179,6 +179,14 @@ class Session(Base):
     # Source distinguishes the deterministic marker from the probabilistic classifier.
     pr_resolution: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pr_resolution_source: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The one-sentence `note` the session passed to `mark_no_pr` alongside that
+    # resolution — its own account of WHY there is no PR. NULL when it gave none, or
+    # when the resolution arrived by marker/classifier (neither carries a note).
+    # Written with pr_resolution and under the same first-write-wins guard, so the
+    # pair always describes the same turn. Read back by session id: the Backlog
+    # Runner settles an ended investigation from it (spec 2026-09-18 §5). Nullable so
+    # init_db backfills without a migration.
+    pr_resolution_note: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Provenance of the LAST archive: "user" | "autopilot" | "backlog-runner". Lets
     # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
     # Cleared on unarchive. Nullable so init_db backfills without a migration.

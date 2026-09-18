@@ -1056,6 +1056,8 @@ class SessionOrchestrator:
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
             escalate=self._backlog_escalate,
+            investigation_state=self._backlog_investigation_state,
+            release_investigation_hold=self._backlog_release_investigation_hold,
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
@@ -4832,6 +4834,11 @@ class SessionOrchestrator:
         # without a source keeps the pre-provenance behaviour and persists "marker",
         # never None.
         resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
+        # The session's own one-line reason for finishing without a PR. No default:
+        # unlike the source, "no note" is a real answer (the marker path has no
+        # argument to carry one) and a synthesised one would be a claim the session
+        # never made. Written with the resolution below, never on its own.
+        resolution_note = getattr(driver, "last_pr_resolution_note", None)
         # The session's own hand_back reason (tool or marker), read only when the status
         # being written IS the hand-back status: a structured AskUserQuestion lands at
         # waiting_question too, and carries no reason. getattr, like the resolution reads
@@ -4878,6 +4885,11 @@ class SessionOrchestrator:
                     and rec.pr_resolution == resolution):
                 values["pr_resolution"] = resolution
                 values["pr_resolution_source"] = resolution_source
+                # Under the SAME guard, so the note can never outlive or contradict
+                # the resolution it explains. DB-only (no SessionRecord field): its
+                # one reader is the Backlog Runner's investigation settle, which
+                # looks the row up by session id.
+                values["pr_resolution_note"] = resolution_note
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
@@ -6283,6 +6295,64 @@ class SessionOrchestrator:
         retry — no two-phase gap where the item is neither claimed nor held."""
         await self._backlog_write_runner_hold(
             target, kind="stronger_model", reason=reason, log_key="escalate")
+
+    async def _backlog_investigation_state(self, target: str,
+                                           session_id: str | None) -> dict:
+        """Everything the sweep needs to settle an ENDED investigation (spec
+        2026-09-18 §5), in one read: ``{issue_state, hold_kind, hold_by, no_pr_note}``.
+
+        An investigation opens no PR by design, so its four exits are legible only
+        here — on the issue (closed as noise / as a duplicate, or still open), on the
+        hold (an ``evidence`` hold still in place means nobody converted it), and in
+        the session's own ``mark_no_pr`` note (which exit it says it took).
+
+        ``issue_state`` comes from LIVE GitHub, not ``WorkItem.state``: the mirror
+        lags a sync interval and the exit happened minutes ago, so the mirror would
+        still say "open" for an issue the session just closed. ``None`` there means
+        UNKNOWN and the caller retries next tick — it must never read as "still
+        open", which is the hand-off case.
+
+        The hold and the note come from the row that IS the answer: the mirrored
+        WorkItem (whose hold the converting session, a person, or the runner itself
+        may have cleared) and the session row's ``pr_resolution_note``.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.automations import backlog_github
+        from server.db.models import Session as DbSession, WorkItem
+        from server.pm.refs import split_ref
+        issue_state = await asyncio.to_thread(
+            backlog_github.issue_state_live, target, gh_run=self._gh_run)
+        hold_kind = hold_by = note = None
+        parts = split_ref(target)
+        async with db_session() as db:
+            if parts is not None:
+                repo, number = parts
+                row = (await db.execute(sa_select(
+                    WorkItem.hold_kind, WorkItem.hold_by).where(
+                        WorkItem.kind == "issue", WorkItem.repo == repo,
+                        WorkItem.number == number))).first()
+                if row is not None:
+                    hold_kind, hold_by = row
+            if session_id:
+                note = (await db.execute(sa_select(DbSession.pr_resolution_note).where(
+                    DbSession.id == session_id))).scalars().first()
+        return {"issue_state": issue_state, "hold_kind": hold_kind,
+                "hold_by": hold_by, "no_pr_note": note}
+
+    async def _backlog_release_investigation_hold(self, target: str) -> bool:
+        """CONVERT-TO-A-FIX exit (spec §5): the investigation found the root cause
+        and wrote it into the issue, so the ``evidence`` hold that made the report an
+        investigation is spent — clear it and the next refill re-claims the issue as
+        an ordinary implement candidate.
+
+        A write seam of its own rather than a mutation hidden inside the read above:
+        the sweep decides the exit, and only one of four exits releases a hold. The
+        rule itself is ``holds.release_on_investigation`` — the same
+        ``clear_hold`` + ``pm.hold.release`` shape as every other release."""
+        from server.pm.holds import release_on_investigation
+        async with db_session() as db:
+            return await db.run_sync(lambda s: release_on_investigation(s, target))
 
     async def _backlog_held_targets(self) -> "frozenset[str]":
         from server.pm.holds import held_refs
