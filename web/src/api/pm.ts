@@ -67,6 +67,18 @@ export function createProject(input: CreateProjectInput): Promise<Project> {
   return api.post<Project>('/pm/projects', input)
 }
 
+/** Sparse patch: only the fields present are changed. `repo` repoints the
+ *  PRIMARY repo in place — not an add/remove-multiple-repos edit. */
+export interface UpdateProjectInput {
+  name?: string
+  slug?: string
+  repo?: string
+}
+
+export function updateProject(slug: string, input: UpdateProjectInput): Promise<Project> {
+  return api.patch<Project>(`/pm/projects/${encodeURIComponent(slug)}`, input)
+}
+
 export function requestProjectSync(slug: string): Promise<{ requested: boolean }> {
   return api.post<{ requested: boolean }>(`/pm/projects/${encodeURIComponent(slug)}/sync`)
 }

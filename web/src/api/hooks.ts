@@ -32,7 +32,7 @@ import {
   type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
-  createProject, requestProjectSync,
+  createProject, updateProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
@@ -40,7 +40,7 @@ import {
   fetchProjectHealth,
   fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold,
   type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult, type HoldReleaseResult,
-  type Project, type CreateProjectInput, type OnboardingView,
+  type Project, type CreateProjectInput, type UpdateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
   type MapChangeInput, type MapChangeResult, type AbandonResult,
@@ -1922,6 +1922,34 @@ export function useUpdateProductPolicy(slug: string) {
     onError: async (e) => {
       if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
       toast.error(extractMutationErrorMessage(e, 'Could not update the automation policy'))
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/**
+ * Renames a product's name/slug and/or repoints its primary repo. A slug
+ * change moves the cache entry to the new key — the caller navigates to the
+ * new `productPath` on success, so the old key's observer is gone by the
+ * time this settles; dropping it here avoids a stale 404 refetch either way.
+ */
+export function useUpdateProject(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, UpdateProjectInput>({
+    mutationFn: (input) => updateProject(slug, input),
+    retry: false,
+    onSuccess: async (project) => {
+      const newSlug = project.slug ?? slug
+      if (newSlug !== slug) qc.removeQueries({ queryKey: QK.project(slug) })
+      qc.setQueryData(QK.project(newSlug), project)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.project(newSlug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+      ])
+    },
+    onError: async (e) => {
+      if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
+      toast.error(extractMutationErrorMessage(e, 'Could not update the product'))
     },
     meta: PM_MUTATION_META,
   })

@@ -57,6 +57,8 @@ vi.mock('@/api/hooks', () => ({
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
+  // The Overview's "Edit" button opens `EditProductDialog`.
+  useUpdateProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useSdlcGates: () => ({ data: undefined, isPending: false, isError: false }),
   // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
   useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
@@ -154,6 +156,15 @@ describe('ProductDetail', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: '+ Capability' }))
     expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
+  })
+
+  it('Overview: "Edit" opens the rename/repoint dialog pre-filled with the current values', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('dialog', { name: 'Edit product' })).toBeInTheDocument()
+    expect(screen.getByLabelText(/Name/)).toHaveValue('KinDash')
+    expect(screen.getByLabelText(/Slug/)).toHaveValue('kindash')
+    expect(screen.getByLabelText(/Primary repository/)).toHaveValue('cairnea/KinDash')
   })
 
   it('counts In flight as the initiatives the In-flight tab lists', () => {

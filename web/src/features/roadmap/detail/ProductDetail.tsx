@@ -25,6 +25,7 @@ import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 import { ProductEdgesEditor } from './ProductEdgesEditor'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
+import { EditProductDialog } from './EditProductDialog'
 import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
@@ -36,6 +37,7 @@ const panelId = (id: string) => `product-panel-${id}`
 export function ProductDetail({ product }: { product: ProductNode }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
   const [addingCapability, setAddingCapability] = useState(false)
+  const [editing, setEditing] = useState(false)
   // Shares `QK.project(slug)` with the header and the new-initiative dialog, so
   // the three of them are one fetch.
   const { data: project, isLoading, isError } = useProject(product.slug)
@@ -107,7 +109,14 @@ export function ProductDetail({ product }: { product: ProductNode }) {
               : project && (
                 <>
                   <section className="flex flex-col gap-2 text-sm">
-                    {project.description && <p className="text-ink">{project.description}</p>}
+                    <div className="flex items-start justify-between gap-2">
+                      {project.description
+                        ? <p className="text-ink">{project.description}</p>
+                        : <span />}
+                      <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+                        Edit
+                      </Button>
+                    </div>
                     {project.repos.length > 0 && (
                       <ul className="flex flex-wrap gap-2" aria-label="Repositories">
                         {project.repos.map((r) => (
@@ -122,6 +131,10 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                     </p>
                   </section>
                   <AutomationPolicyCard product={product} project={project} />
+                  {/* Mounted only while open, like `NewCapabilityDialog` below — each
+                      opening starts from the project's current values rather than
+                      whatever a previous, abandoned edit left the fields holding. */}
+                  {editing && <EditProductDialog project={project} open onClose={() => setEditing(false)} />}
                 </>
               )}
             {/* On the Overview, not in the page header (R8c-3): the header

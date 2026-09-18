@@ -45,9 +45,9 @@ from server.pm.explain import triage_guidance
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
 from server.pm.issue_disposition import IssueDecision
-from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind
+from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
-from server.pm.map_changes_ops import MapOp, MapOpError
+from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
@@ -151,6 +151,15 @@ class ProjectCreateBody(BaseModel):
     description: str | None = None
     portfolioTags: list[str] | None = None
     repos: list[RepoInput]
+
+
+class ProjectUpdateBody(BaseModel):
+    """Sparse patch: only the fields present are changed. `repo` repoints the
+    PRIMARY repo in place (rename-to-new-location, not add/remove-repos)."""
+
+    name: str | None = None
+    slug: str | None = None
+    repo: str | None = None
 
 
 class EdgeCreateBody(BaseModel):
@@ -362,6 +371,104 @@ async def get_project(
     db=Depends(get_db),
 ) -> dict:
     p = await _load_project(db, slug)
+    return await _project_detail_dict(db, p)
+
+
+@router.patch("/projects/{slug}")
+async def update_project(
+    slug: str,
+    body: ProjectUpdateBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Rename a product's name/slug and/or repoint its primary repo.
+
+    Slug and primary-repo changes are refused while a map-changes branch/PR is
+    open: both `map_changes_branch_name` and the service's primary-repo target
+    are derived from the CURRENT slug/repo at use time, so either change would
+    silently orphan the open branch. Merge or abandon it first, then retry.
+    Renaming touches no foreign key (every FK is on `Project.id`, never slug),
+    but a repo repoint resets that repo's sync state — it is now a different
+    upstream, so history is re-mirrored from scratch rather than kept stale.
+    """
+    name = body.name.strip() if body.name is not None else None
+    if body.name is not None and not name:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_name", "message": "name cannot be empty"})
+    new_slug = body.slug.strip() if body.slug is not None else None
+    if new_slug is not None and not SLUG_RE.match(new_slug):
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_slug",
+            "message": "slug must be lowercase letters, digits and hyphens (branch-safe)"})
+    repo = body.repo.strip() if body.repo is not None else None
+    if repo is not None:
+        _validate_repo(repo)
+
+    # Ownership preflight must run, and the registration lock must be taken,
+    # before any other query on this request's session (server/pm/repo_project.py
+    # `lock_repo_registration` docstring) — so this happens before `_load_project`.
+    snapshot = None
+    if repo is not None:
+        snapshot = await gather_repo_ownership_snapshot([repo])
+        await lock_repo_registration(db)
+
+    p = await _load_project(db, slug)
+    primary = (await db.execute(
+        select(ProjectRepo).where(
+            ProjectRepo.project_id == p.id, ProjectRepo.is_primary.is_(True))
+    )).scalar_one_or_none()
+
+    slug_changing = new_slug is not None and new_slug != p.slug
+    repo_changing = repo is not None and (
+        primary is None or (primary.repo or "").casefold() != repo.casefold())
+    if slug_changing or repo_changing:
+        open_pointer = await open_pointer_row(db, p.id)
+        if open_pointer is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "open_map_changes",
+                "message": "Merge or abandon the open map-changes PR before renaming "
+                           "the slug or repointing the primary repo."})
+
+    changes: dict = {}
+    if name is not None and name != p.name:
+        changes["name"] = {"from": p.name, "to": name}
+        p.name = name
+    if slug_changing:
+        existing = (await db.execute(
+            select(Project).where(Project.slug == new_slug, Project.id != p.id)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "slug_conflict", "message": f"Project '{new_slug}' already exists"})
+        changes["slug"] = {"from": p.slug, "to": new_slug}
+        p.slug = new_slug
+    if repo is not None and repo_changing:
+        assert snapshot is not None  # gathered above whenever `repo is not None`
+        try:
+            canonical = await require_unregistered_repos(db, [repo], snapshot=snapshot)
+        except OwnershipConflict as exc:
+            raise HTTPException(status_code=409, detail={
+                "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
+            }) from exc
+        new_repo = canonical[repo]
+        changes["repo"] = {"from": primary.repo if primary else None, "to": new_repo}
+        if primary is None:
+            db.add(ProjectRepo(project_id=p.id, repo=new_repo, is_primary=True))
+        else:
+            primary.repo = new_repo
+            # A different upstream: nothing already mirrored belongs to it.
+            primary.backfill_cursor = None
+            primary.backfill_phase = "issues"
+            primary.backfill_done = False
+            primary.watermark = None
+            primary.last_synced_at = None
+
+    if not changes:
+        return await _project_detail_dict(db, p)
+
+    await db.flush()
+    await record_audit(db=db, type="pm.project.update", identity=identity,
+                       detail={"slug": p.slug, "changes": changes})
     return await _project_detail_dict(db, p)
 
 
