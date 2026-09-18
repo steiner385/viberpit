@@ -9,10 +9,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.sql import Select
 
-from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem
+from server.db.models import (
+    DECISION_PROPOSED_CAUSE, DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem)
 from server.pm.refs import split_ref
 from server.sessions.model_catalog import TIER_ORDER, model_tier, tier_rank
 
@@ -60,12 +61,37 @@ def dispatch_kind_for_hold(hold_kind: str | None) -> str:
 
 def _implement_only():
     """THE ``implement``-dispatch predicate: NULL predates the ``dispatch_kind``
-    column and reads as ``implement`` (spec 2026-09-18 §3/§5). Shared by
-    ``bounces_stmt`` and ``last_attempt_model`` so an ``investigate`` dispatch
-    (series item 4b, never opens a PR by design) cannot count as a bounce in one
-    reader and as an attempt to climb the ladder from in the other."""
+    column and reads as ``implement`` (spec 2026-09-18 §3/§5). An ``investigate``
+    dispatch (series item 4b) never opens a PR by design. Folded into
+    :func:`_counts_as_attempt` below, which is what readers use."""
     return or_(DispatchOutcome.dispatch_kind.is_(None),
                DispatchOutcome.dispatch_kind == "implement")
+
+
+def _counts_as_attempt():
+    """THE "this row is evidence about implementing the issue" predicate — shared by
+    every reader that counts attempts (``bounces_stmt``, ``last_attempt_model``,
+    ``prior_attempts``, ``outcome_stats``), so a row cannot be a bounce in one and
+    an invisible non-attempt in another.
+
+    Two kinds of row are excluded, for the same reason in different columns:
+
+    - an ``investigate`` dispatch (by KIND): it is not trying to open a PR;
+    - a ``decision_proposed`` row (by CAUSE, spec 2026-09-18 §6, review R1 F4): the
+      session stopped to ask the owner a product question and parked the item on a
+      ``decision`` hold. Counting it would charge the issue a bounce it did not
+      earn — feeding the queue's ``needs_spec`` skip and the roadmap chip once the
+      decision is accepted, so an item decided twice could be given up on for
+      asking — and would spend a rung of the model ladder, since
+      ``last_attempt_model`` would climb from the tier that merely asked.
+
+    ``cause`` is nullable, and SQL's ``!=`` is not: ``cause != '…'`` is NULL (i.e.
+    not true) for every row with no cause at all, which is nearly all of them. The
+    IS NULL leg is what keeps those rows counted.
+    """
+    return and_(_implement_only(),
+                or_(DispatchOutcome.cause.is_(None),
+                    DispatchOutcome.cause != DECISION_PROPOSED_CAUSE))
 
 
 def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
@@ -73,14 +99,14 @@ def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
     ``(target_ref, fingerprint)`` pairs. Callers execute it in their own
     session (sync or async) and hand the rows to ``rows_to_bounces``.
 
-    An ``investigate`` dispatch (series item 4b) never opens a PR by design, so it
-    must never count as a bounce; NULL predates the column and reads as
-    ``implement`` (spec 2026-09-18 §3/§5)."""
+    Only rows that ``_counts_as_attempt`` admits: an ``investigate`` dispatch never
+    opens a PR by design and a ``decision_proposed`` one stopped to ask the owner a
+    question, so neither is a bounce (spec 2026-09-18 §3/§5/§6)."""
     wanted = list(pairs)
     return (select(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint,
                    func.count(DispatchOutcome.id))
             .where(DispatchOutcome.outcome.in_(FINALISED_BOUNCE_OUTCOMES),
-                   _implement_only(),
+                   _counts_as_attempt(),
                    tuple_(DispatchOutcome.target_ref,
                           DispatchOutcome.body_fingerprint).in_(wanted))
             .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))
@@ -174,10 +200,11 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
     and so are ``merged`` rows whose ``first_pass_merge`` is NULL: the merge
     happened but nothing knows whether it was first pass, and counting it as an
     outcome with no first pass would read a tier that DID merge as one that cannot
-    do the work — and so are ``investigate`` dispatches (``_implement_only()``,
-    the same predicate ``bounces_stmt`` / ``last_attempt_model`` / ``prior_attempts``
-    apply): one never opens a PR by design, so every one of them would land as a
-    first-pass-less outcome at its tier and drag the capability floor down.
+    do the work — and so is every row ``_counts_as_attempt()`` excludes (the same
+    predicate ``bounces_stmt`` / ``last_attempt_model`` / ``prior_attempts`` apply):
+    an ``investigate`` dispatch never opens a PR by design and a
+    ``decision_proposed`` one asked the owner a question instead of trying, so each
+    would land as a first-pass-less outcome at its tier and drag the floor down.
     Emitted one entry per tier present, in ``TIER_ORDER``.
     """
     refs = [f"{repo}#{number}" for repo, number in (await db.execute(
@@ -192,7 +219,7 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
             DispatchOutcome.project_id == project_id,
             DispatchOutcome.target_ref.in_(refs),
             DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
-            _implement_only()))).all()
+            _counts_as_attempt()))).all()
     counts: dict[str, list[int]] = {}
     for model, first_pass, outcome in rows:
         tier = model_tier(model)
@@ -321,12 +348,14 @@ def next_rung(previous_model: str | None, *, floor: str | None, default_model: s
 async def last_attempt_model(db, target_ref: str) -> str | None:
     """The model the newest finalised implement dispatch for *target_ref* ran on
     (the ladder climbs from here). ``superseded`` and ``running`` rows carry no
-    verdict and are skipped; investigate rows are not attempts."""
+    verdict and are skipped; ``_counts_as_attempt`` drops the rows that were not an
+    attempt at all (investigate dispatches, and a session that proposed a decision —
+    the ladder must not climb from a tier that merely asked a question)."""
     row = (await db.execute(
         select(DispatchOutcome.model).where(
             DispatchOutcome.target_ref == target_ref,
             DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
-            _implement_only())
+            _counts_as_attempt())
         .order_by(DispatchOutcome.ended_at.desc().nullslast(), DispatchOutcome.created_at.desc())
         .limit(1))).first()
     return row[0] if row else None
@@ -338,7 +367,7 @@ async def prior_attempts(db, target_ref: str) -> int:
     for *target_ref*. Every bounce now deletes the runner's claim row (the
     ladder's hold, not the claim, carries the item forward), so the claim can no
     longer count its own attempts — a fresh claim reads this instead. Mirrors
-    ``last_attempt_model``'s filter (``_implement_only()`` + excludes
+    ``last_attempt_model``'s filter (``_counts_as_attempt()`` + excludes
     ``UNFINISHED_OUTCOMES``) so the two readers can never disagree about what
     counts as a past attempt. 0-based: an issue dispatched for the first time
     has 0 prior attempts, matching today's ``attempt_no`` semantics."""
@@ -346,4 +375,4 @@ async def prior_attempts(db, target_ref: str) -> int:
         select(func.count()).select_from(DispatchOutcome).where(
             DispatchOutcome.target_ref == target_ref,
             DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
-            _implement_only()))).scalar_one())
+            _counts_as_attempt()))).scalar_one())

@@ -229,3 +229,51 @@ async def test_prior_attempts_counts_the_same_rows_last_attempt_model_reads(tmp_
     async with db_session() as db:
         assert await prior_attempts(db, "o/r#1") == 2
         assert await prior_attempts(db, "o/r#2") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_decision_proposal_is_not_a_bounce_and_not_an_attempt(tmp_path):
+    """Spec 2026-09-18 §6 / review R1 F4: a dispatch that stopped to ask the owner a
+    product question and parked the item on a ``decision`` hold neither failed nor
+    used up a rung. All three ladder/queue readers go through the ONE
+    ``_counts_as_attempt`` predicate, so the row is invisible to each of them —
+    otherwise an item decided twice could be given up on for asking, and the next
+    dispatch would climb from the tier that merely asked."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.db.models import DECISION_PROPOSED_CAUSE
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'decision_rows.db'}"
+    await init_db(db_url=db_url)
+    # Relative to now, never an absolute date literal (spec §11).
+    base = datetime.now(timezone.utc) - timedelta(days=1)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", cause="session ended without a mergeable PR",
+                               ended_at=base))
+        # The proposal: newer, same ref, same fingerprint — and not an attempt.
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="opus", cause=DECISION_PROPOSED_CAUSE,
+                               ended_at=base + timedelta(hours=1)))
+    async with db_session() as db:
+        rows = (await db.execute(bounces_stmt([("o/r#1", "fp")]))).all()
+        assert rows_to_bounces(rows, [("o/r#1", "fp")]) == {"o/r#1": 1}
+        assert await last_attempt_model(db, "o/r#1") == "sonnet"
+        assert await prior_attempts(db, "o/r#1") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_null_cause_row_still_counts(tmp_path):
+    """The NULL leg of the predicate, which is the whole population of rows written
+    before causes were recorded: SQL's ``cause != '…'`` is NULL — not true — for
+    every one of them, so a predicate without the ``IS NULL`` branch would silently
+    stop counting the entire history."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'null_cause.db'}"
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", cause=None))
+    async with db_session() as db:
+        rows = (await db.execute(bounces_stmt([("o/r#1", "fp")]))).all()
+        assert rows_to_bounces(rows, [("o/r#1", "fp")]) == {"o/r#1": 1}
+        assert await last_attempt_model(db, "o/r#1") == "sonnet"
+        assert await prior_attempts(db, "o/r#1") == 1

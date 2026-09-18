@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
+from server.db.models import DECISION_PROPOSED_CAUSE
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
@@ -632,14 +633,6 @@ async def _stub_session_resolution(_session_id: "str | None") -> "str | None":
     # Unwired seam: no session resolution is readable, so no ending is ever settled
     # as a decision proposal and every no-PR ending keeps the pre-§6 ladder path.
     return None
-
-
-#: The ``DispatchOutcome.cause`` for a dispatch whose session ended on
-#: ``mark_no_pr("awaiting-decision")`` — and the ``kind`` of the event that records
-#: it, so the activity feed and the row cannot be named differently. Documented
-#: beside ``DISPATCH_OUTCOMES`` in ``server/db/models.py``: it is a CAUSE on the
-#: existing ``no_pr`` outcome, never a new outcome value.
-DECISION_PROPOSED_CAUSE = "decision_proposed"
 
 
 async def _stub_release_investigation_hold(_target: str) -> bool:
