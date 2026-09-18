@@ -746,7 +746,11 @@ class BacklogRunnerLoop:
             try:
                 self._policies = await self._read_policies()
             except Exception:
-                policies_known = bool(self._policies)
+                # PRODUCT entries only: a snapshot also carries the no-product
+                # default (``NO_PRODUCT_POLICY_KEY``), and counting that as "we
+                # have policies" would run refill — including the ~10-minute
+                # grouping refresh — on an effectively empty snapshot.
+                policies_known = any(slug != NO_PRODUCT_POLICY_KEY for slug in self._policies)
                 log.warning("backlog_runner.policy_read_failed (refill %s)",
                             "on the previous snapshot" if policies_known else "skipped",
                             exc_info=True)

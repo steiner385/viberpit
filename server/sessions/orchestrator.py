@@ -5826,7 +5826,9 @@ class SessionOrchestrator:
             # it gets the SAME approval-gate clamp the sweep's snapshot gets —
             # otherwise the two halves of one rule could answer differently about
             # where the ladder ends (and the spawn's half is the one that parks).
-            policies = await self._backlog_clamp_ladder_tops(db, policies)
+            # Best-effort here and NOT on the loader seam: this read has no
+            # skip-refill escape, so it degrades to the last verdicts instead.
+            policies = await self._backlog_clamp_ladder_tops(db, policies, best_effort=True)
         # Cached for the other seams in this same tick (selection's weights/caps/
         # order, the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
@@ -5966,16 +5968,20 @@ class SessionOrchestrator:
         caller and it has the context to fail safely — keep the previous snapshot,
         else skip refill this tick — whereas ``{}`` here is indistinguishable from
         "no product has ever opted in", which would silently drop every product's
-        dispatch, cap and model to a guess."""
+        dispatch, cap and model to a guess. A failed approval-gate verdict raises for
+        the same reason (``best_effort=False``): an UNCLAMPED snapshot is likewise
+        indistinguishable from a good one, and it is the direction that parks."""
         from server.automations.product_policy import load_policies
         try:
             async with db_session() as db:
-                return await self._backlog_clamp_ladder_tops(db, await load_policies(db))
+                return await self._backlog_clamp_ladder_tops(
+                    db, await load_policies(db), best_effort=False)
         except Exception:
             log.warning("orchestrator._backlog_load_policies_failed", exc_info=True)
             raise
 
-    async def _backlog_clamp_ladder_tops(self, db, policies: dict[str, dict]) -> dict[str, dict]:
+    async def _backlog_clamp_ladder_tops(self, db, policies: dict[str, dict], *,
+                                         best_effort: bool) -> dict[str, dict]:
         """THE ladder-top clamp for a policy snapshot (spec 2026-09-18 §4, decision 2
         amendment): every product's ``ladder_top`` lowered to the strongest tier the
         model-approval gate ALLOWS, plus the same treatment for the no-product default
@@ -5993,20 +5999,42 @@ class SessionOrchestrator:
         read back through ``gated_ladder_top`` so a hand-off at a clamped top can name
         the gate instead of silently stopping below the operator's setting.
 
-        Each tier is judged ONCE per load, not once per product. Best-effort: a failed
-        verdict leaves the snapshot unclamped and logs — a parked dispatch is visible
-        and recoverable, whereas raising here would stall the whole tick."""
+        Each tier is judged ONCE per load, not once per product, with
+        ``account=None``: a stricter per-account ``modelApprovalAction`` in the ledger
+        can still park a tier this clamp allowed, because the account is not picked
+        until the spawn (a re-check there is a follow-up, review r1 F2).
+
+        The two callers want OPPOSITE handling of a failed verdict read, so
+        *best_effort* is required rather than defaulted (review r1 F4):
+
+        * the loader seam passes ``False`` — it documents that a failed read RAISES,
+          and the loop then keeps its previous (already clamped) snapshot or skips
+          refill. An UNCLAMPED snapshot is the unsafe direction for this feature, and
+          it is the one answer the loop cannot tell apart from a good one.
+        * the queue read passes ``True`` — it has no skip-refill escape, so it falls
+          back to the verdicts of the last successful clamp (stale gate, current
+          policies) and only leaves the snapshot unclamped when this process has
+          never had a verdict at all."""
         from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
         from server.pm.outcomes import clamp_ladder_top
         from server.sessions.model_catalog import TIER_ORDER
         from server.sessions.model_policy import resolve_model_policy
         snapshot = {**policies, NO_PRODUCT_POLICY_KEY: effective_policy(None)}
+        verdicts: dict[str, str] | None
         try:
             verdicts = {tier: await resolve_model_policy(db, model=tier, account=None)
                         for tier in TIER_ORDER}
         except Exception:
-            log.warning("backlog_runner.ladder_top_clamp_failed", exc_info=True)
-            return snapshot
+            if not best_effort:
+                raise
+            verdicts = getattr(self, "_backlog_ladder_verdicts", None)
+            log.warning("backlog_runner.ladder_top_clamp_failed (%s)",
+                        "reusing the last verdicts" if verdicts else "snapshot left unclamped",
+                        exc_info=True)
+            if verdicts is None:
+                return snapshot
+        else:
+            self._backlog_ladder_verdicts = verdicts
 
         def _allowed(tier: str) -> bool:
             return verdicts.get(tier) == "allow"

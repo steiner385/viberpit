@@ -16,6 +16,8 @@ from server.tests.test_backlog_runner_loop import (
 
 import asyncio
 
+import pytest
+
 from server.db import db_session, init_db
 from server.db.models import (AuditEvent, AutomationEvent, GhProject, GhProjectItem,
                               Project, ProjectRepo, WorkItem)
@@ -1066,5 +1068,63 @@ def test_an_ungated_ladder_top_is_left_where_the_operator_set_it(tmp_path):
         policies = await _orch_with_ctx()._backlog_load_policies()
         assert policies["alpha"]["ladder_top"] == "fable"
         assert policies["alpha"]["ladder_top_configured"] == "fable"
+
+    asyncio.run(run())
+
+
+def test_a_failed_verdict_read_raises_on_the_loader_and_degrades_on_the_queue_read(
+        tmp_path, monkeypatch):
+    """Review r1 F4: the two snapshot reads want OPPOSITE handling. The loader
+    documents that a failed read raises (the loop then keeps its previous clamped
+    snapshot or skips refill); the queue read has no such escape, so it degrades to
+    the last successful verdicts rather than handing the spawn an UNCLAMPED top."""
+    from server.sessions import model_policy as mp
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp_fail.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+        orch = _orch_with_ctx()
+        assert (await orch._backlog_load_policies())["alpha"]["ladder_top"] == "opus"
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("verdict read down (injected)")
+        monkeypatch.setattr(mp, "resolve_model_policy", boom)
+
+        with pytest.raises(RuntimeError):
+            await orch._backlog_load_policies()
+
+        await orch._backlog_query_queue(_config())
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "opus"
+        assert orch._backlog_last_policies["alpha"]["ladder_top_configured"] == "fable"
+
+    asyncio.run(run())
+
+
+def test_a_verdict_read_that_never_succeeded_leaves_the_queue_snapshot_unclamped(
+        tmp_path, monkeypatch):
+    """The one case the queue read cannot improve on: no verdict has ever been
+    read in this process, so there is nothing to degrade to. The snapshot stays as
+    the operator configured it (and carries no annotation, so no hand-off claims a
+    gate that was never observed) — the tick still runs."""
+    from server.sessions import model_policy as mp
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp_cold.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("verdict read down (injected)")
+        monkeypatch.setattr(mp, "resolve_model_policy", boom)
+
+        orch = _orch_with_ctx()
+        await orch._backlog_query_queue(_config())
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "fable"
+        assert "ladder_top_configured" not in orch._backlog_last_policies["alpha"]
 
     asyncio.run(run())

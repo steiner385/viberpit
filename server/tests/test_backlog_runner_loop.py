@@ -1490,6 +1490,48 @@ def test_a_failed_policy_read_falls_back_to_the_last_good_snapshot(tmp_path):
     asyncio.run(run())
 
 
+def test_a_snapshot_of_only_the_no_product_default_is_not_a_known_snapshot(tmp_path):
+    """Review r1 F3: every snapshot carries the no-product default
+    (``NO_PRODUCT_POLICY_KEY``), so "do we have policies?" must count PRODUCT
+    entries. A read failure after a successful read that found no product still
+    skips refill — running it (including the grouping refresh) on an effectively
+    empty snapshot is the guessing this branch exists to prevent."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'policydefaultonly.db'}"
+
+    async def run():
+        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
+        await init_db(db_url=db_url)
+        await _seed_row()
+        default_only = {NO_PRODUCT_POLICY_KEY: effective_policy(None)}  # no product opted in
+        fail = {"now": False}
+
+        async def maybe_boom():
+            if fail["now"]:
+                raise RuntimeError("policy read down (injected)")
+            return dict(default_only)
+
+        loop, rec, ctx = build_loop(candidates=[batch("r#1", product="p1")],
+                                    policies=default_only)
+        loop._read_policies = maybe_boom
+        selections: list[dict] = []
+
+        async def counting_select(config):
+            selections.append(config)
+            return batch("r#1", product="p1")
+        loop._select_batch = counting_select
+
+        await loop.tick()        # good read: refill RAN (and refused — no product is on)
+        assert rec.spawns == []
+        after_good = len(selections)
+        assert after_good > 0     # the snapshot WAS known: the plan seam was consulted
+
+        fail["now"] = True
+        await loop.tick()        # failed read → refill SKIPPED, not retried blind
+        assert len(selections) == after_good and rec.spawns == []
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # max_in_flight is a PRODUCT ceiling, enforced in refill                       #
 # --------------------------------------------------------------------------- #
