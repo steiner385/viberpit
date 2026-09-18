@@ -1804,6 +1804,13 @@ async def release_work_item_hold(
 # --------------------------------------------------------------------------- #
 # Decision proposals (spec 2026-09-18 §6)                                      #
 # --------------------------------------------------------------------------- #
+#: How long the accept route waits for the issue comment before giving up on it.
+#: ``gh issue comment`` is the FIRST call of that seam inside a request handler
+#: (``announce_claim`` / ``announce_needs_human`` run in the background runner) and
+#: ``gitrepos._run_gh`` bounds nothing, so a stalled token mint would otherwise hold
+#: the request and a threadpool worker open indefinitely — for work that is purely
+#: decorative and happens after the decision is already committed.
+DECISION_COMMENT_TIMEOUT_S = 15.0
 # Thin wrappers over server/pm/decisions.py, which is THE writer, accepter and
 # rejecter (constitution VI): the `propose_decision` session tool and the
 # assistant's `resolve_decision` reach the same functions, so no validation, hold
@@ -1856,11 +1863,23 @@ async def _owning_slug(db, wi: WorkItem | None) -> str | None:
 
 
 async def _load_decision(db, proposal_id: str) -> DecisionProposal:
-    """The proposal or a 404. Whether it is still PENDING is not asked here: the
-    service module owns that rule and raises ``DecisionConflict``, which every
-    route below maps to 409."""
+    """The proposal or a 404, re-read under a row lock.
+
+    Whether it is still PENDING is not asked here: the service module owns that
+    rule and raises ``DecisionConflict``, which every route below maps to 409.
+
+    ``with_for_update()`` is what makes that check mean anything, exactly as in the
+    classification twin (``pending_proposal_stmt``, server/pm/triage_accept.py):
+    reading ``status == "pending"`` and then writing is a read-then-write race, and
+    under Postgres READ COMMITTED two in-flight resolutions both read "pending" and
+    both pass ``decisions._require_pending``. Two accepts would then write two
+    ``pm.decision.accept`` rows and post two issue comments naming different
+    options, with the later ``chosen_key`` silently winning; an accept interleaved
+    with a reject would leave the proposal ``accepted`` while the reject re-parks
+    the item ``owner_action`` — a decision taken and an issue that never moves. The
+    lock makes the loser re-read the row as resolved and answer 409."""
     prop = (await db.execute(select(DecisionProposal).where(
-        DecisionProposal.id == proposal_id))).scalar_one_or_none()
+        DecisionProposal.id == proposal_id).with_for_update())).scalar_one_or_none()
     if prop is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
     return prop
@@ -2038,11 +2057,16 @@ async def accept_decision(
     await db.commit()
     if ref:
         try:
-            await asyncio.to_thread(
-                backlog_github.announce_decision, ref,
-                label=str(chosen.get("label") or out["chosenKey"] or ""),
-                detail=chosen.get("detail"), chosen_by=actor)
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    backlog_github.announce_decision, ref,
+                    label=str(chosen.get("label") or out["chosenKey"] or ""),
+                    detail=chosen.get("detail"), chosen_by=actor),
+                timeout=DECISION_COMMENT_TIMEOUT_S)
         except Exception:
+            # Including the timeout (``asyncio.TimeoutError`` IS the builtin
+            # ``TimeoutError``). ``CancelledError`` is a ``BaseException`` and is
+            # deliberately NOT caught: a shutdown must still unwind through here.
             log.warning("pm.decision.accept_comment_failed proposal=%s ref=%s",
                         proposal_id, ref, exc_info=True)
     return out

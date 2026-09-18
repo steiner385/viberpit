@@ -128,6 +128,34 @@ def test_a_failed_github_comment_does_not_fail_the_accept(monkeypatch):
         assert _hold_of(c, wid)[0] is None
 
 
+def test_a_stalled_issue_comment_does_not_hold_the_accept_open(monkeypatch):
+    """F4: `gh issue comment` is the first use of that seam inside a request
+    handler and `gitrepos._run_gh` bounds nothing, so the wait is bounded here.
+    The decision is already committed by then — a slow comment must not become a
+    hanging request."""
+    import threading
+
+    released = threading.Event()
+
+    def _hang(ref, *, label, detail, chosen_by):
+        released.wait(30)   # freed by the test once the response is in hand
+
+    monkeypatch.setattr("server.automations.backlog_github.announce_decision", _hang)
+    monkeypatch.setattr("server.api.pm.DECISION_COMMENT_TIMEOUT_S", 0.05)
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pid = _propose(c, wid).json()["id"]
+        try:
+            acc = c.post(f"/api/pm/decisions/{pid}/accept",
+                         json={"chosen_key": "pg"}, headers=IDENTITY_HEADERS)
+            assert acc.status_code == 200, acc.text
+            assert acc.json()["chosenKey"] == "pg"
+            assert _hold_of(c, wid)[0] is None   # the decision itself landed
+        finally:
+            released.set()
+
+
 def test_second_proposal_on_the_same_item_is_a_conflict(monkeypatch):
     _stub_announce(monkeypatch)
     with _client() as c:
@@ -281,6 +309,23 @@ def test_an_unattributed_loopback_caller_may_not_resolve(monkeypatch):
         r = c.post(f"/api/pm/decisions/{pid}/accept", json={"chosen_key": "pg"})
         assert r.status_code == 403 and r.json()["detail"]["error"] == "decision_not_permitted"
         assert _hold_of(c, wid)[0] == "decision"
+
+
+def test_a_reject_after_an_accept_is_refused_and_leaves_the_item_moving(monkeypatch):
+    """F3's practical shape: the loser of an accept/reject race must re-read the
+    row as resolved and answer 409. Were it not refused, the proposal would read
+    `accepted` while the reject re-parked the item `owner_action` — a decision
+    taken and an issue that never moves."""
+    _stub_announce(monkeypatch)
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pid = _propose(c, wid).json()["id"]
+        assert c.post(f"/api/pm/decisions/{pid}/accept", json={"chosen_key": "pg"},
+                      headers=IDENTITY_HEADERS).status_code == 200
+        late = c.post(f"/api/pm/decisions/{pid}/reject", headers=IDENTITY_HEADERS)
+        assert late.status_code == 409 and "already accepted" in late.json()["detail"]["message"]
+        assert _hold_of(c, wid)[0] is None
 
 
 def test_the_routes_audit_the_decision_and_the_hold(monkeypatch):

@@ -116,6 +116,16 @@ def test_decision_reject_names_the_hold_reason_it_actually_writes():
     assert r["then"] == [] and r["when"] == "now"
 
 
+def test_the_re_hold_reversal_is_one_sentence_in_both_cards():
+    """Accepting a decision and tapping Retry on an owner-action hold promise the
+    same thing, so they say it with the same string — not two literals."""
+    from server.pm.explain import REHOLD_REVERSAL, decision_guidance, hold_guidance
+    policy = effective_policy(None)
+    assert decision_guidance(policy=policy)["accept"]["reversal"] == REHOLD_REVERSAL
+    assert hold_guidance(hold_kind="owner_action", policy=policy)["retry"]["reversal"] \
+        == REHOLD_REVERSAL
+
+
 def test_decision_guidance_shares_the_dispatch_sentence_with_triage():
     """No second consequence builder: the machine half of both cards is the one
     ``dispatch_sentence``."""
