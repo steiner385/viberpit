@@ -114,8 +114,9 @@ export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
 
 /** Why an issue is held (server `holdKind`, spec 2026-09-18 §3). Neutral on
- *  purpose: the evidence and stronger-model exits and the decision inbox are
- *  later series items, and a label must never promise them before they exist. */
+ *  purpose: evidence dispatch has landed (item 4b), but the stronger-model exit
+ *  and the decision inbox are still later series items, and a label must never
+ *  promise those before they exist. */
 export const HOLD_LABEL: Record<string, string> = {
   owner_action: 'Held for the owner',
   decision: 'Awaiting your decision',

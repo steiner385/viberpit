@@ -358,7 +358,8 @@ PR linkage, never on labels alone.
   `server/sessions/orchestrator.py:_backlog_attach_families` stamps `"family"` onto evidence
   candidates only (an implement candidate has no signature row to derive one from) and fails OPEN:
   a lookup that blows up leaves every evidence candidate familyless, which groups each one alone —
-  the pre-family behaviour, never a lost tick.
+  the pre-family behaviour, never a lost tick. Sibling reports are bundled only up to
+  `max_issues_per_pr`, which defaults to 1 — raise it to investigate a family in one session.
 
   **Still classified.** An `evidence` (or `stronger_model`) hold parks the WORK, not the FILING:
   `server/sessions/orchestrator.py:_classifiable_hold_clause` excludes only `HELD_KINDS`
@@ -367,6 +368,9 @@ PR linkage, never on labels alone.
   permanently unclassified.
 
   **Limits.**
+  - Sibling reports are bundled only up to `max_issues_per_pr`, which defaults to 1 — raise it to
+    investigate a family in one session. At the default, every family bucket is size 1 and each
+    auto-filed report is investigated alone.
   - The convert-to-a-fix exit is Claude-only in practice: the Codex driver/translator latch no
     resolution and no note (`pr_resolution_note` stays `NULL` for a Codex session), so a
     converting Codex investigation collapses to the hand-off exit instead — its findings are
