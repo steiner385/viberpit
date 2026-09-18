@@ -10,11 +10,15 @@ cannot leave this module testing a different app (constitution VI).
 """
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 import pytest
 
 from server.tests.pm_ownership_fixtures import identity_repositories
 from server.tests.test_pm_api import (
     IDENTITY_HEADERS,
+    LAN_OPEN,
     _client,
     _register,
     _seed_one_pending,
@@ -228,6 +232,55 @@ def test_reject_hands_the_item_back_to_the_person(monkeypatch):
         assert twice.status_code == 409
         assert c.post("/api/pm/decisions/nope/reject",
                       headers=IDENTITY_HEADERS).status_code == 404
+
+
+def test_an_agent_may_propose_but_may_not_resolve(monkeypatch):
+    """Spec §6: a session (or the loopback caller a Codex session reaches these
+    routes as) parks the question and stops. Answering it is a person's — the one
+    thing §6 exists to guarantee."""
+    calls = _stub_announce(monkeypatch)
+    session_headers = {"Tailscale-User-Login": "session:s1"}
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        # proposing is open to every actor class
+        proposed = c.post(f"/api/pm/work-items/{wid}/decisions", json={
+            "options": OPTIONS, "recommended_key": "pg", "rationale": "two writers"},
+            headers=session_headers)
+        assert proposed.status_code == 201, proposed.text
+        pid = proposed.json()["id"]
+        assert proposed.json()["proposedBy"] == "session:s1"
+
+        for path in (f"/api/pm/decisions/{pid}/accept", f"/api/pm/decisions/{pid}/reject"):
+            r = c.post(path, json={"chosen_key": "pg"}, headers=session_headers)
+            assert r.status_code == 403, f"{path} answered {r.status_code}: {r.text}"
+            assert r.json()["detail"]["error"] == "decision_not_permitted"
+            assert r.json()["detail"]["message"] == (
+                "only a person (or the assistant on their behalf) "
+                "may resolve a decision")
+        # refused before anything moved, and with no comment posted
+        assert _hold_of(c, wid)[0] == "decision" and calls == []
+        # an unknown proposal id answers 403 too: the gate runs before the load, so
+        # an agent cannot probe which ids exist
+        assert c.post("/api/pm/decisions/nope/accept", json={"chosen_key": "pg"},
+                      headers=session_headers).status_code == 403
+        # the person can still take it
+        assert c.post(f"/api/pm/decisions/{pid}/accept", json={"chosen_key": "pg"},
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+
+def test_an_unattributed_loopback_caller_may_not_resolve(monkeypatch):
+    """The LAN-open edge is the concrete hole: `lan@local` is agent class, and it
+    is how spec §6 has Codex sessions call these routes."""
+    _stub_announce(monkeypatch)
+    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pid = _propose(c, wid).json()["id"]
+        r = c.post(f"/api/pm/decisions/{pid}/accept", json={"chosen_key": "pg"})
+        assert r.status_code == 403 and r.json()["detail"]["error"] == "decision_not_permitted"
+        assert _hold_of(c, wid)[0] == "decision"
 
 
 def test_the_routes_audit_the_decision_and_the_hold(monkeypatch):

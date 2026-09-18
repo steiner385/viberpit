@@ -1866,6 +1866,19 @@ async def _load_decision(db, proposal_id: str) -> DecisionProposal:
     return prop
 
 
+def _require_may_resolve(actor: str) -> None:
+    """403 unless *actor* may take a decision. The predicate itself lives in
+    ``decisions.may_resolve`` (ONE definition, shared with the assistant tool);
+    this is only its HTTP face, called by accept AND reject.
+
+    Checked BEFORE the proposal is loaded so an agent cannot use the 404/200 split
+    to probe which proposal ids exist."""
+    from server.pm.decisions import RESOLVE_DENIED_MESSAGE, may_resolve
+    if not may_resolve(actor):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "error": "decision_not_permitted", "message": RESOLVE_DENIED_MESSAGE})
+
+
 def _decision_http_error(exc: Exception) -> HTTPException:
     """THE mapping of a ``DecisionError`` onto a status code, so the four routes
     cannot disagree: a state conflict (already pending, already resolved, a
@@ -1991,6 +2004,9 @@ async def accept_decision(
     """Take the decision (spec §6): record ``chosen_key`` and clear the item's
     ``decision`` hold — the ONE path that may — then say so on the issue.
 
+    A person's call, or the assistant's on their behalf (``decisions.may_resolve``);
+    anything else is 403. The proposer must not be able to answer its own question.
+
     The comment is posted AFTER the commit and can never fail the request. The
     accepted ROW is what the next implement run quotes
     (``decisions.accepted_text_for_refs``); the comment is only the GitHub-side
@@ -2003,8 +2019,9 @@ async def accept_decision(
     from server.automations import backlog_github
     from server.pm import decisions
     from server.pm.holds import actor_for_request
-    prop = await _load_decision(db, proposal_id)
     actor = actor_for_request(request)
+    _require_may_resolve(actor)
+    prop = await _load_decision(db, proposal_id)
     try:
         await decisions.accept(db, prop, chosen_key=body.chosen_key,
                                actor=actor, now=datetime.now(timezone.utc))
@@ -2041,12 +2058,17 @@ async def reject_decision(
     """Refuse the options (spec §6): the proposal is rejected and the item becomes
     the caller's ``owner_action`` park with ``DECISION_REJECT_REASON``. Nothing
     re-proposes on its own — Retry and Implement now are the ways back out, and
-    they are a person's to press."""
+    they are a person's to press.
+
+    Gated by ``decisions.may_resolve`` like accept: refusing the options is taking
+    the decision as much as choosing one of them is."""
     from server.pm import decisions
     from server.pm.holds import actor_for_request
+    actor = actor_for_request(request)
+    _require_may_resolve(actor)
     prop = await _load_decision(db, proposal_id)
     try:
-        await decisions.reject(db, prop, actor=actor_for_request(request),
+        await decisions.reject(db, prop, actor=actor,
                                now=datetime.now(timezone.utc))
     except decisions.DecisionError as e:
         raise _decision_http_error(e) from e

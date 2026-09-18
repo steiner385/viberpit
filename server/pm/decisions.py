@@ -72,6 +72,31 @@ class DecisionConflict(DecisionError):
     the request needs fixing, the world moved."""
 
 
+#: Why an agent's accept/reject is refused. One wording for both routes.
+RESOLVE_DENIED_MESSAGE = (
+    "only a person (or the assistant on their behalf) may resolve a decision")
+
+
+def may_resolve(actor: str) -> bool:
+    """May *actor* ACCEPT or REJECT a decision? (spec §6.)
+
+    A person, yes — the whole point of §6 is that the machine drafts options and
+    "the person picks one in the inbox". The assistant, yes: it acts on a person's
+    instruction at their keyboard, and its ``resolve_decision`` tool is allowlisted
+    deny-by-default. A ``session:`` actor, an unattributed ``lan@local`` loopback
+    caller (which is how spec §6 has Codex sessions reach these routes) and the
+    system actors, no — those are the machine answering the question it raised,
+    and ``decision`` is not agent-settable for exactly that reason (§8).
+
+    PROPOSING stays open to every class: parking an item on a question is what an
+    agent is supposed to do. Only taking the decision is gated. ONE predicate, used
+    by both routes and by the assistant tool — a second copy is how one of them
+    ends up admitting the proposer.
+    """
+    return (holds.actor_class(actor) == "person"
+            or actor.startswith(holds.ASSISTANT_PREFIX))
+
+
 def hold_reason(rationale: str) -> str:
     """THE ``decision`` hold reason for *rationale* — one formatter, because the
     proposal writer and anything that recognises such a hold must agree."""
@@ -183,7 +208,8 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
     proposal = DecisionProposal(
         work_item_id=wi.id, options=opts, recommended_key=recommended, rationale=text,
         status=STATUS_PENDING, proposed_by=actor,
-        session_id=actor.split(":", 1)[1] if actor.startswith("session:") else None,
+        session_id=(actor.split(":", 1)[1]
+                    if actor.startswith(holds.SESSION_PREFIX) else None),
         created_at=now)
     db.add(proposal)
     reason = hold_reason(text)

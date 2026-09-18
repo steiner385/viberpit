@@ -27,7 +27,12 @@ AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", "stronger_model"})
 #: (RUNNER_ACTOR / RECONCILER_ACTOR / SYSTEM_ACTORS are defined below, after
 #: ``set_reject_hold``, next to the release rule that is their main consumer.)
 SYSTEM_PREFIXES: tuple[str, ...] = ("automation:",)
-AGENT_PREFIXES: tuple[str, ...] = ("session:", "assistant:")
+#: The two agent prefixes, named because callers need to tell them APART as well as
+#: from a person: the assistant acts on a person's instruction at their keyboard,
+#: a session acts on its own (``server/pm/decisions.py:may_resolve``).
+SESSION_PREFIX = "session:"
+ASSISTANT_PREFIX = "assistant:"
+AGENT_PREFIXES: tuple[str, ...] = (SESSION_PREFIX, ASSISTANT_PREFIX)
 #: The synthetic identity handed to an unattributed loopback caller
 #: (server/auth/identity.py:OPEN_LAN_IDENTITY). Spelled here as a literal so this
 #: module stays free of the auth package.
@@ -453,7 +458,7 @@ def actor_for_request(request: object) -> str:
     state = getattr(request, "state", None)
     identity = str(getattr(state, "identity", "") or OPEN_LAN_ACTOR)
     if getattr(state, "via", None) == "assistant":
-        return f"assistant:{identity}"
+        return f"{ASSISTANT_PREFIX}{identity}"
     return identity
 
 

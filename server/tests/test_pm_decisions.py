@@ -338,3 +338,18 @@ async def test_pending_list_pairs_each_proposal_with_its_work_item(db):
     rows = await decisions.pending_list(db)
     assert [(p.id, w.id if w else None) for p, w in rows] == [
         (orphan.id, None), (pending.id, wi.id)]   # newest first
+
+
+def test_may_resolve_admits_a_person_and_the_assistant_only():
+    """Spec §6: the machine drafts, the PERSON picks. The assistant is the one
+    carve-out (it acts at a person's keyboard, and `resolve_decision` is
+    allowlisted deny-by-default); the proposer's own classes are refused — a
+    Codex session reaches these routes as `lan@local` over loopback, which is
+    exactly the actor that must not answer its own question."""
+    assert decisions.may_resolve("tony@example.com") is True
+    assert decisions.may_resolve("assistant:tony@example.com") is True
+    assert decisions.may_resolve("session:s1") is False
+    assert decisions.may_resolve("lan@local") is False
+    assert decisions.may_resolve("automation:backlog-runner") is False
+    from server.pm.holds import RUNNER_ACTOR
+    assert decisions.may_resolve(RUNNER_ACTOR) is False
