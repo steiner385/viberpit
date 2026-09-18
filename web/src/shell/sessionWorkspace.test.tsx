@@ -66,6 +66,7 @@ vi.mock('@/api/hooks', () => ({
   useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
   useUpdateSettings: vi.fn(() => NOOP),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
+  useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   // The Delivery list column's two reads (finish-line row 4). Gated off on
@@ -233,7 +234,7 @@ describe('the shell advances the open session when it leaves the list', () => {
     const app = renderApp({ path: '/sessions/s1', mode: 'desktop' })
 
     await user.click(await screen.findByRole('button', { name: /more actions for session two/i }))
-    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
+    await user.click(screen.getByRole('menuitem', { name: /^archive$/i }))
 
     expect(closeMutate).toHaveBeenCalledWith('s2')
     // `advanceFrom` bails unless the REMOVED session is the open one.

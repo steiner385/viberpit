@@ -110,7 +110,8 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
 _PER_SESSION: frozenset[str] = frozenset({
     "get_session", "send_prompt", "ensure_driver", "session_queue_move",
     "session_queue_cancel", "cancel_queued", "archive_session", "permanent_delete",
-    "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
+    "rename_session", "note_user_interaction", "set_autopilot_paused",
+    "set_auto_archive_opt_out", "interrupt",
     "stop_subagent",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",

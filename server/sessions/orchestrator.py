@@ -119,8 +119,8 @@ from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
-    ASSISTANT_KIND, SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
-    is_assistant, is_assistant_kind,
+    ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
+    RESUME_ELIGIBLE_STATUSES, is_assistant, is_assistant_kind,
 )
 from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
@@ -16675,6 +16675,23 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id)
                 .values(autopilot_paused=paused)
+            )
+
+    async def set_auto_archive_opt_out(self, session_id: str, opted_out: bool) -> None:
+        """Opt a session out of auto-archive (opted_out=True) or restore its eligibility.
+        Mirrors set_autopilot_paused: writes the SAME auto_archive_opt_out_reason column
+        used by dispatch-time opt-out and manual-unarchive (see AUTO_ARCHIVE_OPT_OUT_*
+        in types.py) — no parallel column, so the completion auto-archive gate needs no
+        new branch. Persists so the opt-out survives rehydrate."""
+        reason = AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE if opted_out else None
+        record = self._records.get(session_id)
+        if record is not None:
+            record.auto_archive_opt_out_reason = reason
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(auto_archive_opt_out_reason=reason)
             )
 
     def _install_driver(self, session_id: str, driver: AgentDriver) -> None:

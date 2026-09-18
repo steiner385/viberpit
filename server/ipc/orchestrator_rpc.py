@@ -312,7 +312,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
+        "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",

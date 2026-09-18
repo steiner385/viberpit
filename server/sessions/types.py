@@ -48,6 +48,11 @@ ASSISTANT_KIND = "assistant"
 # the completion auto-archive path, so a new reason never needs a new branch there.
 AUTO_ARCHIVE_OPT_OUT_CREATE = "create-opt-out"
 
+# Another sibling: a human flipped the mid-session "Disable auto-archive" toggle
+# (see SessionOrchestrator.set_auto_archive_opt_out / POST .../auto-archive) rather
+# than opting out at dispatch or by unarchiving. Same truthy gate, no new branch.
+AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE = "session-toggle"
+
 
 @dataclass
 class SessionRecord:

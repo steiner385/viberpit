@@ -119,6 +119,10 @@ class AutopilotPauseRequest(BaseModel):
     paused: bool
 
 
+class AutoArchiveOptOutRequest(BaseModel):
+    optedOut: bool
+
+
 class QueueMoveRequest(BaseModel):
     op: Literal["up", "down", "top", "position"]
     position: int | None = None
@@ -1270,6 +1274,28 @@ async def set_autopilot_paused(
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
     await orch.set_autopilot_paused(session_id, body.paused)
+    updated = await orch.get_session(session_id)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.post("/{session_id}/auto-archive")
+async def set_auto_archive_opt_out(
+    session_id: str,
+    body: AutoArchiveOptOutRequest,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Opt a session out of auto-archive (optedOut=true) or restore its eligibility.
+    Returns the updated session record, or 404 if unknown."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    await orch.set_auto_archive_opt_out(session_id, body.optedOut)
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))

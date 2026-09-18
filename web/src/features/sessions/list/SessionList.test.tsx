@@ -267,7 +267,7 @@ describe('SessionList', () => {
 
     await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /archive/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /^archive$/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
   })
 
@@ -307,7 +307,7 @@ describe('SessionList', () => {
     )
 
     await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
-    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
+    await user.click(screen.getByRole('menuitem', { name: /^archive$/i }))
     expect(onClose).toHaveBeenCalledWith('sess-1')
   })
 

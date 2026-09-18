@@ -77,6 +77,8 @@ interface SessionCardProps {
   onFixPr?: (id: string, number: number) => void
   /** Called when the user toggles this session's autopilot opt-out — parent owns the mutation. */
   onToggleAutopilot?: (id: string, paused: boolean) => void
+  /** Called when the user toggles this session's auto-archive opt-out — parent owns the mutation. */
+  onToggleAutoArchive?: (id: string, optedOut: boolean) => void
   /** Sessions this one dispatched (child-session spec §4.6); derived by the list from the
    *  same sessions array, so the card never fetches. */
   childSessions?: Session[]
@@ -85,7 +87,7 @@ interface SessionCardProps {
   parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, childSessions = [], parentName = null }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, childSessions = [], parentName = null }: SessionCardProps) {
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
@@ -429,6 +431,21 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                     {session.autopilotPaused ? 'Resume autopilot' : 'Pause autopilot'}
                   </button>
                 )}
+                {onToggleAutoArchive && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="card-overflow-auto-archive"
+                    onClick={() => { close(); onToggleAutoArchive(session.id, !session.autoArchiveOptOut) }}
+                    className={cn(menuItem,
+                      session.autoArchiveOptOut
+                        ? 'text-ink'
+                        : 'text-success')}
+                  >
+                    <Archive size={16} aria-hidden="true" />
+                    {session.autoArchiveOptOut ? 'Enable auto-archive' : 'Disable auto-archive'}
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -604,16 +621,19 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           </span>
         )}
         {session.autoArchiveOptOut && (
-          /* Passive indicator: this session will never be auto-archived — either
-             it was manually unarchived, or "Auto-archive" was unticked when it
-             was created (the two reasons the server records on this column). */
+          /* Indicator: this session will never be auto-archived — it was manually
+             unarchived, "Auto-archive" was unticked at creation, or it was disabled
+             mid-session from this same menu (the three reasons the server records
+             on this column). The menu item above (when provided) is the way back. */
           <span
             data-testid="card-no-autoarchive-badge"
             className={cn(markerBase, 'text-warning')}
             title={
               session.autoArchiveOptOut === 'manual-unarchive'
                 ? "Auto-archive off — you unarchived this session, so autopilot won't archive it again"
-                : 'Auto-archive off — turned off when this session was created'
+                : session.autoArchiveOptOut === 'session-toggle'
+                  ? 'Auto-archive off — turned off for this session'
+                  : 'Auto-archive off — turned off when this session was created'
             }
           >
             <Archive size={12} aria-hidden="true" />

@@ -44,6 +44,7 @@ vi.mock('@/api/hooks', () => ({
   useBulkArchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
+  useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   // The Delivery list column's two reads (finish-line row 4). Gated off on
