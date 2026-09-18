@@ -468,6 +468,14 @@ export function useSetAutopilotPaused() {
   })
 }
 
+export function useSetAutoArchiveOptOut() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; optedOut: boolean }>({
+    mutationFn: ({ id, optedOut }) => api.post<Session>(`/sessions/${id}/auto-archive`, { optedOut }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useQueueMove() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; op: 'up' | 'down' | 'top' | 'position'; position?: number }>({

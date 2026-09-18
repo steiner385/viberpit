@@ -790,6 +790,10 @@ class RemoteOrchestrator:
     async def set_autopilot_paused(self, session_id, paused):
         return await self._client.call("set_autopilot_paused", session_id=session_id, paused=paused)
 
+    async def set_auto_archive_opt_out(self, session_id, opted_out):
+        return await self._client.call(
+            "set_auto_archive_opt_out", session_id=session_id, opted_out=opted_out)
+
     async def session_queue_move(self, session_id: str, op: str, position: int | None = None) -> bool:
         r = await self._client.call("session_queue_move", session_id=session_id, op=op, position=position)
         return r
