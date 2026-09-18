@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.base import (
     AutomationStatus,
@@ -29,7 +28,12 @@ from server.db.models import (
     WorkItem,
 )
 from server.github.repo_canon import canonicalize_repo_list
-from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
+from server.pm.holds import (
+    DecisionHoldError,
+    HoldPermissionError,
+    actor_for_request,
+    release_via_api,
+)
 from server.pm.refs import split_ref
 
 log = logging.getLogger(__name__)
@@ -375,9 +379,16 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
 
     Implement now from the roadmap dialog: before the spawn, release any
     owner_action hold on the target issue(s) in the same request (spec
-    2026-09-18 §7, RELEASE_SIGNALS "implement"). Mirrors the Retry endpoint's
-    actor resolution, its `decision`-hold refusal, and its audit shape
-    (``server/api/pm.py``'s ``release_work_item_hold``)."""
+    2026-09-18 §7, RELEASE_SIGNALS "implement"), through the same
+    ``server/pm/holds.py:release_via_api`` sequence the Retry endpoint uses —
+    ``only_kind="owner_action"`` so the kinds with no release path here
+    (evidence / stronger_model, which exit on their own) are left untouched
+    instead of failing the dispatch.
+
+    The hold release is committed before the spawn, so an orchestrator failure
+    afterwards leaves the hold released with no session. That is acceptable
+    (spec decision 6): the item simply re-enters the queue at the product
+    default, which is what Retry alone would have done."""
     _automation_or_404("backlog-runner")
     if not body.refs:
         raise HTTPException(status_code=400, detail="refs must be non-empty")
@@ -390,27 +401,17 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
         wi = (await db.execute(select(WorkItem).where(
             WorkItem.repo == repo, WorkItem.number == number,
             WorkItem.kind == "issue"))).scalar_one_or_none()
-        if wi is None or wi.hold_kind is None:
+        if wi is None:
             continue
-        if wi.hold_kind == "decision":
-            raise HTTPException(status_code=422, detail={
-                "error": "bad_hold",
-                "message": "a decision hold is resolved through its proposal, not released"})
-        if wi.hold_kind != "owner_action":
-            # evidence / stronger_model holds have no release path here yet
-            # (they exit on their own — see hold_guidance's docstring); leave
-            # them untouched rather than silently clearing them.
-            continue
-        released = wi.hold_kind
         try:
-            clear_hold(wi, actor=actor)
+            await release_via_api(db, wi, actor=actor, identity=identity,
+                                  signal="implement", only_kind="owner_action")
+        except DecisionHoldError as e:
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_hold", "message": str(e)}) from e
         except HoldPermissionError as e:
             raise HTTPException(status_code=422, detail={
                 "error": "hold_not_permitted", "message": str(e)}) from e
-        await db.flush()
-        await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
-            "workItemId": wi.id, "kind": released, "actorClass": actor_class(actor),
-            "signal": "implement"}, via="api")
     # Commit (rather than leaving this to `get_db`'s post-route commit) BEFORE
     # calling into the orchestrator: it opens its own DB session to claim
     # ownership, and SQLite serializes writers — an open write transaction here

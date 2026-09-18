@@ -1661,27 +1661,25 @@ async def release_work_item_hold(
     and Retry would drop the question on the floor and re-queue the item with the
     decision still unmade. Unlike the overlay's ``clearHold`` this records only the
     release — no ``classified_by`` stamp, because nothing on the overlay was edited."""
-    from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
+    from server.pm.holds import (
+        DecisionHoldError,
+        HoldPermissionError,
+        actor_for_request,
+        release_via_api,
+    )
     wi = (await db.execute(
         select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    if wi.hold_kind == "decision":
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_hold",
-            "message": "a decision hold is resolved through its proposal, not released"})
-    actor = actor_for_request(request)
-    released = wi.hold_kind
     try:
-        clear_hold(wi, actor=actor)
+        released = await release_via_api(db, wi, actor=actor_for_request(request),
+                                         identity=identity, signal="retry")
+    except DecisionHoldError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold", "message": str(e)}) from e
     except HoldPermissionError as e:
         raise HTTPException(status_code=422, detail={
             "error": "hold_not_permitted", "message": str(e)}) from e
-    if released is not None:
-        await db.flush()
-        await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
-            "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
-            "signal": "retry"}, via="api")
     return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
 
 
