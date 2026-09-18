@@ -290,3 +290,7 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
 - Read-alias removal after all boards are renamed (§9).
 - Whether the evidence investigation prompt should run at a lower tier than the product default
   to save spend; start at the default and let outcome data decide.
+- A sub-agent's `set_hold` call takes effect in the handler (no `parent_tool_use_id` is available
+  in-process), so its transcript card reads like the other SIGNAL tools' inert misuse case while
+  the hold is real. Bounded to the two agent-settable kinds and audited with the session id; gate
+  or mark it when the tool context gains the caller's agent id.

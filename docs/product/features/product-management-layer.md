@@ -50,6 +50,19 @@ in — phase 2's auto-accept (see "Triage auto-accept" below) is a per-product `
 loop — the drift branch is latched (see Notes), so one unnamed capability yields one map-diff PR,
 not one per tick. The engine is pure/propose-only and never mutates onboarding state on its own.
 
+**Holds (spec `docs/superpowers/specs/2026-09-18-hold-ladder-design.md`, foundation).** A work item
+may carry one hold: `hold_kind` (`evidence`, `stronger_model`, `decision`, `owner_action`),
+`hold_reason` (mandatory), `hold_by` (the actor string: a person's login, `session:<id>`,
+`assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`), `hold_set_at`, and
+`hold_fingerprint` (the body fingerprint at hold time). The former `needs_human` triage state is
+gone: rejecting a classification proposal now writes an `owner_action` hold by the rejecting
+person, and migration 0049 (applied on the live DB by `scripts/convert_legacy_needs_human.py`)
+converted the surviving rows. Only `owner_action` and a pending `decision` derive the board's
+"Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
+write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
+may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`). The ladder, evidence
+dispatch, decision proposals, and the rename to "Held" are the later series items of that spec.
+
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +
 classify/triage, #897, with the remote-mode RPC-serialization fix #899) and **Phase 3** (the

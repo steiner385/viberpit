@@ -12,6 +12,8 @@ the nullable columns, and ``scripts/convert_legacy_needs_human.py`` runs the sam
 conversion statements (``server.pm.holds.LEGACY_CONVERSION_SQL``) once on the live
 DB. This revision is the reviewable record of both.
 """
+from typing import Any
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -22,7 +24,7 @@ down_revision = "0048_artifact_auto_merge_armed"
 branch_labels = None
 depends_on = None
 
-_COLUMNS = (
+_COLUMNS: tuple[sa.Column[Any], ...] = (
     sa.Column("hold_kind", sa.String(), nullable=True),
     sa.Column("hold_reason", sa.String(), nullable=True),
     sa.Column("hold_by", sa.String(), nullable=True),
@@ -35,7 +37,8 @@ def _existing() -> tuple[set[str], set[str]]:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     cols = {c["name"] for c in inspector.get_columns("work_items")}
-    indexes = {idx["name"] for idx in inspector.get_indexes("work_items")}
+    indexes = {idx["name"] for idx in inspector.get_indexes("work_items")
+               if idx["name"] is not None}
     return cols, indexes
 
 
