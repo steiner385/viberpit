@@ -6529,6 +6529,62 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
+    async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
+                                   default_model: str, floor: str | None) -> str | None:
+        """The tier this dispatch is PINNED to because its primary issue is parked
+        as ``stronger_model`` (spec 2026-09-18 §4), or ``None`` when it is not on
+        the ladder at all.
+
+        The climb starts from the model the newest finalised ``implement``
+        dispatch for this issue actually ran on, never drops below the D9 *floor*
+        or a pinned product *default_model*, and stops at the product's
+        ``ladder_top`` — all of which is ``next_rung``'s rule, composed here with
+        the hold that says the runner asked for a climb. The product's policy
+        comes off the tick snapshot (``_backlog_last_policies``, the same one
+        selection's weights read), so the spawn cannot answer from a policy the
+        dispatch decision was never taken on.
+
+        The spawn's one door to the ladder, and an injectable seam so the spawn
+        tests need neither a seeded hold nor an outcome history. Best-effort like
+        ``_backlog_tier_floor``: a failed read costs the RUNG, never the spawn —
+        the item keeps its hold and the next tick tries again.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.automations.product_policy import effective_policy
+        from server.db.models import WorkItem
+        from server.pm.outcomes import last_attempt_model, next_rung, top_tier
+        from server.pm.refs import split_ref
+        parts = split_ref(primary_ref)
+        if parts is None:
+            return None
+        repo, number = parts
+        try:
+            async with db_session() as db:
+                held = (await db.execute(sa_select(WorkItem.hold_kind).where(
+                    WorkItem.repo == repo, WorkItem.number == number,
+                    WorkItem.kind == "issue"))).scalars().first()
+                if held != "stronger_model":
+                    return None
+                previous = await last_attempt_model(db, primary_ref)
+        except Exception:
+            log.warning("backlog_runner.ladder_rung_read_failed target=%s", primary_ref,
+                        exc_info=True)
+            return None
+        policies = getattr(self, "_backlog_last_policies", {})
+        policy = (policies.get(product_slug) if product_slug else None) or effective_policy(None)
+        top = top_tier(policy)
+        rung = next_rung(previous, floor=floor, default_model=default_model, top=top)
+        if rung is None:
+            # Unreachable by construction: a bounce that would climb past the top
+            # is handed to the owner (``_give_up``) and never writes this hold. It
+            # can still happen if ``ladder_top`` was lowered after the hold was
+            # written — loud, because the item then holds at a rung nothing will
+            # ever climb, and spawns at the product's default meanwhile.
+            log.warning("backlog_runner.ladder_rung_missing target=%s previous=%s top=%s",
+                        primary_ref, previous, top)
+        return rung
+
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
                              ownership_token: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
@@ -6567,12 +6623,31 @@ class SessionOrchestrator:
         # §13: a failed history read costs the FLOOR, never the spawn. Claude-only
         # input, but computed here because only this origin has the evidence.
         floor = None
+        rung = None
         if engine is AgentEngine.CLAUDE_CODE:
             try:
                 floor = await self._backlog_tier_floor(batch.product, batch.primary)
             except Exception:
                 log.warning("backlog_runner.tier_floor_failed target=%s",
                             batch.primary, exc_info=True)
+            # The LADDER (spec §4) outranks the floor AND the assessor: an issue
+            # its last bounce parked as ``stronger_model`` is dispatched at the
+            # next rung. Claude-only for the same reason the floor is — the rungs
+            # are Claude tiers, and a Codex dispatch has no ladder to climb.
+            try:
+                rung = await self._backlog_ladder_rung(
+                    batch.product, batch.primary, default_model=default_model, floor=floor)
+            except Exception:
+                log.warning("backlog_runner.ladder_rung_failed target=%s",
+                            batch.primary, exc_info=True)
+        if rung:
+            # PINNED, not floored: ``pick_model``'s floor only raises an ``auto``
+            # assessment, and the rung is not a bound on a fresh guess — it IS the
+            # decision this dispatch exists to act on. A pinned alias is read as
+            # an operator's choice, which is exactly the standing the runner's
+            # climb has.
+            config = {**config, "default_model": rung}
+            detail["ladder_rung"] = rung
         choice = await self._resolve_spawn_model(engine, account, config, summary,
                                                  floor=floor)
         model, reasoning_effort = choice.model, choice.reasoning_effort
@@ -6604,6 +6679,29 @@ class SessionOrchestrator:
         # a record whose id matches the pre-spawn holder is not a new session.
         deduped = (rec is not None and existing_before is not None
                    and getattr(rec, "id", None) == getattr(existing_before, "id", None))
+        if rec is not None:
+            # The dispatch the hold asked for has happened, so the hold is spent
+            # (spec §4): every issue of the batch parked ``stronger_model`` is
+            # released as the runner, audited ``dispatch``. Guarded on a real
+            # record — a REFUSED spawn dispatched nothing, and clearing the hold
+            # then would drop the ladder's memory of the bounce and re-dispatch
+            # the item at its old tier. Best-effort in its own session like the
+            # pick audit below: the session is already running, and a failed
+            # release leaves the hold for the next tick to consume.
+            from datetime import datetime, timezone
+
+            from server.pm.holds import release_on_dispatch
+            issues, now = list(batch.issues), datetime.now(timezone.utc)
+            try:
+                async with db_session() as db:
+                    released = await db.run_sync(
+                        lambda s: release_on_dispatch(s, issues, now=now))
+                if released:
+                    log.info("backlog_runner.ladder_hold_released target=%s refs=%s",
+                             batch.primary, released)
+            except Exception:
+                log.warning("backlog_runner.ladder_hold_release_failed target=%s",
+                            batch.primary, exc_info=True)
         if audit_pick is not None and rec is not None and not deduped:
             # One durable row per auto pick that actually ran: `assessed` vs
             # `applied` is the metric for whether the assessor and the history

@@ -1185,6 +1185,46 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
         assert events == []                         # no audit for a kept hold
 
 
+@pytest.mark.asyncio
+async def test_backlog_ladder_rung_reads_the_hold_and_the_last_attempt(db_env):
+    """Spec 2026-09-18 §4: the rung exists only while the primary issue is parked
+    ``stronger_model``, and it climbs from the model the last finalised implement
+    dispatch ran on, capped by the PRODUCT's ``ladder_top`` (read off the tick's
+    policy snapshot, never re-read at the spawn)."""
+    from datetime import datetime, timezone
+
+    from server.automations.product_policy import effective_policy
+    from server.db.models import DispatchOutcome, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._backlog_last_policies = {
+        "widget": effective_policy({"dispatch": "auto", "ladder_top": "opus"})}
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                        title="unheld", body="B"))
+        wi = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="T", body="B")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+        db.add(wi)
+        db.add(DispatchOutcome(target_ref="o/r#2", outcome="no_pr", model="sonnet",
+                               attempt_no=0, ended_at=now))
+
+    async def rung(ref, *, product="widget", floor=None):
+        return await orch._backlog_ladder_rung(product, ref,
+                                               default_model="auto", floor=floor)
+
+    assert await rung("o/r#1") is None            # no hold: not on the ladder
+    assert await rung("o/r#9") is None            # not mirrored
+    assert await rung("nonsense") is None         # unparseable ref
+    assert await rung("o/r#2") == "opus"          # sonnet + 1
+    # The floor and a pinned product default never let the climb land BELOW them,
+    # and ``ladder_top`` ends it: a bounce at the top is the owner's (the sweep
+    # routes that through the give-up path, so this answer is the unreachable case).
+    assert await rung("o/r#2", floor="fable") is None
+    assert await rung("o/r#2", product="unknown-product") == "opus"
+
+
 def test_backlog_queue_tail_returns_copy_of_cache():
     """The status-card queue-provenance seam (#990) must hand the loop a COPY
     of the cached ranked pool — mutating what it returns must never corrupt
