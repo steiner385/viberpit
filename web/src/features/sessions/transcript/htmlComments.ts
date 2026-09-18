@@ -1,12 +1,7 @@
 // Hide HTML comments from rendered transcript text.
 //
-// Neither of `AssistantText`'s two branches hides them on its own. The streaming
-// branch prints text verbatim. The settled branch hands it to `Markdown`, which runs
-// react-markdown WITHOUT `rehype-raw` — and that does not drop raw HTML, it escapes
-// it, so `<!-- x -->` comes out as readable `&lt;!-- x --&gt;` text. The visible
-// result is that the harness markers the agent appends to a final message
-// (`<!-- viberpit:complete -->` and friends) sit at the end of every finished
-// session's transcript.
+// Strip incomplete comments before Markdown parsing so harness markers stay
+// hidden while their closing delimiter is still arriving.
 //
 // Stripping comments generically, rather than matching the marker literals, is
 // deliberate: those literals have a single source of truth server-side

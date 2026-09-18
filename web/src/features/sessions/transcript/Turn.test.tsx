@@ -78,7 +78,7 @@ describe('Turn rendering edge cases', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('renders the open assistant block as raw text while it is streaming', () => {
+  it('renders the open assistant block as Markdown while it is streaming', () => {
     const blocks: Block[] = [{ kind: 'text', id: 't1', text: '**bold**' }]
     render(
       <Turn
@@ -90,8 +90,8 @@ describe('Turn rendering edge cases', () => {
         onAnswer={noop}
       />,
     )
-    expect(screen.getByText('**bold**')).toBeInTheDocument()
-    expect(document.querySelector('strong')).toBeNull()
+    expect(screen.getByText('bold')).toBeInTheDocument()
+    expect(document.querySelector('strong')).not.toBeNull()
   })
 
   it('renders a finalized (non-streaming) assistant block as markdown', () => {

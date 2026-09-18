@@ -236,6 +236,16 @@ body {
   .markdown pre code { background: transparent; padding: 0; font-size: inherit; }
   .markdown table { display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
   .markdown th, .markdown td { border: 1px solid var(--t-edge); padding: 0.3em 0.5em; text-align: left; }
+  .markdown img { max-width: 100%; height: auto; }
+  .markdown .contains-task-list { list-style: none; }
+  .markdown .task-list-item input { margin-right: 0.4em; }
+  .markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding-block: 0.25em; }
+  .markdown .mermaid-diagram { overflow-x: auto; }
+  .markdown .mermaid-diagram > img { background: white; border-radius: var(--r-md); }
+  .markdown details > summary { cursor: pointer; }
+  .markdown .footnotes { font-size: var(--fs-xs); border-top: 1px solid var(--t-edge); padding-top: 0.75em; }
+  .markdown th[align="center"], .markdown td[align="center"] { text-align: center; }
+  .markdown th[align="right"], .markdown td[align="right"] { text-align: right; }
   .markdown hr { border: 0; border-top: 1px solid var(--t-edge); }
 }
 

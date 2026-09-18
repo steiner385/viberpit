@@ -6,18 +6,10 @@ import { Markdown } from './Markdown'
 interface Props { text: string; streaming: boolean }
 
 export function AssistantText({ text, streaming }: Props) {
-  // Both branches, not just the live one: react-markdown does not DROP a raw HTML
-  // comment, it escapes it into visible text, so a harness marker is readable in the
-  // settled transcript as well as while it streams. See `hideHtmlComments`.
+  // Also hide incomplete harness comments as their characters arrive.
   const visible = hideHtmlComments(text)
 
-  if (streaming) {
-    return (
-      <div className="whitespace-pre-wrap text-sm text-ink font-mono">
-        {visible}
-      </div>
-    )
-  }
+  if (streaming) return <Markdown streaming>{visible}</Markdown>
 
   const segments = parseInsights(visible)
   return (
