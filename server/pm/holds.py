@@ -86,6 +86,31 @@ def actor_for_request(request: object) -> str:
     return identity
 
 
+async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
+                             session_id: str, now: datetime) -> WorkItem:
+    """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
+    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``."""
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        raise ValueError(f"ref must look like owner/repo#123, got {ref!r}")
+    repo, number = parts
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.kind == "issue"))).scalar_one_or_none()
+    if wi is None:
+        raise ValueError(f"{ref} is not a mirrored issue")
+    actor = f"session:{session_id}"
+    if kind is None:
+        clear_hold(wi, actor=actor)
+    else:
+        set_hold(wi, kind=kind, reason=reason, actor=actor, now=now)
+    await db.flush()
+    return wi
+
+
 #: Dialect-neutral conversion of pre-ladder ``needs_human`` rows (spec §3). Run by
 #: migration 0049's ``upgrade()`` AND by ``scripts/convert_legacy_needs_human.py``,
 #: because nothing runs ``alembic upgrade`` at deploy time — the script is what

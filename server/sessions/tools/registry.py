@@ -18,6 +18,12 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("mark_no_pr", ToolClass.SIGNAL, "Finish without a pull request"),
     ToolSpec("hand_back", ToolClass.SIGNAL, "Hand this session back to the user"),
     ToolSpec("request_model", ToolClass.SIGNAL, "Request a different model"),
+    # SIGNAL for the same reason as request_model: it moves a roadmap chip, never a
+    # card — an unattended runner session must be able to say "this needs evidence"
+    # or "this needs a stronger model" (spec 2026-09-18 §8) without a prompt nobody
+    # is there to answer. Agents may only set the two auto-exiting kinds; holds.py
+    # enforces that, not this table.
+    ToolSpec("set_hold", ToolClass.SIGNAL, "Hold or release this session's issue"),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode
@@ -48,14 +54,16 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     """Which SIGNAL tool names are mounted, in declaration order — the signalling half
     of ``mounted_names`` below. ``hand_back`` rides with the two finishing signals: it
     is the third way a turn ends, and a session told about completion but not about
-    hand-back is exactly the session that misuses ``mark_complete``.
+    hand-back is exactly the session that misuses ``mark_complete``. ``set_hold`` rides
+    with them unconditionally too — it needs no engine capability beyond the tool
+    surface itself, unlike ``request_model`` below.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
     """
     if not signalling_tools:
         return ()
-    names = ["mark_complete", "mark_no_pr", "hand_back"]
+    names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

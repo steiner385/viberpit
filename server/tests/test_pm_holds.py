@@ -78,3 +78,30 @@ def test_actor_for_request_reads_via_and_identity():
     assert actor_for_request(drawer) == "assistant:tony@example.com"
     lan = SimpleNamespace(state=SimpleNamespace(identity="lan@local", via=None))
     assert actor_for_request(lan) == "lan@local"
+
+
+def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path, monkeypatch):
+    import asyncio
+    from server.db import db_session, init_db
+    from server.pm.holds import apply_session_hold
+    monkeypatch.setenv("CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path}/t.db")
+
+    async def _run():
+        await init_db()
+        async with db_session() as db:
+            db.add(WorkItem(id="w1", repo="o/r", number=7, kind="issue", body="b",
+                            triage_state="classified"))
+            await db.flush()
+            wi = await apply_session_hold(db, ref="o/r#7", kind="evidence",
+                                          reason="needs a repro", session_id="s1", now=NOW)
+            assert (wi.hold_kind, wi.hold_by) == ("evidence", "session:s1")
+            with pytest.raises(HoldPermissionError):
+                await apply_session_hold(db, ref="o/r#7", kind="owner_action",
+                                         reason="park", session_id="s1", now=NOW)
+            wi = await apply_session_hold(db, ref="o/r#7", kind=None, reason="found it",
+                                          session_id="s1", now=NOW)
+            assert wi.hold_kind is None
+            with pytest.raises(ValueError):
+                await apply_session_hold(db, ref="o/r#99", kind="evidence", reason="r",
+                                         session_id="s1", now=NOW)
+    asyncio.run(_run())

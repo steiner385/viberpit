@@ -198,7 +198,8 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
     from server.sessions.tools.registry import SESSION_TOOL_SPECS, SIGNAL_TOOL_NAMES
     assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
                                  if s.tool_class is ToolClass.SIGNAL}
-    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "request_model"}
+    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "set_hold",
+                                 "request_model"}
 
 
 def test_a_failed_result_stays_failed_even_with_a_mark_complete_call():

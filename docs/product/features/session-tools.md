@@ -1,7 +1,7 @@
 ---
 slug: session-tools
 parent: session-workspaces
-title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
+title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, request_model)
 state: delivering
 links:
   specs:
@@ -19,9 +19,10 @@ links:
     - server/sessions/completion.py
     - server/sessions/model_request.py
     - server/sessions/engine.py
+    - server/pm/holds.py
 ---
 
-# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
+# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, request_model)
 
 Give coding agents reliable application context and a supported way to report feedback, coordinate child work, and signal progress.
 
@@ -38,7 +39,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-seven tools:
+eight tools:
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
@@ -47,12 +48,13 @@ seven tools:
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled`), note? | Declares the work is finished but no PR is appropriate. |
 | `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
+| `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 | `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `CCSWITCH_CHILD_SESSIONS_ENABLED`, capped by `CCSWITCH_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
-`mark_no_pr`, `hand_back` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
+`mark_no_pr`, `hand_back`, `set_hold` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
 card, but not annotated read-only, because each one moves something the user does see (a status
 badge, a completion-bar verdict, a pending model approval). `PermissionRegistry` resolves both
 classes silently in every session mode, never raising a permission card (pinned by
@@ -85,6 +87,25 @@ things distinguish it from `READ`:
   that is read-only would be false, even though it gets the same no-card treatment as `READ` for
   the unattended-completion reason above.
 
+### `set_hold`: the two kinds an agent may set itself
+
+`set_hold` is SIGNAL for the same reason as `request_model`: it moves a roadmap chip (a hold badge
+on the work item, spec 2026-09-18 §3/§8), never something in the project, and an unattended runner
+session must be able to say so without a permission card nobody is there to answer. Its handler is a
+thin wrapper over the ONE in-process path, `server/pm/holds.py:apply_session_hold` — resolve
+`owner/repo#N` (default the session's own `originRef`) to the mirrored issue, then `set_hold` /
+`clear_hold`.
+
+A session may only set (or clear) the two kinds `server/pm/holds.py:AGENT_SETTABLE` allows —
+`evidence` (someone must reproduce or correlate before anyone builds; the next run investigates
+instead of implementing) and `stronger_model` (this session is under-powered; the next attempt
+runs one model tier up). Both are the auto-exiting kinds: nothing about them requires a human to
+release the hold — a later run (agent or system) clears it once the evidence lands or a stronger
+model picks the item up. A hold that genuinely needs a person — `decision` or `owner_action` — is
+not this tool's job; that is what `hand_back` is for. `holds.py:may_set`/`HoldPermissionError`
+enforce the kind restriction, not the tool schema or the registry spec, so the rule holds for every
+caller (session, overlay route, or otherwise), not just this one.
+
 ## Where the signal is read — the Translator, not the handler
 
 A tool **handler** for `mark_complete` / `mark_no_pr` / `hand_back` / `request_model` only validates its
@@ -101,6 +122,13 @@ signalling call still renders as an ordinary tool card and has no effect on the 
 
 Tool-call state is turn-scoped, not message-scoped, and precedence is tool-over-marker: if a turn
 carries both a signalling tool call and a stray marker in its prose, the tool call wins.
+
+`set_hold` is the one SIGNAL tool that does NOT follow this split: its handler acts immediately
+(calls `apply_session_hold`) rather than deferring to the Translator, because a hold is not a
+claim about the session's own top-level completion status — the sub-agent guard above exists to
+stop a `Task` sub-agent's own sub-objective from being mistaken for the session's, which does not
+apply to "this issue needs evidence." It gets the SIGNAL class for the same no-card treatment as
+the other four, not for the Translator-reads-it behavior.
 
 ## Three ways a turn ends
 
