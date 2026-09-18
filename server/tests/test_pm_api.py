@@ -775,12 +775,17 @@ def test_overlay_hold_by_person_any_kind_with_audit():
 
         async def _types():
             async with db_session() as db:
-                return [(e.type, e.detail) for e in (await db.execute(
+                return [(e.type, e.detail, e.via) for e in (await db.execute(
                     select(AuditEvent).where(AuditEvent.type.like("pm.hold.%"))
                     .order_by(AuditEvent.at))).scalars().all()]
         events = c.portal.call(_types)
-        assert [t for t, _ in events] == ["pm.hold.set", "pm.hold.release"]
+        assert [t for t, _, _ in events] == ["pm.hold.set", "pm.hold.release"]
         assert events[0][1]["kind"] == "owner_action" and events[0][1]["actorClass"] == "person"
+        # ONE release audit shape across both API paths (F5): every release names
+        # the signal that ended the hold, and an API release is ``via="api"``.
+        from server.pm.holds import RELEASE_SIGNALS
+        assert events[1][1]["signal"] == "overlay" and "overlay" in RELEASE_SIGNALS
+        assert events[1][2] == "api"
 
 
 def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
@@ -2188,10 +2193,33 @@ def test_hold_release_endpoint_is_the_retry_signal():
 
         async def _rows():
             async with db_session() as db:
-                return [e.detail for e in (await db.execute(
+                return [(e.detail, e.via) for e in (await db.execute(
                     select(AuditEvent).where(AuditEvent.type == "pm.hold.release"))).scalars().all()]
         rows = c.portal.call(_rows)
-        assert [d["signal"] for d in rows] == ["retry"] and rows[0]["actorClass"] == "person"
+        assert [d["signal"] for d, _ in rows] == ["retry"] and rows[0][0]["actorClass"] == "person"
+        assert rows[0][1] == "api"   # same shape as the overlay's release (F5)
+
+
+def test_hold_release_refuses_a_decision_hold():
+    """Spec §8: a decision hold resolves through its proposal, never through the
+    Retry signal — Retry would drop the question on the floor and re-queue the item
+    with the decision still unmade."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "decision", "holdReason": "which storage engine?"},
+                headers=IDENTITY_HEADERS)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/release", headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_hold"
+        assert "proposal" in r.json()["detail"]["message"]
+        from server.db import db_session
+        from server.db.models import WorkItem
+
+        async def _kind():
+            async with db_session() as db:
+                return (await db.get(WorkItem, wid)).hold_kind
+        assert c.portal.call(_kind) == "decision"
 
 
 def test_hold_release_refused_for_agent_class_caller():

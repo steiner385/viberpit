@@ -1484,7 +1484,11 @@ async def patch_overlay(
     db=Depends(get_db),
 ) -> dict:
     """Manual classify / inline score edit / hold on the ViberPit-owned overlay.
-    All fields optional. ``classified_by`` records the ACTOR (spec 2026-09-18 §8):
+    All fields optional. A ``clearHold`` here is a release like any other and audits
+    the shared ``signal`` key as ``"overlay"`` — but unlike the Retry route it ALSO
+    stamps ``classified_by``/``classified_at``, because it arrives as an overlay edit
+    the person (or agent) made, not as a bare release.
+    ``classified_by`` records the ACTOR (spec 2026-09-18 §8):
     a person's login, ``assistant:<login>``, or ``lan@local`` — never a blanket
     "human". A body that applies NO field is a read-through no-op — including one
     whose only would-be effect is itself a no-op (e.g. ``clearHold`` on an item
@@ -1556,8 +1560,12 @@ async def patch_overlay(
             clear_hold(wi, actor=actor)
             if released is not None:
                 applied.append("clearHold")
+                # ONE release audit shape for every path that ends a hold: the same
+                # ``signal`` key the reconcile pass and the Retry route write, from
+                # the same ``RELEASE_SIGNALS`` tuple.
                 await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
-                    "workItemId": item_id, "kind": released, "actorClass": actor_class(actor)})
+                    "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
+                    "signal": "overlay"}, via="api")
     except HoldPermissionError as e:
         raise HTTPException(status_code=422, detail={
             "error": "hold_not_permitted", "message": str(e)}) from e
@@ -1647,12 +1655,21 @@ async def release_work_item_hold(
     """The Retry signal (spec 2026-09-18 §7): a person releases an owner_action
     hold so the item re-enters the queue at the product default. The other two
     signals (board edit, body edit) run in the reconcile pass through the same
-    rule module. Idempotent on an unheld item."""
+    rule module. Idempotent on an unheld item.
+
+    A ``decision`` hold is refused (422): spec §8 resolves one through its proposal,
+    and Retry would drop the question on the floor and re-queue the item with the
+    decision still unmade. Unlike the overlay's ``clearHold`` this records only the
+    release — no ``classified_by`` stamp, because nothing on the overlay was edited."""
     from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
     wi = (await db.execute(
         select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if wi.hold_kind == "decision":
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold",
+            "message": "a decision hold is resolved through its proposal, not released"})
     actor = actor_for_request(request)
     released = wi.hold_kind
     try:
@@ -1664,7 +1681,7 @@ async def release_work_item_hold(
         await db.flush()
         await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
             "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
-            "signal": "retry"})
+            "signal": "retry"}, via="api")
     return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
 
 

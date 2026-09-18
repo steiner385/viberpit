@@ -209,7 +209,10 @@ def test_release_by_signals_board_edit_and_body_edit():
     assert by_board.hold_kind is None and by_body.hold_kind is None
     assert untouched.hold_kind == "owner_action"
     assert evidence.hold_kind == "evidence"
-    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry"}
+    # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
+    # the Retry endpoint, and an explicit clear through the overlay editor. Time is
+    # not one of them.
+    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]

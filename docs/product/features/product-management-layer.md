@@ -72,7 +72,10 @@ An `owner_action` hold ends only on a human signal (spec 2026-09-18 §7): a boar
 Backlog, an issue body edit (the fingerprint no longer matches), or
 `POST /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
 `server/pm/holds.py:release_by_signals` / `clear_hold`, each audited as `pm.hold.release` with its
-`signal`. The queue skips held items as `held`; the Backlog Runner's give-up writes the hold
+`signal` from the one `RELEASE_SIGNALS` tuple. An explicit `clearHold` through the overlay editor
+is the fourth spelling (`signal: "overlay"`); it is also an overlay edit, so unlike the others it
+stamps `classified_by`. Retry refuses a `decision` hold (422) — that one resolves through its
+proposal. The queue skips held items as `held`; the Backlog Runner's give-up writes the hold
 (`hold_by = runner`) and its `gave_up` row survives only until the hold is gone.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project

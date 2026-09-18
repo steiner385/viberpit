@@ -104,8 +104,14 @@ RUNNER_ACTOR = "runner"
 RECONCILER_ACTOR = "reconciler"
 SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
 
-#: The three ways an owner_action hold ends (spec §7). Time is not one of them.
-RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry")
+#: Every way an owner_action hold ends (spec §7), as ONE tuple so the two API paths
+#: and the reconcile pass cannot audit a release in different shapes. Time is not one
+#: of them. ``board_edit`` / ``body_edit`` are detected by ``release_by_signals``;
+#: ``retry`` is the Retry endpoint; ``overlay`` is an explicit clear through the
+#: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
+#: hold), which is an overlay EDIT as well as a release and so also stamps
+#: ``classified_by``.
+RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -145,7 +151,12 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
     pass: a human board edit to Ready/Backlog, or an issue body that no longer
     matches the fingerprint taken when the hold was set. The Retry endpoint is the
     third signal and calls ``clear_hold`` directly with the person's actor.
-    Idempotent: a released item has no hold to release again."""
+    Idempotent: a released item has no hold to release again.
+
+    Deviation from spec §7: the board edit is not compared against ``hold_set_at`` —
+    ``HumanEdit`` has no timestamp and the mirror fetch time is not threaded here. A
+    hold written during the fetch that follows a human's move to Ready can be
+    released by that pre-hold edit; recorded as a follow-up in spec §14."""
     from sqlalchemy import select
     released: list[Released] = []
     board_refs = {e.ref for e in human_edits
