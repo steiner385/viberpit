@@ -1,10 +1,16 @@
-"""Unit tests for backlog_prompt.build_implement_prompt — pure, no I/O."""
+"""Unit tests for backlog_prompt.build_implement_prompt / build_investigate_prompt —
+pure, no I/O."""
 from __future__ import annotations
 
 import pytest
 
-from server.automations.backlog_prompt import build_implement_prompt
+from server.automations.backlog_prompt import (
+    build_implement_prompt,
+    build_investigate_prompt,
+)
+from server.sessions.engine import AgentEngine
 from server.automations.backlog_selection import Batch
+from server.sessions.completion import NO_PR_MARKER, resolution_from_text
 
 
 # --------------------------------------------------------------------------- #
@@ -110,3 +116,110 @@ def test_parametrized_fixes_keywords(issues, expected_fixes):
     result = build_implement_prompt(batch)
     for kw in expected_fixes:
         assert kw in result
+
+
+# --------------------------------------------------------------------------- #
+# build_investigate_prompt                                                     #
+# --------------------------------------------------------------------------- #
+
+def test_investigate_returns_string():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert isinstance(result, str) and result
+
+
+def test_investigate_references_repo():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert "owner/repo" in result
+
+
+def test_investigate_each_issue_ref_mentioned():
+    result = build_investigate_prompt(MULTI_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    for ref in MULTI_BATCH.issues:
+        assert ref in result
+
+
+def test_investigate_names_primary_ref():
+    result = build_investigate_prompt(MULTI_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert MULTI_BATCH.primary in result
+
+
+def test_investigate_names_all_four_exits():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert "Close as noise" in result
+    assert "Consolidate" in result
+    assert "Convert to a fix" in result
+    assert "Escalate" in result
+
+
+def test_investigate_mentions_mark_no_pr_and_set_hold_on_claude():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert "mark_no_pr" in result
+    assert "set_hold" in result
+
+
+def test_investigate_says_read_only_no_pr():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    lower = result.lower()
+    assert "read-only" in lower
+    assert "no pr" in lower or "open no pr" in lower
+
+
+def test_investigate_frames_investigate_not_implement():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert "do not implement" in result.lower()
+
+
+def test_investigate_states_no_exit_hand_off():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert "hands the issue to the owner" in result
+
+
+def test_investigate_omits_implement_prompt_pr_instructions():
+    """The investigate prompt must not carry the implement prompt's PR mechanics."""
+    implement = build_implement_prompt(SINGLE_BATCH)
+    investigate = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    # Phrases only the implement prompt should carry.
+    assert "single pull request" in implement
+    assert "single pull request" not in investigate
+    assert "pull request" not in investigate.lower()
+    assert "gh pr merge" in implement
+    assert "gh pr merge" not in investigate
+    assert "Fixes #" in implement
+    assert "Fixes #" not in investigate
+
+
+def test_investigate_default_engine_is_claude():
+    default_result = build_investigate_prompt(SINGLE_BATCH)
+    claude_result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    assert default_result == claude_result
+
+
+def test_investigate_codex_uses_no_pr_marker_not_the_tool():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
+    assert NO_PR_MARKER in result
+    assert "mark_no_pr(" not in result
+
+
+def test_investigate_codex_still_names_all_four_exits():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
+    assert "Close as noise" in result
+    assert "Consolidate" in result
+    assert "Convert to a fix" in result
+    assert "Escalate" in result
+
+
+def test_investigate_codex_escalate_reads_as_cancelled():
+    """The escalate exit's Codex phrasing must classify as 'cancelled' via the
+    same resolution_from_text the runner uses on a real transcript tail."""
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
+    # Extract a plausible final-message tail: the escalate sentence plus the marker.
+    idx = result.index("Escalate")
+    tail = result[idx:]
+    assert resolution_from_text(tail) == "cancelled"
+
+
+def test_investigate_codex_close_as_noise_reads_as_not_needed():
+    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
+    idx = result.index("Close as noise")
+    tail = result[idx:result.index("Consolidate")]
+    assert resolution_from_text(tail) == "not-needed"
