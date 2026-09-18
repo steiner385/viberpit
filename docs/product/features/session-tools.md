@@ -97,11 +97,13 @@ thin wrapper over the ONE in-process path, `server/pm/holds.py:apply_session_hol
 `clear_hold`.
 
 A session may only set (or clear) the two kinds `server/pm/holds.py:AGENT_SETTABLE` allows —
-`evidence` (someone must reproduce or correlate before anyone builds; the next run investigates
-instead of implementing) and `stronger_model` (this session is under-powered; the next attempt
-runs one model tier up). Both are the auto-exiting kinds: nothing about them requires a human to
-release the hold — a later run (agent or system) clears it once the evidence lands or a stronger
-model picks the item up. A hold that genuinely needs a person — `decision` or `owner_action` — is
+`evidence` (someone must reproduce or correlate before anyone builds) and `stronger_model` (this
+session is under-powered for the issue). In this foundation series the hold is a **record**: it is
+visible on the roadmap and the next pass over the issue reads it. Turning it into dispatch
+behaviour — an investigate-instead-of-implement run, and a spawn one model tier up — is series
+items 4 and 5, so the tool descriptions deliberately promise neither yet. Both are nonetheless the
+auto-exiting kinds: nothing about them requires a human to release the hold — a later run (agent or
+system) clears it once the evidence lands or a stronger model picks the item up. A hold that genuinely needs a person — `decision` or `owner_action` — is
 not this tool's job; that is what `hand_back` is for. `holds.py:may_set`/`HoldPermissionError`
 enforce the kind restriction, not the tool schema or the registry spec, so the rule holds for every
 caller (session, overlay route, or otherwise), not just this one.
@@ -127,8 +129,15 @@ carries both a signalling tool call and a stray marker in its prose, the tool ca
 (calls `apply_session_hold`) rather than deferring to the Translator, because a hold is not a
 claim about the session's own top-level completion status — the sub-agent guard above exists to
 stop a `Task` sub-agent's own sub-objective from being mistaken for the session's, which does not
-apply to "this issue needs evidence." It gets the SIGNAL class for the same no-card treatment as
-the other four, not for the Translator-reads-it behavior.
+apply to "this issue needs evidence." It gets the SIGNAL class for the same no-permission-card
+treatment as the other four, not for the Translator-reads-it behavior.
+
+That is why the two transcript builders (`server/sessions/translator.py` and the JSONL
+`server/sessions/replay.py`) key on `registry.TURN_SIGNAL_NAMES` — the four names the Translator
+reads as a turn outcome — and **not** on the wider `SIGNAL_TOOL_NAMES` permission class. A
+`mark_complete` card would be noise on top of the status change it causes; a `set_hold` card is the
+only record in the transcript that the session parked or released a roadmap item, so it renders
+like any other tool call.
 
 ## Three ways a turn ends
 

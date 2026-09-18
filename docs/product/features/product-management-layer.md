@@ -41,8 +41,10 @@ project registration to `live` state.
 
 **Non-goals** — Not an auto-merging step: the map-synthesis session opens exactly one non-draft PR
 and deliberately does NOT arm auto-merge — the human merge is the curation gate
-(`server/pm/classification.py`). Not a blind-retry classifier — a rejected proposal sends the work
-item to `needs_human`, never a silent re-classify (`server/api/pm.py` `reject_triage`). Not an
+(`server/pm/classification.py`). Not a blind-retry classifier — a rejected proposal parks the work
+item under an **owner-action hold** (`server/api/pm.py` `reject_triage` → `server/pm/holds.py`
+`set_reject_hold`), and it is that hold, not the item's triage state, that keeps it out of the
+classify loop's candidate set — never a silent re-classify. Not an
 `auto` triage *mode*: `PmTriage.modes` is still `("off", "propose")` only, the automation row
 ships `enabled=False`, and a human accept is the gate on a proposal unless its product has opted
 in — phase 2's auto-accept (see "Triage auto-accept" below) is a per-product `triage_auto_accept`
@@ -56,11 +58,15 @@ may carry one hold: `hold_kind` (`evidence`, `stronger_model`, `decision`, `owne
 `assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`), `hold_set_at`, and
 `hold_fingerprint` (the body fingerprint at hold time). The former `needs_human` triage state is
 gone: rejecting a classification proposal now writes an `owner_action` hold by the rejecting
-person, and migration 0049 (applied on the live DB by `scripts/convert_legacy_needs_human.py`)
+ACTOR — spec §8 authorises `owner_action` from "the two reject flows" whoever drives them, so the
+route goes through `holds.py:set_reject_hold` (no actor-class gate) and records `lan@local` or
+`assistant:<login>` truthfully rather than attributing it to a person — and migration 0049
+(applied on the live DB by `scripts/convert_legacy_needs_human.py`)
 converted the surviving rows. Only `owner_action` and a pending `decision` derive the board's
 "Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
 write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
-may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`). The ladder, evidence
+may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
+OVERWRITE a hold they could not clear, since replacing a kind releases the old one. The ladder, evidence
 dispatch, decision proposals, and the rename to "Held" are the later series items of that spec.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project

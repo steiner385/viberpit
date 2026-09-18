@@ -23,11 +23,14 @@ from server.pm.classification import CONFIDENCE_LEVELS
 from server.pm.repo_project import (OwnershipConflict, RepoOwnershipSnapshot,
     gather_repo_ownership_snapshot, require_mutation_owner)
 
-# Who decided a classification, as stored on ``WorkItem.classified_by``. The one
-# spelling of "a person decided this", shared by the accept routes and the overlay
-# PATCH so the inbox chip and the auto-accept gate cannot read a typo'd variant as
-# a machine decision. (Other writers stamp their own provenance — "materialize",
-# "auto-link", "label-route" — which are not triage decisions.)
+# Who decided a classification, as stored on ``WorkItem.classified_by``, for the two
+# writers of a TRIAGE decision: the inbox accept/undo routes pass DECIDED_BY_HUMAN and
+# the PM Triage loop's auto-accept passes DECIDED_BY_AUTO. Sharing the spelling is what
+# stops the inbox chip and the auto-accept gate reading a typo'd variant as a machine
+# decision. The overlay PATCH is NOT a caller: since spec 2026-09-18 §8 it stamps the
+# resolved ACTOR string (a login, ``assistant:<login>``, ``lan@local``) rather than a
+# blanket "human". Other writers stamp their own provenance — "materialize",
+# "auto-link", "label-route" — which are not triage decisions either.
 DECIDED_BY_HUMAN = "human"
 DECIDED_BY_AUTO = "auto"
 

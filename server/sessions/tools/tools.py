@@ -201,14 +201,14 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
 
     @spec_tool("set_hold",
                "Hold or release the issue this session was dispatched for, on the "
-               f"{brand.NAME} roadmap. kind 'evidence': someone must reproduce or correlate "
-               "before anyone builds (the next run investigates instead of implementing). "
-               "kind 'stronger_model': you are under-powered for this; the next attempt "
-               "runs one model tier up. kind null: release the hold you set (e.g. you "
-               "found the cause and wrote it into the issue). reason: one sentence, "
-               "required. ref (optional): owner/repo#N, default this session's issue. "
-               "Only these two kinds are yours to set; a hold that needs the owner is "
-               "hand_back's job.",
+               f"{brand.NAME} roadmap. kind 'evidence': record that someone must reproduce "
+               "or correlate before anyone builds; the hold is visible on the roadmap and "
+               "the next pass over this issue reads it. kind 'stronger_model': record that "
+               "you are under-powered for this issue; the next pass reads it when choosing "
+               "a model. kind null: release the hold you set (e.g. you found the cause and "
+               "wrote it into the issue). reason: one sentence, required. ref (optional): "
+               "owner/repo#N, default this session's issue. Only these two kinds are yours "
+               "to set; a hold that needs the owner is hand_back's job.",
                {"type": "object",
                 "properties": {"kind": {"type": ["string", "null"],
                                         "enum": ["evidence", "stronger_model", None]},
