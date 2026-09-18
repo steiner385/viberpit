@@ -552,8 +552,10 @@ class AutomationContext:
         *fallback* is spec §13's recovery for the OTHER way a row can be missing:
         the spawn-time write failed (history is best-effort, dispatch is not), so
         the dispatch really happened but left nothing behind. Given
-        ``{"product_slug", "session_id", "model", "attempt_no"}`` — the claim's own
-        facts — an already-FINALISED row is inserted here instead: the fingerprint
+        ``{"product_slug", "session_id", "model", "attempt_no", "dispatch_kind"}``
+        — the claim's own facts, ``dispatch_kind`` defaulting to ``implement`` for a
+        claim written before the kind existed — an already-FINALISED row is
+        inserted here instead: the fingerprint
         read off the mirror row exactly as ``record_outcome`` reads it (or the
         bounce could never be counted against the body it bounced on),
         ``started_at`` left None because nobody knows when it began (and so
@@ -616,6 +618,7 @@ class AutomationContext:
                         session_id=fallback.get("session_id"),
                         model=fallback.get("model"),
                         attempt_no=fallback.get("attempt_no"),
+                        dispatch_kind=fallback.get("dispatch_kind") or "implement",
                         started_at=None, ended_at=now, updated_at=now,
                         outcome=outcome, cause=cause,
                         pr_number=pr_number, pr_url=pr_url,

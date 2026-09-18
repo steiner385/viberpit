@@ -1317,7 +1317,8 @@ class BacklogRunnerLoop:
             async with owned(token) as tx:
                 acknowledged = await self._settle_dispatch(
                     tx, batch.primary, getattr(rec, "id", None), getattr(rec, "branch", None),
-                    model=getattr(rec, "model", None))
+                    model=getattr(rec, "model", None),
+                    dispatch_kind=getattr(rec, "dispatch_kind", None))
         except StaleOwnership:
             acknowledged = False
         await self._refresh_dispatch_budget()
@@ -1330,8 +1331,17 @@ class BacklogRunnerLoop:
         return result("spawned", rec)
 
     async def _settle_dispatch(self, tx, target: str, sid: str | None,
-                               branch: str | None, *, model: str | None = None) -> bool:
-        """Observer and callback acknowledge one persisted dispatch intent."""
+                               branch: str | None, *, model: str | None = None,
+                               dispatch_kind: str | None = None) -> bool:
+        """Observer and callback acknowledge one persisted dispatch intent.
+
+        *dispatch_kind* is what the spawn decided this dispatch was FOR (spec
+        2026-09-18 §5) — the spawn hands it back on its record and it is written
+        onto the claim row AND the dispatch-history row, so a later reader (and
+        the recovery path below, which has only the row) knows an investigation
+        from an implementation. Unknown falls back to the intent's own record and
+        then to ``implement``: the dispatch the runner has always made, and what
+        ``record_outcome`` defaults to."""
         from server.db.models import AutomationTargetState, Session as DbSession
 
         intent = tx.operation.provenance.get("runner_dispatch")
@@ -1344,22 +1354,26 @@ class BacklogRunnerLoop:
             return False
         session = await tx.db.get(DbSession, sid) if sid else None
         model = (session.model if session is not None else None) or model or intent["model"]
+        # The reconciler's replay (``_reconcile_operations``) settles from the
+        # intent alone — it never saw the spawn record — so an investigation it
+        # recovers is read off the intent this call is about to stamp.
+        kind = dispatch_kind or intent.get("dispatch_kind") or "implement"
         state = dict(intent["expected"])
         # The APPLIED model, not the policy's ``default_model``: the ladder's
         # ``next_rung`` (spec 2026-09-18 §4) climbs from what this attempt
         # actually ran on, read back off the sweep's ``st.get("model")``.
-        state.update(session_id=sid, branch=branch, model=model)
+        state.update(session_id=sid, branch=branch, model=model, dispatch_kind=kind)
         state.pop("proposed", None)
         try:
             async with tx.db.begin_nested():
                 await self._ctx.record_outcome(
                     target, _db=tx.db, product_slug=state.get("product"), session_id=sid,
-                    model=model, attempt_no=state.get("attempts", 0))
+                    model=model, attempt_no=state.get("attempts", 0), dispatch_kind=kind)
         except Exception:
             log.warning("backlog_runner.outcome_start_failed target=%s", target, exc_info=True)
         row.state = state
         tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
-            **intent, "model": model, "session_id": sid,
+            **intent, "model": model, "dispatch_kind": kind, "session_id": sid,
             "accounted_at": self._wall_clock().isoformat()}}
         return True
 
@@ -1472,9 +1486,12 @@ class BacklogRunnerLoop:
         context inserts one from these instead of losing the bounce. The claim is
         the only surviving account of that dispatch — ``model`` is the APPLIED
         model ``_settle_dispatch`` wrote onto the row (spec 2026-09-18 §4: the
-        ladder climbs from what this attempt actually ran on, not a guess), and
-        ``attempts`` is the count at spawn (the sweep charges its increment after
-        this call), which is exactly what ``record_outcome`` would have written.
+        ladder climbs from what this attempt actually ran on, not a guess),
+        ``dispatch_kind`` is the kind it wrote there too (spec §5: an investigation
+        recovered as an implementation would be counted as a bounce it never was),
+        and ``attempts`` is the count at spawn (the sweep charges its increment
+        after this call), which is exactly what ``record_outcome`` would have
+        written.
 
         ``None`` for a claim that never dispatched (no ``session_id``: a propose
         claim, or one the reaper caught before the spawn record). Nothing ran, so
@@ -1484,7 +1501,8 @@ class BacklogRunnerLoop:
             return None
         return {"product_slug": st.get("product"),
                 "session_id": st.get("implementation_session_id") or st.get("session_id"),
-                "model": st.get("model"), "attempt_no": st.get("attempts", 0)}
+                "model": st.get("model"), "attempt_no": st.get("attempts", 0),
+                "dispatch_kind": st.get("dispatch_kind") or "implement"}
 
     async def _pr_doctor_attempts(self, pr_ref: str) -> int | None:
         """PR Doctor's session-fix count for *pr_ref*, or None when unknown.

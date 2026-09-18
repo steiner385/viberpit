@@ -6193,6 +6193,12 @@ class SessionOrchestrator:
           human signal. That happens whenever a grouping plan built before the
           hand-off still names the issue as a non-primary member of a later batch
           that bounces below the top. Kept, logged, no audit row;
+        - an ``evidence`` hold (spec §5) is kept the same way against the
+          ``stronger_model`` writer alone: the item IS dispatched while it holds —
+          as an investigation — so it never climbs a ladder, and overwriting the
+          hold would re-queue an untriaged error report as an implement candidate.
+          The ``owner_action`` writer may replace it: that is the investigation's
+          escalate exit and the no-exit hand-off;
         - an IDENTICAL hold already in place (same kind/actor/reason) is a
           no-op retry, not a re-stamp (review R1 I2 item 3) — a retried
           give-up or a re-tick while the row release keeps failing must not
@@ -6220,8 +6226,14 @@ class SessionOrchestrator:
                     WorkItem.kind == "issue",
                     tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
                 for wi in items:
-                    if wi.hold_kind in HELD_KINDS and not (
-                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR):
+                    # Both "this writer may not replace that hold" rules, at ONE
+                    # site with one log line (see the docstring): a person's hold,
+                    # and — for the ladder writer only — an ``evidence`` hold,
+                    # which is queue-eligible precisely because the item is
+                    # dispatched while it holds, as an investigation (spec §5).
+                    if (wi.hold_kind in HELD_KINDS and not (
+                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR)) or (
+                            kind == "stronger_model" and wi.hold_kind == "evidence"):
                         log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
                                  wi.repo, wi.number, wi.hold_kind, wi.hold_by)
                         continue
@@ -6672,6 +6684,32 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
+    async def _backlog_primary_hold_kind(self, primary_ref: str) -> str | None:
+        """The hold kind mirrored on the batch's primary issue, or ``None``.
+
+        The spawn's one door to the dispatch KIND (spec 2026-09-18 §5), and an
+        injectable seam so the spawn tests need no seeded row. Deliberately raw —
+        it answers what the mirror says, and ``_backlog_spawn`` alone decides what
+        a given kind means for a dispatch.
+
+        Reads the same column ``_backlog_ladder_rung`` does, in its own session,
+        because the two answer different questions and only one of them is asked
+        per spawn: an ``evidence`` primary skips the ladder entirely, and a
+        ``stronger_model`` one is not an investigation.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import WorkItem
+        from server.pm.refs import split_ref
+        parts = split_ref(primary_ref)
+        if parts is None:
+            return None
+        repo, number = parts
+        async with db_session() as db:
+            return (await db.execute(sa_select(WorkItem.hold_kind).where(
+                WorkItem.repo == repo, WorkItem.number == number,
+                WorkItem.kind == "issue"))).scalars().first()
+
     async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
                                    default_model: str, floor: str | None) -> str | None:
         """The tier this dispatch is PINNED to because its primary issue is parked
@@ -6759,18 +6797,24 @@ class SessionOrchestrator:
 
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
                              ownership_token: str):
-        """Spawn a de-duped runner session for *batch*, seeded with the implement
-        prompt.
+        """Spawn a de-duped runner session for *batch*, seeded with the prompt for
+        the KIND of dispatch this is.
 
-        Chooses model and prompt before forwarding the durable ownership token
-        to the shared session boundary. That boundary reserves a session UUID
-        before cloning or starting the native driver. Returns the SessionRecord.
+        Chooses kind, model and prompt before forwarding the durable ownership
+        token to the shared session boundary. That boundary reserves a session
+        UUID before cloning or starting the native driver. Returns the
+        SessionRecord, carrying ``dispatch_kind`` for the loop to read back the
+        way it reads ``model``/``branch`` (``_settle_dispatch`` writes both onto
+        the claim row and the dispatch-history row).
 
         *default_model* is the PRODUCT's session model, supplied by the caller —
         the loop hands down the snapshot its dispatch decision was made on, the
         tap paths read it through ``_backlog_policy_model``. Keyword-only and
         required so no spawn site can silently fall back to a different model."""
-        from server.automations.backlog_prompt import build_implement_prompt
+        from server.automations.backlog_prompt import (
+            build_implement_prompt,
+            build_investigate_prompt,
+        )
         # Engine FIRST, before any network or disk work: the seed prompt states a
         # commit trailer so it has to be built for the engine that will actually
         # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
@@ -6786,7 +6830,29 @@ class SessionOrchestrator:
         # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
         # instead of growing a second way to be told which model to use.
         config = {**config, "default_model": default_model}
-        detail: dict = {"issues": batch.issues, "engine": engine.value}
+        # WHAT this dispatch is FOR (spec §5), decided before anything acts on it:
+        # an ``evidence``-held primary is an auto-filed error report nobody has
+        # triaged, so it is INVESTIGATED, not implemented. The kind picks the seed
+        # prompt, keeps the item off the ladder, and is recorded on the dispatch —
+        # an investigation opens no PR by design and must never be read back as an
+        # implementation that failed to.
+        #
+        # Best-effort like the floor and the rung below (§13): a failed read costs
+        # the KIND, never the spawn. The fallback is the dispatch the runner has
+        # always made, and the next tick reads the hold again.
+        primary_hold = None
+        try:
+            primary_hold = await self._backlog_primary_hold_kind(batch.primary)
+        except Exception:
+            log.warning("backlog_runner.primary_hold_read_failed target=%s",
+                        batch.primary, exc_info=True)
+        investigate = primary_hold == "evidence"
+        dispatch_kind = "investigate" if investigate else "implement"
+        # Stamped on every spawn, exactly like ``engine``: a backlog that mixes
+        # implementations and investigations is unreadable after the fact if only
+        # one of the two says which it was.
+        detail: dict = {"issues": batch.issues, "engine": engine.value,
+                        "dispatch_kind": dispatch_kind}
         summary = "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
         # The capability's own merge history (D9) floors an `auto` pick, so a
@@ -6806,12 +6872,19 @@ class SessionOrchestrator:
             # its last bounce parked as ``stronger_model`` is dispatched at the
             # next rung. Claude-only for the same reason the floor is — the rungs
             # are Claude tiers, and a Codex dispatch has no ladder to climb.
-            try:
-                rung = await self._backlog_ladder_rung(
-                    batch.product, batch.primary, default_model=default_model, floor=floor)
-            except Exception:
-                log.warning("backlog_runner.ladder_rung_failed target=%s",
-                            batch.primary, exc_info=True)
+            #
+            # An INVESTIGATION is off the ladder entirely (spec §5): its primary
+            # holds ``evidence``, not ``stronger_model``, so there is no rung to
+            # climb and no hold to spend — which is also why the hold-consuming
+            # release below, guarded on ``rung``, never fires for one.
+            if not investigate:
+                try:
+                    rung = await self._backlog_ladder_rung(
+                        batch.product, batch.primary, default_model=default_model,
+                        floor=floor)
+                except Exception:
+                    log.warning("backlog_runner.ladder_rung_failed target=%s",
+                                batch.primary, exc_info=True)
         if rung:
             # PINNED, not floored: ``pick_model``'s floor only raises an ``auto``
             # assessment, and the rung is not a bound on a fresh guess — it IS the
@@ -6841,7 +6914,9 @@ class SessionOrchestrator:
             account=account,
             engine=engine,
             name=f"backlog {batch.primary}",
-            initial_prompt=build_implement_prompt(batch, default_branch, engine=engine),
+            initial_prompt=(
+                build_investigate_prompt(batch, engine=engine) if investigate
+                else build_implement_prompt(batch, default_branch, engine=engine)),
             model=model,
             reasoning_effort=reasoning_effort,
             detail=detail,
@@ -6909,6 +6984,15 @@ class SessionOrchestrator:
             except Exception:
                 log.warning("backlog_runner.model_pick_audit_failed target=%s",
                             batch.primary, exc_info=True)
+        if rec is not None:
+            # How the KIND reaches the claim row and the dispatch-history row: the
+            # loop reads it back off the returned record exactly as it reads
+            # ``model`` and ``branch`` (``backlog_runner._settle_dispatch``). In
+            # memory only and never persisted with the session — the kind belongs
+            # to the DISPATCH, whose durable home is those two rows. A de-duped
+            # record is stamped too: the row is written either way, and it must say
+            # what this dispatch was for.
+            rec.dispatch_kind = dispatch_kind
         return rec
 
     async def backlog_runner_implement_core(self, primary: str) -> str:

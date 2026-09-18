@@ -2817,6 +2817,40 @@ def test_spawn_records_a_running_outcome(tmp_path):
         assert row.model == "opus"
         assert row.project_id is not None and row.body_fingerprint is not None
         assert row.started_at is not None and row.ended_at is None
+        # A spawn that says nothing about its kind is the dispatch the runner has
+        # always made: an implementation (spec 2026-09-18 §5).
+        assert row.dispatch_kind == "implement"
+
+    asyncio.run(run())
+
+
+def test_an_investigate_dispatch_carries_its_kind_to_the_row_and_the_outcome(tmp_path):
+    """Spec 2026-09-18 §5: the spawn decides the dispatch KIND (an evidence-held
+    primary is investigated, not implemented) and hands it back on the record it
+    returns; the claim row and the dispatch-history row both record it, so an
+    investigation is never read back as an implementation that failed to open a
+    PR."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_investigate.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")],
+            spawn_result=SimpleNamespace(id="sess-1", branch="b1",
+                                         dispatch_kind="investigate"),
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000,
+                                              default_model="opus")})
+
+        await loop.tick()
+
+        assert len(rec.spawns) == 1
+        assert (await ctx.get_target_state("o/r#1"))["dispatch_kind"] == "investigate"
+        rows = await _outcomes("o/r#1")
+        assert [row.dispatch_kind for row in rows] == ["investigate"]
 
     asyncio.run(run())
 
@@ -3677,7 +3711,14 @@ def test_outcome_fallback_is_none_for_a_claim_that_never_dispatched():
         {"product": "p1", "proposed": True, "attempts": 0}) is None
     assert BacklogRunnerLoop._outcome_fallback(
         {"product": "p1", "session_id": "s1", "attempts": 1}) == {
-        "product_slug": "p1", "session_id": "s1", "model": None, "attempt_no": 1}
+        "product_slug": "p1", "session_id": "s1", "model": None, "attempt_no": 1,
+        "dispatch_kind": "implement"}
+    # A claim the spawn marked as an investigation recovers as one (spec §5): a
+    # recovered row that claimed to be an implementation would be counted as a
+    # bounce the investigation never was.
+    assert BacklogRunnerLoop._outcome_fallback(
+        {"product": "p1", "session_id": "s1", "attempts": 1,
+         "dispatch_kind": "investigate"})["dispatch_kind"] == "investigate"
 
 
 def test_display_counts_share_claim_snapshot_and_keep_off_product_work():

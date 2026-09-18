@@ -1186,6 +1186,54 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
 
 
 @pytest.mark.asyncio
+async def test_escalate_never_replaces_an_evidence_hold_but_the_handoff_does(db_env):
+    """Spec 2026-09-18 §5: an ``evidence`` hold is not in ``HELD_KINDS`` — the item
+    stays queue-eligible, because it IS dispatched, as an investigation. The ladder
+    must still leave it alone: an evidence item never climbs, and replacing its hold
+    with ``stronger_model`` would re-queue an untriaged error report as an implement
+    candidate. The give-up writer DOES replace it — that is where the
+    investigation's escalate exit (and the no-exit hand-off) lands."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    from server.pm.holds import ERROR_TRIAGE_ACTOR, RUNNER_ACTOR, set_evidence_hold
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
+        set_evidence_hold(wi, reason="auto-filed error report", actor=ERROR_TRIAGE_ACTOR,
+                          now=datetime.now(timezone.utc))
+        db.add(wi)
+    await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
+
+    await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "evidence"
+        assert wi.hold_by == ERROR_TRIAGE_ACTOR
+        assert (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all() == []
+
+    with patch("server.automations.backlog_github.announce_needs_human", lambda *a, **k: None):
+        await orch._backlog_needs_human("o/r#1", "investigation ended with no exit")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "owner_action"
+        assert wi.hold_by == RUNNER_ACTOR
+        assert wi.hold_reason == "investigation ended with no exit"
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert [e.detail["kind"] for e in events] == ["owner_action"]
+
+
+@pytest.mark.asyncio
 async def test_escalate_never_replaces_the_runners_own_owner_action_handoff(db_env):
     """Final review I2: the ``hold_by == RUNNER_ACTOR`` exemption exists so a
     RETRIED give-up can re-stamp its own hold. It must not extend to the
