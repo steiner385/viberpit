@@ -71,3 +71,18 @@ def clear_hold(wi: WorkItem, *, actor: str) -> None:
     wi.hold_by = None
     wi.hold_set_at = None
     wi.hold_fingerprint = None
+
+
+#: Dialect-neutral conversion of pre-ladder ``needs_human`` rows (spec §3). Run by
+#: migration 0049's ``upgrade()`` AND by ``scripts/convert_legacy_needs_human.py``,
+#: because nothing runs ``alembic upgrade`` at deploy time — the script is what
+#: actually converts the live rows. Order matters: the hold is written from the row
+#: while ``triage_state`` still says needs_human, then the state is rewritten.
+LEGACY_CONVERSION_SQL: tuple[str, ...] = (
+    "UPDATE work_items SET hold_kind = 'owner_action', hold_by = 'migration', "
+    "hold_reason = 'pre-ladder needs_human', hold_set_at = classified_at "
+    "WHERE triage_state = 'needs_human' AND hold_kind IS NULL",
+    "UPDATE work_items SET triage_state = 'classified' WHERE triage_state = 'needs_human' "
+    "AND reach IS NOT NULL AND impact IS NOT NULL AND effort IS NOT NULL AND confidence IS NOT NULL",
+    "UPDATE work_items SET triage_state = 'unclassified' WHERE triage_state = 'needs_human'",
+)
