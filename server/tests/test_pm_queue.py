@@ -16,17 +16,17 @@ def _row(**over):
     base = dict(ref="o/r#1", repo="o/r", number=1, product="viberpit", title="t", body="", url="u",
                 status="Ready", score=10.0, gh_created_at=NOW - timedelta(days=1), gh_updated_at=NOW,
                 assignees=(), author="tony", labels=(), open_children=0, open_blockers=(),
-                live_session=False, claimed=False, needs_human_at=None)
+                live_session=False, claimed=False, hold_kind=None)
     base.update(over)
     return QueueRow(**base)
 
 
 def test_ready_unblocked_unassigned_row_is_eligible():
-    assert skip_reason(_row(), min_status="Ready", respect_dependencies=True, needs_human_retry_days=7, now=NOW) is None
+    assert skip_reason(_row(), min_status="Ready", respect_dependencies=True, now=NOW) is None
 
 
 def test_status_gate_honours_min_status():
-    kw = dict(respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    kw = dict(respect_dependencies=True, now=NOW)
     assert skip_reason(_row(status="Backlog"), min_status="Ready", **kw) == "status"
     assert skip_reason(_row(status="Backlog"), min_status="Backlog", **kw) is None
     assert skip_reason(_row(status="Blocked"), min_status="Backlog", **kw) == "blocked"
@@ -34,13 +34,13 @@ def test_status_gate_honours_min_status():
 
 
 def test_open_blocker_blocks_unless_dependencies_are_ignored():
-    kw = dict(min_status="Ready", needs_human_retry_days=7, now=NOW)
+    kw = dict(min_status="Ready", now=NOW)
     assert skip_reason(_row(open_blockers=("o/r#9",)), respect_dependencies=True, **kw) == "blocked"
     assert skip_reason(_row(open_blockers=("o/r#9",)), respect_dependencies=False, **kw) is None
 
 
 def test_live_session_claim_assignee_epic_and_bot_are_excluded():
-    kw = dict(min_status="Ready", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
     assert skip_reason(_row(live_session=True), **kw) == "live_session"
     assert skip_reason(_row(claimed=True), **kw) == "claimed"
     assert skip_reason(_row(assignees=("steiner385",)), **kw) == "assigned"
@@ -50,35 +50,36 @@ def test_live_session_claim_assignee_epic_and_bot_are_excluded():
     assert skip_reason(_row(title="Dependency Dashboard"), **kw) == "bot"
 
 
-def test_needs_human_at_cools_down_then_reopens():
+def test_held_rows_are_skipped_regardless_of_time():
+    """Spec 2026-09-18 §7: an owner_action or decision hold parks the row until a
+    human signal releases it — there is no timer to wait out."""
     kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
-    fresh = _row(needs_human_at=NOW - timedelta(days=2))
-    assert skip_reason(fresh, needs_human_retry_days=7, **kw) == "needs_human_cooldown"
-    assert skip_reason(fresh, needs_human_retry_days=0, **kw) == "needs_human_cooldown"  # 0 = never retry
-    old = _row(needs_human_at=NOW - timedelta(days=8))
-    assert skip_reason(old, needs_human_retry_days=7, **kw) is None
+    assert skip_reason(_row(hold_kind="owner_action"), **kw) == "held"
+    assert skip_reason(_row(hold_kind="decision"), **kw) == "held"
+    # the two auto-exiting kinds are eligible
+    assert skip_reason(_row(hold_kind="evidence"), **kw) is None
+    assert skip_reason(_row(hold_kind="stronger_model"), **kw) is None
 
 
-def test_needs_human_label_alone_no_longer_cools_down():
-    """Phase D: the label is not a signal; only the runner's durable row is."""
-    kw = dict(min_status="Backlog", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+def test_needs_human_label_alone_never_skips():
+    """Phase D: the label is not a signal; only the hold is."""
+    kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
     assert skip_reason(_row(labels=("needs-human",), gh_updated_at=NOW), **kw) is None
 
 
-def test_needs_human_cooldown_outranks_the_board_status_it_causes():
-    """The reconciler stamps ``Needs human`` on exactly these rows (Task 2), so a
+def test_held_outranks_the_board_status_it_causes():
+    """The reconciler stamps ``Needs human`` on exactly these rows, so a
     status-first check would report them as plain "status" skips and the card
-    would lose its needs-human gauge."""
-    kw = dict(min_status="Backlog", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
-    row = _row(status="Needs human", needs_human_at=NOW - timedelta(days=1))
-    assert skip_reason(row, **kw) == "needs_human_cooldown"
+    would lose its held gauge."""
+    kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
+    assert skip_reason(_row(status="Needs human", hold_kind="owner_action"), **kw) == "held"
 
 
 def test_needs_spec_skips_a_bounced_row_before_the_status_gate():
     """D8: a row that keeps bouncing on the same body is parked as ``needs_spec``
-    — checked immediately after the needs-human cooldown and before the status
-    gate, so it is reported whatever the board's Status column says."""
-    kw = dict(min_status=STATUS_READY, respect_dependencies=True, needs_human_retry_days=0, now=NOW)
+    — checked immediately after the held check and before the status gate, so it
+    is reported whatever the board's Status column says."""
+    kw = dict(min_status=STATUS_READY, respect_dependencies=True, now=NOW)
     row = _row(bounces=2, status=STATUS_READY)
     assert skip_reason(row, give_up_after_bounces=2, **kw) == "needs_spec"
     assert skip_reason(row, give_up_after_bounces=3, **kw) is None
@@ -89,9 +90,17 @@ def test_needs_spec_skips_a_bounced_row_before_the_status_gate():
 def test_rank_counts_needs_spec():
     rows = [_row(ref="o/r#1", number=1, bounces=2), _row(ref="o/r#2", number=2, bounces=0)]
     entries, skipped = rank(rows, min_status=STATUS_READY, respect_dependencies=True,
-                            needs_human_retry_days=0, now=NOW, give_up_after_bounces=2)
+                            now=NOW, give_up_after_bounces=2)
     assert skipped == {"needs_spec": 1}
     assert [e.number for e in entries] == [2]
+
+
+def test_rank_carries_hold_kind_onto_entries():
+    entries, skipped = rank([_row(hold_kind="evidence"), _row(ref="o/r#2", number=2, hold_kind="owner_action")],
+                            min_status="Backlog", respect_dependencies=True, now=NOW)
+    assert [(e.ref, e.hold_kind) for e in entries] == [("o/r#1", "evidence")]
+    assert skipped == {"held": 1}
+    assert "held" in SKIP_REASONS and "needs_human_cooldown" not in SKIP_REASONS
 
 
 def test_rank_orders_score_desc_nulls_last_then_age_and_counts_skips():
@@ -149,7 +158,7 @@ def test_to_candidate_carries_urgency_to_the_grouper():
 
 
 def test_rank_rejects_unknown_min_status():
-    kw = dict(respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    kw = dict(respect_dependencies=True, now=NOW)
     with pytest.raises(ValueError, match="min_status must be one of"):
         skip_reason(_row(), min_status="Nope", **kw)
     with pytest.raises(ValueError, match="min_status must be one of"):
@@ -169,7 +178,7 @@ def test_backlog_mode_admits_unstamped_and_foreign_statuses():
     # Decision C-2: an item the reconciler never stamped (status=None) or one
     # sitting in a non-spec column (GitHub's default "Todo") is Backlog-equivalent
     # so an unreconciled board doesn't yield an empty queue.
-    kw = dict(respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    kw = dict(respect_dependencies=True, now=NOW)
     assert skip_reason(_row(status=None), min_status="Backlog", **kw) is None
     assert skip_reason(_row(status="Todo"), min_status="Backlog", **kw) is None
     assert skip_reason(_row(status=None), min_status="Ready", **kw) == "status"
@@ -177,7 +186,7 @@ def test_backlog_mode_admits_unstamped_and_foreign_statuses():
 
 
 def test_every_skip_reason_is_in_the_vocabulary():
-    kw = dict(min_status="Ready", respect_dependencies=True, needs_human_retry_days=7, now=NOW,
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW,
              give_up_after_bounces=2)
     cases = {
         "status": _row(status="Done"),
@@ -187,7 +196,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "assigned": _row(assignees=("steiner385",)),
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
-        "needs_human_cooldown": _row(needs_human_at=NOW - timedelta(days=1)),
+        "held": _row(hold_kind="owner_action"),
         "needs_spec": _row(bounces=2),
     }
     seen = set()
