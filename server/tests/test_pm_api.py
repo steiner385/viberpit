@@ -805,28 +805,38 @@ def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
         refused = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"clearHold": True})
         assert refused.status_code == 422
         assert refused.json()["detail"]["error"] == "hold_not_permitted"
+        # …nor OVERWRITE it with a kind it may set, which would release it just as
+        # surely as clearHold (final-review F1).
+        refused = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                          json={"holdKind": "evidence", "holdReason": "correlate with #2"})
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["error"] == "hold_not_permitted"
+        still = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                        headers=IDENTITY_HEADERS).json()
+        assert still["holdKind"] == "owner_action"
+        assert still["holdBy"] == "testuser@example.com"
         # a legacy value is no longer accepted anywhere
         legacy = c.patch(f"/api/pm/work-items/{wid}/overlay",
                          json={"triageState": "needs_human"}, headers=IDENTITY_HEADERS)
         assert legacy.status_code == 422
 
 
-def test_reject_by_loopback_caller_is_refused_not_500():
-    """reject_triage sets an owner_action hold as the caller; under LAN-open mode
-    with no identity header the caller is lan@local (agent class), which
-    owner_action refuses (#task-3 review finding 1) — this must surface as the
-    same 422 hold_not_permitted patch_overlay gives, not an unhandled 500, and
-    must leave the proposal pending and the item unheld."""
+def test_reject_by_loopback_caller_records_agent_actor():
+    """Rejecting is one of the two flows spec §8 authorises to write ``owner_action``
+    regardless of actor class, so a LAN-open (agent-class) rejection must SUCCEED —
+    the Reject button has to work there — while recording the truth about who did it:
+    ``hold_by == "lan@local"`` and ``actorClass == "agent"``, never a person's login
+    (final-review F4)."""
     from server.db import db_session
     from sqlalchemy import select
-    from server.db.models import TriageProposal, WorkItem
+    from server.db.models import AuditEvent, TriageProposal, WorkItem
 
     with patch.dict(os.environ, LAN_OPEN), _client() as c:
         _register(c, "Viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
         r = c.post(f"/api/pm/triage/{pid}/reject")
-        assert r.status_code == 422, r.text
-        assert r.json()["detail"]["error"] == "hold_not_permitted"
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "rejected"
 
         async def _check():
             async with db_session() as db:
@@ -834,10 +844,15 @@ def test_reject_by_loopback_caller_is_refused_not_500():
                     TriageProposal.id == pid))).scalar_one()
                 wi = (await db.execute(select(WorkItem).where(
                     WorkItem.id == wid))).scalar_one()
-                return prop.status, wi.hold_kind
-        status, hold_kind = c.portal.call(_check)
-        assert status == "pending"
-        assert hold_kind is None
+                detail = (await db.execute(select(AuditEvent.detail).where(
+                    AuditEvent.type == "pm.hold.set"))).scalars().one()
+                return prop.status, wi.hold_kind, wi.hold_by, wi.hold_set_at, detail
+        status, hold_kind, hold_by, hold_set_at, detail = c.portal.call(_check)
+        assert status == "rejected"
+        assert hold_kind == "owner_action"
+        assert hold_by == "lan@local"
+        assert hold_set_at is not None
+        assert detail["actorClass"] == "agent"
 
 
 def test_overlay_hold_reason_without_hold_kind_is_bad_hold():

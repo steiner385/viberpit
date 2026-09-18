@@ -5,7 +5,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 SCRIPT = Path("scripts/convert_legacy_needs_human.py")
 
@@ -66,3 +66,9 @@ def test_script_apply_converts_rows(tmp_path):
     assert row[1] == "owner_action"
     assert row[2] == "migration"
     assert row[3] == "pre-ladder needs_human"
+    # ``WorkItem.hold_kind`` declares index=True, but reconcile ALTER-ADDs COLUMNS only
+    # and nothing runs `alembic upgrade` at deploy — so this script is what puts the
+    # index on an existing DB (final-review M10).
+    from server.pm.holds import HOLD_INDEX_NAME
+    assert HOLD_INDEX_NAME in {
+        i["name"] for i in inspect(engine).get_indexes("work_items")}

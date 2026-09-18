@@ -1291,6 +1291,7 @@ async def accept_triage(
 @router.post("/triage/{proposal_id}/reject")
 async def reject_triage(
     proposal_id: str,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1302,24 +1303,17 @@ async def reject_triage(
     now = datetime.now(timezone.utc)
     if wi is not None:
         prop.undo_snapshot = _overlay_snapshot(wi)
-        # Spec 2026-09-18 §3: a rejection is a person's hold, not a triage state.
-        # This route is gated by current_identity, but in LAN-open mode an
-        # unattributed caller resolves to lan@local (agent class), which
-        # owner_action refuses — so the same HoldPermissionError → 422
-        # translation patch_overlay uses applies here.
-        from server.pm.holds import HoldPermissionError, actor_class, set_hold
-        try:
-            set_hold(wi, kind="owner_action", reason="classification proposal rejected",
-                     actor=identity, now=now)
-        except HoldPermissionError as e:
-            raise HTTPException(status_code=422, detail={
-                "error": "hold_not_permitted", "message": str(e)}) from e
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail={
-                "error": "bad_hold", "message": str(e)}) from e
+        # Spec 2026-09-18 §3: a rejection is a hold, not a triage state — and §8 names
+        # "the two reject flows" as authorised to write owner_action whoever drives
+        # them, so this goes through `set_reject_hold` (no actor-class gate) rather
+        # than `set_hold`. The ACTOR is resolved exactly as patch_overlay resolves it
+        # so an assistant or loopback rejection is recorded as what it was.
+        from server.pm.holds import REJECT_HOLD_REASON, actor_class, actor_for_request, set_reject_hold
+        actor = actor_for_request(request)
+        set_reject_hold(wi, actor=actor, now=now)
         await record_audit(db=db, type="pm.hold.set", identity=identity, detail={
             "workItemId": wi.id, "kind": "owner_action",
-            "reason": "classification proposal rejected", "actorClass": actor_class(identity)})
+            "reason": REJECT_HOLD_REASON, "actorClass": actor_class(actor)})
     prop.status = "rejected"
     prop.resolved_at = now
     await db.flush()

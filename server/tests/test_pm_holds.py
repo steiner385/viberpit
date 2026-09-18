@@ -57,6 +57,27 @@ def test_set_hold_records_everything_and_refuses_bad_input():
         set_hold(wi, kind="bogus", reason="r", actor="tony@example.com", now=NOW)
 
 
+def test_set_hold_may_not_overwrite_a_hold_the_actor_could_not_clear():
+    """Replacing a hold RELEASES the old one, so ``set_hold`` must gate on the kind
+    already on the row as well as the new kind (final-review F1). Otherwise an agent
+    setting ``evidence`` over a person's ``owner_action`` silently un-parks the item
+    and the runner dispatches work a person explicitly stopped."""
+    wi = WorkItem(repo="o/r", number=1, kind="issue", body="hello")
+    set_hold(wi, kind="owner_action", reason="owner only", actor="tony@example.com", now=NOW)
+    with pytest.raises(HoldPermissionError):
+        set_hold(wi, kind="evidence", reason="correlate", actor="session:s1", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("owner_action", "tony@example.com")
+    # a person may replace it
+    set_hold(wi, kind="evidence", reason="get a repro", actor="tony@example.com", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("evidence", "tony@example.com")
+    # and an agent may replace an agent-settable kind with another
+    set_hold(wi, kind="stronger_model", reason="under-powered", actor="session:s1", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("stronger_model", "session:s1")
+    # re-setting the SAME kind is not a replacement — an agent may refresh its own reason
+    set_hold(wi, kind="stronger_model", reason="still under-powered", actor="session:s1", now=NOW)
+    assert wi.hold_reason == "still under-powered"
+
+
 def test_clear_hold_limited_to_settable_kinds():
     wi = WorkItem(repo="o/r", number=1, kind="issue", body="hello")
     set_hold(wi, kind="owner_action", reason="owner only", actor="tony@example.com", now=NOW)
@@ -67,6 +88,25 @@ def test_clear_hold_limited_to_settable_kinds():
     assert wi.hold_set_at is None and wi.hold_fingerprint is None
     # clearing nothing is a no-op for anyone
     clear_hold(wi, actor="session:s1")
+
+
+def test_set_reject_hold_is_open_to_every_actor_class():
+    """Spec §8 authorises ``owner_action`` from "the two reject flows" whoever drives
+    them, so the reject helper writes the same fields as ``set_hold`` but takes no
+    actor-class gate — otherwise the inbox Reject button 422s in LAN-open mode and an
+    assistant rejection cannot be recorded at all (final-review F4)."""
+    from server.pm.holds import set_reject_hold
+    wi = WorkItem(repo="o/r", number=1, kind="issue", body="hello")
+    set_reject_hold(wi, actor="lan@local", now=NOW)
+    assert wi.hold_kind == "owner_action"
+    assert wi.hold_by == "lan@local"
+    assert wi.hold_reason == "classification proposal rejected"
+    assert wi.hold_set_at == NOW
+    assert wi.hold_fingerprint
+    # and it may park an item an agent had merely held for evidence
+    set_hold(wi, kind="evidence", reason="repro", actor="tony@example.com", now=NOW)
+    set_reject_hold(wi, actor="assistant:tony@example.com", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("owner_action", "assistant:tony@example.com")
 
 
 def test_actor_for_request_reads_via_and_identity():

@@ -219,7 +219,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     async def set_hold(args: dict[str, Any]) -> Any:
         from server.audit import record_audit
         from server.db import db_session
-        from server.pm.holds import HoldPermissionError, apply_session_hold
+        from server.pm.holds import apply_session_hold
         rec = ctx.record()
         ref = args.get("ref") or getattr(rec, "origin_ref", None)
         if not ref:
@@ -244,7 +244,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                                        {"workItemId": wi.id, "kind": released,
                                         "reason": str(args.get("reason") or ""), "actorClass": "agent",
                                         "session_id": ctx.session_id}, via="session")
-        except (HoldPermissionError, ValueError) as e:
+        except ValueError as e:  # HoldPermissionError is a ValueError subclass
             raise ToolArgError(str(e)) from e
         return {"ref": ref, "holdKind": wi.hold_kind, "holdBy": wi.hold_by}
 

@@ -9,7 +9,9 @@ Nothing runs ``alembic upgrade`` at deploy, so after the hold columns are live
 Reads the DB URL from the app settings (the same env the server runs with); pass
 ``db_url`` to ``main()`` to override.
 
-Runs exactly ``server.pm.holds.LEGACY_CONVERSION_SQL``; prints the affected count first.
+Creates ``server.pm.holds.HOLD_INDEX_SQL``'s index (reconcile adds columns only, so the
+``index=True`` on ``WorkItem.hold_kind`` never reaches an existing DB) and then runs
+exactly ``server.pm.holds.LEGACY_CONVERSION_SQL``; prints the affected count first.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from server.config import get_settings
-from server.pm.holds import LEGACY_CONVERSION_SQL
+from server.pm.holds import HOLD_INDEX_SQL, LEGACY_CONVERSION_SQL
 
 
 async def main(apply: bool, db_url: str | None = None) -> int:
@@ -34,6 +36,9 @@ async def main(apply: bool, db_url: str | None = None) -> int:
             if not apply:
                 print("dry run; pass --apply to convert")
                 return 0
+            # Before the conversion: the conversion itself is what first fills
+            # hold_kind, and every hold query filters on it.
+            await conn.execute(text(HOLD_INDEX_SQL))
             for stmt in LEGACY_CONVERSION_SQL:
                 await conn.execute(text(stmt))
             left = await conn.scalar(text(

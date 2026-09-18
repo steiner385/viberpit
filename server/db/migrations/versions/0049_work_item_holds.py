@@ -17,7 +17,7 @@ from typing import Any
 from alembic import op
 import sqlalchemy as sa
 
-from server.pm.holds import LEGACY_CONVERSION_SQL
+from server.pm.holds import HOLD_INDEX_NAME, LEGACY_CONVERSION_SQL
 
 revision = "0049_work_item_holds"
 down_revision = "0048_artifact_auto_merge_armed"
@@ -47,13 +47,13 @@ def upgrade() -> None:
     for col in _COLUMNS:
         if col.name not in cols:
             op.add_column("work_items", col)
-    if "ix_work_items_hold_kind" not in indexes:
-        op.create_index("ix_work_items_hold_kind", "work_items", ["hold_kind"])
+    if HOLD_INDEX_NAME not in indexes:
+        op.create_index(HOLD_INDEX_NAME, "work_items", ["hold_kind"])
     for stmt in LEGACY_CONVERSION_SQL:
         op.execute(sa.text(stmt))
 
 
 def downgrade() -> None:
-    op.drop_index("ix_work_items_hold_kind", table_name="work_items")
+    op.drop_index(HOLD_INDEX_NAME, table_name="work_items")
     for col in reversed(_COLUMNS):
         op.drop_column("work_items", col.name)

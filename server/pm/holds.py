@@ -53,8 +53,40 @@ def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime)
         raise ValueError("hold_reason is required")
     if not may_set(actor, kind):
         raise HoldPermissionError(f"{actor_class(actor)} actors may not set {kind!r}")
+    # Overwriting a DIFFERENT kind releases the one already there, so the same gate
+    # ``clear_hold`` applies must apply to the outgoing kind too. Without it an agent
+    # setting ``evidence`` over a person's ``owner_action`` un-parks the item and the
+    # runner dispatches work a person explicitly stopped (spec §8 "an actor may clear
+    # only a kind it may set"). Re-setting the same kind is a refresh, not a release.
+    if (wi.hold_kind is not None and wi.hold_kind != kind
+            and not may_set(actor, wi.hold_kind)):
+        raise HoldPermissionError(
+            f"{actor_class(actor)} actors may not replace a {wi.hold_kind!r} hold")
     wi.hold_kind = kind
     wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
+#: The one spelling of why a rejected classification parks its item, shared by the
+#: reject route and the undo snapshot readers.
+REJECT_HOLD_REASON = "classification proposal rejected"
+
+
+def set_reject_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
+    """Park ``wi`` as ``owner_action`` because a classification proposal was rejected.
+
+    Writes exactly the fields ``set_hold(kind="owner_action", …)`` writes but does NOT
+    gate on the actor's class, because spec §8 authorises ``owner_action`` from "the
+    two reject flows" whoever drives them: the rejection itself is the authority, not
+    the caller. Gating here would 422 the inbox Reject button in LAN-open mode
+    (``lan@local`` is agent class) and make an assistant rejection unrecordable — and
+    the alternative, passing a person's login as the actor, is the provenance lie §8
+    exists to remove. ``actor`` is therefore recorded as-is, truthfully.
+    """
+    wi.hold_kind = "owner_action"
+    wi.hold_reason = REJECT_HOLD_REASON
     wi.hold_by = actor
     wi.hold_set_at = now
     wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
@@ -118,6 +150,16 @@ async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
     await db.flush()
     return wi, released
 
+
+#: THE name of the index backing every hold lookup, declared once here because two
+#: writers need it: migration 0049 (the reviewable record) and
+#: ``scripts/convert_legacy_needs_human.py`` (what actually runs on the live DB).
+#: ``WorkItem.hold_kind`` carries ``index=True``, but ``create_all`` never touches an
+#: existing table and ``init_db``'s reconcile ALTER-ADDs COLUMNS only — so without the
+#: script the index would exist only on databases created from scratch. Both dialects
+#: accept ``IF NOT EXISTS``, so the statement is safe to re-run.
+HOLD_INDEX_NAME = "ix_work_items_hold_kind"
+HOLD_INDEX_SQL = f"CREATE INDEX IF NOT EXISTS {HOLD_INDEX_NAME} ON work_items (hold_kind)"
 
 #: Dialect-neutral conversion of pre-ladder ``needs_human`` rows (spec §3). Run by
 #: migration 0049's ``upgrade()`` AND by ``scripts/convert_legacy_needs_human.py``,

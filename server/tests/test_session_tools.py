@@ -174,6 +174,32 @@ async def test_set_hold_rejects_a_kind_the_agent_may_not_set(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_set_hold_may_not_overwrite_a_persons_owner_action_hold(isolated_db):
+    """An agent-settable kind written OVER a person's ``owner_action`` would release
+    it, so the tool must refuse (final-review F1) and the row must not move."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_hold as pm_set_hold
+    from server.sessions.tools.tools import build_session_tools
+    async with db_session() as db:
+        wi = WorkItem(repo="o/n", number=12, kind="issue", body="b", triage_state="classified")
+        pm_set_hold(wi, kind="owner_action", reason="owner only", actor="tony@example.com",
+                    now=datetime(2026, 9, 18, tzinfo=timezone.utc))
+        db.add(wi)
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "set_hold")
+    out = await tool.handler({"kind": "evidence", "reason": "correlate with #2"})
+    assert out.get("is_error") is True
+    assert "owner_action" in out["content"][0]["text"]
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem))).scalar_one()
+        assert (wi.hold_kind, wi.hold_by) == ("owner_action", "tony@example.com")
+        types = {a.type for a in (await db.execute(select(AuditEvent))).scalars()}
+        assert "pm.hold.set" not in types
+
+
+@pytest.mark.asyncio
 async def test_set_hold_without_a_ref_or_origin_is_a_tool_error(isolated_db):
     from server.sessions.tools.tools import build_session_tools
     rec = SimpleNamespace(id="s1", origin_ref=None)
