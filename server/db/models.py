@@ -1602,8 +1602,13 @@ FEATURE_LINK_KINDS: tuple[str, ...] = ("powered_by", "integrates_with")
 WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
 
 # Approved-overlay triage states on WorkItem (proposals live in TriageProposal).
-WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = (
-    "unclassified", "proposed", "classified", "needs_human")
+# ``needs_human`` was removed by spec 2026-09-18: "held" is now the hold columns
+# below, not a triage state.
+WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = ("unclassified", "proposed", "classified")
+
+# Why a work item is held (spec 2026-09-18 §3). Only ``owner_action`` and a
+# pending ``decision`` render as "Needs you"; the other two exit on their own.
+HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action")
 
 # Also the lifecycle of a MaterializationProposal (spec 003 §7b) — one proposal
 # vocabulary, not one per proposal kind (constitution VI).
@@ -1756,6 +1761,15 @@ class WorkItem(Base):
     classified_by: Mapped[str | None] = mapped_column(String, nullable=True)
     classified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # --- hold (spec 2026-09-18 §3): why the item is parked, by whom, since when ---
+    hold_kind: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # HOLD_KINDS
+    hold_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    hold_by: Mapped[str | None] = mapped_column(String, nullable=True)  # actor string, holds.py
+    hold_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # body_fingerprint at hold time; a differing current fingerprint is the
+    # "issue body edit" release signal for an owner_action hold (spec §7).
+    hold_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

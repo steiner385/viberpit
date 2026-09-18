@@ -1,0 +1,73 @@
+"""Holds on work items — the ONE implementation of spec 2026-09-18 §3/§8.
+
+A hold says why an item is parked and who parked it. Kinds live in
+``server.db.models.HOLD_KINDS``; this module owns who may write which kind and
+the set/clear operations every route and tool must go through.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from server.db.models import HOLD_KINDS, WorkItem
+from server.pm.outcomes import body_fingerprint
+
+#: Kinds a non-person (session, assistant, loopback caller) may set or clear.
+AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", "stronger_model"})
+
+#: System actors: the runner and the automations. They ARE the ladder and the
+#: reject flows, so they may write any kind — but they are never "human".
+SYSTEM_ACTORS: frozenset[str] = frozenset({"runner", "migration"})
+SYSTEM_PREFIXES: tuple[str, ...] = ("automation:",)
+AGENT_PREFIXES: tuple[str, ...] = ("session:", "assistant:")
+#: The synthetic identity handed to an unattributed loopback caller
+#: (server/auth/identity.py:OPEN_LAN_IDENTITY). Spelled here as a literal so this
+#: module stays free of the auth package.
+OPEN_LAN_ACTOR = "lan@local"
+
+ActorClass = Literal["person", "agent", "system"]
+
+
+class HoldPermissionError(ValueError):
+    """The actor may not set or clear this hold kind."""
+
+
+def actor_class(actor: str) -> ActorClass:
+    if actor in SYSTEM_ACTORS or actor.startswith(SYSTEM_PREFIXES):
+        return "system"
+    if actor == OPEN_LAN_ACTOR or actor.startswith(AGENT_PREFIXES):
+        return "agent"
+    return "person"
+
+
+def may_set(actor: str, kind: str) -> bool:
+    if kind not in HOLD_KINDS:
+        return False
+    return actor_class(actor) != "agent" or kind in AGENT_SETTABLE
+
+
+def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime) -> None:
+    if kind not in HOLD_KINDS:
+        raise ValueError(f"hold_kind must be one of {HOLD_KINDS}")
+    if not (reason or "").strip():
+        raise ValueError("hold_reason is required")
+    if not may_set(actor, kind):
+        raise HoldPermissionError(f"{actor_class(actor)} actors may not set {kind!r}")
+    wi.hold_kind = kind
+    wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
+def clear_hold(wi: WorkItem, *, actor: str) -> None:
+    if wi.hold_kind is None:
+        return
+    if not may_set(actor, wi.hold_kind):
+        raise HoldPermissionError(
+            f"{actor_class(actor)} actors may not clear a {wi.hold_kind!r} hold")
+    wi.hold_kind = None
+    wi.hold_reason = None
+    wi.hold_by = None
+    wi.hold_set_at = None
+    wi.hold_fingerprint = None
