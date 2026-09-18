@@ -3274,6 +3274,40 @@ def test_pr_doctor_give_up_climbs_the_ladder_too(tmp_path):
     asyncio.run(run())
 
 
+def test_pr_doctor_give_up_at_an_approval_clamped_top_names_the_gate(tmp_path):
+    """Review r1 F5: the PR-Doctor give-up is the same ladder path, so its
+    top-of-ladder hand-off names the gate the same way a no-PR bounce does —
+    otherwise the owner reads "gave up at the top" as the strongest model having
+    been tried when the ladder never reached it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder3_clamped.db'}"
+
+    async def run():
+        from server.db.models import Automation, AutomationEvent
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            db.add(AutomationEvent(
+                automation_id="pr-doctor", level="warn", summary="gave up",
+                kind="gave_up", target="r#1", detail={"origin_ref": "r#1"}))
+        clamped = {**policy(max_in_flight=1000, ladder_top="opus"),
+                   "ladder_top_configured": "fable"}
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")], pr_status={},
+                                    policies={DEFAULT_PRODUCT: clamped},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="opus"))
+        await loop.tick()                       # spawn r#1 on the clamped top
+        await loop.tick()                       # sweep sees the pr-doctor gave_up
+
+        assert rec.escalations == []            # never climbs onto the gated tier
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        assert rec.needs_humans[0][1] == (
+            "PR Doctor gave up at the top; fable needs approval")
+
+    asyncio.run(run())
+
+
 def test_pr_closed_unmerged_still_hands_off_with_the_pr_link(tmp_path):
     """A person closing the PR unmerged is their decision, not a failed attempt
     (spec §4): straight to the owner via ``_give_up``, with the PR link in the
