@@ -58,13 +58,14 @@ async def _set_policy(slug: str, policy: dict | None) -> None:
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",
                      score: float | None = None,
-                     hold_kind: str | None = None) -> str:
+                     hold_kind: str | None = None,
+                     labels: list[str] | None = None) -> str:
     from sqlalchemy import select
     async with db_session() as db:
         item = WorkItem(repo=repo, number=number, kind="issue", state="open",
                         title=f"issue {number}", body="body",
                         url=f"https://github.com/{repo}/issues/{number}",
-                        author="steiner385", labels=[], assignees=[])
+                        author="steiner385", labels=labels or [], assignees=[])
         if hold_kind is not None:
             item.hold_kind, item.hold_by, item.hold_reason = hold_kind, "tony@example.com", "max attempts"
         db.add(item)
@@ -503,5 +504,70 @@ def test_refresh_groups_stores_an_evidence_only_plan_without_a_model_call(tmp_pa
 
         assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 1
         assert [g["refs"] for g in seen["stored"]] == [[f"{TRIAGE_REPO}#101"]]
+
+    asyncio.run(run())
+
+
+def test_refresh_groups_float_an_urgent_group_ahead_of_the_evidence_half(tmp_path,
+                                                                         monkeypatch):
+    """The evidence half is concatenated in front of the model's, so without the
+    float an incident lands behind every auto-error report of the day — the exact
+    shape #1698's urgent float exists to prevent."""
+    async def run():
+        await _init(tmp_path, "evurgent.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        # The evidence reports outscore the incident, so only urgency can float it.
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 102, score=8.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 900, score=1.0, labels=["deploy-monitor"])
+        await _seed_signature(101, "server.a", "boom")
+        await _seed_signature(102, "server.a", "boom")
+        orch = _orch_with_ctx()
+
+        async def _healthy():
+            return None
+        orch._backlog_healthy_account = _healthy
+        seen: dict = {}
+
+        async def _propose(cands, config, _config_dir=None):
+            return [{"refs": [c["ref"] for c in cands], "rationale": "model"}]
+
+        async def _store(groups, cands):
+            seen["stored"] = groups
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 2
+        assert [g["refs"] for g in seen["stored"]] == [
+            [f"{TRIAGE_REPO}#900"],                          # the incident, first
+            [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#102"],    # the family, behind it
+        ]
+
+    asyncio.run(run())
+
+
+def test_query_queue_survives_a_family_lookup_that_raises(tmp_path, monkeypatch):
+    """Fail OPEN: the family read is an annotation, never the pool's life. A raising
+    lookup leaves the evidence candidates familyless — which groups each alone, the
+    pre-family behaviour — instead of costing the runner the tick."""
+    async def run():
+        await _init(tmp_path, "famboom.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 103, score=7.0)
+        await _seed_signature(101, "server.a", "boom")
+        orch = _orch_with_ctx()
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("signature read failed")
+
+        monkeypatch.setattr("server.pm.error_family.families_for_refs", _boom)
+
+        cands = await orch._backlog_query_queue(_config())
+
+        assert [c["ref"] for c in cands] == [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#103"]
+        assert cands[0]["family"] is None
 
     asyncio.run(run())

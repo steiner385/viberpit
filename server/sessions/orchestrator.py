@@ -6144,12 +6144,12 @@ class SessionOrchestrator:
         work would hand a session two incompatible prompts. Their groups lead the
         stored plan; the model partitions only what is left."""
         from server.automations.backlog_grouping import (
-            family_groups, propose_groups, store_plan)
+            family_groups, float_urgent_first, propose_groups, store_plan)
         candidates = await self._backlog_query_queue(config)
         if not candidates:
             return await store_plan([], [])
         evidence, rest = family_groups(
-            candidates, max_k=max(1, int(config.get("max_issues_per_pr") or 1)))
+            candidates, max_k=int(config.get("max_issues_per_pr") or 1))
         groups: list[dict] = []
         # An evidence-only pool has nothing for the model to partition — asking
         # would burn a call to be told so, and an empty answer is the shape this
@@ -6164,7 +6164,12 @@ class SessionOrchestrator:
             if not groups:
                 raise RuntimeError(
                     f"grouping model returned no parseable plan for {len(rest)} candidate(s)")
-        plan = evidence + groups
+        # Concatenating the two halves would put an incident behind every
+        # auto-error report of the day, because ``parse_group_plan`` floats urgent
+        # work inside the MODEL half only. The same float is re-applied over the
+        # whole plan — one definition of the invariant (#1698), applied wherever a
+        # plan is assembled.
+        plan = float_urgent_first(evidence + groups, candidates)
         # The WHOLE pool, not ``rest``: ``store_plan`` resolves each stored ref's
         # repo and title through it.
         await store_plan(plan, candidates)

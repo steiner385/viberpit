@@ -140,21 +140,30 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     for c in (c for c in candidates if c["ref"] not in seen):
         groups.append({"refs": [c["ref"]], "rationale": None})
 
-    # Urgent work leads the plan, whatever the model said and whatever the
-    # leftover ordering is. The queue already ranks incidents first
-    # (``server.pm.queue.rank_key``), but the plan is what the runner actually
-    # pops, so the invariant has to survive this hand-off too — and BOTH paths
-    # here work against it. A model free to order by "implementation priority"
-    # can rank an incident last, and the degraded path sorts leftovers by issue
-    # NUMBER, where an incident is the newest issue in the pool and therefore
-    # always last. That is not hypothetical: two incidents reporting both admin
-    # environments down came out 328th and 329th of 332.
-    #
-    # Stable, so floating urgent work never otherwise reshuffles the model's
-    # priority ordering.
+    return float_urgent_first(groups, candidates)
+
+
+def float_urgent_first(groups: list[dict], candidates: list[dict]) -> list[dict]:
+    """A group holding an urgent candidate leads the plan. Stable, pure, and THE
+    one place the invariant is applied.
+
+    Urgent work leads the plan, whatever the model said and whatever the leftover
+    ordering is. The queue already ranks incidents first
+    (``server.pm.queue.rank_key``), but the plan is what the runner actually pops,
+    so the invariant has to survive this hand-off too — and every path that builds
+    a plan works against it. A model free to order by "implementation priority" can
+    rank an incident last; the degraded path sorts leftovers by issue NUMBER, where
+    an incident is the newest issue in the pool and therefore always last; and the
+    evidence half (:func:`family_groups`) is concatenated ahead of the model's, so
+    an incident would sit behind a day's worth of auto-error reports. That is not
+    hypothetical: two incidents reporting both admin environments down came out
+    328th and 329th of 332.
+
+    Stable, so floating urgent work never otherwise reshuffles the priority
+    ordering it is applied to.
+    """
     urgent_refs = {c["ref"] for c in candidates if c.get("urgent")}
-    groups.sort(key=lambda g: not urgent_refs.intersection(g["refs"]))
-    return groups
+    return sorted(groups, key=lambda g: not urgent_refs.intersection(g.get("refs") or ()))
 
 
 def family_groups(candidates: list[dict], *,

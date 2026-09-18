@@ -11,6 +11,7 @@ import pytest
 
 from server.automations.backlog_grouping import (
     family_groups,
+    float_urgent_first,
     parse_group_plan,
     plan_to_batch,
     propose_groups,
@@ -405,3 +406,18 @@ def test_family_groups_produce_the_shape_store_plan_persists(tmp_path):
                                      "o/r#3": "[auto-error] o/r#3"}
 
     asyncio.run(run())
+
+
+def test_float_urgent_first_leads_with_the_urgent_group_and_is_stable():
+    """The evidence half is assembled outside ``parse_group_plan``, so the urgent
+    float has to be applicable to an already-built plan — one definition, two
+    callers."""
+    plan = [{"refs": ["o/r#1", "o/r#3"], "rationale": "family"},
+            {"refs": ["o/r#4"], "rationale": "family overflow"},
+            {"refs": ["o/r#900"], "rationale": "model"}]
+    candidates = [_evidence("o/r#1", "f"), _evidence("o/r#3", "f"),
+                  _evidence("o/r#4", "f"),
+                  {**_plain("o/r#900"), "urgent": True}]
+
+    assert [g["refs"] for g in float_urgent_first(plan, candidates)] == [
+        ["o/r#900"], ["o/r#1", "o/r#3"], ["o/r#4"]]
