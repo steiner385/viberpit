@@ -20,6 +20,7 @@ from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
+from server.pm.triage_accept import _aware
 from server.pm.tree import (
     CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_reason,
     issue_tier)
@@ -223,6 +224,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
 def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | None,
           parent_ref: str | None, *, reason: str | None = None, bounces: int = 0) -> dict:
     score = rice_score(w.reach, w.impact, w.effort, w.confidence)
+    held_at = _aware(w.hold_set_at)
     return {
         "id": w.id, "ref": _ref(w), "repo": w.repo, "number": w.number, "kind": w.kind,
         "title": w.title, "url": w.url, "state": w.state, "triageState": w.triage_state,
@@ -231,6 +233,8 @@ def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | Non
         "parentRef": parent_ref, "featureId": w.feature_id, "sessionStatus": session_status,
         "ghCreatedAt": w.gh_created_at.isoformat() if w.gh_created_at else None,
         "reason": reason, "bounces": bounces,
+        "holdKind": w.hold_kind, "holdReason": w.hold_reason, "holdBy": w.hold_by,
+        "holdSetAt": held_at.isoformat() if held_at else None,
     }
 
 

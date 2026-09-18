@@ -1688,11 +1688,20 @@ async def release_work_item_hold(
 @router.get("/work-items/{item_id}/issue")
 async def get_work_item_issue(item_id: str, _identity: str = Depends(current_identity),
                               db=Depends(get_db)) -> dict:
+    from server.pm.explain import hold_guidance
     from server.pm.issue_disposition import detail
     wi = await db.get(WorkItem, item_id)
     if wi is None or wi.kind != "issue":
         raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
-    return detail(wi)
+    policy = effective_policy(None)
+    if wi.repo:
+        slug_by_repo = {repo: owner.slug for repo, owner
+                        in (await owning_projects_by_repo(db, {wi.repo})).items()}
+        slug = slug_by_repo.get(wi.repo)
+        if slug:
+            policies = await load_policies(db)
+            policy = policies.get(slug) or policy
+    return {**detail(wi), "guidance": hold_guidance(hold_kind=wi.hold_kind, policy=policy)}
 
 
 @router.post("/work-items/{item_id}/issue")

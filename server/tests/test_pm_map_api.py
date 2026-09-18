@@ -305,6 +305,51 @@ def test_leaves_for_capability_and_initiative():
             assert c.get("/api/pm/leaves?initiative=nope", headers=IDENTITY_HEADERS).status_code == 404
 
 
+def test_leaves_carry_hold_fields():
+    import asyncio
+    from datetime import datetime, timezone
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Project, WorkItem
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            db.add(prod)
+            await db.flush()
+            cap = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(cap)
+            await db.flush()
+            held = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="Held",
+                            feature_id=cap.id, triage_state="unclassified",
+                            hold_kind="owner_action", hold_by="migration", hold_reason="test",
+                            hold_set_at=datetime.now(timezone.utc))
+            plain = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="Plain",
+                             feature_id=cap.id, triage_state="classified",
+                             reach=1, impact=1, effort=1, confidence=1)
+            db.add_all([held, plain])
+            await db.commit()
+            return cap.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            by_ref = {i["ref"]: i for i in r.json()["items"]}
+            assert by_ref["o/r#1"]["holdKind"] == "owner_action"
+            assert by_ref["o/r#1"]["holdReason"] == "test"
+            assert by_ref["o/r#1"]["holdBy"] == "migration"
+            assert by_ref["o/r#1"]["holdSetAt"]
+            assert by_ref["o/r#2"]["holdKind"] is None
+            assert by_ref["o/r#2"]["holdReason"] is None
+            assert by_ref["o/r#2"]["holdBy"] is None
+            assert by_ref["o/r#2"]["holdSetAt"] is None
+
+
 def test_leaves_and_map_surface_needs_spec_bounces():
     """D8: a product's `give_up_after_bounces` policy turns FINALISED non-merged
     outcomes at an issue's CURRENT body into a `needs_spec` reason — on

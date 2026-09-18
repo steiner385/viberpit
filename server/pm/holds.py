@@ -111,8 +111,10 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
 #: hold), which is an overlay EDIT as well as a release and so also stamps
 #: ``classified_by``; ``session`` is a coding session clearing its own hold through
-#: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``).
-RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session")
+#: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``);
+#: ``implement`` is Implement now from the roadmap dialog: released and dispatched
+#: in one tap.
+RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session", "implement")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 

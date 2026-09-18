@@ -207,6 +207,98 @@ def test_dispatch_api_requires_auth():
     assert r.status_code == 401
 
 
+async def _seed_held_issue(hold_kind: str = "owner_action", *, number: int = 7, repo: str = "o/r"):
+    from server.db import db_session
+    from server.db.models import WorkItem
+    async with db_session() as db:
+        db.add(WorkItem(repo=repo, number=number, kind="issue", state="open",
+                        title=f"Fix {number}", hold_kind=hold_kind, hold_by="migration",
+                        hold_reason="test"))
+        await db.commit()
+
+
+def test_manual_dispatch_releases_an_owner_action_hold_first():
+    """The roadmap dialog's Implement-now tap: releasing a person's owner_action
+    hold and dispatching a session happen as one action (spec 2026-09-18 §7,
+    RELEASE_SIGNALS "implement")."""
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
+
+    def patch_orch(orch):
+        orch._backlog_read_config = AsyncMock(return_value=("auto", {
+            "enabled_repos": ["o/r"],
+            "max_concurrent": 1, "max_spawns_per_day": 10,
+            "max_issues_per_pr": 3, "default_model": None,
+        }))
+        orch._backlog_announce = AsyncMock(return_value=None)
+        orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+        orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(_seed_held_issue)
+        r = c.post("/api/automations/backlog-runner/dispatch",
+                   json={"refs": ["o/r#7"]}, headers=H)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "spawned"
+        c.app.state.orchestrator._backlog_spawn.assert_awaited_once()
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import AuditEvent, WorkItem
+
+        async def _check():
+            async with db_session() as db:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo == "o/r", WorkItem.number == 7))).scalar_one()
+                rows = (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.hold.release"))).scalars().all()
+                return wi.hold_kind, rows
+        hold_kind, rows = c.portal.call(_check)
+        assert hold_kind is None
+        assert len(rows) == 1
+        assert rows[0].detail["signal"] == "implement"
+        assert rows[0].detail["actorClass"] == "person"
+        assert rows[0].detail["kind"] == "owner_action"
+
+
+def test_manual_dispatch_refuses_a_decision_hold():
+    """A ``decision`` hold is resolved through its proposal (spec §8), never by
+    dispatch — 422, and the seam is never called."""
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
+
+    def patch_orch(orch):
+        orch._backlog_read_config = AsyncMock(return_value=("auto", {
+            "enabled_repos": ["o/r"],
+            "max_concurrent": 1, "max_spawns_per_day": 10,
+            "max_issues_per_pr": 3, "default_model": None,
+        }))
+        orch._backlog_announce = AsyncMock(return_value=None)
+        orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+        orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(lambda: _seed_held_issue("decision"))
+        r = c.post("/api/automations/backlog-runner/dispatch",
+                   json={"refs": ["o/r#7"]}, headers=H)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "bad_hold"
+        c.app.state.orchestrator._backlog_spawn.assert_not_awaited()
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import WorkItem
+
+        async def _check():
+            async with db_session() as db:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo == "o/r", WorkItem.number == 7))).scalar_one()
+                return wi.hold_kind
+        assert c.portal.call(_check) == "decision"
+
+
 def test_remote_orch_has_backlog_candidates():
     from server.sessions.remote import RemoteOrchestrator
     assert hasattr(RemoteOrchestrator, "backlog_candidates")

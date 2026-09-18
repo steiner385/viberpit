@@ -2266,3 +2266,23 @@ def test_reconcile_save_releases_hold_on_human_board_edit():
             async with db_session() as db:
                 return (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one().hold_kind
         assert c.portal.call(_item) is None
+
+
+def test_issue_detail_carries_hold_fields_and_guidance():
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        assert r.json()["holdKind"] is None and r.json()["guidance"] is None
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "owner_action", "holdReason": "needs the owner's keyring"},
+                headers=IDENTITY_HEADERS)
+        r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        body = r.json()
+        assert body["holdKind"] == "owner_action" and body["holdReason"] == "needs the owner's keyring"
+        assert body["holdBy"] == "testuser@example.com" and body["holdSetAt"]
+        assert set(body["guidance"]) == {"retry", "implement"}
+        assert body["ref"] == "o/r#1"
+        # the hold is not part of the optimistic-concurrency version
+        assert body["version"] == c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()["version"]
