@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from server.automations.backlog_prompt import (
+    CONVERTED_NOTE_PREFIX,
     build_implement_prompt,
     build_investigate_prompt,
 )
@@ -151,10 +152,15 @@ def test_investigate_names_all_four_exits():
     assert "Escalate" in result
 
 
-def test_investigate_mentions_mark_no_pr_and_set_hold_on_claude():
+def test_investigate_mentions_mark_no_pr_but_not_set_hold_on_claude():
+    """Exit 3 must not tell the session to call set_hold — it's a SIGNAL-class
+    tool Codex never has (durable_tool_surface=False), and the ruling made exit 3
+    engine-neutral: the runner clears the hold itself once it sees the
+    'converted to a fix' note (Task 4), not the session."""
     result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
     assert "mark_no_pr" in result
-    assert "set_hold" in result
+    assert "set_hold" not in result
+    assert CONVERTED_NOTE_PREFIX in result
 
 
 def test_investigate_says_read_only_no_pr():

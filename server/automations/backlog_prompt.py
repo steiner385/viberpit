@@ -29,6 +29,11 @@ from server.sessions.completion import NO_PR_MARKER, commit_trailer
 
 from .backlog_selection import Batch
 
+CONVERTED_NOTE_PREFIX = "converted to a fix"
+"""Shared literal for the investigate prompt's 'convert to a fix' exit note
+and the Backlog Runner's hold-clearing match on it (Task 4) — one spelling,
+never re-typed at either site."""
+
 
 def _repo_clause(repo: str) -> str:
     """The backtick-quoted ``in repository `owner/repo`` `` clause shared by every
@@ -132,8 +137,8 @@ def build_investigate_prompt(batch: Batch, *,
 
     - Close as noise (not a real issue).
     - Consolidate (duplicate of another open report).
-    - Convert to a fix (root cause found; clears the hold so the item re-enters
-      as an implement candidate).
+    - Convert to a fix (root cause found; the runner clears the hold and
+      re-queues the issue as an implement candidate).
     - Escalate (only the owner can supply what is needed).
 
     A session that ends without one of these exits is handed to the owner by
@@ -150,7 +155,8 @@ def build_investigate_prompt(batch: Batch, *,
     close_finish = _finish_not_needed("closed as noise: <why>", codex=codex)
     consolidate_finish = _finish_not_needed(
         f"consolidated into #{primary_number}", codex=codex)
-    convert_finish = _finish_not_needed("converted to a fix", codex=codex)
+    convert_finish = _finish_not_needed(
+        f"{CONVERTED_NOTE_PREFIX}: <one line>", codex=codex)
     escalate_finish = _finish_cancelled(
         "needs owner: <the one specific thing>", codex=codex)
 
@@ -171,9 +177,9 @@ def build_investigate_prompt(batch: Batch, *,
         "3. **Convert to a fix** — you have found the root cause and it is "
         "ready to implement. Edit the primary issue's body "
         '(`gh issue edit --body-file`) to add a "## Findings" section '
-        "(root cause, reproduction, the code path); clear the hold with the "
-        "`set_hold` tool (`kind` null); then "
-        f"{convert_finish} The item re-enters as an implement candidate.\n\n"
+        "(root cause, reproduction, the code path); then "
+        f"{convert_finish} The runner clears the hold and re-queues the issue "
+        "as an implement candidate.\n\n"
         "4. **Escalate** — only the owner can supply what is needed (access, a "
         "decision, a reproduction only they have). Write what is needed into "
         'the body\'s "## Findings" section, then '
