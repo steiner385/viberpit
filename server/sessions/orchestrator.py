@@ -7201,7 +7201,7 @@ class SessionOrchestrator:
         as echoes), then back-syncing any human "Stage" edit onto the linked
         Initiative. Returns the human edits for the loop to surface."""
         from datetime import datetime, timedelta, timezone
-        from server.pm import journal, mirror_store
+        from server.pm import holds, journal, mirror_store
         now = datetime.now(timezone.utc)
 
         def _sync(s):
@@ -7209,6 +7209,10 @@ class SessionOrchestrator:
             edits = mirror_store.upsert_project_items(
                 s, gh_db_id, items, now, own_writes=own)
             mirror_store.back_sync_stage(s, edits)
+            # Spec 2026-09-18 §7: a human board edit to Ready/Backlog (or a body-
+            # fingerprint drift, checked against every owner_action-held row) releases
+            # the hold — the reconcile pass is where that signal is observed.
+            holds.release_by_signals(s, human_edits=edits, now=now)
             return edits
 
         async with db_session() as db:

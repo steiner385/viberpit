@@ -1637,6 +1637,37 @@ async def delete_work_item_dep(
     return result
 
 
+@router.post("/work-items/{item_id}/hold/release")
+async def release_work_item_hold(
+    item_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The Retry signal (spec 2026-09-18 §7): a person releases an owner_action
+    hold so the item re-enters the queue at the product default. The other two
+    signals (board edit, body edit) run in the reconcile pass through the same
+    rule module. Idempotent on an unheld item."""
+    from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
+    wi = (await db.execute(
+        select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    actor = actor_for_request(request)
+    released = wi.hold_kind
+    try:
+        clear_hold(wi, actor=actor)
+    except HoldPermissionError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_not_permitted", "message": str(e)}) from e
+    if released is not None:
+        await db.flush()
+        await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
+            "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
+            "signal": "retry"})
+    return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
+
+
 @router.get("/work-items/{item_id}/issue")
 async def get_work_item_issue(item_id: str, _identity: str = Depends(current_identity),
                               db=Depends(get_db)) -> dict:

@@ -2163,3 +2163,78 @@ def test_triage_guidance_for_an_unowned_repo_reads_as_dispatch_off():
         row = c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()[0]
         assert row["guidance"]["accept"]["immediate"][0]["text"].startswith("Files it with no capability")
         assert "Dispatch is off" in row["guidance"]["accept"]["then"][0]["text"]
+
+
+def test_hold_release_endpoint_is_the_retry_signal():
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdKind": "owner_action", "holdReason": "owner only"},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        r = c.post(f"/api/pm/work-items/{wid}/hold/release", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["released"] == "owner_action"
+        assert r.json()["item"]["holdKind"] is None
+        # idempotent no-op
+        again = c.post(f"/api/pm/work-items/{wid}/hold/release", headers=IDENTITY_HEADERS)
+        assert again.status_code == 200 and again.json()["released"] is None
+        missing = c.post("/api/pm/work-items/nope/hold/release", headers=IDENTITY_HEADERS)
+        assert missing.status_code == 404
+        from server.db import db_session
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+
+        async def _rows():
+            async with db_session() as db:
+                return [e.detail for e in (await db.execute(
+                    select(AuditEvent).where(AuditEvent.type == "pm.hold.release"))).scalars().all()]
+        rows = c.portal.call(_rows)
+        assert [d["signal"] for d in rows] == ["retry"] and rows[0]["actorClass"] == "person"
+
+
+def test_hold_release_refused_for_agent_class_caller():
+    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "owner_action", "holdReason": "owner only"},
+                headers=IDENTITY_HEADERS)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/release")   # lan@local, no header
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "hold_not_permitted"
+
+
+def test_reconcile_save_releases_hold_on_human_board_edit():
+    """The reconciler's project-items save runs THE release rule (spec §7)."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "owner_action", "holdReason": "owner only"},
+                headers=IDENTITY_HEADERS)
+        from server.db import db_session
+        from sqlalchemy import select
+        from server.db.models import GhProject, GhProjectItem, Project, WorkItem
+        from server.pm.gh_projects import GhProjectItemView
+
+        async def _seed_board():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+                gh = GhProject(project_id=p.id, gh_node_id="PVT_1", gh_project_number=1, title="b")
+                db.add(gh)
+                await db.flush()
+                db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wid,
+                                     gh_item_node_id="PVTI_1", status="Needs human"))
+                return gh.id
+        gh_id = c.portal.call(_seed_board)
+        orch = c.app.state.orchestrator
+        view = GhProjectItemView(item_node_id="PVTI_1", repo="o/r", number=1, kind="issue",
+                                 status="Ready", score=None, stage=None, updated_at=None)
+        edits = c.portal.call(lambda: orch._pm_sync_save_project_items(gh_id, [view]))
+        assert [(e.field, e.new) for e in edits] == [("Status", "Ready")]
+
+        async def _item():
+            async with db_session() as db:
+                return (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one().hold_kind
+        assert c.portal.call(_item) is None
