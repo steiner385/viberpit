@@ -14,7 +14,7 @@ const SCHEMA = [
   { key: 'queue_min_status', label: 'Minimum board status', type: 'enum', default: 'ready', help: '', choices: ['ready', 'triaged'] },
   { key: 'max_in_flight', label: 'Max in flight', type: 'int', default: 1, help: '', choices: null },
   { key: 'weight', label: 'Weight', type: 'int', default: 1, help: '', choices: null },
-  { key: 'max_attempts', label: 'Max attempts per issue', type: 'int', default: 2, help: '', choices: null },
+  { key: 'ladder_top', label: 'Ladder top tier', type: 'enum', default: 'fable', help: '', choices: ['haiku', 'sonnet', 'opus', 'fable'] },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
   { key: 'risk_tolerance', label: 'Risk tolerance', type: 'enum', default: 'cautious', help: '', choices: ['cautious', 'balanced', 'bold'] },
@@ -75,11 +75,11 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByLabelText('Dispatch')).toHaveValue('off')
     expect(screen.getByLabelText('Max in flight')).toHaveValue(1)
     expect(screen.getByLabelText('Weight')).toHaveValue(1)
-    expect(screen.getByLabelText('Max attempts per issue')).toHaveValue(2)
+    expect(screen.getByLabelText('Ladder top tier')).toHaveValue('fable')
     expect(screen.getByLabelText('Session model')).toHaveValue('auto')
     expect(screen.getByLabelText('Respect issue dependencies')).toBeChecked()
     // dispatch listed first
-    const labels = screen.getAllByText(/Dispatch|Minimum board status|Max in flight|Weight|Max attempts per issue|Session model|Respect issue dependencies/)
+    const labels = screen.getAllByText(/Dispatch|Minimum board status|Max in flight|Weight|Ladder top tier|Session model|Respect issue dependencies/)
     expect(labels[0]).toHaveTextContent('Dispatch')
   })
 

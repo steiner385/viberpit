@@ -302,3 +302,20 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   `release_by_signals`. A hold written during the fetch that follows a human's move to Ready can
   therefore be released by that pre-hold edit. Thread the edit's (or the fetch's) time through and
   compare it against `hold_set_at`.
+- The model ladder (§4, item 4a) is Claude-only: a Codex bounce is still escalated onto the tier
+  ladder (the same `stronger_model` hold, the same give-up at the top), but `_backlog_ladder_rung`
+  and the hold-consuming release in `_backlog_spawn` are both gated on `AgentEngine.CLAUDE_CODE`,
+  so a Codex dispatch neither reads nor climbs a rung and never consumes the hold. Extend the rung
+  and release paths to Codex's own model tiers, or document the ladder as permanently Claude-only.
+- `_backlog_ladder_rung` reads the `stronger_model` hold and the ladder rung off the batch's
+  PRIMARY issue only, while `release_on_dispatch` clears the hold from every issue of the batch on
+  a climbing spawn. A batch whose non-primary issues carry their own independent bounce history
+  (and so a different rung) is not reconciled — decide whether the rung should be per-issue or
+  whether release should be primary-only too.
+- `clamp_ladder_top` bounds the ladder's PINNED rung to a tier the model-approval gate allows
+  app-wide (`account=None`), but `server/automations/model_pick.py:pick_model`'s D9 floor (~line
+  251-253) can still raise an `auto` assessment past a gated tier with no such clamp — an
+  `auto`-policy product whose capability floor sits above what the gate allows can park a dispatch
+  behind a human the same way an unclamped ladder rung would have. Apply the same clamp to the
+  floor's raise, or accept the gap as D9-specific (it only ever RAISES a real assessment, never
+  pins one on its own).

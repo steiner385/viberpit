@@ -87,7 +87,8 @@ PR linkage, never on labels alone.
 - Backlog runner (`backlog_runner.py`) refills slots through shared ownership by
   select → claim → spawn, and sweeps for merged PRs (close-out), handoff readiness (free the
   slot after the implementation stops and effective PR recovery accepts ownership), and
-  terminal sessions (charge an attempt, give up at max).
+  terminal sessions (climb the model ladder one tier on a bounce, hand off to the owner once
+  the ladder tops out).
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
   what the operator sees is what agents do next.
@@ -127,11 +128,14 @@ PR linkage, never on labels alone.
   runner's own `mode` is just `off | on` now — whether it runs at all; dispatch mode (`propose`
   announces a batch without spawning, `auto` spawns) is a PER-PRODUCT decision
   (`policy["dispatch"]`), so one enabled runner can announce for a product still being trusted and
-  spawn for one that's earned auto, on the same tick. `max_attempts` and `default_model` are read
+  spawn for one that's earned auto, on the same tick. `ladder_top` and `default_model` are read
   the same way, off the target's recorded product (falling back to the pure defaults with
   `dispatch: auto` for a claim written before the flip, or a product the policy map has lost — the
   queue is the real off-gate, so anything that reached the loop this far was already decided to
-  run). A policy read that fails outright (the injected `read_policies` seam,
+  run); `ladder_top` additionally gets clamped every tick to the strongest tier the model-approval
+  gate currently allows (see **The model ladder** below) before the sweep or the spawn ever reads
+  it. There is no attempt cap any more — a bounce climbs the model ladder instead of counting
+  toward a fixed number. A policy read that fails outright (the injected `read_policies` seam,
   `_backlog_load_policies`, raises) keeps the LAST
   good snapshot for that tick's refill if there is one, or skips refill entirely with no snapshot
   yet — either way the sweep (handoffs, give-ups, reconciliation) still runs, since stalling that
@@ -170,22 +174,94 @@ PR linkage, never on labels alone.
   `dispatch_outcomes` row: the loop's own spawn in `_refill`, and the two manual taps
   (`SessionOrchestrator.backlog_runner_implement_core`, `.backlog_runner_dispatch`), each record
   a `running` row (`AutomationContext.record_outcome`) right after the spawn succeeds, with the
-  attempt number and model the session actually got. `BacklogRunnerLoop._sweep_one` finalises it
+  model the session actually got and an `attempt_no` seeded from dispatch history
+  (`server/pm/outcomes.py:prior_attempts` — the count of finalised, non-superseded `implement`
+  outcomes already on the target — rather than a live claim counter, because every bounce now
+  DELETES the claim row: the ladder's hold carries the item forward, not the claim, so a
+  re-queued item has no `attempts` of its own to carry across a bounce). Each row also carries a
+  `dispatch_kind` (`server/db/models.py:DISPATCH_KINDS`, `implement` | `investigate`; `NULL`
+  predates the column and reads as `implement`) — only an `implement` row counts as a bounce or
+  an attempt, so an `investigate` dispatch (series item 4b, never opens a PR by design) can never
+  read as one that failed to. `BacklogRunnerLoop._sweep_one` finalises the row
   (`AutomationContext.finalize_outcome`) at whichever terminal branch closes the target: `merged`
-  (carrying `first_pass_merge`), `needs_human` (a merged PR still needing a human close-out, or
-  the attempt cap reached with a real attempt behind it), `pr_gave_up` (PR Doctor gave up),
-  `abandoned` (the PR closed unmerged, or the cap was reached by a session that never ran a
-  turn), or `no_pr` (the session ended with no mergeable PR and attempts still left — a bounce).
-  Both attempt-cap branches finalise with `upgrade_from=("no_pr",)`: the cap is discovered a
-  sweep after the bounce that carried the dispatch to it, so the row that closes is the earlier
-  `no_pr` row, re-finalised in place, not a second row for the same session. A second dispatch
-  over a still-`running` row (a double tap racing the loop) closes the earlier row `superseded`
-  instead of `abandoned` — it never got to answer, so it is not counted as a bounce. Both writers
-  are best-effort (`server/pm/outcomes.py`, spec §13): a write failure is logged and never blocks
-  a spawn or strands a claim mid-sweep — and a spawn-time write lost that way is recovered by the
+  (carrying `first_pass_merge`), `needs_human` (a merged PR still needing a human close-out — the
+  ladder plays no part in this path), `pr_gave_up` (PR Doctor gave up), `abandoned` (a person
+  closed the PR unmerged, or the session never ran a single turn), or `no_pr` (the session ended
+  with no mergeable PR — a bounce; the row still reads `no_pr` even when that bounce lands at the
+  ladder's top and hands off to the owner, since the recorded OUTCOME was still "no PR", only the
+  next step differs — see **The model ladder** below). A second dispatch over a still-`running`
+  row (a double tap racing the loop) closes the earlier row `superseded` instead of `abandoned` —
+  it never got to answer, so it is not counted as a bounce or an attempt. Both writers are
+  best-effort (`server/pm/outcomes.py`, spec §13): a write failure is logged and never blocks a
+  spawn or strands a claim mid-sweep — and a spawn-time write lost that way is recovered by the
   sweep, which passes the claim's own product/session/model/attempt (`_outcome_fallback`) as
   `finalize_outcome(fallback=…)` so the dispatch is inserted already finalised rather than
-  forgotten, at most once per dispatch.
+  forgotten, at most once per dispatch. The one surviving `upgrade_from=("no_pr",)` re-finalises a
+  prior `no_pr` row in place, rather than inserting a second one, when a session later proves to
+  have never run a turn on the same target — not an attempt-cap discovery; there is no attempt cap
+  any more.
+
+  **The model ladder (spec 2026-09-18 §4).** There is no fixed attempt cap. A bounce — a
+  finalised, non-merged `implement` dispatch, whether a plain `no_pr` (session ended with no
+  mergeable PR) or PR Doctor's `pr_gave_up` — climbs the NEXT dispatch one model tier above
+  whatever the previous finalised attempt actually ran on (`server/pm/outcomes.py:next_rung`; an
+  unresolvable previous model — `auto`, `default`, `best`, unknown — climbs from `sonnet`, so a
+  first bounce under `auto` lands on `opus`), never below a pinned product `default_model`, and
+  never above the product's `ladder_top` (`top_tier`; an enum over the model tiers defaulting to
+  `fable` that replaced `max_attempts` in the policy schema — a stored policy still carrying the
+  retired `max_attempts` key validates, the key is just dropped). A climb that would pass
+  `ladder_top` is `None`: the bounce is AT the top, and it hands off to the human exactly like any
+  other give-up (an `owner_action` hold, a comment, a `gave_up` row, and the same
+  Retry/board-move/body-edit release signals — see the give-up paragraph below). A PR a PERSON
+  closed unmerged is their decision, not a failed attempt: it hands straight to the owner with the
+  PR link and never climbs the ladder at all.
+
+  Concretely, `_sweep_one` writes a `stronger_model` hold (via
+  `SessionOrchestrator._backlog_escalate` → the shared `_backlog_write_runner_hold`,
+  agent-settable, audited `pm.hold.set` with actor `runner`) BEFORE releasing the claim row —
+  never after: a raise between the two leaves the claim intact for the next sweep to retry the
+  whole branch, so the hold and the release can never land as a half-done pair. The SAME writer
+  backs the existing give-up path (`_backlog_needs_human`, `kind="owner_action"`), so a person's
+  hold is never overwritten by either, and an identical retry (same kind/actor/reason already in
+  place) is a no-op, not a re-stamp. The hand-off reason names the tier the climb stopped on —
+  `"bounced at {tier}; next attempt on {rung}"` (or `"PR Doctor gave up; next attempt on
+  {rung}"`) when it climbs, `"bounced at {tier}: no mergeable PR after N attempts"` (or `"PR
+  Doctor gave up at the top"`) at an UNCLAMPED top — and, when the top the climb stopped at was
+  itself lowered by the model-approval gate (see below), appends which tier needs approval, e.g.
+  `"bounced at opus; fable needs approval"`.
+
+  On the next spawn, `SessionOrchestrator._backlog_ladder_rung` reads whether the primary issue
+  still carries a `stronger_model` hold and, if so, composes the SAME `next_rung` inputs the
+  sweep used to write it, then raises that rung to the capability floor (D9) — but never past the
+  top, since a pinned rung above the top would park the dispatch behind a human instead of running
+  it. The rung is PINNED as the dispatch's model (`config["default_model"] = rung`, recorded as
+  `ladder_rung` on the spawned `AutomationEvent`'s detail) rather than fed through the `auto`
+  assessor — no approval step for a ladder dispatch. The hold is released
+  (`server/pm/holds.py:release_on_dispatch`, audited `pm.hold.release` with `signal="dispatch"`)
+  only once the dispatch actually produced a NEW session that climbed — never for a spawn the
+  context refused or de-duped onto an existing session, and never for one that ran at the ordinary
+  pick because the hold read failed or `ladder_top` was lowered under the hold — so a re-run at
+  the same tier still counts toward `give_up_after_bounces` with zero ladder progress.
+
+  The effective `ladder_top` a product's policy carries is CLAMPED, every tick
+  (`SessionOrchestrator._backlog_clamp_ladder_tops`), to the highest tier at or below the
+  configured value that the model-approval policy currently allows (`resolve_model_policy`,
+  `account=None`, judged app-wide): `create_session` would otherwise park a session dispatched
+  onto a gated tier as a driverless `pending_approval` row, exactly what the clamp exists to
+  prevent. Every tier is judged ONCE per policy load, not once per product. The two callers want
+  opposite handling of a failed verdict read: the loader RAISES (it then keeps its previous
+  clamped snapshot or skips refill — an unclamped snapshot is the unsafe direction), the queue
+  read degrades to the last good verdicts instead. The configured value survives as an in-memory
+  `ladder_top_configured` annotation (never persisted, never a `PRODUCT_POLICY_SCHEMA` field, read
+  back through `gated_ladder_top`) so a hand-off at a clamped top can name the gated tier instead
+  of silently stopping below the operator's setting.
+
+  **Limits.** The ladder is Claude-only: a Codex bounce is still escalated onto the tier ladder
+  (the same `stronger_model` hold, the same give-up at the top), but a Codex dispatch neither
+  reads nor climbs a rung and never consumes the hold — a series follow-up. The rung is read from
+  the batch's PRIMARY issue while the hold release clears the WHOLE batch. A per-account
+  model-approval action stricter than the app-wide one judged at policy-load time can still park a
+  ladder dispatch behind a human, because the account is not known until the spawn.
 
   **Model pick (phase 4, spec §7, D9).** A product's `default_model` policy field of `auto`
   still asks `assess_model` (one-shot Haiku complexity judgment) for a tier per dispatch; what's
@@ -245,8 +321,11 @@ PR linkage, never on labels alone.
   Canonical GitHub node IDs identify every issue in a batch and every PR plus its verified
   linked issues. Automatic and manual dispatch, PR repair, consolidation, and map branch
   updates acquire their complete target set together. Repository aliases and overlapping
-  batches cannot create separate owners for the same work. Target-state rows retain workflow
-  attempts and outcomes; an issue comment remains a human-visible trace, never ownership.
+  batches cannot create separate owners for the same work. Target-state rows retain in-flight
+  status and outcomes; every bounce now deletes the row (its `attempt_no` provenance lives on
+  the dispatch-history rows instead, see **Dispatch outcomes** below), so a claim's own history
+  never outlives the bounce that ends it. An issue comment remains a human-visible trace, never
+  ownership.
 
   Launches reserve a session UUID before external work. A repeated request recovers that
   session or reports uncertainty. A missing driver, expired timer, or completed status alone
@@ -297,7 +376,7 @@ PR linkage, never on labels alone.
 - Backlog work selection / claim / spawn: `server/automations/backlog_runner.py`,
   `server/automations/backlog_selection.py`, `server/automations/backlog_grouping.py`,
   `server/automations/backlog_github.py`.
-- Per-product automation policy (phase 1 — scope, reach, caps/weights/attempts/model, the
+- Per-product automation policy (phase 1 — scope, reach, caps/weights/ladder/model, the
   one-shot seed off the retired repo knobs): `server/automations/product_policy.py`,
   `server/sessions/orchestrator.py` (`_backlog_query_queue`, `_backlog_select_batch`,
   `_backlog_seed_policies`), `web/src/features/roadmap/detail/AutomationPolicyCard.tsx`;
