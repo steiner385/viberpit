@@ -259,4 +259,7 @@ def to_candidate(e: QueueEntry) -> dict:
         # urgency verdict has to cross that hand-off as data — a candidate dict is
         # all it receives.
         "urgent": e.urgent,
+        # Carried so the runner's spawn (item 4) can pick the hold's prompt/rung
+        # without re-reading the row — same reason ``urgent`` rides along.
+        "hold_kind": e.hold_kind,
     }

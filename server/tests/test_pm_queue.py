@@ -147,7 +147,7 @@ def test_to_candidate_is_the_runner_shape_plus_provenance():
     entries, _ = rank([_row()], now=NOW)
     assert to_candidate(entries[0]) == {"ref": "o/r#1", "number": 1, "repo": "o/r", "title": "t",
                                         "body": "", "url": "u", "score": 10.0, "product": "viberpit",
-                                        "urgent": False}
+                                        "urgent": False, "hold_kind": None}
 
 
 def test_to_candidate_carries_urgency_to_the_grouper():
