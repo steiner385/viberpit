@@ -14,24 +14,41 @@ def test_marker_with_cancel_phrasing_returns_cancelled():
     assert resolution_from_text(txt) == "cancelled"
 
 
-def test_marker_naming_an_awaiting_decision_returns_that_resolution():
+def test_the_declared_token_returns_the_decision_park():
     """The MARKER half of spec 2026-09-18 §6. An engine without the durable tool
     surface (Codex) proposes through the decisions route and then ends its turn with
-    the no-PR marker, so the only place the park can be legible is the prose — and
-    it must not read as ``not-needed``, which would settle the dispatch as "nothing
-    to do" while the issue sits on an unanswered question."""
+    the no-PR marker, so ``NO_PR_INSTRUCTION`` asks it to write the exact token —
+    without which the ending would read as ``not-needed``, settling the dispatch as
+    "nothing to do" while the issue sits on an unanswered question."""
     from server.sessions.completion import AWAITING_DECISION
-    txt = f"Proposed two options; awaiting a decision before I build.\n{NO_PR_MARKER}"
+    txt = f"Proposed two options — awaiting-decision on #12.\n{NO_PR_MARKER}"
     assert resolution_from_text(txt) == AWAITING_DECISION
-    assert resolution_from_text(f"Awaiting-decision on #12.\n{NO_PR_MARKER}") == AWAITING_DECISION
+    assert AWAITING_DECISION in NO_PR_INSTRUCTION, "the instruction must name the token"
 
 
-def test_an_awaiting_decision_outranks_the_cancellation_heuristic():
-    """Such a turn almost always also says it is not opening a PR — which
-    ``_CANCEL_RE`` matches. The decision park is the more specific claim and the one
-    the runner acts on, so it is tested first."""
+def test_prose_about_awaiting_a_decision_is_not_the_token():
+    """Review R1 F2: only the DECLARED token counts. "awaiting a decision from you"
+    is ordinary English in an ending that is really a cancellation or a hand-back,
+    and a pattern that matched it re-labelled those endings silently — the
+    ``no_pr_resolution_disagreement`` log never fires on a pure-marker turn."""
+    txt = f"Nothing to ship here; awaiting a decision from you on the naming.\n{NO_PR_MARKER}"
+    assert resolution_from_text(txt) == "not-needed"
+
+
+def test_a_cancelled_ending_that_mentions_a_decision_still_reads_cancelled():
+    """The cancellation heuristic keeps its precedence over prose: only the exact
+    token outranks it."""
+    txt = ("Dropping this work — awaiting a decision from the owner before anyone "
+           f"retries.\n{NO_PR_MARKER}")
+    assert resolution_from_text(txt) == "cancelled"
+
+
+def test_the_token_outranks_the_cancellation_heuristic():
+    """A declaration beats a guess, the same precedence the Translator applies when a
+    tool call and a marker disagree — and such a turn very often also says it is
+    "not opening a PR", which ``_CANCEL_RE`` matches."""
     txt = ("Not opening a PR yet: the choice between the two behaviours is yours. "
-           f"Awaiting decision.\n{NO_PR_MARKER}")
+           f"awaiting-decision\n{NO_PR_MARKER}")
     assert resolution_from_text(txt) == "awaiting-decision"
 
 

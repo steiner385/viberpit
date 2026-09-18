@@ -32,6 +32,13 @@ COMPLETION_INSTRUCTION = (
 NO_PR_MARKER = brand.marker("no-pr")
 NO_PR_MARKER_RE = brand.marker_re("no-pr")
 
+#: "I proposed a decision and the item is parked on it" (spec 2026-09-18 §6) — a
+#: token rather than a bare literal because three halves must agree on it: the
+#: ``mark_no_pr`` tool enum, the marker contract below, and the Backlog Runner
+#: branch that reads ``Session.pr_resolution`` back and settles such an ending as
+#: neither a bounce nor a hand-off.
+AWAITING_DECISION = "awaiting-decision"
+
 NO_PR_INSTRUCTION = (
     "If the work is genuinely finished but NO pull request is appropriate — the "
     "objective is already satisfied without a code change, or the user has cancelled "
@@ -44,7 +51,12 @@ NO_PR_INSTRUCTION = (
     "continue is not a reason for this marker — it is a hand-back. State what you "
     f"found, ask the user how to proceed, and emit the hand-back marker (`<!-- {brand.SLUG}"
     f':hand-back reason="…" -->`), never a finishing marker. The same no-question rule '
-    "applies: never combine this marker with a question to the user."
+    "applies: never combine this marker with a question to the user. "
+    "One exception to 'genuinely finished': if you have PROPOSED A DECISION on this "
+    f"issue and it is now parked on the person's answer, write the exact word "
+    f"`{AWAITING_DECISION}` in that final message before the marker. Only that exact "
+    "word counts — it is what records the work as parked on a question rather than "
+    "finished, and it is not a hand-back: the proposal already carries the question."
 )
 
 # The explicit "it's your turn" signal (spec 2026-09-08-hand-back-signal-tool). The
@@ -83,21 +95,24 @@ _CANCEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: "I proposed a decision and the item is parked on it" (spec 2026-09-18 §6) — a
-#: token rather than a bare literal because three halves must agree on it: the tool
-#: schema's enum, the marker heuristic below, and the Backlog Runner branch that
-#: reads ``Session.pr_resolution`` back and settles such an ending as neither a
-#: bounce nor a hand-off.
-AWAITING_DECISION = "awaiting-decision"
-
-#: The prose form of ``AWAITING_DECISION`` for the MARKER path (spec 2026-09-18 §6).
+#: The DECLARED form of ``AWAITING_DECISION`` on the marker path (spec 2026-09-18 §6,
+#: review R1 F2): the exact hyphenated token and nothing else.
+#:
 #: An engine without the durable tool surface (Codex) has no ``mark_no_pr`` argument
-#: to declare a resolution in and no ``propose_decision`` tool: it proposes through
-#: the decisions route and then ends the turn with the no-PR marker, saying so in the
-#: prose the marker trails. Without this the sentence would read as ``not-needed`` —
-#: "finished, nothing to do" — and the runner would settle the dispatch as a plain
-#: no-PR ending while the item sits parked on an unanswered question.
-_AWAITING_DECISION_RE = re.compile(r"awaiting[-\s]+(?:a\s+|the\s+)?decision", re.IGNORECASE)
+#: to declare a resolution in, so ``NO_PR_INSTRUCTION`` asks it to write the token
+#: itself — the one thing on this path that is a DECLARATION rather than a guess,
+#: which is why it outranks the cancellation heuristic below.
+#:
+#: Deliberately NOT a prose pattern. A first cut matched "awaiting a decision"
+#: anywhere in the turn, which is ordinary English in a cancelled or handed-back
+#: ending ("dropping this — awaiting a decision from you on X") and silently
+#: re-labelled those endings as a decision park: the Backlog Runner's hold check
+#: catches the consequence, but ``Session.pr_resolution`` is also read by the UI and
+#: by humans, and the ``no_pr_resolution_disagreement`` log never fires on a
+#: pure-marker turn. Word-bounded on both sides so the token is the whole word,
+#: quoted or bare, and built from the constant so the text the instruction asks for
+#: and the text this matches cannot drift.
+_AWAITING_DECISION_RE = re.compile(rf"\b{re.escape(AWAITING_DECISION)}\b", re.IGNORECASE)
 
 
 # Commit attribution for an agent-authored commit, per engine.
@@ -178,11 +193,15 @@ def resolution_from_text(text: str) -> str | None:
     """Classify a final-turn text carrying NO_PR_MARKER into a resolution token.
 
     Returns None when the marker is absent. When present, ``awaiting-decision`` if
-    the text says the session parked the work on a decision proposal (the most
-    specific claim, so it is tested first — such a turn very often also says the
-    work was "not opening a PR", which the cancellation heuristic would otherwise
-    read as ``cancelled``), then 'cancelled' if the text reads as an explicit
-    cancellation/abandonment, else 'not-needed'."""
+    the text carries that exact token — the one DECLARATION available on this path
+    (``NO_PR_INSTRUCTION`` asks for it by name), so it outranks the two heuristics
+    below exactly as a tool call outranks a marker in the Translator; then
+    'cancelled' if the text reads as an explicit cancellation/abandonment, else
+    'not-needed'.
+
+    Prose about awaiting someone's decision is NOT the token (review R1 F2): it is
+    ordinary English in a cancelled or handed-back ending, and reading it as a
+    decision park would mislabel those endings silently."""
     if not text or NO_PR_MARKER_RE.search(text) is None:
         return None
     if _AWAITING_DECISION_RE.search(text):
@@ -191,8 +210,8 @@ def resolution_from_text(text: str) -> str | None:
 
 
 #: The resolution tokens a no-PR completion can carry. Identical to what
-#: ``resolution_from_text`` infers from prose, so the tool path and the marker
-#: fallback produce values that are comparable rather than merely similar.
+#: ``resolution_from_text`` answers, so the tool path and the marker fallback
+#: produce values that are comparable rather than merely similar.
 NO_PR_RESOLUTIONS: tuple[str, ...] = ("not-needed", "cancelled", AWAITING_DECISION)
 
 
