@@ -258,6 +258,11 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "feature_links": {"src_feature_id": "features", "dst_feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
+    # hold ladder spec 2026-09-18 §6: one decision proposal per parked work item.
+    # created_at/resolved_at put it in the datetime sweep; no _REQUIRED_EXTRAS entry
+    # is needed because id (PK) and created_at (Python default) are its only NOT NULL
+    # columns — everything else is nullable so reconcile can ALTER-ADD a later one.
+    "decision_proposals": {"work_item_id": "work_items"},
     "initiative_features": {"initiative_id": "initiatives", "feature_id": "features"},
     # spec 003 §7b plan materialization: created_at/resolved_at put this table in
     # the datetime sweep; status is its only other NOT NULL column and carries a

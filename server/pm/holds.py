@@ -109,6 +109,78 @@ def set_reject_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
     wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
 
 
+#: The one spelling of why a REJECTED decision proposal parks its item — the
+#: ``owner_action`` sibling of ``REJECT_HOLD_REASON`` (spec 2026-09-18 §6). The
+#: reject route, the undo readers and the tests all read it from here.
+DECISION_REJECT_REASON = "decision proposal rejected"
+
+
+def set_decision_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -> None:
+    """Park ``wi`` as ``decision`` because a proposal is pending (spec §6).
+
+    Writes exactly the fields ``set_hold(kind="decision", …)`` writes but, like
+    ``set_reject_hold``, does NOT gate on the actor's class: the proposal IS the
+    authority, and the intended writer — a coding session (``session:<id>``,
+    agent class) that hit a genuine product decision — could not otherwise set a
+    kind outside ``AGENT_SETTABLE``. Recording a person's login instead would be
+    the provenance lie §8 exists to remove, so ``actor`` is recorded as-is.
+
+    The one thing this must never do is un-park an item a PERSON parked. That
+    guard lives in the caller — ``decisions.propose`` refuses when the item
+    already carries a ``HELD_KINDS`` hold set by a person — because only there is
+    the refusal reportable to the proposer as a ``DecisionError``, and only there
+    is the proposal row suppressed along with the hold.
+
+    Not called directly by routes or tools: ``decisions.propose`` is the ONE
+    writer of a ``decision`` hold (spec §8).
+    """
+    if not (reason or "").strip():
+        raise ValueError("hold_reason is required")
+    wi.hold_kind = "decision"
+    wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
+def clear_decision_hold(wi: WorkItem, *, actor: str) -> bool:
+    """THE only release of a ``decision`` hold (spec §6/§8): accepting the proposal.
+
+    Ungated for the same reason ``set_decision_hold`` is — an accept driven
+    through the assistant or an unattributed loopback caller is agent class, and
+    ``clear_hold`` would refuse it — but narrowed to the kind it owns: a
+    ``decision`` hold only. Anything else on the row (a person's ``owner_action``
+    that replaced this one, say) is somebody else's park and is left alone.
+
+    ``actor`` is taken for call-shape symmetry with ``clear_hold`` and because it
+    is what the caller audits; the class gate it would drive is deliberately
+    absent (see above). Returns whether a hold was actually released, so the
+    caller audits ``pm.hold.release`` only when one was.
+    """
+    if wi.hold_kind != "decision":
+        return False
+    wi.hold_kind = None
+    wi.hold_reason = None
+    wi.hold_by = None
+    wi.hold_set_at = None
+    wi.hold_fingerprint = None
+    return True
+
+
+def set_reject_decision_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
+    """Park ``wi`` as ``owner_action`` because a decision proposal was REJECTED
+    (spec §6): the options were wrong, so the item goes back to the person with
+    ``DECISION_REJECT_REASON``. The ``decision`` hold it replaces is this call's
+    own — the proposal being rejected — so there is nothing of anyone else's to
+    protect, and like ``set_reject_hold`` the rejection is the authority, not the
+    caller's class."""
+    wi.hold_kind = "owner_action"
+    wi.hold_reason = DECISION_REJECT_REASON
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
 RUNNER_ACTOR = "runner"
 RECONCILER_ACTOR = "reconciler"
 SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
@@ -129,9 +201,13 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: can a hold end?" must find every answer in one place. ``investigation`` is the
 #: Backlog Runner settling an ended INVESTIGATION on its convert-to-a-fix exit (spec
 #: §5): the session found the root cause, so the ``evidence`` hold that made the
-#: report an investigation instead of an implementation is spent.
+#: report an investigation instead of an implementation is spent. Finally, ``decision``
+#: is the accept of a decision proposal (``server/pm/decisions.py:accept``) — the ONE
+#: release of a ``decision`` hold, which is why ``release_via_api`` refuses that
+#: kind outright: it does not end on a generic tap, it ends when the person picks
+#: an option (spec 2026-09-18 §6).
 RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch", "investigation")
+                                    "implement", "dispatch", "investigation", "decision")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 

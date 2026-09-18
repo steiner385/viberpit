@@ -1628,6 +1628,11 @@ HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_
 # vocabulary, not one per proposal kind (constitution VI).
 TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
 
+# Spec 2026-09-18 §6 names the DecisionProposal lifecycle in its own right, and the
+# service/route code reads better saying so — but it is the SAME vocabulary, so this
+# is an ALIAS, never a second spelling of the three strings (constitution VI).
+DECISION_PROPOSAL_STATUSES: tuple[str, ...] = TRIAGE_PROPOSAL_STATUSES
+
 
 class Feature(Base):
     """Index row for one ``docs/product/features/<slug>.md`` in the project's
@@ -1933,6 +1938,53 @@ class TriageProposal(Base):
     # proposal again. Nullable so reconcile ALTER-ADDs it on both dialects;
     # NULL/False = eligible.
     auto_undone: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+
+
+class DecisionProposal(Base):
+    """One product decision a coding session could not take on its own (spec
+    2026-09-18 §6): the options it drafted, the one it recommends, and why.
+
+    Written together with the work item's ``decision`` hold by the ONE writer,
+    ``server/pm/decisions.py:propose``. Accepting records ``chosen_key`` and
+    clears that hold (the only path that may); rejecting parks the item as
+    ``owner_action`` instead. The row survives either way as the audit of what
+    was offered, and the accepted one is the text the next implement run carries
+    verbatim (``decisions.accepted_text_for_refs``).
+
+    Column conventions deliberately mirror :class:`TriageProposal` — str-uuid PK,
+    ``DateTime(timezone=True)`` + ``_utcnow`` (never ``func.now()``), nullable
+    JSON — because the inbox reads the two proposal tables side by side, and
+    because ``init_db``'s reconcile can only ALTER-ADD nullable columns: apart
+    from the PK and ``created_at`` (which has a Python default), everything here
+    is nullable so a later column can follow the same path.
+    """
+
+    __tablename__ = "decision_proposals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    work_item_id: Mapped[str] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    # The coding session that proposed it, when one did — derived from the actor
+    # (``session:<id>``) by ``decisions.propose`` so the two can never disagree.
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # [{"key": str, "label": str, "detail": str | None}] — 2..6 entries, keys unique.
+    # Validated on the way in by ``decisions.propose``; stored as given after that,
+    # since the accepted option's label/detail is quoted verbatim into the prompt.
+    options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    recommended_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The option the human picked; NULL until accepted (and on a rejected row).
+    chosen_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="pending", index=True)  # DECISION_PROPOSAL_STATUSES
+    # Actor strings in the ``server/pm/holds.py`` vocabulary (``session:<id>``,
+    # ``assistant:<identity>``, a Tailscale login, ``lan@local``).
+    proposed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class MaterializationProposal(Base):
