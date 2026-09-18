@@ -1837,6 +1837,20 @@ class BacklogRunnerLoop:
             if not await self._session_ever_ran(st):
                 await self._release_never_ran(target, st)
                 return
+            if await self._settle_decision(target, st):
+                # An investigation may propose a decision too — nothing in
+                # ``mounted_signal_names`` withholds the tool by dispatch kind — and
+                # that ending is a DECISION, not an investigation exit (review R1
+                # F3). Ahead of the investigate settle, which would otherwise read
+                # the ``decision`` hold as "somebody else parked it" and record
+                # ``investigation: held by agent``: benign, but it makes "how often
+                # does an investigation end on a decision" unanswerable.
+                #
+                # Here rather than above the whole branch: the two gates this settle
+                # needs — the session is really over, and it ran at all — live inside
+                # each kind's own path, and hoisting the check above them would
+                # settle a decision for a session still mid-turn.
+                return
             await self._settle_investigation(target, st)
             return
         info = await self._pr_status_for(target)
@@ -1958,10 +1972,11 @@ class BacklogRunnerLoop:
             await self._release_never_ran(target, st)
             return
         if await self._settle_decision(target, st):
-            # The session proposed a decision and parked the issue on it. Placed
+            # The session proposed a decision and the item is parked on it. Placed
             # exactly where the investigate settle sits relative to its own bounce —
             # after "did it ever run", before the ladder — because everything below
             # would read a deliberate, correct absence of a PR as a failed attempt.
+            # The same call guards the investigate branch above.
             return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
@@ -2054,9 +2069,20 @@ class BacklogRunnerLoop:
           comments "needs human" on an issue whose inbox card already says so;
         - no bounce dial: the dispatch did what it should have.
 
-        The item stays out of the queue on its own hold (``HELD_KINDS``), which is
-        why releasing the claim here is safe: nothing re-selects it until the
-        decision is accepted, and the accept is the one thing that clears the hold.
+        Releasing the claim is only safe because the item stays out of the queue on
+        its own hold (``HELD_KINDS``) — so the HOLD, not the token, is what this
+        branch verifies (review R1 F1). The token alone is a claim the session makes
+        about itself, and two live paths produce it with no hold behind it: the
+        marker heuristic reading a turn that proposed nothing, and a
+        ``propose_decision`` that was REFUSED (bad options, a person's park, a
+        proposal already pending) followed by the ending the model had already been
+        told to use. Settling either would delete the claim, write no hold, and hand
+        the item straight back to the queue at the same tier with the ladder skipped
+        — an unbounded re-dispatch loop that, with the shipped
+        ``give_up_after_bounces=0``, nothing would ever terminate. Unheld therefore
+        falls through to the ordinary no-PR path (ladder, dial, hand-off), which is
+        exactly the treatment an ending with nothing behind it deserves, and logs
+        ``decision_resolution_without_hold`` so the mismatch is visible.
 
         A lost fence still answers ``True``. The trigger is durable (the session's
         resolution does not change), so the next sweep re-runs this same branch —
@@ -2073,12 +2099,40 @@ class BacklogRunnerLoop:
             return False
         if resolution != AWAITING_DECISION:
             return False
+        if not await self._decision_hold_is_real(target, st):
+            log.warning("backlog_runner.decision_resolution_without_hold target=%s "
+                        "session=%s", target, sid)
+            return False
         if await self._write_state(target, st, None, outcome={
                 "outcome": "no_pr", "cause": DECISION_PROPOSED_CAUSE,
                 "fallback": self._outcome_fallback(st)}):
             await self._ctx.emit("info", f"{target}: decision proposed — awaiting a person",
                                  kind=DECISION_PROPOSED_CAUSE, target=target)
         return True
+
+    async def _decision_hold_is_real(self, target: str, st: dict) -> bool:
+        """Is one of this claim's issues actually PARKED — i.e. did the proposal the
+        session says it made really land?
+
+        Reuses the existing ``held_targets`` seam (``HELD_KINDS`` refs), read the same
+        way ``_release_give_ups`` reads it: ``any`` over the claim's issues, because a
+        batch parks on the issue the decision was proposed for, not on every ref.
+
+        A seam failure answers False — "we could not prove it is held" must keep the
+        ordinary no-PR path, which terminates (ladder → top → hand-off), rather than
+        the settle, which returns the item to the pool with nothing behind it. Same
+        direction as ``_session_ever_ran``'s fail-safe, pointed the other way because
+        here the SHORTER path is the dangerous one. An unwired seam (empty set) is
+        the same answer, so a deployment that never wired it keeps today's behaviour
+        instead of silently releasing claims.
+        """
+        try:
+            held = await self._held_targets()
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.held_targets_failed target=%s", target,
+                        exc_info=True)
+            return False
+        return any(ref in held for ref in (st.get("issues") or [target]))
 
     async def _settle_investigation(self, target: str, st: dict) -> None:
         """Settle one ENDED investigation from the issue's real state and the hold

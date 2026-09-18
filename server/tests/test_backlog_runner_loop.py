@@ -3786,11 +3786,13 @@ def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_pat
 # An ended session that PROPOSED A DECISION (spec 2026-09-18 §6)               #
 # --------------------------------------------------------------------------- #
 
-async def _sweep_after_ending(tmp_path, name: str, resolution, **kw):
+async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=("o/r#1",), **kw):
     """Dispatch one implement batch, end its session, and sweep once.
 
     ``resolution`` is what the ``session_resolution`` seam answers — the token the
-    ended session declared through ``mark_no_pr``."""
+    ended session declared through ``mark_no_pr``. ``held`` is what the
+    ``held_targets`` seam answers, i.e. whether the proposal the session claims to
+    have made actually parked the item; the default is the settled case."""
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
     await _seed_row()
     await _seed_product()
@@ -3798,7 +3800,7 @@ async def _sweep_after_ending(tmp_path, name: str, resolution, **kw):
         config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
         policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
         spawn_result=SimpleNamespace(id="sess-1", model="sonnet"),
-        session_resolution=resolution, **kw)
+        session_resolution=resolution, held=set(held), **kw)
     await loop.tick()                        # dispatch on sonnet
     await _mark_session_ended(ctx, "o/r#1")
     await loop.tick()                        # sweep
@@ -3824,6 +3826,68 @@ def test_an_awaiting_decision_ending_is_neither_a_bounce_nor_a_hand_off(tmp_path
         assert rec.escalations == [] and rec.needs_humans == []
         assert [e["target"] for e in await ctx.list_events(kind=DECISION_PROPOSED_CAUSE)] == [
             "o/r#1"]
+
+    asyncio.run(run())
+
+
+def test_an_awaiting_decision_with_no_hold_behind_it_falls_through_to_the_ladder(tmp_path):
+    """Review R1 F1: the token is the session's claim about itself; the HOLD is the
+    proof. A refused ``propose_decision`` (or a marker heuristic reading a turn that
+    proposed nothing) leaves the item unheld, and settling that would delete the
+    claim, write no hold, skip the ladder — and hand the item back to the queue at
+    the same tier forever, since ``give_up_after_bounces=0`` ships disabled. Unheld
+    therefore takes the ordinary no-PR path, which terminates."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "decision_unheld.db", "awaiting-decision", held=())
+
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "session ended without a mergeable PR")]
+        assert await ctx.list_events(kind="decision_proposed") == []
+
+    asyncio.run(run())
+
+
+def test_an_investigation_that_proposes_a_decision_settles_as_a_decision(tmp_path):
+    """Review R1 F3: ``propose_decision`` is mounted on investigate sessions too, and
+    that ending is a DECISION, not an investigation exit. Without the check ahead of
+    the investigate settle, the ``decision`` hold read as "somebody else parked it"
+    and the dispatch recorded ``investigation: held by agent`` — benign, but it makes
+    "how often does an investigation end on a decision" unanswerable."""
+    async def run():
+        from server.automations.backlog_runner import DECISION_PROPOSED_CAUSE
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_decision.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "decision",
+             "no_pr_note": "stop the turn or let it finish?"},
+            session_resolution="awaiting-decision", held={"o/r#1"})
+
+        assert rec.investigation_reads == []     # the investigate settle never ran
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", DECISION_PROPOSED_CAUSE)]
+        assert [e["target"] for e in await ctx.list_events(kind=DECISION_PROPOSED_CAUSE)] == [
+            "o/r#1"]
+        assert await ctx.list_events(kind="investigated") == []
+        assert rec.needs_humans == [] and not await ctx.get_target_state("o/r#1")
+
+    asyncio.run(run())
+
+
+def test_an_unheld_investigation_decision_still_takes_an_investigation_exit(tmp_path):
+    """The same F1 guard on the investigate side: no hold, no decision settle — the
+    investigate settle runs and reaches its own (terminating) exits."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_decision_unheld.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": "no exit"},
+            session_resolution="awaiting-decision", held=set())
+
+        assert rec.investigation_reads == [("o/r#1", "sess-1")]
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert await ctx.list_events(kind="decision_proposed") == []
 
     asyncio.run(run())
 
