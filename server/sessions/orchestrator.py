@@ -6698,6 +6698,16 @@ class SessionOrchestrator:
         return (len(entries), skipped.get("blocked", 0), skipped.get("status", 0),
                 per_product)
 
+    async def capacity_readout(self) -> dict:
+        """The capacity governor's ceiling stack, one readout (spec 2026-09-19 §5).
+
+        Delegates entirely to the pure builder over injected seams — this method
+        is just where "the real orchestrator" gets wired in for `GET /api/capacity`
+        and, from Task 7, the governor loop's own tick."""
+        from server.automations.capacity_wiring import sources_for
+        from server.automations.capacity_readout import build_readout
+        return await build_readout(sources_for(self))
+
     async def _backlog_seed_policies(self, raw: dict, mode_before: str) -> int:
         """D10, one shot: turn the runner's retired global repo knobs into per-product
         policies so the flip changes no behaviour, and return how many were written.
