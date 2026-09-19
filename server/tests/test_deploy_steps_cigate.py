@@ -198,3 +198,131 @@ def test_green_path_never_probes_the_actions_api():
         return runs
     assert steps.ci_verdict("s", gh_api=api) == "green"
     assert not any("actions/runs" in p for p in paths)
+
+
+# --- a SUPERSEDED check-run must not outvote the one that replaced it (#1557) ---
+# A commit can carry several check-runs of the same name: GitHub double-fires a push
+# event, or a concurrency group cancels the earlier run, or an operator re-runs a flaky
+# job. Branch protection judges a required context by its LATEST run of that name, which
+# is why master tip c20211a3 merged cleanly while the deploy controller refused it:
+# `amendment` had a cancelled run from the superseded attempt sitting beside the
+# successful one, and folding over BOTH read the commit red (2026-09-11).
+#
+# Fail-safe in the other direction: collapsing duplicates we cannot order could turn a
+# genuine red green, so the newest is picked only on positive evidence (id, then
+# started_at) and an unorderable group keeps the strict all-runs reading.
+
+def _dup(*runs, status="completed"):
+    """check-runs JSON from explicit run dicts, defaulting status to completed."""
+    return json.dumps({"check_runs": [{"status": status, **r} for r in runs]})
+
+
+def _required(check_runs_json):
+    return _gh(check_runs_json, contexts=_REQUIRED)
+
+
+def test_cancelled_run_superseded_by_a_successful_rerun_is_green():
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success", "id": 10},
+        {"name": "frontend", "conclusion": "success", "id": 11},
+        {"name": "amendment", "conclusion": "cancelled", "id": 12},
+        {"name": "amendment", "conclusion": "success", "id": 13},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "green"
+
+
+def test_latest_per_name_does_not_depend_on_payload_order():
+    # The check-runs endpoint makes no ordering promise, so the newest run may arrive
+    # first. Recency comes from the run's own id, never from its position in the list.
+    runs = _dup(
+        {"name": "amendment", "conclusion": "success", "id": 13},
+        {"name": "amendment", "conclusion": "cancelled", "id": 12},
+        {"name": "lint-and-test", "conclusion": "success", "id": 10},
+        {"name": "frontend", "conclusion": "success", "id": 11},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "green"
+
+
+def test_a_rerun_that_failed_supersedes_an_earlier_success_and_is_red():
+    # The inverse of the fix: newest wins even when newest is the bad one.
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success", "id": 10},
+        {"name": "frontend", "conclusion": "success", "id": 11},
+        {"name": "amendment", "conclusion": "success", "id": 12},
+        {"name": "amendment", "conclusion": "failure", "id": 13},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "red"
+
+
+def test_cancelled_run_superseded_by_an_in_flight_rerun_is_pending():
+    # `gh run rerun` against a cancelled run: the replacement is queued, not finished.
+    # The verdict follows the LATEST run, so it is pending — not the old run's red.
+    runs = json.dumps({"check_runs": [
+        {"name": "lint-and-test", "status": "completed", "conclusion": "success", "id": 10},
+        {"name": "frontend", "status": "completed", "conclusion": "success", "id": 11},
+        {"name": "amendment", "status": "completed", "conclusion": "cancelled", "id": 12},
+        {"name": "amendment", "status": "in_progress", "conclusion": None, "id": 13},
+    ]})
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "pending"
+
+
+def test_started_at_orders_duplicates_when_ids_are_absent():
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success", "started_at": "2026-09-11T21:07:00Z"},
+        {"name": "frontend", "conclusion": "success", "started_at": "2026-09-11T21:07:00Z"},
+        {"name": "amendment", "conclusion": "cancelled", "started_at": "2026-09-11T21:07:10Z"},
+        {"name": "amendment", "conclusion": "success", "started_at": "2026-09-11T21:09:30Z"},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "green"
+
+
+def test_unorderable_duplicates_keep_the_strict_all_runs_reading():
+    # No id and no started_at: nothing says which run supersedes which. Guessing could
+    # turn a real failure green, so an unorderable group stays strict and blocks.
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success"},
+        {"name": "frontend", "conclusion": "success"},
+        {"name": "amendment", "conclusion": "cancelled"},
+        {"name": "amendment", "conclusion": "success"},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "red"
+
+
+def test_duplicates_sharing_a_started_at_stay_strict():
+    # Equal timestamps order nothing either — same fail-safe as no timestamps at all.
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success"},
+        {"name": "frontend", "conclusion": "success"},
+        {"name": "amendment", "conclusion": "cancelled", "started_at": "2026-09-11T21:07:10Z"},
+        {"name": "amendment", "conclusion": "success", "started_at": "2026-09-11T21:07:10Z"},
+    )
+    assert steps.ci_verdict("s", gh_api=_required(runs)) == "red"
+
+
+def test_superseded_cancelled_run_is_green_without_branch_protection_too():
+    # A non-admin token cannot read required contexts and falls back to counting every
+    # check. That fallback narrows WHICH runs are counted, never HOW MANY runs per name,
+    # so a superseded duplicate must not wedge the deploy there either.
+    runs = _dup(
+        {"name": "lint-and-test", "conclusion": "success", "id": 10},
+        {"name": "amendment", "conclusion": "cancelled", "id": 12},
+        {"name": "amendment", "conclusion": "success", "id": 13},
+    )
+
+    def api(path):
+        if "protection/required_status_checks" in path:
+            raise RuntimeError("HTTP 403: admin required")
+        return runs
+    assert steps.ci_verdict("s", gh_api=api) == "green"
+
+
+def test_unnamed_check_runs_are_never_collapsed_together():
+    # Legacy/synthetic payloads carry no `name`. They are not duplicates of each other,
+    # so every one of them must still count — a failure among them stays red.
+    runs = _dup({"conclusion": "failure"}, {"conclusion": "success"})
+
+    def api(path):
+        if "protection/required_status_checks" in path:
+            raise RuntimeError("HTTP 403: admin required")
+        return runs
+    assert steps.ci_verdict("s", gh_api=api) == "red"

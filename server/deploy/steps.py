@@ -93,13 +93,61 @@ def _never_ran(sha: str, gh_api: Callable[[str], str]) -> bool:
     return any((r.get("conclusion") or "") == "cancelled" for r in runs)
 
 
+def _newest(group: list[dict]) -> dict | None:
+    """The one run in ``group`` that supersedes the rest, or None if nothing orders them.
+
+    Ordering needs POSITIVE evidence, in the order GitHub actually provides it:
+    ``id`` (monotonic at creation, always present on a real payload) and then
+    ``started_at``. ``completed_at`` is deliberately not a fallback — a rerun still in
+    flight has none, so it would sort *below* the finished run it replaced and hand the
+    verdict back to the superseded one.
+
+    Values that do not distinguish the runs (a missing field, a shared timestamp) prove
+    nothing, and guessing in that state could collapse a genuine failure into its
+    sibling's success — the one direction this function must never get wrong. So it
+    declines, and the caller keeps every run.
+    """
+    if len(group) == 1:
+        return group[0]
+    for field, ok in (("id", lambda v: isinstance(v, int) and not isinstance(v, bool)),
+                      ("started_at", lambda v: isinstance(v, str) and v)):
+        values = [r.get(field) for r in group]
+        if all(ok(v) for v in values) and len(set(values)) == len(values):
+            return max(group, key=lambda r: r[field])
+    return None
+
+
+def _latest_per_name(runs: list[dict]) -> list[dict]:
+    """Collapse each check-run name to the run that currently speaks for it.
+
+    A commit can carry several check-runs of one name — GitHub double-fires a push event,
+    a concurrency group cancels the earlier attempt, an operator re-runs a flaky job — and
+    branch protection judges a required context by the LATEST of them. Reading all of them
+    instead is how master tip c20211a3 merged green and then failed the deploy preflight:
+    `amendment` carried a cancelled run from the superseded attempt next to the successful
+    one (#1557).
+
+    Runs with no ``name`` are not duplicates of each other and are never collapsed.
+    """
+    groups: dict[object, list[dict]] = {}
+    for run in runs:
+        groups.setdefault(run.get("name"), []).append(run)
+    kept: list[dict] = []
+    for name, group in groups.items():
+        newest = _newest(group) if name is not None else None
+        kept.extend([newest] if newest is not None else group)
+    return kept
+
+
 def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     gh_api = gh_api or _default_gh_api
     try:
         body = json.loads(gh_api(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs"))
     except Exception:
         return "unavailable"
-    runs = body.get("check_runs") or []
+    # Before anything reads a status or a conclusion: one run per name, the way branch
+    # protection reads them. A superseded run is not evidence about this commit.
+    runs = _latest_per_name(body.get("check_runs") or [])
     required = _required_contexts(gh_api)
     if required:
         # Only the checks that gate a MERGE gate a DEPLOY. Without this, a non-required or
