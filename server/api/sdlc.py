@@ -25,7 +25,7 @@ from server.db.models import (
     TriageItem,
     WorkItem,
 )
-from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
+from server.pm.desired_state import STATUS_BLOCKED, is_held_status
 from server.pm.priority import initiative_priority
 from server.pm.score import rice_score
 from server.pm.tree import derived_stage, rollup_epic_progress
@@ -195,7 +195,7 @@ async def _epic_progress_batch(
     array is serialized into each entry. `list_initiatives` (the LIST
     endpoint) passes ``False``: its readers (the AI assistant's
     `server/assistant/tools.py`, and anything scripting the API) only need the
-    epic's `url`/`done`/`total`/`blocked`/`needsHuman`, so an unread
+    epic's `url`/`done`/`total`/`blocked`/`held`, so an unread
     one-object-per-sub-issue array would be serialized for no reader. The web
     roadmap does not call it at all — the map endpoint (`/api/pm/map`) already
     carries per-initiative progress, and the roadmap's initiative page fetches
@@ -249,7 +249,8 @@ async def _epic_progress_batch(
             "total": len(children),
             "done": sum(1 for c in children if c.state == "closed"),
             "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
-            "needsHuman": sum(1 for c in children if status_by_child.get(c.id) == STATUS_NEEDS_HUMAN),
+            # Both board spellings count while the fleet finishes renaming (spec §9).
+            "held": sum(1 for c in children if is_held_status(status_by_child.get(c.id))),
             # Spec 2026-09-14 D6: computed here, once, for every reader.
             "priority": initiative_priority(
                 rice_score(epic_wi.reach, epic_wi.impact, epic_wi.effort, epic_wi.confidence)

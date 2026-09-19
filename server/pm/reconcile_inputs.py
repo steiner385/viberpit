@@ -135,7 +135,7 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     #
     # A hold IS folded in, and is not the same kind of value: `hold_set_at` is a
     # decision time its writer stamps once, at the moment the hold is set (it flips
-    # the board to Needs human), so unlike `Session.updated_at` it does not churn
+    # the board to Held), so unlike `Session.updated_at` it does not churn
     # and cannot hold the gate at ~now. The reconciler must not write against a
     # mirror older than the hold it is trying to reflect.
     newest = _max(*(_aware(w.classified_at) for w in issues),

@@ -733,9 +733,8 @@ def test_announce_needs_human_comments_with_reason():
     body = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
     text = body[body.index("--body") + 1]
     assert "max attempts" in text
-    # The comment must name a board value that EXISTS today: the Status option is
-    # still "Needs human" (the rename to "Held" is a later item in the series), and
-    # it must list the three release signals (spec §7).
-    assert "Board Status is Needs human" in text and "Held" not in text
+    # The comment must name the board value the reconciler writes — "Held" since the
+    # rename (spec 2026-09-18 §9) — and list the three release signals (spec §7).
+    assert "Board Status is Held" in text and "Needs human" not in text
     assert "Ready or Backlog" in text and "Retry" in text
     assert not any("label" in a for c in gh.calls for a in c)

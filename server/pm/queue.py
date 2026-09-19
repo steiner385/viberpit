@@ -171,7 +171,7 @@ def skip_reason(
         return "needs_spec"
     status = row.status if row.status in STATUS_OPTIONS else STATUS_BACKLOG
     if status not in (STATUS_BACKLOG, STATUS_READY, STATUS_BLOCKED):
-        return "status"  # Done / In progress / Needs human
+        return "status"  # Done / In progress / Held
     if status == STATUS_BLOCKED or (respect_dependencies and row.open_blockers):
         return "blocked"
     # status is now guaranteed Backlog or Ready (Blocked returned above).

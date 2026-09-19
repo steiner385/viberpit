@@ -18,7 +18,7 @@ from server.pm.desired_state import (
     HUMAN_WAIT_SESSION_STATUSES,
     STATUS_BLOCKED,
     STATUS_IN_PROGRESS,
-    STATUS_NEEDS_HUMAN,
+    is_held_status,
 )
 from server.pm.outcomes import bounced_out
 from server.sdlc.gates import auto_resolved_view
@@ -125,7 +125,7 @@ def issue_tier(state: str | None, triage_state: str | None,
     if reason is not None:
         return "needs-you"
     if (hold_kind in HELD_KINDS or session_status in HUMAN_WAIT_SESSION_STATUSES
-            or board_status == STATUS_NEEDS_HUMAN):
+            or is_held_status(board_status)):
         return "needs-you"
     if has_open_blocker or board_status == STATUS_BLOCKED:
         return "blocked"
@@ -193,7 +193,7 @@ def rollup_epic_progress(entries: dict[str, dict | None],
         if iid not in children:
             out[iid] = entry
             continue
-        totals = {"total": 0, "done": 0, "blocked": 0, "needsHuman": 0}
+        totals = {"total": 0, "done": 0, "blocked": 0, "held": 0}
         priorities: list[float] = []
         for leaf in leaves(iid):
             e = entries.get(leaf)
@@ -249,7 +249,7 @@ class InitiativeIn:
     status: str | None
     primary_slug: str | None
     capability_slugs: tuple[str, ...]
-    epic: dict | None                     # {ref,url,total,done,blocked,needsHuman} or None
+    epic: dict | None                     # {ref,url,total,done,blocked,held} or None
     parent_slug: str | None = None        # program this phase nests under, or None
     # `Initiative.last_auto_gate` verbatim (spec 2026-09-14 §8): what the
     # synthesizer last did with one of this row's gates, or None. Rendered as
@@ -281,7 +281,7 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
     # slug-keyed), whereas server/api/sdlc.py's initiative payload serializes
     # `primaryCapability` as `{id, slug, title}`. Both shapes are intended —
     # Phase 3 consumes each from its own endpoint — not a drift to reconcile.
-    epic_blocked, epic_needs = int(epic.get("blocked", 0)), int(epic.get("needsHuman", 0))
+    epic_blocked, epic_needs = int(epic.get("blocked", 0)), int(epic.get("held", 0))
     tier = initiative_tier(ini.status, ini.stage, epic_blocked, epic_needs,
                            epic_total=total, epic_done=done, has_children=has_children)
     reason = initiative_reason(ini.status, ini.stage, total, done, has_children=has_children)

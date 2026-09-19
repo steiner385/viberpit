@@ -47,6 +47,37 @@ def test_build_batch_rejects_unknown_option_and_oversize():
     assert [len(c) for c in chunk(too_many)] == [MAX_ALIASES, 1]
 
 
+@pytest.mark.parametrize("options,expect", [
+    ({"Held": "O_held"}, "O_held"),
+    ({"Needs human": "O_legacy"}, "O_legacy"),
+    ({"Needs human": "O_legacy", "Held": "O_held"}, "O_held"),
+])
+def test_held_resolves_to_whichever_spelling_the_board_has(options, expect):
+    """Rollout tolerance (spec 2026-09-18 §9): the engine only ever decides ``Held``,
+    but the board's own Status option may still be spelled ``Needs human``. The write
+    path resolves against the cached spelling — preferring ``Held`` when both exist —
+    so a mixed fleet keeps writing instead of parking on ``UnknownOption``."""
+    from server.pm.desired_state import STATUS_HELD
+    cache = {"Status": {"field_id": "F_s", "options": options}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    doc, _ = build_batch([m], project_node_id="PVT_1", field_cache=cache)
+    assert f'value: {{singleSelectOptionId: "{expect}"}}' in doc
+
+
+def test_held_with_neither_spelling_cached_is_an_unknown_option():
+    from server.pm.desired_state import STATUS_HELD
+    cache = {"Status": {"field_id": "F_s", "options": {"Ready": "O_ready"}}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    with pytest.raises(UnknownOption):
+        build_batch([m], project_node_id="PVT_1", field_cache=cache)
+    # The alias is one-way: a board that somehow still DECIDES the legacy spelling
+    # gets no help from a "Held" option — nothing produces that value any more.
+    legacy = Mutation("set_field", "PVTI_1", "Status", None, "Needs human", "status:o/r#1")
+    with pytest.raises(UnknownOption):
+        build_batch([legacy], project_node_id="PVT_1",
+                    field_cache={"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}})
+
+
 def test_parse_batch_maps_errors_per_alias():
     payload = {"data": {"m0": {"projectV2Item": {"id": "PVTI_1"}}, "m1": None},
                "errors": [{"path": ["m1"], "message": "Could not resolve to a node"}]}

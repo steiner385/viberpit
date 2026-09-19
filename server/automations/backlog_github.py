@@ -369,11 +369,11 @@ def announce_needs_human(batch, reason: str, *,
     reason a human needs in order to pick the target up. The handoff SIGNAL is
     the owner_action hold the runner writes on the issue (spec 2026-09-18 §3);
     this only says so on the issue. Best-effort, exactly like :func:`announce_claim`."""
-    # "Needs human" is the board value that EXISTS today — the rename to "Held" is a
-    # later item in the hold-ladder series, and naming it here would send a reader
-    # looking for a Status option their board does not have.
+    # "Held" is the board's Status option since the rename (spec 2026-09-18 §9). A board
+    # the one-time rename has not reached yet still shows the old column name; the
+    # reconciler writes whichever spelling that board has, so the card is parked either way.
     body = (f"Handed to a human by {brand.NAME} Backlog Runner: {reason}. "
-            "Board Status is Needs human until a person releases it: move the card to "
+            "Board Status is Held until a person releases it: move the card to "
             f"Ready or Backlog, edit the issue body, or tap Retry in {brand.NAME}.")
     for ref in batch.issues:
         try:

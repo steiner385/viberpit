@@ -287,7 +287,10 @@ def test_release_by_signals_board_edit_and_body_edit():
     evidence = _held(db, 4, kind="evidence")
     by_body.body = "edited after the hold"          # fingerprint drift
     db.flush()
-    edits = [HumanEdit("o/r#1", "Status", "Needs human", "Ready"),
+    # The old value is whatever the board was spelling: "Held" since the rename, and
+    # "Needs human" on a board mid-rollout (§9). Neither is read — a Status edit off
+    # the held column is the signal, not the value it moved from.
+    edits = [HumanEdit("o/r#1", "Status", "Held", "Ready"),
              HumanEdit("o/r#3", "Score", 1.0, 2.0),           # not a status edit
              HumanEdit("o/r#4", "Status", "Needs human", "Backlog")]  # evidence: not released
     released = release_by_signals(db, human_edits=edits, now=NOW)

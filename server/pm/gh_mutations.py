@@ -10,6 +10,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
 from .reconcile_diff import Mutation
 
 MAX_ALIASES = 20
@@ -44,7 +45,15 @@ def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) 
         if m.field == "Score":
             value = "{number: %s}" % float(m.new_value)  # type: ignore[arg-type]
         else:
-            option = (spec.get("options") or {}).get(str(m.new_value))
+            options = spec.get("options") or {}
+            option = options.get(str(m.new_value))
+            # THE write-side resolver for the rename (spec 2026-09-18 §9): the engine
+            # only ever decides "Held", but a board mid-rollout still spells its Status
+            # option "Needs human". Same column — write the spelling the board's cache
+            # actually has, preferring the new one when it carries both, and never
+            # create a second option (`gh_reconcile._missing_status_options`).
+            if not option and m.field == "Status" and m.new_value == STATUS_HELD:
+                option = options.get(LEGACY_STATUS_NEEDS_HUMAN)
             if not option:
                 raise UnknownOption(f"{m.field}={m.new_value!r} has no option id")
             value = "{singleSelectOptionId: %s}" % _q(option)

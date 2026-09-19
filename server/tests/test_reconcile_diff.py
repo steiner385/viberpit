@@ -33,6 +33,24 @@ def test_diff_fields_emits_only_changed_and_pushable():
         ("set_field", "Score", None, 480.0)]
 
 
+def test_held_and_the_legacy_spelling_are_the_same_status():
+    """Rollout tolerance (spec 2026-09-18 §9): a board whose Status option is still
+    called ``Needs human`` already holds the card, so desired ``Held`` must not
+    re-plan the same mutation on every tick. Any OTHER value still diffs."""
+    from server.pm.desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
+    desired = DesiredItem("o/r#5", Decision(STATUS_HELD, T2), Decision(None, None),
+                          Decision(None, None))
+    assert diff_fields(desired, _mirror(status=LEGACY_STATUS_NEEDS_HUMAN)) == []
+    assert diff_fields(desired, _mirror(status=STATUS_HELD)) == []
+    muts = diff_fields(desired, _mirror(status="Ready"))
+    assert [(m.field, m.old_value, m.new_value) for m in muts] == [
+        ("Status", "Ready", STATUS_HELD)]
+    # The alias is Status-scoped: no other single-select field gets it.
+    stage = DesiredItem("o/r#5", Decision(None, None), Decision(None, None),
+                        Decision(STATUS_HELD, T2))
+    assert [m.field for m in diff_fields(stage, _mirror(stage=LEGACY_STATUS_NEEDS_HUMAN))] == ["Stage"]
+
+
 def test_mutation_key_is_stable_and_value_sensitive():
     a = Mutation("set_field", "PVTI_5", "Status", "Backlog", "Ready", "status:o/r#5")
     b = Mutation("set_field", "PVTI_5", "Status", "Blocked", "Ready", "x")

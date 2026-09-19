@@ -2395,7 +2395,7 @@ def test_reconcile_save_releases_hold_on_human_board_edit():
                 db.add(gh)
                 await db.flush()
                 db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wid,
-                                     gh_item_node_id="PVTI_1", status="Needs human"))
+                                     gh_item_node_id="PVTI_1", status="Held"))
                 return gh.id
         gh_id = c.portal.call(_seed_board)
         orch = c.app.state.orchestrator

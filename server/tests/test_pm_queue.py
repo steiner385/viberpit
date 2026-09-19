@@ -68,11 +68,11 @@ def test_needs_human_label_alone_never_skips():
 
 
 def test_held_outranks_the_board_status_it_causes():
-    """The reconciler stamps ``Needs human`` on exactly these rows, so a
-    status-first check would report them as plain "status" skips and the card
-    would lose its held gauge."""
+    """The reconciler stamps ``Held`` on exactly these rows, so a status-first
+    check would report them as plain "status" skips and the card would lose its
+    held gauge."""
     kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
-    assert skip_reason(_row(status="Needs human", hold_kind="owner_action"), **kw) == "held"
+    assert skip_reason(_row(status="Held", hold_kind="owner_action"), **kw) == "held"
 
 
 def test_needs_spec_skips_a_bounced_row_before_the_status_gate():
@@ -167,8 +167,8 @@ def test_rank_rejects_unknown_min_status():
 
 def test_min_status_options_are_the_first_two_board_statuses():
     # gh_reconcile._ensure_fields seeds the board's Status field options in
-    # STATUS_OPTIONS display order (Backlog, Ready, In progress, Blocked, Needs
-    # human, Done). The queue's min_status gate only ever admits from the front
+    # STATUS_OPTIONS display order (Backlog, Ready, In progress, Blocked, Held,
+    # Done). The queue's min_status gate only ever admits from the front
     # of that order — pin the coupling so a reorder of STATUS_OPTIONS is caught
     # here instead of silently changing what "Backlog" or "Ready" mode means.
     assert MIN_STATUS_OPTIONS == STATUS_OPTIONS[:2]

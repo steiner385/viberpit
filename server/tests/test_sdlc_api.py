@@ -249,7 +249,7 @@ def test_build_stage_surfaces_backlog_sessions():
 def test_get_detail_includes_epic_progress():
     """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 3 children
     (1 closed, 1 'Blocked', 1 'Ready' via GhProjectItem.status); GET detail →
-    epic.total==3, epic.done==1, epic.blocked==1, epic.needsHuman==0 (#991)."""
+    epic.total==3, epic.done==1, epic.blocked==1, epic.held==0 (#991)."""
     from server.db import db_session
     from server.db.models import GhProjectItem, Initiative, WorkItem
 
@@ -314,7 +314,7 @@ def test_get_detail_includes_epic_progress():
                 assert epic["total"] == 3
                 assert epic["done"] == 1
                 assert epic["blocked"] == 1
-                assert epic["needsHuman"] == 0
+                assert epic["held"] == 0
                 child_refs = {c["ref"]: c for c in epic["children"]}
                 assert child_refs["o/r#1"]["state"] == "closed"
                 assert child_refs["o/r#2"]["status"] == "Blocked"
