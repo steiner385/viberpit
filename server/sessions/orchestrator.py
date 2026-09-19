@@ -6464,7 +6464,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await db.run_sync(lambda s: release_on_investigation(s, target))
 
-    async def _backlog_held_targets(self) -> "frozenset[str]":
+    async def _backlog_held_targets(self) -> "dict[str, str]":
         from server.pm.holds import held_refs
         async with db_session() as db:
             return await db.run_sync(held_refs)

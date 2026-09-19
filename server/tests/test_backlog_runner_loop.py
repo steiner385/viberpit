@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Collection, Mapping
 from types import SimpleNamespace
 
 import pytest
@@ -144,7 +145,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
                pr_doctor_attempts_fn=None, session_gone=None,
-               held: "set[str] | None" = None, escalate_raises=False,
+               held: "Collection[str] | Mapping[str, str] | None" = None,
+               escalate_raises=False,
                investigation_state=None, session_resolution=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
@@ -238,7 +240,13 @@ def build_loop(*, mode="on", config=None, clock=None,
         rec.escalations.append((target, reason, rung))
 
     async def _held():
-        return frozenset(held or ())
+        # The seam answers ref → hold kind (``holds.held_refs``). A bare iterable of
+        # refs is shorthand for the give-up tests, where only membership matters, and
+        # spells the kind a give-up actually writes; a test that cares about the kind
+        # (``_settle_decision``) passes the mapping.
+        if isinstance(held, Mapping):
+            return dict(held)
+        return {ref: "owner_action" for ref in (held or ())}
 
     async def investigation_state_seam(target, session_id):
         # ``investigation_state`` is a dict (one shape for every target) or a
@@ -3786,13 +3794,15 @@ def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_pat
 # An ended session that PROPOSED A DECISION (spec 2026-09-18 §6)               #
 # --------------------------------------------------------------------------- #
 
-async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=("o/r#1",), **kw):
+async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=None, **kw):
     """Dispatch one implement batch, end its session, and sweep once.
 
     ``resolution`` is what the ``session_resolution`` seam answers — the token the
     ended session declared through ``mark_no_pr``. ``held`` is what the
-    ``held_targets`` seam answers, i.e. whether the proposal the session claims to
-    have made actually parked the item; the default is the settled case."""
+    ``held_targets`` seam answers (ref → hold kind), i.e. whether the proposal the
+    session claims to have made actually parked the item; the default is the settled
+    case — the item parked by a ``decision`` hold."""
+    held = {"o/r#1": "decision"} if held is None else held
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
     await _seed_row()
     await _seed_product()
@@ -3800,7 +3810,7 @@ async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=("o/r#1",
         config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
         policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
         spawn_result=SimpleNamespace(id="sess-1", model="sonnet"),
-        session_resolution=resolution, held=set(held), **kw)
+        session_resolution=resolution, held=held, **kw)
     await loop.tick()                        # dispatch on sonnet
     await _mark_session_ended(ctx, "o/r#1")
     await loop.tick()                        # sweep
@@ -3850,6 +3860,32 @@ def test_an_awaiting_decision_with_no_hold_behind_it_falls_through_to_the_ladder
     asyncio.run(run())
 
 
+def test_an_owner_action_park_is_not_proof_a_decision_was_proposed(tmp_path, caplog):
+    """Final review [minor] 2: the proof is a ``decision`` hold, not ANY hold.
+
+    ``decisions.propose`` refuses outright when a PERSON has already parked the item,
+    and the refused session then ends with the ``mark_no_pr("awaiting-decision")`` its
+    tool description told it to use. Reading the seam as a bare set settled that as
+    ``decision_proposed`` — a cause the ladder and the capability floor both discount —
+    for a dispatch that proposed nothing, and silenced the very warning added to make
+    the mismatch visible. So an ``owner_action`` park answers False: the warning fires
+    and the ending takes the ordinary (terminating) no-PR path."""
+    async def run():
+        with caplog.at_level("WARNING", logger="server.automations.backlog_runner"):
+            _loop, rec, ctx = await _sweep_after_ending(
+                tmp_path, "decision_owner_action.db", "awaiting-decision",
+                held={"o/r#1": "owner_action"})
+
+        assert "decision_resolution_without_hold" in caplog.text
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "session ended without a mergeable PR")]
+        assert await ctx.list_events(kind="decision_proposed") == []
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+
+    asyncio.run(run())
+
+
 def test_an_investigation_that_proposes_a_decision_settles_as_a_decision(tmp_path):
     """Review R1 F3: ``propose_decision`` is mounted on investigate sessions too, and
     that ending is a DECISION, not an investigation exit. Without the check ahead of
@@ -3862,7 +3898,7 @@ def test_an_investigation_that_proposes_a_decision_settles_as_a_decision(tmp_pat
             tmp_path, "inv_decision.db",
             {"issue_state": "open", "mirrored": True, "hold_kind": "decision",
              "no_pr_note": "stop the turn or let it finish?"},
-            session_resolution="awaiting-decision", held={"o/r#1"})
+            session_resolution="awaiting-decision", held={"o/r#1": "decision"})
 
         assert rec.investigation_reads == []     # the investigate settle never ran
         assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [

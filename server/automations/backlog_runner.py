@@ -7,6 +7,7 @@ from .context import observation_failed, publish_observation
 import asyncio
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
@@ -504,11 +505,14 @@ SessionResolution = Callable[["str | None"], Awaitable["str | None"]]
 # hold so the report re-enters the queue as an implement candidate. Returns whether
 # a hold was actually released (False = there was none, or the write is unwired).
 ReleaseInvestigationHold = Callable[[str], Awaitable[bool]]
-# Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
-# runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
-# §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
-# An unwired seam (stub) returns an empty set, so no row is ever released.
-HeldTargets = Callable[[], Awaitable["frozenset[str]"]]
+# Which ``owner/repo#N`` refs are currently held, MAPPED TO THE KIND holding them
+# (``owner_action`` / ``decision``) — the runner's own ``gave_up`` rows follow the
+# hold now, not a timer (spec 2026-09-18 §3): ``_release_give_ups`` drops a row once
+# none of its refs is a key here. It carries the kind rather than being a bare set
+# because ``_settle_decision`` must distinguish the two: a person's ``owner_action``
+# park is not proof that a proposal landed. ONE read backs both questions.
+# An unwired seam (stub) returns an empty mapping, so no row is ever released.
+HeldTargets = Callable[[], Awaitable["Mapping[str, str]"]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
 # forever. Returns the close-out outcome: "closed" (≥1 issue verifiably linked to
@@ -641,9 +645,10 @@ async def _stub_release_investigation_hold(_target: str) -> bool:
     return False
 
 
-async def _stub_held_targets() -> "frozenset[str]":
-    # Unwired seam: nothing reads as held, so no gave_up row is ever released.
-    return frozenset()
+async def _stub_held_targets() -> "Mapping[str, str]":
+    # Unwired seam: nothing reads as held, so no gave_up row is ever released and
+    # no awaiting-decision ending is ever settled as a proposal.
+    return {}
 
 
 class BacklogRunnerLoop:
@@ -2104,18 +2109,26 @@ class BacklogRunnerLoop:
         return True
 
     async def _decision_hold_is_real(self, target: str, st: dict) -> bool:
-        """Is one of this claim's issues actually PARKED — i.e. did the proposal the
-        session says it made really land?
+        """Is one of this claim's issues parked BY A DECISION — i.e. did the proposal
+        the session says it made really land?
 
-        Reuses the existing ``held_targets`` seam (``HELD_KINDS`` refs), read the same
-        way ``_release_give_ups`` reads it: ``any`` over the claim's issues, because a
-        batch parks on the issue the decision was proposed for, not on every ref.
+        Reuses the existing ``held_targets`` seam (one read, now kind-aware), read the
+        same way ``_release_give_ups`` reads it: ``any`` over the claim's issues,
+        because a batch parks on the issue the decision was proposed for, not on every
+        ref. The kind is load-bearing, not decoration: ``decisions.propose`` REFUSES
+        when a person has already parked the item, and the refused session then ends
+        with the ``mark_no_pr("awaiting-decision")`` its tool description told it to
+        use. Any-hold-will-do would settle that as ``decision_proposed`` — a cause the
+        ladder and the capability floor both discount — for a dispatch that proposed
+        nothing, and the ``decision_resolution_without_hold`` warning added to make
+        exactly this mismatch visible would never fire. So an ``owner_action`` park
+        answers False and the ending takes the ordinary (terminating) no-PR path.
 
         A seam failure answers False — "we could not prove it is held" must keep the
         ordinary no-PR path, which terminates (ladder → top → hand-off), rather than
         the settle, which returns the item to the pool with nothing behind it. Same
         direction as ``_session_ever_ran``'s fail-safe, pointed the other way because
-        here the SHORTER path is the dangerous one. An unwired seam (empty set) is
+        here the SHORTER path is the dangerous one. An unwired seam (empty mapping) is
         the same answer, so a deployment that never wired it keeps today's behaviour
         instead of silently releasing claims.
         """
@@ -2125,7 +2138,7 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.held_targets_failed target=%s", target,
                         exc_info=True)
             return False
-        return any(ref in held for ref in (st.get("issues") or [target]))
+        return any(held.get(ref) == "decision" for ref in (st.get("issues") or [target]))
 
     async def _settle_investigation(self, target: str, st: dict) -> None:
         """Settle one ENDED investigation from the issue's real state and the hold

@@ -262,6 +262,10 @@ def _held(db, number, *, kind="owner_action", body="b", state="open"):
 
 
 def test_held_refs_lists_open_owner_action_and_decision_holds_only():
+    """And it names the KIND, not just the ref: the runner's give-up sweep only needs
+    membership, but ``_settle_decision`` must tell a ``decision`` park from an
+    ``owner_action`` one — a person's park is not proof a proposal landed. Both
+    questions ride this single read."""
     from server.pm.holds import held_refs
     db = _sync_db()
     _held(db, 1)
@@ -270,7 +274,7 @@ def test_held_refs_lists_open_owner_action_and_decision_holds_only():
     _held(db, 4, state="closed")
     db.add(WorkItem(repo="o/r", number=5, kind="issue", state="open", title="t", body="b"))
     db.commit()
-    assert held_refs(db) == frozenset({"o/r#1", "o/r#2"})
+    assert held_refs(db) == {"o/r#1": "owner_action", "o/r#2": "decision"}
 
 
 def test_release_by_signals_board_edit_and_body_edit():

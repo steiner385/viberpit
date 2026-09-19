@@ -14,6 +14,7 @@ from server.db.models import (
     ProjectRepo, TriageProposal, WorkItem, WorkItemDep)
 from server.sdlc.slug import normalize_epic_title, slugify
 
+from .decisions import STATUS_PENDING
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
@@ -450,6 +451,37 @@ def _rowcount(result: object) -> int:
     return int(getattr(result, "rowcount", 0) or 0)
 
 
+#: The five columns that ARE a hold (``server/pm/holds.py:set_hold`` writes exactly
+#: these). Listed once so the alias merge below moves a hold without re-deriving it.
+_HOLD_COLUMNS = ("hold_kind", "hold_reason", "hold_by", "hold_set_at", "hold_fingerprint")
+
+
+def _move_decision_hold(db: Session, alias_id: str, twin_id: str) -> None:
+    """Carry the ``decision`` hold across with the pending proposal it belongs to.
+
+    A pending proposal and the ``decision`` hold on its item are one fact (spec
+    2026-09-18 §6: ``decisions.propose`` writes both in one flush). Re-pointing the
+    proposal at the twin without the hold leaves the twin unheld, so
+    ``queue.py`` stops skipping it and the runner dispatches an implement run on an
+    issue whose product question is still open — and the later ``clear_decision_hold``
+    finds nothing to release, so the accept writes no ``pm.hold.release`` either.
+
+    The hold MOVES, it is not re-set: the five fields are copied verbatim and no
+    audit is written, because ``pm.hold.set`` was already recorded when the proposal
+    was made and the alias row is deleted moments later. Only an UNHELD twin is
+    written — a twin a person has already parked outranks a hold from a row that is
+    about to disappear."""
+    alias, twin = db.get(WorkItem, alias_id), db.get(WorkItem, twin_id)
+    if alias is None or twin is None or alias.hold_kind != "decision":
+        return
+    if twin.hold_kind is not None:
+        log.info("rename_repo.decision_hold_not_moved twin=%s held=%s",
+                 twin_id, twin.hold_kind)
+        return
+    for column in _HOLD_COLUMNS:
+        setattr(twin, column, getattr(alias, column))
+
+
 def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
     """Re-key every mirror row from alias *old* to GitHub's canonical *new*.
 
@@ -515,17 +547,18 @@ def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
         # that shadowed the dropped row — is deleted moments later anyway.
         pending_twins = {wid for (wid,) in db.query(DecisionProposal.work_item_id).filter(
             DecisionProposal.work_item_id.in_(list(twin_of.values())),
-            DecisionProposal.status == "pending")}
+            DecisionProposal.status == STATUS_PENDING)}
         for dp in db.query(DecisionProposal).filter(
                 DecisionProposal.work_item_id.in_(alias_ids)).all():
-            twin = twin_of[dp.work_item_id]
-            if dp.status == "pending" and twin in pending_twins:
+            alias_id, twin = dp.work_item_id, twin_of[dp.work_item_id]
+            if dp.status == STATUS_PENDING and twin in pending_twins:
                 log.info("rename_repo.decision_proposal_dropped id=%s twin=%s", dp.id, twin)
                 db.delete(dp)
                 continue
             dp.work_item_id = twin
-            if dp.status == "pending":
+            if dp.status == STATUS_PENDING:
                 pending_twins.add(twin)
+                _move_decision_hold(db, alias_id, twin)
         for d in db.query(WorkItemDep).filter(or_(
                 WorkItemDep.src_work_item_id.in_(alias_ids),
                 WorkItemDep.dst_work_item_id.in_(alias_ids))).all():

@@ -277,17 +277,22 @@ def set_evidence_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -
     set_hold(wi, kind="evidence", reason=reason, actor=actor, now=now)
 
 
-def held_refs(db: "Session") -> frozenset[str]:
-    """``owner/repo#N`` of every open issue parked by an owner_action or decision
-    hold — what the runner's sweep reads to drop ``gave_up`` rows that are no longer
-    backed by a hold."""
+def held_refs(db: "Session") -> dict[str, str]:
+    """``owner/repo#N`` → the ``HELD_KINDS`` kind holding it, for every open issue
+    parked by an owner_action or decision hold.
+
+    Two readers, one query: the runner's sweep drops ``gave_up`` rows that are no
+    longer backed by ANY hold (membership), and ``_settle_decision`` asks whether an
+    ``awaiting-decision`` ending is backed by a ``decision`` hold specifically — an
+    ``owner_action`` park is not proof a proposal landed. Returning the kind keeps
+    both on this single read rather than growing a second seam."""
     from sqlalchemy import select
 
     from server.pm.desired_state import HELD_KINDS
-    rows = db.execute(select(WorkItem.repo, WorkItem.number).where(
+    rows = db.execute(select(WorkItem.repo, WorkItem.number, WorkItem.hold_kind).where(
         WorkItem.kind == "issue", WorkItem.state == "open",
         WorkItem.hold_kind.in_(sorted(HELD_KINDS)))).all()
-    return frozenset(f"{repo}#{number}" for repo, number in rows)
+    return {f"{repo}#{number}": str(kind) for repo, number, kind in rows}
 
 
 def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor: str,
