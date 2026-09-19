@@ -144,6 +144,10 @@ _BACKLOG_STATUS_MAP = {
     "uncertain": ("warn", "Launch outcome unknown; targets remain reserved — see the feed"),
     "no_account": ("warn", "All accounts at/above usage ceiling — try later"),
     "unknown": ("warn", "No longer a current candidate"),
+    # The batch failed the live pre-spawn re-check (#1523) — closed, assigned or
+    # newly blocked since it was proposed, or GitHub could not be asked and the
+    # check failed closed. One status for both: the feed event carries which.
+    "not_ready": ("warn", "Not ready to implement right now — see the feed"),
     # The launch was declined before a session existed — an engine the origin is
     # not audited for, or an engine/permission-mode pair that could not open the
     # PR the run exists to produce. The claim was returned to the pool; the

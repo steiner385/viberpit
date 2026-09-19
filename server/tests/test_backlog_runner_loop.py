@@ -2040,6 +2040,23 @@ def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
     asyncio.run(run())
 
 
+def test_live_check_ok_passes_when_no_verify_seam_is_wired(tmp_path):
+    """The public gate the propose tap calls (#1523). An absent ``verify_ready``
+    is a caller asking for NO check, not a check that failed — fail-closed
+    applies to a wired seam that could not answer, not to an unwired one, and
+    the refill loop has always taken the same view."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, _rec, ctx = build_loop(verify_ready=None, candidates=[batch("o/r#7")])
+        assert await loop.live_check_ok(batch("o/r#7")) is True
+        assert await ctx.list_events(kind="skipped_live_check") == []
+
+    asyncio.run(run())
+
+
 def test_live_check_gates_propose_dispatch_claims_too(tmp_path):
     """A ``propose`` product's claim row is written before the user tap — a stale
     pick must not be claimed there either."""

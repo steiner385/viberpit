@@ -1069,7 +1069,11 @@ class SessionOrchestrator:
             close_out=self._backlog_close_out,
             refresh_groups=self._backlog_refresh_groups,
             credential_alerts=self._backlog_credential_alerts,
-            verify_ready=self._backlog_verify_ready,
+            # Late-bound like ``spawn`` above, not an early-bound method
+            # reference: the tap now goes through this gate too, so the seam is
+            # resolved per call and a rebind of the attribute cannot leave the
+            # loop holding a stale one.
+            verify_ready=lambda batch: self._backlog_verify_ready(batch),
             queue_tail=self._backlog_queue_tail,
         )
         self._backlog_task: asyncio.Task | None = None
@@ -7253,10 +7257,11 @@ class SessionOrchestrator:
         """Propose-tap: claim (if needed) + spawn the batch for *primary*.
 
         Re-reads the current priority queue, pins a batch on *primary*, claims it
-        (unless already claimed), resolves a healthy account, and spawns the
-        de-duped runner session. Returns a status string: ``"spawned"`` /
-        ``"unknown"`` (not a current candidate) / ``"no_account"`` /
-        ``"refused"``."""
+        (unless already claimed), re-verifies the batch against live GitHub,
+        resolves a healthy account, and spawns the de-duped runner session.
+        Returns a status string: ``"spawned"`` / ``"unknown"`` (not a current
+        candidate) / ``"not_ready"`` (failed the live re-check) / ``"no_account"``
+        / ``"refused"``."""
         from server.automations.backlog_runner import is_pending_dispatch
         from server.automations.backlog_selection import Batch
         _mode, config = await self._backlog_read_config()
@@ -7284,6 +7289,18 @@ class SessionOrchestrator:
                       # tapped into an implementation (spec 2026-09-18 §5).
                       primary_hold_kind=(candidate.get("hold_kind")
                                          or st.get("primary_hold_kind")))
+        # Spec 003 §7a, the half the tap was missing (#1523): the loop verifies
+        # live immediately before it claims, but a PROPOSED claim was verified
+        # whenever the proposal was made — possibly hours before a person taps
+        # it. The spawn happens now, so the check happens now, through the loop's
+        # own gate (fails closed per §10; the feed event says which of not-ready
+        # / check-failed it was). The claim is deliberately KEPT: the tap refuses
+        # this attempt, it does not reject the work — releasing would drop the
+        # batch back into a pool whose next pick would hit the same blocker.
+        # ``backlog_runner_dispatch`` is an explicit operator override and stays
+        # ungated.
+        if not await self._backlog_loop.live_check_ok(batch):
+            return "not_ready"
         result = await self._backlog_dispatch_batch(batch, source="proposal")
         return result["status"]
 

@@ -58,6 +58,11 @@ async def dispatch_orch(tmp_path, monkeypatch):
         # The candidate pool is the priority-queue read the loop itself selects
         # from — dispatch resolves repo/title through the same seam.
         orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+        # The propose tap re-verifies its batch against live GitHub before it
+        # spawns (#1523). Stubbed ready here so the rest of these tests keep
+        # exercising the path each is about; the gate's own tests drive the seam
+        # to False/None themselves.
+        orch._backlog_verify_ready = AsyncMock(return_value=True)
         from server.db import db_session, init_db
         from server.db.models import Automation
         await init_db(db_url=db_url)
@@ -442,6 +447,81 @@ async def test_proposal_tap_uses_stored_entire_batch_outside_candidate_pool(disp
     assert batch.titles == {"o/r#7": "Seven", "o/r#8": "Eight"}
     state = await ctx.get_target_state("o/r#7")
     assert state["ownership_token"] == proposal["ownership_token"] and state["attempts"] == 2
+    # …and it was re-verified live first, over the WHOLE stored batch (#1523).
+    assert dispatch_orch._backlog_verify_ready.await_count == 1
+    assert dispatch_orch._backlog_verify_ready.await_args[0][0].issues == ["o/r#7", "o/r#8"]
+
+
+async def _proposal_claim(ctx, *, ref: str = "o/r#7") -> dict:
+    return await ctx.claim_target_state(ref, {
+        "issues": [ref], "repo": "o/r", "product": "test-product", "claimed": True,
+        "proposed": True, "titles": {ref: "Seven"}, "attempts": 0},
+        expected={}, source="automatic")
+
+
+async def _live_check_results() -> list[str]:
+    """``detail.result`` of every ``skipped_live_check`` event, oldest first."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AutomationEvent
+    async with db_session() as db:
+        rows = (await db.execute(select(AutomationEvent).where(
+            AutomationEvent.kind == "skipped_live_check").order_by(
+            AutomationEvent.id))).scalars().all()
+    return [(r.detail or {})["result"] for r in rows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live,expected_result", [(False, "not_ready"),
+                                                  (None, "check_failed")])
+async def test_proposal_tap_refuses_when_the_live_recheck_does_not_pass(
+        dispatch_orch, live, expected_result):
+    """#1523: a proposal is verified when it is MADE, the tap spawns possibly
+    hours later — so the tap re-verifies, and fails closed (spec 003 §10) on a
+    check that could not be completed just as it does on one that said no."""
+    ctx = dispatch_orch._backlog_ctx
+    claim = await _proposal_claim(ctx)
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    dispatch_orch._backlog_verify_ready = AsyncMock(return_value=live)
+
+    assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "not_ready"
+
+    # The PATCHED seam is what answered — not a real ``gh`` call failing closed,
+    # which would make this pass for the wrong reason (the loop resolves
+    # ``verify_ready`` per call precisely so this rebind lands).
+    dispatch_orch._backlog_verify_ready.assert_awaited_once()
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+    # The refusal is about THIS attempt, not the work: the claim survives so a
+    # person can tap again once the blocker clears.
+    state = await ctx.get_target_state("o/r#7")
+    assert state["proposed"] and state["ownership_token"] == claim["ownership_token"]
+    # One gate, so the tap gets the loop's own reason in the feed.
+    assert await _live_check_results() == [expected_result]
+
+
+@pytest.mark.asyncio
+async def test_proposal_tap_refusal_reports_not_ready_to_the_action_caller(dispatch_orch):
+    from server.automations.action_providers import BacklogRunnerActionProvider
+    await _proposal_claim(dispatch_orch._backlog_ctx)
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    dispatch_orch._backlog_verify_ready = AsyncMock(return_value=False)
+
+    result = await BacklogRunnerActionProvider(dispatch_orch).trigger("o/r#7", "implement")
+
+    # Mapped, not the unmapped-status fallback ("Action failed — see the feed").
+    assert (result.status, result.level) == ("not_ready", "warn")
+    assert "see the feed" in result.message and "failed" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_stays_an_ungated_operator_override(dispatch_orch):
+    """``backlog_runner_dispatch`` is a deliberate human override: it must NOT
+    grow the tap's live gate (#1523), or an operator could no longer dispatch
+    work the mirror or GitHub is currently wrong about."""
+    dispatch_orch._backlog_verify_ready = AsyncMock(return_value=False)
+    assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7"]))["status"] == "spawned"
+    dispatch_orch._backlog_verify_ready.assert_not_awaited()
 
 
 @pytest.mark.asyncio
