@@ -16,6 +16,13 @@ RuntimeDirectoryPreserve=yes
 # under here; without it the non-root daemon can't create /var/lib/viberpit and
 # snapshot_deploy fails with PermissionError.
 StateDirectory=viberpit
+# Per-HOST log dir, created and chowned to User= by systemd (/var/log/viberpit).
+# Without it the non-root daemon cannot write under /var/log and the log dir
+# default fell through to ~/.claude-accounts/logs — the sshfs-SHARED account
+# store, so rocky's daemon and dobby's edge appended to and independently
+# rotated ONE log file over FUSE, and #1009's daemon logs were unrecoverable
+# (#1010). server/obs/logdir.py picks this first.
+LogsDirectory=viberpit
 WorkingDirectory=/home/tony/GitHub/viberpit-deploy
 EnvironmentFile=/etc/viberpit/viberpit.env
 # Where per-account CODEX_HOMEs land: /var/lib/viberpit/state/ccswitch/codex.

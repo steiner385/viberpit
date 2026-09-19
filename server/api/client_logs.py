@@ -1,6 +1,7 @@
 """Ingest frontend errors/warnings and replay them through the backend logging
 pipeline so they share one redaction filter, rotation policy and query surface
-(journald + ccswitch.jsonl), correlated by session_id / request_id.
+(journald + this process's viberpit-<process>.jsonl), correlated by session_id /
+request_id.
 """
 from __future__ import annotations
 

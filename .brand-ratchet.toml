@@ -124,7 +124,7 @@ ceiling = 173
 id = "host-legacy-names"
 pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv)/ccswitch|\.(cache|local/lib)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
 issue = 1592
-ceiling = 298
+ceiling = 295
 
 [[allow]]
 id = "python-package"

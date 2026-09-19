@@ -8,7 +8,7 @@ from typing import Any
 
 from ccswitch import brand
 from ccswitch.env_compat import mirror_legacy_env
-from server import hostpaths
+from server.obs.logdir import default_log_dir
 
 # Every alias below spells the legacy prefix, and this module reads os.environ in its
 # body. Mirror before any of that, so a host whose env file has already moved to
@@ -205,12 +205,14 @@ try:
         stt_max_concurrent: int = Field(default=3, alias="CCSWITCH_STT_MAX_CONCURRENT")
         stt_max_session_s: float = Field(default=600.0, alias="CCSWITCH_STT_MAX_SESSION_S")
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
-        log_dir: str = Field(
-            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
-                else str(Path.home() / ".claude-accounts" / "logs")),
-            alias="CCSWITCH_LOG_DIR",
-        )
+        # Per-HOST by construction — see server/obs/logdir.py. The old default asked
+        # `os.access("/var/log", os.W_OK)` (the parent, root-owned, so always false
+        # under User=tony) and fell through to the sshfs-shared account store, where
+        # two hosts rotated one file (#1010).
+        # No os.environ.get() here: pydantic-settings reads the alias itself and only
+        # calls default_factory when the var is ABSENT, so an env read would be dead
+        # code. The dataclass fallback below has no alias machinery and needs one.
+        log_dir: str = Field(default_factory=default_log_dir, alias="CCSWITCH_LOG_DIR")
         client_log_level: str = Field(default="warn", alias="CCSWITCH_CLIENT_LOG_LEVEL")
         # Override the directory used for archived session working directories.
         # Defaults to $CCSWITCH_HOME/archive. Set to a path on a larger/slower
@@ -536,9 +538,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")
         )
         log_dir: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
-                else str(Path.home() / ".claude-accounts" / "logs"))
+            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR") or default_log_dir()
         )
         client_log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CLIENT_LOG_LEVEL", "warn")

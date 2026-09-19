@@ -141,7 +141,9 @@ def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
         jl.configure_logging()  # idempotent — second call is a no-op
         json_handlers = [h for h in root.handlers if isinstance(h.formatter, jl.JSONFormatter)]
         assert json_handlers  # at least the stream handler attached
-        assert (tmp_path / "ccswitch.jsonl").exists()
+        # Named per process since #1010 — the edge and the daemon must never share
+        # one rotating handle. This call defaults to process="edge".
+        assert (tmp_path / "viberpit-edge.jsonl").exists()
     finally:
         # configure_logging mutates the root logger; restore it so other tests see a clean root.
         for h in root.handlers[:]:

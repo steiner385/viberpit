@@ -286,6 +286,10 @@ def test_daemon_units_share_canonical_runtime_and_state_roots():
         unit = (ROOT / "deploy" / name).read_text()
         assert "RuntimeDirectory=viberpit\n" in unit
         assert "StateDirectory=viberpit\n" in unit
+        # Per-host log dir (#1010): without it the non-root daemon cannot write
+        # under /var/log and the default fell through to the sshfs-shared account
+        # store, where two hosts rotated one file.
+        assert "LogsDirectory=viberpit\n" in unit
         assert "EnvironmentFile=/etc/viberpit/viberpit.env" in unit
         assert "Environment=XDG_STATE_HOME=%S/viberpit/state" in unit
 
