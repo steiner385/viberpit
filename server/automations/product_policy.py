@@ -252,9 +252,17 @@ def is_on(policy: "dict | None") -> bool:
 
 
 def policies_by_slug(db: Session) -> dict[str, dict]:
-    """slug -> effective policy for every Project (sync session; the queue loader's session)."""
-    rows = db.execute(select(Project.slug, Project.automation_policy)).all()
-    return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+    """slug -> effective policy for every Project (sync session; the queue loader's session).
+
+    Overlaid with the capacity governor's live plan (phase 2, spec §6.3) before
+    ``effective_policy`` validates each entry — a lazy import avoids a module
+    cycle (``capacity_apply`` imports ``effective_policy`` from this module)."""
+    from server.automations.capacity_apply import apply_product_plan
+    from server.automations.capacity_store import live_plan_sync
+    rows = {slug: policy for slug, policy in
+            db.execute(select(Project.slug, Project.automation_policy)).all() if slug is not None}
+    plan = live_plan_sync(db)
+    return {slug: effective_policy(raw) for slug, raw in apply_product_plan(rows, plan).items()}
 
 
 # The reserved key a runner policy SNAPSHOT carries its no-product default under

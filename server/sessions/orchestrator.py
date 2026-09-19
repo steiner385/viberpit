@@ -5568,12 +5568,19 @@ class SessionOrchestrator:
         ``default_mode="on"`` for the same reason every other two-mode automation
         passes one: with exactly two modes the UI hides the mode select, so its
         toggle enables the row with ``mode`` still NULL — without the default an
-        enabled runner would read ``off`` forever."""
+        enabled runner would read ``off`` forever.
+
+        ``max_concurrent`` is then capped at the capacity governor's live plan
+        (phase 2, spec §6.4) — the operator's stored value is never overwritten,
+        only overlaid downward for this read."""
         from server.automations.backlog_runner import BacklogRunner, fold_global_mode
+        from server.automations.capacity_apply import apply_fleet_plan
+        from server.automations.capacity_store import live_plan
         from server.automations.config_store import read_automation_config
         mode, config = await read_automation_config(
             BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
             log_key="backlog_runner")
+        config = apply_fleet_plan(config, await live_plan())
         return fold_global_mode(mode), config
 
     async def _backlog_read_raw_config(self) -> "tuple[bool, str | None, dict]":

@@ -8,6 +8,8 @@ from typing import Literal
 
 from sqlalchemy import select
 
+from server.automations.capacity_apply import apply_product_plan
+from server.automations.capacity_store import live_plan
 from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
 from server.pm.repo_project import RepoOwnership, gather_repo_identities, resolve_repo_ownership
@@ -44,6 +46,7 @@ async def gather_product_coverage(
             repo for pid, repo in registrations if project is not None and pid == project.id and repo})
         candidates = {repo for _, repo in registrations if repo} | set(requested)
     identities = await gather_repo_identities(candidates, verified_repos=verified_repos) if requested else {}
+    plan = await live_plan()
     async with db_session() as db:
         if requested_product is not None:
             project = await db.scalar(select(Project).where(Project.slug == requested_product))
@@ -56,6 +59,7 @@ async def gather_product_coverage(
         ownership = await resolve_repo_ownership(db, requested, canonical_repos=identities)
         policies = {slug: raw for slug, raw in (await db.execute(
             select(Project.slug, Project.automation_policy))).all() if slug is not None}
+    policies = apply_product_plan(policies, plan)
     return ProductCoverage(ownership, policies, datetime.now(timezone.utc).isoformat())
 
 
