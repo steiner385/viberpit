@@ -18,8 +18,7 @@ from server.pm.classification import (
 )
 from server.pm.fenced_json import FencedJsonError, extract_fenced_json
 from server.sessions.completion import commit_trailer
-
-from ccswitch.engines import AgentEngine
+from server.sessions.engine import AgentEngine
 
 
 def _item(n: int) -> WorkItemBrief:

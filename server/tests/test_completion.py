@@ -1,10 +1,9 @@
 import re
 
-from ccswitch.engines import AgentEngine
-
 from server.sessions.completion import (
     COMPLETION_MARKER, COMPLETION_INSTRUCTION, commit_trailer,
 )
+from server.sessions.engine import AgentEngine
 
 
 def test_marker_is_html_comment():
