@@ -14,6 +14,7 @@ const h = vi.hoisted(() => {
   const advanceMutate = vi.fn()
   const stepBackMutate = vi.fn()
   const unblockMutate = vi.fn()
+  const retryMutate = vi.fn()
   const updateMutate = vi.fn()
   const initiative = {
     slug: 'views', repo: 'cairnea/KinDash', title: 'Use-case-first task views',
@@ -81,7 +82,7 @@ const h = vi.hoisted(() => {
     leaves: [] as unknown[],
     proposal: null as unknown,
   }
-  return { advanceMutate, stepBackMutate, unblockMutate, updateMutate, initiative, map, state }
+  return { advanceMutate, stepBackMutate, unblockMutate, retryMutate, updateMutate, initiative, map, state }
 })
 
 vi.mock('@/api/hooks', () => ({
@@ -109,6 +110,7 @@ vi.mock('@/api/hooks', () => ({
   useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useStepBackInitiative: () => ({ mutate: h.stepBackMutate, isPending: false, isError: false, error: null }),
   useUnblockInitiative: () => ({ mutate: h.unblockMutate, isPending: false, isError: false, error: null }),
+  useDecomposeAgain: () => ({ mutate: h.retryMutate, isPending: false, isError: false, error: null }),
   useUpdateInitiative: () => ({ mutate: h.updateMutate, isPending: false, isError: false, error: null }),
 }))
 
@@ -125,6 +127,7 @@ describe('InitiativePage', () => {
     h.advanceMutate.mockClear()
     h.stepBackMutate.mockClear()
     h.unblockMutate.mockClear()
+    h.retryMutate.mockClear()
     h.updateMutate.mockClear()
     h.state.data = h.initiative
     h.state.isLoading = false
@@ -412,6 +415,7 @@ describe('InitiativePage', () => {
         when: 'next_tick', reversal: 'Advance', gate: null,
       },
       unblock: { available: false, unavailableReason: 'Not blocked.', immediate: [], then: [], when: 'never', reversal: null, gate: 'initiative.blocked' },
+      decompose_again: { available: false, unavailableReason: 'Not blocked.', immediate: [], then: [], when: 'never', reversal: null, gate: 'initiative.blocked' },
       materialize_accept: { available: false, unavailableReason: 'No decomposition is waiting.', immediate: [], then: [], when: 'never', reversal: null, gate: 'materialization.accept' },
       materialize_reject: { available: false, unavailableReason: 'No decomposition is waiting.', immediate: [], then: [], when: 'never', reversal: null, gate: null },
     },
@@ -456,6 +460,73 @@ describe('InitiativePage', () => {
     expect(screen.getByRole('button', { name: /Advance/ })).toHaveAttribute('title', 'Clear the block first.')
     fireEvent.click(screen.getByRole('button', { name: 'Unblock' }))
     expect(screen.getByText('Clears the block; the gate stays at build.')).toBeInTheDocument()
+  })
+
+  // ── The retry for a plan the synthesizer gave up decomposing (#1582) ──────
+  //
+  // Whether it applies is the SERVER's answer (only it can see the attempt budget
+  // and the retry baseline), so every case here drives `guidance`.
+
+  /** `guidance` with `decompose_again` available — the exhausted-plan shape. */
+  const retryable = {
+    ...guidance,
+    actions: {
+      ...guidance.actions,
+      unblock: {
+        ...guidance.actions.unblock, available: false,
+        unavailableReason: 'Decomposition gave up after repeated attempts; use Decompose again instead.',
+      },
+      decompose_again: {
+        ...guidance.actions.decompose_again, available: true, unavailableReason: null,
+        immediate: [{
+          text: 'Clears the block and gives the plan a fresh set of decomposition attempts; every past proposal is kept as history.',
+          spawnsSession: false, writesGithub: false,
+        }],
+      },
+    },
+  }
+
+  it('offers Decompose again on an exhausted plan, and confirms before retrying', () => {
+    h.state.data = { ...h.initiative, status: 'blocked', guidance: retryable }
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Decompose again' }))
+    expect(h.retryMutate).not.toHaveBeenCalled()
+    // The consequence a human needs before tapping: nothing is deleted.
+    expect(screen.getByText(/kept as history/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm decompose again' }))
+    expect(h.retryMutate).toHaveBeenCalledWith('views', expect.anything())
+  })
+
+  it('Unblock explains itself on an exhausted plan instead of 409-ing on tap', () => {
+    h.state.data = { ...h.initiative, status: 'blocked', guidance: retryable }
+    mount()
+    // Still enabled — the server's reason rides as the tooltip, and the copy
+    // points at the control beside it rather than being a dead end.
+    expect(screen.getByRole('button', { name: 'Unblock' }))
+      .toHaveAttribute('title', expect.stringContaining('use Decompose again instead'))
+  })
+
+  it('hides Decompose again when the server says it does not apply', () => {
+    // A failed-materialize block, or an older server with no such control: the
+    // button is ABSENT rather than present-and-409-ing. `guidance` (the default
+    // fixture) has `decompose_again` unavailable.
+    h.state.data = { ...h.initiative, status: 'blocked', guidance }
+    mount()
+    expect(screen.getByRole('button', { name: 'Unblock' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Decompose again' })).not.toBeInTheDocument()
+  })
+
+  it('never offers Decompose again on a row that is not blocked', () => {
+    h.state.data = { ...h.initiative, status: 'active', guidance: retryable }
+    mount()
+    expect(screen.queryByRole('button', { name: 'Decompose again' })).not.toBeInTheDocument()
+  })
+
+  it('a pending materialization holds Decompose again, exactly as it holds Unblock', () => {
+    h.state.data = { ...h.initiative, status: 'blocked', guidance: retryable }
+    h.state.proposal = { id: 'p1', status: 'pending', tasks: [], created: null }
+    mount()
+    expect(screen.getByRole('button', { name: 'Decompose again' })).toBeDisabled()
   })
 
   it('without guidance the confirms fall back to their static copy and the Track tab shows no card', () => {

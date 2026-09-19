@@ -23,6 +23,12 @@ export interface InitiativeCardProps {
   onOpen: () => void
   /** Container-dependent row role; `aria-level` is emitted for a tree row only. */
   rowRole?: 'treeitem' | 'listitem'
+  /** Namespace for the open control's DOM id (`ui/list/rowId`). Required in
+   *  practice for this card: it is the one row rendered by three containers at
+   *  once — the Map tree, the Initiatives scope, and the detail pane's
+   *  `InitiativeList` — and `rowKey` is the same slug-derived string in all
+   *  three, so an unscoped id collides across panes. */
+  idScope?: string
   /** Roving tabindex inside the Map scope's tree (`useTreeKeys`). The
    *  Initiatives scope is a plain list with no cursor of its own, so every row
    *  there stays a tab stop — hence the default. */
@@ -41,7 +47,7 @@ export interface InitiativeCardProps {
 }
 
 export function InitiativeCard({
-  initiative, rowKey, depth, selected, onOpen, rowRole = 'treeitem', focusable = true,
+  initiative, rowKey, depth, selected, onOpen, rowRole = 'treeitem', idScope, focusable = true,
   expanded = false, hasChildren = false, onToggle, programTitle = null,
 }: InitiativeCardProps) {
   const title = initiative.title ?? initiative.slug
@@ -66,6 +72,7 @@ export function InitiativeCard({
     >
       <CardFrame
         id={rowKey}
+        idScope={idScope}
         openLabel={`Open ${INITIATIVE.singular.toLowerCase()} ${title}`}
         railClass={TIER_ACCENT[initiative.tier].rail}
         selected={selected}
@@ -75,7 +82,7 @@ export function InitiativeCard({
         onOpen={onOpen}
         leading={
           hasChildren ? (
-            <FoldChevron expanded={expanded} label={title} focusable={focusable} onToggle={() => onToggle?.()} />
+            <FoldChevron expanded={expanded} label={title} onToggle={() => onToggle?.()} />
           ) : (
             <span aria-hidden="true" className="size-6 shrink-0" />
           )

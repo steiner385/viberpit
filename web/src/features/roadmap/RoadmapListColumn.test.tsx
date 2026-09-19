@@ -6,6 +6,7 @@ import type { RoadmapMap } from '@/api/roadmap'
 import { MAP, cap, ini, product } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
 import { capabilityKey, initiativeKey, productKey } from './treeRows'
+import { TREE_ID_SCOPE } from './useTreeKeys'
 import { ViewportProvider } from '@/shell/useViewport'
 
 // The Inbox scope's rows call the real triage mutations; the column's job here
@@ -36,15 +37,21 @@ function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {
     proposals: PROPOSALS, isLoading: false, isError: false, product: null,
     onOpenProposal, onClearProduct,
   }
-  const { unmount } = render(
+  const tree = (props: Partial<React.ComponentProps<typeof RoadmapListColumn>>) => (
     <ViewportProvider kiosk={null}>
       <MemoryRouter>
         <RoadmapListColumn scope="map" map={MAP} isLoading={false} isError={false}
-          selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} inbox={inbox} {...over} />
+          selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} inbox={inbox} {...props} />
       </MemoryRouter>
-    </ViewportProvider>,
+    </ViewportProvider>
   )
-  return { onOpen, onOpenInbox, onOpenProposal, onClearProduct, unmount }
+  const { unmount, rerender } = render(tree(over))
+  /** Re-render the SAME tree with a prop changed — component state survives, which
+   *  is the whole point for anything testing how the cursor reacts to a new
+   *  `selectedKey` (an unmount/remount would reset it and prove nothing). */
+  const setProps = (next: Partial<React.ComponentProps<typeof RoadmapListColumn>>) =>
+    rerender(tree({ ...over, ...next }))
+  return { onOpen, onOpenInbox, onOpenProposal, onClearProduct, unmount, setProps }
 }
 
 describe('RoadmapListColumn', () => {
@@ -287,5 +294,62 @@ describe('RoadmapListColumn — tree keyboard', () => {
     expect(program).toHaveAttribute('aria-expanded', 'true')
     fireEvent.keyDown(program, { key: 'ArrowLeft' })
     expect(screen.queryByTestId(`row-${initiativeKey('audit-01')}`)).toBeNull()
+  })
+
+  // ── #1475: the three ways the one-tab-stop promise leaked ──────────────────
+
+  it('the fold chevron is never a second tab stop on the roving row', () => {
+    // The WAI-ARIA tree pattern is ONE tab stop for the whole tree. The chevron
+    // used to rove with the row, so Tab into the tree landed on the chevron, Tab
+    // again on the open control, and only the third Tab left. `←`/`→` fold from
+    // the row, which is how a tree is folded.
+    mount({ selectedKey: capabilityKey('kindash', 'tasks') })
+    expect(control('Open capability Tasks')).toHaveAttribute('tabindex', '0')
+    expect(control('Collapse Tasks')).toHaveAttribute('tabindex', '-1')
+    // Still clickable — it is the POINTER affordance, not a keyboard one.
+    fireEvent.click(control('Collapse Tasks'))
+    expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeNull()
+  })
+
+  it('the roving tab stop follows a new selection, not the last row arrowed to', () => {
+    // `focusKey` used to be write-only: arrow down to a row, then open a
+    // DIFFERENT one, and Tab took the user back to the row they had left rather
+    // than to the one highlighted in front of them. Selection arrives as a prop
+    // (it is the URL), so a new selection is a new `selectedKey`.
+    const { setProps } = mount({ selectedKey: productKey('kindash') })
+    const first = control('Open product KinDash')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(control('Open capability Billing')).toHaveAttribute('tabindex', '0')
+    expect(first).toHaveAttribute('tabindex', '-1')
+
+    setProps({ selectedKey: capabilityKey('kindash', 'tasks') })
+    expect(control('Open capability Tasks')).toHaveAttribute('tabindex', '0')
+    expect(control('Open capability Billing')).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('a walk through the tree still keeps its cursor while the selection holds', () => {
+    // The other half of the rule: only a CHANGED selection retires the cursor.
+    // Arrowing does not open a row, so two arrow presses must not lose the stop.
+    const { setProps } = mount({ selectedKey: productKey('kindash') })
+    const first = control('Open product KinDash')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    setProps({ selectedKey: productKey('kindash') })   // a re-render, same selection
+    expect(control('Open capability Billing')).toHaveAttribute('tabindex', '0')
+  })
+
+  it('namespaces its row ids so an identically-keyed row elsewhere cannot steal focus', () => {
+    // A detail pane rendering the same initiative mints the same `rowKey`. With
+    // both unscoped, `document.getElementById` returned whichever came first in
+    // the DOM — so arrow-key focus was correct only by the accident of pane order.
+    mount()
+    const row = control('Open capability Tasks')
+    expect(row.id).toBe(`row-${TREE_ID_SCOPE}-${capabilityKey('kindash', 'tasks')}`)
+    // And the focus path still lands: the lookup uses the same namespace.
+    const first = control('Open product KinDash')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(control('Open capability Billing'))
   })
 })

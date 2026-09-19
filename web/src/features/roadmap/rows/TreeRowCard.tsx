@@ -21,6 +21,10 @@ import { FoldChevron } from './FoldChevron'
 export interface TreeRowCardProps {
   row: Exclude<TreeRow, { kind: 'initiative' }>
   selected: boolean
+  /** Namespace for the open control's DOM id (`ui/list/rowId`) — the Roadmap
+   *  tree's scope, so its `getElementById` focus can never land on an
+   *  identically-keyed row in the detail pane beside it. */
+  idScope?: string
   /** Roving tabindex: exactly one row of the tree is a tab stop (`useTreeKeys`).
    *  Everything else is reached with the arrow keys, as a tree should be. */
   focusable: boolean
@@ -29,7 +33,7 @@ export interface TreeRowCardProps {
   onOpenInbox: (productSlug: string) => void
 }
 
-export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpenInbox }: TreeRowCardProps) {
+export function TreeRowCard({ row, selected, idScope, focusable, onOpen, onToggle, onOpenInbox }: TreeRowCardProps) {
   if (row.kind === 'pseudo') {
     const label = row.pseudo === 'awaiting-triage' ? 'Awaiting triage' : 'Needs a home'
     const Icon = row.pseudo === 'awaiting-triage' ? Inbox : HelpCircle
@@ -44,6 +48,7 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
       >
         <CardFrame
           id={row.key}
+          idScope={idScope}
           openLabel={`Open ${label.toLowerCase()} for ${row.product.name ?? row.product.slug}`}
           railClass={TIER_ACCENT['needs-you'].rail}
           selected={selected}
@@ -94,6 +99,7 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
     >
       <CardFrame
         id={row.key}
+        idScope={idScope}
         openLabel={`Open ${noun.toLowerCase()} ${title}`}
         railClass={TIER_ACCENT[tier].rail}
         selected={selected}
@@ -103,7 +109,7 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
         onOpen={() => onOpen(row)}
         leading={
           row.hasChildren ? (
-            <FoldChevron expanded={row.expanded} label={title} focusable={focusable} onToggle={() => onToggle(row.key)} />
+            <FoldChevron expanded={row.expanded} label={title} onToggle={() => onToggle(row.key)} />
           ) : (
             <span aria-hidden="true" className="size-6 shrink-0" />
           )

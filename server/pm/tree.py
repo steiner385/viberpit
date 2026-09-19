@@ -255,6 +255,12 @@ class InitiativeIn:
     # synthesizer last did with one of this row's gates, or None. Rendered as
     # `autoResolved` only inside the visible window (`auto_resolved_view`).
     last_auto_gate: dict | None = None
+    # `Initiative.updated_at`, so the portfolio's Needs-you tab can list pending
+    # decisions newest first (spec §7). The map's rows arrive `created_at`
+    # ascending, which is the OPPOSITE order, and the web has no other timestamp
+    # on a node to sort by. Nullable/defaulted: the column is NOT NULL in the
+    # model, but this dataclass is also built by fixtures and pure-rule tests.
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +310,13 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
         # through as a phantom `parentInitiative`.
         "parentInitiative": parent_slug,
         "hasChildren": has_children,
+        # Spec §7's sort key for the portfolio Needs-you tab. Serialized, never
+        # compared here: the tier IS the primary order (needs-you before
+        # blocked) and "newest first" is the tiebreak inside one tier, which is
+        # the web's own list's business — `detail/needsYou.ts`.
+        # The caller normalizes to aware UTC (`pm_tree.py:_aware`) so a SQLite
+        # read cannot emit an offset-less string where Postgres emits one.
+        "updatedAt": ini.updated_at.isoformat() if ini.updated_at else None,
     }
 
 

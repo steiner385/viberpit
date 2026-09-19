@@ -15,7 +15,20 @@
  * moved a tree cursor from the prompt dock would be a bug, not a feature.
  */
 import { useCallback, useRef, useState } from 'react'
+import { rowElementId } from '@/ui/list/rowId'
 import type { TreeRow } from './treeRows'
+
+/**
+ * `CardFrame` id namespace for every row of the Map scope's tree.
+ *
+ * Exported because two parties must agree on it: `RoadmapListColumn`, which
+ * passes it down to the rows, and `focusRow` below, which looks one up. Without
+ * a namespace both the tree and the detail pane's `detail/InitiativeList` mint
+ * `row-initiative:<slug>` for the same initiative, and `getElementById` returns
+ * whichever is earlier in the DOM — so arrow-key focus was correct only by the
+ * accident of pane order (#1475).
+ */
+export const TREE_ID_SCOPE = 'roadmap-tree'
 
 /** Rows that can be folded carry `expanded`/`hasChildren`; leaves do not. A
  *  program initiative row structurally qualifies the same way a product or
@@ -41,6 +54,23 @@ export function useTreeKeys(
   const containerRef = useRef<HTMLDivElement>(null)
   const [focusKey, setFocusKey] = useState<string | null>(null)
 
+  // A NEW selection retires the keyboard's cursor. `focusKey` used to be write-
+  // only: it was set by every arrow key and never cleared, so after arrowing down
+  // three rows and then CLICKING a fourth, the tab stop stayed on the arrowed row
+  // — Tab took the user back to a row they had left, not to the one highlighted
+  // in front of them. Selection is the more recent intent, whichever way it was
+  // expressed, so it wins. Render-phase adjustment (React's "resetting state when
+  // a prop changes"), not an effect: the tab stop must be right in the same frame
+  // the new selection paints.
+  //
+  // Arrowing itself does NOT re-enter here — `focusRow` only moves focus, it does
+  // not open a row — so the cursor still survives a walk through the tree.
+  const [seenSelection, setSeenSelection] = useState(selectedKey)
+  if (seenSelection !== selectedKey) {
+    setSeenSelection(selectedKey)
+    setFocusKey(null)
+  }
+
   // The open row owns the tab stop until the keyboard moves off it. Either can
   // vanish (a fold, a search, a deleted product), and then the first row takes
   // it — a tree whose only tab stop is a row that no longer exists is a tree the
@@ -52,10 +82,12 @@ export function useTreeKeys(
 
   const focusRow = useCallback((key: string) => {
     setFocusKey(key)
-    // `CardFrame` ids its open control `row-<key>`; getElementById avoids having
-    // to escape a key full of `:` for a CSS selector. Scoped to the container so
-    // a same-named row in another list can never steal the focus.
-    const el = document.getElementById(`row-${key}`)
+    // `CardFrame` ids its open control through `rowElementId`; getElementById
+    // avoids having to escape a key full of `:` for a CSS selector. The scope is
+    // what makes the lookup unambiguous — the detail pane beside this tree
+    // renders the same keys — and the `contains` check stays as the belt to that
+    // brace, so a future second tree in the same scope still cannot steal focus.
+    const el = document.getElementById(rowElementId(key, TREE_ID_SCOPE))
     if (el && containerRef.current?.contains(el)) el.focus()
   }, [])
 

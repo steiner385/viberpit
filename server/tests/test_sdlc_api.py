@@ -1274,8 +1274,133 @@ def test_unblock_refuses_an_initiative_the_synthesizer_gave_up_on():
             assert r.status_code == 409, r.text
             assert r.json()["detail"]["error"] == "materialize_exhausted"
             assert str(MATERIALIZE_MAX_ATTEMPTS) in r.json()["detail"]["message"]
+            # The refusal names the way out (#1582) rather than being a dead end.
+            assert "Decompose again" in r.json()["detail"]["message"]
             got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
             assert got["status"] == "blocked"
+
+
+def test_decompose_again_resets_the_budget_without_deleting_history():
+    """#1582: the retry the exhausted 409 points at.
+
+    It moves the LINE the budget is measured from — ``materialize_retry_baseline``
+    — and unblocks in the same call. Every proposal row stays: the same total is
+    the decompose session's dedupe key, and lowering it (which is what deleting
+    them does, and what a human had to do by hand before this route existed) would
+    re-mint a key already spent and hand the loop the previous attempt's finished
+    session."""
+    from sqlalchemy import func, select
+
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+    from server.db import db_session
+    from server.db.models import Initiative, MaterializationProposal
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/decompose-again",
+                       headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "awaiting_human"
+
+            async def _check():
+                async with db_session() as db:
+                    ini = (await db.execute(select(Initiative).where(
+                        Initiative.slug == "dark-mode"))).scalar_one()
+                    kept = int((await db.execute(
+                        select(func.count()).select_from(MaterializationProposal).where(
+                            MaterializationProposal.initiative_id == ini.id))).scalar() or 0)
+                    return ini.materialize_retry_baseline, kept
+            baseline, kept = c.portal.call(_check)
+            assert baseline == MATERIALIZE_MAX_ATTEMPTS   # the line, not a deletion
+            assert kept == MATERIALIZE_MAX_ATTEMPTS       # every attempt still on record
+
+            # …and the budget really is spent-from-zero again, so nothing reports
+            # the row as exhausted any more.
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert got["guidance"]["actions"]["unblock"]["available"] is False  # not blocked now
+            assert "Not blocked" in got["guidance"]["actions"]["unblock"]["unavailableReason"]
+
+
+def test_a_retried_initiative_can_be_unblocked_again_after_re_blocking():
+    """The whole point of the baseline: once the loop has re-blocked a retried plan
+    the count is above the cap in TOTAL terms, and only the budget makes the row
+    clearable again. With the baseline forgiving the first three, two fresh
+    failures leave one attempt in hand — so `unblock` stops refusing."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Initiative, MaterializationProposal
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            assert c.post("/api/sdlc/initiatives/dark-mode/decompose-again",
+                          headers=IDENTITY_HEADERS).status_code == 200
+
+            async def _fail_twice_and_reblock():
+                async with db_session() as db:
+                    ini = (await db.execute(select(Initiative).where(
+                        Initiative.slug == "dark-mode"))).scalar_one()
+                    for _ in range(MATERIALIZE_MAX_ATTEMPTS - 1):
+                        db.add(MaterializationProposal(initiative_id=ini.id, status="rejected",
+                                                       session_id="s", payload={"tasks": []}))
+                    ini.status = "blocked"
+            c.portal.call(_fail_twice_and_reblock)
+
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text   # 409 here = the baseline was ignored
+            assert r.json()["status"] == "awaiting_human"
+
+
+def test_decompose_again_refuses_an_unblocked_row_and_a_pending_proposal():
+    """The same two refusals ``unblock`` makes, for the same reasons: nothing to
+    retry on a row that is not blocked, and a pending proposal is already a
+    decision waiting for this human."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Initiative, MaterializationProposal
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            async def _park_and_add_pending():
+                async with db_session() as db:
+                    ini = (await db.execute(select(Initiative).where(
+                        Initiative.slug == "dark-mode"))).scalar_one()
+                    db.add(MaterializationProposal(initiative_id=ini.id, status="pending",
+                                                   session_id="s", payload={"tasks": []}))
+                    ini.status = "awaiting_human"
+                    return ini.id
+            iid = c.portal.call(_park_and_add_pending)
+
+            r = c.post("/api/sdlc/initiatives/dark-mode/decompose-again", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409 and r.json()["detail"]["error"] == "not_blocked"
+
+            async def _reblock():
+                async with db_session() as db:
+                    ini = (await db.execute(select(Initiative).where(
+                        Initiative.id == iid))).scalar_one()
+                    ini.status = "blocked"
+            c.portal.call(_reblock)
+
+            r = c.post("/api/sdlc/initiatives/dark-mode/decompose-again", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409 and r.json()["detail"]["error"] == "proposal_pending"
+
+
+def test_decompose_again_404s_an_unknown_slug():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=1)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/nope/decompose-again", headers=IDENTITY_HEADERS)
+            assert r.status_code == 404, r.text
 
 
 def test_detail_guidance_mirrors_the_exhausted_unblock_refusal():

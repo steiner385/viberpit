@@ -46,7 +46,10 @@ function RoadmapPageContent() {
   const opened = !inbox && item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
   // `poll: false`: the shell's list column observes the same cache entry and
   // owns the 15 s interval. Two polling observers of one key are two requests.
-  const { data: map, isLoading, isError } = useRoadmapMap({ poll: false })
+  // `isFetching` as well as `isLoading`: `isLoading` is FIRST-load only, and the
+  // state this page has to survive is a refetch over a cache that already
+  // resolved — see `missing` below.
+  const { data: map, isLoading, isFetching, isError } = useRoadmapMap({ poll: false })
   const sync = useSyncProject()
   const [creating, setCreating] = useState(false)
   const [registering, setRegistering] = useState(false)
@@ -136,11 +139,39 @@ function RoadmapPageContent() {
   /** First load of the queue: NEITHER list has answered yet, either way. */
   const inboxPending = (triage.isLoading || decisions.isLoading) && queue === undefined
 
+  /**
+   * Has the map been READ, settled, since this address became the current one?
+   *
+   * `map !== undefined` alone is not that question, and getting them confused is
+   * what made a freshly registered product flash "Not found": `NewProductDialog`
+   * navigates to `/roadmap/<slug>` the moment the POST answers, while the cached
+   * map is still the pre-create one. The map is defined, the product is not in
+   * it, and `isLoading` is false — that flag is FIRST-load only, and this is a
+   * refetch over a cache that already resolved.
+   *
+   * Latched per address rather than read straight off `isFetching`, because the
+   * list column beside this page refetches the same cache entry every 15 s: a
+   * bare `!isFetching` would also blank a GENUINE "Not found" for the length of
+   * every poll, on a verdict that has not changed. Once the map has answered for
+   * this address the answer stands; changing the address asks again.
+   *
+   * Render-phase adjustment, not an effect (React's "resetting state when a prop
+   * changes"): the answer must be right on the very first render after a
+   * navigation — that frame is the one that used to show the empty state.
+   */
+  const addressKey = opened === null ? '' : `${opened.kind}:${opened.productSlug}:${opened.kind === 'capability' ? opened.capSlug : ''}`
+  const [answeredFor, setAnsweredFor] = useState<string | null>(null)
+  if (map !== undefined && !isFetching && answeredFor !== addressKey) setAnsweredFor(addressKey)
+  const mapAnswered = answeredFor === addressKey
+
   // The address points at something the map does not contain — a renamed slug or
-  // a stale bookmark. Gated on the map having ARRIVED: a failed fetch also leaves
-  // `product` null with `isLoading` false, and that is a broken connection, not a
-  // renamed product.
-  const missing = map !== undefined && opened !== null
+  // a stale bookmark. A failed fetch also leaves `product` null, and that is a
+  // broken connection rather than a renamed product; `mapAnswered` is false then
+  // too (nothing settled), so the Banner above carries that case instead.
+  // `map !== undefined` is kept beside `mapAnswered` rather than folded into it:
+  // the latch remembers that an answer ARRIVED, and a cache entry that later went
+  // back to undefined is not an address problem.
+  const missing = mapAnswered && map !== undefined && opened !== null
     && (product === null || (opened.kind === 'capability' && capability === null))
 
   const crumbs: BreadcrumbItem[] = [{ label: ROADMAP.label, to: roadmapPath() }]
@@ -218,6 +249,13 @@ function RoadmapPageContent() {
               <ProposalDetail
                 proposal={proposal}
                 capabilities={capabilities}
+                // The capability options come from `/pm/map`, a SEPARATE query
+                // from the one that delivered this proposal — so the editor can
+                // render complete while its select still has nothing in it. Say
+                // which of the two it is: an empty select with no explanation
+                // reads as "this product has no capabilities", and accepting on
+                // that belief homes the issue nowhere.
+                capabilitiesLoading={map === undefined && isLoading}
                 scopeProduct={inboxProduct}
                 autoFocusScores={editing}
                 onDone={onDecided}

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,6 +40,45 @@ log = logging.getLogger(__name__)
 #: ride out a bad turn, few enough that a plan the model cannot decompose costs
 #: three sessions, not a session every tick forever.
 MATERIALIZE_MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class MaterializeAttempts:
+    """Two counts over one initiative's ``MaterializationProposal`` rows.
+
+    They are different numbers on purpose, and conflating them is the trap #1582
+    exists to close.
+
+    ``total`` never decreases. It is the attempt ORDINAL in the decompose
+    session's dedupe key (``<slug>:materialize:<n>``), so a value that came round
+    twice would hand this tick the PREVIOUS attempt's finished session and
+    re-ingest a transcript it did not produce (C4-R15). That is exactly what
+    deleting the stale proposal rows — the only way to lower the count before the
+    retry disposition existed — would have done.
+
+    ``budget`` is what the exhaustion gate and the unblock refusal read: ``total``
+    minus whatever a human's "Decompose again" recorded in
+    ``Initiative.materialize_retry_baseline``. A deliberate retry buys real
+    attempts back without touching a single historical row.
+
+    THE one place the two are derived, so the loop, ``GET /initiatives/{slug}``
+    and the unblock route cannot drift on what "attempts spent" means.
+    """
+
+    total: int
+    budget: int
+
+    @classmethod
+    def of(cls, total: int, baseline: int | None) -> MaterializeAttempts:
+        # `max(0, …)` for the one state that should be impossible and is cheap to
+        # survive: a baseline above the current total (rows deleted by hand after
+        # a retry) would otherwise make `budget` negative and the gate unreachable.
+        return cls(total=total, budget=max(0, total - (baseline or 0)))
+
+    @property
+    def exhausted(self) -> bool:
+        return self.budget >= MATERIALIZE_MAX_ATTEMPTS
+
 
 #: Modes the row could carry before spec 2026-09-14 D8 folded them into ``on``.
 LEGACY_SYNTH_MODES: tuple[str, ...] = ("propose", "auto")
@@ -74,7 +114,10 @@ SetStatus = Callable[[str, str], Awaitable[None]]
 Spawn = Callable[[dict, str], Awaitable[Any]]
 SpawnMaterialize = Callable[[dict], Awaitable[Any]]
 HasPendingMaterialization = Callable[[str], Awaitable[bool]]
-MaterializationAttempts = Callable[[str], Awaitable[int]]
+#: initiative id → the two counts (`MaterializeAttempts`). A pair, not an int:
+#: the ordinal in the spawn's dedupe key and the exhaustion budget are different
+#: numbers once a human has retried (#1582), and one query answers both.
+MaterializationAttempts = Callable[[str], Awaitable[MaterializeAttempts]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
@@ -225,10 +268,16 @@ class SdlcSynthesizerLoop:
         #: slugs already warned about a missing materialize seam — once per
         #: initiative, or an unwired deployment would warn on every tick forever.
         self._materialize_unwired: set[str] = set()
-        #: slugs already warned about spending their decomposition attempts. The
-        #: `blocked` write below normally stops the second tick from ever asking,
-        #: but a human who un-blocks without fixing anything must not get the warn
-        #: on every tick from then on.
+        #: `<slug>:<total attempts>` keys already warned about spending their
+        #: decomposition attempts. The `blocked` write below normally stops the
+        #: second tick from ever asking, but a human who un-blocks without fixing
+        #: anything must not get the warn on every tick from then on.
+        #:
+        #: Keyed on the TOTAL rather than the slug so a retry (#1582) re-arms it
+        #: without anything having to reach into this process: the total only goes
+        #: up, so the next exhaustion is a key this set has not seen. A bare slug
+        #: latched the initiative FOREVER, and the re-block that followed a retry
+        #: would then have been silent.
         self._materialize_exhausted: set[str] = set()
         self._pr_lookup = pr_lookup
         self._update_artifact = update_artifact
@@ -461,15 +510,24 @@ class SdlcSynthesizerLoop:
         # the human gate is not a spent attempt, it is the outcome this loop wanted.
         if self._materialization_attempts is not None:
             attempts = await self._materialization_attempts(ini["id"])
-            if attempts >= MATERIALIZE_MAX_ATTEMPTS:
-                if slug not in self._materialize_exhausted:
-                    self._materialize_exhausted.add(slug)
+            if attempts.exhausted:
+                # Latched on the TOTAL, not on the slug: an in-process set of
+                # slugs could never be re-armed from the API process that records
+                # a retry (and in remote mode that is a different machine
+                # entirely), so a re-block after "Decompose again" would have
+                # arrived with no message at all — the exact dead end #1582
+                # reports. The total only ever goes up, so the next exhaustion
+                # necessarily carries a key this set has not seen.
+                latch = f"{slug}:{attempts.total}"
+                if latch not in self._materialize_exhausted:
+                    self._materialize_exhausted.add(latch)
                     await self._emit(
-                        "warn", f"{slug}: {attempts} decomposition attempts have "
+                        "warn", f"{slug}: {attempts.budget} decomposition attempts have "
                                 "produced nothing to review — decompose the plan by "
-                                "hand, or clear the rejected proposals to retry",
+                                "hand, or tap Decompose again to retry",
                         kind="materialization_attempts_exhausted", target=slug,
-                        detail={"attempts": attempts,
+                        detail={"attempts": attempts.budget,
+                                "totalAttempts": attempts.total,
                                 "max": MATERIALIZE_MAX_ATTEMPTS})
                 # Blocked is the right end state HERE (unlike a single parse
                 # failure): the loop has exhausted what it can do by itself, so it

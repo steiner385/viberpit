@@ -62,7 +62,10 @@ describe('WhatHappensNext', () => {
       ],
       because: 'Risk tolerance balanced: the machine resolves these gates itself: advance a stage once its artifact merged.',
     },
-    actions: { advance, step_back: advance, unblock: advance, materialize_accept: advance, materialize_reject: advance },
+    actions: {
+      advance, step_back: advance, unblock: advance, decompose_again: advance,
+      materialize_accept: advance, materialize_reject: advance,
+    },
     tolerance: { effective: 'balanced', configured: 'balanced', autoresolveEnabled: true, synthesizerMode: 'on' },
     tickSeconds: 60,
   }

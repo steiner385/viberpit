@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.automations.sdlc_synthesizer import SdlcSynthesizer, SdlcSynthesizerLoop
+from server.automations.sdlc_synthesizer import (
+    MaterializeAttempts, SdlcSynthesizer, SdlcSynthesizerLoop)
 
 
 class Ctx:
@@ -101,7 +102,11 @@ class Recorder:
         return initiative_id in self.pending_materialization
 
     async def materialization_attempts(self, initiative_id):
-        return self.attempts.get(initiative_id, 0)
+        # `self.attempts` stays a plain int per initiative — the BUDGET, which is
+        # what every case here is about. The real seam derives it from the total
+        # net of the retry baseline (#1582); with no baseline the two are equal,
+        # so folding both out of one number keeps these cases reading the same.
+        return MaterializeAttempts.of(self.attempts.get(initiative_id, 0), None)
 
     async def pr_lookup(self, art):
         return self.pr_infos.get(art["id"])
@@ -319,8 +324,67 @@ async def test_spent_decomposition_attempts_block_instead_of_respawning():
              if e[2].get("kind") == "materialization_attempts_exhausted"]
     assert len(warns) == 1
     assert warns[0][0] == "warn"
+    # `totalAttempts` rides beside the budget so the feed says which number the
+    # cap was measured against (they differ after a retry — #1582).
     assert warns[0][2]["detail"] == {"attempts": MATERIALIZE_MAX_ATTEMPTS,
+                                     "totalAttempts": MATERIALIZE_MAX_ATTEMPTS,
                                      "max": MATERIALIZE_MAX_ATTEMPTS}
+
+
+@pytest.mark.asyncio
+async def test_a_retry_re_arms_the_exhaustion_warning():
+    """#1582: the warn latch must re-arm after a "Decompose again".
+
+    It cannot be re-armed from outside — the API process that records the retry is
+    not this one, and in remote mode not even this machine — so it is keyed on the
+    TOTAL attempt count rather than the slug. Same initiative, same exhausted
+    verdict, a higher total: the human hears about it a second time instead of the
+    row going quietly back to `blocked`."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    ctx = Ctx()
+    loop = _loop(rec, ctx)
+    # First exhaustion: three attempts spent, none of them forgiven.
+    rec.attempts["i1"] = MATERIALIZE_MAX_ATTEMPTS
+    await loop.tick()
+    await loop.tick()   # latched — still one warn
+
+    def _warns():
+        return [e for e in ctx.events
+                if e[2].get("kind") == "materialization_attempts_exhausted"]
+    assert len(_warns()) == 1
+
+    # A retry, then three more failures: the baseline forgave the first three, so
+    # the BUDGET is back at the cap while the TOTAL has doubled.
+    async def _after_retry(_iid):
+        return MaterializeAttempts.of(MATERIALIZE_MAX_ATTEMPTS * 2, MATERIALIZE_MAX_ATTEMPTS)
+    loop._materialization_attempts = _after_retry
+    await loop.tick()
+    assert len(_warns()) == 2
+    assert _warns()[1][2]["detail"] == {"attempts": MATERIALIZE_MAX_ATTEMPTS,
+                                       "totalAttempts": MATERIALIZE_MAX_ATTEMPTS * 2,
+                                       "max": MATERIALIZE_MAX_ATTEMPTS}
+    await loop.tick()   # …and latched again at the new total
+    assert len(_warns()) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_retry_baseline_buys_attempts_back():
+    """The budget, not the total, is what the cap is compared against: an
+    initiative with the cap's worth of TOTAL proposals all forgiven by a retry
+    baseline decomposes again rather than re-blocking (#1582)."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+
+    async def _all_forgiven(_iid):
+        return MaterializeAttempts.of(MATERIALIZE_MAX_ATTEMPTS, MATERIALIZE_MAX_ATTEMPTS)
+    loop = _loop(rec)
+    loop._materialization_attempts = _all_forgiven
+    await loop.tick()
+    assert rec.materialized == ["dark-mode"]
+    assert ("i1", "blocked") not in rec.statuses
 
 
 @pytest.mark.asyncio

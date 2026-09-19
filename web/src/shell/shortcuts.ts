@@ -18,7 +18,8 @@ export type KeyboardLike = Pick<
   'key' | 'code' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'
 >
 
-export type ShortcutGroup = 'app' | 'compose' | 'list-mode' | 'list-mode-header' | 'in-session'
+export type ShortcutGroup =
+  | 'app' | 'compose' | 'list-mode' | 'list-mode-header' | 'in-session' | 'roadmap-inbox'
 
 /**
  * Where a shortcut is allowed to fire. Evaluated against live context on each
@@ -265,6 +266,47 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'compose.help', keys: '?', description: 'Open this help panel', group: 'compose',
     match: plain((e) => e.key === '?' || (e.key === '/' && e.shiftKey)),
     when: (c) => c.interactive && !c.overlayOpen && !isFormControl(c.active) },
+  // ── Roadmap Inbox scope — WIRED, but by the scope, not by the shell ──
+  //
+  // These fire from `features/roadmap/inbox/InboxScopeBody`'s own window
+  // listener, which resolves them through `matchShortcut(e, inGroup(
+  // 'roadmap-inbox'))`. They are registered HERE anyway, for two reasons that
+  // pull in the same direction:
+  //
+  //   · the help sheet (`?`) renders from this array and nothing else, so a key
+  //     map that is not here is a key map no user can discover — the gap #1494
+  //     reports. The Kbd legend in the Inbox's controls strip is a reminder for
+  //     somebody already looking at the queue, not documentation;
+  //   · one owner for "which key does what". Before this, the switch statement
+  //     in the scope was the only place `x` meant select, and the legend beside
+  //     it was a second, hand-kept copy free to disagree with it.
+  //
+  // They stay OUT of the shell's dispatcher regardless: it can only fire a row
+  // with a handler registered under its id (`useShortcuts`), and `AppShellInner`
+  // registers none of these. That is deliberate and not an oversight — `a` and
+  // `r` are irreversible past the undo window, and must not survive the scope
+  // that owns the queue they act on. The scope keeps its own guards for the same
+  // reason (`overlayIsOpen`, `isTypingTarget`), which is why no row here carries
+  // a `when`: a context this array cannot see is not a context it should judge.
+  //
+  // `a` and `A` are separate rows matching the exact `key`, not one row with a
+  // case-insensitive test the way `list.archive` has: Shift+a is a DIFFERENT
+  // action here (accept the whole selection), and folding them together would
+  // make one keystroke do the other's work.
+  { id: 'inbox.next', keys: 'j', description: 'Move to the next proposal',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'j') },
+  { id: 'inbox.prev', keys: 'k', description: 'Move to the previous proposal',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'k') },
+  { id: 'inbox.accept', keys: 'a', description: 'Accept the focused proposal (a decision opens instead)',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'a') },
+  { id: 'inbox.reject', keys: 'r', description: 'Reject the focused proposal (a decision opens instead)',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'r') },
+  { id: 'inbox.edit', keys: 'e', description: 'Open the focused proposal with its scores focused',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'e') },
+  { id: 'inbox.select', keys: 'x', description: 'Tick the focused proposal for a bulk accept',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'x') },
+  { id: 'inbox.acceptSelected', keys: 'Shift+A', description: 'Accept every ticked proposal',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'A') },
   // ── In-session ───────────────────────────────────────────────────────
   //
   // `hasOpenAction` holds ← and Esc — an unanswered permission or question card

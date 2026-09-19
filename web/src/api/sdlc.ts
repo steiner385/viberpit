@@ -111,7 +111,9 @@ export interface MachineOutlook {
   because: string
 }
 
-export type GuidanceControl = 'advance' | 'step_back' | 'unblock' | 'materialize_accept' | 'materialize_reject'
+export type GuidanceControl =
+  | 'advance' | 'step_back' | 'unblock' | 'decompose_again'
+  | 'materialize_accept' | 'materialize_reject'
 
 export interface InitiativeGuidance {
   /** Null for a program (it has no gate of its own). */
@@ -222,6 +224,16 @@ export function stepBackInitiative(slug: string): Promise<Initiative> {
  *  card has its own accept/reject). */
 export function unblockInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/unblock`)
+}
+
+/** Give a plan the synthesizer gave up decomposing a fresh set of attempts, and
+ *  clear the block in the same call (#1582) — the way out of `unblock`'s
+ *  `materialize_exhausted` 409. Past proposals are KEPT: the server records a
+ *  baseline the attempt count is measured from rather than deleting them, because
+ *  the same total is the decompose session's dedupe key. Same two 409s as
+ *  `unblockInitiative`. */
+export function decomposeAgain(slug: string): Promise<Initiative> {
+  return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/decompose-again`)
 }
 
 // ── Plan materialization: the decomposition gate (spec 003 §7b, #992) ────────

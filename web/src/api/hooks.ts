@@ -22,7 +22,8 @@ import type {
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
-  fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, createInitiative,
+  fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, decomposeAgain,
+  createInitiative,
   updateInitiative,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
@@ -1614,6 +1615,21 @@ export function useUnblockInitiative() {
   const qc = useQueryClient()
   return useMutation<Initiative, ApiRequestError, string>({
     mutationFn: (slug) => unblockInitiative(slug),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The retry for a plan whose decomposition the synthesizer gave up on (#1582).
+ *  Invalidates exactly what `useUnblockInitiative` does — it clears the same
+ *  block, so the row leaves the Needs-you pile's blocked section the same way. */
+export function useDecomposeAgain() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, string>({
+    mutationFn: (slug) => decomposeAgain(slug),
     onSuccess: (updated) => {
       void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })

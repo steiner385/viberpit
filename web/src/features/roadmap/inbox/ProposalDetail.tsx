@@ -59,6 +59,16 @@ export interface ProposalDetailProps {
   proposal: InboxProposal
   capabilities: readonly CapabilityOption[]
   /**
+   * The map query that FILLS `capabilities` has not answered yet.
+   *
+   * An empty `capabilities` has two very different causes — the product really
+   * has no capability to offer, or the map is still in flight — and the select
+   * cannot tell them apart on its own. Undifferentiated, it shows one option and
+   * a user reasonably concludes the first, then accepts the proposal homed
+   * nowhere. Defaulted, so a caller with the options already in hand says nothing.
+   */
+  capabilitiesLoading?: boolean
+  /**
    * The `?product=` narrowing the LIST is observing (`inboxProductForSearch`),
    * not the proposal's own product.
    *
@@ -103,7 +113,7 @@ export function ProposalDetail(props: ProposalDetailProps) {
 }
 
 function TriageDetail({
-  proposal: p, capabilities, scopeProduct, autoFocusScores, onDone,
+  proposal: p, capabilities, capabilitiesLoading = false, scopeProduct, autoFocusScores, onDone,
 }: ProposalDetailProps & { proposal: TriageProposal }) {
   // Keyed to the SCOPE the list is observing, not to `p.projectSlug`: these
   // mutations remove the row optimistically, and they can only remove it from
@@ -209,6 +219,10 @@ function TriageDetail({
                 capability at all, and the option has to say so rather than
                 offering to keep a proposal that does not exist. */}
             <option value="">{p.proposedFeatureId ? '— keep proposal —' : '— no fit —'}</option>
+            {/* Why the list below is short, while it still is. Disabled so it can
+                never be chosen, and inside the select rather than beside it: the
+                sentence has to be where the user is looking when they open it. */}
+            {capabilitiesLoading && <option value="" disabled>Loading capabilities…</option>}
             {options.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </Select>
         </Field>

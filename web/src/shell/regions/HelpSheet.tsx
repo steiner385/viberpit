@@ -3,6 +3,7 @@ import { BRAND_NAME } from '@/brand'
 import { shortcutsByGroup, displayKeys, type Shortcut, type ShortcutGroup } from '@/shell/shortcuts'
 import { Kbd } from '@/ui/Kbd'
 import { NAV_DEFS } from '@/shell/navDefs'
+import { ROADMAP } from '@/features/products/vocab'
 
 /**
  * The body of `?drawer=help` — every keyboard binding, every section of the app,
@@ -47,6 +48,10 @@ export const GROUPS: { group: ShortcutGroup; title: string }[] = [
   { group: 'compose', title: 'Compose mode' },
   { group: 'list-mode', title: 'List-focus mode' },
   { group: 'list-mode-header', title: 'Group headers' },
+  // Scope-local, and listed anyway: the keys only fire while the Roadmap Inbox
+  // is on screen (`features/roadmap/inbox/InboxScopeBody` owns the listener), but
+  // the sheet is where a user goes to find out that they exist at all.
+  { group: 'roadmap-inbox', title: `${ROADMAP.inbox} (${ROADMAP.label})` },
   { group: 'in-session', title: 'In-session' },
 ]
 

@@ -40,7 +40,8 @@ ACTOR_YOU = "you"
 ACTOR_NOBODY = "nobody"
 
 #: Every human control the initiative page carries, in the order the wire lists them.
-CONTROLS: tuple[str, ...] = ("advance", "step_back", "unblock", "materialize_accept", "materialize_reject")
+CONTROLS: tuple[str, ...] = ("advance", "step_back", "unblock", "decompose_again",
+                             "materialize_accept", "materialize_reject")
 
 _PROGRAM_REASON = "A program is driven by its phases; act on each phase instead."
 
@@ -309,9 +310,11 @@ def _unblock(ctx: ExplainContext) -> Consequence:
     if ctx.materialize_exhausted:
         # The endpoint's third 409 (`materialize_exhausted`): the synthesizer wrote
         # this block after MATERIALIZE_MAX_ATTEMPTS and would re-block on the next
-        # tick, so the button must say so rather than 409 on tap.
-        return _unavailable("Decomposition gave up after repeated attempts; reject or remove "
-                            "the stale proposals first.", gate)
+        # tick, so the button must say so rather than 409 on tap. It names the
+        # control that IS available instead (`decompose_again` below) — an
+        # unavailable reason that only says "no" is a dead end with extra steps.
+        return _unavailable("Decomposition gave up after repeated attempts; "
+                            "use Decompose again instead.", gate)
     after = replace(view, status="awaiting_human")
     then, when = _then(ctx, after)
     immediate: tuple[Step, ...] = (Step(f"Clears the block; the gate stays at {view.stage}."),)
@@ -320,6 +323,38 @@ def _unblock(ctx: ExplainContext) -> Consequence:
         # may have left issues on GitHub that a later decomposition will duplicate.
         immediate += (Step("If a failed materialize left an epic or sub-issues on GitHub, close "
                            "them first; a later decomposition creates a fresh set."),)
+    return Consequence(True, None, immediate, then, when, None, gate)
+
+
+def _decompose_again(ctx: ExplainContext) -> Consequence:
+    """"Decompose again" — the retry for a plan the synthesizer gave up on (#1582).
+
+    Shares ``unblock``'s gate: both clear the same block, and a human choosing
+    between them is choosing HOW, not whether. The difference the copy has to
+    carry is that this one also spends a fresh decomposition budget, so the loop
+    will burn sessions on the plan again — which is the whole point, and also the
+    cost."""
+    gate = "initiative.blocked"
+    view = ctx.initiative
+    if view.status != "blocked":
+        return _unavailable("Not blocked.", gate)
+    if ctx.proposal_pending:
+        return _unavailable("Accept or reject the pending materialization first.", gate)
+    if view.stage != "plan" or view.epic is not None:
+        # Only the shape the synthesizer's exhaustion path can produce: a merged
+        # plan with no epic yet. Anything else is a failed-materialize block or a
+        # later stage, where there is no decomposition to retry and `unblock` is
+        # the one disposition.
+        return _unavailable("Nothing to decompose: this block is not a plan awaiting "
+                            "its decomposition.", gate)
+    after = replace(view, status="awaiting_human")
+    then, when = _then(ctx, after)
+    immediate = (
+        Step("Clears the block and gives the plan a fresh set of decomposition "
+             "attempts; every past proposal is kept as history."),
+        Step("If a failed materialize left an epic or sub-issues on GitHub, close "
+             "them first; a later decomposition creates a fresh set."),
+    )
     return Consequence(True, None, immediate, then, when, None, gate)
 
 
@@ -375,6 +410,7 @@ def explain(ctx: ExplainContext) -> Guidance:
         "advance": _advance(ctx),
         "step_back": _step_back(ctx),
         "unblock": _unblock(ctx),
+        "decompose_again": _decompose_again(ctx),
         "materialize_accept": _materialize_accept(ctx),
         "materialize_reject": _materialize_reject(ctx),
     }
