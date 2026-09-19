@@ -13,6 +13,10 @@ const SCHEMA = [
   { key: 'dispatch', label: 'Dispatch', type: 'enum', default: 'off', help: 'Whether the runner works this board.', choices: ['off', 'propose', 'auto'] },
   { key: 'queue_min_status', label: 'Minimum board status', type: 'enum', default: 'ready', help: '', choices: ['ready', 'triaged'] },
   { key: 'max_in_flight', label: 'Max in flight', type: 'int', default: 1, help: '', choices: null },
+  // The grouping test needs a field the earlier flat schema mock never carried
+  // (task 9): without it, "every unmapped key falls into Capacity" reads as
+  // true only because every key already IS a Capacity key.
+  { key: 'capacity_mode', label: 'In-flight cap', type: 'enum', default: 'auto', help: '', choices: ['auto', 'pinned'] },
   { key: 'weight', label: 'Weight', type: 'int', default: 1, help: '', choices: null },
   { key: 'ladder_top', label: 'Ladder top tier', type: 'enum', default: 'fable', help: '', choices: ['haiku', 'sonnet', 'opus', 'fable'] },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
@@ -69,9 +73,22 @@ beforeEach(() => {
   Object.assign(h.gates, { data: GATES, isPending: false, isError: false })
 })
 
+// Every render needs Router context now: the Capacity fieldset always links
+// to the real capacity page (task 9), not only the repository-coverage
+// sub-section that used to be the only `<Link>` in this component.
+function renderCard(ui: Parameters<typeof render>[0]) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>)
+}
+
+/** Which of the three grouped `<fieldset>`s (by its `<legend>` text) an input
+ *  lives in — the DOM-level proof that grouping, not just presence, worked. */
+function legendFor(input: HTMLElement): string | null {
+  return input.closest('fieldset')?.querySelector('legend')?.textContent ?? null
+}
+
 describe('AutomationPolicyCard', () => {
   it('renders every schema field with the default and the not-opted-in note when the policy is null', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     expect(screen.getByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toHaveValue('off')
     expect(screen.getByLabelText('Max in flight')).toHaveValue(1)
@@ -85,13 +102,13 @@ describe('AutomationPolicyCard', () => {
   })
 
   it('a change sends only the edited key and the observed revision', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     fireEvent.change(screen.getByLabelText('Dispatch'), { target: { value: 'auto' } })
     expect(h.update).toHaveBeenCalledWith({ policy: { dispatch: 'auto' }, expectedUpdatedAt: null })
   })
 
   it('reads existing policy values over the defaults', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({
       automationPolicy: { dispatch: 'propose', max_in_flight: 3 },
     })} />)
     expect(screen.queryByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeNull()
@@ -103,7 +120,7 @@ describe('AutomationPolicyCard', () => {
 
   it('a failed schema fetch banners instead of skeletoning forever', () => {
     Object.assign(h.schema, { data: undefined, isLoading: false, isError: true })
-    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Could not load the automation settings.')).toBeInTheDocument()
     expect(screen.queryByLabelText('Dispatch')).toBeNull()
   })
@@ -113,14 +130,14 @@ describe('AutomationPolicyCard', () => {
       isError: true,
       error: new ApiRequestError(422, { detail: { message: 'max_in_flight must be an int' } }),
     })
-    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('max_in_flight must be an int')).toBeInTheDocument()
     // …and the fields stay on screen so the value can be corrected in place.
     expect(screen.getByLabelText('Dispatch')).toBeInTheDocument()
   })
 
   it('disables every field and shows the not-live note until the product is live', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({ onboardingState: 'map_merged' })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ onboardingState: 'map_merged' })} />)
     expect(screen.getByText('Automation settings can be edited once the product is live.')).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toBeDisabled()
     expect(screen.getByLabelText('Max in flight')).toBeDisabled()
@@ -128,7 +145,7 @@ describe('AutomationPolicyCard', () => {
   })
 
   it('lists every gate with its verdict under the configured tolerance', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'balanced' } })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'balanced' } })} />)
     expect(screen.getByRole('heading', { name: 'Gates under balanced' })).toBeInTheDocument()
     const rows = screen.getAllByRole('row').slice(1)
     expect(rows).toHaveLength(4)
@@ -146,22 +163,59 @@ describe('AutomationPolicyCard', () => {
   })
 
   it('defaults to cautious and marks nothing automatic', () => {
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     expect(screen.getByRole('heading', { name: 'Gates under cautious' })).toBeInTheDocument()
     expect(screen.queryByText('Automatic')).not.toBeInTheDocument()
   })
 
   it('says every gate waits when the kill switch is off, whatever the tolerance', () => {
     Object.assign(h.gates, { data: { ...GATES, autoresolveEnabled: false } })
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'bold' } })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'bold' } })} />)
     expect(screen.getByText(/Auto-resolve is switched off for this deployment/)).toBeInTheDocument()
     expect(screen.queryByText('Automatic')).not.toBeInTheDocument()
   })
 
   it('reports a gate list that will not load', () => {
     Object.assign(h.gates, { data: undefined, isPending: false, isError: true })
-    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Gate list is unavailable.')).toBeInTheDocument()
+  })
+
+  // Findability (spec D9): the flat field list used to bury the capacity
+  // dials among model and gate settings with no way back to the real capacity
+  // page. Grouping is verified at the DOM level (which fieldset's legend an
+  // input sits under), not just "the legend text exists somewhere".
+  it('groups fields into Capacity / Models / Gates fieldsets, in that order', () => {
+    const { container } = renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
+    // Only the three grouped inner fieldsets carry a `<legend>` — the outer
+    // disabled fieldset that gates every control at once does not.
+    const legends = Array.from(container.querySelectorAll('legend')).map((el) => el.textContent)
+    expect(legends).toEqual(['Capacity', 'Models', 'Gates'])
+    expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Max in flight'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('In-flight cap'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Weight'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Ladder top tier'))).toBe('Models')
+    expect(legendFor(screen.getByLabelText('Session model'))).toBe('Models')
+    expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
+  })
+
+  it('links the Capacity group to the fleet capacity page', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    const link = screen.getByRole('link', { name: "See the fleet's capacity" })
+    expect(link).toHaveAttribute('href', '/delivery?scope=capacity')
+    expect(legendFor(link)).toBe('Capacity')
+  })
+
+  it('places a field the grouping lists do not recognize into Capacity rather than dropping it', () => {
+    Object.assign(h.schema, { data: [
+      ...SCHEMA,
+      { key: 'not_yet_categorized', label: 'Not yet categorized', type: 'bool', default: false, help: '', choices: null },
+    ] })
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Capacity')
   })
 })
 
@@ -185,7 +239,7 @@ describe('repository coverage', () => {
           owner: null, candidates: [], unresolvedRepos: [], reason: 'No registered product.' },
       ],
     }
-    render(<MemoryRouter><AutomationPolicyCard product={product} project={makeProject()} /></MemoryRouter>)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Registration diagnostics only; this does not authorize automation.')).toBeInTheDocument()
     expect(screen.getByText('One registered product owns this repository.')).toBeInTheDocument()
     expect(screen.getByText('Multiple products register the same repository.')).toBeInTheDocument()
@@ -199,20 +253,20 @@ describe('repository coverage', () => {
 
   it.each([true, false])('keeps policy controls when coverage is unavailable (error %s)', (isError) => {
     Object.assign(h.coverage, { isError })
-    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Repository coverage is unavailable.')).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toBeEnabled()
   })
 
   it('identifies loading and empty registration states', () => {
     Object.assign(h.coverage, { isPending: true })
-    const view = render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    const view = renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Checking repository coverage…')).toBeInTheDocument()
     Object.assign(h.coverage, { isPending: false, data: {
       projectSlug: 'kindash', observedAt: '2026-09-14T12:00:00Z', scope: 'repository-coverage',
       explanation: 'Registration diagnostics only.', repositories: [],
     } })
-    view.rerender(<AutomationPolicyCard product={product} project={makeProject()} />)
+    view.rerender(<MemoryRouter><AutomationPolicyCard product={product} project={makeProject()} /></MemoryRouter>)
     expect(screen.getByText('No repositories are registered for this product.')).toBeInTheDocument()
   })
 })
@@ -246,7 +300,7 @@ describe('implementation eligibility', () => {
 
   it('renders server eligibility and blocking reasons without inferring permission from settings', () => {
     h.implementation.data = policyPreview()
-    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { dispatch: 'auto' } })} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { dispatch: 'auto' } })} />)
     expect(screen.getByText('Automatic implementation: refused')).toBeInTheDocument()
     expect(screen.getByText('Automatic proposals: permitted')).toBeInTheDocument()
     expect(screen.getByText('Manual implementation: unknown')).toBeInTheDocument()
@@ -261,7 +315,7 @@ describe('implementation eligibility', () => {
 
   it.each([true, false])('keeps settings available when implementation policy is unavailable (error %s)', (isError) => {
     Object.assign(h.implementation, { isError })
-    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Implementation policy is unavailable.')).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toBeEnabled()
     expect(screen.getByText('Repository coverage is unavailable.')).toBeInTheDocument()
@@ -269,10 +323,10 @@ describe('implementation eligibility', () => {
 
   it('shows pending and empty decisions explicitly', () => {
     h.implementation.isPending = true
-    const view = render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    const view = renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Checking implementation policy…')).toBeInTheDocument()
     Object.assign(h.implementation, { isPending: false, data: { ...policyPreview(), repositories: [] } })
-    view.rerender(<AutomationPolicyCard product={product} project={makeProject()} />)
+    view.rerender(<MemoryRouter><AutomationPolicyCard product={product} project={makeProject()} /></MemoryRouter>)
     expect(screen.getByText('No repository implementation decisions are available.')).toBeInTheDocument()
   })
 })
@@ -280,7 +334,7 @@ describe('implementation eligibility', () => {
 
 it('disables all settings while a save is pending', () => {
   h.updateState.isPending = true
-  render(<AutomationPolicyCard product={product} project={makeProject()} />)
+  renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
   expect(screen.getByLabelText('Dispatch')).toBeDisabled()
   expect(screen.getByLabelText('Max in flight')).toBeDisabled()
   expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
@@ -288,7 +342,7 @@ it('disables all settings while a save is pending', () => {
 
 it('preserves the exact revision without rounding microseconds', () => {
   const revision = '2026-09-17T01:00:00.123456+00:00'
-  render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicyUpdatedAt: revision })} />)
+  renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicyUpdatedAt: revision })} />)
   fireEvent.change(screen.getByLabelText('Weight'), { target: { value: '4' } })
   expect(h.update).toHaveBeenCalledWith({ policy: { weight: 4 }, expectedUpdatedAt: revision })
 })

@@ -175,7 +175,8 @@ export function FleetSection() {
                 <th className="pr-2">Load</th>
                 <th className="pr-2">Free mem</th>
                 <th className="pr-2">Version</th>
-                <th className="pr-2">Weight</th>
+                <th className="pr-2">Weight (dispatch share)</th>
+                <th className="pr-2">Max sessions</th>
                 <th className="pr-2">Enabled</th>
                 <th />
               </tr>
@@ -247,11 +248,25 @@ export function FleetSection() {
                       min={1}
                       max={1000}
                       defaultValue={h.weight}
-                      aria-label={`weight for ${h.name}`}
+                      aria-label={`weight (dispatch share) for ${h.name}`}
                       className="w-16 rounded border border-edge-strong bg-transparent px-1"
                       onBlur={(e) => {
                         const weight = Number(e.target.value)
                         if (weight !== h.weight) patch.mutate({ name: h.name, body: { weight } })
+                      }}
+                    />
+                  </td>
+                  <td className="pr-2">
+                    <input
+                      type="number"
+                      min={1}
+                      defaultValue={h.maxSessions ?? ''}
+                      aria-label={`max sessions for ${h.name}`}
+                      className="w-16 rounded border border-edge-strong bg-transparent px-1"
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim()
+                        const maxSessions = raw === '' ? null : Number(raw)
+                        if (maxSessions !== h.maxSessions) patch.mutate({ name: h.name, body: { maxSessions } })
                       }}
                     />
                   </td>

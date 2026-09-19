@@ -68,7 +68,7 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="auto: the capacity governor sets this product's in-flight cap from the "
                      "fleet's real headroom and your priority order. pinned: the value above "
                      "is a hard cap the governor respects."),
-    ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
+    ConfigField(key="weight", label="Weight (contested slot share)", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
     # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt

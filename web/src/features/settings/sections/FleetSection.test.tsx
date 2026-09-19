@@ -10,10 +10,11 @@
  * never "unavailable".
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { FleetSection } from './FleetSection'
+import { api } from '@/api/client'
 import * as fleet from '@/api/fleet'
 import type { FleetHost, HostEngineState } from '@/api/fleet'
 import { fleetHost } from '@/test/factories'
@@ -113,5 +114,65 @@ describe('FleetSection — the Codex column', () => {
     renderFleet([fleetHost({ name: 'fresh', healthy: null, engines: undefined })])
     expect(within(row('fresh')).getByText('not yet probed')).toBeInTheDocument()
     expect(within(row('fresh')).getByText(/not advertised/)).toBeInTheDocument()
+  })
+})
+
+// Task 9 (spec D9): two "weight" dials exist in this app — this one is the
+// per-host DISPATCH-share multiplier, the product policy card's is a
+// per-product CONTESTED-SLOT share. The label disambiguates them; the max
+// sessions column is the new editable cap alongside it.
+describe('FleetSection — weight and max sessions', () => {
+  it('labels the weight column and input as the dispatch-share weight', () => {
+    renderFleet([fleetHost({ name: 'rocky', weight: 3 })])
+    expect(screen.getByRole('columnheader', { name: 'Weight (dispatch share)' })).toBeInTheDocument()
+    expect(screen.getByLabelText('weight (dispatch share) for rocky')).toHaveValue(3)
+  })
+
+  it('patches weight on blur when it changed', async () => {
+    renderFleet([fleetHost({ name: 'rocky', weight: 3 })])
+    const input = screen.getByLabelText('weight (dispatch share) for rocky')
+    fireEvent.change(input, { target: { value: '5' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { weight: 5 })
+    })
+  })
+
+  it('does not patch weight on blur when it is unchanged', () => {
+    renderFleet([fleetHost({ name: 'rocky', weight: 3 })])
+    fireEvent.blur(screen.getByLabelText('weight (dispatch share) for rocky'))
+    expect(api.put).not.toHaveBeenCalled()
+  })
+
+  it('has a max sessions column, blank for a host with no cap', () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
+    expect(screen.getByRole('columnheader', { name: 'Max sessions' })).toBeInTheDocument()
+    expect(screen.getByLabelText('max sessions for rocky')).toHaveValue(null)
+  })
+
+  it('patches max sessions on blur with a number', async () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '4' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { maxSessions: 4 })
+    })
+  })
+
+  it('clearing the field patches max sessions back to null', async () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { maxSessions: null })
+    })
+  })
+
+  it('does not patch max sessions on blur when it is unchanged', () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    fireEvent.blur(screen.getByLabelText('max sessions for rocky'))
+    expect(api.put).not.toHaveBeenCalled()
   })
 })

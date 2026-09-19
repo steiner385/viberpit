@@ -86,6 +86,13 @@ export function DeliveryPage() {
                 <TierDot tier={automationTier(automation)} />
                 <span>{automationTierLine(automationTier(automation), automation)}</span>
                 <span>{automation.status.text}</span>
+                {/* Findability (spec D9): every capacity dial should point at
+                    the Capacity page, including the runner header when it is
+                    the reason nothing is happening. */}
+                {automation.id === 'backlog-runner' &&
+                  (automation.status.waitingReason === 'capacity' || automation.status.text.includes('capacity')) && (
+                  <Link to={deliveryPath('capacity')} className="underline">See capacity</Link>
+                )}
                 {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
                 {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
                 {(automation.operatorTriggered ?? automation.modes.length === 0)
