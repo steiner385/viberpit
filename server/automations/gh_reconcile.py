@@ -26,7 +26,7 @@ from server.pm.desired_state import (
     STATUS_OPTIONS,
     derive,
 )
-from server.pm.gh_mutations import (UnknownOption, build_batch, build_create_field,
+from server.pm.gh_mutations import (UnknownOption, as_written, build_batch, build_create_field,
                                     build_rate_limit_query, build_update_field_options, chunk,
                                     parse_batch, parse_rate_limit)
 from server.pm.gh_projects import parse_created_field
@@ -478,6 +478,10 @@ class GhReconcileLoop:
                 planned.extend(diff_fields(derive(item), mirror, own_values or {}))
         planned.extend(membership(facts.open_issue_nodes, set(facts.mirror), facts.project_node_id))
         planned.extend(compile_edges(facts.deps, facts.node_ids, applied_keys))
+        # Restate every plan in the board's own vocabulary BEFORE it is journaled, so the
+        # write-ahead row (and therefore the echo-suppression key the next sync reads back)
+        # carries the spelling we actually send — see ``gh_mutations.as_written``.
+        planned = [as_written(m, cache) for m in planned]
         keep: list[Mutation] = []
         for m in planned:
             if await self._j_parked(m.key()):

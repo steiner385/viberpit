@@ -78,6 +78,24 @@ def test_held_with_neither_spelling_cached_is_an_unknown_option():
                     field_cache={"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}})
 
 
+def test_as_written_stamps_the_mutation_with_the_spelling_the_board_carries():
+    """What we journal must be what we send (spec 2026-09-18 §9): the echo-suppression
+    key is built from the journal row, so a row saying "Held" against a board that
+    stores "Needs human" would read our own write back as a human edit."""
+    from server.pm.desired_state import STATUS_HELD
+    from server.pm.gh_mutations import as_written
+    legacy = {"Status": {"field_id": "F_s", "options": {"Needs human": "O_legacy"}}}
+    renamed = {"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    assert as_written(m, legacy).new_value == "Needs human"
+    assert as_written(m, renamed) is m          # already the board's spelling
+    assert as_written(m, {}) is m               # no option at all -> _render still raises
+    # Score and non-field mutations are never restated.
+    score = Mutation("set_field", "PVTI_1", "Score", None, 480.0, "score:o/r#1")
+    add = Mutation("add_item", "PVT_1", None, None, "I_9", "membership:o/r#9")
+    assert as_written(score, legacy) is score and as_written(add, legacy) is add
+
+
 def test_parse_batch_maps_errors_per_alias():
     payload = {"data": {"m0": {"projectV2Item": {"id": "PVTI_1"}}, "m1": None},
                "errors": [{"path": ["m1"], "message": "Could not resolve to a node"}]}
