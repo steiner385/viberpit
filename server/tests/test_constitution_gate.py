@@ -83,6 +83,12 @@ def test_bare_marker_with_no_statement_does_not_count():
         "[Owner acknowledgment: I approve these changes]",
         "`Owner acknowledgment: I approve these changes`",
         "- Owner acknowledgment: I approve these changes.",
+        # Closing decoration between the label and the colon (#1831): the colon
+        # ends up outside the bold/italic span, which is at least as idiomatic
+        # as putting it inside.
+        "**Owner acknowledgment**: I approve these changes.",
+        "*Owner acknowledgment*: I approve these changes.",
+        "__Owner acknowledgment__: I approve these changes.",
     ],
 )
 def test_acknowledgment_line_shapes_that_do_count(line):
@@ -101,6 +107,27 @@ def test_acknowledgment_after_a_comment_block_counts():
 def test_missing_acknowledgment_is_rejected():
     violations = check_amendment(BASE, HEAD_OK, "Looks good to me.")
     assert any(ACKNOWLEDGMENT_MARKER in v for v in violations)
+
+
+def test_decoration_between_label_and_colon_still_requires_a_line_start():
+    """Widening the label/colon gap must not admit prose (#1831)."""
+    body = "I was told the **owner acknowledgment**: prefix is what the gate looks for."
+    assert check_amendment(BASE, HEAD_OK, body) != []
+
+
+def test_missing_acknowledgment_names_accepted_forms_when_word_is_present():
+    """When the author already wrote "acknowledgment" but not a matching line, the
+    failure message should say so instead of repeating the generic instruction
+    (#1831) — this is the shape of the round trip that cost #1830."""
+    body = "**Owner Acknowledgment**\nI approve this, see the acknowledgment above."
+    violations = check_amendment(BASE, HEAD_OK, body)
+    assert any("already mentions" in v or "acknowledgment" in v.lower() for v in violations)
+    assert any("**Owner acknowledgment:**" in v or "Owner acknowledgment:" in v for v in violations)
+
+
+def test_missing_acknowledgment_generic_message_when_word_absent():
+    violations = check_amendment(BASE, HEAD_OK, "Looks good to me.")
+    assert not any("already mentions" in v for v in violations)
 
 
 def test_empty_pr_body_is_rejected():
