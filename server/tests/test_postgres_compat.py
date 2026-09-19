@@ -280,6 +280,10 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     # it. No _REQUIRED_EXTRAS entry — id/created_at are its only NOT NULL columns and
     # both are defaulted.
     "dispatch_outcomes": {"project_id": "projects", "session_id": "sessions"},
+    # capacity governor spec 2026-09-19 §4: single derived-plan row, no FKs at all
+    # — the only NOT NULL column is the defaulted "current" primary key, so no
+    # _REQUIRED_EXTRAS entry is needed either.
+    "capacity_plans": {},
 }
 
 
