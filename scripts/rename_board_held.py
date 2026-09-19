@@ -256,6 +256,8 @@ def verify_ids(rename: Rename, fresh: StatusField) -> None:
     null Status, and a cache saved over that failure looks perfectly healthy."""
     got = {o.name: o.id for o in fresh.options}
     expected = rename.option_ids
+    if len(fresh.options) != len(rename.options):
+        raise OptionIdsChanged("option ids changed — cards may be blanked, inspect the board")
     if got.get(STATUS_HELD) != rename.option_id:
         raise OptionIdsChanged("option ids changed — cards may be blanked, inspect the board")
     for name, oid in expected.items():
@@ -401,7 +403,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     boards = {b.slug: b for b in await load_boards(args.project)}
     if not boards:
         print("no mirrored boards found" + (f" for {args.project}" if args.project else ""))
-        return 0
+        return 2
 
     token = os.environ.get(TOKEN_ENV) or ""
     if not token:

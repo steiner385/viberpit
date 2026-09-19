@@ -15,6 +15,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from server.pm.desired_state import STATUS_OPTIONS  # noqa: E402 -- repo root added above
 
 OWNER = "steiner385"
 
@@ -297,7 +304,7 @@ def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length
     print(json.dumps(status, indent=2))
     print("=== updateProjectV2Field: replace Status options with the spec vocabulary ===")
     new_opts = ", ".join('{name: "%s", color: GRAY, description: ""}' % s
-                         for s in ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done"))
+                         for s in STATUS_OPTIONS)
     print(json.dumps(g('mutation { updateProjectV2Field(input: {fieldId: "%s", singleSelectOptions: [%s]}) '
                        '{ projectV2Field { ... on ProjectV2SingleSelectField { options { id name } } } } }'
                        % (status["id"], new_opts)), indent=2)[:800])
@@ -366,7 +373,7 @@ def probe_optionids() -> None:  # noqa: C901 - spike probe, deliberate length
     issue = g('query { repository(owner: "%s", name: "viberpit") '
               "{ issues(first: 1, states: OPEN) { nodes { id number } } } }"
               % OWNER)["data"]["repository"]["issues"]["nodes"][0]
-    spec_vocab = ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done")
+    spec_vocab = STATUS_OPTIONS
 
     for send_ids in (False, True):
         label = "WITH existing ids" if send_ids else "names only"
