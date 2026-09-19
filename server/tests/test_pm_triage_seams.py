@@ -199,12 +199,8 @@ def _finished_map_diff(**cols) -> DbSession:
 
 
 @pytest.mark.asyncio
-async def test_not_needed_map_diff_session_latches(db_env):
-    """(d) A FINISHED map-diff session answered ``not-needed``: the cluster is
-    covered by a doc under another slug, so (a) can never fire, and (b) released
-    the moment the session archived. Prod 2026-09-18: the session archived at
-    19:44:17Z and the tick re-spawned the identical prompt at 19:44:55Z — the
-    third session for one suggestion in an afternoon. The verdict is the latch."""
+async def test_old_not_needed_session_does_not_latch_new_proposals(db_env):
+    """A disposable session verdict cannot suppress future proposal inputs."""
     await _seed(db_env)
     await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
     async with db_session() as db:
@@ -213,21 +209,19 @@ async def test_not_needed_map_diff_session_latches(db_env):
                                   pr_resolution_source="classifier"))
     orch = _triage_orch()
     state, _ = await _clusters(orch)
-    assert state.open_map_diff_suggestions == ("offline-mode",)
+    assert state.open_map_diff_suggestions == ()
 
 
 @pytest.mark.asyncio
-async def test_human_archived_map_diff_session_latches(db_env):
-    """(d) A human putting the map-diff session away is a disposition too — the
-    one the operator reaches for when the session is stuck asking. Re-spawning
-    the same prompt 60 s later overrules them."""
+async def test_old_human_archive_does_not_latch_new_proposals(db_env):
+    """Human dispositions belong to evaluated proposals, not a perpetual slug latch."""
     await _seed(db_env)
     await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
     async with db_session() as db:
         db.add(_finished_map_diff(status="archived", archived_by="user"))
     orch = _triage_orch()
     state, _ = await _clusters(orch)
-    assert state.open_map_diff_suggestions == ("offline-mode",)
+    assert state.open_map_diff_suggestions == ()
 
 
 @pytest.mark.asyncio

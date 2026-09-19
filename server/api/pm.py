@@ -1478,6 +1478,7 @@ async def undo_triage(
     prop.status = "pending"
     prop.resolved_at = None
     prop.undo_snapshot = None
+    prop.map_resolution = None
     await db.flush()
     await record_audit(db=db, type="pm.triage.undo", identity=identity,
                        detail={"proposalId": proposal_id, "workItemId": prop.work_item_id,

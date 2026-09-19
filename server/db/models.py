@@ -1949,6 +1949,9 @@ class TriageProposal(Base):
     # already undone) → undo answers 409 no_snapshot, which it checks BEFORE the
     # undo window so a pre-migration row reports the specific reason.
     undo_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Repository-verified map disposition belongs to the proposal, never the
+    # disposable session. Inputs are fingerprinted so edited work is eligible again.
+    map_resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     # Set by POST /triage/{id}/undo when the decision being undone was the PM
