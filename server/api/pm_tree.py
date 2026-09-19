@@ -208,7 +208,12 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
                 capability_slugs=tuple(c["slug"] for c in cap_list),
                 epic=epics.get(i.id),
                 parent_slug=slug_by_id.get(i.parent_initiative_id) if i.parent_initiative_id else None,
-                last_auto_gate=i.last_auto_gate))
+                last_auto_gate=i.last_auto_gate,
+                # Through `_aware`, like every other datetime this payload
+                # carries: the column is DateTime(timezone=True), which SQLite
+                # hands back tzinfo-less, so a bare isoformat() would emit an
+                # offset on Postgres and none in the tests that pin the shape.
+                updated_at=_aware(i.updated_at)))
         my_repos = repos_by_project.get(p.id, [])
         products.append(build_product_tree(ProductIn(
             slug=p.slug or "", name=p.name,

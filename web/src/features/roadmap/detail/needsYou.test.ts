@@ -23,6 +23,52 @@ describe('needsYouRows', () => {
   })
 })
 
+describe('needsYouRows — newest first inside a tier (#1476, spec §7)', () => {
+  // The map arrives created_at ASCENDING, which is the opposite of what §7 asks
+  // for, and `updatedAt` is the only timestamp a node carries.
+  const dated = (slug: string, updatedAt: string | null, tier: 'needs-you' | 'blocked' = 'needs-you') =>
+    ini({ slug, projectSlug: 'kindash', tier, updatedAt })
+
+  it('sorts a tier newest first', () => {
+    const prod = product({ slug: 'kindash', initiatives: [
+      dated('oldest', '2026-09-01T00:00:00Z'),
+      dated('newest', '2026-09-19T00:00:00Z'),
+      dated('middle', '2026-09-10T00:00:00Z'),
+    ] })
+    expect(needsYouRows([prod]).initiatives.map((r) => r.initiative.slug))
+      .toEqual(['newest', 'middle', 'oldest'])
+  })
+
+  it('keeps the TIER as the primary order — a stale decision still outranks a fresh block', () => {
+    const prod = product({ slug: 'kindash', initiatives: [
+      dated('fresh-block', '2026-09-19T00:00:00Z', 'blocked'),
+      dated('stale-decision', '2026-09-01T00:00:00Z', 'needs-you'),
+    ] })
+    expect(needsYouRows([prod]).initiatives.map((r) => r.initiative.slug))
+      .toEqual(['stale-decision', 'fresh-block'])
+  })
+
+  it('sorts ACROSS products within a tier, not per product', () => {
+    // One queue, not "newest in KinDash, then newest in ViberPit".
+    const a = product({ slug: 'a', initiatives: [dated('a-old', '2026-09-01T00:00:00Z')] })
+    const b = product({ slug: 'b', initiatives: [dated('b-new', '2026-09-19T00:00:00Z')] })
+    expect(needsYouRows([a, b]).initiatives.map((r) => r.initiative.slug))
+      .toEqual(['b-new', 'a-old'])
+  })
+
+  it('sorts a node with no timestamp LAST, and breaks ties by slug', () => {
+    // An absent `updatedAt` (an older server, a hand-built fixture) must never
+    // jump the queue; equal timestamps must not reshuffle between renders.
+    const prod = product({ slug: 'kindash', initiatives: [
+      dated('undated', null),
+      dated('zebra', '2026-09-10T00:00:00Z'),
+      dated('apple', '2026-09-10T00:00:00Z'),
+    ] })
+    expect(needsYouRows([prod]).initiatives.map((r) => r.initiative.slug))
+      .toEqual(['apple', 'zebra', 'undated'])
+  })
+})
+
 const child = cap({ slug: 'child', counts: { openIssues: 2, inFlight: 0, blocked: 1, needsYou: 1 } })
 const parent = cap({ slug: 'parent', children: [child], counts: { openIssues: 3, inFlight: 0, blocked: 2, needsYou: 3 } })
 const scopedProduct = product({ slug: 'p', capabilities: [parent], initiatives: [

@@ -77,6 +77,7 @@ vi.mock('@/api/hooks', () => ({
   useRemoveDependency: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useStepBackInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useUnblockInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useDecomposeAgain: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 // A FUNCTION, not a shared element: `rerender` with the identical element

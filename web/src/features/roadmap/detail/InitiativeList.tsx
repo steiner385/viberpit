@@ -10,6 +10,12 @@ import { InitiativeCard } from '../rows/InitiativeCard'
 import { initiativeKey } from '../treeRows'
 import { initiativePath } from '../roadmapNavState'
 
+/** `CardFrame` id namespace for this list's rows — the sibling of the tree's
+ *  `TREE_ID_SCOPE`. Both containers are on screen at once in the two-column
+ *  layout and both key their rows by initiative slug, so without a scope each
+ *  would mint the same `row-initiative:<slug>` (#1475). */
+const LIST_ID_SCOPE = 'roadmap-initiative-list'
+
 /**
  * Nest PURELY structurally: an item whose `parentInitiative` names another
  * item IN THIS LIST sits under it; everything else — a plain root, or a phase
@@ -73,6 +79,7 @@ export function InitiativeList({ initiatives, programTitleFor }: InitiativeListP
         <InitiativeCard
           key={node.slug}
           rowKey={initiativeKey(node.slug)}
+          idScope={LIST_ID_SCOPE}
           depth={depth}
           initiative={node}
           selected={false}

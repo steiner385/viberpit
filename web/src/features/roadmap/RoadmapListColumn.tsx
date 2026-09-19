@@ -29,7 +29,7 @@ import { InitiativeCard } from './rows/InitiativeCard'
 import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
 import { flattenMap, initiativeKey, setCollapsed, toggleKey, type TreeRow, type TreeState } from './treeRows'
-import { useTreeKeys } from './useTreeKeys'
+import { TREE_ID_SCOPE, useTreeKeys } from './useTreeKeys'
 
 /**
  * The Inbox scope's half of the column's props. `selectedKey` is NOT here — the
@@ -171,6 +171,7 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
             <InitiativeCard
               key={row.key}
               rowKey={row.key}
+              idScope={TREE_ID_SCOPE}
               depth={row.depth}
               initiative={row.initiative}
               selected={selectedKey === row.key}
@@ -186,6 +187,7 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
             <TreeRowCard
               key={row.key}
               row={row}
+              idScope={TREE_ID_SCOPE}
               selected={selectedKey === row.key}
               focusable={rovingKey === row.key}
               onOpen={onOpen}
@@ -198,6 +200,9 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
     </ScopeBody>
   )
 }
+
+/** `CardFrame` id namespace for the Initiatives scope's rows (`ui/list/rowId`). */
+const INITIATIVES_ID_SCOPE = 'roadmap-initiatives'
 
 type InitiativeGroupBy = 'stage' | 'product' | 'none'
 type InitiativeSortBy = 'tier' | 'title'
@@ -322,6 +327,11 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
             <InitiativeCard
               key={key}
               rowKey={key}
+              // Its own scope, not the tree's: this scope and the Map scope are
+              // never on screen together, but the DETAIL pane beside either one
+              // renders the same keys, and a scope per container is the rule
+              // (`ui/list/rowId`) rather than a judgement per pairing.
+              idScope={INITIATIVES_ID_SCOPE}
               depth={0}
               rowRole="listitem"
               initiative={e.initiative}

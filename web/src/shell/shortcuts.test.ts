@@ -174,6 +174,16 @@ function chordFromKeys(keys: string): KeyboardLike | null {
     const key = keyForGlyph(asMeta[1].toLowerCase())
     return key === null ? null : ev({ key, metaKey: true })
   }
+  // `Shift+a` reports the UPPERCASE key, unlike the two above which lowercase —
+  // that difference is the whole reason a Shift row needs its own parse rather
+  // than a looser glyph rule. `roadmap-inbox`'s `Shift+A` is a DIFFERENT action
+  // from its `a` (accept the selection vs accept the focused row), so a guard
+  // that could not tell the two apart would pass while they collided.
+  const asShift = /^Shift\+(.+)$/.exec(keys)
+  if (asShift) {
+    const key = keyForGlyph(asShift[1].toLowerCase())
+    return key === null ? null : ev({ key: key.toUpperCase(), shiftKey: true })
+  }
   return null
 }
 
@@ -279,6 +289,59 @@ describe('shortcuts registry — integrity', () => {
 
   it('Shift+Tab stays undocumented — the binding and its handler are both gone (D8)', () => {
     for (const s of SHORTCUTS) expect(s.keys).not.toMatch(/Shift\s*\+\s*Tab/i)
+  })
+})
+
+// ─── The Roadmap Inbox group (#1494) ─────────────────────────────────────────
+//
+// The keys live here so the help sheet can list them (`DrawerHost.test.tsx`
+// asserts every group and every description renders); the LISTENER stays in
+// `features/roadmap/inbox/InboxScopeBody`, which resolves them through
+// `matchShortcut(e, inGroup('roadmap-inbox'))`.
+
+describe('shortcuts registry — roadmap-inbox', () => {
+  const resolve = (e: Partial<KeyboardLike>) =>
+    matchShortcut(ev(e), inGroup('roadmap-inbox'))?.id
+
+  it('resolves the scope\'s whole key map', () => {
+    expect(resolve({ key: 'j' })).toBe('inbox.next')
+    expect(resolve({ key: 'k' })).toBe('inbox.prev')
+    expect(resolve({ key: 'a' })).toBe('inbox.accept')
+    expect(resolve({ key: 'r' })).toBe('inbox.reject')
+    expect(resolve({ key: 'e' })).toBe('inbox.edit')
+    expect(resolve({ key: 'x' })).toBe('inbox.select')
+  })
+
+  it('keeps `a` and Shift+A apart — they are different, irreversible actions', () => {
+    // One accepts the focused row, the other the whole ticked selection. A single
+    // case-insensitive row (the way `list.archive` matches both) would make one
+    // keystroke do the other's work.
+    expect(resolve({ key: 'A', shiftKey: true })).toBe('inbox.acceptSelected')
+    expect(resolve({ key: 'a' })).toBe('inbox.accept')
+  })
+
+  it('never fires under a Ctrl/Meta/Alt chord that belongs to the browser', () => {
+    expect(resolve({ key: 'a', ctrlKey: true })).toBeUndefined()   // Ctrl+A: select all
+    expect(resolve({ key: 'r', metaKey: true })).toBeUndefined()   // ⌘R: reload
+  })
+
+  it('is invisible to the shell dispatcher: no handler id, and no `when` to judge', () => {
+    // `useShortcuts` can only fire a row whose id has a handler in AppShellInner,
+    // and it registers none of these — which is deliberate: `a` and `r` are
+    // irreversible past the undo window and must not outlive the Inbox scope.
+    // No `when` either, because the real guards (`overlayIsOpen`, `isTypingTarget`)
+    // are the scope's and this array cannot see them.
+    for (const s of shortcutsByGroup('roadmap-inbox')) {
+      expect(s.when, `${s.id} must not carry a when`).toBeUndefined()
+      expect(s.action, `${s.id} is not a session-row action`).toBeUndefined()
+    }
+  })
+
+  it('does not steal the list-mode letters that share its glyphs', () => {
+    // `a` is archive in list mode and accept here; `r` is rename there. Each
+    // scope resolves inside its own group, so neither leaks.
+    expect(matchShortcut(ev({ key: 'a' }), inGroup('list-mode'))?.id).toBe('list.archive')
+    expect(matchShortcut(ev({ key: 'r' }), inGroup('list-mode'))?.id).toBe('list.rename')
   })
 })
 

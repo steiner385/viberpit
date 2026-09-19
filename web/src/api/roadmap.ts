@@ -70,6 +70,10 @@ export interface InitiativeNode {
   parentInitiative: string | null
   /** Whether this initiative has phases nested under it (a "program"). */
   hasChildren: boolean
+  /** `Initiative.updated_at` as an ISO-8601 UTC string, or null. The ONLY
+   *  timestamp a map node carries, and the Needs-you tab's newest-first
+   *  tiebreak (spec §7) — the payload itself arrives created_at ASCENDING. */
+  updatedAt: string | null
 }
 
 export interface AutoResolved {

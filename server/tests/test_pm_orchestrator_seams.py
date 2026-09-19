@@ -2126,9 +2126,54 @@ async def test_materialize_ingest_parse_failure_records_a_rejected_proposal(db_e
             Initiative.slug == "dark-mode"))).scalar_one()
         assert ini.status == "awaiting_human"  # still the loop's to retry
     # A failed attempt still counts, so the next decompose gets its own key.
-    assert await orch._sdlc_materialization_attempts_for(ini_id) == 1
+    attempts = await orch._sdlc_materialization_attempts_for(ini_id)
+    # Both counts, and they agree here: nothing has been retried, so the ordinal
+    # the dedupe key uses and the budget the cap is measured against are the same
+    # number. They diverge once a human taps "Decompose again" (#1582).
+    assert (attempts.total, attempts.budget) == (1, 1)
     # …and it is not a proposal anyone can be asked to review.
     assert await orch._sdlc_has_pending_materialization(ini_id) is False
+
+
+@pytest.mark.asyncio
+async def test_the_attempts_seam_reads_the_retry_baseline(db_env):
+    """#1582: the DB-backed seam is where `materialize_retry_baseline` is applied.
+
+    The pure derivation and the route that writes the column are covered
+    elsewhere; this is the read in between — the one the loop's exhaustion gate and
+    the unblock refusal both go through. `total` must ignore the baseline entirely
+    (it is the decompose session's dedupe ordinal, and a number that came round
+    twice re-ingests a finished session — C4-R15) while `budget` must honour it."""
+    from sqlalchemy import select
+
+    from server.db.models import Initiative, MaterializationProposal
+    ini_id = await _seed_initiative(db_env)
+    orch = _bare_orch()
+    async with db_session() as db:
+        for _ in range(4):
+            db.add(MaterializationProposal(initiative_id=ini_id, status="rejected",
+                                           session_id="s", payload={}))
+        await db.flush()
+
+    before = await orch._sdlc_materialization_attempts_for(ini_id)
+    assert (before.total, before.budget) == (4, 4)   # NULL baseline == 0
+
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        ini.materialize_retry_baseline = 3
+
+    after = await orch._sdlc_materialization_attempts_for(ini_id)
+    assert (after.total, after.budget) == (4, 1)     # the ordinal never moves back
+
+    # A baseline ABOVE the total — rows deleted by hand after a retry, which should
+    # not happen — floors at zero rather than making the gate unreachable.
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        ini.materialize_retry_baseline = 99
+    impossible = await orch._sdlc_materialization_attempts_for(ini_id)
+    assert (impossible.total, impossible.budget) == (4, 0)
 
 
 @pytest.mark.asyncio

@@ -515,11 +515,9 @@ async def get_initiative(
     # can be exhausted.
     materialize_exhausted = False
     if ini.status == "blocked" and ini.stage == "plan" and ini.epic_number is None:
-        from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
         from server.sessions.orchestrator import SessionOrchestrator
         materialize_exhausted = (
-            await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)
-        ) >= MATERIALIZE_MAX_ATTEMPTS
+            await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)).exhausted
 
     result = _initiative_to_dict(ini)
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
@@ -736,11 +734,12 @@ async def unblock_initiative(
     them stays up; clearing the row underneath would tell the loop to decompose
     again while a human is still deciding.
 
-    409 ``materialize_exhausted``: the synthesizer wrote this block and its
-    warn is latched in-process, so clearing it would send the row back to
-    ``awaiting_human`` only for the next tick to re-block it silently. Resetting
-    the attempt count (removing the stale proposals) is the way out; a retry path
-    for that is a follow-up.
+    409 ``materialize_exhausted``: the synthesizer wrote this block because the
+    decomposition budget is spent, so clearing it would send the row back to
+    ``awaiting_human`` only for the next tick to re-block it. ``POST
+    .../decompose-again`` is the way out (#1582) — it resets the budget as a
+    deliberate act and unblocks in the same call, which is why THIS route keeps
+    refusing rather than quietly doing it.
 
     The web confirm says out loud that a re-decomposition creates a second epic if
     a failed apply's issues are still open on GitHub — closing those is the
@@ -760,19 +759,76 @@ async def unblock_initiative(
         # Imported inside the handler: the orchestrator module pulls in the whole
         # session stack, which a router must not do at import time. The count
         # itself is the loop's own — one implementation of "attempts spent".
-        from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
         from server.sessions.orchestrator import SessionOrchestrator
         attempts = await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)
-        if attempts >= MATERIALIZE_MAX_ATTEMPTS:
+        if attempts.exhausted:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
                 "error": "materialize_exhausted",
-                "message": f"Decomposition was attempted {attempts} times and gave "
-                           "up; clearing the block would only re-block it on the "
-                           "next tick. Reject or remove the stale proposals first."})
+                "message": f"Decomposition was attempted {attempts.budget} times and "
+                           "gave up; clearing the block would only re-block it on "
+                           "the next tick. Use Decompose again to spend a fresh set "
+                           "of attempts."})
     ini.status = "awaiting_human"
     await db.flush()
     await record_audit(db=db, type="sdlc.initiative.unblock", identity=identity,
                        detail={"slug": slug})
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+@router.post("/initiatives/{slug}/decompose-again")
+async def decompose_again(
+    slug: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The way back for a plan whose decomposition the synthesizer gave up on
+    (#1582) — the disposition ``unblock``'s ``materialize_exhausted`` 409 points at.
+
+    Records the current proposal count as ``Initiative.materialize_retry_baseline``
+    and returns the row to ``awaiting_human``, so the loop's budget
+    (``MaterializeAttempts.budget``) is zero again and the next tick decomposes.
+
+    A BASELINE, not a delete. The same total the budget comes from is also the
+    decompose session's dedupe key (``<slug>:materialize:<n>``), so lowering it by
+    removing the stale rows — which, before this route, was the only way out and
+    meant editing the database by hand — would re-mint a key already spent and
+    hand the loop the previous attempt's finished session (C4-R15). Every
+    historical proposal stays exactly where it is; only the line the budget is
+    measured from moves. The loop's warn latch keys on that same untouched total,
+    so a second exhaustion still announces itself.
+
+    409 ``not_blocked`` / ``proposal_pending``: the same two refusals ``unblock``
+    makes, for the same reasons — there is nothing to retry on a row that is not
+    blocked, and a pending proposal is a decision already waiting for this human.
+    Deliberately NOT gated on being exhausted: retrying a plan that has spent one
+    attempt of three is a smaller version of the same intent, and refusing it
+    would only teach people to wait until it breaks.
+    """
+    ini = await _load_initiative(db, slug)
+    if ini.status != "blocked":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_blocked", "message": f"Initiative is {ini.status!r}, not blocked"})
+    pending = (await db.execute(select(MaterializationProposal.id).where(
+        MaterializationProposal.initiative_id == ini.id,
+        MaterializationProposal.status == "pending"))).scalars().first()
+    if pending is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "proposal_pending",
+            "message": "Accept or reject the pending materialization first"})
+    from server.sessions.orchestrator import SessionOrchestrator
+    before = await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)
+    ini.materialize_retry_baseline = before.total
+    ini.status = "awaiting_human"
+    await db.flush()
+    await record_audit(db=db, type="sdlc.initiative.decompose_again", identity=identity,
+                       # Both numbers: `spentAttempts` is what the human decided
+                       # was worth another try, and `baseline` is the line now
+                       # drawn. Whether people retry plans the model simply cannot
+                       # decompose is the metric this pair answers.
+                       detail={"slug": slug, "baseline": before.total,
+                               "spentAttempts": before.budget})
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d

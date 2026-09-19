@@ -22,13 +22,20 @@
  * form the way the old page did: it opens the row with `edit`, and the pane
  * puts the caret in the score fields.
  *
- * The key map is local to this component rather than registered in
- * `shell/shortcuts.ts`: these keys exist only while the Inbox scope is on
- * screen, and `a`/`r` are irreversible enough that they must not survive it.
- * Both guards from the old page come along — `overlayIsOpen()` (a modal sheet
- * parks focus on its Close BUTTON, which is not a typing target) and
- * `isTypingTarget` (the listener is on `window`, so it sees the search box, the
- * prompt dock and everything else).
+ * The LISTENER is local to this component rather than installed by the shell:
+ * these keys exist only while the Inbox scope is on screen, and `a`/`r` are
+ * irreversible enough that they must not survive it. Both guards from the old
+ * page come along — `overlayIsOpen()` (a modal sheet parks focus on its Close
+ * BUTTON, which is not a typing target) and `isTypingTarget` (the listener is on
+ * `window`, so it sees the search box, the prompt dock and everything else).
+ *
+ * The KEYS, though, come from `shell/shortcuts.ts`' `roadmap-inbox` group, read
+ * here through `matchShortcut(ev, inGroup('roadmap-inbox'))`. A scope-local
+ * switch on `ev.key` was invisible to the Help sheet (`?`), which renders from
+ * that registry and nothing else, so the whole map was undiscoverable (#1494) —
+ * and the Kbd legend below was a second, hand-kept copy of it. Registering the
+ * rows does NOT hand them to the shell's dispatcher: that can only fire a row
+ * whose id has a handler in `AppShellInner`, and none of these do.
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import {
@@ -47,6 +54,7 @@ import { Kbd } from '@/ui/Kbd'
 import { Skeleton } from '@/ui/Skeleton'
 import { useItemOrdering } from '@/session/useSessionOrdering'
 import { overlayIsOpen } from '@/shell/useOverlayState'
+import { inGroup, matchShortcut } from '@/shell/shortcuts'
 import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
@@ -167,18 +175,22 @@ export function InboxScopeBody({
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
       // Somebody else already claimed this keydown; an overlay is up; or the
-      // key is part of a chord that belongs to the browser (Ctrl+A, Cmd+R).
+      // key is part of a chord that belongs to the browser (Ctrl+A, Cmd+R —
+      // every `roadmap-inbox` row uses `plain()`, which bails on those anyway).
       // Shift is allowed through — it is how `A` is typed.
       if (ev.defaultPrevented || overlayIsOpen()) return
-      if (ev.ctrlKey || ev.metaKey || ev.altKey) return
       if (isTypingTarget(ev.target)) return
-      switch (ev.key) {
-        case 'j': dispatch({ type: 'move', delta: 1, ids }); break
-        case 'k': dispatch({ type: 'move', delta: -1, ids }); break
+      // No context argument: a `roadmap-inbox` row carries no `when` (the guards
+      // above are this scope's, not the registry's), and passing a fabricated
+      // context is how a `when` comes to be evaluated against a lie.
+      const row = matchShortcut(ev, inGroup('roadmap-inbox'))
+      switch (row?.id) {
+        case 'inbox.next': dispatch({ type: 'move', delta: 1, ids }); break
+        case 'inbox.prev': dispatch({ type: 'move', delta: -1, ids }); break
         // A row past `pending` (a fresh auto-accept, still shown for the undo
         // window) has already had its one decision — none of these keys have
         // anything left to act on, so the cursor sitting on it is inert.
-        case 'x':
+        case 'inbox.select':
           // A decision cannot go into a bulk accept (see `pendingIds`).
           if (!isPending(current) || isDecisionProposal(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
@@ -191,22 +203,22 @@ export function InboxScopeBody({
         // own recommendation and a one-keystroke discard are the same hazard, so
         // both land in the pane, where the options and the consequence copy are
         // and the real Accept/Reject buttons live.
-        case 'a':
+        case 'inbox.accept':
           if (!isPending(current)) return
           if (isDecisionProposal(current)) onOpen(current)
           else acceptOne(current)
           break
-        case 'r':
+        case 'inbox.reject':
           if (!isPending(current)) return
           if (isDecisionProposal(current)) onOpen(current)
           else rejectOne(current)
           break
-        case 'e':
+        case 'inbox.edit':
           // Nothing to edit on a decision: the scores are the classifier's.
           if (!isPending(current) || isDecisionProposal(current)) return
           onOpen(current, { edit: true })
           break
-        case 'A':
+        case 'inbox.acceptSelected':
           if (state.selected.size === 0) return
           acceptSelected()
           break

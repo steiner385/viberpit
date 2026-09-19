@@ -1125,6 +1125,99 @@ def test_drift_accept_reproposes_orphaned_siblings():
         assert accepted_fid == fid
 
 
+def test_accept_bulk_savepoint_covers_the_sibling_repropose():
+    """Regression (#1495): the sibling re-propose is INSIDE each id's savepoint.
+
+    It reads as if it might not be — the loop is not lexically next to the
+    ``begin_nested()`` in ``accept_bulk``, it is two frames down inside
+    ``apply_accept`` — and if it ever moves back out, a failure there would leave
+    this id's accept committed against a half-re-pointed drift cluster: the work
+    item classified, some siblings re-pointed with their ``no_fit_suggestion``
+    destroyed, and no record that anything went wrong beyond one ``failed`` row.
+
+    So this pins the property rather than the call graph: make the re-propose
+    blow up, and this id must roll back WHOLE (item unclassified, proposal still
+    pending, sibling untouched) while an unrelated id in the same batch still
+    lands."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm import triage_accept
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                # The drift shape: the suggested slug is now a REAL feature, so
+                # accepting either no_fit proposal re-points the other.
+                db.add(Feature(project_id=p.id, slug="offline-mode",
+                               title="Offline mode", state="live"))
+                await db.flush()
+                ids = []
+                for n in (1, 2):
+                    w = WorkItem(repo="o/r", number=n, kind="issue",
+                                 title=f"#{n}", state="open",
+                                 triage_state="unclassified")
+                    db.add(w)
+                    await db.flush()
+                    tp = TriageProposal(work_item_id=w.id, status="pending",
+                                        no_fit_suggestion="offline-mode",
+                                        rationale="offline")
+                    db.add(tp)
+                    await db.flush()
+                    ids.append((tp.id, w.id))
+                return ids
+        (drift_pid, drift_wid), (sib_pid, sib_wid) = c.portal.call(_seed)
+        # An id with nothing to do with the drift cluster: the batch must still
+        # land it, or a rolled-back savepoint is indistinguishable from a
+        # rolled-back request.
+        good_pid, good_wid = _seed_one_pending(c, feature_slug="sessions", number=3)
+
+        async def _boom(*_a, **_kw):
+            raise RuntimeError("repropose exploded")
+
+        # Patched on the OWNING module: `apply_accept` resolves the name there, so
+        # that is the seam the call site under test actually goes through.
+        with patch.object(triage_accept, "_repropose_siblings", _boom):
+            r = c.post("/api/pm/triage/accept-bulk",
+                       json={"ids": [drift_pid, good_pid]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        by_id = {x["id"]: x for x in body["results"]}
+        assert by_id[drift_pid] == {"id": drift_pid, "ok": False, "error": "failed"}
+        assert by_id[good_pid] == {"id": good_pid, "ok": True}
+        assert body["accepted"] == 1
+
+        async def _check():
+            async with db_session() as db:
+                items = {w.id: w for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.id.in_([drift_wid, sib_wid, good_wid])))).scalars().all()}
+                props = {p.id: p for p in (await db.execute(
+                    select(TriageProposal).where(TriageProposal.id.in_(
+                        [drift_pid, sib_pid, good_pid])))).scalars().all()}
+                return items, props
+        items, props = c.portal.call(_check)
+        # The failing id rolled back WHOLE — including the overlay write and the
+        # undo snapshot `apply_accept` had already made before the explosion.
+        assert items[drift_wid].triage_state == "unclassified"
+        assert items[drift_wid].feature_id is None
+        assert props[drift_pid].status == "pending"
+        assert props[drift_pid].undo_snapshot is None
+        # …and its sibling keeps the classifier's original suggestion, which the
+        # re-propose destroys irrecoverably when it succeeds.
+        assert props[sib_pid].status == "pending"
+        assert props[sib_pid].no_fit_suggestion == "offline-mode"
+        assert props[sib_pid].proposed_feature_id is None
+        # The unrelated id is committed, so this was a savepoint and not a
+        # whole-session rollback.
+        assert items[good_wid].triage_state == "classified"
+        assert props[good_pid].status == "accepted"
+
+
 def test_drift_accept_handles_two_siblings_in_one_batch():
     """Both halves of one drift cluster in the SAME ids list. Accepting the first
     re-points the second (clearing its no_fit_suggestion), so the second id must

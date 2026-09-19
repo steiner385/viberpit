@@ -16,6 +16,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { useViewport } from '@/shell/useViewport'
 import { useSwipeAction } from '@/lib/useSwipeAction'
+import { rowElementId } from './rowId'
 
 export interface CardSwipeAction {
   /** Accessible name of the revealed button, e.g. "Archive Alpha". */
@@ -30,6 +31,11 @@ export interface CardSwipeAction {
 
 export interface CardFrameProps {
   id: string
+  /** Namespace for the open control's DOM id (`ui/list/rowId`). Pass one when a
+   *  second container on screen can render the same `id` — the Roadmap tree and
+   *  the detail pane's initiative list both do. Omit to keep the unscoped
+   *  `row-<id>` that `DispatchBar`'s `aria-activedescendant` points at. */
+  idScope?: string
   /** Accessible name of the open control, e.g. "Open session Alpha". */
   openLabel: string
   /** Left-edge status rail colour class. */
@@ -65,7 +71,7 @@ export interface CardFrameProps {
 const PANEL_PX = 88
 
 export function CardFrame({
-  id, openLabel, railClass, selected, listMode, onOpen, onKeyDown, focusable,
+  id, idScope, openLabel, railClass, selected, listMode, onOpen, onKeyDown, focusable,
   swipeRight, swipeLeft, swipeEnabled = true, leading, identity, trailing, children,
 }: CardFrameProps) {
   const articleRef = useRef<HTMLElement>(null)
@@ -198,7 +204,7 @@ export function CardFrame({
               without role="option". */}
           <button
             type="button"
-            id={`row-${id}`}
+            id={rowElementId(id, idScope)}
             ref={buttonRef}
             tabIndex={focusable === undefined ? (selected ? 0 : -1) : (focusable ? 0 : -1)}
             data-selected={selected}
