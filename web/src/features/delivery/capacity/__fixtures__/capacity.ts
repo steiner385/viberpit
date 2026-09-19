@@ -47,4 +47,5 @@ export const CAPACITY: CapacityReadout = {
     reasons: ['kindash: pinned at 2', 'viberpit: capped by a held defect, not real load'],
     defects: [],
   },
+  planLive: false,
 }

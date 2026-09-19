@@ -16,6 +16,7 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     binding: null,
     defects: [],
     plan: null,
+    planLive: false,
     ...overrides,
   }
 }

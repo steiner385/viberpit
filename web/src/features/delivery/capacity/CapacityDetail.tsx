@@ -383,6 +383,12 @@ export function CapacityDetail() {
           <p className="text-sm font-medium text-ink">
             {plan.applied ? 'Governor set…' : 'Governor would set…'}
           </p>
+          {plan.applied && !readout.planLive && (
+            <Banner tone="warning" title="This plan is stale" className="mt-2">
+              It is older than 10 minutes, so the runner is using stored caps until the governor
+              ticks again.
+            </Banner>
+          )}
           {plan.reasons.length > 0 && (
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-muted">
               {plan.reasons.map((reason, i) => <li key={i}>{reason}</li>)}

@@ -109,6 +109,11 @@ export interface CapacityReadout {
   binding: CapacityBinding | null
   defects: CapacityDefect[]
   plan: CapacityPlan | null
+  /** Whether `plan` is the one actually governing this tick (`server/automations/
+   *  capacity_apply.py:plan_is_live` — enabled, applied, computed within the last
+   *  10 minutes). `false` while `plan.applied` is true means the runner has fallen
+   *  back to each product's stored pin/policy until the governor ticks again. */
+  planLive: boolean
 }
 
 export function fetchCapacity(): Promise<CapacityReadout> {

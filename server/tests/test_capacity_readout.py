@@ -6,6 +6,8 @@ these tests never touch the DB.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from types import SimpleNamespace
 
@@ -274,6 +276,89 @@ def test_binding_falls_back_to_hosts_full():
     r = asyncio.run(run())
     assert r["binding"] == {"layer": "host", "code": "hosts_full",
                             "text": "every enabled healthy host is at its session cap"}
+
+
+# --- Task 4: `effectiveCap` follows the live plan; readout gains `planLive`. ---
+
+_PERMITTED_DECISION = SimpleNamespace(constraints=[
+    SimpleNamespace(code="dispatch_allowed", state="permitted", text="ok"),
+])
+
+
+def _auto_product(capacity_mode: str | None = None) -> list[dict]:
+    policy: dict = {"dispatch": "auto"}
+    if capacity_mode is not None:
+        policy["capacity_mode"] = capacity_mode
+    return [{"slug": "viberpit", "name": "ViberPit", "priorityRank": 1, "createdAt": "2026-09-01",
+             "policy": policy, "primaryRepo": "o/r"}]
+
+
+_VIBERPIT_CANDIDATES = (10, 0, 0, {"viberpit": {"dispatch": "auto", "eligible": 10, "cap": 1}})
+
+
+async def _decide_permitted(repo, slug):
+    return _PERMITTED_DECISION, {}
+
+
+def test_effective_cap_follows_live_plan_for_auto_product():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 3
+    assert row["pin"] == 1
+    assert r["planLive"] is True
+
+
+def test_effective_cap_stays_pinned_when_product_is_pinned():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product("pinned"), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is True
+
+
+def test_effective_cap_falls_back_to_pin_when_plan_is_stale():
+    stale = datetime.now(timezone.utc) - timedelta(minutes=11)
+    plan = {"computedAt": stale.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is False
+
+
+def test_effective_cap_falls_back_to_pin_when_plan_not_applied():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": False, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is False
 
 
 def test_binding_falls_back_to_global_cap_full():

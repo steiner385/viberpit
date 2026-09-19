@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from server.db.models import INACTIVE_SESSION_STATUSES
 
 from .backlog_runner import in_flight_by_product, is_in_flight
+from .capacity_apply import plan_is_live
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, product_order)
 from .product_policy import effective_policy, is_on
@@ -110,6 +111,10 @@ async def build_readout(src: CapacitySources) -> dict:
     # it still surfaces in `defects` for the card.
     defect_products = {d["product"] for d in defects}
 
+    now = datetime.now(timezone.utc)
+    plan = await src.plan()
+    live = plan_is_live(plan, now=now, enabled=src.kill_switch())
+
     products: list[dict] = []
     for p in await src.products():
         slug = p["slug"]
@@ -135,11 +140,17 @@ async def build_readout(src: CapacitySources) -> dict:
                 refused = [c for c in decision.constraints if c.state != "permitted"]
                 if refused:
                     constraint, waiting = refused[0].code, refused[0].text
+        effective_cap = policy["max_in_flight"]
+        if live and policy["capacity_mode"] == "auto" and plan and slug in (plan.get("perProduct") or {}):
+            try:
+                effective_cap = int(plan["perProduct"][slug])
+            except (TypeError, ValueError):
+                effective_cap = policy["max_in_flight"]
         products.append({
             "slug": slug, "name": p.get("name"), "rank": p.get("priorityRank"),
             "createdAt": p.get("createdAt"), "dispatch": policy["dispatch"],
             "capacityMode": policy["capacity_mode"], "pin": policy["max_in_flight"],
-            "effectiveCap": policy["max_in_flight"], "inFlight": by_product.get(slug, 0),
+            "effectiveCap": effective_cap, "inFlight": by_product.get(slug, 0),
             "eligible": int(counts.get("eligible") or 0), "constraint": constraint,
             "waitingOn": waiting, "defect": slug in defect_products,
         })
@@ -182,9 +193,8 @@ async def build_readout(src: CapacitySources) -> dict:
             binding = {"layer": "global", "code": "global_cap_full",
                        "text": f"the global active-session cap ({global_cap}) is reached"}
 
-    plan = await src.plan()
     return {
-        "computedAt": datetime.now(timezone.utc).isoformat(), "pushLevel": push_level,
+        "computedAt": now.isoformat(), "pushLevel": push_level,
         "governorMode": mode, "killSwitch": src.kill_switch(),
         "global": {"cap": global_cap, "active": global_active, "free": global_free},
         "hosts": hosts,
@@ -194,6 +204,7 @@ async def build_readout(src: CapacitySources) -> dict:
         "runner": {"ceiling": int(runner_cfg.get("max_concurrent") or 0), "inFlight": in_flight_total,
                    "derived": (plan or {}).get("fleetConcurrency")},
         "products": products, "binding": binding, "defects": defects, "plan": plan,
+        "planLive": live,
     }
 
 

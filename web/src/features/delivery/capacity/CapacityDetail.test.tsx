@@ -52,12 +52,14 @@ function setup({
   patchState = mutationResult({ mutate: patchMutate }),
   patchPolicyState = mutationResult({ mutate: patchPolicyMutate }),
   projectData,
+  readout = CAPACITY,
 }: {
   patchState?: ReturnType<typeof mutationResult>
   patchPolicyState?: ReturnType<typeof mutationResult>
   projectData?: { automationPolicyUpdatedAt: string | null }
+  readout?: typeof CAPACITY
 } = {}) {
-  vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(CAPACITY) as never)
+  vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(readout) as never)
   vi.mocked(hooks.useAutomations).mockReturnValue(queryResult([GOVERNOR]) as never)
   // `usePatchAutomation()` is called twice per render (once for the
   // push-level radio, once for the governor-mode select — two SEPARATE hook
@@ -240,6 +242,22 @@ describe('CapacityDetail', () => {
     for (const reason of CAPACITY.plan!.reasons) {
       expect(screen.getByText(reason)).toBeInTheDocument()
     }
+  })
+
+  it('shows no stale-plan banner when the plan is only proposed (not applied)', () => {
+    setup()
+    expect(screen.queryByText('This plan is stale')).not.toBeInTheDocument()
+  })
+
+  it('shows a stale-plan banner when an applied plan is no longer live', () => {
+    setup({ readout: { ...CAPACITY, planLive: false, plan: { ...CAPACITY.plan!, applied: true } } })
+    expect(screen.getByText('This plan is stale')).toBeInTheDocument()
+    expect(screen.getByText(/is using stored caps until the governor ticks again/)).toBeInTheDocument()
+  })
+
+  it('shows no stale-plan banner when an applied plan is live', () => {
+    setup({ readout: { ...CAPACITY, planLive: true, plan: { ...CAPACITY.plan!, applied: true } } })
+    expect(screen.queryByText('This plan is stale')).not.toBeInTheDocument()
   })
 
   it('I6: the pin input has min=0 and step=1', () => {
