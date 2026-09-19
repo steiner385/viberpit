@@ -15,5 +15,6 @@ the standing product area; each child retains its own maturity and delivery evid
 - [Autopilot & Backlog Runner](autopilot-backlog-runner.md)
 - [Background (maintenance) sessions](background-sessions.md)
 - [SDLC Engine, Governance & Evals](sdlc-governance-evals.md)
+- [Capacity Governor](capacity-governor.md)
 
 See the [product hierarchy and maintenance rules](../README.md).
