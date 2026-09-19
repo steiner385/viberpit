@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({
   project: {
     id: 'p1', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
     onboardingState: 'live', createdAt: null, updatedAt: null, repos: [], featureCount: 0, workItemCount: 0,
-    automationPolicy: null, automationPolicyUpdatedAt: null,
+    automationPolicy: null, automationPolicyUpdatedAt: null, priorityRank: null,
     edges: [
       { id: 'e1', srcSlug: 'kindash', dstSlug: 'web', kind: 'depends_on', note: null },
       { id: 'e2', srcSlug: 'kindash', dstSlug: 'infra', kind: 'integrates_with', note: null },

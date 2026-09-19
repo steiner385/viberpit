@@ -1575,6 +1575,10 @@ class Project(Base):
         JSON(none_as_null=True), nullable=True)
     automation_policy_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Capacity governor (spec 2026-09-19 §4): the person's priority order. 1 = highest;
+    # NULL = unranked (sorted after ranked products by created_at). Nullable so
+    # reconcile ALTER-ADDs it on both dialects.
+    priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProjectRepo(Base):

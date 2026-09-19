@@ -55,6 +55,7 @@ function makeProject(over: Partial<Project> = {}): Project {
     id: 'p', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
     onboardingState: 'live', createdAt: null, updatedAt: null, repos: [], edges: [],
     featureCount: 0, workItemCount: 0, automationPolicy: null, automationPolicyUpdatedAt: null,
+    priorityRank: null,
     ...over,
   }
 }
