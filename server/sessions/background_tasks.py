@@ -240,6 +240,17 @@ def scan_open_background_tasks(
                         # "Waiting…" with nothing running (2026-09-16).
                         terminated.add(tid)
                         continue
+                    if call is not None and call[0] == "TaskStop":
+                        # The agent stopped this task itself. The CLI journals the
+                        # stop only as the TaskStop's own result — never as a
+                        # task-notification — so nothing else ever closes the
+                        # launch. Left open it pinned the session on "Waiting…" and
+                        # had every restart ask it to relaunch a task it had killed
+                        # on purpose (a50a5873, 2026-09-19: four refusals, twelve
+                        # hours on waiting_external). Closed for BOTH scans: a
+                        # deliberately stopped task is not one to re-arm either.
+                        terminated |= by_task.get(str(call[1].get("task_id") or ""), set())
+                        continue
                     if task_id is None:
                         continue
                     if tid not in launches and call is not None:
