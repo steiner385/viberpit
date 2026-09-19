@@ -17,6 +17,8 @@ def client(fixture=None):
 
 # Full case SHA before metadata repair: b5ca691336d554d80b63a8b46843ccd56f4a1c3cdeed260c432b293be0ac4288
 # After setup-only repair: b224764dd87ceb21761e4f026cd9c858209a7a9f87847363f61d527cfb0d75ae
+# Before the assistant's resolve_decision case (hold ladder §6, 125 cases):
+# db4445721e49cce3cdc8670da408943fb460b6daf3d05b45af3634d14155120b
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -24,8 +26,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "db4445721e49cce3cdc8670da408943fb460b6daf3d05b45af3634d14155120b"
-    assert len(rows) == 125
+    assert digest == "50afb2b815ce079a83a49dc929651d81baf3eb420acb2ee24d508861ceb09d0a"
+    assert len(rows) == 126
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 

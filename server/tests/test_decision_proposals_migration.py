@@ -1,4 +1,4 @@
-"""Migration 0052: the decision_proposals table exists and the revision is re-runnable.
+"""Migration 0053: the decision_proposals table exists and the revision is re-runnable.
 
 Nothing runs ``alembic upgrade`` at deploy time — ``create_all`` builds the table
 at next boot — so the revision's job is to be the reviewable record AND to survive
