@@ -1889,19 +1889,22 @@ class SessionOrchestrator:
     async def _automation_session_work_stopped(self, session_id: str) -> bool:
         """Whole managed-tree proof, never a UI status or an expired host lease."""
         from server.automations.ownership import (
-            StaleOwnership, attest_session_stopped, execution_snapshot, session_execution,
+            StaleOwnership, attest_session_stopped, attest_terminal_session_stopped,
+            execution_snapshot, session_execution,
         )
         snapshot = await execution_snapshot(session_id)
         if snapshot is None or snapshot.tree_generation is None:
             return False
         record = self._records.get(session_id)
         status: str | None
+        host: str | None
         if record is not None:
-            status = record.status
+            status, host = record.status, getattr(record, "host", None)
         else:
             async with db_session() as db:
                 row = await db.get(DbSession, session_id)
                 status = row.status if row is not None else None
+                host = row.host if row is not None else None
         if status not in ("complete", "ended", "archived"):
             return False
         if snapshot.tree_stopped_generation == snapshot.tree_generation:
@@ -1919,6 +1922,38 @@ class SessionOrchestrator:
                 return False
             association = await session_execution(session_id)
             return bool(association and association[1] is not None and association[1] == association[2])
+        if (record is None and status in ("ended", "archived")
+                and session_id not in self._drivers):
+            # A terminal row whose record is gone is this orchestrator's own act —
+            # archive_session and close_session pop the record and the driver and
+            # aclose it before the row flips — so with no driver left here the
+            # native process is gone, whatever the close-time probe could observe.
+            # A record still held with a terminal status is NOT that (a mirror, or a
+            # test's hand-built state) and keeps needing native proof, as before.
+            # Without this, a claim whose session
+            # signalled complete mid-turn (the probe saw a live turn, refused, and
+            # the driver was then released) or resumed past a drain-cap kill (its
+            # predecessor unknown, so the probe can never pass) held its product
+            # slot forever: KinDash sat at 1/1 behind an archived session for hours
+            # (#2009). Only rows this daemon owns: a worker's driver is not visible
+            # here, and a completion release still closing the driver is not over.
+            releasing = getattr(self, "_releasing", {}).get(session_id)
+            if releasing is not None and not releasing.done():
+                return False
+            try:
+                enabled_hosts = await self._enabled_host_names()
+            except Exception:  # registry unknown — own only unstamped / own-host rows
+                enabled_hosts = None
+            if not self._owns_record_by_stamp(host, enabled_hosts):
+                return False
+            try:
+                return await attest_terminal_session_stopped(session_id)
+            except StaleOwnership:
+                return False
+            except Exception:
+                log.warning("automation terminal attestation unknown session=%s",
+                            session_id, exc_info=True)
+                return False
         record = self._records.get(session_id)
         if record is None or record.status not in ("complete", "ended", "archived"):
             return False

@@ -401,3 +401,33 @@ async def attest_session_stopped(token: str, generation: int, *, session_id: str
                         for session in states.values() for value in session["executions"].values())):
             tx.operation.stopped_generation = tx.operation.execution_generation
         return True
+
+
+async def attest_terminal_session_stopped(session_id: str) -> bool:
+    """Attest EVERY unstopped native execution retained for *session_id*, then let
+    the tree aggregate (#2009).
+
+    For a session whose driver the owning orchestrator has already torn down — its
+    row is ``archived``/``ended`` — each retained generation names a process that no
+    longer exists, whatever its close-time probe could observe: a turn still live
+    when ``mark_complete`` released the driver, or a resumed driver whose
+    predecessor died under a drain cap and so can never prove itself. One CAS per
+    execution, through the same path a live close uses, so a concurrent restart of
+    the session still rejects it. Returns True iff the whole managed tree is
+    stopped afterwards.
+    """
+    snapshot = await execution_snapshot(session_id)
+    if snapshot is None:
+        return False
+    async with db_session() as db:
+        operation = await db.get(AutomationOperation, snapshot.token)
+        states = (operation.execution_sessions or {}) if operation is not None else {}
+    executions = dict(states.get(session_id, {}).get("executions", {}))
+    for execution_id, state in executions.items():
+        generation = state.get("generation")
+        if generation is None or state.get("stopped") is not None:
+            continue
+        await attest_session_stopped(snapshot.token, generation, session_id=session_id,
+                                     execution_id=execution_id)
+    association = await session_execution(session_id)
+    return bool(association and association[1] is not None and association[1] == association[2])
