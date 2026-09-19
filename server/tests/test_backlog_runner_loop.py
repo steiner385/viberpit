@@ -4617,3 +4617,63 @@ def test_missing_admission_seam_never_claims_or_spawns(tmp_path):
         assert "admission_unavailable" in BacklogRunner().status(ctx).text
 
     asyncio.run(run())
+
+
+async def _seed_legacy_handed_off(ctx, target: str) -> None:
+    await ctx.set_target_state(target, {
+        "repo": "o/r", "claimed": True, "handed_off": True, "attempts": 0,
+        "issues": [target], "session_id": "gone-sid",
+        "claimed_at": "2026-08-07T10:22:57+00:00"})
+
+
+def test_legacy_handed_off_released_when_its_pr_is_merged_or_closed(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy_ho1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        from server.github.pr_status import PullRequestInfo
+
+        async def session_gone(sid):
+            return False  # PR evidence alone is enough
+
+        def pr(n, state):
+            return PullRequestInfo(number=n, state=state, url=f"u/{n}", title="t",
+                                   checks="passing")
+        loop, rec, ctx = build_loop(
+            candidates=[], session_gone=session_gone,
+            pr_status={"o/r#1": pr(1, "merged"), "o/r#2": pr(2, "closed"),
+                       "o/r#3": pr(3, "open")})
+        for n in (1, 2, 3):
+            await _seed_legacy_handed_off(ctx, f"o/r#{n}")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#1") == {}
+        assert await ctx.get_target_state("o/r#2") == {}
+        assert await ctx.get_target_state("o/r#3") != {}
+        assert len(await ctx.list_events(kind="legacy_claim_released")) == 2
+
+    asyncio.run(run())
+
+
+def test_legacy_handed_off_released_when_session_gone_and_issue_closed(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy_ho2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+
+        async def session_gone(sid):
+            return True
+
+        loop, rec, ctx = build_loop(
+            candidates=[], session_gone=session_gone,
+            investigation_state=lambda t, s: {"issue_state": "closed" if t == "o/r#1" else "open"})
+        await _seed_legacy_handed_off(ctx, "o/r#1")
+        await _seed_legacy_handed_off(ctx, "o/r#2")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#1") == {}
+        assert await ctx.get_target_state("o/r#2") != {}
+
+    asyncio.run(run())
