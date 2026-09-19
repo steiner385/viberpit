@@ -130,6 +130,7 @@ from .pm_classify import PmClassify  # noqa: E402
 from .gh_reconcile import GhReconcile  # noqa: E402
 from .error_triage import ErrorTriage  # noqa: E402
 from .deploy_monitor import DeployMonitor  # noqa: E402
+from .capacity_governor import CapacityGovernor  # noqa: E402
 
 # Current effects, not future policy. Keep metadata beside each registration.
 registry.register(PrDoctor(), oversight=AutomationOversight(
@@ -276,5 +277,15 @@ registry.register(DeployMonitor(), oversight=AutomationOversight(
     },
     (Relationship('shares_work_with', 'cicd-doctor',
                   'Monitors deployment outcomes while CI/CD Doctor monitors build and test health.'),),
+))
+registry.register(CapacityGovernor(), oversight=AutomationOversight(
+    Responsibility.EXECUTION, 'Fleet concurrency and per-product in-flight caps, derived from account quota, host capacity and the runner ledger.',
+    {
+        'off': 'Disable capacity planning; every cap stays as configured.',
+        'monitor': 'Compute the plan every tick and show it on Delivery → Capacity; apply nothing.',
+        'act': 'Compute and apply the plan to auto-mode products and the runner ceiling (phase 2); pinned caps are respected.',
+    },
+    (Relationship('uses', 'pm-sync', 'Reads mirrored eligible counts per product.'),
+     Relationship('shares_work_with', 'backlog-runner', 'Sets what the runner may claim per product.')),
 ))
 registry.validate_oversight(require_all=True)

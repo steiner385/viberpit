@@ -610,7 +610,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task",
-    "_deploy_monitor_task",
+    "_deploy_monitor_task", "_capacity_governor_task",
 })
 
 # How many raw rows a control-band metric reader pulls per repo (#804). Generous
@@ -1271,6 +1271,27 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._control_band_task: asyncio.Task | None = None
+        # Capacity Governor control loop (Task 7, spec 2026-09-19 §6): derives
+        # fleet concurrency and per-product in-flight caps from the same readout
+        # `capacity_readout()` builds for GET /api/capacity. Phase 1: monitor
+        # computes and shows the plan every tick; act is wired (the kill switch
+        # gates it) but the runner does not read the plan until phase 2.
+        from server.automations.capacity_governor import CapacityGovernorLoop
+        from server.automations.capacity_store import read_plan as _capacity_read_plan
+        from server.automations.capacity_store import write_plan as _capacity_write_plan
+        self._capacity_governor_ctx = AutomationContext("capacity-governor")
+        self._capacity_governor_loop = CapacityGovernorLoop(
+            self._capacity_governor_ctx,
+            read_config=self._capacity_governor_read_config,
+            read_readout=self.capacity_readout,
+            read_plan=_capacity_read_plan,
+            write_plan=_capacity_write_plan,
+            # The process-wide kill switch (spec D10) is read per tick, not
+            # captured at construction — flipping the env and restarting the
+            # daemon is the whole procedure.
+            kill_switch=lambda: get_settings().capacity_governor_enabled,
+        )
+        self._capacity_governor_task: asyncio.Task | None = None
         self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
@@ -2188,6 +2209,11 @@ class SessionOrchestrator:
             self._control_band_task = asyncio.create_task(
                 self._control_band_tick_loop(interval=300.0), name="control-band-loop"
             )
+            # Capacity Governor: one plan-compute pass per interval. Phase 1 only
+            # computes and shows (monitor); a disabled/off row is a cheap no-op tick.
+            self._capacity_governor_task = asyncio.create_task(
+                self._capacity_governor_tick_loop(interval=60.0), name="capacity-governor-loop"
+            )
             # Autopilot control loop: one tick per interval plus status-change nudges.
             self._autopilot_task = asyncio.create_task(
                 self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
@@ -2681,7 +2707,7 @@ class SessionOrchestrator:
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
-                     "_sdlc_synth_task", "_control_band_task",
+                     "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_error_triage_task", "_deploy_monitor_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
@@ -7835,6 +7861,47 @@ class SessionOrchestrator:
                 await self._bump_automation_active("control-band-monitor")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("control_band.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Capacity Governor control-loop dependencies (Task 7, spec 2026-09-19 §6)
+    #
+    # The tick composes the pure planner (server/automations/capacity_plan.py)
+    # over the same readout `capacity_readout()` builds for GET /api/capacity —
+    # nothing here decides anything, it only reads config and drives the loop.
+    # ------------------------------------------------------------------
+
+    async def _capacity_governor_read_config(self) -> tuple[str, dict]:
+        """The capacity-governor row's (mode, config) merged onto schema
+        defaults. Off + pure defaults on an absent/invalid row, so a bad config
+        never applies a plan (mirrors ``_control_band_read_config``)."""
+        from server.automations.capacity_governor import CapacityGovernor
+        from server.automations.config_store import read_automation_config
+        return await read_automation_config(
+            CapacityGovernor, modes=("monitor", "act"), log_key="capacity_governor")
+
+    async def _capacity_governor_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the capacity governor loop (mirrors
+        _control_band_tick_loop)."""
+        while True:
+            await self._capacity_governor_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _capacity_governor_tick_once(self) -> None:
+        """One capacity-governor tick + an enabled-only ``last_active_at``
+        heartbeat. Best-effort — neither the tick nor the heartbeat may crash
+        the loop."""
+        if not await self._schedule_allows_tick("capacity-governor"):
+            return
+        try:
+            await self._capacity_governor_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("capacity_governor.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._capacity_governor_read_config()
+            if mode != "off":
+                await self._bump_automation_active("capacity-governor")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("capacity_governor.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # PM Sync control-loop dependencies (injected into PmSyncLoop)
@@ -13959,6 +14026,7 @@ class SessionOrchestrator:
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
             "control-band-monitor": getattr(self, "_control_band_ctx", None),
+            "capacity-governor": getattr(self, "_capacity_governor_ctx", None),
             "archive-audit": getattr(self, "_archaudit_ctx", None),
             "pm-onboard": getattr(self, "_pm_onboard_ctx", None),
             "pm-classify": getattr(self, "_pm_classify_ctx", None),

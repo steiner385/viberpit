@@ -3,7 +3,9 @@
 number comes from."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from typing import TYPE_CHECKING
+
+from sqlalchemy import and_, select
 
 from server.api.accounts import account_headroom
 from server.api.fleet import host_to_wire
@@ -15,9 +17,8 @@ from server.db.models import Host, Project, ProjectRepo, Session as DbSession
 
 from .capacity_readout import CapacitySources
 
-
-async def _off() -> tuple[str, dict]:
-    return "off", {}
+if TYPE_CHECKING:
+    from server.automations.product_admission import ImplementationSnapshot
 
 
 def sources_for(orch) -> CapacitySources:
@@ -27,23 +28,47 @@ def sources_for(orch) -> CapacitySources:
         return [host_to_wire(r) for r in rows]
 
     async def products() -> list[dict]:
+        # OUTER join: a product with no primary repo (or none yet flagged primary)
+        # must still appear in the readout, not silently vanish (spec gap c).
         async with db_session() as db:
             rows = (await db.execute(
                 select(Project, ProjectRepo)
-                .join(ProjectRepo, ProjectRepo.project_id == Project.id)
-                .where(ProjectRepo.is_primary.is_(True))
+                .outerjoin(ProjectRepo, and_(ProjectRepo.project_id == Project.id,
+                                             ProjectRepo.is_primary.is_(True)))
             )).all()
-        return [{
-            "slug": project.slug, "name": project.name,
-            "priorityRank": project.priority_rank,
-            "createdAt": project.created_at.isoformat() if project.created_at else None,
-            "policy": project.automation_policy, "primaryRepo": repo.repo,
-        } for project, repo in rows if project.slug]
+        seen: set[str] = set()
+        out: list[dict] = []
+        for project, repo in rows:
+            # Defensive dedupe: the join condition already scopes to is_primary, so
+            # this only fires if stored data ever carries >1 primary repo per project.
+            if not project.slug or project.id in seen:
+                continue
+            seen.add(project.id)
+            out.append({
+                "slug": project.slug, "name": project.name,
+                "priorityRank": project.priority_rank,
+                "createdAt": project.created_at.isoformat() if project.created_at else None,
+                "policy": project.automation_policy,
+                "primaryRepo": repo.repo if repo is not None else None,
+            })
+        return out
+
+    # ONE gather_implementation_snapshot() per readout tick, not one per product:
+    # it shells out to `gh` per repo, so calling it product-at-a-time here would
+    # spawn P×O `gh` subprocesses on every governor poll (every ~30s) instead of a
+    # single batched call. Lazily built on the first `decide()` of a tick and
+    # reused for the rest of that tick; `sources_for` is called fresh per readout,
+    # so a new snapshot is built next tick too — this is a per-tick cache, not a
+    # long-lived one.
+    _snapshot: "ImplementationSnapshot | None" = None
 
     async def decide(repo: str, slug: str):
-        snap = await gather_implementation_snapshot(
-            [repo], requested_product=slug, context=orch._backlog_ctx)
-        return snap.decide(repo, requested_product=slug, trigger="automatic", effect="dispatch")
+        nonlocal _snapshot
+        if _snapshot is None:
+            all_products = await products()
+            repos = sorted({p["primaryRepo"] for p in all_products if p.get("primaryRepo")})
+            _snapshot = await gather_implementation_snapshot(repos, context=orch._backlog_ctx)
+        return _snapshot.decide(repo, requested_product=slug, trigger="automatic", effect="dispatch")
 
     async def session_status(sid: str) -> str | None:
         async with db_session() as db:
@@ -53,7 +78,11 @@ def sources_for(orch) -> CapacitySources:
 
     return CapacitySources(
         global_cap=orch._max_active_sessions,
-        global_active=orch.active_session_count,
+        # NOT active_session_count (the deploy-drain counter, which ignores
+        # idle/done records) — this must be the same counter the global-cap
+        # admission gate itself compares against (orchestrator.py ~2902/3305/3531),
+        # or the readout's "global.free" lies relative to what actually blocks a spawn.
+        global_active=orch._active_session_count,
         hosts=hosts,
         accounts=lambda reserve: account_headroom(orch, reserve_pct=reserve),
         runner_config=orch._backlog_read_config,
@@ -63,9 +92,6 @@ def sources_for(orch) -> CapacitySources:
         decide=decide,
         session_status=session_status,
         plan=read_plan,
-        # Task 7 supplies both of these for real: a governor config store/read
-        # seam and the kill-switch setting. Until then the governor reads as
-        # permanently "off" and the kill switch defaults on.
-        governor_config=getattr(orch, "_capacity_governor_read_config", None) or _off,
-        kill_switch=lambda: bool(getattr(get_settings(), "capacity_governor_enabled", True)),
+        governor_config=orch._capacity_governor_read_config,
+        kill_switch=lambda: bool(get_settings().capacity_governor_enabled),
     )
