@@ -80,7 +80,7 @@ export function InitiativeTrack(
         const isBuild = epic != null && INITIATIVE_STAGES[i] === 'build'
         const label = isBuild ? `${n.label} ${epic.done}/${epic.total}` : n.label
         const title = isBuild
-          ? `${label} — ${ariaLabelWord(n.status)} (${epic.blocked} blocked, ${epic.needsHuman} needs human)`
+          ? `${label} — ${ariaLabelWord(n.status)} (${epic.blocked} blocked, ${epic.held} held)`
           : `${n.label} — ${ariaLabelWord(n.status)}`
         return (
           <Fragment key={`${n.label}-${i}`}>

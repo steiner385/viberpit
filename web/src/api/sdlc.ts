@@ -47,7 +47,7 @@ export interface InitiativeEpicChild {
  *  rather than rebuilding a board (spec 003 §7c). Both `GET /initiatives` and
  *  `GET /initiatives/{slug}` compute and emit this object (or `null`) on every
  *  row — but the list endpoint omits `children`, since `InitiativeTrack` only
- *  ever reads `url`/`done`/`total`/`blocked`/`needsHuman` and that endpoint's
+ *  ever reads `url`/`done`/`total`/`blocked`/`held` and that endpoint's
  *  query is re-run on every websocket status frame, so `children` is optional
  *  here rather than a second, list-only type. */
 export interface InitiativeEpic {
@@ -58,7 +58,7 @@ export interface InitiativeEpic {
   total: number
   done: number
   blocked: number
-  needsHuman: number
+  held: number
   children?: InitiativeEpicChild[]
 }
 

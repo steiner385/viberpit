@@ -291,7 +291,7 @@ function EpicTab({ initiative, product }: { initiative: Initiative; product: Pro
           { label: 'Done', value: epic.done, tone: 'success' },
           { label: 'Total', value: epic.total },
           { label: 'Blocked', value: epic.blocked, tone: 'danger' },
-          { label: 'Needs human', value: epic.needsHuman, tone: 'warning' },
+          { label: 'Held', value: epic.held, tone: 'warning' },
         ]}
       />
       <LeafList scope={{ initiative: initiative.slug }} product={product} />
@@ -328,7 +328,7 @@ function PhasesTab({ initiative, product }: { initiative: Initiative; product: P
             { label: 'Done', value: epic.done, tone: 'success' },
             { label: 'Total', value: epic.total },
             { label: 'Blocked', value: epic.blocked, tone: 'danger' },
-            { label: 'Needs human', value: epic.needsHuman, tone: 'warning' },
+            { label: 'Held', value: epic.held, tone: 'warning' },
           ]}
         />
       )}
