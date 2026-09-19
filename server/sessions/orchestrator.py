@@ -1922,11 +1922,15 @@ class SessionOrchestrator:
                 return False
             association = await session_execution(session_id)
             return bool(association and association[1] is not None and association[1] == association[2])
-        if status in ("ended", "archived") and session_id not in self._drivers:
-            # A terminal row is this orchestrator's own act — archive_session and
-            # close_session pop the driver and aclose it before the row flips — so
-            # with no driver left here the native process is gone, whatever the
-            # close-time probe could observe. Without this, a claim whose session
+        if (record is None and status in ("ended", "archived")
+                and session_id not in self._drivers):
+            # A terminal row whose record is gone is this orchestrator's own act —
+            # archive_session and close_session pop the record and the driver and
+            # aclose it before the row flips — so with no driver left here the
+            # native process is gone, whatever the close-time probe could observe.
+            # A record still held with a terminal status is NOT that (a mirror, or a
+            # test's hand-built state) and keeps needing native proof, as before.
+            # Without this, a claim whose session
             # signalled complete mid-turn (the probe saw a live turn, refused, and
             # the driver was then released) or resumed past a drain-cap kill (its
             # predecessor unknown, so the probe can never pass) held its product
