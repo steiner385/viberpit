@@ -7,11 +7,13 @@ from .context import observation_failed, publish_observation
 import asyncio
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
+from server.db.models import DECISION_PROPOSED_CAUSE
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
@@ -490,15 +492,27 @@ Escalate = Callable[[str, str, str], Awaitable[None]]
 # retries next tick rather than guessing; an unwired seam (stub) answers ``{}``,
 # which is that same unknown, so nothing is settled until the seam is real.
 InvestigationState = Callable[[str, "str | None"], Awaitable[dict]]
+# DECISION settle (spec 2026-09-18 §6): ``session_resolution(session_id)`` ->
+# ``Session.pr_resolution``, the token the ended session declared through
+# ``mark_no_pr`` (or its marker). The sweep needs exactly one of them —
+# ``awaiting-decision``, which says the session proposed a decision and parked the
+# issue on it — and reads the column rather than the proposal table on purpose: the
+# question is what THIS dispatch ended as, not what the item happens to carry now.
+# ``None`` (no session, no resolution, an unwired seam) reads as "not a decision
+# ending" and the sweep falls through to the ladder exactly as before.
+SessionResolution = Callable[["str | None"], Awaitable["str | None"]]
 # The one investigation exit that WRITES: convert-to-a-fix clears the ``evidence``
 # hold so the report re-enters the queue as an implement candidate. Returns whether
 # a hold was actually released (False = there was none, or the write is unwired).
 ReleaseInvestigationHold = Callable[[str], Awaitable[bool]]
-# Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
-# runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
-# §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
-# An unwired seam (stub) returns an empty set, so no row is ever released.
-HeldTargets = Callable[[], Awaitable["frozenset[str]"]]
+# Which ``owner/repo#N`` refs are currently held, MAPPED TO THE KIND holding them
+# (``owner_action`` / ``decision``) — the runner's own ``gave_up`` rows follow the
+# hold now, not a timer (spec 2026-09-18 §3): ``_release_give_ups`` drops a row once
+# none of its refs is a key here. It carries the kind rather than being a bare set
+# because ``_settle_decision`` must distinguish the two: a person's ``owner_action``
+# park is not proof that a proposal landed. ONE read backs both questions.
+# An unwired seam (stub) returns an empty mapping, so no row is ever released.
+HeldTargets = Callable[[], Awaitable["Mapping[str, str]"]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
 # forever. Returns the close-out outcome: "closed" (≥1 issue verifiably linked to
@@ -619,15 +633,22 @@ async def _stub_investigation_state(_target: str, _session_id: "str | None") -> 
     return {}
 
 
+async def _stub_session_resolution(_session_id: "str | None") -> "str | None":
+    # Unwired seam: no session resolution is readable, so no ending is ever settled
+    # as a decision proposal and every no-PR ending keeps the pre-§6 ladder path.
+    return None
+
+
 async def _stub_release_investigation_hold(_target: str) -> bool:
     # Unwired seam: no hold is cleared. The converted exit still finalises its
     # outcome row — the item simply stays parked until a real seam is wired.
     return False
 
 
-async def _stub_held_targets() -> "frozenset[str]":
-    # Unwired seam: nothing reads as held, so no gave_up row is ever released.
-    return frozenset()
+async def _stub_held_targets() -> "Mapping[str, str]":
+    # Unwired seam: nothing reads as held, so no gave_up row is ever released and
+    # no awaiting-decision ending is ever settled as a proposal.
+    return {}
 
 
 class BacklogRunnerLoop:
@@ -666,6 +687,7 @@ class BacklogRunnerLoop:
         escalate: Escalate | None = None,
         investigation_state: InvestigationState | None = None,
         release_investigation_hold: ReleaseInvestigationHold | None = None,
+        session_resolution: SessionResolution | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
         session_work_stopped: SessionEnded | None = None,
@@ -710,6 +732,9 @@ class BacklogRunnerLoop:
         self._investigation_state = investigation_state or _stub_investigation_state
         self._release_investigation_hold = (
             release_investigation_hold or _stub_release_investigation_hold)
+        # The decision settle (spec §6): one read of the ended session's own no-PR
+        # verdict. Unwired, nothing ever settles as a decision proposal.
+        self._session_resolution = session_resolution or _stub_session_resolution
         self._held_targets = held_targets or _stub_held_targets  # what backs a gave_up row
         self._session_ended = session_ended         # (session_id) -> bool | None
         # (session_id) -> True when the session row is terminal OR no longer exists.
@@ -1810,6 +1835,20 @@ class BacklogRunnerLoop:
             if not await self._session_ever_ran(st):
                 await self._release_never_ran(target, st)
                 return
+            if await self._settle_decision(target, st):
+                # An investigation may propose a decision too — nothing in
+                # ``mounted_signal_names`` withholds the tool by dispatch kind — and
+                # that ending is a DECISION, not an investigation exit (review R1
+                # F3). Ahead of the investigate settle, which would otherwise read
+                # the ``decision`` hold as "somebody else parked it" and record
+                # ``investigation: held by agent``: benign, but it makes "how often
+                # does an investigation end on a decision" unanswerable.
+                #
+                # Here rather than above the whole branch: the two gates this settle
+                # needs — the session is really over, and it ran at all — live inside
+                # each kind's own path, and hoisting the check above them would
+                # settle a decision for a session still mid-turn.
+                return
             await self._settle_investigation(target, st)
             return
         info = await self._pr_status_for(target)
@@ -1930,6 +1969,13 @@ class BacklogRunnerLoop:
         if not await self._session_ever_ran(st):
             await self._release_never_ran(target, st)
             return
+        if await self._settle_decision(target, st):
+            # The session proposed a decision and the item is parked on it. Placed
+            # exactly where the investigate settle sits relative to its own bounce —
+            # after "did it ever run", before the ladder — because everything below
+            # would read a deliberate, correct absence of a PR as a failed attempt.
+            # The same call guards the investigate branch above.
+            return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
         top = top_tier(ladder_policy)
@@ -1997,6 +2043,102 @@ class BacklogRunnerLoop:
                 "fallback": self._outcome_fallback(st)}):
             await self._ctx.emit("info", f"released {target} (session never ran a turn)",
                                  kind="unclaimed", target=target)
+
+    async def _settle_decision(self, target: str, st: dict) -> bool:
+        """Settle an ended session that proposed a DECISION (spec 2026-09-18 §6).
+
+        Answers whether this sweep handled the target. ``False`` is the ordinary
+        case — the session ended some other way and the caller continues into the
+        ladder — so an unwired seam, a missing session row or a read failure all
+        leave today's behaviour exactly as it was.
+
+        A session that ends with ``mark_no_pr("awaiting-decision")`` did not fail and
+        did not ask for a human turn at the keyboard: it drafted options and parked
+        its issue on a ``decision`` hold that only an accept can lift. So this branch
+        is deliberately the shortest one in the sweep — finalise the outcome row as
+        ``no_pr`` with cause ``DECISION_PROPOSED_CAUSE``, release the claim, say so on
+        the activity feed, and nothing else:
+
+        - no ``next_rung`` / ``_escalate``: a stronger model cannot answer a question
+          about what the product should do, and a ``stronger_model`` hold would be
+          queue-eligible — it would re-dispatch the item the runner just parked;
+        - no ``_give_up``: that writes an ``owner_action`` hold over the ``decision``
+          one (destroying the link to the proposal the person must answer) and
+          comments "needs human" on an issue whose inbox card already says so;
+        - no bounce dial: the dispatch did what it should have.
+
+        Releasing the claim is only safe because the item stays out of the queue on
+        its own hold (``HELD_KINDS``) — so the HOLD, not the token, is what this
+        branch verifies (review R1 F1). The token alone is a claim the session makes
+        about itself, and two live paths produce it with no hold behind it: the
+        marker heuristic reading a turn that proposed nothing, and a
+        ``propose_decision`` that was REFUSED (bad options, a person's park, a
+        proposal already pending) followed by the ending the model had already been
+        told to use. Settling either would delete the claim, write no hold, and hand
+        the item straight back to the queue at the same tier with the ladder skipped
+        — an unbounded re-dispatch loop that, with the shipped
+        ``give_up_after_bounces=0``, nothing would ever terminate. Unheld therefore
+        falls through to the ordinary no-PR path (ladder, dial, hand-off), which is
+        exactly the treatment an ending with nothing behind it deserves, and logs
+        ``decision_resolution_without_hold`` so the mismatch is visible.
+
+        A lost fence still answers ``True``. The trigger is durable (the session's
+        resolution does not change), so the next sweep re-runs this same branch —
+        whereas falling through to the ladder would charge a bounce for a proposal.
+        """
+        from server.sessions.completion import AWAITING_DECISION
+
+        sid = st.get("session_id")
+        try:
+            resolution = await self._session_resolution(sid)
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.session_resolution_failed target=%s session=%s",
+                        target, sid, exc_info=True)
+            return False
+        if resolution != AWAITING_DECISION:
+            return False
+        if not await self._decision_hold_is_real(target, st):
+            log.warning("backlog_runner.decision_resolution_without_hold target=%s "
+                        "session=%s", target, sid)
+            return False
+        if await self._write_state(target, st, None, outcome={
+                "outcome": "no_pr", "cause": DECISION_PROPOSED_CAUSE,
+                "fallback": self._outcome_fallback(st)}):
+            await self._ctx.emit("info", f"{target}: decision proposed — awaiting a person",
+                                 kind=DECISION_PROPOSED_CAUSE, target=target)
+        return True
+
+    async def _decision_hold_is_real(self, target: str, st: dict) -> bool:
+        """Is one of this claim's issues parked BY A DECISION — i.e. did the proposal
+        the session says it made really land?
+
+        Reuses the existing ``held_targets`` seam (one read, now kind-aware), read the
+        same way ``_release_give_ups`` reads it: ``any`` over the claim's issues,
+        because a batch parks on the issue the decision was proposed for, not on every
+        ref. The kind is load-bearing, not decoration: ``decisions.propose`` REFUSES
+        when a person has already parked the item, and the refused session then ends
+        with the ``mark_no_pr("awaiting-decision")`` its tool description told it to
+        use. Any-hold-will-do would settle that as ``decision_proposed`` — a cause the
+        ladder and the capability floor both discount — for a dispatch that proposed
+        nothing, and the ``decision_resolution_without_hold`` warning added to make
+        exactly this mismatch visible would never fire. So an ``owner_action`` park
+        answers False and the ending takes the ordinary (terminating) no-PR path.
+
+        A seam failure answers False — "we could not prove it is held" must keep the
+        ordinary no-PR path, which terminates (ladder → top → hand-off), rather than
+        the settle, which returns the item to the pool with nothing behind it. Same
+        direction as ``_session_ever_ran``'s fail-safe, pointed the other way because
+        here the SHORTER path is the dangerous one. An unwired seam (empty mapping) is
+        the same answer, so a deployment that never wired it keeps today's behaviour
+        instead of silently releasing claims.
+        """
+        try:
+            held = await self._held_targets()
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.held_targets_failed target=%s", target,
+                        exc_info=True)
+            return False
+        return any(held.get(ref) == "decision" for ref in (st.get("issues") or [target]))
 
     async def _settle_investigation(self, target: str, st: dict) -> None:
         """Settle one ENDED investigation from the issue's real state and the hold

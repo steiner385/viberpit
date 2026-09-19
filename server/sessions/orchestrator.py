@@ -23,7 +23,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
@@ -1057,6 +1057,7 @@ class SessionOrchestrator:
             needs_human=self._backlog_needs_human,
             escalate=self._backlog_escalate,
             investigation_state=self._backlog_investigation_state,
+            session_resolution=self._backlog_session_resolution,
             release_investigation_hold=self._backlog_release_investigation_hold,
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
@@ -6394,7 +6395,7 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
 
         from server.automations import backlog_github
-        from server.db.models import Session as DbSession, WorkItem
+        from server.db.models import WorkItem
         from server.pm.refs import split_ref
         issue_state = await asyncio.to_thread(
             backlog_github.issue_state_live, target, gh_run=self._gh_run)
@@ -6411,11 +6412,43 @@ class SessionOrchestrator:
                 if row is not None:
                     mirrored = True
                     hold_kind, hold_by = row
-            if session_id:
-                note = (await db.execute(sa_select(DbSession.pr_resolution_note).where(
-                    DbSession.id == session_id))).scalars().first()
+            note = (await self._session_no_pr(db, session_id))["note"]
         return {"issue_state": issue_state, "mirrored": mirrored,
                 "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note}
+
+    @staticmethod
+    async def _session_no_pr(db, session_id: str | None) -> dict:
+        """THE read of an ended session's no-PR verdict: ``{resolution, note}``, the
+        pair ``mark_no_pr`` wrote together.
+
+        One query for both sweeps that ask about it — the investigation settle wants
+        the note (which exit the session says it took) and the decision settle wants
+        the resolution (whether it parked the issue on a proposal) — because a second
+        SELECT over the same row is how the two would come to disagree about which
+        session they were reading. ``{None, None}`` for a session with no id, no row,
+        or nothing recorded."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import Session as DbSession
+        if not session_id:
+            return {"resolution": None, "note": None}
+        row = (await db.execute(sa_select(
+            DbSession.pr_resolution, DbSession.pr_resolution_note).where(
+                DbSession.id == session_id))).first()
+        if row is None:
+            return {"resolution": None, "note": None}
+        return {"resolution": row[0], "note": row[1]}
+
+    async def _backlog_session_resolution(self, session_id: str | None) -> str | None:
+        """The ``session_resolution`` seam (spec 2026-09-18 §6): what an ended
+        dispatch's session declared through ``mark_no_pr``.
+
+        A sibling of ``_backlog_investigation_state`` rather than a field on it: this
+        one costs a single indexed row read and no GitHub call, and the sweep asks it
+        of EVERY ended implement dispatch, where the investigation state is read only
+        for the investigate kind."""
+        async with db_session() as db:
+            return (await self._session_no_pr(db, session_id))["resolution"]
 
     async def _backlog_release_investigation_hold(self, target: str) -> bool:
         """CONVERT-TO-A-FIX exit (spec §5): the investigation found the root cause
@@ -6431,7 +6464,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await db.run_sync(lambda s: release_on_investigation(s, target))
 
-    async def _backlog_held_targets(self) -> "frozenset[str]":
+    async def _backlog_held_targets(self) -> "dict[str, str]":
         from server.pm.holds import held_refs
         async with db_session() as db:
             return await db.run_sync(held_refs)
@@ -6831,6 +6864,25 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
+    async def _backlog_accepted_decisions(self, refs: "Sequence[str]") -> dict[str, str]:
+        """The accepted decisions for *refs* (spec 2026-09-18 §6): ``owner/repo#N``
+        → the decision text the implement prompt quotes verbatim.
+
+        The spawn's one door to ``server/pm/decisions.py``, whose
+        ``accepted_text_for_refs`` is the ONE formatter of that text — the prompt
+        builder re-words nothing, so what the person picked in the inbox, what the
+        issue comment said and what the next run reads are the same sentence.
+
+        An injectable seam for the same reason ``_backlog_tier_floor`` and
+        ``_backlog_ladder_rung`` are: the spawn tests need no seeded proposal. The
+        CALLER is best-effort (spec §13) — a failed read costs the prompt BLOCK,
+        never the spawn; the dispatch then runs without the decision, exactly as it
+        would have before anyone took one.
+        """
+        from server.pm.decisions import accepted_text_for_refs
+        async with db_session() as db:
+            return await accepted_text_for_refs(db, refs)
+
     async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
                                    default_model: str, floor: str | None) -> str | None:
         """The tier this dispatch is PINNED to because its primary issue is parked
@@ -6959,6 +7011,22 @@ class SessionOrchestrator:
         # describe different dispatches.
         dispatch_kind = dispatch_kind_for_hold(batch.primary_hold_kind)
         investigate = dispatch_kind == "investigate"
+        # The decisions this batch's issues already have (spec 2026-09-18 §6), read
+        # HERE rather than carried on the plan: a person can take a decision between
+        # the tick that built the batch and this dispatch, and the run must carry
+        # the decision in force now. IMPLEMENT only — an investigation is asking
+        # what the problem is, and its prompt's four exits are its whole contract.
+        # Best-effort like the floor and the rung: a failed read costs the block,
+        # never the spawn.
+        if not investigate:
+            try:
+                accepted = await self._backlog_accepted_decisions(batch.issues)
+            except Exception:
+                log.warning("backlog_runner.accepted_decisions_failed target=%s",
+                            batch.primary, exc_info=True)
+                accepted = {}
+            if accepted:
+                batch = dataclass_replace(batch, decisions=accepted)
         # The seed prompt, built here because only the implement one takes a branch
         # and resolving one is a remote branch listing — the same reason the refusal
         # check runs first: an investigation must not pay for work it has no use for.

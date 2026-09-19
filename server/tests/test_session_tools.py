@@ -261,3 +261,114 @@ def test_set_hold_is_mounted_with_the_signalling_tools():
     from server.sessions.tools.registry import mounted_names
     assert "set_hold" in mounted_names(signalling_tools=True, self_model_switch=False)
     assert "set_hold" not in mounted_names(signalling_tools=False, self_model_switch=False)
+
+
+def test_propose_decision_is_mounted_with_the_signalling_tools():
+    """Spec 2026-09-18 §6. It rides with ``set_hold`` — no extra engine capability —
+    because the two are the pair a session picks between when it cannot proceed."""
+    from server.sessions.tools.registry import mounted_names
+    assert "propose_decision" in mounted_names(signalling_tools=True, self_model_switch=False)
+    assert "propose_decision" not in mounted_names(signalling_tools=False,
+                                                   self_model_switch=False)
+
+
+_OPTIONS = [{"key": "stop", "label": "Stop the turn", "detail": "Archive immediately."},
+            {"key": "finish", "label": "Let it finish", "detail": "Archive on completion."}]
+
+
+@pytest.mark.asyncio
+async def test_propose_decision_writes_the_proposal_and_the_hold_as_the_session(isolated_db):
+    """The handler is a thin tap on ``server/pm/decisions.py:propose`` (constitution
+    VI): the proposal row, the ``decision`` hold and BOTH audit rows come from the
+    service the HTTP route calls, attributed to ``session:<id>``, and the tool's own
+    answer tells the model how to end the turn."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import AuditEvent, DecisionProposal, WorkItem
+    from server.sessions.tools.tools import build_session_tools
+    async with db_session() as db:
+        db.add(WorkItem(repo="o/n", number=12, kind="issue", body="b",
+                        triage_state="classified"))
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "propose_decision")
+    out = await tool.handler({"options": _OPTIONS, "recommended_key": "finish",
+                              "rationale": "Stopping a turn mid-flight loses the work."})
+    assert out.get("is_error") is not True
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["ref"] == "o/n#12" and data["status"] == "pending"
+    assert 'mark_no_pr("awaiting-decision"' in data["next"]
+    async with db_session() as db:
+        prop = (await db.execute(select(DecisionProposal))).scalar_one()
+        assert prop.proposed_by == "session:s1" and prop.session_id == "s1"
+        assert prop.recommended_key == "finish"
+        assert [o["key"] for o in prop.options] == ["stop", "finish"]
+        assert data["proposalId"] == prop.id
+        wi = (await db.execute(select(WorkItem))).scalar_one()
+        assert (wi.hold_kind, wi.hold_by) == ("decision", "session:s1")
+        types = {a.type for a in (await db.execute(select(AuditEvent))).scalars()}
+        assert {"pm.decision.propose", "pm.hold.set"} <= types
+
+
+@pytest.mark.asyncio
+async def test_propose_decision_refuses_a_second_pending_proposal(isolated_db):
+    """One pending decision per item: the second call is a corrective message to the
+    model, not a second park — and nothing new is written."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import DecisionProposal, WorkItem
+    from server.sessions.tools.tools import build_session_tools
+    async with db_session() as db:
+        db.add(WorkItem(repo="o/n", number=12, kind="issue", body="b",
+                        triage_state="classified"))
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "propose_decision")
+    args = {"options": _OPTIONS, "recommended_key": "stop", "rationale": "Two ways."}
+    assert (await tool.handler(args)).get("is_error") is not True
+    out = await tool.handler(args)
+    assert out["is_error"] is True
+    from server.pm.decisions import PENDING_CONFLICT_MESSAGE
+    assert PENDING_CONFLICT_MESSAGE in out["content"][0]["text"]
+    async with db_session() as db:
+        assert len((await db.execute(select(DecisionProposal))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_propose_decision_rejects_a_malformed_proposal_without_parking(isolated_db):
+    """The VALIDATION is the service's (2-6 options, a recommendation among them) —
+    the handler only has to turn its refusal into the model's corrective message,
+    and the item must be left unheld."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from server.sessions.tools.tools import build_session_tools
+    async with db_session() as db:
+        db.add(WorkItem(repo="o/n", number=12, kind="issue", body="b",
+                        triage_state="classified"))
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "propose_decision")
+    out = await tool.handler({"options": _OPTIONS, "recommended_key": "neither",
+                              "rationale": "why"})
+    assert out["is_error"] is True and "recommended_key" in out["content"][0]["text"]
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem))).scalar_one().hold_kind is None
+
+
+@pytest.mark.asyncio
+async def test_propose_decision_without_an_issue_ref_is_a_tool_error(isolated_db):
+    """A decision parks THIS session's issue; a session dispatched without one has
+    nothing to park, and the model is pointed at hand_back instead."""
+    from server.sessions.tools.tools import build_session_tools
+    rec = SimpleNamespace(id="s1", origin_ref=None)
+    tool = _tool(build_session_tools(_ctx(record=rec, signalling_tools=True)),
+                 "propose_decision")
+    out = await tool.handler({"options": _OPTIONS, "recommended_key": "stop",
+                              "rationale": "why"})
+    assert out["is_error"] is True and "hand_back" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_propose_decision_on_an_unmirrored_issue_is_a_tool_error(isolated_db):
+    """The ref resolve is the one ``set_hold`` uses (``holds.work_item_for_ref``), so
+    both tools answer "that issue is not mirrored" in the same words."""
+    from server.sessions.tools.tools import build_session_tools
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "propose_decision")
+    out = await tool.handler({"options": _OPTIONS, "recommended_key": "stop",
+                              "rationale": "why"})
+    assert out["is_error"] is True and "mirrored" in out["content"][0]["text"]

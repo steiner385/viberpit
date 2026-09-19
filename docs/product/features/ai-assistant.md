@@ -127,7 +127,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 91 tools are registered in `server/assistant/tools.py`; 86 are exposed by
+- **Tool surface (v2)** — 92 tools are registered in `server/assistant/tools.py`; 87 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Pack X is
   not yet built.
 
@@ -135,7 +135,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   |---|---|---|
   | Base (v1) | 28 | sessions, accounts, hosts, PRs, pipeline health, automations, deploy status |
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
-  | P — product & delivery | 11 | SDLC initiatives, PM products/queue/triage/onboarding |
+  | P — product & delivery | 12 | SDLC initiatives, PM products/queue/triage/onboarding, decision proposal accept/reject |
   | A — automations control | 11 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools |
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
@@ -154,6 +154,16 @@ assistant mutation does not make subsequent harness cleanup safe.
   auto-allow in `PermissionRegistry.request`; they're gated by MCP `ToolAnnotations` per tool class
   (read / mutation / destructive), so mutations surface the same permission card a coding session
   would, and destructive tools can never be marked "always allow".
+- **`resolve_decision` (Pack P, spec 2026-09-18 §6)** — accepts or rejects ONE pending decision
+  proposal from the Inbox on the person's behalf: `proposal_id`, `decision` (`accept` | `reject`),
+  and for an accept a `chosen_key` among the proposal's own option keys. Like every tool here it is
+  exactly one loopback call to one endpoint (`POST /api/pm/decisions/{pid}/accept|reject`) with no
+  business logic in the handler, and it is MUTATION class, so it raises a permission card. The
+  assistant is one of only two actor classes `server/pm/decisions.py:may_resolve` admits (a person
+  is the other): a `session:` actor, an unattributed `lan@local` loopback caller and the system
+  actors are all 403, because the machine must not answer the question it raised. Reaching the
+  routes still requires the route allowlist, which stays deny-by-default, and
+  `server/tests/test_assistant_policy.py` carries a `False` row for every new mutating route.
 - **Injection defence** — data returned by tools (session summaries, transcripts, PR titles) is
   untrusted and framed as such in the system prompt; the eval set includes ≥ 6 injection cases
   (`docs/superpowers/evals/assistant/cases.jsonl`) asserting the model refuses embedded instructions

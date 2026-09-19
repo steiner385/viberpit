@@ -117,6 +117,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
     ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject triage proposal"),
+    ToolSpec("resolve_decision", ToolClass.MUTATION, "Accept/reject decision proposal"),
     ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
@@ -1256,6 +1257,30 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             raise ToolArgError("proposal_id must be a proposal id from list_triage")
         return await api.post(f"/api/pm/triage/{pid}/{decision}")
 
+    @spec_tool("resolve_decision",
+               "Accept or reject ONE pending decision proposal from the inbox (the options "
+               "a coding session drafted for a genuine product decision). Accepting takes "
+               "chosen_key — one of the proposal's option keys — and clears the item's "
+               "decision hold so the next implement run carries it; rejecting parks the "
+               "item as an owner-action hold and chosen_key is ignored. decision is "
+               "'accept' or 'reject'.",
+               _schema(("proposal_id", "decision"),
+                       proposal_id=str, decision=str, chosen_key=str))
+    @guarded
+    async def resolve_decision(args: dict[str, Any]) -> Any:
+        decision = args.get("decision")
+        if decision not in ("accept", "reject"):
+            raise ToolArgError("decision must be 'accept' or 'reject'")
+        pid = str(args["proposal_id"])
+        if not _OPAQUE_ID.match(pid):
+            raise ToolArgError("proposal_id must be a proposal id from the decisions inbox")
+        if decision == "reject":
+            return await api.post(f"/api/pm/decisions/{pid}/reject")
+        chosen_key = args.get("chosen_key")
+        if not isinstance(chosen_key, str) or not chosen_key:
+            raise ToolArgError("chosen_key is required to accept a decision")
+        return await api.post(f"/api/pm/decisions/{pid}/accept", {"chosen_key": chosen_key})
+
     @spec_tool("request_product_sync",
                "Ask the reconciler to re-sync a product from GitHub on its next pass. It "
                "is a request, not the sync itself — nothing is synced by the time this "
@@ -1426,7 +1451,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             adopt_session,
             create_notification_rule, delete_notification_rule,
             watch, delete_watch,
-            set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
+            set_quiet_hours, advance_initiative, resolve_triage, resolve_decision,
+            request_product_sync,
             delete_session, delete_sessions, cancel_queued_session, ready_merge_pr,
             trigger_automation_action, dispatch_backlog, consolidate_prs]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,

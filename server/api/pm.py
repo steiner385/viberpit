@@ -28,6 +28,7 @@ from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     WORK_ITEM_TRIAGE_STATES,
+    DecisionProposal,
     Feature,
     GhProject,
     GhProjectItem,
@@ -1600,9 +1601,14 @@ async def patch_overlay(
     "human". A body that applies NO field is a read-through no-op — including one
     whose only would-be effect is itself a no-op (e.g. ``clearHold`` on an item
     with no hold): nothing stamps ``classified_by`` or fires an audit unless
-    something on the work item actually changed."""
+    something on the work item actually changed.
+
+    A ``decision`` hold is out of this route's reach in BOTH directions (spec §8):
+    setting one is refused by ``set_hold`` (only a proposal may park an item on a
+    question) and clearing one is refused by ``refuse_decision_release`` — the same
+    guard the Retry route gets, so the overlay is not a way around it."""
     from server.pm.holds import (HoldPermissionError, actor_class, actor_for_request,
-                                 clear_hold, set_hold)
+                                 clear_hold, refuse_decision_release, set_hold)
     if body.triageState is not None and body.triageState not in WORK_ITEM_TRIAGE_STATES:
         raise HTTPException(
             status_code=422,
@@ -1663,6 +1669,11 @@ async def patch_overlay(
                 "workItemId": item_id, "kind": body.holdKind, "reason": wi.hold_reason,
                 "actorClass": actor_class(actor)})
         elif body.clearHold:
+            # THE same refusal the Retry route gets (spec §8): a decision hold ends
+            # when a person picks an option, never on an overlay edit. Without this
+            # the overlay was a second, ungated release path around
+            # ``release_via_api`` — ``clear_hold`` itself has no decision rule.
+            refuse_decision_release(wi)
             released = wi.hold_kind
             clear_hold(wi, actor=actor)
             if released is not None:
@@ -1788,6 +1799,306 @@ async def release_work_item_hold(
         raise HTTPException(status_code=422, detail={
             "error": "hold_not_permitted", "message": str(e)}) from e
     return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
+
+
+# --------------------------------------------------------------------------- #
+# Decision proposals (spec 2026-09-18 §6)                                      #
+# --------------------------------------------------------------------------- #
+#: How long the accept route waits for the issue comment before giving up on it.
+#: ``gh issue comment`` is the FIRST call of that seam inside a request handler
+#: (``announce_claim`` / ``announce_needs_human`` run in the background runner) and
+#: ``gitrepos._run_gh`` bounds nothing, so a stalled token mint would otherwise hold
+#: the request and a threadpool worker open indefinitely — for work that is purely
+#: decorative and happens after the decision is already committed.
+DECISION_COMMENT_TIMEOUT_S = 15.0
+# Thin wrappers over server/pm/decisions.py, which is THE writer, accepter and
+# rejecter (constitution VI): the `propose_decision` session tool and the
+# assistant's `resolve_decision` reach the same functions, so no validation, hold
+# write or audit shape may be re-spelled in a route here.
+
+def _decision_to_dict(prop: DecisionProposal, wi: WorkItem | None,
+                      project_slug: str | None, guidance: dict | None = None) -> dict:
+    """The wire shape of one decision proposal.
+
+    Keys mirror ``_triage_to_dict`` wherever the two carry the same fact
+    (``workItemId``, ``repo``, ``number``, ``title``, ``url``, ``projectSlug``,
+    ``rationale``, ``status``, ``createdAt``, ``guidance``): spec §6 lists decision
+    proposals in the SAME inbox as classification proposals, "same ordering spec
+    and keys", and a second name for the owning product would fork the inbox's
+    grouping. ``ref`` is the ``owner/repo#N`` the proposal was made against,
+    carried so a card can link out without re-joining repo and number.
+    """
+    return {
+        "id": prop.id,
+        "workItemId": prop.work_item_id,
+        "repo": wi.repo if wi else None,
+        "number": wi.number if wi else None,
+        "ref": f"{wi.repo}#{wi.number}" if wi and wi.repo and wi.number else None,
+        "projectSlug": project_slug,
+        "title": wi.title if wi else None,
+        "url": wi.url if wi else None,
+        "options": prop.options or [],
+        "recommendedKey": prop.recommended_key,
+        "rationale": prop.rationale,
+        "chosenKey": prop.chosen_key,
+        "status": prop.status,
+        "proposedBy": prop.proposed_by,
+        "resolvedBy": prop.resolved_by,
+        "createdAt": prop.created_at.isoformat() if prop.created_at else None,
+        "resolvedAt": prop.resolved_at.isoformat() if prop.resolved_at else None,
+        # What Accept / Reject do under the owning product's dispatch policy; the
+        # list route computes it, the single-item routes answer None (the caller
+        # has just acted — there is nothing left to explain).
+        "guidance": guidance,
+    }
+
+
+async def _owning_slug(db, wi: WorkItem | None) -> str | None:
+    """The slug of the product that owns *wi*'s repo, through THE repo→project
+    helper — never inferred client-side or from the repo name."""
+    if wi is None or not wi.repo:
+        return None
+    owner = (await owning_projects_by_repo(db, {wi.repo})).get(wi.repo)
+    return owner.slug if owner else None
+
+
+async def _load_decision(db, proposal_id: str) -> DecisionProposal:
+    """The proposal or a 404, re-read under a row lock.
+
+    Whether it is still PENDING is not asked here: the service module owns that
+    rule and raises ``DecisionConflict``, which every route below maps to 409.
+
+    ``with_for_update()`` is what makes that check mean anything, exactly as in the
+    classification twin (``pending_proposal_stmt``, server/pm/triage_accept.py):
+    reading ``status == "pending"`` and then writing is a read-then-write race, and
+    under Postgres READ COMMITTED two in-flight resolutions both read "pending" and
+    both pass ``decisions._require_pending``. Two accepts would then write two
+    ``pm.decision.accept`` rows and post two issue comments naming different
+    options, with the later ``chosen_key`` silently winning; an accept interleaved
+    with a reject would leave the proposal ``accepted`` while the reject re-parks
+    the item ``owner_action`` — a decision taken and an issue that never moves. The
+    lock makes the loser re-read the row as resolved and answer 409."""
+    prop = (await db.execute(select(DecisionProposal).where(
+        DecisionProposal.id == proposal_id).with_for_update())).scalar_one_or_none()
+    if prop is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    return prop
+
+
+def _require_may_resolve(actor: str) -> None:
+    """403 unless *actor* may take a decision. The predicate itself lives in
+    ``decisions.may_resolve`` (ONE definition, shared with the assistant tool);
+    this is only its HTTP face, called by accept AND reject.
+
+    Checked BEFORE the proposal is loaded so an agent cannot use the 404/200 split
+    to probe which proposal ids exist."""
+    from server.pm.decisions import RESOLVE_DENIED_MESSAGE, may_resolve
+    if not may_resolve(actor):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "error": "decision_not_permitted", "message": RESOLVE_DENIED_MESSAGE})
+
+
+def _decision_http_error(exc: Exception) -> HTTPException:
+    """THE mapping of a ``DecisionError`` onto a status code, so the four routes
+    cannot disagree: a state conflict (already pending, already resolved, a
+    person's park) is 409 — nothing about the request needs fixing — and a
+    malformed proposal is 422."""
+    from server.pm.decisions import DecisionConflict
+    if isinstance(exc, DecisionConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "decision_conflict", "message": str(exc)})
+    return HTTPException(status_code=422, detail={
+        "error": "bad_decision", "message": str(exc)})
+
+
+class DecisionOptionBody(BaseModel):
+    """One proposed option as it arrives on the wire. Typed at the boundary so a
+    wrongly-shaped ``options`` (a number, a list of strings — exactly what a
+    model-driven ``propose_decision`` call gets wrong) is FastAPI's 422 and never
+    reaches ``normalize_options``, whose ``for raw in options`` would raise
+    ``TypeError`` out of the route as a 500. The SEMANTIC rules (2–6 options,
+    unique non-empty keys, a recommendation among them) stay in the service —
+    this only pins the types."""
+
+    key: str
+    label: str
+    detail: str | None = None
+
+
+class DecisionProposalBody(BaseModel):
+    options: list[DecisionOptionBody] = []
+    recommended_key: str = ""
+    rationale: str = ""
+
+
+class DecisionAcceptBody(BaseModel):
+    chosen_key: str = ""
+
+
+@router.post("/work-items/{item_id}/decisions", status_code=status.HTTP_201_CREATED)
+async def propose_work_item_decision(
+    item_id: str,
+    request: Request,
+    body: DecisionProposalBody,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Propose a decision on this item (spec §6): two to six options, the one the
+    proposer recommends, and why — recorded together with the item's ``decision``
+    hold in ONE transaction by ``server/pm/decisions.py:propose``.
+
+    Every actor class may call it (a person, a coding session's
+    ``propose_decision`` tool as ``session:<id>``, the assistant, an
+    unattributed loopback caller), because a ``decision`` hold is the one kind an
+    agent may set AND only THROUGH THIS ROUTE (spec §8): the proposal is the
+    authority for the park, and accepting it is the only thing that lifts it.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from server.pm import decisions
+    from server.pm.holds import actor_for_request
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    try:
+        prop = await decisions.propose(
+            db, wi,
+            options=[o.model_dump() for o in body.options],
+            recommended_key=body.recommended_key,
+            rationale=body.rationale,
+            actor=actor_for_request(request),
+            now=datetime.now(timezone.utc))
+    except decisions.DecisionError as e:
+        raise _decision_http_error(e) from e
+    except IntegrityError as e:
+        # ``ux_decision_proposals_pending`` is what actually enforces "one pending
+        # proposal per item" — the SELECT above it is only the friendly path, and a
+        # genuinely concurrent second proposer passes it and fails at the flush.
+        # Same outcome, same message: a race is a conflict, not a server fault.
+        raise _decision_http_error(
+            decisions.DecisionConflict(decisions.PENDING_CONFLICT_MESSAGE)) from e
+    return _decision_to_dict(prop, wi, await _owning_slug(db, wi))
+
+
+@router.get("/decisions")
+async def list_decisions(
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> list[dict]:
+    """Pending decision proposals, newest first — the inbox's second card kind.
+
+    Pending ONLY, with no ``pendingOnly`` escape hatch: the widened leg on
+    ``/triage`` exists to keep a fresh auto-accept visible for its undo window,
+    and a decision has no such window (spec decision 3 — the machine drafts, the
+    person decides, and once taken it is taken).
+    """
+    from server.pm import decisions
+    from server.pm.explain import decision_guidance
+    rows = await decisions.pending_list(db)
+    if not rows:
+        return []
+    repos = {w.repo for _p, w in rows if w is not None and w.repo}
+    slug_by_repo: dict[str, str] = {
+        repo: owner.slug for repo, owner
+        in (await owning_projects_by_repo(db, repos)).items()} if repos else {}
+    policies = await load_policies(db)
+    out = []
+    for prop, wi in rows:
+        slug = slug_by_repo.get(wi.repo) if wi is not None and wi.repo else None
+        policy = (policies.get(slug) if slug else None) or effective_policy(None)
+        out.append(_decision_to_dict(
+            prop, wi, slug, guidance=decision_guidance(policy=policy)))
+    return out
+
+
+@router.post("/decisions/{proposal_id}/accept")
+async def accept_decision(
+    proposal_id: str,
+    request: Request,
+    body: DecisionAcceptBody = Body(default_factory=DecisionAcceptBody),
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Take the decision (spec §6): record ``chosen_key`` and clear the item's
+    ``decision`` hold — the ONE path that may — then say so on the issue.
+
+    A person's call, or the assistant's on their behalf (``decisions.may_resolve``);
+    anything else is 403. The proposer must not be able to answer its own question.
+
+    The comment is posted AFTER the commit and can never fail the request. The
+    accepted ROW is what the next implement run quotes
+    (``decisions.accepted_text_for_refs``); the comment is only the GitHub-side
+    record of it, and announcing before the commit would risk publishing a
+    decision a rollback then erased. It runs on a worker thread because it shells
+    out to ``gh``.
+    """
+    import asyncio
+
+    from server.automations import backlog_github
+    from server.pm import decisions
+    from server.pm.holds import actor_for_request
+    actor = actor_for_request(request)
+    _require_may_resolve(actor)
+    prop = await _load_decision(db, proposal_id)
+    try:
+        await decisions.accept(db, prop, chosen_key=body.chosen_key,
+                               actor=actor, now=datetime.now(timezone.utc))
+    except decisions.DecisionError as e:
+        raise _decision_http_error(e) from e
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    # Read everything the response and the comment need BEFORE committing: an
+    # async session expires its instances on commit, and touching one afterwards
+    # would be lazy IO in a place that cannot await it.
+    out = _decision_to_dict(prop, wi, await _owning_slug(db, wi))
+    chosen = decisions.chosen_option(prop) or {}
+    ref = out["ref"]
+    await db.commit()
+    if ref:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    backlog_github.announce_decision, ref,
+                    label=str(chosen.get("label") or out["chosenKey"] or ""),
+                    detail=chosen.get("detail"), chosen_by=actor),
+                timeout=DECISION_COMMENT_TIMEOUT_S)
+        except Exception:
+            # Including the timeout (``asyncio.TimeoutError`` IS the builtin
+            # ``TimeoutError``). ``CancelledError`` is a ``BaseException`` and is
+            # deliberately NOT caught: a shutdown must still unwind through here.
+            log.warning("pm.decision.accept_comment_failed proposal=%s ref=%s",
+                        proposal_id, ref, exc_info=True)
+    return out
+
+
+@router.post("/decisions/{proposal_id}/reject")
+async def reject_decision(
+    proposal_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Refuse the options (spec §6): the proposal is rejected and the item becomes
+    the caller's ``owner_action`` park with ``DECISION_REJECT_REASON``. Nothing
+    re-proposes on its own — Retry and Implement now are the ways back out, and
+    they are a person's to press.
+
+    Gated by ``decisions.may_resolve`` like accept: refusing the options is taking
+    the decision as much as choosing one of them is."""
+    from server.pm import decisions
+    from server.pm.holds import actor_for_request
+    actor = actor_for_request(request)
+    _require_may_resolve(actor)
+    prop = await _load_decision(db, proposal_id)
+    try:
+        await decisions.reject(db, prop, actor=actor,
+                               now=datetime.now(timezone.utc))
+    except decisions.DecisionError as e:
+        raise _decision_http_error(e) from e
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    return _decision_to_dict(prop, wi, await _owning_slug(db, wi))
 
 
 @router.get("/work-items/{item_id}/issue")

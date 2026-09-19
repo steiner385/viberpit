@@ -152,6 +152,11 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/leaves"),
         ("POST", r"/api/pm/projects/[a-z0-9-]+/sync"),
         ("POST", r"/api/pm/triage/[A-Za-z0-9-]+/(accept|reject)"),
+        # Decision proposals (spec §6, §8): accept/reject only — the propose route
+        # (`POST /api/pm/work-items/{id}/decisions`) has no row here on purpose, the
+        # assistant does not propose, only a coding session or a person does.
+        ("GET", r"/api/pm/decisions"),
+        ("POST", r"/api/pm/decisions/[A-Za-z0-9-]+/(accept|reject)"),
         ("POST", r"/api/sessions"),
         # Batch tools (spec v2 B4) — each acts on up to 20 session ids in one call.
         ("POST", r"/api/sessions/batch/(archive|unarchive|resume|rotate|permanent-delete)"),

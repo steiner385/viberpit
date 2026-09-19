@@ -66,8 +66,8 @@ converted the surviving rows. Only `owner_action` and a pending `decision` deriv
 "Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
 write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
 may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
-OVERWRITE a hold they could not clear, since replacing a kind releases the old one. Decision
-proposals and the rename to "Held" are still later series items of that spec.
+OVERWRITE a hold they could not clear, since replacing a kind releases the old one. The rename to
+"Held" is still a later series item of that spec.
 **Evidence dispatch has landed (item 4b, spec §5).** `evidence` is born AT FILING: the moment a
 new, open, auto-filed error report (carrying the error-triage label) enters the mirror,
 `server/sessions/orchestrator.py:_pm_sync_upsert_items` parks it under an `evidence` hold
@@ -96,6 +96,44 @@ refill re-claims the item, and it is released only by the dispatch that actually
 (`server/pm/holds.py:release_on_dispatch`, `signal: "dispatch"` — the one entry in
 `RELEASE_SIGNALS` that ends no `owner_action` hold at all, since a `stronger_model` hold is not one).
 See `docs/product/features/autopilot-backlog-runner.md` § The model ladder for the full rule.
+**Decision proposals have landed (item 5, spec §6).** When a coding session hits a genuine product
+question it proposes options instead of guessing or handing back: `POST
+/api/pm/work-items/{id}/decisions` with two to six `options` (`key`, `label`, optional `detail`), a
+`recommended_key` among them and a `rationale`. `server/pm/decisions.py:propose` — THE writer,
+which the `propose_decision` session tool calls in-process and Codex sessions reach over loopback —
+records the proposal row and the item's `decision` hold in ONE transaction, audited as
+`pm.decision.propose` plus `pm.hold.set`. A `decision` hold is the one kind an agent may set and
+only through this route; one pending proposal per item (a database constraint, not just a check).
+The session then ends with `mark_no_pr(resolution="awaiting-decision")`, which the Backlog Runner
+treats as neither a bounce nor a hand-off.
+The pending proposals list from `GET /api/pm/decisions`, which carries `id`, `ref`, `title`,
+`projectSlug` (the SAME key the classification list uses — the inbox groups both kinds by the
+owning product through one ordering spec), `options`, `recommendedKey`, `rationale`, `proposedBy`,
+`createdAt` and the two-column `guidance` (`server/pm/explain.py:decision_guidance`, the same
+`Consequence` wire shape the classification card renders). The web tags the rows `proposalKind:
+'decision'` at fetch time — the wire has no discriminator, and `/pm/triage`'s `kind` means the work
+item's kind — so `triageSelectors.pendingProposals` stays the ONE "awaiting a human" predicate and
+the Roadmap nav badge counts both kinds (spec §6: "reuses the pending-proposal channel, no new
+kind"). In the Inbox they list beside classification proposals with the same keys; the card is a
+single-choice group with the recommendation preselected, the rationale above it, `Accept` / `Reject`
+below. `a` on a decision row OPENS it rather than accepting — the accept carries the option the
+person chose and there is no undo window to take a guess back with — while `r` rejects, `x`/`e`/`A`
+are inert, and the classification bulk accept never sees a decision id.
+**Accept** (`POST /api/pm/decisions/{pid}/accept` with `chosen_key`) records the key, clears the
+hold — the ONLY path that may — and comments on the issue after the commit (best-effort, bounded by
+`DECISION_COMMENT_TIMEOUT_S`); the next implement prompt quotes the accepted row verbatim through
+`decisions.accepted_text_for_refs`. **Reject** replaces the hold with the caller's own
+`owner_action` park, reason `decision proposal rejected` (`holds.DECISION_REJECT_REASON`), so Retry
+and Implement now are the ways back out. Both are gated on `decisions.may_resolve` — a person or
+`assistant:<login>` only, 403 for a `session:` actor, `lan@local` or a system actor, because the
+machine must not answer the question it raised — and both re-read the row `FOR UPDATE`, so a race
+loses with 409 rather than writing two decisions. Audit identities are ACTOR STRINGS, not people:
+`pm.decision.propose {workItemId, proposalId, actorClass}` is usually `session:<id>`, while
+`pm.decision.accept {proposalId, chosenKey}` and `pm.decision.reject` carry whoever resolved it.
+The Review-and-decide dialog shows a `decision` hold as "Awaiting your decision" with a link to the
+Inbox and no buttons of its own (spec §7): the options, the recommendation and the consequence
+columns live on the proposal card, and accepting it is the only thing that lifts the hold.
+
 An `owner_action` hold ends only on a human signal (spec 2026-09-18 §7): a board edit to Ready or
 Backlog, an issue body edit (the fingerprint no longer matches), or
 `POST /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through

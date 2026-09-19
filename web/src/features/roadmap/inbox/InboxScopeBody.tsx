@@ -1,7 +1,15 @@
 /**
  * The Inbox scope of the Roadmap list column (finish-line §4.3, roadmap spec
- * §12): the pending triage proposals, grouped by product, with the j/k a r e x
- * A key map and the bulk bar re-homed from the old standalone Triage page.
+ * §12): the pending proposals, grouped by product, with the j/k a r e x A key
+ * map and the bulk bar re-homed from the old standalone Triage page.
+ *
+ * Since spec 2026-09-18 §6 the queue carries TWO kinds — classification
+ * proposals and decision proposals — through one ordering spec and one key map.
+ * A decision is not bulk-acceptable (the accept carries the option the person
+ * chose) and has no scores to edit, so `x`, `e` and `A` do not reach one; `a`
+ * OPENS it rather than accepting, because there is no chosen option in a list
+ * row and a decision has no undo window to take a guess back with. `r` rejects
+ * either kind: refusing needs no choice, and it parks the item for its owner.
  *
  * Two cursors, deliberately: SELECTION is the URL (`?proposal=`, arriving as
  * `selectedKey`) because the detail pane is what it opens, while the KEY cursor
@@ -23,8 +31,12 @@
  * prompt dock and everything else).
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
-import type { TriageProposal } from '@/api/triage'
-import { useAcceptBulk, useAcceptProposal, useRejectProposal, useTriageLive } from '@/api/hooks'
+import {
+  isDecisionProposal, isTriageProposal, type InboxProposal, type TriageProposal,
+} from '@/api/triage'
+import {
+  useAcceptBulk, useAcceptProposal, useRejectDecision, useRejectProposal, useTriageLive,
+} from '@/api/hooks'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { BulkActionBar } from '@/ui/list/BulkActionBar'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
@@ -38,6 +50,7 @@ import { overlayIsOpen } from '@/shell/useOverlayState'
 import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
+import { INBOX_LOAD_ERROR } from './inboxErrors'
 import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } from './inboxKeys'
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
@@ -45,19 +58,21 @@ import { ProposalCard } from './ProposalCard'
 import { isPending, pendingProposals } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
-  proposals: readonly TriageProposal[]
+  proposals: readonly InboxProposal[]
   isLoading: boolean
   isError: boolean
   /** The `?product=` chip, or null for every product. */
   product: string | null
   /** Key of the open row (`keyForOpenItem`), or null. */
   selectedKey: string | null
-  onOpen: (p: TriageProposal, opts?: { edit: boolean }) => void
+  onOpen: (p: InboxProposal, opts?: { edit: boolean }) => void
   onClearProduct: () => void
 }
 
-const haystack = (p: TriageProposal) =>
-  `${p.title ?? ''} ${p.repo ?? ''}#${p.number ?? ''} ${p.proposedFeatureSlug ?? ''} ${p.noFitSuggestion ?? ''}`
+const haystack = (p: InboxProposal) =>
+  (isDecisionProposal(p)
+    ? `${p.title ?? ''} ${p.ref ?? ''} ${p.options.map((o) => o.label).join(' ')} ${p.rationale ?? ''}`
+    : `${p.title ?? ''} ${p.repo ?? ''}#${p.number ?? ''} ${p.proposedFeatureSlug ?? ''} ${p.noFitSuggestion ?? ''}`)
     .toLowerCase()
 
 export function InboxScopeBody({
@@ -84,13 +99,19 @@ export function InboxScopeBody({
   // open): the pane must fall back rather than follow a frozen order.
   useEffect(() => clearInboxOrder, [])
 
-  // The rows the user can still decide, through `triageSelectors`' one
-  // definition of "still pending" (the nav badge and the Inbox scope count read
-  // the same one). Shared from here by the selection prune below and by
-  // `acceptSelected` — two copies would be free to disagree about what the bulk
-  // bar counts and what it sends.
+  // The rows the bulk bar may act on, through `triageSelectors`' one definition
+  // of "still pending" (the nav badge and the Inbox scope count read the same
+  // one). Shared from here by the selection prune below and by `acceptSelected`
+  // — two copies would be free to disagree about what the bulk bar counts and
+  // what it sends.
+  //
+  // Pending AND classification: `/pm/triage/accept-bulk` accepts classification
+  // proposals only, and a decision id reaching it would be a 404 inside a sweep
+  // whose toast then under-reports. The kind filter is here rather than inside
+  // the selector because it is not a second answer to "is this awaiting a
+  // human?" — decisions ARE — but to "can this be decided without opening it?".
   const pendingIds = useMemo(
-    () => pendingProposals(ordered).map((p) => p.id),
+    () => pendingProposals(ordered).filter(isTriageProposal).map((p) => p.id),
     [ordered],
   )
 
@@ -105,13 +126,15 @@ export function InboxScopeBody({
     dispatch({ type: 'rowsChanged', ids })
     dispatch({ type: 'pruneSelected', pendingIds })
   }, [ids, pendingIds])
-  const current: TriageProposal | undefined = ordered[resolveCursorIndex(ids, state)]
+  const current: InboxProposal | undefined = ordered[resolveCursorIndex(ids, state)]
 
   const accept = useAcceptProposal(product ?? undefined)
   const reject = useRejectProposal(product ?? undefined)
+  const rejectDecision = useRejectDecision()
   const bulk = useAcceptBulk(product ?? undefined)
   const acceptMutate = accept.mutate
   const rejectMutate = reject.mutate
+  const rejectDecisionMutate = rejectDecision.mutate
   const bulkMutate = bulk.mutate
 
   // A single accept/reject takes its row out of the list, so it takes the row
@@ -121,10 +144,14 @@ export function InboxScopeBody({
     acceptMutate({ id: p.id })
     dispatch({ type: 'deselect', id: p.id })
   }, [acceptMutate])
-  const rejectOne = useCallback((p: TriageProposal) => {
-    rejectMutate({ id: p.id })
+  // One `r`, two endpoints — the reject a decision needs is its own route
+  // (it writes the person's owner-action hold, not a triage state), so the row's
+  // kind picks the mutation here rather than the key map growing a second case.
+  const rejectOne = useCallback((p: InboxProposal) => {
+    if (isDecisionProposal(p)) rejectDecisionMutate({ id: p.id })
+    else rejectMutate({ id: p.id })
     dispatch({ type: 'deselect', id: p.id })
-  }, [rejectMutate])
+  }, [rejectMutate, rejectDecisionMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
   // The `pendingIds` filter is belt to the prune effect's braces: the prune
@@ -152,19 +179,31 @@ export function InboxScopeBody({
         // window) has already had its one decision — none of these keys have
         // anything left to act on, so the cursor sitting on it is inert.
         case 'x':
-          if (!isPending(current)) return
+          // A decision cannot go into a bulk accept (see `pendingIds`).
+          if (!isPending(current) || isDecisionProposal(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
+        // Neither key DECIDES a decision from the list — both open the pane.
+        // Accept carries the option the person chose, and reject is terminal
+        // (`_require_pending`: a rejected proposal can never be accepted, the
+        // drafted options are gone and only a new session can re-propose). With
+        // no undo window behind either, a one-keystroke accept of the machine's
+        // own recommendation and a one-keystroke discard are the same hazard, so
+        // both land in the pane, where the options and the consequence copy are
+        // and the real Accept/Reject buttons live.
         case 'a':
           if (!isPending(current)) return
-          acceptOne(current)
+          if (isDecisionProposal(current)) onOpen(current)
+          else acceptOne(current)
           break
         case 'r':
           if (!isPending(current)) return
-          rejectOne(current)
+          if (isDecisionProposal(current)) onOpen(current)
+          else rejectOne(current)
           break
         case 'e':
-          if (!isPending(current)) return
+          // Nothing to edit on a decision: the scores are the classifier's.
+          if (!isPending(current) || isDecisionProposal(current)) return
           onOpen(current, { edit: true })
           break
         case 'A':
@@ -220,10 +259,22 @@ export function InboxScopeBody({
           )}
           {/* Keyboard-FIRST, not keyboard-only — every key below also has a
               pointer affordance (click a row, the per-row tick, the bulk bar). */}
+          {/* And it follows the CURSOR: the two row kinds answer the same keys
+              differently, so a fixed strip promising "a accept · r reject" is
+              false half the time. `A` stays on both — it acts on the selection,
+              which a decision can never join. */}
           <p className="flex flex-wrap items-center gap-1 text-xs text-ink-faint">
-            <Kbd keys="j" />/<Kbd keys="k" /> move · <Kbd keys="a" /> accept ·
-            {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
-            {' '}<Kbd keys="x" /> select · <Kbd keys="A" /> accept selected
+            <Kbd keys="j" />/<Kbd keys="k" /> move ·
+            {current !== undefined && isDecisionProposal(current)
+              ? <>{' '}<Kbd keys="a" /> / <Kbd keys="r" /> open ·</>
+              : (
+                <>
+                  {' '}<Kbd keys="a" /> accept ·
+                  {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
+                  {' '}<Kbd keys="x" /> select ·
+                </>
+              )}
+            {' '}<Kbd keys="A" /> accept selected
           </p>
           {/* In the controls strip, not below the rows — the same place both
               other bulk-selecting lists put it (`SessionList`,
@@ -244,12 +295,16 @@ export function InboxScopeBody({
         </div>
       }
     >
-      {isError && <Banner tone="danger" title="Could not load the inbox." />}
+      {/* The column ORs the two queries into one flag: it lists whatever loaded,
+          and an undifferentiated banner is right for a surface that shows both
+          kinds interleaved. The PANE, which renders one row, names the half that
+          broke (`inboxErrorTitle`). */}
+      {isError && <Banner tone="danger" title={INBOX_LOAD_ERROR} />}
       {isLoading && proposals.length === 0 && (
         <div role="status" aria-label="Loading inbox"><Skeleton lines={5} /></div>
       )}
       {!isLoading && visible.length === 0 && <EmptyState title={emptyTitle} />}
-      <GroupedList<TriageProposal>
+      <GroupedList<InboxProposal>
         groups={ordering.groups}
         collapsedKeys={ordering.collapsedKeys}
         onToggleCollapse={ordering.toggleCollapse}

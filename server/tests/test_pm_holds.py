@@ -5,10 +5,21 @@ import pytest
 
 from server.db.models import HOLD_KINDS, WORK_ITEM_TRIAGE_STATES, WorkItem
 from server.pm.holds import (
-    AGENT_SETTABLE, HoldPermissionError, actor_class, clear_hold, may_set, set_hold,
+    AGENT_SETTABLE, HoldPermissionError, actor_class, clear_hold, may_set, set_decision_hold,
+    set_hold,
 )
 
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
+
+
+def _park(wi, kind, *, actor="tony@example.com"):
+    """Put *wi* on a hold of *kind* the way the production code does. A
+    ``decision`` hold has exactly ONE writer (spec §8) and ``set_hold`` refuses the
+    kind outright, so a fixture that wants one goes through ``set_decision_hold``."""
+    if kind == "decision":
+        set_decision_hold(wi, reason="r", actor=actor, now=NOW)
+    else:
+        set_hold(wi, kind=kind, reason="r", actor=actor, now=NOW)
 
 
 def test_vocabularies():
@@ -166,7 +177,7 @@ def test_release_via_api_is_the_one_release_and_audit_sequence(tmp_path):
             def add(item_id, kind):
                 wi = WorkItem(id=item_id, repo="o/r", number=int(item_id[1:]), kind="issue",
                               title="t", body="b")
-                set_hold(wi, kind=kind, reason="r", actor="tony@example.com", now=NOW)
+                _park(wi, kind)
                 db.add(wi)
                 return wi
             owner, decision, evidence = add("w1", "owner_action"), add("w2", "decision"), add("w3", "evidence")
@@ -244,13 +255,17 @@ def _sync_db():
 
 def _held(db, number, *, kind="owner_action", body="b", state="open"):
     wi = WorkItem(repo="o/r", number=number, kind="issue", state=state, title="t", body=body)
-    set_hold(wi, kind=kind, reason="r", actor="tony@example.com", now=NOW)
+    _park(wi, kind)
     db.add(wi)
     db.flush()
     return wi
 
 
 def test_held_refs_lists_open_owner_action_and_decision_holds_only():
+    """And it names the KIND, not just the ref: the runner's give-up sweep only needs
+    membership, but ``_settle_decision`` must tell a ``decision`` park from an
+    ``owner_action`` one — a person's park is not proof a proposal landed. Both
+    questions ride this single read."""
     from server.pm.holds import held_refs
     db = _sync_db()
     _held(db, 1)
@@ -259,7 +274,7 @@ def test_held_refs_lists_open_owner_action_and_decision_holds_only():
     _held(db, 4, state="closed")
     db.add(WorkItem(repo="o/r", number=5, kind="issue", state="open", title="t", body="b"))
     db.commit()
-    assert held_refs(db) == frozenset({"o/r#1", "o/r#2"})
+    assert held_refs(db) == {"o/r#1": "owner_action", "o/r#2": "decision"}
 
 
 def test_release_by_signals_board_edit_and_body_edit():
@@ -285,7 +300,7 @@ def test_release_by_signals_board_edit_and_body_edit():
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
     # not one of them.
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch", "investigation"}
+                                    "implement", "dispatch", "investigation", "decision"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
@@ -318,3 +333,59 @@ def test_release_on_dispatch_clears_stronger_model_holds_only():
     # Idempotent, and blind to a malformed ref: the hold is gone, so a re-run of
     # the same batch releases nothing.
     assert release_on_dispatch(db, ["o/r#1", "not-a-ref"], now=NOW) == []
+
+
+def test_decision_hold_is_settable_by_a_session_and_cleared_only_as_a_decision():
+    """Spec 2026-09-18 §6/§8: the intended writer of a ``decision`` hold is a coding
+    session — agent class, and ``decision`` is not in ``AGENT_SETTABLE`` — so the two
+    decision helpers are ungated on purpose, like the reject flows. What they must NOT
+    do is touch a kind that is not theirs."""
+    from server.pm.holds import (DECISION_SET_MESSAGE, DecisionHoldError, clear_decision_hold,
+                                 set_decision_hold)
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    # The generic setter refuses the kind outright — for a person as much as for a
+    # session — because a decision hold is the shadow of a proposal (spec §8).
+    with pytest.raises(DecisionHoldError, match=DECISION_SET_MESSAGE):
+        set_hold(wi, kind="decision", reason="r", actor="session:s1", now=NOW)
+    with pytest.raises(DecisionHoldError, match=DECISION_SET_MESSAGE):
+        set_hold(wi, kind="decision", reason="r", actor="tony@example.com", now=NOW)
+    set_decision_hold(wi, reason="decision pending: per repo or global?",
+                      actor="session:s1", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("decision", "session:s1")
+    assert wi.hold_set_at == NOW and wi.hold_fingerprint
+    with pytest.raises(ValueError):
+        set_decision_hold(wi, reason="  ", actor="session:s1", now=NOW)
+
+    # the accept releases it — as an agent-class actor, which ``clear_hold`` refuses
+    with pytest.raises(HoldPermissionError):
+        clear_hold(wi, actor="lan@local")
+    assert clear_decision_hold(wi, actor="lan@local") is True
+    assert wi.hold_kind is None and wi.hold_by is None and wi.hold_fingerprint is None
+    # idempotent, and narrowed to the kind it owns
+    assert clear_decision_hold(wi, actor="tony@example.com") is False
+    set_hold(wi, kind="owner_action", reason="mine now", actor="tony@example.com", now=NOW)
+    assert clear_decision_hold(wi, actor="session:s1") is False
+    assert wi.hold_kind == "owner_action"
+
+
+def test_set_reject_decision_hold_parks_the_item_for_the_person_who_rejected():
+    from server.pm.holds import DECISION_REJECT_REASON, set_reject_decision_hold
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    set_reject_decision_hold(wi, actor="tony@example.com", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("owner_action", "tony@example.com")
+    assert wi.hold_reason == DECISION_REJECT_REASON
+    assert wi.hold_set_at == NOW and wi.hold_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_release_via_api_still_refuses_a_decision_hold():
+    """The generic release taps (Retry, Implement now) must keep refusing a decision:
+    it ends when the person picks an option, not on a button (spec §6)."""
+    from server.pm.holds import (DECISION_HOLD_MESSAGE, DecisionHoldError, release_via_api,
+                                 set_decision_hold)
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    set_decision_hold(wi, reason="r", actor="tony@example.com", now=NOW)
+    with pytest.raises(DecisionHoldError, match=DECISION_HOLD_MESSAGE):
+        await release_via_api(None, wi, actor="tony@example.com",
+                              identity="tony@example.com", signal="retry")
+    assert wi.hold_kind == "decision"

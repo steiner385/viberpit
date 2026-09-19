@@ -24,11 +24,17 @@ vi.mock('@/api/triage', async (importOriginal) => {
     acceptBulk: vi.fn(),
     updateOverlay: vi.fn(),
     undoProposal: vi.fn(),
+    fetchDecisions: vi.fn(),
+    acceptDecision: vi.fn(),
+    rejectDecision: vi.fn(),
   }
 })
 
 import { toast } from 'sonner'
-import { QK, useAcceptProposal, useAcceptBulk, useUpdateOverlay, useUndoProposal } from '@/api/hooks'
+import {
+  QK, useAcceptProposal, useAcceptBulk, useAcceptDecision, useRejectDecision,
+  useUpdateOverlay, useUndoProposal,
+} from '@/api/hooks'
 import * as triage from '@/api/triage'
 
 const mocked = vi.mocked(triage)
@@ -238,5 +244,87 @@ describe('undo', () => {
 
     expect(mocked.undoProposal).toHaveBeenCalledWith('p1')
     expect(toast.error).toHaveBeenCalled()
+  })
+})
+
+/**
+ * The inbox's second card kind (spec 2026-09-18 §6). Same optimistic shape as
+ * the classification twins above — and deliberately NO undo toast: a decision
+ * has no server-side undo window, so an Undo action here would be a lie.
+ */
+describe('decision proposals', () => {
+  function seedDecisions(qc: QueryClient) {
+    qc.setQueryData(QK.decisions, [
+      { id: 'd1', title: 'Sync or async?' },
+      { id: 'd2', title: 'Which store?' },
+    ] as unknown as triage.DecisionProposal[])
+  }
+  const decisionIds = (qc: QueryClient) =>
+    qc.getQueryData<triage.DecisionProposal[]>(QK.decisions)?.map((r) => r.id)
+
+  it('accept sends the chosen key, drops the row, and does not offer an undo', async () => {
+    const qc = makeClient()
+    seedDecisions(qc)
+    mocked.acceptDecision.mockResolvedValueOnce({ id: 'd1', status: 'accepted', chosenKey: 'b' })
+
+    const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'd1', chosenKey: 'b' }) })
+
+    expect(mocked.acceptDecision).toHaveBeenCalledWith('d1', 'b')
+    expect(decisionIds(qc)).toEqual(['d2'])
+    // A plain confirmation, never the `{ action: { label: 'Undo' } }` shape the
+    // triage accept above carries.
+    expect(toast.success).toHaveBeenCalledWith('Decision recorded')
+  })
+
+  it('restores the row and toasts once when the accept fails', async () => {
+    const qc = makeClient()
+    seedDecisions(qc)
+    mocked.acceptDecision.mockRejectedValueOnce(new Error('409'))
+
+    const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => {
+      await result.current.mutateAsync({ id: 'd1', chosenKey: 'b' }).catch(() => undefined)
+    })
+
+    expect(decisionIds(qc)).toEqual(['d1', 'd2'])
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    // …and the global MutationCache toast stays silenced, so it is said ONCE.
+    expect(qc.getMutationCache().getAll().at(-1)?.options.meta)
+      .toEqual({ suppressErrorToast: true })
+  })
+
+  it('reject drops the row and refreshes the views a hold change moves', async () => {
+    const qc = makeClient()
+    seedDecisions(qc)
+    mocked.rejectDecision.mockResolvedValueOnce({ id: 'd2', status: 'rejected', chosenKey: null })
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+
+    const { result } = renderHook(() => useRejectDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'd2' }) })
+
+    expect(mocked.rejectDecision).toHaveBeenCalledWith('d2')
+    expect(decisionIds(qc)).toEqual(['d1'])
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.decisions })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.roadmapMap })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.queue })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'issue'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'leaves'] })
+  })
+
+  it('accept refreshes the leaf lists too — a leaf row renders the hold it just lifted', async () => {
+    // `Leaf.holdKind` drives the hold chip and the needs-you tier, so the leaf
+    // list a person may have open kept saying "Awaiting your decision" until
+    // `useLeaves`' own 30 s poll fired. The two sibling hold-moving mutations
+    // (`useReleaseHold`, `useDispositionIssue`) both invalidate this key.
+    const qc = makeClient()
+    seedDecisions(qc)
+    mocked.acceptDecision.mockResolvedValueOnce({ id: 'd1', status: 'accepted', chosenKey: 'b' })
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+
+    const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'd1', chosenKey: 'b' }) })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'leaves'] })
   })
 })

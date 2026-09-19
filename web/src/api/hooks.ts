@@ -53,7 +53,9 @@ import {
 } from './roadmap'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
+  fetchDecisions, acceptDecision, rejectDecision,
   type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay, type UndoResult,
+  type DecisionProposal, type DecisionResult,
 } from './triage'
 import { useSessionSocket } from '@/ws/client'
 import { extractMutationErrorMessage } from './queryClient'
@@ -113,6 +115,11 @@ export const QK = {
   incidents: ['sdlc', 'incidents'] as const,
   gates: ['sdlc', 'gates'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
+  // The inbox's SECOND card kind (spec 2026-09-18 §6). A key of its own, not a
+  // widening of `triage`: the two come from two endpoints with two resolution
+  // routes, and one key would make every decision accept refetch the whole
+  // classification queue (and the reverse).
+  decisions: ['pm', 'decisions'] as const,
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
   roadmapMap: ['pm', 'map'] as const,
   leaves: (scope: string) => ['pm', 'leaves', scope] as const,
@@ -2165,15 +2172,47 @@ export function useTriage(
 }
 
 /**
+ * Pending DECISION proposals (spec 2026-09-18 §6), on the same 15 s cadence as
+ * `useTriage` and nudged by the same `/ws` hook.
+ *
+ * Unscoped: `GET /pm/decisions` takes no `projectSlug`, so there is exactly ONE
+ * cache entry and the `?product=` chip narrows it client-side. That makes the
+ * observer arithmetic simpler than triage's, not harder — the nav badge
+ * (`useNavBadges`) always owns this key's interval, so the Roadmap column passes
+ * `poll: false` and adds no second timer. `enabled` is what keeps the column off
+ * kiosk, which renders no nav badges at all.
+ */
+export function useDecisions(
+  { enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {},
+) {
+  return useQuery<DecisionProposal[]>({
+    queryKey: QK.decisions,
+    queryFn: fetchDecisions,
+    enabled,
+    staleTime: 5_000,
+    refetchInterval: poll ? 15_000 : false,
+  })
+}
+
+/**
  * Live nudge for the triage inbox — the `useInitiativesLive` idiom keyed to
  * triage: classification runs in spawned sessions, so the queue grows on `/ws`
  * status frames. Baseline polling in `useTriage` covers the gaps.
+ *
+ * It nudges BOTH inbox lists from the one subscription. A decision proposal is
+ * written by a coding session too (its `propose_decision` tool, then the session
+ * ends), so the same status frame that grows the classification queue is what
+ * announces a new decision — and a second hook would be a second `/ws`
+ * subscription for one list.
  */
 export function useTriageLive() {
   const qc = useQueryClient()
   const { on, off } = useSessionSocket()
   useEffect(() => {
-    const nudge = () => void qc.invalidateQueries({ queryKey: QK.triage })
+    const nudge = () => {
+      void qc.invalidateQueries({ queryKey: QK.triage })
+      void qc.invalidateQueries({ queryKey: QK.decisions })
+    }
     on('status', nudge)
     return () => off('status', nudge)
   }, [on, off, qc])
@@ -2345,6 +2384,79 @@ export function useUndoProposal(projectSlug?: string) {
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not undo')),
     meta: PM_MUTATION_META,
   })
+}
+
+/**
+ * Accept / reject one DECISION proposal (spec 2026-09-18 §6).
+ *
+ * Same optimistic shape as the classification twins above — the row leaves the
+ * list on `onMutate`, comes back on `onError`, and the hook owns its failure
+ * message because the removal has already unmounted the inline slot.
+ *
+ * With ONE deliberate difference: no undo toast. A triage accept has a ~60 s
+ * server-side undo window; a decision has none (spec decision 3 — the machine
+ * drafts, the person decides, and once taken it is taken), so offering an Undo
+ * that no endpoint backs would be a lie. Reversing a decision means parking the
+ * item again, which is what the accept guidance's "Reverse:" line says.
+ *
+ * Both invalidate the same three views because both move the item's hold: the
+ * board/roadmap tier (`roadmapMap`), the dispatch queue, and the disposition
+ * dialog's issue (`['pm','issue']` — a prefix, since only lazily-mounted dialogs
+ * live under it and the proposal carries no id for the one that matters).
+ */
+function invalidateAfterDecision(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: QK.decisions })
+  // A leaf row renders the hold chip and the needs-you tier from `Leaf.holdKind`,
+  // so the list a person may be looking at while they decide has to be told too —
+  // the same key the other two hold-moving mutations invalidate (`useReleaseHold`,
+  // `useDispositionIssue`). Without it the leaf keeps saying "Awaiting your
+  // decision" until `useLeaves`' own 30 s poll fires.
+  void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+  void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+  void qc.invalidateQueries({ queryKey: QK.queue })
+  void qc.invalidateQueries({ queryKey: ['pm', 'issue'] })
+}
+
+function useDecisionMutation<V extends { id: string }>(
+  run: (vars: V) => Promise<DecisionResult>,
+  { failure, success }: { failure: string; success: string },
+) {
+  const qc = useQueryClient()
+  return useMutation<DecisionResult, ApiRequestError, V, { prev?: DecisionProposal[] }>({
+    mutationFn: run,
+    onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: QK.decisions })
+      const prev = qc.getQueryData<DecisionProposal[]>(QK.decisions)
+      qc.setQueryData<DecisionProposal[]>(QK.decisions, (cur) => (cur ?? []).filter((p) => p.id !== id))
+      return { prev }
+    },
+    onError: (e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.decisions, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, failure))
+    },
+    onSuccess: () => {
+      invalidateAfterDecision(qc)
+      toast.success(success)
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: QK.decisions }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Take the decision at the option the person picked. */
+export function useAcceptDecision() {
+  return useDecisionMutation<{ id: string; chosenKey: string }>(
+    ({ id, chosenKey }) => acceptDecision(id, chosenKey),
+    { failure: 'Could not record this decision', success: 'Decision recorded' },
+  )
+}
+
+/** Refuse the options; the item becomes the person's own hold. */
+export function useRejectDecision() {
+  return useDecisionMutation<{ id: string }>(
+    ({ id }) => rejectDecision(id),
+    { failure: 'Could not reject this proposal', success: 'Proposal rejected' },
+  )
 }
 
 // MCP OAuth auth flow — mirrors the reauth hooks pattern.

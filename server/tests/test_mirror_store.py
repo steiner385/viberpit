@@ -162,6 +162,73 @@ def test_rename_repo_merges_into_an_existing_canonical_twin():
     assert dep.dst_work_item_id == twin.id and dep.src_work_item_id == child.id
 
 
+def test_rename_repo_repoints_a_decision_proposal_onto_the_twin():
+    """``decision_proposals`` is a child FK of ``work_items`` (hold ladder spec §6),
+    so the alias merge must re-point it like every other child: on Postgres the
+    alias DELETE would otherwise violate the constraint and abort the rename, and on
+    SQLite the proposal would be orphaned — still ``pending``, so the inbox keeps
+    showing a card for an issue that no longer exists.
+
+    The ``decision`` HOLD travels with it. A pending proposal whose item is unheld is
+    the one state §6 exists to prevent: ``queue.py`` stops skipping the item, the
+    runner dispatches an implement run on an unanswered product question, and the
+    eventual accept finds no hold to release (no ``pm.hold.release`` row)."""
+    from server.db.models import DecisionProposal
+    from server.pm import holds
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    db.add(DecisionProposal(
+        work_item_id=alias.id, options=[{"key": "a", "label": "A", "detail": None},
+                                        {"key": "b", "label": "B", "detail": None}],
+        recommended_key="a", rationale="which way?", status="pending",
+        proposed_by="session:s1"))
+    set_at = datetime.now(timezone.utc)
+    holds.set_decision_hold(alias, reason="which way?", actor="session:s1", now=set_at)
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    proposal = db.query(DecisionProposal).one()
+    assert proposal.work_item_id == twin.id
+    assert proposal.status == "pending"
+    survivor = db.query(WorkItem).filter_by(number=950).one()
+    assert survivor.id == twin.id
+    assert (survivor.hold_kind, survivor.hold_by) == ("decision", "session:s1")
+    assert survivor.hold_reason == "which way?"
+    assert survivor.hold_set_at is not None
+
+
+def test_rename_repo_drops_an_alias_proposal_the_twin_already_has_open():
+    """``ux_decision_proposals_pending`` allows one pending proposal per item, so a
+    twin that already has the question open would collide. Same policy as a
+    duplicate dep edge: the alias copy is dropped, the canonical one survives."""
+    from server.db.models import DecisionProposal
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    opts = [{"key": "a", "label": "A", "detail": None},
+            {"key": "b", "label": "B", "detail": None}]
+    db.add(DecisionProposal(work_item_id=alias.id, options=opts, recommended_key="a",
+                            rationale="alias copy", status="pending", proposed_by="session:s1"))
+    db.add(DecisionProposal(work_item_id=twin.id, options=opts, recommended_key="b",
+                            rationale="canonical", status="pending", proposed_by="session:s2"))
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    survivor = db.query(DecisionProposal).one()
+    assert survivor.rationale == "canonical" and survivor.work_item_id == twin.id
+
+
 def test_relations_under_the_canonical_name_link_after_rename():
     """Issue #999 acceptance: once the mirror is canonical, a relations pass
     keyed by GitHub's nameWithOwner links parents and resolves native edges."""

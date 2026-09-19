@@ -38,6 +38,14 @@ class Batch:
     # recovery settle that only has the intent still knows which it was. ``None``
     # for an unheld primary, or one whose batch was built outside the queue.
     primary_hold_kind: str | None = None
+    # ref → the accepted decision for that issue, verbatim as
+    # ``server/pm/decisions.py:decision_text`` rendered it (spec 2026-09-18 §6).
+    # Filled at the SPAWN (``_backlog_accepted_decisions``), not by the plan: a
+    # decision can be taken between the tick that built the batch and the dispatch
+    # that acts on it, and the prompt must carry the one in force at spawn time.
+    # Empty for every batch with nothing decided — and an empty map renders no
+    # prompt text at all, so an undecided dispatch reads exactly as it always did.
+    decisions: dict[str, str] = field(default_factory=dict)
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:

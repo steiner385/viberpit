@@ -386,6 +386,31 @@ def announce_needs_human(batch, reason: str, *,
             log.warning("backlog_github.announce_needs_human_failed ref=%s", ref)
 
 
+def announce_decision(ref: str, *, label: str, detail: str | None, chosen_by: str,
+                      gh_run: GhRun = gitrepos._run_gh) -> None:
+    """Human-visible trace of an accepted decision proposal (spec 2026-09-18 §6):
+    one comment on the issue naming the option a person picked and who picked it.
+
+    The DECISION itself is the accepted ``decision_proposals`` row — that row is
+    what clears the hold and what the next implement run quotes verbatim; this
+    only says so where a reader on GitHub will see it. Best-effort and never
+    raises, exactly like :func:`announce_claim` and :func:`announce_needs_human`:
+    a comment that does not land must not fail the accept that already committed.
+
+    Takes ONE ref rather than a batch because a decision belongs to a single
+    issue — the batch announcements above speak for a runner bundle.
+    """
+    body = (f"Decision accepted: {label} — {detail or label}. "
+            f"Chosen by {chosen_by}.")
+    try:
+        posted = _issue_comment(ref, body, gh_run=gh_run)
+    except Exception:
+        log.warning("backlog_github.announce_decision_error ref=%s", ref, exc_info=True)
+        return
+    if not posted:
+        log.warning("backlog_github.announce_decision_failed ref=%s", ref)
+
+
 # --------------------------------------------------------------------------- #
 # PR↔issue linkage verification (fail closed, #642)                            #
 # --------------------------------------------------------------------------- #

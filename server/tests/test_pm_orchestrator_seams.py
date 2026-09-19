@@ -1157,7 +1157,7 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
 
     from server.automations.context import AutomationContext
     from server.db.models import Automation, AuditEvent, WorkItem
-    from server.pm.holds import set_hold
+    from server.pm.holds import set_decision_hold
     await init_db(db_env)
     orch = _bare_orch()
     orch._gh_run = object()
@@ -1166,7 +1166,9 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
     async with db_session() as db:
         db.add(Automation(id="backlog-runner"))
         wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
-        set_hold(wi, kind="decision", reason="human called it", actor="tony@example.com", now=now)
+        # Through THE one writer of a decision hold (spec §8): ``set_hold`` refuses
+        # the kind, so a proposal is the only way an item ever reaches this state.
+        set_decision_hold(wi, reason="human called it", actor="tony@example.com", now=now)
         db.add(wi)
     await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
 
@@ -1275,6 +1277,34 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
         info = await orch._backlog_investigation_state("o/r#404", "sess-1")
     assert info["mirrored"] is False and info["hold_kind"] is None
     assert info["hold_by"] is None
+
+
+@pytest.mark.asyncio
+async def test_backlog_session_resolution_reads_the_ended_sessions_own_verdict(db_env):
+    """Spec 2026-09-18 §6: the decision settle asks one question — what did this
+    dispatch's session declare through ``mark_no_pr``? — and both sweeps read the
+    resolution/note pair through the SAME query (``_session_no_pr``), so they can
+    never be looking at different rows."""
+    from server.db.models import Session as DbSession
+    await init_db(db_env)
+    orch = _bare_orch()
+    async with db_session() as db:
+        db.add(DbSession(id="sess-1", name="x", account_name="a", cwd="/tmp",
+                         status="ended", pr_resolution="awaiting-decision",
+                         pr_resolution_source="tool",
+                         pr_resolution_note="stop the turn or let it finish?"))
+        db.add(DbSession(id="sess-2", name="y", account_name="a", cwd="/tmp",
+                         status="ended"))
+
+    assert await orch._backlog_session_resolution("sess-1") == "awaiting-decision"
+    # No resolution, no session id and no row are all simply "not a decision ending".
+    assert await orch._backlog_session_resolution("sess-2") is None
+    assert await orch._backlog_session_resolution(None) is None
+    assert await orch._backlog_session_resolution("sess-404") is None
+
+    async with db_session() as db:
+        assert await orch._session_no_pr(db, "sess-1") == {
+            "resolution": "awaiting-decision", "note": "stop the turn or let it finish?"}
 
 
 @pytest.mark.asyncio
@@ -1452,6 +1482,60 @@ async def test_backlog_ladder_rung_floor_raise_stops_at_an_approval_clamped_top(
     assert await rung("fable") == "opus"      # the floor never pins the gated tier
     assert await rung(None) == "opus"
     assert await rung("opus") == "opus"
+
+
+@pytest.mark.asyncio
+async def test_backlog_accepted_decisions_returns_the_decision_in_force(db_env):
+    """Spec 2026-09-18 §6: the spawn's one door to ``server/pm/decisions.py``.
+    It answers the ACCEPTED decision for each ref — the newest one where an issue
+    has been decided more than once — and says nothing at all about a ref that is
+    undecided, still pending, or not mirrored."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.db.models import WorkItem
+    from server.pm import decisions
+    await init_db(db_env)
+    orch = _bare_orch()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    later = now + timedelta(minutes=5)
+    options = [{"key": "server", "label": "Server-side", "detail": "render it on the server"},
+               {"key": "client", "label": "Client-side", "detail": None}]
+
+    async with db_session() as db:
+        decided = WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                           title="decided", body="b")
+        redecided = WorkItem(repo="o/r", number=2, kind="issue", state="open",
+                             title="redecided", body="b")
+        pending = WorkItem(repo="o/r", number=3, kind="issue", state="open",
+                           title="pending", body="b")
+        db.add_all([decided, redecided, pending])
+        await db.flush()
+        first = await decisions.propose(db, decided, options=options,
+                                        recommended_key="server", rationale="the ledger",
+                                        actor="session:s1", now=now)
+        await decisions.accept(db, first, chosen_key="server",
+                               actor="tony@example.com", now=now)
+        stale = await decisions.propose(db, redecided, options=options,
+                                        recommended_key="client", rationale="first answer",
+                                        actor="session:s2", now=now)
+        await decisions.accept(db, stale, chosen_key="client",
+                               actor="tony@example.com", now=now)
+        current = await decisions.propose(db, redecided, options=options,
+                                          recommended_key="server",
+                                          rationale="second answer",
+                                          actor="session:s3", now=later)
+        await decisions.accept(db, current, chosen_key="server",
+                               actor="tony@example.com", now=later)
+        await decisions.propose(db, pending, options=options, recommended_key="server",
+                                rationale="still open", actor="session:s4", now=now)
+
+    got = await orch._backlog_accepted_decisions(
+        ["o/r#1", "o/r#2", "o/r#3", "o/r#404", "nonsense"])
+    assert got == {
+        "o/r#1": "Decision (Server-side): render it on the server — the ledger",
+        "o/r#2": "Decision (Server-side): render it on the server — second answer",
+    }
+    assert await orch._backlog_accepted_decisions([]) == {}
 
 
 def test_backlog_queue_tail_returns_copy_of_cache():

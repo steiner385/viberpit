@@ -355,6 +355,46 @@ PR linkage, never on labels alone.
   `"implement"` rows, so an investigation's by-design absence of a PR can never read as a failed
   implementation attempt or climb the model ladder.
 
+  **The awaiting-decision ending (series item 5, spec 2026-09-18 §6).** A session that hits a
+  genuine product question — which of two designs, which of three trade-offs — proposes options
+  rather than guessing, and ends with `mark_no_pr("awaiting-decision")` (the third `mark_no_pr`
+  resolution; Codex writes the same token through its `NO_PR_MARKER` comment). That ending is
+  **neither a bounce nor a hand-off**, and `BacklogRunnerLoop._settle_decision` is deliberately the
+  shortest branch in the sweep: finalise the `dispatch_outcomes` row as `no_pr` with cause
+  `decision_proposed` (`DECISION_PROPOSED_CAUSE`), release the claim, post an activity event, and
+  nothing else. No ladder climb — a stronger model cannot answer a question about what the product
+  should do, and a `stronger_model` hold is queue-eligible, so it would re-dispatch the very item
+  the runner just parked. No give-up — that would write an `owner_action` hold OVER the `decision`
+  hold, destroying the link to the proposal the person must answer, and comment "needs human" on an
+  issue whose inbox card already says so. And no bounce on the dial: `_counts_as_attempt` excludes
+  the cause, so a dispatch that stopped to ask a question neither fails nor spends a rung.
+
+  Releasing the claim is safe only because the item stays out of the queue on its OWN hold, so the
+  settle verifies the HOLD, not the token. The token alone is a claim a session makes about itself,
+  and two live paths produce it with nothing behind it: the marker heuristic reading a turn that
+  proposed nothing, and a `propose_decision` that was REFUSED (bad options, a person's park, a
+  proposal already pending) followed by the ending the model had already been told to use. An
+  unheld `awaiting-decision` therefore falls through to the ordinary no-PR path — ladder, dial,
+  hand-off — and logs `decision_resolution_without_hold`, rather than deleting the claim and
+  handing the item back to the queue at the same tier with the ladder skipped, which with the
+  shipped `give_up_after_bounces=0` nothing would terminate.
+
+  **An investigation that proposes settles the same way.** Nothing withholds the `propose_decision`
+  tool by dispatch kind, so an investigate dispatch can end on a decision too. `_settle_decision`
+  runs AHEAD of `_settle_investigation` for exactly that reason: the investigate settle would
+  otherwise read the `decision` hold as "somebody else parked it" and record
+  `investigation: held by agent` — benign, but it makes "how often does an investigation end on a
+  decision" unanswerable. It sits inside the investigate branch rather than above it because the
+  two gates it needs (the session really ended, and it ran at all) live in each kind's own path.
+
+  **The next run carries the answer.** Once a person accepts the proposal in the Inbox, the hold
+  clears and the item is queue-eligible again. `Batch.decisions` (`ref` → the accepted decision
+  text, from `server/pm/decisions.py:accepted_text_for_refs`) is threaded into the spawn, and
+  `build_implement_prompt` renders a **"## Decisions already taken"** block quoting each accepted
+  decision VERBATIM, prefixed with the ref it belongs to. Nothing re-words it — what the person
+  picked is what the run implements. A batch with nothing decided produces a byte-identical prompt
+  to the one before this landed.
+
   **Family grouping.** Sibling reports of ONE defect — one broken call site can raise from three
   frames and file three issues with three fingerprints, all sharing the same `logger:event`
   (`server/pm/error_family.py:family_key`, derived from the `ErrorSignature` rows at read time,

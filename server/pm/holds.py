@@ -27,7 +27,12 @@ AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", "stronger_model"})
 #: (RUNNER_ACTOR / RECONCILER_ACTOR / SYSTEM_ACTORS are defined below, after
 #: ``set_reject_hold``, next to the release rule that is their main consumer.)
 SYSTEM_PREFIXES: tuple[str, ...] = ("automation:",)
-AGENT_PREFIXES: tuple[str, ...] = ("session:", "assistant:")
+#: The two agent prefixes, named because callers need to tell them APART as well as
+#: from a person: the assistant acts on a person's instruction at their keyboard,
+#: a session acts on its own (``server/pm/decisions.py:may_resolve``).
+SESSION_PREFIX = "session:"
+ASSISTANT_PREFIX = "assistant:"
+AGENT_PREFIXES: tuple[str, ...] = (SESSION_PREFIX, ASSISTANT_PREFIX)
 #: The synthetic identity handed to an unattributed loopback caller
 #: (server/auth/identity.py:OPEN_LAN_IDENTITY). Spelled here as a literal so this
 #: module stays free of the auth package.
@@ -48,6 +53,22 @@ class DecisionHoldError(ValueError):
 #: The one wording of that refusal, so the two routes cannot drift apart.
 DECISION_HOLD_MESSAGE = "a decision hold is resolved through its proposal, not released"
 
+#: The SET-side sibling (spec §8, "decision holds only via the decisions endpoint").
+#: A ``decision`` hold exists only as the shadow of a pending proposal, so the one
+#: writer is ``decisions.propose`` → :func:`set_decision_hold`.
+DECISION_SET_MESSAGE = "decision holds are set only by a decision proposal"
+
+
+def refuse_decision_release(wi: WorkItem) -> None:
+    """Raise ``DecisionHoldError`` when *wi* carries a ``decision`` hold — THE
+    guard every generic release path shares (:func:`release_via_api` for Retry and
+    Implement now, the overlay PATCH's ``clearHold``). One function rather than the
+    same two lines in each, so a third tap cannot quietly omit it: releasing a
+    decision hold outside ``decisions.accept`` drops the question on the floor and
+    re-queues the item with the decision still unmade."""
+    if wi.hold_kind == "decision":
+        raise DecisionHoldError(DECISION_HOLD_MESSAGE)
+
 
 def actor_class(actor: str) -> ActorClass:
     if actor in SYSTEM_ACTORS or actor.startswith(SYSTEM_PREFIXES):
@@ -66,6 +87,13 @@ def may_set(actor: str, kind: str) -> bool:
 def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime) -> None:
     if kind not in HOLD_KINDS:
         raise ValueError(f"hold_kind must be one of {HOLD_KINDS}")
+    # Refused for EVERY actor class, ahead of the class gate: a ``decision`` hold
+    # is the shadow of a pending proposal (spec §8), and one set here — by the
+    # overlay PATCH, by the ``set_hold`` session tool — would park the item with
+    # nothing to resolve it, while every release path refuses the kind. Only
+    # ``decisions.propose`` (via ``set_decision_hold``) may write one.
+    if kind == "decision":
+        raise DecisionHoldError(DECISION_SET_MESSAGE)
     if not (reason or "").strip():
         raise ValueError("hold_reason is required")
     if not may_set(actor, kind):
@@ -109,6 +137,78 @@ def set_reject_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
     wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
 
 
+#: The one spelling of why a REJECTED decision proposal parks its item — the
+#: ``owner_action`` sibling of ``REJECT_HOLD_REASON`` (spec 2026-09-18 §6). The
+#: reject route, the undo readers and the tests all read it from here.
+DECISION_REJECT_REASON = "decision proposal rejected"
+
+
+def set_decision_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -> None:
+    """Park ``wi`` as ``decision`` because a proposal is pending (spec §6).
+
+    Writes exactly the fields ``set_hold(kind="decision", …)`` writes but, like
+    ``set_reject_hold``, does NOT gate on the actor's class: the proposal IS the
+    authority, and the intended writer — a coding session (``session:<id>``,
+    agent class) that hit a genuine product decision — could not otherwise set a
+    kind outside ``AGENT_SETTABLE``. Recording a person's login instead would be
+    the provenance lie §8 exists to remove, so ``actor`` is recorded as-is.
+
+    The one thing this must never do is un-park an item a PERSON parked. That
+    guard lives in the caller — ``decisions.propose`` refuses when the item
+    already carries a ``HELD_KINDS`` hold set by a person — because only there is
+    the refusal reportable to the proposer as a ``DecisionError``, and only there
+    is the proposal row suppressed along with the hold.
+
+    Not called directly by routes or tools: ``decisions.propose`` is the ONE
+    writer of a ``decision`` hold (spec §8).
+    """
+    if not (reason or "").strip():
+        raise ValueError("hold_reason is required")
+    wi.hold_kind = "decision"
+    wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
+def clear_decision_hold(wi: WorkItem, *, actor: str) -> bool:
+    """THE only release of a ``decision`` hold (spec §6/§8): accepting the proposal.
+
+    Ungated for the same reason ``set_decision_hold`` is — an accept driven
+    through the assistant or an unattributed loopback caller is agent class, and
+    ``clear_hold`` would refuse it — but narrowed to the kind it owns: a
+    ``decision`` hold only. Anything else on the row (a person's ``owner_action``
+    that replaced this one, say) is somebody else's park and is left alone.
+
+    ``actor`` is taken for call-shape symmetry with ``clear_hold`` and because it
+    is what the caller audits; the class gate it would drive is deliberately
+    absent (see above). Returns whether a hold was actually released, so the
+    caller audits ``pm.hold.release`` only when one was.
+    """
+    if wi.hold_kind != "decision":
+        return False
+    wi.hold_kind = None
+    wi.hold_reason = None
+    wi.hold_by = None
+    wi.hold_set_at = None
+    wi.hold_fingerprint = None
+    return True
+
+
+def set_reject_decision_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
+    """Park ``wi`` as ``owner_action`` because a decision proposal was REJECTED
+    (spec §6): the options were wrong, so the item goes back to the person with
+    ``DECISION_REJECT_REASON``. The ``decision`` hold it replaces is this call's
+    own — the proposal being rejected — so there is nothing of anyone else's to
+    protect, and like ``set_reject_hold`` the rejection is the authority, not the
+    caller's class."""
+    wi.hold_kind = "owner_action"
+    wi.hold_reason = DECISION_REJECT_REASON
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
 RUNNER_ACTOR = "runner"
 RECONCILER_ACTOR = "reconciler"
 SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
@@ -129,9 +229,13 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: can a hold end?" must find every answer in one place. ``investigation`` is the
 #: Backlog Runner settling an ended INVESTIGATION on its convert-to-a-fix exit (spec
 #: §5): the session found the root cause, so the ``evidence`` hold that made the
-#: report an investigation instead of an implementation is spent.
+#: report an investigation instead of an implementation is spent. Finally, ``decision``
+#: is the accept of a decision proposal (``server/pm/decisions.py:accept``) — the ONE
+#: release of a ``decision`` hold, which is why ``release_via_api`` refuses that
+#: kind outright: it does not end on a generic tap, it ends when the person picks
+#: an option (spec 2026-09-18 §6).
 RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch", "investigation")
+                                    "implement", "dispatch", "investigation", "decision")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -173,17 +277,22 @@ def set_evidence_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -
     set_hold(wi, kind="evidence", reason=reason, actor=actor, now=now)
 
 
-def held_refs(db: "Session") -> frozenset[str]:
-    """``owner/repo#N`` of every open issue parked by an owner_action or decision
-    hold — what the runner's sweep reads to drop ``gave_up`` rows that are no longer
-    backed by a hold."""
+def held_refs(db: "Session") -> dict[str, str]:
+    """``owner/repo#N`` → the ``HELD_KINDS`` kind holding it, for every open issue
+    parked by an owner_action or decision hold.
+
+    Two readers, one query: the runner's sweep drops ``gave_up`` rows that are no
+    longer backed by ANY hold (membership), and ``_settle_decision`` asks whether an
+    ``awaiting-decision`` ending is backed by a ``decision`` hold specifically — an
+    ``owner_action`` park is not proof a proposal landed. Returning the kind keeps
+    both on this single read rather than growing a second seam."""
     from sqlalchemy import select
 
     from server.pm.desired_state import HELD_KINDS
-    rows = db.execute(select(WorkItem.repo, WorkItem.number).where(
+    rows = db.execute(select(WorkItem.repo, WorkItem.number, WorkItem.hold_kind).where(
         WorkItem.kind == "issue", WorkItem.state == "open",
         WorkItem.hold_kind.in_(sorted(HELD_KINDS)))).all()
-    return frozenset(f"{repo}#{number}" for repo, number in rows)
+    return {f"{repo}#{number}": str(kind) for repo, number, kind in rows}
 
 
 def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor: str,
@@ -330,8 +439,7 @@ async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal
     kind ``only_kind`` skipped). Audits ``pm.hold.release`` with ``via="api"`` only when a
     hold actually ended."""
     from server.audit import record_audit
-    if wi.hold_kind == "decision":
-        raise DecisionHoldError(DECISION_HOLD_MESSAGE)
+    refuse_decision_release(wi)
     if only_kind is not None and wi.hold_kind is not None and wi.hold_kind != only_kind:
         return None
     released = wi.hold_kind
@@ -355,20 +463,19 @@ def actor_for_request(request: object) -> str:
     state = getattr(request, "state", None)
     identity = str(getattr(state, "identity", "") or OPEN_LAN_ACTOR)
     if getattr(state, "via", None) == "assistant":
-        return f"assistant:{identity}"
+        return f"{ASSISTANT_PREFIX}{identity}"
     return identity
 
 
-async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
-                             session_id: str, now: datetime) -> tuple[WorkItem, str | None]:
-    """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
-    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``.
+async def work_item_for_ref(db, ref: str) -> WorkItem:
+    """Resolve ``owner/repo#N`` to the mirrored issue, or raise ``ValueError``.
 
-    Returns ``(work_item, released)`` where ``released`` is the hold kind that WAS on
-    the item before a clear (``None`` when setting, and ``None`` when clearing an
-    already-unheld item) — mirroring the overlay route's ``released = wi.hold_kind``
-    capture (``server/api/pm.py``'s ``clearHold`` branch), since ``clear_hold`` blanks
-    ``wi.hold_kind`` before a caller could otherwise read what was released."""
+    THE resolve every session-tool handler shares (``set_hold`` below,
+    ``propose_decision`` in ``server/sessions/tools/tools.py``): a malformed ref and
+    an unmirrored issue are the two failures the model must be told about in words,
+    and a second copy of this lookup is how one tool would start answering them
+    differently from another. ``guarded`` turns the ``ValueError`` into the tool's
+    own corrective message."""
     from sqlalchemy import select
 
     from server.pm.refs import split_ref
@@ -381,6 +488,20 @@ async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
         WorkItem.kind == "issue"))).scalar_one_or_none()
     if wi is None:
         raise ValueError(f"{ref} is not a mirrored issue")
+    return wi
+
+
+async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
+                             session_id: str, now: datetime) -> tuple[WorkItem, str | None]:
+    """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
+    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``.
+
+    Returns ``(work_item, released)`` where ``released`` is the hold kind that WAS on
+    the item before a clear (``None`` when setting, and ``None`` when clearing an
+    already-unheld item) — mirroring the overlay route's ``released = wi.hold_kind``
+    capture (``server/api/pm.py``'s ``clearHold`` branch), since ``clear_hold`` blanks
+    ``wi.hold_kind`` before a caller could otherwise read what was released."""
+    wi = await work_item_for_ref(db, ref)
     actor = f"session:{session_id}"
     released: str | None = None
     if kind is None:

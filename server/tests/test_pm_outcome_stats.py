@@ -185,6 +185,42 @@ async def test_outcome_stats_never_counts_an_investigate_dispatch(db_env):
 
 
 @pytest.mark.asyncio
+async def test_outcome_stats_never_counts_a_decision_proposal(db_env):
+    """Review R1 F4, the same argument as the investigate row above in a different
+    column: a dispatch that ended by proposing a decision never tried to open a PR,
+    so counting it would post a first-pass-less outcome at its tier and drag the
+    capability floor down — here it would make sonnet read as a tier that cannot do
+    the work. The exclusion rides the ONE ``_counts_as_attempt`` predicate the
+    ladder and queue readers use, so no reader can disagree with another."""
+    from server.db.models import DECISION_PROPOSED_CAUSE
+    await init_db(db_env)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="viberpit")
+        db.add(project)
+        await db.flush()
+        cap = Feature(project_id=project.id, slug="cap", title="Capability")
+        db.add(cap)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=1, kind="issue", title="issue 1", body="b",
+                        feature_id=cap.id))
+        db.add_all([
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="merged",
+                            first_pass_merge=True, dispatch_kind="implement"),
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="merged",
+                            first_pass_merge=True, dispatch_kind="implement"),
+            # The proposal: an implement dispatch, finalised, no first pass — and
+            # not evidence about sonnet's capability.
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="no_pr",
+                            cause=DECISION_PROPOSED_CAUSE, dispatch_kind="implement"),
+        ])
+        await db.flush()
+        assert await outcome_stats(db, project.id, cap.id) == [TierStats("sonnet", 2, 2)]
+
+
+@pytest.mark.asyncio
 async def test_outcome_stats_is_empty_for_a_capability_with_no_issues(db_env):
     project_id, _ = await _seed(db_env)
     async with db_session() as db:

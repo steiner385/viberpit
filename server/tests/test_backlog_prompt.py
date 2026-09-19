@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from dataclasses import replace
+
 from server.automations.backlog_prompt import (
     CONVERTED_NOTE_PREFIX,
+    DECISIONS_HEADING,
     build_implement_prompt,
     build_investigate_prompt,
 )
 from server.sessions.engine import AgentEngine
 from server.automations.backlog_selection import Batch
-from server.sessions.completion import NO_PR_MARKER, resolution_from_text
+from server.sessions.completion import NO_PR_MARKER, commit_trailer, resolution_from_text
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +120,100 @@ def test_parametrized_fixes_keywords(issues, expected_fixes):
     result = build_implement_prompt(batch)
     for kw in expected_fixes:
         assert kw in result
+
+
+# --------------------------------------------------------------------------- #
+# Decisions already taken (spec 2026-09-18 §6)                                 #
+# --------------------------------------------------------------------------- #
+
+# The implement prompt exactly as it read BEFORE decisions were threaded through
+# it, so the undecided path is pinned byte-for-byte: carrying a decision may add
+# text to a DECIDED batch and must add nothing at all to an undecided one. The
+# trailer is interpolated from the one ``commit_trailer`` the builder itself
+# calls — it is engine-derived and is the only part of the prompt that is not a
+# literal.
+UNDECIDED_PROMPT = (
+    "Implement the following GitHub issue(s) in repository `owner/repo` "
+    "and land them in a single pull request:\n\n"
+    "- owner/repo#42  (close with `Fixes #42` in the PR body)\n\n"
+    "Requirements — follow the repository's completion workflow exactly:\n"
+    "1. Implement all issues listed above.\n"
+    "2. Open ONE pull request that covers all of them (never a draft).\n"
+    "3. In the PR body include a closing keyword for EVERY issue:\n"
+    "   `Fixes #<n>` (one per issue) so GitHub auto-closes them on merge.\n"
+    "4. Mark the PR ready for review immediately after opening.\n"
+    "5. Arm auto-merge: `gh pr merge <#> --squash --auto`.\n"
+    "   Both steps 4 and 5 are required — a ready PR with auto-merge armed\n"
+    "   is the finished state.\n"
+    "6. Branch off `origin/master` (never local `master`).\n"
+    "7. End every commit message with:\n"
+    f"   `{commit_trailer(AgentEngine.CLAUDE_CODE)}`\n"
+)
+
+# One accepted decision as ``server/pm/decisions.py:decision_text`` renders it.
+# Quoted here the way the prompt must quote it: character for character.
+DECISION_TEXT = (
+    "Decision (Server-side): render it on the server — the client cannot see the "
+    "ledger — because the mobile bundle must not grow.")
+
+
+def test_undecided_prompt_is_byte_identical_to_the_pre_decision_prompt():
+    """A batch with nothing decided (the dataclass default) must produce exactly
+    the prompt the runner has always sent — threading decisions through the
+    builder is additive or it is a silent rewrite of every dispatch."""
+    assert build_implement_prompt(SINGLE_BATCH) == UNDECIDED_PROMPT
+    assert DECISIONS_HEADING not in build_implement_prompt(SINGLE_BATCH)
+
+
+def test_an_empty_decisions_map_adds_nothing():
+    """Explicitly empty is the same as unset: no heading, no blank section, no
+    stray newline — the same bytes."""
+    assert build_implement_prompt(replace(SINGLE_BATCH, decisions={})) == UNDECIDED_PROMPT
+
+
+def test_accepted_decision_is_quoted_verbatim():
+    result = build_implement_prompt(
+        replace(SINGLE_BATCH, decisions={"owner/repo#42": DECISION_TEXT}))
+    assert DECISIONS_HEADING in result
+    # Verbatim: the exact sentence the person accepted, prefixed only by its ref.
+    assert f"- owner/repo#42: {DECISION_TEXT}" in result
+
+
+def test_the_decision_block_is_purely_additive():
+    """Everything OUTSIDE the block is byte-identical to the undecided prompt, so
+    a decision adds an instruction and changes no other one."""
+    result = build_implement_prompt(
+        replace(SINGLE_BATCH, decisions={"owner/repo#42": DECISION_TEXT}))
+    start = result.index(DECISIONS_HEADING)
+    end = result.index("Requirements — follow")
+    assert result[:start] + result[end:] == UNDECIDED_PROMPT
+
+
+def test_decisions_follow_the_batch_issue_order_and_skip_undecided_issues():
+    result = build_implement_prompt(replace(
+        MULTI_BATCH, decisions={"owner/repo#30": "Decision (C): third.",
+                                "owner/repo#10": "Decision (A): first."}))
+    block = result[result.index(DECISIONS_HEADING):result.index("Requirements — follow")]
+    assert block.index("Decision (A): first.") < block.index("Decision (C): third.")
+    assert "owner/repo#20" not in block          # nothing decided for that issue
+
+
+def test_a_decision_for_a_ref_outside_the_batch_still_renders():
+    """The batch's issues can be trimmed between the decision and the dispatch;
+    dropping the decision silently would send the run off to re-litigate it."""
+    result = build_implement_prompt(
+        replace(SINGLE_BATCH, decisions={"owner/repo#99": "Decision (B): keep it."}))
+    assert "- owner/repo#99: Decision (B): keep it." in result
+
+
+def test_the_investigate_prompt_carries_no_decisions():
+    """Only the IMPLEMENT path takes decisions: an investigation is asking what
+    the problem is, and its four exits are its whole contract."""
+    result = build_investigate_prompt(
+        replace(SINGLE_BATCH, decisions={"owner/repo#42": DECISION_TEXT}),
+        engine=AgentEngine.CLAUDE_CODE)
+    assert DECISIONS_HEADING not in result
+    assert DECISION_TEXT not in result
 
 
 # --------------------------------------------------------------------------- #

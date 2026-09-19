@@ -75,3 +75,62 @@ def test_hold_guidance_evidence_is_one_entry_with_no_buttons():
     # Policy-independent: the copy does not vary with dispatch mode.
     g2 = hold_guidance(hold_kind="evidence", policy={**effective_policy(None), "dispatch": "auto"})
     assert g2 == g
+
+
+# --------------------------------------------------------------------------- #
+# Decision proposals (spec 2026-09-18 §6)                                      #
+# --------------------------------------------------------------------------- #
+
+def test_decision_guidance_is_two_columns_under_auto_dispatch():
+    from server.pm.explain import decision_guidance
+    g = decision_guidance(policy={**effective_policy(None), "dispatch": "auto"})
+    assert set(g) == {"accept", "reject"}
+    a = g["accept"]
+    assert a["available"] is True
+    assert a["immediate"][0]["text"] == \
+        "The hold clears; the next run implements with the chosen option."
+    assert a["then"][0]["spawnsSession"] is True
+    assert "dispatch it to a coding session" in a["then"][0]["text"]
+    assert a["when"] == "next_tick"
+
+
+def test_decision_accept_under_off_dispatch_spawns_nothing():
+    from server.pm.explain import decision_guidance
+    a = decision_guidance(policy=effective_policy(None))["accept"]
+    assert a["then"][0]["spawnsSession"] is False
+    assert "Dispatch is off" in a["then"][0]["text"]
+    assert a["when"] == "never"
+
+
+def test_decision_reject_names_the_hold_reason_it_actually_writes():
+    """The sentence the explainer promises and the reason ``decisions.reject``
+    writes are ONE constant — a second spelling here would go stale silently."""
+    from server.pm.decisions import reject  # noqa: F401 — the writer this pins
+    from server.pm.explain import decision_guidance
+    from server.pm.holds import DECISION_REJECT_REASON
+    r = decision_guidance(policy=effective_policy(None))["reject"]
+    assert r["immediate"][0]["text"] == (
+        f"The issue is held for you with '{DECISION_REJECT_REASON}'; "
+        "Retry or Implement now release it.")
+    assert DECISION_REJECT_REASON == "decision proposal rejected"
+    assert r["then"] == [] and r["when"] == "now"
+
+
+def test_the_re_hold_reversal_is_one_sentence_in_both_cards():
+    """Accepting a decision and tapping Retry on an owner-action hold promise the
+    same thing, so they say it with the same string — not two literals."""
+    from server.pm.explain import REHOLD_REVERSAL, decision_guidance, hold_guidance
+    policy = effective_policy(None)
+    assert decision_guidance(policy=policy)["accept"]["reversal"] == REHOLD_REVERSAL
+    assert hold_guidance(hold_kind="owner_action", policy=policy)["retry"]["reversal"] \
+        == REHOLD_REVERSAL
+
+
+def test_decision_guidance_shares_the_dispatch_sentence_with_triage():
+    """No second consequence builder: the machine half of both cards is the one
+    ``dispatch_sentence``."""
+    from server.pm.explain import decision_guidance
+    policy = {**effective_policy(None), "dispatch": "propose"}
+    assert (decision_guidance(policy=policy)["accept"]["then"][0]["text"]
+            == triage_guidance(feature_slug="x", score=None,
+                               policy=policy)["accept"]["then"][0]["text"])

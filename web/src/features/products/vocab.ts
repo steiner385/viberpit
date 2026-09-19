@@ -81,7 +81,7 @@ export const ROADMAP = {
   initiatives: 'Initiatives',
   queue: 'Queue',
   inbox: 'Inbox',
-  help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you. Its Inbox scope holds the proposed classifications awaiting your decision — accept, adjust or reject each one.',
+  help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you. Its Inbox scope holds what is awaiting your decision — proposed classifications to accept, adjust or reject, and product decisions a session drafted options for rather than guessing.',
 } as const
 
 export const INITIATIVE = { singular: 'Initiative', plural: 'Initiatives', new: 'New initiative' } as const
@@ -113,10 +113,11 @@ export const REASON_LABEL: Record<string, string> = {
 export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
 
-/** Why an issue is held (server `holdKind`, spec 2026-09-18 §3). Neutral on
- *  purpose: evidence dispatch has landed (item 4b), but the stronger-model exit
- *  and the decision inbox are still later series items, and a label must never
- *  promise those before they exist. */
+/** Why an issue is held (server `holdKind`, spec 2026-09-18 §3). Evidence
+ *  dispatch (item 4b) and the decision inbox (item 5) have landed, so those two
+ *  labels name a surface a tap actually reaches; the stronger-model exit is
+ *  still a later series item and its label stays neutral about what happens
+ *  next, because a label must never promise a surface before it exists. */
 export const HOLD_LABEL: Record<string, string> = {
   owner_action: 'Held for the owner',
   decision: 'Awaiting your decision',

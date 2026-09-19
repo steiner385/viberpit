@@ -173,8 +173,10 @@ class Session(Base):
     # autopilot help continues). Nullable so init_db backfills without a migration.
     auto_archive_opt_out_reason: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None)
-    # Durable record that a session resolved it will NOT open a PR — either it
-    # finished without one ("not-needed") or cancelled the PR work ("cancelled").
+    # Durable record that a session resolved it will NOT open a PR — it finished
+    # without one ("not-needed"), cancelled the PR work ("cancelled"), or parked the
+    # issue on a decision proposal ("awaiting-decision", spec 2026-09-18 §6). The
+    # vocabulary is `server/sessions/completion.py:NO_PR_RESOLUTIONS`.
     # None = unresolved (default). Reason token may carry ": detail" for audit.
     # Source distinguishes the deterministic marker from the probabilistic classifier.
     pr_resolution: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -715,6 +717,23 @@ class AutomationOwnedTarget(Base):
 DISPATCH_OUTCOMES: tuple[str, ...] = (
     "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned",
     "superseded")
+
+# ``cause`` is free text, NOT a vocabulary — the reason behind one of the outcomes
+# above. Exactly one cause is READ BACK rather than only displayed, so it is a
+# constant here (the one module both the writer in ``server/automations`` and the
+# readers in ``server/pm`` can import without a cycle), never a re-typed literal:
+DECISION_PROPOSED_CAUSE = "decision_proposed"
+# ``decision_proposed`` sits on a ``no_pr`` row whose session ended with
+# ``mark_no_pr("awaiting-decision")`` after proposing a decision (spec 2026-09-18
+# §6). Deliberately a cause and not a new outcome: nothing about the dispatch
+# differs from any other ending that opened no PR, and a new outcome value would
+# have to be taught to every consumer of the tuple above (``server/pm/outcomes.py``,
+# ``web/src/api/pm.ts``). It is excluded from the attempt/bounce arithmetic by
+# ``server/pm/outcomes.py:_counts_as_attempt`` — a dispatch that stopped to ask the
+# owner a question neither failed nor used up a rung of the model ladder.
+# The other cause worth knowing about is ``investigation: …`` on a ``no_pr`` row
+# with ``dispatch_kind='investigate'`` (spec §5), whose suffix names which of the
+# four exits was taken; it is excluded from the same arithmetic by its KIND.
 
 # What a dispatch was for (spec 2026-09-18 §3/§5). ``implement`` opens a PR;
 # ``investigate`` (series item 4b) reproduces or correlates and never counts as a
@@ -1628,6 +1647,11 @@ HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_
 # vocabulary, not one per proposal kind (constitution VI).
 TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
 
+# Spec 2026-09-18 §6 names the DecisionProposal lifecycle in its own right, and the
+# service/route code reads better saying so — but it is the SAME vocabulary, so this
+# is an ALIAS, never a second spelling of the three strings (constitution VI).
+DECISION_PROPOSAL_STATUSES: tuple[str, ...] = TRIAGE_PROPOSAL_STATUSES
+
 
 class Feature(Base):
     """Index row for one ``docs/product/features/<slug>.md`` in the project's
@@ -1933,6 +1957,67 @@ class TriageProposal(Base):
     # proposal again. Nullable so reconcile ALTER-ADDs it on both dialects;
     # NULL/False = eligible.
     auto_undone: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+
+
+class DecisionProposal(Base):
+    """One product decision a coding session could not take on its own (spec
+    2026-09-18 §6): the options it drafted, the one it recommends, and why.
+
+    Written together with the work item's ``decision`` hold by the ONE writer,
+    ``server/pm/decisions.py:propose``. Accepting records ``chosen_key`` and
+    clears that hold (the only path that may); rejecting parks the item as
+    ``owner_action`` instead. The row survives either way as the audit of what
+    was offered, and the accepted one is the text the next implement run carries
+    verbatim (``decisions.accepted_text_for_refs``).
+
+    Column conventions deliberately mirror :class:`TriageProposal` — str-uuid PK,
+    ``DateTime(timezone=True)`` + ``_utcnow`` (never ``func.now()``), nullable
+    JSON — because the inbox reads the two proposal tables side by side, and
+    because ``init_db``'s reconcile can only ALTER-ADD nullable columns: apart
+    from the PK and ``created_at`` (which has a Python default), everything here
+    is nullable so a later column can follow the same path.
+    """
+
+    __tablename__ = "decision_proposals"
+
+    # "One pending decision per item" is an invariant, not a convention: two
+    # concurrent proposers (two sessions, or the session tool and the route) can
+    # both pass ``decisions.propose``'s SELECT check inside their own transaction
+    # and both insert, leaving the item with two live cards and no way to propose
+    # again until both are resolved. A PARTIAL unique index makes the database the
+    # arbiter; the SELECT stays because it is what produces the friendly
+    # ``DecisionConflict`` message instead of an IntegrityError. Resolved rows are
+    # deliberately outside the index — an issue may be decided many times.
+    __table_args__ = (
+        Index("ux_decision_proposals_pending", "work_item_id", unique=True,
+              sqlite_where=text("status = 'pending'"),
+              postgresql_where=text("status = 'pending'")),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    work_item_id: Mapped[str] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    # The coding session that proposed it, when one did — derived from the actor
+    # (``session:<id>``) by ``decisions.propose`` so the two can never disagree.
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # [{"key": str, "label": str, "detail": str | None}] — 2..6 entries, keys unique.
+    # Validated on the way in by ``decisions.propose``; stored as given after that,
+    # since the accepted option's label/detail is quoted verbatim into the prompt.
+    options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    recommended_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The option the human picked; NULL until accepted (and on a rejected row).
+    chosen_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="pending", index=True)  # DECISION_PROPOSAL_STATUSES
+    # Actor strings in the ``server/pm/holds.py`` vocabulary (``session:<id>``,
+    # ``assistant:<identity>``, a Tailscale login, ``lan@local``).
+    proposed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class MaterializationProposal(Base):

@@ -14,8 +14,9 @@ import { Skeleton } from '@/ui/Skeleton'
 import { Banner } from '@/ui/Banner'
 import { Markdown } from '@/features/sessions/transcript/Markdown'
 import { ConsequenceList } from '../guidance/ConsequenceList'
-import { holdLabel } from '@/features/products/vocab'
+import { holdLabel, ROADMAP } from '@/features/products/vocab'
 import { sessionPath } from '@/session/sessionNavState'
+import { inboxPath } from '../roadmapNavState'
 
 /** Lazy-mounted by the list: its queries exist only after an explicit review. */
 export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; onClose: () => void }) {
@@ -168,6 +169,20 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
               there is nothing here for a person to tap. */}
           {data.holdKind === 'evidence' && data.guidance && 'evidence' in data.guidance &&
             <ConsequenceList consequence={data.guidance.evidence} />}
+          {/* Decision: the options, the recommendation and the two consequence
+              columns all live on the proposal card, so this panel LINKS there
+              (spec 2026-09-18 §7) rather than growing a second copy of the
+              choice. No Retry either — accepting the proposal is the only thing
+              that clears a decision hold, which is why `hold_guidance` computes
+              no buttons for this kind. */}
+          {data.holdKind === 'decision' && <>
+            <p className="text-sm text-ink-muted">
+              A session proposed options instead of guessing. Pick one in the {ROADMAP.inbox.toLowerCase()} and the next run implements it.
+            </p>
+            <Link to={inboxPath({})} className="inline-block text-sm text-accent hover:underline">
+              Open the {ROADMAP.inbox.toLowerCase()}
+            </Link>
+          </>}
         </div>}
         {/* Outside the hold panel on purpose: a dispatch RELEASES the hold, so the
             panel disappears on the refetch that follows — and the session it just

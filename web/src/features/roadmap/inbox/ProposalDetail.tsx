@@ -1,5 +1,6 @@
 /**
- * One pending proposal, as the Inbox scope's DETAIL PANE (roadmap spec §12).
+ * One pending proposal, as the Inbox scope's DETAIL PANE (roadmap spec §12) —
+ * a CLASSIFICATION proposal, or (spec 2026-09-18 §6) a DECISION proposal.
  *
  * The editor IS the detail pane: the old standalone page opened an inline form
  * inside the row, which meant the thing you were deciding and the evidence you
@@ -27,9 +28,14 @@
  * `featureId` (`server/api/pm.py:_validate_accept_edits`) — so nothing the
  * PATCH enforced is lost by dropping it.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { OverlayEdits, TriageProposal } from '@/api/triage'
-import { useAcceptProposal, useRejectProposal } from '@/api/hooks'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  isDecisionProposal,
+  type DecisionProposal, type InboxProposal, type OverlayEdits, type TriageProposal,
+} from '@/api/triage'
+import {
+  useAcceptDecision, useAcceptProposal, useRejectDecision, useRejectProposal,
+} from '@/api/hooks'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { Badge, type Tone } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
@@ -50,7 +56,7 @@ export interface CapabilityOption {
 }
 
 export interface ProposalDetailProps {
-  proposal: TriageProposal
+  proposal: InboxProposal
   capabilities: readonly CapabilityOption[]
   /**
    * The `?product=` narrowing the LIST is observing (`inboxProductForSearch`),
@@ -84,9 +90,21 @@ const editsOf = (p: TriageProposal): OverlayEdits => ({
   featureId: p.proposedFeatureId ?? undefined,
 })
 
-export function ProposalDetail({
+/**
+ * The pane, for whichever kind of proposal is open. Two bodies, one component:
+ * the page opens `?proposal=<id>` without knowing which list the id came from,
+ * and a second exported pane would need a second branch there and a second copy
+ * of the key-swallowing wrapper below.
+ */
+export function ProposalDetail(props: ProposalDetailProps) {
+  return isDecisionProposal(props.proposal)
+    ? <DecisionDetail proposal={props.proposal} onDone={props.onDone} />
+    : <TriageDetail {...props} proposal={props.proposal} />
+}
+
+function TriageDetail({
   proposal: p, capabilities, scopeProduct, autoFocusScores, onDone,
-}: ProposalDetailProps) {
+}: ProposalDetailProps & { proposal: TriageProposal }) {
   // Keyed to the SCOPE the list is observing, not to `p.projectSlug`: these
   // mutations remove the row optimistically, and they can only remove it from
   // the cache entry the rows actually came from.
@@ -136,7 +154,6 @@ export function ProposalDetail({
   for (const f of SCORE_FIELDS) if (differs(f)) edited[f] = effective[f]
   if (featureChanged) edited.featureId = effective.featureId
   const score = riceScore(effective.reach, effective.impact, effective.effort, effective.confidence)
-  const name = p.title ?? p.id
   const options = useMemo(
     () => capabilities.map((c) => ({ ...c, label: `${'  '.repeat(c.depth)}${c.title ?? c.slug}` })),
     [capabilities],
@@ -162,38 +179,15 @@ export function ProposalDetail({
   }
 
   return (
-    <div
-      className="flex flex-col gap-4"
-      onKeyDown={(e) => {
-        if (e.ctrlKey || e.metaKey || e.altKey) return
-        if (INBOX_KEYS.has(e.key)) e.stopPropagation()
-      }}
-    >
-      <header className="flex flex-col gap-1">
-        {p.url
-          ? (
-            <a
-              href={p.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-lg font-semibold text-ink hover:underline"
-            >
-              {name}
-            </a>
-          )
-          : <span className="text-lg font-semibold text-ink">{name}</span>}
-        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-          <span>{p.repo}#{p.number}</span>
-          {p.projectSlug && <span>· {p.projectSlug}</span>}
-          {p.proposedFeatureSlug
-            ? <Badge tone="info">{p.proposedFeatureSlug}</Badge>
-            : <Badge tone="warning">no fit → {p.noFitSuggestion ?? 'new capability'}</Badge>}
-          <Badge tone={CONFIDENCE_TONE[p.confidenceLevel ?? 'low'] ?? 'neutral'}>
-            {p.confidenceLevel ?? 'low'} confidence
-          </Badge>
-          {isValidTimestamp(p.createdAt) && <span title={p.createdAt}>· proposed {relTime(p.createdAt)}</span>}
-        </div>
-      </header>
+    <PaneShell>
+      <ProposalHeader proposal={p}>
+        {p.proposedFeatureSlug
+          ? <Badge tone="info">{p.proposedFeatureSlug}</Badge>
+          : <Badge tone="warning">no fit → {p.noFitSuggestion ?? 'new capability'}</Badge>}
+        <Badge tone={CONFIDENCE_TONE[p.confidenceLevel ?? 'low'] ?? 'neutral'}>
+          {p.confidenceLevel ?? 'low'} confidence
+        </Badge>
+      </ProposalHeader>
       {/* The classifier's stated reason — the one piece of evidence a human has
           before an irreversible accept, so it reads before the form. */}
       {p.rationale && <p className="text-sm text-ink">{p.rationale}</p>}
@@ -241,6 +235,164 @@ export function ProposalDetail({
           </Button>
         </div>
       </form>
+    </PaneShell>
+  )
+}
+
+/**
+ * The pane's frame. The list column's key map lives on `window` and must not
+ * reach past this pane (see the header), so the letter keys are swallowed HERE,
+ * once, for whichever body is inside — not re-spelled per kind.
+ */
+function PaneShell({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="flex flex-col gap-4"
+      onKeyDown={(e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return
+        if (INBOX_KEYS.has(e.key)) e.stopPropagation()
+      }}
+    >
+      {children}
     </div>
+  )
+}
+
+/** Title, issue ref, owning product, when it was proposed — the facts BOTH
+ *  kinds carry, said the same way. `children` are the kind's own chips. */
+function ProposalHeader({ proposal: p, children }: {
+  proposal: InboxProposal
+  children?: ReactNode
+}) {
+  const name = p.title ?? p.id
+  return (
+    <header className="flex flex-col gap-1">
+      {p.url
+        ? (
+          <a
+            href={p.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-lg font-semibold text-ink hover:underline"
+          >
+            {name}
+          </a>
+        )
+        : <span className="text-lg font-semibold text-ink">{name}</span>}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+        <span>{p.repo}#{p.number}</span>
+        {p.projectSlug && <span>· {p.projectSlug}</span>}
+        {children}
+        {isValidTimestamp(p.createdAt) && <span title={p.createdAt}>· proposed {relTime(p.createdAt)}</span>}
+      </div>
+    </header>
+  )
+}
+
+/**
+ * One pending DECISION proposal (spec 2026-09-18 §6): the options a coding
+ * session drafted rather than guessing, as a single-choice group with the
+ * recommendation preselected, the rationale beneath, and the same two-column
+ * consequence guidance the classification pane carries — through the same
+ * `ConsequenceList`, never a second renderer.
+ *
+ * The recommendation is PRESELECTED, not pre-taken: Accept always sends what the
+ * radio group holds, so the person confirms an option either way. There is no
+ * undo window on a decision (spec decision 3), which is also why there is no
+ * edit-then-accept third button here — the options are the whole of the choice.
+ */
+function DecisionDetail({ proposal: p, onDone }: {
+  proposal: DecisionProposal
+  onDone: () => void
+}) {
+  const accept = useAcceptDecision()
+  const reject = useRejectDecision()
+  // Seeded from the recommendation, re-seeded only when the PROPOSAL changes —
+  // the same render-phase reset the classification pane uses, and for the same
+  // reason: the queue refetches on every `/ws` status frame, and an effect on
+  // `p` would throw away a choice the user had already clicked.
+  const [seededFor, setSeededFor] = useState(p.id)
+  const [chosen, setChosen] = useState<string>(() => p.recommendedKey ?? '')
+  if (seededFor !== p.id) {
+    setSeededFor(p.id)
+    setChosen(p.recommendedKey ?? '')
+  }
+  const groupId = `decision-${p.id}`
+  const guidance = p.guidance ?? null
+
+  return (
+    <PaneShell>
+      <ProposalHeader proposal={p}>
+        <Badge tone="warning">decision</Badge>
+      </ProposalHeader>
+      {/* Why these options and why that recommendation — the evidence the person
+          decides on, so it reads before the choice, exactly as the classifier's
+          rationale does on the other card. */}
+      {p.rationale && <p className="text-sm text-ink">{p.rationale}</p>}
+      {p.proposedBy && <p className="text-xs text-ink-muted">Proposed by {p.proposedBy}</p>}
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (!chosen) return
+          accept.mutate({ id: p.id, chosenKey: chosen })
+          onDone()
+        }}
+      >
+        <div role="radiogroup" aria-label="Options" className="flex flex-col gap-2">
+          {p.options.map((o) => (
+            <label
+              key={o.key}
+              htmlFor={`${groupId}-${o.key}`}
+              className="flex cursor-pointer items-start gap-2 rounded-md border border-edge p-3 hover:bg-surface-raised"
+            >
+              <input
+                type="radio"
+                id={`${groupId}-${o.key}`}
+                name={groupId}
+                value={o.key}
+                checked={chosen === o.key}
+                onChange={() => setChosen(o.key)}
+                className="mt-1 size-4 shrink-0 accent-accent"
+              />
+              <span className="flex min-w-0 flex-col gap-1">
+                <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
+                  {o.label}
+                  {o.key === p.recommendedKey && <Badge tone="info">recommended</Badge>}
+                </span>
+                {o.detail && <span className="text-sm text-ink-muted">{o.detail}</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+        {guidance && (
+          <div role="group" aria-label="What each decision does" className="grid gap-3 rounded-md border border-edge p-3 sm:grid-cols-2">
+            <ConsequenceList heading="Accept" consequence={guidance.accept} />
+            <ConsequenceList heading="Reject" consequence={guidance.reject} />
+          </div>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="lg"
+            disabled={reject.isPending}
+            onClick={() => { reject.mutate({ id: p.id }); onDone() }}
+          >
+            Reject
+          </Button>
+          {/* Disabled while `chosen` is empty: the server answers 422 on an empty
+              `chosen_key`, and a button that can only fail is not an offer.
+              DEFENCE ONLY — the state is unreachable today: `decisions.propose`
+              refuses a `recommended_key` that is not one of the options, so the
+              seed is always a real key, and a native radio group cannot be
+              cleared once one is set. It guards the seeding rule rather than any
+              flow a person can drive. */}
+          <Button type="submit" size="lg" disabled={!chosen || accept.isPending}>
+            Accept
+          </Button>
+        </div>
+      </form>
+    </PaneShell>
   )
 }

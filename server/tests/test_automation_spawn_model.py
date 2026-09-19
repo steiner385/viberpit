@@ -25,7 +25,8 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=None):
+def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=None,
+                        accepted_decisions=None):
     """A bare orchestrator whose runner config is *config*.
 
     The session model is NOT read here since the fix wave: ``_backlog_spawn``
@@ -39,6 +40,9 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
     otherwise reach for a DB. *ladder_rung* stubs ``_backlog_ladder_rung`` the
     same way (spec 2026-09-18 §4): the rung this dispatch is pinned to because
     the primary issue is parked ``stronger_model``, or ``None`` when it is not.
+    *accepted_decisions* stubs ``_backlog_accepted_decisions`` (spec 2026-09-18
+    §6): ref → the accepted decision text the implement prompt quotes, defaulting
+    to none so no test here needs a seeded proposal.
 
     The dispatch KIND has no seam: it is read off ``Batch.primary_hold_kind``
     (spec 2026-09-18 §5), which the candidate pool put there and the loop stamped
@@ -63,6 +67,10 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
     async def rung(product_slug, primary_ref, *, default_model, floor):
         return ladder_rung
     orch._backlog_ladder_rung = rung  # type: ignore[method-assign]
+
+    async def decisions(refs):
+        return dict(accepted_decisions or {})
+    orch._backlog_accepted_decisions = decisions  # type: ignore[method-assign]
 
     return orch
 
@@ -616,6 +624,86 @@ async def test_backlog_spawn_without_an_evidence_hold_implements(tmp_path, monke
     assert "Open ONE pull request" in captured["initial_prompt"]
     assert captured["detail"]["dispatch_kind"] == "implement"
     assert rec.dispatch_kind == "implement"
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_carries_the_accepted_decision_verbatim(tmp_path, monkeypatch):
+    """Spec 2026-09-18 §6: the decision the person took in the inbox reaches the
+    next implement run WORD FOR WORD, and the seam is asked about the batch's
+    issues — not just the primary, since a bundled issue can be the decided one."""
+    from server.automations.backlog_prompt import DECISIONS_HEADING
+    text = "Decision (Server-side): render it on the server because X."
+    orch = _build_backlog_orch({}, accepted_decisions={"o/r#7": text})
+    _patch_git(monkeypatch, tmp_path)
+    asked: dict = {}
+
+    async def decisions(refs):
+        asked["refs"] = list(refs)
+        return {"o/r#7": text}
+    orch._backlog_accepted_decisions = decisions  # type: ignore[method-assign]
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
+                              ownership_token="test-token")
+
+    assert asked["refs"] == _BATCH.issues
+    assert DECISIONS_HEADING in captured["initial_prompt"]
+    assert f"- o/r#7: {text}" in captured["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_leaves_an_undecided_prompt_alone(tmp_path, monkeypatch):
+    """Nothing decided, nothing added: the overwhelming majority of dispatches
+    must read exactly as they did before decisions existed."""
+    from server.automations.backlog_prompt import DECISIONS_HEADING
+    orch = _build_backlog_orch({})
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
+                              ownership_token="test-token")
+
+    assert DECISIONS_HEADING not in captured["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_investigation_never_reads_decisions(tmp_path, monkeypatch):
+    """An investigation asks what the problem is; its four exits are its whole
+    contract (spec §5), so it neither pays for the read nor carries the block."""
+    from server.automations.backlog_prompt import DECISIONS_HEADING
+    orch = _build_backlog_orch({})
+    _patch_git(monkeypatch, tmp_path)
+
+    async def boom(refs):
+        raise AssertionError("an investigation must not read decisions")
+    orch._backlog_accepted_decisions = boom  # type: ignore[method-assign]
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_EVIDENCE_BATCH, "acct", default_model="sonnet",
+                              ownership_token="test-token")
+
+    assert DECISIONS_HEADING not in captured["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_survives_a_failing_decisions_read(tmp_path, monkeypatch):
+    """Best-effort (spec §13): a failed read costs the BLOCK, never the spawn —
+    the dispatch runs exactly as it would have before anyone decided anything."""
+    from server.automations.backlog_prompt import DECISIONS_HEADING
+    orch = _build_backlog_orch({})
+    _patch_git(monkeypatch, tmp_path)
+
+    async def boom(refs):
+        raise RuntimeError("db down")
+    orch._backlog_accepted_decisions = boom  # type: ignore[method-assign]
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
+                                    ownership_token="test-token")
+
+    assert rec is not None
+    assert DECISIONS_HEADING not in captured["initial_prompt"]
+    assert "Open ONE pull request" in captured["initial_prompt"]
 
 
 @pytest.mark.asyncio

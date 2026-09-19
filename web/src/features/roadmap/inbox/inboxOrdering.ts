@@ -9,17 +9,39 @@
  * cannot stay in step, because each seeds its group-by/sort-by from
  * localStorage once and never re-reads it (see `inboxOrderStore`'s header).
  */
-import type { TriageProposal } from '@/api/triage'
+import { isDecisionProposal, type InboxProposal } from '@/api/triage'
 import type { OrderingSpec } from '@/session/useSessionOrdering'
 
 export type InboxGroupBy = 'product' | 'capability' | 'confidence' | 'none'
 export type InboxSortBy = 'newest' | 'confidence' | 'title'
 
-/** High first — the queue's whole job is to surface the safe accepts. */
-const CONF_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
-const confRank = (p: TriageProposal) => CONF_RANK[p.confidenceLevel ?? 'low'] ?? 2
+/**
+ * THE spec for both inbox card kinds (spec 2026-09-18 §6: decision proposals
+ * list with classification proposals, "same ordering spec and keys").
+ *
+ * Product, newest and title are facts both kinds carry, so those three need no
+ * branch at all. Capability and confidence are the classifier's alone — a
+ * decision proposal has neither — so each of those groupings gives decisions one
+ * bucket of their own, ordered LAST: the grouping was chosen to sort
+ * classification work, and burying decisions inside "no fit" or "low confidence"
+ * would say something about them that is not true.
+ *
+ * The key is NAMESPACED (`kind:decision`) because the two groupings that use it
+ * key their other buckets on user data — a capability slug, a confidence level.
+ * A capability literally slugged `decision` would otherwise land in this bucket
+ * with a different label and a different order, and the collapsed-state store
+ * (which persists bucket keys) would confuse the two across sessions.
+ */
+const DECISION_BUCKET = { key: 'kind:decision', label: 'Decisions' }
 
-export const INBOX_ORDERING_SPEC: OrderingSpec<InboxGroupBy, InboxSortBy, TriageProposal> = {
+/** High first — the queue's whole job is to surface the safe accepts. A
+ *  decision has no confidence and ranks after every level of it. */
+const CONF_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
+const DECISION_RANK = 3
+const confRank = (p: InboxProposal) =>
+  (isDecisionProposal(p) ? DECISION_RANK : CONF_RANK[p.confidenceLevel ?? 'low'] ?? 2)
+
+export const INBOX_ORDERING_SPEC: OrderingSpec<InboxGroupBy, InboxSortBy, InboxProposal> = {
   namespace: 'roadmap-inbox',
   groupByValues: ['product', 'capability', 'confidence', 'none'],
   sortByValues: ['newest', 'confidence', 'title'],
@@ -32,18 +54,22 @@ export const INBOX_ORDERING_SPEC: OrderingSpec<InboxGroupBy, InboxSortBy, Triage
       },
       capability: {
         // "No fit" last: it is the bucket that needs a decision, not a home.
-        bucketOf: (p) => ({
-          key: p.proposedFeatureSlug ?? 'no-fit',
-          label: p.proposedFeatureSlug ?? 'No fit',
-          order: p.proposedFeatureSlug ? 0 : 1,
-        }),
+        bucketOf: (p) => (isDecisionProposal(p)
+          ? { ...DECISION_BUCKET, order: 2 }
+          : {
+            key: p.proposedFeatureSlug ?? 'no-fit',
+            label: p.proposedFeatureSlug ?? 'No fit',
+            order: p.proposedFeatureSlug ? 0 : 1,
+          }),
       },
       confidence: {
-        bucketOf: (p) => ({
-          key: p.confidenceLevel ?? 'low',
-          label: p.confidenceLevel ?? 'low',
-          order: confRank(p),
-        }),
+        bucketOf: (p) => (isDecisionProposal(p)
+          ? { ...DECISION_BUCKET, order: DECISION_RANK }
+          : {
+            key: p.confidenceLevel ?? 'low',
+            label: p.confidenceLevel ?? 'low',
+            order: confRank(p),
+          }),
       },
     },
     // Every comparator ends on the id, so a refetch cannot reshuffle equal rows

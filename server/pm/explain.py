@@ -12,6 +12,12 @@ from server.sdlc.explain import (
 )
 from server.sdlc.gates import GATE_BY_ID
 
+#: How a person walks back a release they have just approved — shared by the
+#: decision card's Accept column and the owner-action card's Retry column, which
+#: promise the same thing (the item becomes queue-eligible; parking it again is
+#: what stops the next run). One sentence, one spelling.
+REHOLD_REVERSAL = "Hold it again from Edit details or the overlay."
+
 
 def triage_guidance(*, feature_slug: str | None, score: float | None, policy: dict) -> dict:
     """``{"accept": …, "reject": …}`` (Consequence wire shape) for one proposal.
@@ -30,6 +36,36 @@ def triage_guidance(*, feature_slug: str | None, score: float | None, policy: di
     reject = Consequence(
         True, None,
         (Step("Marks it needs-human; it leaves the inbox and nothing is dispatched."),),
+        (), WHEN_NOW, None, None)
+    return {"accept": consequence_to_wire(accept), "reject": consequence_to_wire(reject)}
+
+
+def decision_guidance(*, policy: dict) -> dict:
+    """``{"accept": …, "reject": …}`` for one DECISION proposal (spec 2026-09-18 §6).
+
+    The second column of the inbox's two-column guidance, built from the same
+    helpers as :func:`triage_guidance` — the dispatch sentence in particular, so
+    the inbox says exactly one thing about what the Backlog Runner does next
+    whichever kind of proposal the card carries. No second consequence builder.
+    """
+    # Function-level so this module keeps its no-DB import graph (``holds``
+    # imports the ORM). The reason string is NOT re-spelled here: what the
+    # explainer promises and what ``decisions.reject`` writes must be one value.
+    from server.pm.holds import DECISION_REJECT_REASON
+    dispatch = str(policy.get("dispatch") or "off")
+    min_status = str(policy.get("queue_min_status") or "ready")
+    accept = Consequence(
+        True, None,
+        (Step("The hold clears; the next run implements with the chosen option."),),
+        (Step(capitalize(dispatch_sentence(dispatch, min_status)), spawns_session=dispatch == "auto"),),
+        WHEN_NEXT_TICK if dispatch == "auto" else WHEN_NEVER,
+        # Accepting is not undoable the way a triage accept is (there is no undo
+        # window on a decision): parking the item again is what stops the next run.
+        REHOLD_REVERSAL, None)
+    reject = Consequence(
+        True, None,
+        (Step(f"The issue is held for you with '{DECISION_REJECT_REASON}'; "
+              "Retry or Implement now release it."),),
         (), WHEN_NOW, None, None)
     return {"accept": consequence_to_wire(accept), "reject": consequence_to_wire(reject)}
 
@@ -61,7 +97,7 @@ def hold_guidance(*, hold_kind: str | None, policy: dict) -> dict | None:
         (Step("Releases the hold; the item is queue-eligible again at its score."),),
         (Step(capitalize(dispatch_sentence(dispatch, min_status)), spawns_session=dispatch == "auto"),),
         WHEN_NEXT_TICK if dispatch == "auto" else WHEN_NEVER,
-        "Hold it again from Edit details or the overlay.", None)
+        REHOLD_REVERSAL, None)
     implement = Consequence(
         dispatch != "off",
         None if dispatch != "off" else

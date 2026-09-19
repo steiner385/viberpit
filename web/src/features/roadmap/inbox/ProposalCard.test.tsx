@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { TriageProposal } from '@/api/triage'
+import type { DecisionProposal, TriageProposal } from '@/api/triage'
 import { ProposalCard } from './ProposalCard'
 import { ViewportProvider } from '@/shell/useViewport'
 
@@ -18,10 +18,24 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 const p = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
+  proposalKind: 'triage',
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: null, proposedFeatureSlug: 'tasks', noFitSuggestion: null,
   reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending',
   createdAt: null, classifiedBy: null, resolvedAt: null, ...over,
+})
+
+const d = (over: Partial<DecisionProposal> & { id: string }): DecisionProposal => ({
+  proposalKind: 'decision', workItemId: `w-${over.id}`, projectSlug: 'viberpit',
+  repo: 'steiner385/viberpit', number: 12, ref: 'steiner385/viberpit#12',
+  title: 'Queue or stream?', url: null,
+  options: [
+    { key: 'queue', label: 'Durable queue', detail: 'Survives a restart.' },
+    { key: 'stream', label: 'In-process stream', detail: null },
+  ],
+  recommendedKey: 'queue', rationale: 'Both work; one costs a table.', chosenKey: null,
+  status: 'pending', proposedBy: 'session:s1', resolvedBy: null,
+  createdAt: null, resolvedAt: null, ...over,
 })
 
 function mount(over: Partial<TriageProposal> & { id?: string } = {}) {
@@ -79,5 +93,54 @@ describe('ProposalCard', () => {
   it('leaves the select tick enabled on a pending row', () => {
     mount({ status: 'pending' })
     expect(screen.getByRole('button', { name: 'Select p1' })).toBeEnabled()
+  })
+})
+
+/** The second card kind (spec 2026-09-18 §6), in the same list, through the same
+ *  `CardFrame` — a row whose only action is to open the choice. */
+describe('ProposalCard — a decision proposal', () => {
+  function mountDecision(over: Partial<DecisionProposal> = {}) {
+    const onOpen = vi.fn()
+    render(
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter>
+          <ul>
+            <ProposalCard
+              proposal={d({ id: 'd1', ...over })}
+              selected={false}
+              checked={false}
+              cursor={false}
+              onOpen={onOpen}
+              onToggleSelect={vi.fn()}
+            />
+          </ul>
+        </MemoryRouter>
+      </ViewportProvider>,
+    )
+    return { onOpen }
+  }
+
+  it('names the question, the ref, the option count and the recommendation', () => {
+    mountDecision()
+    expect(screen.getByText('Queue or stream?')).toBeInTheDocument()
+    expect(screen.getByText('2 options')).toBeInTheDocument()
+    expect(screen.getByText(/steiner385\/viberpit#12/)).toBeInTheDocument()
+    expect(screen.getByText(/recommended: Durable queue/)).toBeInTheDocument()
+  })
+
+  it('says what it is in words, not only in the rail colour', () => {
+    mountDecision()
+    expect(screen.getByText('awaiting your decision')).toBeInTheDocument()
+  })
+
+  it('offers NO select tick — a decision cannot go into a bulk accept', () => {
+    mountDecision()
+    expect(screen.queryByRole('button', { name: /^Select / })).toBeNull()
+  })
+
+  it('opens the pane, which is where the options are', () => {
+    const { onOpen } = mountDecision()
+    fireEvent.click(screen.getByRole('button', { name: /Open decision Queue or stream\?/ }))
+    expect(onOpen).toHaveBeenCalled()
   })
 })

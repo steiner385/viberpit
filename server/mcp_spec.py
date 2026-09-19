@@ -46,6 +46,12 @@ class ToolSpec:
     name: str
     tool_class: ToolClass
     title: str          # human label for permission cards ("Archive session")
+    #: Override for ``idempotentHint`` when the CLASS default would be a lie. ``None``
+    #: (the default) keeps the class rule in ``annotations_for``: a READ or a SIGNAL
+    #: repeats harmlessly. The exception is a SIGNAL that CREATES something — a second
+    #: ``propose_decision`` is a hard conflict, not a no-op — and telling the model
+    #: otherwise invites the retry the unique index then refuses.
+    idempotent: bool | None = None
 
 
 class ToolArgError(ValueError):
@@ -62,7 +68,8 @@ def annotations_for(spec: ToolSpec) -> ToolAnnotations:
         title=spec.title,
         readOnlyHint=spec.tool_class is ToolClass.READ,
         destructiveHint=spec.tool_class is ToolClass.DESTRUCTIVE,
-        idempotentHint=spec.tool_class in (ToolClass.READ, ToolClass.SIGNAL),
+        idempotentHint=(spec.idempotent if spec.idempotent is not None
+                        else spec.tool_class in (ToolClass.READ, ToolClass.SIGNAL)),
         openWorldHint=False,
     )
 
