@@ -50,6 +50,7 @@ import { overlayIsOpen } from '@/shell/useOverlayState'
 import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
+import { INBOX_LOAD_ERROR } from './inboxErrors'
 import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } from './inboxKeys'
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
@@ -182,18 +183,23 @@ export function InboxScopeBody({
           if (!isPending(current) || isDecisionProposal(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
+        // Neither key DECIDES a decision from the list — both open the pane.
+        // Accept carries the option the person chose, and reject is terminal
+        // (`_require_pending`: a rejected proposal can never be accepted, the
+        // drafted options are gone and only a new session can re-propose). With
+        // no undo window behind either, a one-keystroke accept of the machine's
+        // own recommendation and a one-keystroke discard are the same hazard, so
+        // both land in the pane, where the options and the consequence copy are
+        // and the real Accept/Reject buttons live.
         case 'a':
           if (!isPending(current)) return
-          // A decision's accept carries the option the person chose, and there
-          // is no undo window to take a guessed one back with — so `a` opens the
-          // pane where the options are, rather than silently accepting the
-          // machine's own recommendation on one keystroke.
           if (isDecisionProposal(current)) onOpen(current)
           else acceptOne(current)
           break
         case 'r':
           if (!isPending(current)) return
-          rejectOne(current)
+          if (isDecisionProposal(current)) onOpen(current)
+          else rejectOne(current)
           break
         case 'e':
           // Nothing to edit on a decision: the scores are the classifier's.
@@ -253,10 +259,22 @@ export function InboxScopeBody({
           )}
           {/* Keyboard-FIRST, not keyboard-only — every key below also has a
               pointer affordance (click a row, the per-row tick, the bulk bar). */}
+          {/* And it follows the CURSOR: the two row kinds answer the same keys
+              differently, so a fixed strip promising "a accept · r reject" is
+              false half the time. `A` stays on both — it acts on the selection,
+              which a decision can never join. */}
           <p className="flex flex-wrap items-center gap-1 text-xs text-ink-faint">
-            <Kbd keys="j" />/<Kbd keys="k" /> move · <Kbd keys="a" /> accept ·
-            {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
-            {' '}<Kbd keys="x" /> select · <Kbd keys="A" /> accept selected
+            <Kbd keys="j" />/<Kbd keys="k" /> move ·
+            {current !== undefined && isDecisionProposal(current)
+              ? <>{' '}<Kbd keys="a" /> / <Kbd keys="r" /> open ·</>
+              : (
+                <>
+                  {' '}<Kbd keys="a" /> accept ·
+                  {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
+                  {' '}<Kbd keys="x" /> select ·
+                </>
+              )}
+            {' '}<Kbd keys="A" /> accept selected
           </p>
           {/* In the controls strip, not below the rows — the same place both
               other bulk-selecting lists put it (`SessionList`,
@@ -277,7 +295,11 @@ export function InboxScopeBody({
         </div>
       }
     >
-      {isError && <Banner tone="danger" title="Could not load the inbox." />}
+      {/* The column ORs the two queries into one flag: it lists whatever loaded,
+          and an undifferentiated banner is right for a surface that shows both
+          kinds interleaved. The PANE, which renders one row, names the half that
+          broke (`inboxErrorTitle`). */}
+      {isError && <Banner tone="danger" title={INBOX_LOAD_ERROR} />}
       {isLoading && proposals.length === 0 && (
         <div role="status" aria-label="Loading inbox"><Skeleton lines={5} /></div>
       )}

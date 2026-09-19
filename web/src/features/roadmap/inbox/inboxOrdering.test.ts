@@ -48,13 +48,23 @@ describe('INBOX_ORDERING_SPEC over both card kinds', () => {
     expect(bucket('capability', triage({ proposedFeatureSlug: null })))
       .toMatchObject({ key: 'no-fit', order: 1 })
     expect(bucket('capability', decision()))
-      .toEqual({ key: 'decision', label: 'Decisions', order: 2 })
+      .toEqual({ key: 'kind:decision', label: 'Decisions', order: 2 })
+  })
+
+  it('namespaces the decision bucket so a capability slug cannot collide with it', () => {
+    // The other capability buckets are keyed on user data. A capability actually
+    // slugged `decision` shared the bare key, arriving with a different label and
+    // a different order — and the collapsed-state store persists bucket keys, so
+    // the two would have been confused across sessions.
+    const collide = bucket('capability', triage({ proposedFeatureSlug: 'decision' }))
+    expect(collide).toMatchObject({ key: 'decision', label: 'decision', order: 0 })
+    expect(bucket('capability', decision()).key).not.toBe(collide.key)
   })
 
   it('gives a decision its own confidence bucket, after every level', () => {
     expect(bucket('confidence', triage({ confidenceLevel: 'low' }))).toMatchObject({ order: 2 })
     expect(bucket('confidence', decision()))
-      .toEqual({ key: 'decision', label: 'Decisions', order: 3 })
+      .toEqual({ key: 'kind:decision', label: 'Decisions', order: 3 })
   })
 
   it('sorts a decision after every scored row, and by title like any other', () => {

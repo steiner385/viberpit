@@ -21,6 +21,7 @@ import { ProductDetail } from './detail/ProductDetail'
 import { CapabilityDetail } from './detail/CapabilityDetail'
 import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
 import { NewProductDialog } from './detail/NewProductDialog'
+import { inboxErrorTitle } from './inbox/inboxErrors'
 import { useInboxOrder } from './inbox/inboxOrderStore'
 import { InboxWelcome } from './inbox/InboxWelcome'
 import { ProposalDetail } from './inbox/ProposalDetail'
@@ -68,18 +69,26 @@ function RoadmapPageContent() {
   // exactly as the list column does — the pane and the column must resolve the
   // same `?proposal=` id to the same row.
   const decisions = useDecisions({ poll: false })
-  // `undefined` until BOTH lists have answered — this is what `proposalMissing`
-  // asks "has the queue arrived?" of, and a half-arrived queue would report a
-  // decision that is merely still in flight as one somebody else already took.
+  // The two lists are INDEPENDENT: whatever answered is rendered, so a broken
+  // `/pm/decisions` cannot take the classification queue down with it — the list
+  // column beside this pane goes on showing (and accepting) those same rows, and
+  // a person with `?proposal=<classification id>` open would otherwise lose the
+  // only surface that decides it because an unrelated endpoint is down.
+  // `undefined` only while NEITHER has answered.
   const queue = useMemo<InboxProposal[] | undefined>(
-    () => (triage.data === undefined || decisions.data === undefined
+    () => (triage.data === undefined && decisions.data === undefined
       ? undefined
       : [
-        ...triage.data,
-        ...decisions.data.filter((d) => !inboxProduct || d.projectSlug === inboxProduct),
+        ...(triage.data ?? []),
+        ...(decisions.data ?? []).filter((d) => !inboxProduct || d.projectSlug === inboxProduct),
       ]),
     [triage.data, decisions.data, inboxProduct],
   )
+  // "Has the WHOLE queue arrived?" — a different question, and the one
+  // `proposalMissing` must ask: a half-arrived queue would report a proposal that
+  // is merely still in flight as one somebody else already decided.
+  const queueComplete = triage.data !== undefined && decisions.data !== undefined
+  const inboxError = inboxErrorTitle(triage.isError, decisions.isError)
   const proposalId = item?.kind === 'proposal' ? item.proposalId : null
   // `e` in the list column opens the row WITH the score fields focused, which
   // is the whole of what "edit" means now that the editor is the pane.
@@ -123,8 +132,8 @@ function RoadmapPageContent() {
   // A proposal the queue does not contain: decided in another tab, decided by
   // somebody else, or a stale bookmark. Gated on the queue having ARRIVED — a
   // failed fetch also leaves `proposal` null, and that is a broken connection.
-  const proposalMissing = inbox && proposalId !== null && queue !== undefined && !proposal
-  /** First load of the queue: no answer yet either way. */
+  const proposalMissing = inbox && proposalId !== null && queueComplete && !proposal
+  /** First load of the queue: NEITHER list has answered yet, either way. */
   const inboxPending = (triage.isLoading || decisions.isLoading) && queue === undefined
 
   // The address points at something the map does not contain — a renamed slug or
@@ -199,8 +208,12 @@ function RoadmapPageContent() {
             query, a different detail level, and none of the map's states. */}
         {inbox && (
           <>
-            {/* Same copy as the list column, which fails from the same queries. */}
-            {(triage.isError || decisions.isError) && <Banner tone="danger" className="mb-4" title="Could not load the inbox." />}
+            {/* One line per failed list, naming it: the pane keeps rendering the
+                proposal that DID load, so a blanket "could not load the inbox"
+                over a perfectly usable classification row is worse than nothing.
+                The copy lives with the list column's, which fails from the same
+                two queries. */}
+            {inboxError !== null && <Banner tone="danger" className="mb-4" title={inboxError} />}
             {proposal && (
               <ProposalDetail
                 proposal={proposal}
@@ -223,9 +236,11 @@ function RoadmapPageContent() {
             )}
             {/* Nothing open, and not still waiting for the queue: the pane says
                 what is waiting rather than sitting blank. A failed fetch is not
-                inbox zero, so it says so instead. */}
+                inbox zero, so it says so instead — but only when NOTHING loaded;
+                one list answering still gives a real count, next to the error
+                line above naming the other. */}
             {!proposal && !proposalMissing && !inboxPending && (
-              (triage.isError || decisions.isError) && queue === undefined
+              inboxError !== null && queue === undefined
                 ? (
                   <EmptyState
                     title={`No ${ROADMAP.inbox.toLowerCase()} to show`}

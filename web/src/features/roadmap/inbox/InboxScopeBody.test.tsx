@@ -339,11 +339,27 @@ describe('InboxScopeBody', () => {
       expect(onOpen).toHaveBeenCalledWith(MIXED[1])
     })
 
-    it('r rejects through the DECISION route, never the triage one', () => {
-      mount({ proposals: MIXED })
+    it('r OPENS a decision too — reject is terminal and has no undo either', () => {
+      // `decisions.reject` sets status=rejected and `_require_pending` makes it
+      // unacceptable forever: the drafted options are gone and only a new session
+      // can re-propose. Same hazard as `a`, so the same answer — the pane, where
+      // the Reject button carries the consequence copy.
+      const { onOpen } = mount({ proposals: MIXED })
       fireEvent.keyDown(window, { key: 'r' })
-      expect(rejectDecision).toHaveBeenCalledWith({ id: 'Decide' })
+      expect(rejectDecision).not.toHaveBeenCalled()
       expect(reject).not.toHaveBeenCalled()
+      expect(onOpen).toHaveBeenCalledWith(MIXED[1])
+    })
+
+    it('says what a and r do for the row under the cursor', () => {
+      // A fixed "a accept · r reject" strip is false half the time once the
+      // queue carries two row kinds.
+      const { rerender } = mount({ proposals: MIXED })
+      expect(screen.getByText(/open/)).toBeInTheDocument()
+      expect(screen.queryByText(/accept ·/)).toBeNull()
+      rerender({ proposals: [p({ id: 'First' })] })
+      expect(screen.getByText(/accept ·/)).toBeInTheDocument()
+      expect(screen.queryByText(/open ·/)).toBeNull()
     })
 
     it('x and e are inert on a decision, so A can never send one to accept-bulk', () => {

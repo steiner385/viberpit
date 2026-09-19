@@ -25,8 +25,14 @@ export type InboxSortBy = 'newest' | 'confidence' | 'title'
  * bucket of their own, ordered LAST: the grouping was chosen to sort
  * classification work, and burying decisions inside "no fit" or "low confidence"
  * would say something about them that is not true.
+ *
+ * The key is NAMESPACED (`kind:decision`) because the two groupings that use it
+ * key their other buckets on user data — a capability slug, a confidence level.
+ * A capability literally slugged `decision` would otherwise land in this bucket
+ * with a different label and a different order, and the collapsed-state store
+ * (which persists bucket keys) would confuse the two across sessions.
  */
-const DECISION_BUCKET = { key: 'decision', label: 'Decisions' }
+const DECISION_BUCKET = { key: 'kind:decision', label: 'Decisions' }
 
 /** High first — the queue's whole job is to surface the safe accepts. A
  *  decision has no confidence and ranks after every level of it. */

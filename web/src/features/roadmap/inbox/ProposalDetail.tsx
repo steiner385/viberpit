@@ -381,11 +381,13 @@ function DecisionDetail({ proposal: p, onDone }: {
           >
             Reject
           </Button>
-          {/* Disabled until something is chosen: the server answers 422 on an
-              empty `chosen_key`, and a button that can only fail is not an offer.
-              A proposal always arrives with a recommendation, so this is the
-              state after a person actively clears the choice — or a row whose
-              recommendation is no longer among its options. */}
+          {/* Disabled while `chosen` is empty: the server answers 422 on an empty
+              `chosen_key`, and a button that can only fail is not an offer.
+              DEFENCE ONLY — the state is unreachable today: `decisions.propose`
+              refuses a `recommended_key` that is not one of the options, so the
+              seed is always a real key, and a native radio group cannot be
+              cleared once one is set. It guards the seeding rule rather than any
+              flow a person can drive. */}
           <Button type="submit" size="lg" disabled={!chosen || accept.isPending}>
             Accept
           </Button>

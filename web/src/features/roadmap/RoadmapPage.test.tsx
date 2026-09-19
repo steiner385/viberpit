@@ -427,8 +427,29 @@ describe('RoadmapPage — Inbox scope', () => {
 
   it('blames the failed fetch rather than the address when the queue could not load', () => {
     Object.assign(triage, { data: undefined, isLoading: false, isError: true })
+    Object.assign(decisions, { data: undefined, isLoading: false, isError: true })
     mount('/roadmap?scope=inbox&proposal=p1')
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load the inbox.')
+    expect(screen.queryByText(/Proposal not found/)).toBeNull()
+  })
+
+  it('keeps the classification that loaded when only the decisions fetch failed', () => {
+    // The two lists are independent fetches. A blanket "could not load the
+    // inbox" that also blanked the pane took away the only surface that decides
+    // a perfectly good classification row — while the list column beside it went
+    // on showing, and accepting, that same row.
+    Object.assign(decisions, { data: undefined, isLoading: false, isError: true })
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load the decisions.')
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument()
+    expect(screen.queryByText(/Proposal not found/)).toBeNull()
+  })
+
+  it('will not call a proposal gone while the other list is still in flight', () => {
+    // `proposalMissing` is the one thing that still needs BOTH lists: the id may
+    // be in the half that has not answered yet.
+    Object.assign(decisions, { data: undefined, isLoading: true })
+    mount('/roadmap?scope=inbox&proposal=gone')
     expect(screen.queryByText(/Proposal not found/)).toBeNull()
   })
 

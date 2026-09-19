@@ -2406,6 +2406,12 @@ export function useUndoProposal(projectSlug?: string) {
  */
 function invalidateAfterDecision(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: QK.decisions })
+  // A leaf row renders the hold chip and the needs-you tier from `Leaf.holdKind`,
+  // so the list a person may be looking at while they decide has to be told too —
+  // the same key the other two hold-moving mutations invalidate (`useReleaseHold`,
+  // `useDispositionIssue`). Without it the leaf keeps saying "Awaiting your
+  // decision" until `useLeaves`' own 30 s poll fires.
+  void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
   void qc.invalidateQueries({ queryKey: QK.roadmapMap })
   void qc.invalidateQueries({ queryKey: QK.queue })
   void qc.invalidateQueries({ queryKey: ['pm', 'issue'] })

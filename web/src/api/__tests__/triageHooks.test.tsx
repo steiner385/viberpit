@@ -309,5 +309,22 @@ describe('decision proposals', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.roadmapMap })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.queue })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'issue'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'leaves'] })
+  })
+
+  it('accept refreshes the leaf lists too — a leaf row renders the hold it just lifted', async () => {
+    // `Leaf.holdKind` drives the hold chip and the needs-you tier, so the leaf
+    // list a person may have open kept saying "Awaiting your decision" until
+    // `useLeaves`' own 30 s poll fired. The two sibling hold-moving mutations
+    // (`useReleaseHold`, `useDispositionIssue`) both invalidate this key.
+    const qc = makeClient()
+    seedDecisions(qc)
+    mocked.acceptDecision.mockResolvedValueOnce({ id: 'd1', status: 'accepted', chosenKey: 'b' })
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+
+    const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'd1', chosenKey: 'b' }) })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'leaves'] })
   })
 })

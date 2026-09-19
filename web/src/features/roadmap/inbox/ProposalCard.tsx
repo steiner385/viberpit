@@ -191,8 +191,10 @@ function TriageRow({ proposal: p, selected, checked, onOpen, onToggleSelect }: {
  * A decision proposal's row. No tick: `POST /pm/triage/accept-bulk` accepts
  * CLASSIFICATIONS, and accepting a decision needs the option the person chose —
  * which is a thing only the detail pane can ask. So the row's one job is to open
- * it, and the leading slot keeps the rail alignment with a disabled control
- * rather than collapsing the row's geometry to something else.
+ * it, and the leading slot holds nothing but empty space the width of the
+ * classification row's tick: the alignment is kept without drawing a control.
+ * A bordered empty box there read, to a sighted user, as a disabled checkbox —
+ * an affordance offering something this row can never do.
  */
 function DecisionRow({ proposal: p, selected, onOpen }: {
   proposal: DecisionProposal
@@ -212,12 +214,7 @@ function DecisionRow({ proposal: p, selected, onOpen }: {
       focusable
       swipeEnabled={false}
       onOpen={onOpen}
-      leading={
-        <span
-          aria-hidden="true"
-          className="flex size-6 shrink-0 items-center justify-center rounded-sm border border-edge text-ink-faint opacity-50"
-        />
-      }
+      leading={<span aria-hidden="true" className="size-6 shrink-0" />}
       identity={
         <span className="flex min-w-0 items-center gap-2">
           <TierDot tier={DECISION_TIER} />
