@@ -10,7 +10,9 @@ import pytest
 
 from server.pm.desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
 
-SCRIPT = Path("scripts/rename_board_held.py")
+#: Absolute, so collection does not depend on pytest's cwd (this module imports the
+#: script at import time, so a relative path errors the whole file, not one test).
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "rename_board_held.py"
 
 
 def _module():
@@ -244,6 +246,7 @@ def test_verify_ids_accepts_the_set_that_was_sent():
     mod.verify_ids(plan, mod.read_status_field(RENAMED_PAYLOAD))  # does not raise
 
 
+@pytest.mark.slow  # spawns an interpreter — that spawn IS what is under test
 def test_script_runs_standalone_and_refuses_an_implicit_database():
     """Imported as the ENTRY module, not alongside an already-loaded server.
 
@@ -266,6 +269,7 @@ def test_script_runs_standalone_and_refuses_an_implicit_database():
     assert mod.DB_URL_ENV in proc.stderr
 
 
+@pytest.mark.slow  # spawns an interpreter — that spawn IS what is under test
 def test_the_cache_save_path_imports_from_a_standalone_script():
     """The save's own imports, run with the script as the entry point.
 
