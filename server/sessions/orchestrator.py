@@ -5040,7 +5040,16 @@ class SessionOrchestrator:
 
         if not still_current():
             return
+        verifying: set[str] | None = getattr(self, "_pm_map_diff_verifying", None)
+        if verifying is None:
+            self._pm_map_diff_verifying: set[str] = set()
+            verifying = self._pm_map_diff_verifying
+        if rec.id in verifying:
+            return
+        verifying.add(rec.id)
         try:
+            if await self._session_is_parked(rec.id) or not still_current():
+                return
             if await self._completion_open_question(rec.id) or not still_current():
                 return
             if not await self._pm_onboard_observe_map_diff_not_needed(rec):
@@ -5061,6 +5070,8 @@ class SessionOrchestrator:
         except Exception:
             log.warning("pm_onboard.unmarked_completion_failed sid=%s", rec.id,
                         exc_info=True)
+        finally:
+            verifying.discard(rec.id)
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
         """Schedule a completion auto-archive for ANY session that self-declares done.
@@ -8510,14 +8521,23 @@ class SessionOrchestrator:
         # spawning context means the origin id and the terminal-status set can
         # never drift from the spawn path.
         for c in clusters:
-            if c.suggestion in latched:
-                continue
             slug = slugs.get(c.repo)
             if slug is None:  # pragma: no cover — already latched by (c)
                 continue
             key = f"{slug}:map-diff:{c.suggestion}"
-            if await self._pm_onboard_ctx._existing_session(key) is not None:
+            existing = await self._pm_onboard_ctx._existing_session(key)
+            if existing is not None:
                 latched.add(c.suggestion)
+                rec = getattr(self, "_records", {}).get(existing.id)
+                if (rec is not None and rec.status == "done"
+                        and self._pm_onboard_is_map_diff(rec)
+                        and self._owns_record(rec, None)):
+                    # A retained plain-done turn has no new status event after
+                    # rollout. Reuse completion's guarded verifier; awaiting it
+                    # bounds work to this serial tick and its per-session guard
+                    # deduplicates an overlapping driver turn-end callback.
+                    await self._certify_unmarked_map_diff_turn(
+                        rec, rec.updated_at, rec.last_user_interaction_at)
         return tuple(sorted(latched))
 
     async def _pm_triage_count_state(self):

@@ -282,3 +282,91 @@ async def test_failed_classifier_disposition_write_keeps_session(tmp_path, archi
     assert not orch._drivers["s1"].closed
     orch._pm_onboard_observe_map_diff_not_needed.assert_awaited_once_with(
         rec, disposition_source="classifier")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opt_out", [False, True])
+@pytest.mark.parametrize("indexed", [False, True])
+async def test_triage_recovers_retained_done_map_diff_without_a_new_turn(tmp_path, opt_out, indexed):
+    from server.db import db_session
+    from server.db.models import Feature, Project, ProjectRepo, TriageProposal, WorkItem
+    from server.tests.test_pm_orchestrator_seams import _clone_with_docs
+
+    orch = await _map_orch(tmp_path)
+    del orch._pm_onboard_observe_map_diff_not_needed
+    root = str(tmp_path / "repos")
+    _clone_with_docs(root, {"docs/product/features/renamed.md": "#100\n"})
+    orch._effective_repo_root = AsyncMock(return_value=root)
+    orch._sdlc_default_branch = AsyncMock(return_value="main")
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="ViberPit")
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
+        if indexed:
+            db.add(Feature(project_id=project.id, slug="offline-mode", title="Offline"))
+        item = WorkItem(repo="steiner385/viberpit", number=100, kind="issue", title="Offline",
+                        state="open", triage_state="classified")
+        db.add(item)
+        await db.flush()
+        db.add(TriageProposal(work_item_id=item.id, status="accepted", no_fit_suggestion="offline-mode"))
+    # Rehydrated historical state: no new _persist_status(done) callback occurs.
+    rec = orch.record("s1")
+    rec.status = "done"
+    if opt_out:
+        rec.auto_archive_opt_out_reason = "manual-unarchive"
+    await orch._pm_triage_count_state()
+    await _drain(orch)
+    assert rec.status == ("done" if opt_out else "complete")
+    assert rec.pr_resolution_source == (None if opt_out else "observed")
+    assert bool((await orch._pm_triage_count_state()).no_fit_clusters) == opt_out
+
+
+@pytest.mark.asyncio
+async def test_unmarked_map_verifier_deduplicates_overlapping_recovery(tmp_path):
+    orch = await _map_orch(tmp_path)
+    rec = orch.record("s1")
+    rec.status = "done"
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def observe(_rec):
+        entered.set()
+        await release.wait()
+        return False
+    orch._pm_onboard_observe_map_diff_not_needed.side_effect = observe
+    first = asyncio.create_task(orch._certify_unmarked_map_diff_turn(
+        rec, rec.updated_at, rec.last_user_interaction_at))
+    await entered.wait()
+    second = asyncio.create_task(orch._certify_unmarked_map_diff_turn(
+        rec, rec.updated_at, rec.last_user_interaction_at))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+    orch._pm_onboard_observe_map_diff_not_needed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hold", ["remote", "waiting_question", "waiting_permission", "parked"])
+async def test_triage_recovery_preserves_remote_and_waiting_sessions(tmp_path, hold):
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo
+    from server.pm.engine import NoFitCluster
+
+    orch = await _map_orch(tmp_path)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="ViberPit")
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
+    rec = orch.record("s1")
+    rec.status = "done"
+    if hold == "remote":
+        rec.host = "other-live-host"
+        orch._drivers.pop("s1")
+    elif hold == "parked":
+        orch._session_is_parked = AsyncMock(return_value=True)
+    else:
+        rec.status = hold
+    assert await orch._pm_triage_open_map_diffs((
+        NoFitCluster("offline-mode", (100,), "steiner385/viberpit"),)) == ("offline-mode",)
+    orch._pm_onboard_observe_map_diff_not_needed.assert_not_awaited()
+    assert rec.pr_resolution is None
