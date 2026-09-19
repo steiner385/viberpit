@@ -2451,3 +2451,58 @@ async def test_citations_to_other_repository_do_not_resolve_local_work(db_env):
     with tempfile.TemporaryDirectory() as root:
         _clone_with_docs(root, {f"{_DOCS}/renamed.md": "other/repo#100 other/repo#101 other/repo#102\n"})
         assert not await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [None, "human-archive"])
+async def test_changed_scope_is_not_disposed_by_unchanged_document_citations(db_env, source):
+    from sqlalchemy import select
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": "#100 #101 #102\n"})
+        orch = _observe_orch(root)
+        assert await orch._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec(), disposition_source=source)
+        async with db_session() as db:
+            item = (await db.execute(select(WorkItem).where(WorkItem.number == 100))).scalars().one()
+            item.body = "Completely new scope"
+        assert not await orch._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+        assert (await orch._pm_triage_count_state()).no_fit_clusters[0].item_numbers == (100,)
+        async def spawn_changed_work(*args, **kwargs):
+            assert kwargs["item_numbers"] == (100,)
+            return "new-scope-session"
+        orch.pm_onboard_spawn_map = spawn_changed_work
+        assert await orch._pm_triage_propose_map_diff(
+            "offline-mode", (100,), _OBS_REPO) == "new-scope-session"
+        assert (await orch._pm_triage_count_state()).no_fit_clusters[0].item_numbers == (100,)
+        # A fresh operator decision is allowed to dispose of the changed scope.
+        assert await orch._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec(), disposition_source="human-archive")
+        assert (await orch._pm_triage_count_state()).no_fit_clusters == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("citation", [
+    "[#100](https://github.com/other/repo/issues/100) [#101](https://github.com/other/repo/issues/101) [#102](https://github.com/other/repo/issues/102)",
+    "[#100][foreign] [#101][foreign] [#102][foreign]\n[foreign]: https://github.com/other/repo/issues/100",
+])
+async def test_foreign_markdown_citations_do_not_resolve_local_work(db_env, citation):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": citation})
+        assert not await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("citation", [
+    "steiner385/viberpit#100 steiner385/viberpit#101 steiner385/viberpit#102",
+    "[#100](https://github.com/steiner385/viberpit/issues/100) [#101](https://github.com/steiner385/viberpit/issues/101) [#102](https://github.com/steiner385/viberpit/issues/102)",
+])
+async def test_same_repository_qualified_citations_resolve_local_work(db_env, citation):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": citation})
+        assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())

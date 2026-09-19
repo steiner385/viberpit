@@ -97,6 +97,21 @@ async def test_question_check_failure_leaves_unmarked_turn_alone(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_user_typing_during_verification_preserves_unmarked_turn(tmp_path):
+    orch = await _map_orch(tmp_path)
+
+    async def observe(rec):
+        orch.note_user_interaction("s1")
+        return True
+
+    orch._pm_onboard_observe_map_diff_not_needed.side_effect = observe
+    await orch._persist_status("s1", "done")
+    await _drain(orch)
+    assert orch.record("s1").status == "done"
+    assert orch.record("s1").pr_resolution is None
+
+
+@pytest.mark.asyncio
 async def test_human_archive_persists_disposition_before_teardown(tmp_path):
     orch = await _map_orch(tmp_path)
     driver = orch._drivers["s1"]
@@ -120,3 +135,150 @@ async def test_failed_human_disposition_write_prevents_loss_of_session(tmp_path)
         await orch.archive_session("s1")
     assert orch.record("s1") is not None
     assert not orch._drivers["s1"].closed
+
+
+@pytest.mark.asyncio
+async def test_real_archive_delete_and_fresh_triage_preserve_disposition(tmp_path):
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo, Session, TriageProposal, WorkItem
+    from server.tests.test_pm_triage_seams import _triage_orch
+
+    orch = await _map_orch(tmp_path)
+    # Exercise the real PM persistence and session cleanup, stubbing only filesystem
+    # cleanup and unrelated background retention scheduling.
+    del orch._pm_onboard_observe_map_diff_not_needed
+    orch._enforce_archive_limit = AsyncMock()
+    orch._delete_legacy_archive_dir = AsyncMock(return_value=True)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="ViberPit")
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
+        item = WorkItem(repo="steiner385/viberpit", kind="issue", number=100,
+                        title="Offline", state="open", triage_state="classified")
+        db.add(item)
+        await db.flush()
+        proposal = TriageProposal(work_item_id=item.id, status="accepted",
+                                  no_fit_suggestion="offline-mode")
+        db.add(proposal)
+        await db.flush()
+        proposal_id = proposal.id
+    await orch.archive_session("s1")
+    await _drain(orch)
+    assert await orch.permanent_delete("s1")
+    async with db_session() as db:
+        assert await db.get(Session, "s1") is None
+        row = await db.get(TriageProposal, proposal_id)
+        assert row.map_resolution["source"] == "human-archive"
+    fresh = _triage_orch()
+    assert (await fresh._pm_triage_count_state()).no_fit_clusters == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_change", [None, "proposal", "body", "acceptance"])
+@pytest.mark.parametrize("archive_via", ["completion", "autopilot", "autopilot-without-record"])
+async def test_classifier_map_disposition_survives_cleanup_and_respects_dispatch_scope(
+        tmp_path, late_change, archive_via):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo, Session, TriageProposal, WorkItem
+    from server.pm.map_resolution import map_resolution_inputs
+    from server.tests.test_pm_triage_seams import _triage_orch
+
+    orch = await _map_orch(tmp_path)
+    del orch._pm_onboard_observe_map_diff_not_needed
+    orch._read_auto_archive_enabled = AsyncMock(return_value=True)
+    orch._enforce_archive_limit = AsyncMock()
+    orch._delete_legacy_archive_dir = AsyncMock(return_value=True)
+    before = datetime.now(timezone.utc) - timedelta(minutes=5)
+    dispatch = before + timedelta(minutes=2)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="ViberPit")
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
+        item = WorkItem(repo="steiner385/viberpit", kind="issue", number=100,
+                        title="Offline", body="old scope", state="open", triage_state="classified",
+                        gh_updated_at=before)
+        db.add(item)
+        await db.flush()
+        proposal = TriageProposal(work_item_id=item.id, status="accepted",
+                                  no_fit_suggestion="offline-mode", created_at=before,
+                                  resolved_at=before)
+        db.add(proposal)
+        await db.flush()
+        proposal.map_resolution = {"source": "observed", "inputs": map_resolution_inputs(proposal, item)}
+        item.body = "Expanded scope evaluated by the new session"
+        if late_change == "body":
+            item.gh_updated_at = dispatch + timedelta(minutes=1)
+        if late_change == "acceptance":
+            proposal.resolved_at = dispatch + timedelta(minutes=1)
+        if late_change == "proposal":
+            db.add(TriageProposal(work_item_id=item.id, status="accepted",
+                                  no_fit_suggestion="offline-mode",
+                                  created_at=dispatch + timedelta(minutes=1)))
+        rec = orch.record("s1")
+        rec.created_at = dispatch
+        rec.pr_resolution = "not-needed"
+        rec.pr_resolution_source = "classifier"
+        rec.status = "complete"
+        row = await db.get(Session, "s1")
+        row.created_at = dispatch
+        row.pr_resolution = "not-needed"
+        row.pr_resolution_source = "classifier"
+    if archive_via == "autopilot-without-record":
+        orch._records.pop("s1")
+    if archive_via == "completion":
+        await orch._auto_archive_completed("s1")
+    else:
+        assert await orch._autopilot_archive("s1")
+    await _drain(orch)
+    assert await orch.permanent_delete("s1")
+    async with db_session() as db:
+        assert await db.get(Session, "s1") is None
+        proposals = (await db.execute(select(TriageProposal))).scalars().all()
+        classifier_count = sum(p.map_resolution is not None and
+                               p.map_resolution.get("source") == "classifier" for p in proposals)
+        assert classifier_count == (0 if late_change in ("body", "acceptance") else 1)
+    state = await _triage_orch()._pm_triage_count_state()
+    assert bool(state.no_fit_clusters) == (late_change is not None)
+
+
+@pytest.mark.asyncio
+async def test_classifier_disposition_requires_known_dispatch_time_and_verified_source(tmp_path):
+    orch = await _map_orch(tmp_path)
+    del orch._pm_onboard_observe_map_diff_not_needed
+    rec = orch.record("s1")
+    rec.pr_resolution = "not-needed"
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    rec.pr_resolution_source = "classifier"
+    rec.created_at = None
+    with patch("server.sessions.orchestrator.db_session", side_effect=AssertionError("must not query")):
+        assert not await orch._pm_onboard_observe_map_diff_not_needed(rec, disposition_source="classifier")
+        rec.created_at = datetime.now(timezone.utc)
+        for source in ("tool", "marker"):
+            rec.pr_resolution_source = source
+            assert not await orch._pm_onboard_observe_map_diff_not_needed(rec, disposition_source="classifier")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archive_via", ["completion", "autopilot"])
+async def test_failed_classifier_disposition_write_keeps_session(tmp_path, archive_via):
+    orch = await _map_orch(tmp_path)
+    orch._read_auto_archive_enabled = AsyncMock(return_value=True)
+    rec = orch.record("s1")
+    rec.pr_resolution = "not-needed"
+    rec.pr_resolution_source = "classifier"
+    rec.status = "complete"
+    orch._pm_onboard_observe_map_diff_not_needed.side_effect = RuntimeError("DB unavailable")
+    if archive_via == "completion":
+        await orch._auto_archive_completed("s1")
+    else:
+        with pytest.raises(RuntimeError, match="DB unavailable"):
+            await orch._autopilot_archive("s1")
+    assert orch.record("s1") is rec
+    assert not orch._drivers["s1"].closed
+    orch._pm_onboard_observe_map_diff_not_needed.assert_awaited_once_with(
+        rec, disposition_source="classifier")

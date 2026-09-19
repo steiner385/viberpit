@@ -4992,7 +4992,8 @@ class SessionOrchestrator:
             # A map-diff objective can be discharged by repository evidence even
             # when the model omitted its completion tool. Never infer this for an
             # ordinary ended turn, and keep repository I/O off the driver pump.
-            self._spawn(self._certify_unmarked_map_diff_turn(rec, rec.updated_at),
+            self._spawn(self._certify_unmarked_map_diff_turn(
+                rec, rec.updated_at, rec.last_user_interaction_at),
                         name="pm-map-diff-completion")
         # Nudge autopilot when a session enters an actionable state so a stuck session
         # is advanced immediately, not only on the next interval tick. Best-effort; the
@@ -5022,7 +5023,8 @@ class SessionOrchestrator:
         return status
 
     async def _certify_unmarked_map_diff_turn(
-            self, rec: SessionRecord, revision: datetime | None) -> None:
+            self, rec: SessionRecord, revision: datetime | None,
+            interaction: datetime | None) -> None:
         """Verify one unmarked PM turn without completing a newer user turn.
 
         The same question gate and repository observer used by explicit completion
@@ -5032,6 +5034,7 @@ class SessionOrchestrator:
         def still_current() -> bool:
             return (self._records.get(rec.id) is rec and rec.status == "done"
                     and rec.updated_at == revision
+                    and rec.last_user_interaction_at == interaction
                     and not rec.auto_archive_opt_out_reason
                     and rec.pr_resolution is None)
 
@@ -5051,7 +5054,8 @@ class SessionOrchestrator:
             await self._latch_pr_resolution(rec, "not-needed", OBSERVED_RESOLUTION_SOURCE)
             # The latch awaits DB I/O. Do not finish a turn started in that window.
             if (self._records.get(rec.id) is not rec or rec.status != "done"
-                    or rec.updated_at != revision or rec.auto_archive_opt_out_reason):
+                    or rec.updated_at != revision or rec.auto_archive_opt_out_reason
+                    or rec.last_user_interaction_at != interaction):
                 return
             await self._persist_status(rec.id, "complete")
         except Exception:
@@ -9383,7 +9387,8 @@ class SessionOrchestrator:
 
         Repository evidence must cover EVERY driving item (or the requested doc
         itself must exist). A majority cannot permanently dispose of minority work.
-        Explicit human archive is a separate, intentional operator disposition.
+        Explicit human archive and harness classifier completion are separate
+        dispositions; the latter is restricted to work predating dispatch.
         Snapshot/recheck brackets the slow git read; new or edited work is never
         silently swept into an older decision.
         """
@@ -9407,6 +9412,13 @@ class SessionOrchestrator:
         # A retained legacy human archive can disposition only work that existed
         # unchanged when the operator archived it. New proposals remain eligible.
         cutoff = getattr(rec, "archived_at", None) if disposition_source else None
+        if disposition_source == "classifier":
+            # Never promote a self-claim, and never apply the classifier's
+            # judgement to proposals or issue edits arriving after dispatch.
+            cutoff = getattr(rec, "created_at", None)
+            if (cutoff is None or getattr(rec, "pr_resolution", None) != "not-needed"
+                    or getattr(rec, "pr_resolution_source", None) != "classifier"):
+                return False
         if cutoff is not None:
             from sqlalchemy import or_
             stmt = stmt.where(
@@ -9422,6 +9434,13 @@ class SessionOrchestrator:
                       if (p.map_resolution or {}).get("inputs") != map_resolution_inputs(p, w)}
         if not inputs:
             return bool(rows)
+        if disposition_source is None and any(
+                p.id in inputs and p.map_resolution for p, _ in rows):
+            # The same issue number (or existing doc filename) says nothing
+            # about newly requested scope. Leave changed work to a real agent
+            # and normal PR completion or an explicit new human disposition.
+            # Even an unrelated repository/doc edit must not lift this guard.
+            return False
         evidence: dict = {"source": disposition_source or "observed",
                           "sessionId": getattr(rec, "id", None),
                           "observedAt": datetime.now(timezone.utc).isoformat()}
@@ -9430,7 +9449,7 @@ class SessionOrchestrator:
             clone = str(gitrepos.clone_path(await self._effective_repo_root(), repo))
             observed = await asyncio.to_thread(
                 self._pm_onboard_feature_doc_citations, clone,
-                f"refs/remotes/origin/{default_branch}", suggestion)
+                f"refs/remotes/origin/{default_branch}", suggestion, repo)
             if observed is None:
                 return False
             doc_exists, cited, sha, paths = observed
@@ -9453,11 +9472,15 @@ class SessionOrchestrator:
                     covered = False
                     continue
                 proposal.map_resolution = {**evidence, "inputs": snapshot}
+        log.info("pm_onboard.map_diff_disposition sid=%s suggestion=%s source=%s "
+                 "evaluated=%d covered=%s", getattr(rec, "id", None), suggestion,
+                 evidence["source"], len(inputs), covered)
         return covered
 
     @staticmethod
     def _pm_onboard_feature_doc_citations(
-            clone: str, ref: str, suggestion: str) -> tuple[bool, set[int], str, list[str]] | None:
+            clone: str, ref: str, suggestion: str, repo: str = "",
+    ) -> tuple[bool, set[int], str, list[str]] | None:
         """Read doc existence, citations, commit and paths from a fresh default ref.
 
         Failed fetches are unobserved: stale cache is not durable evidence. Sync;
@@ -9492,8 +9515,36 @@ class SessionOrchestrator:
                     capture_output=True, text=True, timeout=30, check=False)
                 if gr.returncode not in (0, 1):   # 1 = no matches, not an error
                     return None
-                # Qualified references to another repository are not local work.
-                cited = {int(n) for n in re.findall(r"(?<![\w/])#([0-9]+)\b", gr.stdout)}
+                from urllib.parse import urlsplit
+                from server.pm.refs import split_ref
+
+                def link_target(match: re.Match[str]) -> str:
+                    # A link label is presentation, not an issue identity.
+                    # Attribute explicit links to their destination repository.
+                    url = urlsplit(match.group(1).strip("<>"))
+                    parts = url.path.strip("/").split("/")
+                    if (url.hostname == "github.com" and len(parts) == 4
+                            and parts[2] in ("issues", "pull")):
+                        parsed = split_ref(f"{parts[0]}/{parts[1]}#{parts[3]}")
+                        if parsed and parsed[0].casefold() == repo.casefold():
+                            cited.add(parsed[1])
+                    return " "
+
+                text = re.sub(r"\[[^\]\n]*\]\(\s*([^\s)]+)[^)]*\)",
+                              link_target, gr.stdout)
+                # Reference-style labels have no trustworthy local identity
+                # without resolving their definition. Conservatively ignore them.
+                text = re.sub(r"\[[^\]\n]*\]\s*\[[^\]\n]*\]", " ", text)
+                text = re.sub(r"https?://\S+", " ", text)
+                for qualified in re.findall(r"[\w.-]+/[\w.-]+#[0-9]+\b", text):
+                    parsed = split_ref(qualified)
+                    if parsed and parsed[0].casefold() == repo.casefold():
+                        cited.add(parsed[1])
+                text = re.sub(r"[\w.-]+/[\w.-]+#[0-9]+\b", " ", text)
+                # Unresolved/shortcut link labels must not become bare citations.
+                text = re.sub(r"\[[^\]\n]*\]", " ", text)
+                cited.update(int(n) for n in re.findall(
+                    r"(?<![\w/])#([0-9]+)\b", text))
             return doc_exists, cited, sha, paths
         except Exception:  # noqa: BLE001 - unreadable is "unobserved", never a crash
             log.debug("pm_onboard.map_diff_observe_read_failed clone=%s ref=%s",
@@ -17933,17 +17984,23 @@ class SessionOrchestrator:
         ``context`` snapshots the decision features for AUTO archives, so a later manual
         unarchive can tell an auto-archive was reversed and record a learning heuristic.
         """
-        # A human's disposition belongs to the PM proposals, not a session row
-        # archive retention can delete immediately. Persist before any teardown;
-        # a failed write must not discard the sole record of that decision.
-        if archived_by not in AUTO_ARCHIVE_PROVENANCE:
-            disposition_record: SessionRecord | DbSession | None = self._records.get(session_id)
-            if disposition_record is None:
-                async with db_session() as db:
-                    disposition_record = await db.get(DbSession, session_id)
-            if self._pm_onboard_is_map_diff(disposition_record):
+        # PM dispositions belong to proposals, not disposable session rows.
+        # This boundary serves completion, autopilot, and human archives alike.
+        # Persist before ANY teardown; failure leaves the session available.
+        disposition_record: SessionRecord | DbSession | None = self._records.get(session_id)
+        if disposition_record is None:
+            async with db_session() as db:
+                disposition_record = await db.get(DbSession, session_id)
+        if self._pm_onboard_is_map_diff(disposition_record):
+            if archived_by not in AUTO_ARCHIVE_PROVENANCE:
                 await self._pm_onboard_observe_map_diff_not_needed(
                     disposition_record, disposition_source="human-archive")
+            elif (getattr(disposition_record, "pr_resolution", None) == "not-needed"
+                  and getattr(disposition_record, "pr_resolution_source", None) == "classifier"):
+                # The caller owns the completion bar; only an independently
+                # classified no-PR outcome is durable here, never a self-claim.
+                await self._pm_onboard_observe_map_diff_not_needed(
+                    disposition_record, disposition_source="classifier")
 
         # Unregister the driver, clear in-memory state and stop the X11 display —
         # the shared teardown close_session and the assistant reap also use.

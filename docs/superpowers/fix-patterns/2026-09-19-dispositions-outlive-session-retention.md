@@ -20,6 +20,11 @@ Compare current inputs with that identity so new or changed work remains eligibl
 Verify the whole resolve/archive/delete/restart/dispatch lifecycle, including
 negative controls for uncovered work and explicit human holds.
 
+Write classifier-confirmed and human dispositions at the shared archive boundary.
+Completion-triggered archival and autopilot are distinct callers; fixing only the
+completion caller leaves the same data loss reachable through autopilot. Scope a
+classifier's decision to proposals accepted and work last updated before dispatch.
+
 ## Where to look
 
 - PM triage cluster construction, repository observation, manual archive, and
