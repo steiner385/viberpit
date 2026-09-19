@@ -4,7 +4,8 @@
 // what its header says, and that an address the list does not contain says so.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, Outlet, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { AutomationStatus } from '@/api/automations'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { CAPACITY } from './capacity/__fixtures__/capacity'
@@ -59,7 +60,7 @@ vi.mock('@/api/hooks', () => ({
   // CapacityDetail's own reads — see CapacityDetail.test.tsx for the detailed
   // behaviour; this file only needs the scope to render without crashing.
   useCapacity: () => ({ data: CAPACITY, isLoading: false, isError: false }),
-  useUpdateProject: () => ({ mutate: vi.fn() }),
+  useReorderProject: () => ({ mutateAsync: vi.fn().mockResolvedValue({}) }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn() }),
   useProject: () => ({ data: undefined }),
 }))
@@ -78,16 +79,28 @@ function Location() {
   return <div data-testid="location">{pathname}{search}</div>
 }
 
+// `CapacityDetail` reads the real `useQueryClient()` (for `qc.getQueryData`/
+// `invalidateQueries` — not something `@/api/hooks` can mock) AND uses
+// `useSettingsForm`'s `useBlocker` for its pin `SaveBar`, which throws
+// outside a DATA router — a plain `<MemoryRouter>` no longer suffices, so
+// both harnesses below use `createMemoryRouter`/`RouterProvider` instead.
+function qc() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
+}
+
+const DELIVERY_ROUTE_PATHS = [DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE]
+
 function mount(path: string) {
+  const router = createMemoryRouter([
+    {
+      element: <><Outlet /><Location /></>,
+      children: DELIVERY_ROUTE_PATHS.map((p) => ({ path: p, element: <DeliveryPage /> })),
+    },
+  ], { initialEntries: [path] })
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        {[DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE].map((p) => (
-          <Route key={p} path={p} element={<DeliveryPage />} />
-        ))}
-      </Routes>
-      <Location />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   )
 }
 
@@ -105,16 +118,16 @@ function NavButtons() {
 }
 
 function mountWithNav(path: string) {
+  const router = createMemoryRouter([
+    {
+      element: <><NavButtons /><Outlet /><Location /></>,
+      children: DELIVERY_ROUTE_PATHS.map((p) => ({ path: p, element: <DeliveryPage /> })),
+    },
+  ], { initialEntries: [path] })
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <NavButtons />
-      <Routes>
-        {[DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE].map((p) => (
-          <Route key={p} path={p} element={<DeliveryPage />} />
-        ))}
-      </Routes>
-      <Location />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   )
 }
 

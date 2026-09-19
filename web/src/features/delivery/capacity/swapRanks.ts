@@ -10,7 +10,7 @@
  * two concrete numbers — the row moving "up" gets the smaller one.
  *
  * Pure and side-effect free: `CapacityDetail` turns its two entries into two
- * `useUpdateProject(slug).mutate({ priorityRank })` calls.
+ * sequential `useReorderProject().mutateAsync({ slug, priorityRank })` calls.
  */
 export interface RankInput {
   slug: string
@@ -40,7 +40,7 @@ export function swapRanks(
   const row = products[index]!
   const neighbour = products[neighbourIndex]!
   return [
-    { slug: row.slug, priorityRank: neighbour.rank ?? row.rank ?? neighbourIndex + 1 },
-    { slug: neighbour.slug, priorityRank: row.rank ?? neighbour.rank ?? index + 1 },
+    { slug: row.slug, priorityRank: neighbour.rank ?? neighbourIndex + 1 },
+    { slug: neighbour.slug, priorityRank: row.rank ?? index + 1 },
   ]
 }

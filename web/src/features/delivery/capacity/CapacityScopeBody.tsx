@@ -32,15 +32,14 @@ export function CapacityScopeBody({ capacity, isLoading, isError }: CapacityScop
       {capacity && (
         <ul role="list" aria-label={DELIVERY.capacity} className="flex flex-col gap-1 text-sm">
           {buildCapacityStack(capacity).map((row) => (
-            <li
-              key={row.key}
-              data-testid={`capacity-stack-${row.key}`}
-              className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-ink"
-            >
-              <span className="truncate">{row.label}</span>
-              <span className="shrink-0 tabular-nums text-ink-muted">
-                {row.used} / {row.cap ?? '∞'} · {row.free ?? '∞'} free
-              </span>
+            <li key={row.key} data-testid={`capacity-stack-${row.key}`} className="rounded-md px-2 py-1.5 text-ink">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate">{row.label}</span>
+                <span className="shrink-0 tabular-nums text-ink-muted">
+                  {row.used} / {row.cap ?? '∞'} · {row.free ?? '∞'} free
+                </span>
+              </div>
+              {row.secondary && <p className="text-xs text-ink-muted">{row.secondary}</p>}
             </li>
           ))}
         </ul>

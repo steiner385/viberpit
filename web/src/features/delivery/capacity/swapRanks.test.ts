@@ -30,11 +30,28 @@ describe('swapRanks', () => {
     expect(swapRanks(products, 2, 'down')).toBeNull()
   })
 
-  it('an unranked neighbour gets the moved row’s old rank', () => {
+  it('a ranked row moving past an unranked neighbour falls back to the NEIGHBOUR\'s own position, not the row\'s old rank', () => {
+    // Fix round 1 / C1: the middle `?? row.rank` fallback let both sides land
+    // on 5 here (a real bug — 'a' and 'b' would tie). Each side gets ONLY the
+    // other side's rank, or its own 1-based position — never the other row's
+    // stale value.
     const rows = [{ slug: 'a', rank: null }, { slug: 'b', rank: 5 }]
     expect(swapRanks(rows, 1, 'up')).toEqual([
-      { slug: 'b', priorityRank: 5 },
+      { slug: 'b', priorityRank: 1 },
       { slug: 'a', priorityRank: 5 },
+    ])
+  })
+
+  it('promoting an unranked row above a ranked neighbour (coordinator example)', () => {
+    // y (index 6, unranked) moves up past x (index 5, rank 5): y takes x's
+    // rank (5); x, unranked on the other side of the swap, falls back to y's
+    // OLD 1-based position (index 6 + 1 = 7) rather than reusing y's null.
+    const rows = Array.from({ length: 7 }, (_, i) => ({ slug: `p${i}`, rank: null as number | null }))
+    rows[5] = { slug: 'x', rank: 5 }
+    rows[6] = { slug: 'y', rank: null }
+    expect(swapRanks(rows, 6, 'up')).toEqual([
+      { slug: 'y', priorityRank: 5 },
+      { slug: 'x', priorityRank: 7 },
     ])
   })
 

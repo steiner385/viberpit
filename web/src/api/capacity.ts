@@ -82,7 +82,7 @@ export interface CapacityDefect {
 }
 
 export interface CapacityPlan {
-  computedAt: string
+  computedAt: string | null
   pushLevel: string
   applied: boolean
   fleetConcurrency: number

@@ -19,6 +19,9 @@ export interface CapacityStackRow {
    *  there is none (Products — its own dial is the table on this same page). */
   href: string | null
   binding: boolean
+  /** Secondary line under the row — today only the Hosts row's excluded-host
+   *  note, but generic so a future row can use it without a parallel field. */
+  secondary?: string
 }
 
 function isBindingLayer(binding: CapacityReadout['binding'], ...layers: CapacityBindingLayer[]): boolean {
@@ -26,10 +29,17 @@ function isBindingLayer(binding: CapacityReadout['binding'], ...layers: Capacity
 }
 
 export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
-  const hostsUnbounded = r.hosts.some((h) => h.enabled && h.max === null)
-  const hostsCap = hostsUnbounded ? null : r.hosts.reduce((s, h) => s + (h.max ?? 0), 0)
-  const hostsFree = hostsUnbounded ? null : r.hosts.reduce((s, h) => s + (h.free ?? 0), 0)
-  const hostsActive = r.hosts.reduce((s, h) => s + h.active, 0)
+  // Mirrors `_fleet()` in server/automations/capacity_plan.py: a disabled or
+  // not-confirmed-healthy host (`healthy` false or still `null`/unknown)
+  // contributes nothing to the fleet's real capacity, so it must not inflate
+  // this row's used/cap/free either — a host flapping unhealthy used to make
+  // the Hosts row claim more capacity than the governor would actually use.
+  const countedHosts = r.hosts.filter((h) => h.enabled && h.healthy === true)
+  const excludedHosts = r.hosts.length - countedHosts.length
+  const hostsUnbounded = countedHosts.some((h) => h.max === null)
+  const hostsCap = hostsUnbounded ? null : countedHosts.reduce((s, h) => s + (h.max ?? 0), 0)
+  const hostsFree = hostsUnbounded ? null : countedHosts.reduce((s, h) => s + (h.free ?? 0), 0)
+  const hostsActive = countedHosts.reduce((s, h) => s + h.active, 0)
   const accountsUsed = Math.max(0, r.accounts.total - r.accounts.available)
   const runnerFree = Math.max(0, r.runner.ceiling - r.runner.inFlight)
   const productsCap = r.products.reduce((s, p) => s + p.effectiveCap, 0)
@@ -43,6 +53,9 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
     {
       key: 'hosts', label: 'Hosts', used: hostsActive, cap: hostsCap, free: hostsFree,
       href: '/settings/fleet', binding: isBindingLayer(r.binding, 'host'),
+      secondary: excludedHosts > 0
+        ? `${excludedHosts} host${excludedHosts === 1 ? '' : 's'} excluded: disabled or unhealthy`
+        : undefined,
     },
     {
       key: 'accounts', label: 'Accounts', used: accountsUsed, cap: r.accounts.total, free: r.accounts.available,

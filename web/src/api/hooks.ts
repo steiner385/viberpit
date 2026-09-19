@@ -1211,7 +1211,14 @@ export function usePatchAutomation() {
   const qc = useQueryClient()
   return useMutation<Automation, ApiRequestError, { id: string; body: AutomationPatch }>({
     mutationFn: ({ id, body }) => patchAutomation(id, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automations }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.automations })
+      // The capacity governor is an automation (id `capacity-governor`); its
+      // push level and mode are two of the readout's own fields (design
+      // 2026-09-19 §5/§7.1), so a change here must not leave the Capacity
+      // page showing a stale push level until the next 30s poll.
+      qc.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 }
 
@@ -1887,14 +1894,20 @@ export function useSdlcGates() {
   })
 }
 
-/** One project: repos and edges (the list payload's counts are not here). */
-export function useProject(slug: string | null) {
+/** One project: repos and edges (the list payload's counts are not here).
+ *  `poll` defaults true (every existing caller's behaviour); a reader that
+ *  mounts many of these at once (e.g. one per row of the Capacity products
+ *  table, `CapacityProductRow`) passes `poll: false` so N rows don't open N
+ *  15s timers over the same handful of `QK.project` keys — a `staleTime`-only
+ *  refetch on remount/focus is enough for a value only shown, not live-edited,
+ *  by that reader. */
+export function useProject(slug: string | null, { poll = true }: { poll?: boolean } = {}) {
   return useQuery<Project>({
     queryKey: QK.project(slug ?? ''),
     queryFn: () => fetchProject(slug as string),
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
-    refetchInterval: 15_000,
+    refetchInterval: poll ? 15_000 : false,
   })
 }
 
@@ -1940,6 +1953,10 @@ export function useUpdateProductPolicy(slug: string) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: QK.project(slug) }),
         qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        // `capacity_mode`/`max_in_flight` are two of the readout's own product
+        // fields (design 2026-09-19 §5) — a policy edit must not leave the
+        // Capacity page showing the pre-edit value until its next poll.
+        qc.invalidateQueries({ queryKey: QK.capacity }),
       ])
     },
     onError: async (e) => {
@@ -1968,11 +1985,45 @@ export function useUpdateProject(slug: string) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: QK.project(newSlug) }),
         qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        // `priorityRank` is one of the readout's own product fields — see
+        // `useReorderProject` below, this hook's sibling for the Capacity
+        // products table's rank buttons.
+        qc.invalidateQueries({ queryKey: QK.capacity }),
       ])
     },
     onError: async (e) => {
       if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
       toast.error(extractMutationErrorMessage(e, 'Could not update the product'))
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/**
+ * Re-ranks one product by slug (design 2026-09-19 §7.1's rank ▲▼ buttons).
+ * Deliberately NOT `useUpdateProject(slug)`: that hook bakes its slug into the
+ * mutation's closure at hook-creation time, but a rank swap always touches
+ * TWO products (the moved row and its neighbour — see
+ * `features/delivery/capacity/swapRanks.ts`) whose slugs are only known at
+ * click time. This hook takes `slug` as a mutation VARIABLE instead, so one
+ * instance (created once, not per-row) can `mutateAsync` for either side in
+ * sequence without a second, differently-slugged hook instance.
+ */
+export function useReorderProject() {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, { slug: string; priorityRank: number }>({
+    mutationFn: ({ slug, priorityRank }) => updateProject(slug, { priorityRank }),
+    retry: false,
+    onSuccess: async (project, { slug }) => {
+      qc.setQueryData(QK.project(slug), project)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.project(slug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        qc.invalidateQueries({ queryKey: QK.capacity }),
+      ])
+    },
+    onError: async (e, { slug }) => {
+      if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
     },
     meta: PM_MUTATION_META,
   })
