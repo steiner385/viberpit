@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
-import { usePendingDeploy } from '@/api/hooks'
+import { usePendingDeploy, useFleetHostPatch } from '@/api/hooks'
 // The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
 // shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
 // below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
@@ -92,12 +92,11 @@ export function FleetSection() {
 
   const [draft, setDraft] = useState({ name: '', endpoint: '' })
   const [addError, setAddError] = useState<string | null>(null)
+  // Row-level "max sessions" validation error, keyed by host name — set on an
+  // invalid blur (kept local, never sent), cleared on the next valid blur.
+  const [maxSessionsError, setMaxSessionsError] = useState<Record<string, string | null>>({})
 
-  const patch = useMutation({
-    mutationFn: ({ name, body }: { name: string; body: Partial<FleetHost> }) =>
-      api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
-  })
+  const patch = useFleetHostPatch()
 
   const add = useMutation({
     mutationFn: (body: { name: string; endpoint: string }) =>
@@ -175,7 +174,8 @@ export function FleetSection() {
                 <th className="pr-2">Load</th>
                 <th className="pr-2">Free mem</th>
                 <th className="pr-2">Version</th>
-                <th className="pr-2">Weight</th>
+                <th className="pr-2">Weight (dispatch share)</th>
+                <th className="pr-2">Max sessions</th>
                 <th className="pr-2">Enabled</th>
                 <th />
               </tr>
@@ -247,13 +247,55 @@ export function FleetSection() {
                       min={1}
                       max={1000}
                       defaultValue={h.weight}
-                      aria-label={`weight for ${h.name}`}
+                      aria-label={`weight (dispatch share) for ${h.name}`}
                       className="w-16 rounded border border-edge-strong bg-transparent px-1"
                       onBlur={(e) => {
                         const weight = Number(e.target.value)
                         if (weight !== h.weight) patch.mutate({ name: h.name, body: { weight } })
                       }}
                     />
+                  </td>
+                  <td className="pr-2">
+                    <input
+                      // `type="text"`, not `number`: a number input SANITIZES
+                      // non-numeric keystrokes at the DOM level (they never
+                      // land in `.value` at all), so the custom "must be a
+                      // whole number ≥ 1" validation below could never see
+                      // — let alone report — an "abc" entry. `inputMode`
+                      // still asks for the numeric keypad on mobile.
+                      type="text"
+                      inputMode="numeric"
+                      defaultValue={h.maxSessions ?? ''}
+                      aria-label={`max sessions for ${h.name}`}
+                      aria-invalid={maxSessionsError[h.name] ? true : undefined}
+                      className="w-16 rounded border border-edge-strong bg-transparent px-1"
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim()
+                        if (raw === '') {
+                          setMaxSessionsError((prev) => ({ ...prev, [h.name]: null }))
+                          if (h.maxSessions !== null) patch.mutate({ name: h.name, body: { maxSessions: null } })
+                          return
+                        }
+                        const n = Number(raw)
+                        if (!Number.isInteger(n) || n < 1) {
+                          // Never patch a bad value — reset the field to what the
+                          // server last confirmed and surface a row-level error
+                          // instead of silently dropping the edit.
+                          e.target.value = String(h.maxSessions ?? '')
+                          setMaxSessionsError((prev) => ({
+                            ...prev, [h.name]: 'Max sessions must be a whole number ≥ 1',
+                          }))
+                          return
+                        }
+                        setMaxSessionsError((prev) => ({ ...prev, [h.name]: null }))
+                        if (n !== h.maxSessions) patch.mutate({ name: h.name, body: { maxSessions: n } })
+                      }}
+                    />
+                    {maxSessionsError[h.name] && (
+                      <p role="alert" className="text-xs text-danger">
+                        {maxSessionsError[h.name]}
+                      </p>
+                    )}
                   </td>
                   <td className="pr-2">
                     <input

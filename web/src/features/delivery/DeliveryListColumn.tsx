@@ -7,7 +7,9 @@
  * by `shell/listColumns.tsx`, from `useDeliveryWorkspace`'s props.
  */
 import type { Automation } from '@/api/automations'
+import type { CapacityReadout } from '@/api/capacity'
 import { AutomationsScopeBody } from './AutomationsScopeBody'
+import { CapacityScopeBody } from './capacity/CapacityScopeBody'
 import { CiScopeBody } from './CiScopeBody'
 import { DeliveryScopeSegment } from './DeliveryScopeSegment'
 import type { DeliveryScope } from './deliveryNavState'
@@ -20,6 +22,9 @@ export interface DeliveryListColumnProps {
   repos: readonly string[]
   reposLoading: boolean
   reposError: boolean
+  capacity: CapacityReadout | undefined
+  capacityLoading: boolean
+  capacityError: boolean
   /** Key of the open row (`keyForDeliveryItem`), or null. */
   selectedKey: string | null
   onOpenAutomation: (id: string) => void
@@ -28,12 +33,19 @@ export interface DeliveryListColumnProps {
 
 export function DeliveryListColumn({
   scope, automations, automationsLoading, automationsError,
-  repos, reposLoading, reposError, selectedKey, onOpenAutomation, onOpenRepo,
+  repos, reposLoading, reposError,
+  capacity, capacityLoading, capacityError,
+  selectedKey, onOpenAutomation, onOpenRepo,
 }: DeliveryListColumnProps) {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="shrink-0 p-2">
-        <DeliveryScopeSegment scope={scope} automationCount={automations.length} ciCount={repos.length} />
+        <DeliveryScopeSegment
+          scope={scope}
+          automationCount={automations.length}
+          ciCount={repos.length}
+          capacityCount={capacity?.binding ? 1 : 0}
+        />
       </div>
       {scope === 'automations' && (
         <AutomationsScopeBody
@@ -51,6 +63,13 @@ export function DeliveryListColumn({
           isError={reposError}
           selectedKey={selectedKey}
           onOpen={onOpenRepo}
+        />
+      )}
+      {scope === 'capacity' && (
+        <CapacityScopeBody
+          capacity={capacity}
+          isLoading={capacityLoading}
+          isError={capacityError}
         />
       )}
     </div>

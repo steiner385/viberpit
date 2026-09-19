@@ -103,6 +103,7 @@ def _project_to_dict(p: Project) -> dict:
         # renders it through PRODUCT_POLICY_SCHEMA's defaults (server/automations/product_policy.py).
         "automationPolicy": p.automation_policy,
         "automationPolicyUpdatedAt": iso_utc(p.automation_policy_updated_at),
+        "priorityRank": p.priority_rank,
     }
 
 
@@ -161,6 +162,7 @@ class ProjectUpdateBody(BaseModel):
     name: str | None = None
     slug: str | None = None
     repo: str | None = None
+    priorityRank: int | None = None
 
 
 class EdgeCreateBody(BaseModel):
@@ -405,6 +407,12 @@ async def update_project(
     if repo is not None:
         _validate_repo(repo)
 
+    rank_set = "priorityRank" in body.model_fields_set
+    if rank_set and body.priorityRank is not None and body.priorityRank < 1:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_priority_rank",
+            "message": "priorityRank must be 1 or higher, or null to unrank"})
+
     # Ownership preflight must run, and the registration lock must be taken,
     # before any other query on this request's session (server/pm/repo_project.py
     # `lock_repo_registration` docstring) — so this happens before `_load_project`.
@@ -463,6 +471,10 @@ async def update_project(
             primary.backfill_done = False
             primary.watermark = None
             primary.last_synced_at = None
+
+    if rank_set and body.priorityRank != p.priority_rank:
+        changes["priorityRank"] = {"from": p.priority_rank, "to": body.priorityRank}
+        p.priority_rank = body.priorityRank
 
     if not changes:
         return await _project_detail_dict(db, p)

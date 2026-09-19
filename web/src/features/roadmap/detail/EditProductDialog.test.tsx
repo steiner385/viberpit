@@ -22,6 +22,7 @@ const PROJECT: Project = {
   portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null,
   repos: [{ id: 'r1', repo: 'steiner385/lakota-grades-mcp', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
   edges: [], featureCount: 0, workItemCount: 0, automationPolicy: null, automationPolicyUpdatedAt: null,
+  priorityRank: null,
 }
 
 function Here() {

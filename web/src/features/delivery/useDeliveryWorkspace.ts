@@ -10,7 +10,7 @@
  */
 import { useCallback, useMemo } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useAutomations, useStageModels } from '@/api/hooks'
+import { useAutomations, useCapacity, useStageModels } from '@/api/hooks'
 import type { DeliveryListColumnProps } from './DeliveryListColumn'
 import {
   automationPath, ciRepoPath, deliveryOpenItem, deliveryScope, keyForDeliveryItem,
@@ -33,6 +33,10 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
   // second half: `DeliveryPage`'s CI welcome observes this exact cache entry,
   // and two polling observers of one key are two requests.
   const repos = useStageModels({ enabled: active, poll: false })
+  // Same split as `repos` above: `CapacityDetail` (the page for this scope)
+  // owns the 30 s poll; this observer reads the same cache entry without a
+  // second timer.
+  const capacity = useCapacity({ enabled: active, poll: false })
 
   const onOpenAutomation = useCallback((id: string) => navigate(automationPath(id)), [navigate])
   const onOpenRepo = useCallback((repo: string) => navigate(ciRepoPath(repo)), [navigate])
@@ -48,6 +52,9 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
       repos: repoList,
       reposLoading: repos.isLoading,
       reposError: repos.isError,
+      capacity: capacity.data,
+      capacityLoading: capacity.isLoading,
+      capacityError: capacity.isError,
       selectedKey: keyForDeliveryItem(deliveryOpenItem(params)),
       onOpenAutomation,
       onOpenRepo,

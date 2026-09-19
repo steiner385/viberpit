@@ -90,6 +90,7 @@ const PROJECT = {
   portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null,
   repos: [{ id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
   edges: [], featureCount: 3, workItemCount: 40, automationPolicy: null, automationPolicyUpdatedAt: null,
+  priorityRank: null,
 }
 
 const ONBOARDING = {

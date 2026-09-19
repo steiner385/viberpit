@@ -23,6 +23,7 @@ import { automationTier, automationTierLine } from './automationTier'
 import { AutomationControls } from './automation/AutomationControls'
 import { AutomationDetail } from './automation/AutomationDetail'
 import { engineBadge } from './automation/engineBadge'
+import { CapacityDetail } from './capacity/CapacityDetail'
 import { CiRepoDetail, WINDOWS, type CiWindow } from './ci/CiRepoDetail'
 import { deliveryOpenItem, deliveryPath, deliveryScope } from './deliveryNavState'
 import { DeliveryWelcome } from './DeliveryWelcome'
@@ -85,6 +86,13 @@ export function DeliveryPage() {
                 <TierDot tier={automationTier(automation)} />
                 <span>{automationTierLine(automationTier(automation), automation)}</span>
                 <span>{automation.status.text}</span>
+                {/* Findability (spec D9): every capacity dial should point at
+                    the Capacity page, including the runner header when it is
+                    the reason nothing is happening. */}
+                {automation.id === 'backlog-runner' &&
+                  (automation.status.waitingReason === 'capacity' || automation.status.text.includes('capacity')) && (
+                  <Link to={deliveryPath('capacity')} className="underline">See capacity</Link>
+                )}
                 {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
                 {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
                 {(automation.operatorTriggered ?? automation.modes.length === 0)
@@ -116,10 +124,10 @@ export function DeliveryPage() {
               : undefined
         }
       />
-      {/* The CI detail owns its own skeleton, so only the panes that read the
-          two list queries wait here. */}
+      {/* The CI detail and Capacity detail each own their own skeleton, so
+          only the panes that read the two list queries wait here. */}
       <PageContent
-        busy={item?.kind === 'ciRepo'
+        busy={item?.kind === 'ciRepo' || scope === 'capacity'
           ? false
           : scope === 'ci'
             ? repos.isLoading && !repos.data
@@ -157,8 +165,11 @@ export function DeliveryPage() {
           />
         )}
         {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={ciWindow} />}
+        {/* Capacity has no per-item route — this scope is always "nothing
+            open", and its pane is the controls/table/plan, never the welcome. */}
+        {item === null && scope === 'capacity' && <CapacityDetail />}
         {/* Nothing open: the pane says what is waiting rather than sitting blank. */}
-        {item === null && (
+        {item === null && scope !== 'capacity' && (
           <DeliveryWelcome
             scope={scope}
             count={scope === 'ci'

@@ -13,6 +13,7 @@ import type { GateSpec } from '@/api/sdlc'
 import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy, useSdlcGates } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
+import { deliveryPath } from '@/features/delivery/deliveryNavState'
 import { Banner } from '@/ui/Banner'
 import { Field } from '@/ui/Field'
 import { Skeleton } from '@/ui/Skeleton'
@@ -23,6 +24,32 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
   const dispatch = schema.filter((f) => f.key === 'dispatch')
   const rest = schema.filter((f) => f.key !== 'dispatch')
   return [...dispatch, ...rest]
+}
+
+// Findability (spec D9): every capacity-shaped knob groups under one legend
+// with a link to the real capacity page, rather than sitting flat among the
+// model and gate dials. A key this schema does not yet know about — a field
+// shipped before this list is updated — falls into Capacity rather than
+// vanishing, since Capacity is the safest place for a stranger to surface.
+const MODELS_FIELD_KEYS = new Set(['default_model', 'ladder_top', 'unattended_model_floor'])
+const GATES_FIELD_KEYS = new Set([
+  'risk_tolerance', 'triage_auto_accept', 'give_up_after_bounces', 'max_initiatives_in_flight',
+])
+
+interface FieldGroups {
+  capacity: ConfigField[]
+  models: ConfigField[]
+  gates: ConfigField[]
+}
+
+function groupFields(fields: ConfigField[]): FieldGroups {
+  const groups: FieldGroups = { capacity: [], models: [], gates: [] }
+  for (const field of fields) {
+    if (MODELS_FIELD_KEYS.has(field.key)) groups.models.push(field)
+    else if (GATES_FIELD_KEYS.has(field.key)) groups.gates.push(field)
+    else groups.capacity.push(field)
+  }
+  return groups
 }
 
 function ImplementationEligibility({ label, decision }: { label: string; decision: ProductImplementationDecision }) {
@@ -93,6 +120,23 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
     update.mutate({ policy: { [key]: val }, expectedUpdatedAt: project.automationPolicyUpdatedAt })
   }
 
+  function renderField(field: ConfigField) {
+    return field.type === 'bool'
+      ? (
+        <div key={field.key}>
+          <ConfigInput field={field} value={effective[field.key]} onChange={handleChange} />
+          {field.help && <p className="text-xs text-ink-muted mt-0.5">{field.help}</p>}
+        </div>
+      )
+      : (
+        <Field key={field.key} label={field.label} htmlFor={field.key} help={field.help || undefined}>
+          <ConfigInput field={field} value={effective[field.key]} onChange={handleChange} />
+        </Field>
+      )
+  }
+
+  const groups = groupFields(fields)
+
   return (
     <section aria-labelledby="automation-heading" className="flex flex-col gap-2">
       <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
@@ -115,21 +159,22 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
       {/* A native fieldset disables every descendant control at once — ConfigInput
           itself carries no `disabled` prop (it is shared verbatim with the
           automations Config tab, which never disables a field). */}
-      <fieldset disabled={!live || update.isPending} className="flex flex-col gap-3 disabled:opacity-60">
-        {fields.map((field) => (
-          field.type === 'bool'
-            ? (
-              <div key={field.key}>
-                <ConfigInput field={field} value={effective[field.key]} onChange={handleChange} />
-                {field.help && <p className="text-xs text-ink-muted mt-0.5">{field.help}</p>}
-              </div>
-            )
-            : (
-              <Field key={field.key} label={field.label} htmlFor={field.key} help={field.help || undefined}>
-                <ConfigInput field={field} value={effective[field.key]} onChange={handleChange} />
-              </Field>
-            )
-        ))}
+      <fieldset disabled={!live || update.isPending} className="flex flex-col gap-4 disabled:opacity-60">
+        <fieldset className="flex flex-col gap-3">
+          <legend className="text-sm font-medium">Capacity</legend>
+          <Link to={deliveryPath('capacity')} className="text-xs text-accent hover:underline">
+            See the fleet&apos;s capacity
+          </Link>
+          {groups.capacity.map(renderField)}
+        </fieldset>
+        <fieldset className="flex flex-col gap-3">
+          <legend className="text-sm font-medium">Models</legend>
+          {groups.models.map(renderField)}
+        </fieldset>
+        <fieldset className="flex flex-col gap-3">
+          <legend className="text-sm font-medium">Gates</legend>
+          {groups.gates.map(renderField)}
+        </fieldset>
       </fieldset>
       {/* Every gate the tolerance governs, with what the selected level does to it
           (spec 2026-09-14 §11, built by 2026-09-17 D5). The verdict column is the

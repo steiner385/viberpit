@@ -51,6 +51,8 @@ import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
 } from './roadmap'
+import { fetchCapacity, type CapacityReadout } from './capacity'
+import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
   fetchDecisions, acceptDecision, rejectDecision,
@@ -131,6 +133,7 @@ export const QK = {
   policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
+  capacity: ['capacity'] as const,
 }
 
 /**
@@ -1142,6 +1145,28 @@ export function useDeployStatus() {
   return { ...q, data: q.data?.deploy as DeployProgress | undefined }
 }
 
+/**
+ * Settings › Fleet's one PATCH surface (enabled / weight / max sessions / ssh
+ * config), `PUT /api/fleet/hosts/{name}`. Lives here — not inline in
+ * `FleetSection` — so a rejected write (e.g. a "max sessions" value the
+ * server refuses) gets the same `onError` treatment every other mutation in
+ * this file gets instead of silently vanishing: the hosts query still gets
+ * invalidated (a 409 can mean the row moved under the operator) and the
+ * failure reaches them as a toast, not nothing.
+ */
+export function useFleetHostPatch() {
+  const qc = useQueryClient()
+  return useMutation<FleetHost, ApiRequestError, { name: string; body: Partial<FleetHost> }>({
+    mutationFn: ({ name, body }) =>
+      api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+    onError: (e) => {
+      void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      toast.error(extractMutationErrorMessage(e, 'Could not update the host'))
+    },
+  })
+}
+
 export function useStartDeploy() {
   const qc = useQueryClient()
   // The variable is an optional explicit target sha (green-frontier deploy);
@@ -1177,6 +1202,20 @@ export function useAutomations({ poll = false }: { poll?: boolean } = {}) {
     refetchInterval: poll ? 30_000 : false })
 }
 
+/** The capacity governor's readout (design §5). `poll` is owned by whichever
+ *  caller is the live page (`CapacityDetail`); the list column's copy (via
+ *  `useDeliveryWorkspace`) reads the same cache entry without a second timer —
+ *  the same split as `useAutomations`/`useStageModels` above. */
+export function useCapacity({ poll = false, enabled = true }: { poll?: boolean; enabled?: boolean } = {}) {
+  return useQuery<CapacityReadout>({
+    queryKey: QK.capacity,
+    queryFn: fetchCapacity,
+    staleTime: 10_000,
+    refetchInterval: poll ? 30_000 : false,
+    enabled,
+  })
+}
+
 export function useAutomationEvents(id: string, enabled = true) {
   return useQuery<AutomationEvent[]>({
     queryKey: QK.automationEvents(id), queryFn: () => fetchAutomationEvents(id),
@@ -1195,7 +1234,14 @@ export function usePatchAutomation() {
   const qc = useQueryClient()
   return useMutation<Automation, ApiRequestError, { id: string; body: AutomationPatch }>({
     mutationFn: ({ id, body }) => patchAutomation(id, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automations }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.automations })
+      // The capacity governor is an automation (id `capacity-governor`); its
+      // push level and mode are two of the readout's own fields (design
+      // 2026-09-19 §5/§7.1), so a change here must not leave the Capacity
+      // page showing a stale push level until the next 30s poll.
+      qc.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 }
 
@@ -1871,14 +1917,20 @@ export function useSdlcGates() {
   })
 }
 
-/** One project: repos and edges (the list payload's counts are not here). */
-export function useProject(slug: string | null) {
+/** One project: repos and edges (the list payload's counts are not here).
+ *  `poll` defaults true (every existing caller's behaviour); a reader that
+ *  mounts many of these at once (e.g. one per row of the Capacity products
+ *  table, `CapacityProductRow`) passes `poll: false` so N rows don't open N
+ *  15s timers over the same handful of `QK.project` keys — a `staleTime`-only
+ *  refetch on remount/focus is enough for a value only shown, not live-edited,
+ *  by that reader. */
+export function useProject(slug: string | null, { poll = true }: { poll?: boolean } = {}) {
   return useQuery<Project>({
     queryKey: QK.project(slug ?? ''),
     queryFn: () => fetchProject(slug as string),
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
-    refetchInterval: 15_000,
+    refetchInterval: poll ? 15_000 : false,
   })
 }
 
@@ -1924,6 +1976,10 @@ export function useUpdateProductPolicy(slug: string) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: QK.project(slug) }),
         qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        // `capacity_mode`/`max_in_flight` are two of the readout's own product
+        // fields (design 2026-09-19 §5) — a policy edit must not leave the
+        // Capacity page showing the pre-edit value until its next poll.
+        qc.invalidateQueries({ queryKey: QK.capacity }),
       ])
     },
     onError: async (e) => {
@@ -1952,11 +2008,45 @@ export function useUpdateProject(slug: string) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: QK.project(newSlug) }),
         qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        // `priorityRank` is one of the readout's own product fields — see
+        // `useReorderProject` below, this hook's sibling for the Capacity
+        // products table's rank buttons.
+        qc.invalidateQueries({ queryKey: QK.capacity }),
       ])
     },
     onError: async (e) => {
       if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
       toast.error(extractMutationErrorMessage(e, 'Could not update the product'))
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/**
+ * Re-ranks one product by slug (design 2026-09-19 §7.1's rank ▲▼ buttons).
+ * Deliberately NOT `useUpdateProject(slug)`: that hook bakes its slug into the
+ * mutation's closure at hook-creation time, but a rank swap always touches
+ * TWO products (the moved row and its neighbour — see
+ * `features/delivery/capacity/swapRanks.ts`) whose slugs are only known at
+ * click time. This hook takes `slug` as a mutation VARIABLE instead, so one
+ * instance (created once, not per-row) can `mutateAsync` for either side in
+ * sequence without a second, differently-slugged hook instance.
+ */
+export function useReorderProject() {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, { slug: string; priorityRank: number }>({
+    mutationFn: ({ slug, priorityRank }) => updateProject(slug, { priorityRank }),
+    retry: false,
+    onSuccess: async (project, { slug }) => {
+      qc.setQueryData(QK.project(slug), project)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.project(slug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        qc.invalidateQueries({ queryKey: QK.capacity }),
+      ])
+    },
+    onError: async (e, { slug }) => {
+      if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
     },
     meta: PM_MUTATION_META,
   })

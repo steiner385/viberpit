@@ -54,6 +54,8 @@ export interface Project {
    *  alone as "every key present". */
   automationPolicy: Record<string, unknown> | null
   automationPolicyUpdatedAt: string | null
+  /** Capacity governor (spec 2026-09-19 §4): 1 = highest priority; null = unranked. */
+  priorityRank: number | null
 }
 
 export interface CreateProjectInput {
@@ -73,6 +75,7 @@ export interface UpdateProjectInput {
   name?: string
   slug?: string
   repo?: string
+  priorityRank?: number | null
 }
 
 export function updateProject(slug: string, input: UpdateProjectInput): Promise<Project> {

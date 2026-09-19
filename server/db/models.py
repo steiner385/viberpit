@@ -804,6 +804,27 @@ class BacklogGroup(Base):
     consumed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class CapacityPlanRow(Base):
+    """The capacity governor's current plan (spec 2026-09-19 §4, D5): ONE row,
+    ``id = "current"``, rewritten every tick. Never the human's policy — the runner
+    merges this over policy at read time (phase 2). Every non-key column nullable
+    so reconcile creates it on both dialects."""
+
+    __tablename__ = "capacity_plans"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="current")
+    computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    push_level: Mapped[str | None] = mapped_column(String, nullable=True)
+    applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fleet_concurrency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    per_product: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pending: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    budget: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    binding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    defects: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
 class CiRun(Base):
     """One completed GitHub Actions workflow run (CI/CD Doctor sensing).
     id is the GitHub run id (globally unique). All non-PK columns nullable so
@@ -1575,6 +1596,10 @@ class Project(Base):
         JSON(none_as_null=True), nullable=True)
     automation_policy_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Capacity governor (spec 2026-09-19 §4): the person's priority order. 1 = highest;
+    # NULL = unranked (sorted after ranked products by created_at). Nullable so
+    # reconcile ALTER-ADDs it on both dialects.
+    priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProjectRepo(Base):

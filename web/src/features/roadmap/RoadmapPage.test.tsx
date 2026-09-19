@@ -38,6 +38,7 @@ vi.mock('@/api/hooks', () => ({
       id: 'p', slug: 'kindash', name: 'KinDash', description: 'Family dashboard', status: null,
       portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null, edges: [],
       featureCount: 3, workItemCount: 40, automationPolicy: null, automationPolicyUpdatedAt: null,
+      priorityRank: null,
       repos: [{ id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
     },
     isLoading: false,

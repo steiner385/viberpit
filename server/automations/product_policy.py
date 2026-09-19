@@ -60,10 +60,15 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # otherwise have to fake by flipping dispatch off. A NEGATIVE cap is what is
     # rejected; ``_refill`` treats every cap literally, so a stored ``-1`` would
     # read as an unreachable ceiling, i.e. unlimited.
-    ConfigField(key="max_in_flight", label="Max in flight", type="int", default=1, min=0,
-                help="This product's concurrent runner sessions. 0 pauses issue "
-                     "dispatch without losing the rest of its policy."),
-    ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
+    ConfigField(key="max_in_flight", label="Max in flight (pin)", type="int", default=1, min=0,
+                help="This product's concurrent runner sessions. Read as a hard cap while In-flight cap is pinned; "
+                     "the fallback while auto and no plan exists. 0 pauses issue dispatch without losing the rest of its policy."),
+    ConfigField(key="capacity_mode", label="In-flight cap", type="enum", default="auto",
+                choices=["auto", "pinned"],
+                help="auto: the capacity governor sets this product's in-flight cap from the "
+                     "fleet's real headroom and your priority order. pinned: the value above "
+                     "is a hard cap the governor respects."),
+    ConfigField(key="weight", label="Weight (contested slot share)", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
     # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt

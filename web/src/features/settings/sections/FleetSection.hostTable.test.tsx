@@ -38,14 +38,18 @@ const deployStatus = {
 // a refetch is visible as a new ROW rather than as a call count.
 let listed = hosts
 
-vi.mock('@/api/client', () => ({
-  api: {
-    get: vi.fn(async (path: string) =>
-      path.startsWith('/deploy') ? deployStatus : { hosts: listed }),
-    put: vi.fn(async () => hosts[0]),
-    post: vi.fn(async () => ({ started: true })),
-  },
-}))
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return {
+    ...actual,
+    api: {
+      get: vi.fn(async (path: string) =>
+        path.startsWith('/deploy') ? deployStatus : { hosts: listed }),
+      put: vi.fn(async () => hosts[0]),
+      post: vi.fn(async () => ({ started: true })),
+    },
+  }
+})
 
 import { api } from '@/api/client'
 
@@ -192,5 +196,29 @@ describe('FleetSection', () => {
         name: 'newhost', endpoint: 'https://newhost:9443',
       }))
     await waitFor(() => expect(screen.getByText('newhost')).toBeInTheDocument())
+  })
+
+  // Fix wave item 1: a rejected write used to just vanish (the row silently
+  // kept showing the old value with no way to tell the PATCH failed). The
+  // hook's `onError` re-invalidates the hosts query — real here (this file
+  // does not mock `@/api/hooks`), so the refetch is observable as another
+  // `GET /fleet/hosts` call, not just an internal implementation detail.
+  it('a rejected max sessions patch still re-fetches the hosts list', async () => {
+    vi.mocked(api.put).mockRejectedValueOnce(new Error('boom'))
+    wrap(<FleetSection />)
+    await waitFor(() => expect(screen.getByText('rocky')).toBeInTheDocument())
+    const hostsCallsBefore = vi.mocked(api.get).mock.calls
+      .filter(([p]) => typeof p === 'string' && !p.startsWith('/deploy')).length
+
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '9' } })
+    fireEvent.blur(input)
+
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { maxSessions: 9 }))
+    await waitFor(() => {
+      const after = vi.mocked(api.get).mock.calls
+        .filter(([p]) => typeof p === 'string' && !p.startsWith('/deploy')).length
+      expect(after).toBeGreaterThan(hostsCallsBefore)
+    })
   })
 })

@@ -50,6 +50,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("session_feedback_cap", "CCSWITCH_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("error_sink_enabled", "CCSWITCH_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
+    ("capacity_governor_enabled", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "Capacity governor may apply its plan (act mode)"),
     ("log_level", "CCSWITCH_LOG_LEVEL", "Server log level"),
     ("client_log_level", "CCSWITCH_CLIENT_LOG_LEVEL", "Browser log level"),
 )

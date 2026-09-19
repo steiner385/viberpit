@@ -4,9 +4,11 @@
 // what its header says, and that an address the list does not contain says so.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { createMemoryRouter, Outlet, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { AutomationStatus } from '@/api/automations'
 import { AUTOMATIONS } from './__fixtures__/automations'
+import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryPage } from './DeliveryPage'
 import { AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
 
@@ -16,13 +18,22 @@ const patch = vi.fn()
 // factory below is only evaluated once (when `@/api/hooks` is first
 // imported), but the arrow functions it returns are re-invoked on every
 // render, so a test can flip these before `mount()` and the component sees it.
-const hookState: { automationsIsError: boolean; reposIsError: boolean; status?: AutomationStatus } = { automationsIsError: false, reposIsError: false }
+const hookState: {
+  automationsIsError: boolean
+  reposIsError: boolean
+  status?: AutomationStatus
+  backlogRunnerStatus?: AutomationStatus
+} = { automationsIsError: false, reposIsError: false }
 
 // The page's own hooks plus everything the two detail bodies reach for — the
 // same set `AutomationDetail.test.tsx` mocks, so the real panes render.
 vi.mock('@/api/hooks', () => ({
   useAutomations: () => ({
-    data: hookState.automationsIsError ? undefined : AUTOMATIONS.map((a) => a.id === 'pr-doctor' && hookState.status ? { ...a, status: hookState.status } : a),
+    data: hookState.automationsIsError ? undefined : AUTOMATIONS.map((a) => {
+      if (a.id === 'pr-doctor' && hookState.status) return { ...a, status: hookState.status }
+      if (a.id === 'backlog-runner' && hookState.backlogRunnerStatus) return { ...a, status: hookState.backlogRunnerStatus }
+      return a
+    }),
     isLoading: false,
     isError: hookState.automationsIsError,
   }),
@@ -46,6 +57,12 @@ vi.mock('@/api/hooks', () => ({
   useGithubRepos: () => ({ data: [], isLoading: false }),
   useConsolidation: () => ({ data: undefined }),
   useConsolidate: () => ({ mutate: vi.fn(), isPending: false }),
+  // CapacityDetail's own reads — see CapacityDetail.test.tsx for the detailed
+  // behaviour; this file only needs the scope to render without crashing.
+  useCapacity: () => ({ data: CAPACITY, isLoading: false, isError: false }),
+  useReorderProject: () => ({ mutateAsync: vi.fn().mockResolvedValue({}) }),
+  useUpdateProductPolicy: () => ({ mutate: vi.fn() }),
+  useProject: () => ({ data: undefined }),
 }))
 vi.mock('./automation/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
 vi.mock('./automation/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
@@ -62,16 +79,28 @@ function Location() {
   return <div data-testid="location">{pathname}{search}</div>
 }
 
+// `CapacityDetail` reads the real `useQueryClient()` (for `qc.getQueryData`/
+// `invalidateQueries` — not something `@/api/hooks` can mock) AND uses
+// `useSettingsForm`'s `useBlocker` for its pin `SaveBar`, which throws
+// outside a DATA router — a plain `<MemoryRouter>` no longer suffices, so
+// both harnesses below use `createMemoryRouter`/`RouterProvider` instead.
+function qc() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
+}
+
+const DELIVERY_ROUTE_PATHS = [DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE]
+
 function mount(path: string) {
+  const router = createMemoryRouter([
+    {
+      element: <><Outlet /><Location /></>,
+      children: DELIVERY_ROUTE_PATHS.map((p) => ({ path: p, element: <DeliveryPage /> })),
+    },
+  ], { initialEntries: [path] })
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        {[DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE].map((p) => (
-          <Route key={p} path={p} element={<DeliveryPage />} />
-        ))}
-      </Routes>
-      <Location />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   )
 }
 
@@ -89,16 +118,16 @@ function NavButtons() {
 }
 
 function mountWithNav(path: string) {
+  const router = createMemoryRouter([
+    {
+      element: <><NavButtons /><Outlet /><Location /></>,
+      children: DELIVERY_ROUTE_PATHS.map((p) => ({ path: p, element: <DeliveryPage /> })),
+    },
+  ], { initialEntries: [path] })
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <NavButtons />
-      <Routes>
-        {[DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE].map((p) => (
-          <Route key={p} path={p} element={<DeliveryPage />} />
-        ))}
-      </Routes>
-      <Location />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   )
 }
 
@@ -106,6 +135,7 @@ afterEach(() => {
   hookState.automationsIsError = false
   hookState.reposIsError = false
   hookState.status = undefined
+  hookState.backlogRunnerStatus = undefined
 })
 
 const h1 = () => screen.getByRole('heading', { level: 1 })
@@ -116,6 +146,13 @@ describe('DeliveryPage', () => {
     expect(h1()).toHaveTextContent('Delivery')
     expect(screen.getByText('Pick an automation')).toBeInTheDocument()
     expect(screen.getByText(/3 registered/)).toBeInTheDocument()
+  })
+
+  it('the Capacity scope has no welcome pane — it always shows the readout', () => {
+    mount('/delivery?scope=capacity')
+    expect(h1()).toHaveTextContent('Delivery')
+    expect(screen.getByText('Push level')).toBeInTheDocument()
+    expect(screen.queryByText('Pick an automation')).not.toBeInTheDocument()
   })
 
   it('the CI scope keeps the section title and invites a repository pick', () => {
@@ -163,6 +200,32 @@ describe('DeliveryPage', () => {
       vi.useRealTimers()
     }
   })
+  // Findability (spec D9): the runner header names the reason it is idle in
+  // plain text already (R9); when that reason is capacity, it should also
+  // hand the operator a way to the page that explains and controls it.
+  it('links to the capacity page when the runner is waiting on capacity (typed reason)', () => {
+    hookState.backlogRunnerStatus = { text: 'Waiting on capacity', level: 'warn', counts: null, waitingReason: 'capacity' }
+    mount('/delivery/automations/backlog-runner')
+    expect(screen.getByRole('link', { name: 'See capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
+  })
+
+  it('also links when the status text names capacity without a typed waitingReason', () => {
+    hookState.backlogRunnerStatus = { text: 'Paused: capacity exhausted', level: 'warn', counts: null }
+    mount('/delivery/automations/backlog-runner')
+    expect(screen.getByRole('link', { name: 'See capacity' })).toBeInTheDocument()
+  })
+
+  it('omits the capacity link when the runner is not waiting on capacity', () => {
+    mount('/delivery/automations/backlog-runner')
+    expect(screen.queryByRole('link', { name: 'See capacity' })).not.toBeInTheDocument()
+  })
+
+  it('never shows the capacity link for a different automation, even one whose status mentions capacity', () => {
+    hookState.status = { text: 'Waiting on capacity', level: 'warn', counts: null, waitingReason: 'capacity' }
+    mount('/delivery/automations/pr-doctor')
+    expect(screen.queryByRole('link', { name: 'See capacity' })).not.toBeInTheDocument()
+  })
+
   it('an automation the list does not contain says so and offers the way back', () => {
     mount('/delivery/automations/nope')
     expect(screen.getByText('Automation not found')).toBeInTheDocument()

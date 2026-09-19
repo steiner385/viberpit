@@ -255,6 +255,12 @@ try:
         # CCSWITCH_ on hosts still on the old one.
         gate_autoresolve_enabled: bool = Field(
             default=True, alias="VIBERPIT_GATE_AUTORESOLVE_ENABLED")
+        # Capacity Governor (spec 2026-09-19 §6, D10): process-wide kill switch for
+        # `act` mode. Off holds every governor row to monitor-only, regardless of
+        # its configured mode — phase 1's `act` writes `applied: false` and phase
+        # 2's runner refuses to read a plan the switch has disowned.
+        capacity_governor_enabled: bool = Field(
+            default=True, alias="VIBERPIT_CAPACITY_GOVERNOR_ENABLED")
         # Per-session in-process MCP surface for coding sessions (session tools spec §3).
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
@@ -563,6 +569,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         gate_autoresolve_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        capacity_governor_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_tools_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")

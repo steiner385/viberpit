@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { AUTOMATIONS } from './__fixtures__/automations'
+import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryListColumn } from './DeliveryListColumn'
 import { automationKey, ciRepoKey } from './deliveryNavState'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -23,7 +24,9 @@ function mount(over: Partial<React.ComponentProps<typeof DeliveryListColumn>> = 
     <ViewportProvider kiosk={null}>
       <MemoryRouter>
         <DeliveryListColumn scope="automations" automations={AUTOMATIONS} automationsLoading={false} automationsError={false}
-          repos={['o/r', 'a/b']} reposLoading={false} reposError={false} selectedKey={null}
+          repos={['o/r', 'a/b']} reposLoading={false} reposError={false}
+          capacity={undefined} capacityLoading={false} capacityError={false}
+          selectedKey={null}
           onOpenAutomation={onOpenAutomation} onOpenRepo={onOpenRepo} {...over} />
       </MemoryRouter>
     </ViewportProvider>,
@@ -63,10 +66,17 @@ describe('DeliveryListColumn', () => {
     expect(onOpenRepo).toHaveBeenCalledWith('o/r')
     expect(screen.getByTestId(`row-${ciRepoKey('a/b')}`)).toBeInTheDocument()
   })
-  it('the scope segment links both scopes and counts them', () => {
+  it('the scope segment links all three scopes and counts them', () => {
     mount()
     expect(screen.getByRole('link', { name: 'Automations (3)' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'CI health (2)' })).toHaveAttribute('href', '/delivery?scope=ci')
+    expect(screen.getByRole('link', { name: 'Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
+  })
+  it('Capacity scope: the five stack rows, and a binding count of 1 on the scope link', () => {
+    mount({ scope: 'capacity', capacity: CAPACITY })
+    const list = screen.getByRole('list', { name: 'Capacity' })
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5)
+    expect(screen.getByRole('link', { name: 'Capacity (1)' })).toHaveAttribute('aria-current', 'page')
   })
   it('search narrows the Automations scope', () => {
     mount()
