@@ -538,3 +538,37 @@ def test_successful_background_launch_stays_open_until_its_notification(tmp_path
     p.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
     assert [t.tool_use_id for t in scan_open_background_tasks(str(p))] == ["tu-bg"]
     assert is_parked(str(p)) is True
+
+
+def test_task_stopped_by_the_agent_is_closed_for_both_scans(tmp_path):
+    # Session a50a5873 (2026-09-19): a `sleep 300; true` placeholder launched in the
+    # background, then deliberately stopped with TaskStop. The CLI journals the stop
+    # only as the TaskStop's own tool_result — never as a task-notification — so the
+    # launch read as open forever: twelve hours on waiting_external, and four
+    # post-restart prompts asking the agent to relaunch a task it had killed on purpose.
+    stop_result = {"message": "Successfully stopped task: bmys2bjxs (sleep 300; true)",
+                   "task_id": "bmys2bjxs", "task_type": "local_bash",
+                   "command": "sleep 300; true"}
+    path = _write(tmp_path, [
+        _user("fix the failing CI"),
+        _assistant_tool("toolu_bg", "Bash", {"command": "sleep 300; true",
+                                             "run_in_background": True}),
+        _ack("toolu_bg", {"stdout": "", "backgroundTaskId": "bmys2bjxs"}, ""),
+        _assistant_tool("toolu_stop", "TaskStop", {"task_id": "bmys2bjxs"}),
+        _ack("toolu_stop", stop_result, json.dumps(stop_result)),
+        _assistant_text("Cancelled the placeholder; PR #160 merged, nothing outstanding."),
+    ])
+    assert scan_open_background_tasks(path) == []                              # re-arm scan
+    assert scan_open_background_tasks(path, treat_killed_as_open=False) == []  # is_parked scan
+    assert is_parked(path) is False
+
+
+def test_task_stop_of_some_other_task_closes_nothing(tmp_path):
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_bg", "Bash", {"command": "sleep 300", "run_in_background": True}),
+        _ack("toolu_bg", {"backgroundTaskId": "keep"}, ""),
+        _assistant_tool("toolu_stop", "TaskStop", {"task_id": "other"}),
+        _ack("toolu_stop", {"message": "Successfully stopped task: other", "task_id": "other"}, ""),
+    ])
+    assert [t.tool_use_id for t in scan_open_background_tasks(path)] == ["toolu_bg"]
+    assert is_parked(path) is True
