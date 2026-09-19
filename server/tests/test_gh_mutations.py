@@ -142,6 +142,33 @@ def test_update_field_options_echoes_existing_option_ids():
     assert '{id:' not in build_update_field_options("F_s", ["Todo"])
 
 
+def test_update_field_options_preserves_colour_and_description_when_given():
+    """``color``/``description`` are required members of the option input and the mutation
+    REPLACES the set, so a caller holding the board's current values must be able to send
+    them back — otherwise every preserved column is repainted gray and its description
+    erased (the rename one-shot's hazard)."""
+    doc = build_update_field_options(
+        "F_s", ["Todo", "Held", "New"],
+        option_ids={"Todo": "o1", "Held": "o2"},
+        option_attrs={"Todo": {"color": "blue", "description": 'the "next" pile'},
+                      "Held": {"color": "PURPLE", "description": ""},
+                      "New": {"color": "NOT_A_COLOR", "description": None}})
+    assert '{id: "o1", name: "Todo", color: BLUE, description: "the \\"next\\" pile"}' in doc
+    assert '{id: "o2", name: "Held", color: PURPLE, description: ""}' in doc
+    # An unknown colour (or a missing/non-string description) falls back to the default
+    # rather than interpolating an arbitrary token into the enum position.
+    assert '{name: "New", color: GRAY, description: ""}' in doc
+
+
+def test_update_field_options_without_attrs_is_unchanged_for_the_bootstrap():
+    """The reconciler's field bootstrap passes no attrs and must keep its old rendering:
+    a brand-new option gets GitHub's defaults, which is what a new option should get."""
+    assert (build_update_field_options("F_s", ["Todo", "Backlog"], option_ids={"Todo": "o1"})
+            == build_update_field_options("F_s", ["Todo", "Backlog"], option_ids={"Todo": "o1"},
+                                          option_attrs=None))
+    assert 'color: GRAY, description: ""' in build_update_field_options("F_s", ["Todo"])
+
+
 def test_rate_limit_query_and_parser():
     assert build_rate_limit_query() == "query { rateLimit { cost remaining resetAt } }"
     payload = {"data": {"rateLimit": {"cost": 2, "remaining": 4990, "resetAt": "x"}}}

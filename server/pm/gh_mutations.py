@@ -218,11 +218,38 @@ def chunk(mutations: Sequence[Mutation], size: int = MAX_ALIASES) -> list[list[M
     return [list(mutations[i:i + size]) for i in range(0, len(mutations), size)]
 
 
-def _options(names: Sequence[str], ids: Mapping[str, str] | None = None) -> str:
-    return ", ".join(
-        '{%sname: %s, color: GRAY, description: ""}'
-        % ("id: %s, " % _q((ids or {}).get(n)) if (ids or {}).get(n) else "", _q(n))
-        for n in names)
+#: ``ProjectV2SingleSelectFieldOptionColor`` — the enum GitHub returns for an option's
+#: colour and accepts back in the option input. Unquoted in GraphQL, so a value echoed
+#: from a response is validated against this set rather than interpolated blind.
+OPTION_COLORS: frozenset[str] = frozenset(
+    {"GRAY", "BLUE", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE"})
+#: What an option with no known colour gets: GitHub's own default for a new option.
+DEFAULT_OPTION_COLOR = "GRAY"
+
+
+def _options(names: Sequence[str], ids: Mapping[str, str] | None = None,
+             attrs: Mapping[str, Mapping[str, object]] | None = None) -> str:
+    """Render the ``singleSelectOptions`` input list.
+
+    ``color`` and ``description`` are REQUIRED members of
+    ``ProjectV2SingleSelectFieldOptionInput`` and the mutation replaces the option
+    set wholesale, so an option rendered without them comes back gray with no
+    description. That default is right for an option being *created* (the field
+    bootstrap's appended spec names) and wrong for one being *preserved*: pass its
+    current ``{color, description}`` in ``attrs`` — keyed by the name it will carry —
+    and it keeps them."""
+    out = []
+    for name in names:
+        oid = (ids or {}).get(name)
+        attr = (attrs or {}).get(name) or {}
+        color = str(attr.get("color") or "").upper()
+        if color not in OPTION_COLORS:
+            color = DEFAULT_OPTION_COLOR
+        description = attr.get("description") or ""
+        out.append('{%sname: %s, color: %s, description: %s}' % (
+            "id: %s, " % _q(oid) if oid else "", _q(name), color,
+            _q(description if isinstance(description, str) else "")))
+    return ", ".join(out)
 
 
 def build_create_field(project_node_id: str, name: str, data_type: str,
@@ -234,8 +261,10 @@ def build_create_field(project_node_id: str, name: str, data_type: str,
             % (_q(project_node_id), data_type, _q(name), extra))
 
 
-def build_update_field_options(field_id: str, options: Sequence[str],
-                               *, option_ids: Mapping[str, str] | None = None) -> str:
+def build_update_field_options(field_id: str, options: Sequence[str], *,
+                               option_ids: Mapping[str, str] | None = None,
+                               option_attrs: Mapping[str, Mapping[str, object]] | None = None,
+                               ) -> str:
     """Replace a single-select's option set with ``options`` (the caller's union, in order).
 
     ``updateProjectV2Field`` REPLACES the option list wholesale, and an input entry without
@@ -245,7 +274,14 @@ def build_update_field_options(field_id: str, options: Sequence[str],
     value. Passing each preserved option's existing id (``option_ids``, the board's
     name → option-id map straight out of ``field_cache``) keeps ids stable and the
     assignments with them. Names absent from the map are created fresh, which is exactly
-    what the appended spec options want."""
+    what the appended spec options want.
+
+    ``option_attrs`` (name → ``{color, description}``) is the same story for the option's
+    *appearance*: the input requires both, so an option resent without them is repainted
+    gray with its description erased. A caller that holds the board's current values (a
+    live fields read) passes them here and the preserved options come back unchanged; a
+    caller that does not — the field bootstrap, appending brand-new names — passes nothing
+    and gets GitHub's defaults, which is what a new option should get."""
     return ("mutation { updateProjectV2Field(input: {fieldId: %s, singleSelectOptions: [%s]}) "
             "{ projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } } } }"
-            % (_q(field_id), _options(options, option_ids)))
+            % (_q(field_id), _options(options, option_ids, option_attrs)))

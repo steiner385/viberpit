@@ -81,7 +81,11 @@ def build_project_fields_query(project_node_id: str) -> str:
     return (
         'query { node(id: "%s") { ... on ProjectV2 { fields(first: 50) { nodes {'
         " ... on ProjectV2FieldCommon { id name }"
-        " ... on ProjectV2SingleSelectField { id name options { id name } }"
+        # colour and description are selected for the writers, not the cache: an option
+        # resent without them is repainted gray with its description erased, so anything
+        # that REPLACES a single-select's option set must read them first
+        # (``parse_field_options`` + ``build_update_field_options(option_attrs=…)``).
+        " ... on ProjectV2SingleSelectField { id name options { id name color description } }"
         " } } } } }" % project_node_id)
 
 
@@ -110,6 +114,23 @@ def parse_project_fields(payload: dict) -> dict:
             "options": {o["name"]: o["id"] for o in node.get("options") or []},
         }
     return cache
+
+
+def parse_field_options(payload: dict, field_name: str) -> list[dict]:
+    """One single-select field's options, IN BOARD ORDER, raw: id, name, color, description.
+
+    :func:`parse_project_fields` collapses them to the cache's ``{name: id}``, which loses
+    the attributes a wholesale option-set replacement has to send back, and silently merges
+    two options that share a name. A writer rebuilding the set reads them from here instead,
+    and compares ``len()`` against the parsed cache to notice that collapse."""
+    nodes = (((payload.get("data") or {}).get("node") or {}).get("fields") or {}).get("nodes") or []
+    for node in nodes:
+        if not node or node.get("name") != field_name:
+            continue
+        return [{"id": o.get("id") or "", "name": o.get("name") or "",
+                 "color": o.get("color") or "", "description": o.get("description") or ""}
+                for o in node.get("options") or []]
+    return []
 
 
 def parse_created_field(payload: dict) -> tuple[str, str, dict[str, str]] | None:
