@@ -85,7 +85,11 @@ roadmap's Review-and-decide dialog shows the hold (kind, reason, who, when) and 
 (the release endpoint) and **Implement now** (manual dispatch, which releases the hold with
 `signal = implement` first), each with server-computed consequence copy from
 `server/pm/explain.py:hold_guidance`; Retry refuses a `decision` hold (422) — that one resolves only
-through its proposal, never a plain release. The queue skips held items as `held`; the Backlog
+through its proposal, never a plain release. An `evidence` hold instead shows ONE button-less
+consequence line from the same function — the Backlog Runner dispatches and settles it on its own,
+so there is nothing here for a person to tap — rendered through the same `ConsequenceList` the
+owner-action buttons use, never a second renderer. The leaf row shows the hold kind as a chip. The
+queue skips held items as `held`; the Backlog
 Runner's give-up writes the hold (`hold_by = runner`) and its `gave_up` row survives only until the
 hold is gone.
 
@@ -127,7 +131,8 @@ the wire itself carries no discriminator — so `triageSelectors.pendingProposal
 "awaiting a human" predicate and the Roadmap nav badge counts both kinds. In the Inbox they list
 beside classification proposals with the same keys, as a single-choice group with the
 recommendation preselected; `a` OPENS a decision row rather than accepting it (there is no undo
-window to take a chosen option back with), `r` rejects, and `x`/`e`/`A` are inert.
+window to take a chosen option back with); `r` does the same — neither key decides a decision from
+the list, only the pane's own Accept/Reject buttons do — and `x`/`e`/`A` are inert.
 
 **Accept** (`POST /api/pm/decisions/{pid}/accept` with `chosen_key`) records the key, clears the
 hold — the only path that may — and comments on the issue after the commit (best-effort, bounded by
@@ -152,7 +157,14 @@ field cache actually carries, so a mixed fleet mid-rollout keeps working with no
 description and every card's assignment, never a delete-and-recreate — dry-run first
 (`python scripts/rename_board_held.py`), then `--apply`; a board carrying both spellings at once is
 a `conflict` the script refuses to touch, and needs a human to move the cards off the legacy column
-by hand first. Run it once per board, on the edge host, after a deploy that ships this series.
+by hand first. Run it once per board, on the edge host, after a deploy that ships this series. It
+needs `VIBERPIT_DB_URL` (the live database) and `VIBERPIT_GH_PROJECT_TOKEN` (the legacy name is
+mirrored at import) — the DRY RUN needs the token too, since it reads every board live rather than
+the cache. The plan it prints is read at plan time and resent as-is on `--apply`; a board column
+added between the read and the apply is
+dropped with its cards, so only run it when nobody is editing board columns (the window is seconds
+per invocation). The apply path has not yet run against real GitHub, so apply one board first
+(`--apply --project <slug>`) and read the printed ids before running it across the fleet.
 Expect exactly one `gh_human_edit` observation per already-held card right after its board's rename:
 the mirror's last-synced value for that card is still the old spelling, the read-back after the
 rename reports the new one for the SAME option id, and `upsert_project_items` compares those two
