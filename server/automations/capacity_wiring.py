@@ -55,8 +55,10 @@ def sources_for(orch) -> CapacitySources:
 
     # ONE gather_implementation_snapshot() per readout tick, not one per product:
     # it shells out to `gh` per repo, so calling it product-at-a-time here would
-    # spawn P×O `gh` subprocesses on every governor poll (every ~30s) instead of a
-    # single batched call. Lazily built on the first `decide()` of a tick and
+    # spawn P×O `gh` subprocesses every time a readout is built — the governor
+    # loop ticks every 60s, and GET /api/capacity is also polled directly by the
+    # Delivery → Capacity page every 30s — instead of a single batched call.
+    # Lazily built on the first `decide()` of a tick and
     # reused for the rest of that tick; `sources_for` is called fresh per readout,
     # so a new snapshot is built next tick too — this is a per-tick cache, not a
     # long-lived one.

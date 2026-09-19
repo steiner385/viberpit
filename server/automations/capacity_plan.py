@@ -55,7 +55,12 @@ def plan_from_dict(d: dict | None) -> CapacityPlan | None:
                         fleet_concurrency=int(d.get("fleetConcurrency") or 0),
                         per_product={k: int(v) for k, v in (d.get("perProduct") or {}).items()},
                         pending={k: int(v) for k, v in (d.get("pending") or {}).items()},
-                        budget=dict(d.get("budget") or {}))
+                        budget=dict(d.get("budget") or {}),
+                        # The store has no dedicated `limiting` column, so the writer
+                        # (CapacityGovernorLoop) smuggles it into `budget`; restore it
+                        # here rather than leave every reader of a round-tripped plan
+                        # seeing the CapacityPlan default ("none").
+                        limiting=str((d.get("budget") or {}).get("limiting") or "none"))
 
 
 def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str, dict]:

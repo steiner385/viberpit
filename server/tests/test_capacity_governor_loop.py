@@ -67,10 +67,11 @@ def _readout(*, products: list[dict] | None = None, defects: list[dict] | None =
 
 def _build_loop(*, mode: str = "monitor", config: dict | None = None,
                 readout: dict | None = None, readout_raises: bool = False,
+                write_fail_on: frozenset[int] = frozenset(),
                 initial_plan: dict | None = None, kill_switch=lambda: True):
     ctx = FakeCtx()
     store: dict = {"plan": initial_plan}
-    calls: dict = {"write_plan": [], "read_readout": 0}
+    calls: dict = {"write_plan": [], "read_readout": 0, "write_attempts": 0}
     readout = readout if readout is not None else _readout()
 
     async def read_config():
@@ -86,6 +87,9 @@ def _build_loop(*, mode: str = "monitor", config: dict | None = None,
         return store["plan"]
 
     async def write_plan(plan):
+        calls["write_attempts"] += 1
+        if calls["write_attempts"] in write_fail_on:
+            raise RuntimeError("write boom")
         calls["write_plan"].append(plan)
         store["plan"] = plan
 
@@ -163,6 +167,36 @@ async def test_readout_failure_keeps_previous_plan_and_emits_plan_stale_once():
 
 
 @pytest.mark.asyncio
+async def test_write_plan_failure_keeps_previous_plan_and_emits_plan_stale_once():
+    """spec §6.4: a write failure is exactly as stale as a readout failure — the
+    previous plan is still the last thing anyone saw, so it must not be
+    papered over, and a later successful tick clears the streak so a later
+    failure is loud again rather than assumed to be the same one."""
+    loop, ctx, calls, _store = _build_loop(write_fail_on=frozenset({1, 2, 4}))
+    await loop.tick()  # attempt 1: fails
+    await loop.tick()  # attempt 2: fails — same streak, no second event
+    assert ctx.kinds().count("plan_stale") == 1
+    assert calls["write_plan"] == []
+    assert "cap_changed" not in ctx.kinds()
+
+    await loop.tick()  # attempt 3: succeeds — clears the streak
+    assert len(calls["write_plan"]) == 1
+    assert ctx.kinds().count("plan_stale") == 1
+
+    await loop.tick()  # attempt 4: fails again — a fresh streak, loud again
+    assert ctx.kinds().count("plan_stale") == 2
+
+
+@pytest.mark.asyncio
+async def test_no_cap_changed_events_on_the_first_ever_plan():
+    """With no previous plan every product proposal is new, not a CHANGE from
+    anything already shown — so tick one must announce nothing."""
+    loop, ctx, _calls, _store = _build_loop()
+    await loop.tick()
+    assert "cap_changed" not in ctx.kinds()
+
+
+@pytest.mark.asyncio
 async def test_defect_event_once_per_target():
     readout = _readout(defects=[_DEFECT])
     loop, ctx, _calls, _store = _build_loop(readout=readout)
@@ -189,3 +223,28 @@ def test_the_automation_surface_is_claude_only_with_off_monitor_act():
 def test_status_is_idle_with_no_observation():
     a = CapacityGovernor()
     assert a.status(None).level == "idle"
+
+
+@pytest.mark.asyncio
+async def test_capacity_counts_published_for_the_status_card():
+    loop, ctx, _calls, _store = _build_loop()
+    await loop.tick()
+    assert set(ctx.capacity_counts) == {
+        "fleet", "defects", "accounts_available", "products", "binding_text"}
+
+
+@pytest.mark.asyncio
+async def test_status_text_mirrors_the_published_binding_text_and_counts_are_int_only():
+    readout = _readout()
+    readout["binding"] = {"layer": "account", "code": "no_account_headroom",
+                          "text": "no account has headroom under the 20% reserve"}
+    loop, ctx, _calls, _store = _build_loop(readout=readout)
+    await loop.tick()
+
+    status = CapacityGovernor().status(ctx)
+    assert status.text == readout["binding"]["text"]
+    # The web types `counts` as Record<string, number> — binding_text (a str)
+    # must never leak into it, only the plain int fields.
+    assert status.counts is not None
+    assert all(isinstance(v, int) and not isinstance(v, bool) for v in status.counts.values())
+    assert "binding_text" not in status.counts

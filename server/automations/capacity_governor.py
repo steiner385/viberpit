@@ -86,25 +86,44 @@ class CapacityGovernorLoop:
                 await self._ctx.emit("warn", f"capacity readout failed: {exc}; keeping the previous plan",
                                      kind="plan_stale")
             return
-        self._stale_emitted = False
         previous = plan_from_dict(await self._read_plan())
         plan = plan_capacity(readout_to_inputs(readout), push_level=config.get("push_level", "steady"),
                              sessions_per_account=int(config.get("sessions_per_account") or 2),
                              previous=previous)
         applied = mode == "act" and bool(self._kill_switch())
-        await self._write_plan({
-            "pushLevel": plan.push_level, "applied": applied,
-            "fleetConcurrency": plan.fleet_concurrency, "perProduct": plan.per_product,
-            "pending": plan.pending, "budget": {**plan.budget, "limiting": plan.limiting},
-            "binding": readout.get("binding"), "reasons": plan.reasons, "defects": readout.get("defects", []),
-        })
+        try:
+            await self._write_plan({
+                "pushLevel": plan.push_level, "applied": applied,
+                "fleetConcurrency": plan.fleet_concurrency, "perProduct": plan.per_product,
+                "pending": plan.pending, "budget": {**plan.budget, "limiting": plan.limiting},
+                "binding": readout.get("binding"), "reasons": plan.reasons,
+                "defects": readout.get("defects", []),
+            })
+        except Exception as exc:
+            # spec §6.4: a write failure is exactly as stale as a readout failure
+            # — the previous plan is still the last one anyone saw, so it must
+            # not be papered over by a half-written or missing row, and nothing
+            # below (cap_changed / defect events, the fresh counts observation)
+            # may claim a plan that never made it to the store.
+            observation_failed(self._ctx)
+            if not self._stale_emitted:
+                self._stale_emitted = True
+                await self._ctx.emit("warn", f"plan write failed: {exc}; keeping the previous plan",
+                                     kind="plan_stale")
+            return
+        # Only a tick where BOTH the readout and the write succeeded clears the
+        # streak — a later failure (of either) must be loud again, not silently
+        # assumed to be the same one already reported.
+        self._stale_emitted = False
         prev_caps = previous.per_product if previous else {}
         for slug, cap in plan.per_product.items():
             if slug in prev_caps and prev_caps[slug] != cap:
                 reason = next((r for r in plan.reasons if r.startswith(f"{slug}:")), "")
-                await self._ctx.emit("info", f"{slug} in-flight cap {prev_caps[slug]} → {cap}"
-                                     + (f" ({'applied' if applied else 'monitor only'}): {reason}"),
-                                     kind="cap_changed", target=slug)
+                mode_text = "applied" if applied else "monitor only"
+                suffix = f": {reason}" if reason else ""
+                await self._ctx.emit(
+                    "info", f"{slug} in-flight cap {prev_caps[slug]} → {cap} ({mode_text}{suffix})",
+                    kind="cap_changed", target=slug)
         current = {d["target"] for d in readout.get("defects", [])}
         for d in readout.get("defects", []):
             if d["target"] not in self._defects_emitted:
@@ -114,6 +133,6 @@ class CapacityGovernorLoop:
         binding = readout.get("binding") or {}
         publish_observation(self._ctx, "capacity_counts", {
             "fleet": plan.fleet_concurrency, "defects": len(current),
-            "accounts_available": readout["accounts"]["available"],
+            "accounts_available": readout.get("accounts", {}).get("available", 0),
             "products": len(plan.per_product), "binding_text": binding.get("text"),
         })
