@@ -123,12 +123,23 @@ def host_to_wire(h: Host) -> dict:
     }
 
 
-def sanitize_patch(body: dict) -> dict:
+def sanitize_patch(body: dict, fields_set: set[str] | None = None) -> dict:
     """Keep only operator-settable fields, mapped to column names and clamped.
 
     A None value means "not supplied" and is ignored — a PATCH omitting a field
     must leave it alone rather than nulling it; an EMPTY STRING clears an
     upgrade-config field back to NULL (not configured).
+
+    ``maxSessions`` is the one exception: NULL is the documented value for
+    "uncapped" (see ``Host.max_sessions``), so the wire format has no other way
+    to spell "clear the cap" — ``{"maxSessions": null}`` must be a real write,
+    not "not supplied". ``fields_set`` (the caller's ``model_fields_set``, or
+    an equivalent explicit-vs-absent marker) is how the difference is told
+    apart: a null the caller actually SENT clears the cap; a null that is
+    simply the field's default (omitted) is ignored exactly as before. Every
+    other field keeps today's "None means not supplied" meaning even if a
+    caller explicitly sends null for it — none of them has a NULL-means-clear
+    wire contract.
 
     ssh_host / repo_path land in the argv of a sudo-capable ssh command, so they
     are validated with the SAME patterns the deploy controller applies to
@@ -136,9 +147,12 @@ def sanitize_patch(body: dict) -> dict:
     could smuggle an ssh option (``-oProxyCommand=…``) or shell metacharacters
     is rejected with 400, never stored.
     """
+    fields_set = fields_set or set()
     out: dict = {}
     for wire, col in _PATCHABLE.items():
         if body.get(wire) is None:
+            if wire == "maxSessions" and wire in fields_set:
+                out[col] = None
             continue
         val = body[wire]
         if col == "weight":
@@ -211,7 +225,7 @@ async def list_hosts(_identity: str = Depends(current_identity)) -> dict:
 @router.put("/hosts/{name}")
 async def update_host(name: str, body: HostPatch,
                       _identity: str = Depends(current_identity)) -> dict:
-    values = sanitize_patch(body.model_dump())
+    values = sanitize_patch(body.model_dump(), body.model_fields_set)
     if not values:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail={"code": "no_writable_fields",

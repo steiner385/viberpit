@@ -182,29 +182,28 @@ export function CapacityDetail() {
   // Fix round 1 / I5: replaces the previous `moving` state + effect
   // workaround. `useReorderProject()` takes `slug` as a MUTATION VARIABLE
   // (not baked into the hook at creation time like `useUpdateProject(slug)`),
-  // so one shared instance can `mutateAsync` for the mover and then the
-  // neighbour, in order, entirely inside the click handler — no render round
-  // trip needed to "rebind" a hook to a different slug. The second write
-  // never fires if the first fails (Ruling 10).
+  // so one shared instance can `mutateAsync` for each patch in turn, entirely
+  // inside the click handler — no render round trip needed to "rebind" a hook
+  // to a different slug.
+  //
+  // Fix round 3: `swapRanks` can now return MORE than the mover/neighbour pair
+  // — an all- (or partly-) unranked list also needs the rest of the visible
+  // order normalised first (see swapRanks's own comment) — so this applies
+  // the full list sequentially rather than destructuring exactly two entries.
+  // A later patch never fires once an earlier one fails (Ruling 10).
   async function handleMove(index: number, direction: 'up' | 'down') {
     if (!readout) return
     const patches = swapRanks(readout.products, index, direction)
     if (!patches) return
-    const [mover, neighbour] = patches
-    setSlugStatus(mover.slug, { status: 'pending' })
-    try {
-      await reorder.mutateAsync({ slug: mover.slug, priorityRank: mover.priorityRank })
-    } catch (err) {
-      setSlugStatus(mover.slug, { status: 'error', error: err })
-      return
-    }
-    setSlugStatus(mover.slug, { status: 'success' })
-    setSlugStatus(neighbour.slug, { status: 'pending' })
-    try {
-      await reorder.mutateAsync({ slug: neighbour.slug, priorityRank: neighbour.priorityRank })
-      setSlugStatus(neighbour.slug, { status: 'success' })
-    } catch (err) {
-      setSlugStatus(neighbour.slug, { status: 'error', error: err })
+    for (const patch of patches) {
+      setSlugStatus(patch.slug, { status: 'pending' })
+      try {
+        await reorder.mutateAsync({ slug: patch.slug, priorityRank: patch.priorityRank })
+        setSlugStatus(patch.slug, { status: 'success' })
+      } catch (err) {
+        setSlugStatus(patch.slug, { status: 'error', error: err })
+        return
+      }
     }
   }
 

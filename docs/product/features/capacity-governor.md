@@ -63,9 +63,9 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   `policies_by_slug` for each auto product's `max_in_flight`). Nothing else in the runner changes —
   `decide_implementation` still reads the same merged values it always did. Phase 1 ships monitor
   mode only; act mode is phase 2.
-- **Kill switch** — `VIBERPIT_CAPACITY_GOVERNOR_ENABLED` (default true) stops plan application; the
-  readout keeps working either way, since it is built from the same `decide_implementation` counts
-  the runner already uses, not from the plan.
+- **Kill switch** — `VIBERPIT_CAPACITY_GOVERNOR_ENABLED` (default true); setting it to `false` stops
+  plan application. The readout keeps working either way, since it is built from the same
+  `decide_implementation` counts the runner already uses, not from the plan.
 - **Phase 2 (not yet shipped)** is exactly the mode flip to `act`: the two read-seam merges above
   start taking effect once a day of monitor-mode plans have read sensibly on the Capacity page.
 

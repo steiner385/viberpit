@@ -20,13 +20,21 @@ import type { FleetHost, HostEngineState } from '@/api/fleet'
 import { fleetHost } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
-vi.mock('@/api/hooks', () => ({
-  usePendingDeploy: vi.fn(() => ({ data: undefined })),
-}))
+// Spread `actual` (not a bare stub): `FleetSection` also calls the real
+// `useFleetHostPatch`, which this file needs working (it drives `api.put`,
+// mocked below) — only `usePendingDeploy` is overridden here.
+vi.mock('@/api/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/hooks')>()
+  return { ...actual, usePendingDeploy: vi.fn(() => ({ data: undefined })) }
+})
 
-vi.mock('@/api/client', () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), del: vi.fn() },
-}))
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return { ...actual, api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), del: vi.fn() } }
+})
+
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+import { toast } from 'sonner'
 
 function engineState(over: Partial<HostEngineState> = {}): HostEngineState {
   return {
@@ -147,7 +155,7 @@ describe('FleetSection — weight and max sessions', () => {
   it('has a max sessions column, blank for a host with no cap', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
     expect(screen.getByRole('columnheader', { name: 'Max sessions' })).toBeInTheDocument()
-    expect(screen.getByLabelText('max sessions for rocky')).toHaveValue(null)
+    expect(screen.getByLabelText('max sessions for rocky')).toHaveValue('')
   })
 
   it('patches max sessions on blur with a number', async () => {
@@ -174,5 +182,54 @@ describe('FleetSection — weight and max sessions', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
     fireEvent.blur(screen.getByLabelText('max sessions for rocky'))
     expect(api.put).not.toHaveBeenCalled()
+  })
+
+  // Fix wave item 1: a non-empty, non-whole-number-≥1 value must never reach
+  // the server — it used to swallow the failure entirely (a 400 nobody saw).
+  it('"abc" sends nothing, reverts the field, and shows a row-level error', () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: 'abc' } })
+    fireEvent.blur(input)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(input).toHaveValue('4')
+    expect(screen.getByRole('alert')).toHaveTextContent('Max sessions must be a whole number ≥ 1')
+  })
+
+  it('"0" sends nothing, reverts the field, and shows a row-level error', () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.blur(input)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(input).toHaveValue('4')
+    expect(screen.getByRole('alert')).toHaveTextContent('Max sessions must be a whole number ≥ 1')
+  })
+
+  it('a valid blur after an error clears the row-level error', async () => {
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.blur(input)
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: '7' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { maxSessions: 7 }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // Ruling: a rejected PATCH must never vanish silently — the API error
+  // reaches the operator as a toast (the accompanying re-invalidation is
+  // covered where `useFleetHosts` is the REAL hook — see
+  // `FleetSection.hostTable.test.tsx`, which can actually observe a refetch;
+  // this file mocks `useFleetHosts` outright, so a cache invalidation here
+  // would have nothing to act on).
+  it('a rejected max sessions patch toasts the API error', async () => {
+    vi.mocked(api.put).mockRejectedValueOnce({ body: { detail: { message: 'host not found' } } })
+    renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
+    const input = screen.getByLabelText('max sessions for rocky')
+    fireEvent.change(input, { target: { value: '7' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
   })
 })

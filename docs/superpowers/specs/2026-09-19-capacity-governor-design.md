@@ -244,8 +244,9 @@ gated on it.
 
 1. **Readout + knobs, governor in monitor.** `priority_rank`, `capacity_mode`, `capacity_plans`,
    `capacity_readout.py`, `GET /api/capacity`, the governor automation with `plan_capacity` and the
-   loop in `monitor` (registry default mode `monitor`, enabled), the Capacity scope and page, the
-   D9 findability changes, tests. Behaviour-preserving: no plan is applied.
+   loop in `monitor` (the automation row is created disabled like every other; the deploy step
+   enables it in `monitor`), the Capacity scope and page, the D9 findability changes, tests.
+   Behaviour-preserving: no plan is applied.
 2. **Act mode.** `apply_plan` in the two read seams, kill switch, hysteresis tests, runner
    integration tests; flip the deployed governor to `act` after one day of monitor-mode plans
    reading sensibly on the Capacity page.

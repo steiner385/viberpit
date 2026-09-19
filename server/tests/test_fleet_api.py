@@ -57,6 +57,33 @@ def test_none_values_are_ignored_not_written():
     assert sanitize_patch({"enabled": None, "weight": None, "maxSessions": None}) == {}
 
 
+def test_max_sessions_null_is_ignored_when_not_explicitly_supplied():
+    """Same call, but the omission is made explicit via an empty fields_set —
+    the field is absent, not a caller-sent clear, so it stays untouched."""
+    from server.api.fleet import sanitize_patch
+
+    assert sanitize_patch({"maxSessions": None}, set()) == {}
+
+
+def test_max_sessions_null_clears_the_cap_when_explicitly_supplied():
+    """`maxSessions: null` is the only wire spelling for "uncapped" — a caller
+    that explicitly sent it (tracked via fields_set, e.g. pydantic's
+    ``model_fields_set``) must have it applied as a real clear, not dropped
+    the way every other None is."""
+    from server.api.fleet import sanitize_patch
+
+    assert sanitize_patch({"maxSessions": None}, {"maxSessions"}) == {"max_sessions": None}
+
+
+def test_other_fields_null_stays_not_supplied_even_when_explicitly_sent():
+    """Only maxSessions has a NULL-means-clear wire contract — `enabled: null`
+    explicitly sent must still be ignored, never write NULL onto a non-nullable
+    column."""
+    from server.api.fleet import sanitize_patch
+
+    assert sanitize_patch({"enabled": None}, {"enabled"}) == {}
+
+
 def test_create_host_rejects_blank_name():
     from pydantic import ValidationError
     from server.api.fleet import HostCreate
@@ -141,6 +168,44 @@ def test_delete_host(tmp_path):
 
     hosts = asyncio.run(run())
     assert hosts == []
+
+
+def test_put_max_sessions_null_clears_an_existing_cap(tmp_path):
+    """The web `FleetSection` "Max sessions" field clears to blank by sending
+    `{"maxSessions": null}` (#capacity-governor-phase1 fix wave item 1) — that
+    must set the cap back to NULL (uncapped), not 400 as "no writable fields"."""
+    from server.db import init_db
+    from server.api.fleet import HostPatch, create_host, update_host, HostCreate
+
+    class _FakeIdentity:
+        pass
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'clear.db'}")
+        await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443",
+                                     maxSessions=4), _identity=_FakeIdentity())
+        return await update_host("rocky", HostPatch(maxSessions=None), _identity=_FakeIdentity())
+
+    wire = asyncio.run(run())
+    assert wire["maxSessions"] is None
+
+
+def test_put_empty_body_still_400s():
+    """An omitted maxSessions (the field never appears in fields_set) must
+    still count as no writable fields — only an explicit null clears it."""
+    from fastapi import HTTPException
+
+    from server.api.fleet import HostPatch, update_host
+
+    class _FakeIdentity:
+        pass
+
+    try:
+        asyncio.run(update_host("rocky", HostPatch(), _identity=_FakeIdentity()))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail["code"] == "no_writable_fields"
 
 
 def test_delete_host_404_unknown(tmp_path):

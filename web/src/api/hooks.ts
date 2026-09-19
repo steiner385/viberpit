@@ -52,6 +52,7 @@ import {
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
 } from './roadmap'
 import { fetchCapacity, type CapacityReadout } from './capacity'
+import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
   fetchDecisions, acceptDecision, rejectDecision,
@@ -1142,6 +1143,28 @@ export function usePendingDeploy() {
 export function useDeployStatus() {
   const q = useDeployStatusResponse()
   return { ...q, data: q.data?.deploy as DeployProgress | undefined }
+}
+
+/**
+ * Settings › Fleet's one PATCH surface (enabled / weight / max sessions / ssh
+ * config), `PUT /api/fleet/hosts/{name}`. Lives here — not inline in
+ * `FleetSection` — so a rejected write (e.g. a "max sessions" value the
+ * server refuses) gets the same `onError` treatment every other mutation in
+ * this file gets instead of silently vanishing: the hosts query still gets
+ * invalidated (a 409 can mean the row moved under the operator) and the
+ * failure reaches them as a toast, not nothing.
+ */
+export function useFleetHostPatch() {
+  const qc = useQueryClient()
+  return useMutation<FleetHost, ApiRequestError, { name: string; body: Partial<FleetHost> }>({
+    mutationFn: ({ name, body }) =>
+      api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+    onError: (e) => {
+      void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      toast.error(extractMutationErrorMessage(e, 'Could not update the host'))
+    },
+  })
 }
 
 export function useStartDeploy() {
