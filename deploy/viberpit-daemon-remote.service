@@ -21,6 +21,12 @@ User=tony
 RuntimeDirectory=viberpit
 RuntimeDirectoryPreserve=yes
 StateDirectory=viberpit
+# Per-HOST log dir (/var/log/viberpit), created and chowned to User= by systemd.
+# This matters MOST here: this host mounts the account store over sshfs, and the
+# pre-#1010 log-dir default landed in it — so this daemon's every log line went
+# into dobby's file, with both hosts rotating it. Locality is a property of the
+# unit, exactly like StateDirectory= above.
+LogsDirectory=viberpit
 WorkingDirectory=/home/tony/GitHub/viberpit
 EnvironmentFile=/etc/viberpit/viberpit.env
 # Where per-account CODEX_HOMEs land: /var/lib/viberpit/state/ccswitch/codex.

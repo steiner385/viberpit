@@ -9,7 +9,8 @@ RedactingFilter does not cover.
 
 configure_logging() attaches a stdout handler (captured by journald) and a
 size-rotating JSON file handler. It is idempotent and never raises: an unwritable
-log dir degrades to stdout-only with a single warning.
+log dir — or one that is not provably host-local (#1010) — degrades to
+stdout-only with a single warning.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from typing import Any
 
 from server.audit import install_redacting_filter, redact_text
 from server.obs.context import PROC_EPOCH, request_id_var, session_id_var
+from server.obs.logdir import is_shared_dir, log_file_name
 from server.time_iso import iso_utc
 
 _MAX_BYTES = 50 * 1024 * 1024
@@ -109,8 +111,9 @@ def configure_logging(*, process: str = "edge") -> None:
     """Attach JSON stdout + rotating-file handlers to the root logger. Idempotent.
 
     ``process`` names the caller ("edge" for server/app.py, "daemon" for
-    server/ipc/serve.py) and is exposed as ``PROCESS``. Never raises: a bad log
-    dir degrades to stdout-only with one warning.
+    server/ipc/serve.py), is exposed as ``PROCESS``, and names the file so the two
+    never share one rotating handle. Never raises: a bad log dir degrades to
+    stdout-only with one warning.
     """
     global _configured, PROCESS
     if _configured:
@@ -133,11 +136,22 @@ def configure_logging(*, process: str = "edge") -> None:
     root.addHandler(stream)
 
     log_dir = str(getattr(settings, "log_dir", "") or "")
+    if log_dir and is_shared_dir(log_dir):
+        # The default is per-host by construction (server/obs/logdir.py), so reaching
+        # here means an operator pointed the log dir at a share. Two hosts
+        # appending to — and independently rotating — one file over FUSE is #1010;
+        # the stdout handler above already puts every line in this host's journal,
+        # so dropping only the file sink loses nothing that was safe to keep.
+        root.warning(
+            "jsonlog: log dir %s is not provably host-local; stdout-only "
+            "(two hosts rotating one file over a share is #1010)", log_dir)
+        log_dir = ""
     if log_dir:
         try:
             Path(log_dir).mkdir(parents=True, exist_ok=True)
             file_handler = logging.handlers.RotatingFileHandler(
-                Path(log_dir) / "ccswitch.jsonl",
+                # Unique per (host, process) — see log_file_name's docstring.
+                Path(log_dir) / log_file_name(PROCESS),
                 maxBytes=_MAX_BYTES,
                 backupCount=_BACKUP_COUNT,
                 encoding="utf-8",

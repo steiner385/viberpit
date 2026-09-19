@@ -28,6 +28,11 @@ HEALTH_STATE_DIR = f"{STATE_DIR}/health"
 DEPLOY_SNAPSHOT_PATH = f"{STATE_DIR}/deploy-snapshot/live.json"
 
 LOG_DIR = prefer_existing(f"/var/log/{brand.HOST_SLUG}", f"/var/log/{brand.LEGACY_SLUG}")
+#: The stem the paths above share, and the one per-host FILE names use:
+#: server/obs/logdir.py writes ``<HOST_STEM>-<process>.jsonl`` into LOG_DIR.
+#: Always the canonical slug, even on a host where prefer_existing kept a legacy
+#: DIRECTORY — a file created today has no legacy installation to preserve.
+HOST_STEM = brand.HOST_SLUG
 
 ETC_DIR = prefer_existing(f"/etc/{brand.HOST_SLUG}", f"/etc/{brand.LEGACY_SLUG}")
 ENV_FILE = prefer_existing(f"{ETC_DIR}/{brand.HOST_SLUG}.env",
