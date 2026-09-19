@@ -171,6 +171,25 @@ describe('IssueDispositionDialog', () => {
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
   })
 
+  // Spec 2026-09-18 §7: "Decision: links to the proposal card." The options,
+  // the recommendation and the two consequence columns live on that card, so
+  // this panel never grows a second copy of the choice — and no Retry, because
+  // accepting the proposal is the only thing that clears a decision hold.
+  it('points a decision hold at the inbox, and offers no buttons of its own', async () => {
+    fetchMock.mockResolvedValueOnce(reply({
+      ...detail, holdKind: 'decision',
+      holdReason: 'durable queue or in-process stream?',
+      holdBy: 'session:s1', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: null }))
+    mount()
+    const region = await screen.findByRole('region', { name: 'Hold' })
+    expect(region).toHaveTextContent('Awaiting your decision')
+    expect(region).toHaveTextContent('durable queue or in-process stream?')
+    expect(screen.getByRole('link', { name: /Open the inbox/ }))
+      .toHaveAttribute('href', '/roadmap?scope=inbox')
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
   it('clears the last dispatch outcome when an edit starts', async () => {
     fetchMock.mockResolvedValueOnce(reply(held))
       .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))

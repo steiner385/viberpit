@@ -18,7 +18,9 @@ const sync = vi.hoisted(() => ({
 // The Inbox scope's queue and its three decision mutations. The page finds the
 // open proposal in this list, so it is also what "the next proposal" means.
 const triage = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
+const decisions = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
 const accept = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
+const acceptDecision = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
 const reject = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
 // The scope each decision mutation was keyed to: the cache entry its optimistic
 // removal patches has to be the one the list column's rows came from.
@@ -69,8 +71,11 @@ vi.mock('@/api/hooks', () => ({
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useTriage: () => triage,
+  useDecisions: () => decisions,
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return accept },
   useRejectProposal: () => reject,
+  useAcceptDecision: () => acceptDecision,
+  useRejectDecision: () => ({ mutate: vi.fn(), isPending: false }),
   // The product Overview's hygiene notice — no data, so it renders nothing.
   useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
@@ -108,6 +113,7 @@ function mount(path: string, over: Partial<typeof map> = {}) {
 }
 
 const proposal = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
+  proposalKind: 'triage',
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: 'f-tasks', proposedFeatureSlug: 'tasks',
   noFitSuggestion: null, reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null,
@@ -127,7 +133,12 @@ beforeEach(() => {
   clearInboxOrder()
   Object.assign(sync, { mutate: vi.fn(), isPending: false, isError: false, error: null })
   Object.assign(triage, { data: QUEUE, isLoading: false, isError: false })
+  // The decisions list has ANSWERED (empty) in every test that does not say
+  // otherwise: the page holds `proposalMissing` back until BOTH inbox queries
+  // have, so a permanently-undefined second list would freeze the pane.
+  Object.assign(decisions, { data: [], isLoading: false, isError: false })
   Object.assign(accept, { mutate: vi.fn(), isPending: false })
+  Object.assign(acceptDecision, { mutate: vi.fn(), isPending: false })
   Object.assign(reject, { mutate: vi.fn(), isPending: false })
   acceptScope.mockClear()
 })
@@ -419,5 +430,52 @@ describe('RoadmapPage — Inbox scope', () => {
     mount('/roadmap?scope=inbox&proposal=p1')
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load the inbox.')
     expect(screen.queryByText(/Proposal not found/)).toBeNull()
+  })
+
+  /**
+   * A decision proposal opens through the SAME `?proposal=` address as a
+   * classification one (spec 2026-09-18 §6/§7): the page finds the id in the
+   * combined queue and the pane picks the body. Nothing about the address, the
+   * breadcrumb or "what comes next" knows which list the id came from.
+   */
+  describe('a decision proposal', () => {
+    const DECISION = {
+      proposalKind: 'decision' as const, id: 'd1', workItemId: 'w9',
+      repo: 'cairnea/KinDash', number: 12, ref: 'cairnea/KinDash#12',
+      projectSlug: 'kindash', title: 'Queue or stream?', url: null,
+      options: [{ key: 'queue', label: 'Durable queue' }, { key: 'stream', label: 'In-process stream' }],
+      recommendedKey: 'queue', rationale: 'Both work.', chosenKey: null,
+      status: 'pending', proposedBy: 'session:s1', resolvedBy: null,
+      createdAt: '2026-09-18T10:00:00Z', resolvedAt: null,
+    }
+
+    it('opens in the same pane, with the options as a single-choice group', () => {
+      Object.assign(decisions, { data: [DECISION] })
+      mount('/roadmap?scope=inbox&proposal=d1')
+      expect(screen.getByRole('radiogroup', { name: 'Options' })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: /Durable queue/ })).toBeChecked()
+    })
+
+    it('counts toward the welcome, which does not know the two lists apart', () => {
+      Object.assign(decisions, { data: [DECISION] })
+      mount('/roadmap?scope=inbox')
+      // Two classification rows plus this one.
+      expect(screen.getByText(/3/)).toBeInTheDocument()
+    })
+
+    it('moves on to the next row after the decision is taken', () => {
+      Object.assign(decisions, { data: [DECISION] })
+      mount('/roadmap?scope=inbox&proposal=d1')
+      fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+      expect(acceptDecision.mutate).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
+      // Somewhere in the queue, never still on the row just decided.
+      expect(screen.getByTestId('location')).not.toHaveTextContent('proposal=d1')
+    })
+
+    it('holds "not found" back until the DECISIONS list has answered too', () => {
+      Object.assign(decisions, { data: undefined, isLoading: true })
+      mount('/roadmap?scope=inbox&proposal=d1')
+      expect(screen.queryByText(/Proposal not found/)).toBeNull()
+    })
   })
 })

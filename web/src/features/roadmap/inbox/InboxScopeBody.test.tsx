@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { TriageProposal } from '@/api/triage'
+import type { DecisionProposal, TriageProposal } from '@/api/triage'
 import { InboxScopeBody } from './InboxScopeBody'
 import { clearInboxOrder, getInboxOrder } from './inboxOrderStore'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -20,10 +20,12 @@ const accept = vi.fn()
 const reject = vi.fn()
 const bulk = vi.fn()
 const undo = vi.fn()
+const rejectDecision = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: accept, isPending: false }),
   useRejectProposal: () => ({ mutate: reject, isPending: false }),
   useAcceptBulk: () => ({ mutate: bulk, isPending: false }),
+  useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
   useTriageLive: () => undefined,
   // ProposalCard's own undo control (auto-accept chip) — mocked here too since
   // this file mounts the real ProposalCard rows.
@@ -33,10 +35,18 @@ const overlayOpen = vi.fn(() => false)
 vi.mock('@/shell/useOverlayState', () => ({ overlayIsOpen: () => overlayOpen() }))
 
 const p = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
+  proposalKind: 'triage',
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: null, proposedFeatureSlug: 'tasks', noFitSuggestion: null,
   reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending',
   createdAt: null, classifiedBy: null, resolvedAt: null, ...over,
+})
+const d = (over: Partial<DecisionProposal> & { id: string }): DecisionProposal => ({
+  proposalKind: 'decision', workItemId: `w-${over.id}`, projectSlug: 'kindash',
+  repo: 'cairnea/KinDash', number: 12, ref: 'cairnea/KinDash#12', title: over.id, url: null,
+  options: [{ key: 'queue', label: 'Durable queue' }, { key: 'stream', label: 'In-process stream' }],
+  recommendedKey: 'queue', rationale: null, chosenKey: null, status: 'pending',
+  proposedBy: 'session:s1', resolvedBy: null, createdAt: null, resolvedAt: null, ...over,
 })
 /** Ordered (group by product, then id): First, Third | Second. Three rows so
  *  "the selected set" and "the whole queue" are different assertions. */
@@ -76,6 +86,7 @@ const scrollIntoView = vi.fn()
 describe('InboxScopeBody', () => {
   beforeEach(() => {
     accept.mockReset(); reject.mockReset(); bulk.mockReset(); undo.mockReset()
+    rejectDecision.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
     clearInboxOrder()
@@ -298,5 +309,67 @@ describe('InboxScopeBody', () => {
   it('says so when the inbox could not be loaded', () => {
     mount({ proposals: [], isError: true })
     expect(screen.getByText('Could not load the inbox.')).toBeInTheDocument()
+  })
+
+  /**
+   * The second card kind, in the SAME list (spec 2026-09-18 §6). What is pinned
+   * here is the boundary between the kinds: a decision is listed, counted and
+   * rejectable like any other row, but it can never reach the classification
+   * accept — its own accept carries the option the person chose.
+   */
+  describe('decision proposals in the queue', () => {
+    // One product, both createdAt-less, so the tiebreak is the id: the cursor
+    // starts on `Decide` and `j` moves it to `First`.
+    const MIXED = [p({ id: 'First' }), d({ id: 'Decide' })]
+
+    it('lists both kinds through the one ordering spec', () => {
+      mount({ proposals: MIXED })
+      expect(screen.getByTestId('row-proposal:First')).toBeInTheDocument()
+      const row = screen.getByTestId('row-proposal:Decide')
+      expect(row).toHaveTextContent('2 options')
+      expect(row).toHaveTextContent('recommended: Durable queue')
+    })
+
+    it('a OPENS a decision rather than accepting the machine\'s recommendation', () => {
+      // There is no undo window on a decision, so one keystroke must not take
+      // it. `a` puts the options on screen; the pane sends the chosen key.
+      const { onOpen } = mount({ proposals: MIXED })
+      fireEvent.keyDown(window, { key: 'a' })
+      expect(accept).not.toHaveBeenCalled()
+      expect(onOpen).toHaveBeenCalledWith(MIXED[1])
+    })
+
+    it('r rejects through the DECISION route, never the triage one', () => {
+      mount({ proposals: MIXED })
+      fireEvent.keyDown(window, { key: 'r' })
+      expect(rejectDecision).toHaveBeenCalledWith({ id: 'Decide' })
+      expect(reject).not.toHaveBeenCalled()
+    })
+
+    it('x and e are inert on a decision, so A can never send one to accept-bulk', () => {
+      const { onOpen } = mount({ proposals: MIXED })
+      fireEvent.keyDown(window, { key: 'x' })
+      fireEvent.keyDown(window, { key: 'e' })
+      expect(screen.queryByRole('button', { name: /Accept selected/ })).toBeNull()
+      expect(onOpen).not.toHaveBeenCalled()
+      fireEvent.keyDown(window, { key: 'A' })
+      expect(bulk).not.toHaveBeenCalled()
+    })
+
+    it('a bulk sweep carries only the classification rows', () => {
+      mount({ proposals: MIXED })
+      // `j` off the decision and onto First (a classification): tick it, sweep.
+      fireEvent.keyDown(window, { key: 'j' })
+      fireEvent.keyDown(window, { key: 'x' })
+      fireEvent.keyDown(window, { key: 'A' })
+      expect(bulk).toHaveBeenCalledWith(['First'], expect.anything())
+    })
+
+    it('search reaches a decision by its option labels', () => {
+      mount({ proposals: MIXED })
+      fireEvent.change(screen.getByLabelText('Search inbox'), { target: { value: 'in-process' } })
+      expect(screen.getByTestId('row-proposal:Decide')).toBeInTheDocument()
+      expect(screen.queryByTestId('row-proposal:First')).toBeNull()
+    })
   })
 })

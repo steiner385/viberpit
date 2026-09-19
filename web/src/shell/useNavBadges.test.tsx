@@ -9,6 +9,7 @@ const useAllPrs = vi.fn()
 const useAutomations = vi.fn()
 const useAccounts = vi.fn()
 const useTriage = vi.fn()
+const useDecisions = vi.fn()
 
 const useDeployState = vi.fn()
 
@@ -18,6 +19,7 @@ vi.mock('@/api/hooks', () => ({
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
   useTriage: () => useTriage(),
+  useDecisions: () => useDecisions(),
 }))
 
 // Mocked at the DERIVED state, not at the two queries under it: the dot is a
@@ -61,7 +63,7 @@ function automation(over: Partial<Automation> = {}): Automation {
 
 function proposal(over: Partial<TriageProposal> = {}): TriageProposal {
   return {
-    id: 'p1', workItemId: 'w1', projectSlug: 'kindash', repo: 'steiner385/kindash',
+    proposalKind: 'triage', id: 'p1', workItemId: 'w1', projectSlug: 'kindash', repo: 'steiner385/kindash',
     number: 1, kind: 'issue', title: 't', url: null,
     proposedFeatureId: null, proposedFeatureSlug: null, noFitSuggestion: null,
     reach: null, impact: null, effort: null, confidence: null,
@@ -78,6 +80,7 @@ describe('useNavBadges', () => {
     useAutomations.mockReturnValue({ data: [] })
     useAccounts.mockReturnValue({ data: [] })
     useTriage.mockReturnValue({ data: [] })
+    useDecisions.mockReturnValue({ data: [] })
     useDeployState.mockReturnValue({ hasFailure: false, count: 0 })
   })
 
@@ -129,6 +132,31 @@ describe('useNavBadges', () => {
     })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.roadmap).toBe(5)
+  })
+
+  // Spec 2026-09-18 §6: a decision proposal notifies through the EXISTING
+  // pending-proposal channel — "no new kind" — so it adds to this badge rather
+  // than growing a second one, and it does so through the same
+  // `pendingProposals` predicate the classification rows go through.
+  it('roadmap counts pending DECISION proposals in the same badge', () => {
+    useTriage.mockReturnValue({ data: [proposal({ id: 'a' })] })
+    useDecisions.mockReturnValue({
+      data: [
+        { id: 'd1', status: 'pending' },
+        { id: 'd2', status: 'pending' },
+        // Already taken: decided work is not backlog, on either list.
+        { id: 'd3', status: 'accepted' },
+      ],
+    })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.roadmap).toBe(3)
+  })
+
+  it('a decisions-only queue still badges Roadmap', () => {
+    useTriage.mockReturnValue({ data: [] })
+    useDecisions.mockReturnValue({ data: [{ id: 'd1', status: 'pending' }] })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.roadmap).toBe(1)
   })
 
   it('settings is boolean-or-undefined, never a number', () => {

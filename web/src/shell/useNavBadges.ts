@@ -1,6 +1,6 @@
 import { automationTier } from '@/features/delivery/automationTier'
 import type { NavBadgeKey, NavDef } from './navDefs'
-import { useAccounts, useSessions, useAllPrs, useAutomations, useTriage } from '@/api/hooks'
+import { useAccounts, useSessions, useAllPrs, useAutomations, useDecisions, useTriage } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
@@ -41,6 +41,11 @@ export function useNavBadges(): NavBadges {
   // that key's interval: the column passes `poll: false` for the unscoped queue
   // precisely so the two do not run two timers over one key.
   const { data: proposals = [] } = useTriage()
+  // The inbox's second card kind (spec 2026-09-18 §6, "notification: reuses the
+  // pending-proposal channel, no new kind"). Unscoped and polled for the same
+  // reason the triage list above is, and THIS observer owns the key's interval:
+  // the Roadmap column passes `poll: false`.
+  const { data: decisions = [] } = useDecisions()
   const deploy = useDeployState()
 
   const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
@@ -59,7 +64,11 @@ export function useNavBadges(): NavBadges {
     // the badge follows it onto Roadmap rather than disappearing with the row.
     // `pendingProposals` because the wire list is widened with the triage loop's
     // fresh auto-accepts (their undo window); those are decided, not backlog.
-    roadmap: pendingProposals(proposals).length || undefined,
+    // BOTH inbox kinds go through that ONE predicate: a decision proposal is a
+    // thing awaiting a human exactly as a classification proposal is, and a
+    // badge that counted only one of them would send you to a queue longer than
+    // it said.
+    roadmap: pendingProposals([...proposals, ...decisions]).length || undefined,
     // A FAILED deploy, not a pending one. The deploy banner is hidden on phone
     // (`useAppBanners`, `hideOn: ['phone']`), so without this dot a lost session
     // would be silent there — Settings › Deploy has the detail but nothing would

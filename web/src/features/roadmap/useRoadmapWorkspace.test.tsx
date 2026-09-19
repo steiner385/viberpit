@@ -41,6 +41,7 @@ import { useRoadmapWorkspace } from './useRoadmapWorkspace'
 const get = vi.mocked(api.get)
 const paths = () => get.mock.calls.map(([p]) => p)
 const triageCalls = () => paths().filter((p) => p.startsWith('/pm/triage'))
+const decisionCalls = () => paths().filter((p) => p.startsWith('/pm/decisions'))
 
 function wrap(initial: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -94,5 +95,74 @@ describe('useRoadmapWorkspace polling', () => {
     const calls = await requestsAfterFourIntervals('/roadmap?scope=inbox&product=kindash')
     expect(calls.length).toBeGreaterThan(1)
     expect(new Set(calls)).toEqual(new Set(['/pm/triage?projectSlug=kindash']))
+  })
+})
+
+/**
+ * The inbox's second list (spec 2026-09-18 §6). `GET /pm/decisions` takes no
+ * `projectSlug`, so there is exactly ONE key — the nav badge always owns its
+ * interval, and the `?product=` chip narrows the rows here rather than keying a
+ * second query.
+ */
+describe('useRoadmapWorkspace — decision proposals', () => {
+  const D = (over: Record<string, unknown>) => ({
+    id: 'd1', workItemId: 'w9', repo: 'cairnea/KinDash', number: 12,
+    ref: 'cairnea/KinDash#12', projectSlug: 'kindash', title: 'Queue or stream?',
+    url: null, options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }],
+    recommendedKey: 'a', rationale: null, chosenKey: null, status: 'pending',
+    proposedBy: 'session:s1', resolvedBy: null, createdAt: null, resolvedAt: null,
+    ...over,
+  })
+
+  beforeEach(() => get.mockClear())
+  afterEach(() => {
+    vi.useRealTimers()
+    // The per-test implementations above outlive their test otherwise.
+    get.mockReset()
+    get.mockImplementation(async (path?: string): Promise<unknown> => {
+      const { MAP } = await import('@/features/roadmap/__fixtures__/map')
+      return path === '/pm/map' ? MAP : []
+    })
+  })
+
+  it('asks for nothing while the column is not the section', async () => {
+    renderHook(() => useRoadmapWorkspace(false), { wrapper: wrap('/sessions') })
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(decisionCalls()).toEqual([])
+  })
+
+  it('fetches the list once and never polls it — the nav badge owns the interval', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox') })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(decisionCalls()).toEqual(['/pm/decisions'])
+  })
+
+  it('concatenates both kinds into ONE queue', async () => {
+    get.mockImplementation(async (path?: string): Promise<unknown> => {
+      if (path === '/pm/decisions') return [D({ id: 'd1' })]
+      const { MAP } = await import('@/features/roadmap/__fixtures__/map')
+      return path === '/pm/map' ? MAP : []
+    })
+    const { result } = renderHook(() => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox') })
+    await waitFor(() => expect(result.current.list.inbox.proposals).toHaveLength(1))
+    expect(result.current.list.inbox.proposals[0]).toMatchObject({ id: 'd1', proposalKind: 'decision' })
+  })
+
+  it('narrows the one unscoped list client-side to the ?product= chip', async () => {
+    get.mockImplementation(async (path?: string): Promise<unknown> => {
+      if (path === '/pm/decisions') {
+        return [D({ id: 'mine' }), D({ id: 'theirs', projectSlug: 'viberpit' })]
+      }
+      const { MAP } = await import('@/features/roadmap/__fixtures__/map')
+      return path === '/pm/map' ? MAP : []
+    })
+    const { result } = renderHook(
+      () => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox&product=kindash') })
+    await waitFor(() => expect(result.current.list.inbox.proposals).toHaveLength(1))
+    expect(result.current.list.inbox.proposals[0]!.id).toBe('mine')
+    // Still ONE request for the whole list — the narrowing is not a second key.
+    expect(decisionCalls()).toEqual(['/pm/decisions'])
   })
 })

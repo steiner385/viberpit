@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { ComponentProps } from 'react'
-import type { TriageProposal } from '@/api/triage'
+import type { DecisionProposal, TriageProposal } from '@/api/triage'
 import { ProposalDetail } from './ProposalDetail'
 
 const accept = vi.fn()
@@ -16,13 +16,17 @@ const reject = vi.fn()
 // removal will patch.
 const acceptScope = vi.fn()
 const rejectScope = vi.fn()
+const acceptDecision = vi.fn()
+const rejectDecision = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return { mutate: accept, isPending: false } },
   useRejectProposal: (slug?: string) => { rejectScope(slug); return { mutate: reject, isPending: false } },
+  useAcceptDecision: () => ({ mutate: acceptDecision, isPending: false }),
+  useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
 }))
 
 const proposal: TriageProposal = {
-  id: 'p1', workItemId: 'w1', projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7, kind: 'issue',
+  proposalKind: 'triage', id: 'p1', workItemId: 'w1', projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7, kind: 'issue',
   title: 'Bulk edit', url: 'https://x/7', proposedFeatureId: 'f-tasks', proposedFeatureSlug: 'tasks',
   noFitSuggestion: null, reach: 3, impact: 3, effort: 2, confidence: 80,
   rationale: 'Touches the task list.', confidenceLevel: 'high', status: 'pending',
@@ -196,6 +200,134 @@ describe('ProposalDetail', () => {
       // Everything else still belongs to the app (Escape, Tab, shortcuts).
       fireEvent.keyDown(button, { key: 'Escape' })
       expect(seen).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('keydown', seen)
+    }
+  })
+})
+
+/**
+ * The DECISION pane (spec 2026-09-18 §6): a single-choice group of the options a
+ * session drafted, the recommendation preselected, the rationale above it, and
+ * the same two-column guidance the classification pane renders.
+ */
+const GUIDANCE = {
+  accept: {
+    available: true, unavailableReason: null,
+    immediate: [{ text: 'The hold clears; the next run implements with the chosen option.', spawnsSession: false, writesGithub: false }],
+    then: [{ text: 'The Backlog Runner may dispatch it.', spawnsSession: true, writesGithub: false }],
+    when: 'next_tick' as const, reversal: 'Park the item again', gate: null,
+  },
+  reject: {
+    available: true, unavailableReason: null,
+    immediate: [{ text: "The issue is held for you with 'decision proposal rejected'.", spawnsSession: false, writesGithub: false }],
+    then: [], when: 'now' as const, reversal: null, gate: null,
+  },
+}
+
+const decision: DecisionProposal = {
+  proposalKind: 'decision', id: 'd1', workItemId: 'w9', repo: 'steiner385/viberpit', number: 12,
+  ref: 'steiner385/viberpit#12', projectSlug: 'viberpit', title: 'Queue or stream?', url: null,
+  options: [
+    { key: 'queue', label: 'Durable queue', detail: 'Survives a restart; costs a table.' },
+    { key: 'stream', label: 'In-process stream', detail: null },
+  ],
+  recommendedKey: 'queue', rationale: 'Both work; one costs a table.', chosenKey: null,
+  status: 'pending', proposedBy: 'session:s1', resolvedBy: null,
+  createdAt: '2026-09-18T10:00:00Z', resolvedAt: null,
+}
+
+function mountDecision(over: Partial<DecisionProposal> = {}) {
+  const onDone = vi.fn()
+  render(
+    <MemoryRouter>
+      <ProposalDetail
+        proposal={{ ...decision, ...over }}
+        capabilities={caps}
+        scopeProduct={null}
+        autoFocusScores={false}
+        onDone={onDone}
+      />
+    </MemoryRouter>,
+  )
+  return { onDone }
+}
+
+describe('ProposalDetail — a decision proposal', () => {
+  beforeEach(() => {
+    acceptDecision.mockReset()
+    rejectDecision.mockReset()
+  })
+
+  it('offers the options as ONE single-choice group, with the recommendation preselected', () => {
+    mountDecision()
+    const group = screen.getByRole('radiogroup', { name: 'Options' })
+    expect(group).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Durable queue/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /In-process stream/ })).not.toBeChecked()
+    expect(screen.getByText('recommended')).toBeInTheDocument()
+    // The detail under an option is the difference the person is choosing on.
+    expect(screen.getByText(/Survives a restart/)).toBeInTheDocument()
+  })
+
+  it('reads the rationale and who proposed it before the choice', () => {
+    mountDecision()
+    expect(screen.getByText('Both work; one costs a table.')).toBeInTheDocument()
+    expect(screen.getByText('Proposed by session:s1')).toBeInTheDocument()
+  })
+
+  it('accepts the option the person picked, not the recommendation', () => {
+    const { onDone } = mountDecision()
+    fireEvent.click(screen.getByRole('radio', { name: /In-process stream/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(acceptDecision).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'stream' })
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('accepts the recommendation when nothing is changed', () => {
+    mountDecision()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(acceptDecision).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
+  })
+
+  it('rejects through the decision route, and moves on', () => {
+    const { onDone } = mountDecision()
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    expect(rejectDecision).toHaveBeenCalledWith({ id: 'd1' })
+    expect(accept).not.toHaveBeenCalled()
+    expect(reject).not.toHaveBeenCalled()
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('cannot accept with no option chosen — the server would 422', () => {
+    mountDecision({ recommendedKey: null })
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+  })
+
+  it('offers no edit-then-accept: the options ARE the whole choice', () => {
+    mountDecision()
+    expect(screen.queryByRole('button', { name: /Save edits/ })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Capability' })).toBeNull()
+  })
+
+  it('says what Accept and Reject do, through the same renderer as the other card', () => {
+    mountDecision({ guidance: GUIDANCE })
+    const region = screen.getByRole('group', { name: 'What each decision does' })
+    expect(region).toHaveTextContent('The hold clears; the next run implements with the chosen option.')
+    expect(region).toHaveTextContent('starts a session')
+    expect(region).toHaveTextContent("held for you with 'decision proposal rejected'")
+  })
+
+  it('swallows the inbox letter keys here too', () => {
+    const seen = vi.fn()
+    window.addEventListener('keydown', seen)
+    try {
+      mountDecision()
+      const button = screen.getByRole('button', { name: 'Accept' })
+      button.focus()
+      fireEvent.keyDown(button, { key: 'a' })
+      fireEvent.keyDown(button, { key: 'r' })
+      expect(seen).not.toHaveBeenCalled()
     } finally {
       window.removeEventListener('keydown', seen)
     }

@@ -337,3 +337,18 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   found the fix still collapses to the hand-off exit — its findings are in the issue body, so the
   direction is safe, but it is never read back as a conversion. Extend the Codex driver to latch
   the note, or document the collapse as permanent.
+- §6's two resolution routes serialise on `SELECT … FOR UPDATE` (`_load_decision`), which SQLite
+  silently ignores — it has no row-lock equivalent. Under Postgres a concurrent accept/reject pair
+  loses with 409; under SQLite the loser can still pass `_require_pending` and write the second
+  resolution. Dev and the test suite run on SQLite, so the race is untestable there and the
+  guarantee is production-only. Accept that (prod is Postgres) or add a dialect-neutral guard — a
+  conditional `UPDATE … WHERE status = 'pending'` whose rowcount is the lock.
+- §6's assistant carve-out in `server/pm/decisions.py:may_resolve` is unit-tested against actor
+  strings and pinned by the `test_assistant_policy.py` rows, but it is not exercised END TO END
+  through the drawer: no test drives `resolve_decision` with a real `ccas1:` token over loopback and
+  asserts the accept lands. The parts either side are covered (the tool is one HTTP call; the route
+  is covered directly with an `assistant:` identity), so the gap is the seam between them.
+- §6's decision proposals are unscoped on the wire: `GET /api/pm/decisions` takes no `projectSlug`,
+  and the Inbox's `?product=` chip narrows the one list client-side. That is right at today's
+  volume (one pending proposal per item, only while unanswered) and wrong if the queue ever grows
+  enough for the chip to matter; add the query parameter then, beside `/pm/triage`'s.

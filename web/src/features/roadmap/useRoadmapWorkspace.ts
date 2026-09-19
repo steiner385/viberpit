@@ -7,10 +7,10 @@
  *   what keeps the map's 15 s poll off the four other sections and off kiosk,
  *   where `app.list` does not exist at all.
  */
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useRoadmapMap, useTriage } from '@/api/hooks'
-import type { TriageProposal } from '@/api/triage'
+import { useDecisions, useRoadmapMap, useTriage } from '@/api/hooks'
+import type { InboxProposal } from '@/api/triage'
 import type { RoadmapListColumnProps } from './RoadmapListColumn'
 import {
   capabilityPath, inboxPath, inboxProductForSearch, initiativePath, keyForOpenItem, productPath,
@@ -40,6 +40,18 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   // badge's 15 s interval, so the column adds no timer to it; a `?product=`
   // chip is its own key with no other observer, so that one polls itself.
   const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
+  // The inbox's second card kind (spec 2026-09-18 §6). One unscoped key, whose
+  // interval the nav badge always owns — hence `poll: false` here, the same
+  // "no second timer over one key" rule the unscoped triage leg follows.
+  const decisions = useDecisions({ enabled: active, poll: false })
+  // Narrowed CLIENT-side: `GET /pm/decisions` takes no `projectSlug`, so the
+  // `?product=` chip filters the one list rather than keying a second query.
+  // The rows are then concatenated into ONE queue — the ordering spec, the key
+  // map and the pending count all act on the whole inbox, not on two halves.
+  const proposals = useMemo<InboxProposal[]>(() => [
+    ...(triage.data ?? []),
+    ...(decisions.data ?? []).filter((d) => !product || d.projectSlug === product),
+  ], [triage.data, decisions.data, product])
 
   const onOpen = useCallback((row: TreeRow) => {
     if (row.kind === 'product') navigate(productPath(row.product.slug))
@@ -53,7 +65,7 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
     navigate(inboxPath({ product: productSlug }))
   }, [navigate])
 
-  const onOpenProposal = useCallback((p: TriageProposal, opts?: { edit: boolean }) => {
+  const onOpenProposal = useCallback((p: InboxProposal, opts?: { edit: boolean }) => {
     // The editor IS the detail pane (spec §12), so `e` is "open with the score
     // fields focused", not a second inline form.
     navigate(inboxPath({ product, proposal: p.id }) + (opts?.edit ? '&edit=1' : ''))
@@ -71,9 +83,12 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
       onOpen,
       onOpenInbox,
       inbox: {
-        proposals: triage.data ?? [],
-        isLoading: triage.isLoading,
-        isError: triage.isError,
+        proposals,
+        // Either list failing is the inbox failing: a banner that stayed quiet
+        // because only the decisions query broke would show a short queue as if
+        // it were the whole one.
+        isLoading: triage.isLoading || decisions.isLoading,
+        isError: triage.isError || decisions.isError,
         product,
         onOpenProposal,
         onClearProduct,

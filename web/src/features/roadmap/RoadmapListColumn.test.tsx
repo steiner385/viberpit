@@ -14,12 +14,13 @@ vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useRejectProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useAcceptBulk: () => ({ mutate: vi.fn(), isPending: false }),
+  useRejectDecision: () => ({ mutate: vi.fn(), isPending: false }),
   useTriageLive: () => undefined,
   useUndoProposal: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 const PROPOSALS: TriageProposal[] = [{
-  id: 'pr1', workItemId: 'w1', projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7,
+  proposalKind: 'triage', id: 'pr1', workItemId: 'w1', projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7,
   kind: 'issue', title: 'Recurring chores', url: null, proposedFeatureId: null,
   proposedFeatureSlug: 'tasks', noFitSuggestion: null, reach: 3, impact: 2, effort: 1,
   confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending', createdAt: null,

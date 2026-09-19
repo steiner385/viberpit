@@ -1,7 +1,8 @@
 import { IssueDispositionProvider } from './detail/IssueDispositionProvider'
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useProject, useRoadmapMap, useSyncProject, useTriage } from '@/api/hooks'
+import { useDecisions, useProject, useRoadmapMap, useSyncProject, useTriage } from '@/api/hooks'
+import { isDecisionProposal, type InboxProposal } from '@/api/triage'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -62,15 +63,35 @@ function RoadmapPageContent() {
   // the 15 s interval. Two polling observers of one key are two requests.
   const inboxProduct = inboxProductForSearch(search)
   const triage = useTriage(inboxProduct ?? undefined, { poll: false })
+  // The inbox's second card kind (spec 2026-09-18 §6): one unscoped key whose
+  // interval the nav badge owns, narrowed client-side to the `?product=` chip
+  // exactly as the list column does — the pane and the column must resolve the
+  // same `?proposal=` id to the same row.
+  const decisions = useDecisions({ poll: false })
+  // `undefined` until BOTH lists have answered — this is what `proposalMissing`
+  // asks "has the queue arrived?" of, and a half-arrived queue would report a
+  // decision that is merely still in flight as one somebody else already took.
+  const queue = useMemo<InboxProposal[] | undefined>(
+    () => (triage.data === undefined || decisions.data === undefined
+      ? undefined
+      : [
+        ...triage.data,
+        ...decisions.data.filter((d) => !inboxProduct || d.projectSlug === inboxProduct),
+      ]),
+    [triage.data, decisions.data, inboxProduct],
+  )
   const proposalId = item?.kind === 'proposal' ? item.proposalId : null
   // `e` in the list column opens the row WITH the score fields focused, which
   // is the whole of what "edit" means now that the editor is the pane.
   const editing = new URLSearchParams(search).get('edit') === '1'
-  const proposal = proposalId ? triage.data?.find((p) => p.id === proposalId) ?? null : null
+  const proposal = proposalId ? queue?.find((p) => p.id === proposalId) ?? null : null
   // The proposal's OWN product, not the one the `?product=` chip names: an
   // unscoped inbox mixes products, and offering a KinDash capability as the
-  // home for a ViberPit issue would accept it onto the wrong tree.
-  const proposalProduct = proposal?.projectSlug ? findProduct(map, proposal.projectSlug) : null
+  // home for a ViberPit issue would accept it onto the wrong tree. A decision
+  // pane offers no capability at all, so the lookup is skipped for one.
+  const proposalProduct = proposal && !isDecisionProposal(proposal) && proposal.projectSlug
+    ? findProduct(map, proposal.projectSlug)
+    : null
   const capabilities = useMemo(
     () => flattenCapabilities(proposalProduct?.capabilities ?? [])
       .map(({ node, depth }) => ({ id: node.id, slug: node.slug, title: node.title, depth })),
@@ -91,7 +112,7 @@ function RoadmapPageContent() {
     // Empty store = no column is rendering an order — the phone layout unmounts
     // the list while a proposal is open. Then, and only then, the server's order
     // is the best sequence available; it is also what the user last saw.
-    const ids = columnOrder.length > 0 ? columnOrder : (triage.data ?? []).map((p) => p.id)
+    const ids = columnOrder.length > 0 ? columnOrder : (queue ?? []).map((p) => p.id)
     const i = proposalId === null ? -1 : ids.indexOf(proposalId)
     const next = i === -1 ? undefined : (ids[i + 1] ?? ids[i - 1])
     navigate(
@@ -102,9 +123,9 @@ function RoadmapPageContent() {
   // A proposal the queue does not contain: decided in another tab, decided by
   // somebody else, or a stale bookmark. Gated on the queue having ARRIVED — a
   // failed fetch also leaves `proposal` null, and that is a broken connection.
-  const proposalMissing = inbox && proposalId !== null && triage.data !== undefined && !proposal
+  const proposalMissing = inbox && proposalId !== null && queue !== undefined && !proposal
   /** First load of the queue: no answer yet either way. */
-  const inboxPending = triage.isLoading && !triage.data
+  const inboxPending = (triage.isLoading || decisions.isLoading) && queue === undefined
 
   // The address points at something the map does not contain — a renamed slug or
   // a stale bookmark. Gated on the map having ARRIVED: a failed fetch also leaves
@@ -178,8 +199,8 @@ function RoadmapPageContent() {
             query, a different detail level, and none of the map's states. */}
         {inbox && (
           <>
-            {/* Same copy as the list column, which fails from the same query. */}
-            {triage.isError && <Banner tone="danger" className="mb-4" title="Could not load the inbox." />}
+            {/* Same copy as the list column, which fails from the same queries. */}
+            {(triage.isError || decisions.isError) && <Banner tone="danger" className="mb-4" title="Could not load the inbox." />}
             {proposal && (
               <ProposalDetail
                 proposal={proposal}
@@ -204,14 +225,14 @@ function RoadmapPageContent() {
                 what is waiting rather than sitting blank. A failed fetch is not
                 inbox zero, so it says so instead. */}
             {!proposal && !proposalMissing && !inboxPending && (
-              triage.isError && !triage.data
+              (triage.isError || decisions.isError) && queue === undefined
                 ? (
                   <EmptyState
                     title={`No ${ROADMAP.inbox.toLowerCase()} to show`}
                     description="It will fill in as soon as the queue loads again."
                   />
                 )
-                : <InboxWelcome count={triage.data?.length ?? 0} product={inboxProduct} />
+                : <InboxWelcome count={queue?.length ?? 0} product={inboxProduct} />
             )}
           </>
         )}

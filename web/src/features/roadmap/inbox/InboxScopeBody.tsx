@@ -1,7 +1,15 @@
 /**
  * The Inbox scope of the Roadmap list column (finish-line §4.3, roadmap spec
- * §12): the pending triage proposals, grouped by product, with the j/k a r e x
- * A key map and the bulk bar re-homed from the old standalone Triage page.
+ * §12): the pending proposals, grouped by product, with the j/k a r e x A key
+ * map and the bulk bar re-homed from the old standalone Triage page.
+ *
+ * Since spec 2026-09-18 §6 the queue carries TWO kinds — classification
+ * proposals and decision proposals — through one ordering spec and one key map.
+ * A decision is not bulk-acceptable (the accept carries the option the person
+ * chose) and has no scores to edit, so `x`, `e` and `A` do not reach one; `a`
+ * OPENS it rather than accepting, because there is no chosen option in a list
+ * row and a decision has no undo window to take a guess back with. `r` rejects
+ * either kind: refusing needs no choice, and it parks the item for its owner.
  *
  * Two cursors, deliberately: SELECTION is the URL (`?proposal=`, arriving as
  * `selectedKey`) because the detail pane is what it opens, while the KEY cursor
@@ -23,8 +31,12 @@
  * prompt dock and everything else).
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
-import type { TriageProposal } from '@/api/triage'
-import { useAcceptBulk, useAcceptProposal, useRejectProposal, useTriageLive } from '@/api/hooks'
+import {
+  isDecisionProposal, isTriageProposal, type InboxProposal, type TriageProposal,
+} from '@/api/triage'
+import {
+  useAcceptBulk, useAcceptProposal, useRejectDecision, useRejectProposal, useTriageLive,
+} from '@/api/hooks'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { BulkActionBar } from '@/ui/list/BulkActionBar'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
@@ -45,19 +57,21 @@ import { ProposalCard } from './ProposalCard'
 import { isPending, pendingProposals } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
-  proposals: readonly TriageProposal[]
+  proposals: readonly InboxProposal[]
   isLoading: boolean
   isError: boolean
   /** The `?product=` chip, or null for every product. */
   product: string | null
   /** Key of the open row (`keyForOpenItem`), or null. */
   selectedKey: string | null
-  onOpen: (p: TriageProposal, opts?: { edit: boolean }) => void
+  onOpen: (p: InboxProposal, opts?: { edit: boolean }) => void
   onClearProduct: () => void
 }
 
-const haystack = (p: TriageProposal) =>
-  `${p.title ?? ''} ${p.repo ?? ''}#${p.number ?? ''} ${p.proposedFeatureSlug ?? ''} ${p.noFitSuggestion ?? ''}`
+const haystack = (p: InboxProposal) =>
+  (isDecisionProposal(p)
+    ? `${p.title ?? ''} ${p.ref ?? ''} ${p.options.map((o) => o.label).join(' ')} ${p.rationale ?? ''}`
+    : `${p.title ?? ''} ${p.repo ?? ''}#${p.number ?? ''} ${p.proposedFeatureSlug ?? ''} ${p.noFitSuggestion ?? ''}`)
     .toLowerCase()
 
 export function InboxScopeBody({
@@ -84,13 +98,19 @@ export function InboxScopeBody({
   // open): the pane must fall back rather than follow a frozen order.
   useEffect(() => clearInboxOrder, [])
 
-  // The rows the user can still decide, through `triageSelectors`' one
-  // definition of "still pending" (the nav badge and the Inbox scope count read
-  // the same one). Shared from here by the selection prune below and by
-  // `acceptSelected` — two copies would be free to disagree about what the bulk
-  // bar counts and what it sends.
+  // The rows the bulk bar may act on, through `triageSelectors`' one definition
+  // of "still pending" (the nav badge and the Inbox scope count read the same
+  // one). Shared from here by the selection prune below and by `acceptSelected`
+  // — two copies would be free to disagree about what the bulk bar counts and
+  // what it sends.
+  //
+  // Pending AND classification: `/pm/triage/accept-bulk` accepts classification
+  // proposals only, and a decision id reaching it would be a 404 inside a sweep
+  // whose toast then under-reports. The kind filter is here rather than inside
+  // the selector because it is not a second answer to "is this awaiting a
+  // human?" — decisions ARE — but to "can this be decided without opening it?".
   const pendingIds = useMemo(
-    () => pendingProposals(ordered).map((p) => p.id),
+    () => pendingProposals(ordered).filter(isTriageProposal).map((p) => p.id),
     [ordered],
   )
 
@@ -105,13 +125,15 @@ export function InboxScopeBody({
     dispatch({ type: 'rowsChanged', ids })
     dispatch({ type: 'pruneSelected', pendingIds })
   }, [ids, pendingIds])
-  const current: TriageProposal | undefined = ordered[resolveCursorIndex(ids, state)]
+  const current: InboxProposal | undefined = ordered[resolveCursorIndex(ids, state)]
 
   const accept = useAcceptProposal(product ?? undefined)
   const reject = useRejectProposal(product ?? undefined)
+  const rejectDecision = useRejectDecision()
   const bulk = useAcceptBulk(product ?? undefined)
   const acceptMutate = accept.mutate
   const rejectMutate = reject.mutate
+  const rejectDecisionMutate = rejectDecision.mutate
   const bulkMutate = bulk.mutate
 
   // A single accept/reject takes its row out of the list, so it takes the row
@@ -121,10 +143,14 @@ export function InboxScopeBody({
     acceptMutate({ id: p.id })
     dispatch({ type: 'deselect', id: p.id })
   }, [acceptMutate])
-  const rejectOne = useCallback((p: TriageProposal) => {
-    rejectMutate({ id: p.id })
+  // One `r`, two endpoints — the reject a decision needs is its own route
+  // (it writes the person's owner-action hold, not a triage state), so the row's
+  // kind picks the mutation here rather than the key map growing a second case.
+  const rejectOne = useCallback((p: InboxProposal) => {
+    if (isDecisionProposal(p)) rejectDecisionMutate({ id: p.id })
+    else rejectMutate({ id: p.id })
     dispatch({ type: 'deselect', id: p.id })
-  }, [rejectMutate])
+  }, [rejectMutate, rejectDecisionMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
   // The `pendingIds` filter is belt to the prune effect's braces: the prune
@@ -152,19 +178,26 @@ export function InboxScopeBody({
         // window) has already had its one decision — none of these keys have
         // anything left to act on, so the cursor sitting on it is inert.
         case 'x':
-          if (!isPending(current)) return
+          // A decision cannot go into a bulk accept (see `pendingIds`).
+          if (!isPending(current) || isDecisionProposal(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
         case 'a':
           if (!isPending(current)) return
-          acceptOne(current)
+          // A decision's accept carries the option the person chose, and there
+          // is no undo window to take a guessed one back with — so `a` opens the
+          // pane where the options are, rather than silently accepting the
+          // machine's own recommendation on one keystroke.
+          if (isDecisionProposal(current)) onOpen(current)
+          else acceptOne(current)
           break
         case 'r':
           if (!isPending(current)) return
           rejectOne(current)
           break
         case 'e':
-          if (!isPending(current)) return
+          // Nothing to edit on a decision: the scores are the classifier's.
+          if (!isPending(current) || isDecisionProposal(current)) return
           onOpen(current, { edit: true })
           break
         case 'A':
@@ -249,7 +282,7 @@ export function InboxScopeBody({
         <div role="status" aria-label="Loading inbox"><Skeleton lines={5} /></div>
       )}
       {!isLoading && visible.length === 0 && <EmptyState title={emptyTitle} />}
-      <GroupedList<TriageProposal>
+      <GroupedList<InboxProposal>
         groups={ordering.groups}
         collapsedKeys={ordering.collapsedKeys}
         onToggleCollapse={ordering.toggleCollapse}
