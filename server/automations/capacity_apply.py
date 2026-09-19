@@ -56,14 +56,15 @@ def plan_is_live(plan: dict | None, *, now: datetime, enabled: bool, max_age_s: 
 def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -> dict[str, dict | None]:
     """Overlay the governor's per-product caps onto a slug -> policy mapping.
 
-    Only a slug whose policy is stored (not ``None``, i.e. actually opted in),
-    has an entry in ``plan["perProduct"]``, and reads ``capacity_mode == "auto"``
-    is overlaid — a pinned product's operator-set cap is never overridden, and a
-    ``None`` policy (never configured; dispatch is off regardless) is left
-    ``None`` rather than synthesized into a policy dict. Every overlay produces a
-    NEW dict; inputs are never mutated. A malformed plan (wrong shape, a
-    non-numeric cap) logs a warning and leaves the affected entr(y/ies)
-    unchanged rather than raising.
+    Only a slug whose policy is stored as a dict (not ``None`` and not some
+    other corrupt type, i.e. actually opted in), has an entry in
+    ``plan["perProduct"]``, and reads ``capacity_mode == "auto"`` is overlaid —
+    a pinned product's operator-set cap is never overridden, and a ``None`` or
+    non-dict policy (never configured, or a corrupt stored row; dispatch is off
+    regardless) is left unchanged rather than synthesized into a policy dict.
+    Every overlay produces a NEW dict; inputs are never mutated. A malformed
+    plan (wrong shape, a non-numeric cap) logs a warning and leaves the
+    affected entr(y/ies) unchanged rather than raising.
     """
     if not plan:
         return dict(policies)
@@ -75,7 +76,7 @@ def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -
         return dict(policies)
     out: dict[str, dict | None] = {}
     for slug, raw in policies.items():
-        if raw is not None and slug in per_product and effective_policy(raw).get("capacity_mode") == "auto":
+        if isinstance(raw, dict) and slug in per_product and effective_policy(raw).get("capacity_mode") == "auto":
             try:
                 cap = int(per_product[slug])
             except (TypeError, ValueError):

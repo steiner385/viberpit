@@ -145,6 +145,19 @@ def test_apply_product_plan_non_numeric_per_product_value_is_unchanged():
     assert out["viberpit"] == raw
 
 
+def test_apply_product_plan_non_dict_truthy_raw_passes_through_unchanged():
+    # A corrupt stored policy row (wrong type, not just wrong shape) must never
+    # raise: it passes through unchanged, like a None raw, while other slugs in
+    # the same call are still overlaid normally.
+    kindash_raw = {"dispatch": "auto", "capacity_mode": "auto", "max_in_flight": 1}
+    plan = _plan(perProduct={"viberpit": 3, "kindash": 5})
+    for bad_raw in ("not-a-dict", 123, ["a"], True):
+        policies = {"viberpit": bad_raw, "kindash": kindash_raw}
+        out = apply_product_plan(policies, plan)
+        assert out["viberpit"] == bad_raw
+        assert out["kindash"]["max_in_flight"] == 5
+
+
 # --- apply_fleet_plan -----------------------------------------------------
 
 
