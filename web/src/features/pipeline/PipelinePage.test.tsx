@@ -76,6 +76,15 @@ describe('PipelinePage (Workspace variant)', () => {
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
   })
 
+  it('a feed that only errors shows the danger banner after the stale window', () => {
+    vi.useFakeTimers()
+    mount()
+    act(() => { FakeEventSource.instances.at(-1)!.onerror?.(new Event('error')) })
+    expect(screen.queryByText(/Pipeline feed unavailable/)).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(90_001) })
+    expect(screen.getByText('Pipeline feed unavailable — reconnecting…')).toBeInTheDocument()
+  })
+
   it('after a frame: the repo strip is a tablist, the first repo is focused, and a tab click rewrites ?pipeline=', () => {
     mount()
     deliver()

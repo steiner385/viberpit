@@ -160,6 +160,17 @@ describe('useDashboard', () => {
     expect(result.current.stale).toBe(true)
   })
 
+  it('staleness: a feed that never delivers a frame still trips stale from mount', () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useDashboard(), { wrapper })
+    act(() => { FakeEventSource.instances[0].onerror?.(new Event('error')) })
+    expect(result.current.stale).toBe(false)
+    act(() => { vi.advanceTimersByTime(90_001) })
+    expect(result.current.stale).toBe(true)
+    expect(result.current.state).toBeNull()
+    expect(result.current.connected).toBe(false)
+  })
+
   it('staleness resets when a new frame arrives', () => {
     vi.useFakeTimers()
 

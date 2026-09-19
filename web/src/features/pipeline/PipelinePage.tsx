@@ -58,7 +58,7 @@ function Inner() {
     (id: string, number: number) => fixPr.mutate({ id, number }),
     [fixPr.mutate], // eslint-disable-line react-hooks/exhaustive-deps -- .mutate is the stable handle; depending on `fixPr` would break the stable-ref contract above
   )
-  const { state, stale, notifySupported, notifyEnabled, toggleNotify } = useDashboard()
+  const { state, connected, stale, notifySupported, notifyEnabled, toggleNotify } = useDashboard()
   const repos = useMemo(() => (state?.repos ?? []).map((r) => r.repo), [state])
   // In kiosk the focus is not written to the URL: the wall display's URL is its
   // configuration and must survive a reload unchanged.
@@ -117,11 +117,19 @@ function Inner() {
         />
       )}
       <PageContent scroll={false} busy={!state}>
-        {stale && (
+        {stale && !state && !connected && (
+          <Banner
+            tone="danger"
+            role="status"
+            title="Pipeline feed unavailable — reconnecting…"
+            className="mx-4 mt-3 shrink-0 md:mx-6"
+          />
+        )}
+        {stale && (state || connected) && (
           <Banner
             tone="warning"
             role="status"
-            title="Pipeline feed stalled — showing the last frame."
+            title={state ? 'Pipeline feed stalled — showing the last frame.' : 'Pipeline feed stalled — waiting for the first frame.'}
             className="mx-4 mt-3 shrink-0 md:mx-6"
           />
         )}

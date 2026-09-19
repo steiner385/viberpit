@@ -56,6 +56,10 @@ export function useDashboard(): DashboardHook {
       if (staleTimer.current) clearTimeout(staleTimer.current);
       staleTimer.current = setTimeout(() => setStale(true), STALE_AFTER_MS);
     };
+    // Armed at mount too, so a feed that never delivers a frame (backend down,
+    // /events erroring) still trips `stale` instead of leaving the page on its
+    // loading skeleton forever.
+    armStale();
     const onFrame = (data: string) => { sseArrived = true; setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
 
     // Fast first paint: pull the warm cached frame from /snapshot and render it
