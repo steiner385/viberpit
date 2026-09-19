@@ -273,6 +273,50 @@ describe('CapacityDetail', () => {
     await waitFor(() => expect(screen.getByText(/Saved/)).toBeInTheDocument())
   })
 
+  it('Fix round 2 / item 1: a successful pin save caches the fresh project, so a second save on the same row uses the new stamp', async () => {
+    const { qc } = setup()
+    qc.setQueryData(QK.project('kindash'), { automationPolicyUpdatedAt: 'stamp-1' })
+    updateProductPolicy.mockResolvedValueOnce({ slug: 'kindash', automationPolicyUpdatedAt: 'stamp-2' })
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalledTimes(1))
+    expect(qc.getQueryData(QK.project('kindash'))).toEqual({ slug: 'kindash', automationPolicyUpdatedAt: 'stamp-2' })
+
+    updateProductPolicy.mockResolvedValueOnce({ slug: 'kindash', automationPolicyUpdatedAt: 'stamp-3' })
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '6' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalledTimes(2))
+    expect(updateProductPolicy).toHaveBeenNthCalledWith(2, 'kindash', {
+      policy: { max_in_flight: 6 }, expectedUpdatedAt: 'stamp-2',
+    })
+  })
+
+  it('Fix round 2 / item 1: a 409 during a pin save invalidates the project cache before the form surfaces the failure', async () => {
+    const { qc } = setup()
+    qc.setQueryData(QK.project('kindash'), { automationPolicyUpdatedAt: 'stale-stamp' })
+    updateProductPolicy.mockRejectedValueOnce(new ApiRequestError(409, { detail: 'conflict' }))
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByText('conflict')).toBeInTheDocument())
+    expect(qc.getQueryState(QK.project('kindash'))?.isInvalidated).toBe(true)
+  })
+
+  it('Fix round 2 / item 2: clearing the pin field is a validation error, never a silent max_in_flight: 0', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByText(/pin must be a whole number/)).toBeInTheDocument())
+    expect(updateProductPolicy).not.toHaveBeenCalled()
+  })
+
+  it('Fix round 2 / item 2: a whitespace-only pin field is also a validation error', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByText(/pin must be a whole number/)).toBeInTheDocument())
+    expect(updateProductPolicy).not.toHaveBeenCalled()
+  })
+
   it('Ruling 12 / I6: an invalid pin value surfaces a form-level error instead of saving', async () => {
     setup()
     fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '-1' } })

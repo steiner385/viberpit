@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { ApiRequestError } from '@/api/client'
 import type { CapacityDefect, CapacityProduct, PushLevel } from '@/api/capacity'
 import {
   QK, useAutomations, useCapacity, usePatchAutomation, useProject,
@@ -222,20 +223,46 @@ export function CapacityDetail() {
       for (const product of readout.products) {
         const raw = draft[product.slug]
         if (raw === undefined) continue
+        const name = product.name ?? product.slug
+        // Fix round 2 / item 2: a cleared field is not "0" — `Number('')` is
+        // 0, and silently saving that PAUSES the product (`max_in_flight: 0`
+        // is a real, load-bearing value, not "no input yet"). Checked before
+        // the unchanged-value skip below so a pin that happens to already be
+        // 0 still can't be "saved" by clearing and re-submitting.
+        if (raw.trim() === '') {
+          throw new Error(`${name}: pin must be a whole number ≥ 0`)
+        }
         const next = Number(raw)
         if (next === product.pin) continue
         if (!Number.isInteger(next) || next < 0) {
-          throw new Error(`${product.name ?? product.slug}: pin must be a whole number ≥ 0`)
+          throw new Error(`${name}: pin must be a whole number ≥ 0`)
         }
         // Fix round 1 / C2: never send `expectedUpdatedAt: null` — the stamp
         // is read straight off the query cache each row's own `useProject`
         // already populated (a plain cache read here, not a second hook call
         // in a loop, which the rules of hooks forbid).
         const stamp = qc.getQueryData<Project>(QK.project(product.slug))?.automationPolicyUpdatedAt
-        await updateProductPolicy(product.slug, {
-          policy: { max_in_flight: next },
-          ...(stamp ? { expectedUpdatedAt: stamp } : {}),
-        })
+        let project: Project
+        try {
+          project = await updateProductPolicy(product.slug, {
+            policy: { max_in_flight: next },
+            ...(stamp ? { expectedUpdatedAt: stamp } : {}),
+          })
+        } catch (err) {
+          // Fix round 2 / item 1: mirrors `useUpdateProductPolicy`'s onError
+          // — a 409 means the cached stamp is stale, so refresh it before
+          // the caller (`useSettingsForm`) surfaces the failure, rather than
+          // leaving the next attempt to fail the same way again.
+          if (err instanceof ApiRequestError && err.status === 409) {
+            await qc.invalidateQueries({ queryKey: QK.project(product.slug) })
+          }
+          throw err
+        }
+        // Fix round 2 / item 1: keep the response's fresh
+        // `automationPolicyUpdatedAt` so the NEXT toggle or save on this row
+        // (cap-mode switch or another pin edit) sends the current stamp
+        // instead of the one that was already just spent.
+        qc.setQueryData(QK.project(product.slug), project)
       }
       qc.invalidateQueries({ queryKey: QK.capacity })
       qc.invalidateQueries({ queryKey: QK.roadmapMap })
