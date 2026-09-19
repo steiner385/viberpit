@@ -28,7 +28,7 @@
 - Views: create a "Board" view grouped by Status and a "Table" view sorted by Score desc, per board.
 - **Rename the built-in Status options to the spec vocabulary by hand, before the first apply.**
   GitHub's defaults are `Todo` / `In Progress` / `Done`; the spec's are `Backlog` / `Ready` /
-  `In progress` / `Blocked` / `Needs human` / `Done`. `_ensure_fields` appends missing options
+  `In progress` / `Blocked` / `Held` / `Done`. `_ensure_fields` appends missing options
   by **exact name**, so `In Progress` and `In progress` are two different columns to it — leave
   the defaults in place and the board comes out of the migration with both, plus a dead `Todo`.
   Renaming in the UI first leaves the union with nothing to append.
@@ -68,7 +68,7 @@ does about them:
    Automations → GitHub Reconcile: mode `dry_run`, `migrate` on.
 2. Wait two ticks (≤ 4 min). Review: `GET /api/pm/reconcile/journal?state=dry_run` — expect field
    bootstrap rows (Score, Stage, Status options), `add_item` rows for every open issue, `set_field`
-   Status rows (`Backlog`/`Ready`/`Needs human`…), and `add_blocked_by` rows for each prose edge
+   Status rows (`Backlog`/`Ready`/`Held`…), and `add_blocked_by` rows for each prose edge
    **whose blocker is still open** — a prose dep pointing at a CLOSED issue produces no
    `add_blocked_by` row, because a closed blocker doesn't block. Dry-run rows are deduped within
    24h and pruned after it, so leaving dry run on does not grow the journal per tick; a second

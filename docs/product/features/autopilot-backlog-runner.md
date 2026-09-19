@@ -520,7 +520,7 @@ PR linkage, never on labels alone.
   members can still require operator review after an uncertain close; broader recovery
   controls belong to the later recovery phase of #1611.
   A **give-up is the same row marked `gave_up`**, which replaces the claim (a target waiting on a
-  human holds no slot); the reconciler turns it into board Status `Needs human`. The queue skips
+  human holds no slot); the reconciler turns it into board Status `Held`. The queue skips
   held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and its
   `gave_up` row survives only until the hold is gone (spec 2026-09-18 §7, `server/pm/holds.py`).
   Because the row and the hold are two transactions, the row carries `held`: false until the hold

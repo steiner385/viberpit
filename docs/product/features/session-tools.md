@@ -186,7 +186,7 @@ beats marker. A turn carrying both a hand-back and a completion signal reads as 
 logs `sessions.hand_back_over_completion` — keeping a session on the board is the recoverable
 error. `hand_back` reuses `waiting_question` rather than adding a status: the harness already
 persists that status without a structured question card (the parked-`done` overlay and the
-completion open-question hold), so push alerts, the PM "Needs human" view, autopilot, the deploy
+completion open-question hold), so push alerts, the PM "Held" view, autopilot, the deploy
 drain and the restart normaliser all already handle it. The reason rides `turnEnd` as
 `handBackReason` and is audited as `session.hand_back`; nothing in the web reads it yet.
 Spec: `docs/superpowers/specs/2026-09-08-hand-back-signal-tool-design.md`.

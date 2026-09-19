@@ -52,104 +52,112 @@ in — phase 2's auto-accept (see "Triage auto-accept" below) is a per-product `
 loop — the drift branch is latched (see Notes), so one unnamed capability yields one map-diff PR,
 not one per tick. The engine is pure/propose-only and never mutates onboarding state on its own.
 
-**Holds (spec `docs/superpowers/specs/2026-09-18-hold-ladder-design.md`, foundation).** A work item
-may carry one hold: `hold_kind` (`evidence`, `stronger_model`, `decision`, `owner_action`),
-`hold_reason` (mandatory), `hold_by` (the actor string: a person's login, `session:<id>`,
-`assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`), `hold_set_at`, and
-`hold_fingerprint` (the body fingerprint at hold time). The former `needs_human` triage state is
-gone: rejecting a classification proposal now writes an `owner_action` hold by the rejecting
-ACTOR — spec §8 authorises `owner_action` from "the two reject flows" whoever drives them, so the
-route goes through `holds.py:set_reject_hold` (no actor-class gate) and records `lan@local` or
-`assistant:<login>` truthfully rather than attributing it to a person — and migration 0049
-(applied on the live DB by `scripts/convert_legacy_needs_human.py`)
-converted the surviving rows. Only `owner_action` and a pending `decision` derive the board's
-"Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
-write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
-may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
-OVERWRITE a hold they could not clear, since replacing a kind releases the old one. The rename to
-"Held" is still a later series item of that spec.
-**Evidence dispatch has landed (item 4b, spec §5).** `evidence` is born AT FILING: the moment a
-new, open, auto-filed error report (carrying the error-triage label) enters the mirror,
-`server/sessions/orchestrator.py:_pm_sync_upsert_items` parks it under an `evidence` hold
-(`server/pm/holds.py:set_evidence_hold`, actor `automation:error-triage`) before it can ever reach
-the queue as ordinary work — only on the new-row branch, so an already-mirrored issue gets no
-backfilled hold. Like `stronger_model`, it is agent-settable and QUEUE-ELIGIBLE, so the Backlog
-Runner dispatches it as an ordinary candidate — but as an INVESTIGATION, never an implementation
-(`server/pm/outcomes.py:dispatch_kind_for_hold`, the seed prompt from
-`server/automations/backlog_prompt.py:build_investigate_prompt`): read-only on code, no PR. The
-runner releases the hold itself once an ended investigation's `mark_no_pr` note says it converted
-the report into a fix (`server/pm/holds.py:release_on_investigation`, the `RELEASE_SIGNALS` signal
-`"investigation"`), re-queuing the issue as an ordinary implement candidate on the next refill;
-every other exit either closes the issue or hands it to the owner. An `evidence` or
-`stronger_model` hold parks the WORK, not the FILING, so an item under either kind is still
-classified normally (`server/sessions/orchestrator.py:_classifiable_hold_clause` excludes only
-`owner_action` and a pending `decision`) — excluding `evidence` there would leave the whole
-auto-error stream permanently unclassified. See
-`docs/product/features/autopilot-backlog-runner.md` § Evidence dispatch for the full rule.
-**The ladder has landed (item 4a, spec §4).** `stronger_model` is the Backlog Runner's own climb
-marker: a bounce below the product's `ladder_top` writes it (`server/pm/holds.py:
-set_runner_stronger_hold`, actor `runner`) on every issue of the batch, BEFORE the runner releases
-its claim on the row, through the same writer the give-up path uses so a person's hold is never
-overwritten and a retried write is a no-op, not a re-stamp; a bounce AT `ladder_top` writes
-`owner_action` instead (the ordinary give-up). It is agent-settable and queue-eligible, so the next
-refill re-claims the item, and it is released only by the dispatch that actually climbed
-(`server/pm/holds.py:release_on_dispatch`, `signal: "dispatch"` — the one entry in
-`RELEASE_SIGNALS` that ends no `owner_action` hold at all, since a `stronger_model` hold is not one).
-See `docs/product/features/autopilot-backlog-runner.md` § The model ladder for the full rule.
-**Decision proposals have landed (item 5, spec §6).** When a coding session hits a genuine product
-question it proposes options instead of guessing or handing back: `POST
-/api/pm/work-items/{id}/decisions` with two to six `options` (`key`, `label`, optional `detail`), a
-`recommended_key` among them and a `rationale`. `server/pm/decisions.py:propose` — THE writer,
-which the `propose_decision` session tool calls in-process and Codex sessions reach over loopback —
-records the proposal row and the item's `decision` hold in ONE transaction, audited as
-`pm.decision.propose` plus `pm.hold.set`. A `decision` hold is the one kind an agent may set and
-only through this route; one pending proposal per item (a database constraint, not just a check).
-The session then ends with `mark_no_pr(resolution="awaiting-decision")`, which the Backlog Runner
-treats as neither a bounce nor a hand-off.
-The pending proposals list from `GET /api/pm/decisions`, which carries `id`, `ref`, `title`,
-`projectSlug` (the SAME key the classification list uses — the inbox groups both kinds by the
-owning product through one ordering spec), `options`, `recommendedKey`, `rationale`, `proposedBy`,
-`createdAt` and the two-column `guidance` (`server/pm/explain.py:decision_guidance`, the same
-`Consequence` wire shape the classification card renders). The web tags the rows `proposalKind:
-'decision'` at fetch time — the wire has no discriminator, and `/pm/triage`'s `kind` means the work
-item's kind — so `triageSelectors.pendingProposals` stays the ONE "awaiting a human" predicate and
-the Roadmap nav badge counts both kinds (spec §6: "reuses the pending-proposal channel, no new
-kind"). In the Inbox they list beside classification proposals with the same keys; the card is a
-single-choice group with the recommendation preselected, the rationale above it, `Accept` / `Reject`
-below. `a` on a decision row OPENS it rather than accepting — the accept carries the option the
-person chose and there is no undo window to take a guess back with — while `r` rejects, `x`/`e`/`A`
-are inert, and the classification bulk accept never sees a decision id.
-**Accept** (`POST /api/pm/decisions/{pid}/accept` with `chosen_key`) records the key, clears the
-hold — the ONLY path that may — and comments on the issue after the commit (best-effort, bounded by
-`DECISION_COMMENT_TIMEOUT_S`); the next implement prompt quotes the accepted row verbatim through
-`decisions.accepted_text_for_refs`. **Reject** replaces the hold with the caller's own
-`owner_action` park, reason `decision proposal rejected` (`holds.DECISION_REJECT_REASON`), so Retry
-and Implement now are the ways back out. Both are gated on `decisions.may_resolve` — a person or
-`assistant:<login>` only, 403 for a `session:` actor, `lan@local` or a system actor, because the
-machine must not answer the question it raised — and both re-read the row `FOR UPDATE`, so a race
-loses with 409 rather than writing two decisions. Audit identities are ACTOR STRINGS, not people:
-`pm.decision.propose {workItemId, proposalId, actorClass}` is usually `session:<id>`, while
-`pm.decision.accept {proposalId, chosenKey}` and `pm.decision.reject` carry whoever resolved it.
-The Review-and-decide dialog shows a `decision` hold as "Awaiting your decision" with a link to the
-Inbox and no buttons of its own (spec §7): the options, the recommendation and the consequence
-columns live on the proposal card, and accepting it is the only thing that lifts the hold.
+## Holds
 
-An `owner_action` hold ends only on a human signal (spec 2026-09-18 §7): a board edit to Ready or
-Backlog, an issue body edit (the fingerprint no longer matches), or
-`POST /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
-`server/pm/holds.py:release_by_signals` / `clear_hold`, each audited as `pm.hold.release` with its
-`signal` from the one `RELEASE_SIGNALS` tuple. An explicit `clearHold` through the overlay editor
-is the fourth spelling (`signal: "overlay"`); it is also an overlay edit, so unlike the others it
-stamps `classified_by`. Retry refuses a `decision` hold (422) — that one resolves through its
-proposal. The queue skips held items as `held`; the Backlog Runner's give-up writes the hold
-(`hold_by = runner`) and its `gave_up` row survives only until the hold is gone. The roadmap's
-Review-and-decide dialog shows the hold (kind, reason, who, when); an owner-action hold offers
-**Retry** (the release endpoint) and **Implement now** (manual dispatch, which releases the hold
-with `signal = implement` first), each with server-computed consequence copy from
-`server/pm/explain.py:hold_guidance`; an evidence hold instead shows ONE button-less consequence
-line from the same function — the Backlog Runner dispatches and settles it on its own, so there is
-nothing here for a person to tap — rendered through the same `ConsequenceList` the owner-action
-buttons use, never a second renderer. The leaf row shows the kind as a chip.
+THE single description of the hold ladder (spec `docs/superpowers/specs/2026-09-18-hold-ladder-design.md`,
+landed items 1–6). A work item may carry one hold: `hold_kind` (`evidence`, `stronger_model`,
+`decision`, `owner_action`), `hold_reason` (mandatory), `hold_by` (the actor string: a person's
+login, `session:<id>`, `assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`),
+`hold_set_at`, and `hold_fingerprint` (the body fingerprint at hold time). A person may set or clear
+any kind; a session, the assistant, or a loopback caller may set or clear only `evidence` and
+`stronger_model` (`server/pm/holds.py:AGENT_SETTABLE`), plus `decision` through the one proposal
+route below; the runner and the automations write whichever kind their own flow owns but are never
+counted as "human" (`server/pm/holds.py:actor_class`). No actor may OVERWRITE a hold it could not
+itself clear — replacing a kind releases the old one first. Rejecting a classification proposal
+writes an `owner_action` hold by the rejecting actor this way (spec §8 authorises it from "the two
+reject flows" whoever drives them, through `holds.py:set_reject_hold`, no actor-class gate — it
+records `lan@local` or `assistant:<login>` truthfully rather than attributing the reject to a
+person); migration 0049 (`scripts/convert_legacy_needs_human.py`) converted the surviving pre-ladder
+rows on the live DB. Every overlay write still records its actor in `classified_by`.
+
+Only `owner_action` and a pending `decision` derive the board's "Held" status and the roadmap's
+needs-you tier; `evidence` and `stronger_model` are agent-settable AND queue-eligible, so an item
+under either one still reads `Ready`/`Backlog` and rides the Backlog Runner's ordinary queue until
+it is actually dispatched — a card is never shown "Held" for work nothing is parked on.
+
+An `owner_action` hold ends only on a human signal (spec §7): a board edit to Ready or Backlog, an
+issue body edit (the fingerprint no longer matches), or `POST
+/api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
+`server/pm/holds.py:release_by_signals` / `clear_hold`, each audited `pm.hold.release` with its
+`signal` from the one `RELEASE_SIGNALS` tuple. An explicit `clearHold` through the overlay editor is
+a fourth spelling (`signal: "overlay"`) and, unlike the other three, stamps `classified_by`. The
+roadmap's Review-and-decide dialog shows the hold (kind, reason, who, when) and offers **Retry**
+(the release endpoint) and **Implement now** (manual dispatch, which releases the hold with
+`signal = implement` first), each with server-computed consequence copy from
+`server/pm/explain.py:hold_guidance`; Retry refuses a `decision` hold (422) — that one resolves only
+through its proposal, never a plain release. The queue skips held items as `held`; the Backlog
+Runner's give-up writes the hold (`hold_by = runner`) and its `gave_up` row survives only until the
+hold is gone.
+
+The model ladder (`stronger_model`, item 4a, spec §4): a bounce climbs the NEXT dispatch one model
+tier above whatever the previous attempt ran on, up to the product's `ladder_top`; a bounce AT that
+top writes `owner_action` instead — the ordinary give-up to the human. `ladder_top` is itself
+clamped to whatever the model-approval policy allows before the climb ever reaches it, so a climb
+never parks a session as a driverless approval instead of a dispatch. `give_up_after_bounces`
+(default `0`, meaning never) is an optional stricter stop in front of the ladder's own top. See
+`docs/product/features/autopilot-backlog-runner.md` § The model ladder for the full rule.
+
+Evidence dispatch (`evidence`, item 4b, spec §5): a new, open, auto-filed error report is parked
+under an `evidence` hold the moment it enters the mirror, then dispatched as a read-only
+INVESTIGATION, never an implementation. The session must end in exactly one of four exits — close
+as noise, consolidate into a sibling, convert to a fix, or escalate what only the owner can supply —
+and sibling reports of one defect are grouped into a single investigation by error family
+(`server/pm/error_family.py:family_key`) rather than racing N sessions to close each other as
+duplicates. An item under `evidence` (like `stronger_model`) is still classified normally — only
+`owner_action` and a pending `decision` are excluded from the classify-candidate set. See
+`docs/product/features/autopilot-backlog-runner.md` § Evidence dispatch for the full rule.
+
+Decision proposals (`decision`, item 5, spec §6): when a session hits a genuine product question it
+proposes two to six options instead of guessing or handing back — `POST
+/api/pm/work-items/{id}/decisions` with `options` (`key`, `label`, optional `detail`), a
+`recommended_key` among them, and a `rationale`. `server/pm/decisions.py:propose` — the one writer,
+called in-process by the `propose_decision` session tool and reached over loopback by Codex
+sessions — records the proposal row and the item's `decision` hold in ONE transaction, audited
+`pm.decision.propose {workItemId, proposalId, actorClass}` plus `pm.hold.set`; only one pending
+proposal per item, a database constraint, not just a check. The session then ends with
+`mark_no_pr(resolution="awaiting-decision")`, which the Backlog Runner treats as neither a bounce
+nor a hand-off.
+
+`GET /api/pm/decisions` lists every pending proposal — `id`, `ref`, `title`, `projectSlug` (the
+SAME key the classification list uses, so the Inbox groups both kinds by owning product through one
+ordering spec), `options`, `recommendedKey`, `rationale`, `proposedBy`, `createdAt`, and the
+two-column `guidance` (`server/pm/explain.py:decision_guidance`, the same `Consequence` wire shape
+the classification card renders). The web tags the rows `proposalKind: 'decision'` at fetch time —
+the wire itself carries no discriminator — so `triageSelectors.pendingProposals` stays the ONE
+"awaiting a human" predicate and the Roadmap nav badge counts both kinds. In the Inbox they list
+beside classification proposals with the same keys, as a single-choice group with the
+recommendation preselected; `a` OPENS a decision row rather than accepting it (there is no undo
+window to take a chosen option back with), `r` rejects, and `x`/`e`/`A` are inert.
+
+**Accept** (`POST /api/pm/decisions/{pid}/accept` with `chosen_key`) records the key, clears the
+hold — the only path that may — and comments on the issue after the commit (best-effort, bounded by
+`DECISION_COMMENT_TIMEOUT_S`); the next implement prompt quotes the accepted row verbatim
+(`decisions.accepted_text_for_refs`). **Reject** replaces the hold with the caller's own
+`owner_action` park (reason `decision proposal rejected`, `holds.DECISION_REJECT_REASON`), so Retry
+and Implement now are the way back out. Both are gated on `decisions.may_resolve` — a person or
+`assistant:<login>` only, 403 for a `session:` actor, `lan@local`, or a system actor, since the
+machine must not answer the question it raised — and both re-read the proposal row `FOR UPDATE`, so
+a race loses with 409 rather than recording two decisions. Audit identities are ACTOR STRINGS, not
+people: `pm.decision.propose` is usually `session:<id>`, while `pm.decision.accept {proposalId,
+chosenKey}` and `pm.decision.reject` carry whoever actually resolved it. The Review-and-decide
+dialog shows a `decision` hold as "Awaiting your decision" with a link to the Inbox and no buttons
+of its own — the proposal card is the only way to resolve it.
+
+**The rename to "Held" (item 6, spec §9) has landed.** The board's machine value is `Held`
+(`server/pm/desired_state.py:STATUS_HELD`). A board the one-time rename has not yet reached still
+spells that column `Needs human`; every read (`is_held_status`) treats both spellings as one
+column, and the one write path (`gh_mutations._render`) resolves to whichever spelling that board's
+field cache actually carries, so a mixed fleet mid-rollout keeps working with no double option.
+`scripts/rename_board_held.py` renames a board's Status option in place — same id, colour,
+description and every card's assignment, never a delete-and-recreate — dry-run first
+(`python scripts/rename_board_held.py`), then `--apply`; a board carrying both spellings at once is
+a `conflict` the script refuses to touch, and needs a human to move the cards off the legacy column
+by hand first. Run it once per board, on the edge host, after a deploy that ships this series.
+Expect exactly one `gh_human_edit` observation per already-held card right after its board's rename:
+the mirror's last-synced value for that card is still the old spelling, the read-back after the
+rename reports the new one for the SAME option id, and `upsert_project_items` compares those two
+strings literally — a real, one-time, harmless echo, not a person touching the card. The read alias
+(`LEGACY_STATUS_NEEDS_HUMAN`) is dropped in a follow-up PR once every board reports `done`.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +
