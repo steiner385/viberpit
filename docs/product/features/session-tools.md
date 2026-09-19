@@ -99,15 +99,23 @@ thin wrapper over the ONE in-process path, `server/pm/holds.py:apply_session_hol
 
 A session may only set (or clear) the two kinds `server/pm/holds.py:AGENT_SETTABLE` allows —
 `evidence` (someone must reproduce or correlate before anyone builds) and `stronger_model` (this
-session is under-powered for the issue). In this foundation series the hold is a **record**: it is
-visible on the roadmap and the next pass over the issue reads it. Turning it into dispatch
-behaviour — an investigate-instead-of-implement run, and a spawn one model tier up — is series
-items 4 and 5, so the tool descriptions deliberately promise neither yet. Both are nonetheless the
-auto-exiting kinds: nothing about them requires a human to release the hold — a later run (agent or
-system) clears it once the evidence lands or a stronger model picks the item up. A hold that genuinely needs a person — `decision` or `owner_action` — is
-not this tool's job; that is what `hand_back` is for. `holds.py:may_set`/`HoldPermissionError`
-enforce the kind restriction, not the tool schema or the registry spec, so the rule holds for every
-caller (session, overlay route, or otherwise), not just this one.
+session is under-powered for the issue). The hold is no longer only a record: series item 4 turned
+both kinds into dispatch behaviour — 4a spawns the next attempt one model tier up (the ladder), 4b
+spawns an investigate-instead-of-implement run — so setting one is a request the Backlog Runner
+acts on. Both remain the auto-exiting kinds: nothing about them requires a human to release the
+hold — a later run (agent or system) clears it once the evidence lands or a stronger model picks the
+item up.
+
+The two kinds that DO need a person are not this tool's, and they are not one job either.
+`owner_action` is `hand_back`'s: the session is out of moves and the item belongs to its owner.
+`decision` is `propose_decision`'s (below): the session knows exactly what it would do, it just may
+not choose between two defensible answers — so it drafts them and parks the item until somebody
+picks, which is a different thing from giving up. `set_hold` refuses `decision` for EVERY actor
+class ahead of the class gate (only `decisions.propose` may write one, because the hold is the
+shadow of a pending proposal), and refuses `owner_action` to an agent one.
+`holds.py:may_set`/`HoldPermissionError` enforce the kind restriction, not the tool schema or
+the registry spec, so the rule holds for every caller (session, overlay route, or otherwise), not
+just this one.
 
 ### `propose_decision`: the question an agent may ask without a human turn
 
