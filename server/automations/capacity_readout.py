@@ -8,12 +8,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from server.db.models import CAPACITY_EXEMPT_STATUSES
+from server.db.models import INACTIVE_SESSION_STATUSES
 
 from .backlog_runner import in_flight_by_product, is_in_flight
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, product_order)
 from .product_policy import effective_policy, is_on
+
+#: Session statuses under which a token-bearing claim can never be released by
+#: the runner's sweep (D7): the terminal rows plus `complete`, which releases its
+#: driver at once and was the #2009 shape. Deliberately narrower than
+#: CAPACITY_EXEMPT_STATUSES — `queued` and `pending_approval` hold no runtime slot
+#: yet but will start, so their claims are pending, not dead.
+DEAD_CLAIM_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"complete"}
 
 log = logging.getLogger(__name__)
 
@@ -86,11 +93,14 @@ async def build_readout(src: CapacitySources) -> dict:
         if not is_in_flight(st) or not st.get("ownership_token") or not sid:
             continue
         status = await src.session_status(sid)
-        # A terminal/exempt session (or one whose row is simply GONE — None) still
-        # holds the claim's ownership token, so nothing ever frees the slot: #2009's
-        # shape was a `complete` session (CAPACITY_EXEMPT_STATUSES, not merely
-        # INACTIVE_SESSION_STATUSES) wedging a product's in-flight count forever.
-        if status is None or status in CAPACITY_EXEMPT_STATUSES:
+        # A terminal session (or one whose row is simply GONE — None) still holds
+        # the claim's ownership token, so nothing ever frees the slot: #2009's
+        # shape was a `complete` session (not merely INACTIVE_SESSION_STATUSES)
+        # wedging a product's in-flight count forever. NOT the whole
+        # CAPACITY_EXEMPT_STATUSES set: `queued` / `pending_approval` sessions hold
+        # no runtime slot yet but WILL start — a legitimate pending claim, not a
+        # dead one (the first live tick flagged a queued runner session).
+        if status is None or status in DEAD_CLAIM_STATUSES:
             defects.append({"product": st.get("product"), "target": target, "sessionId": sid,
                             "sessionStatus": status,
                             "text": f"{target}: claim held by {status or 'a missing'} session "

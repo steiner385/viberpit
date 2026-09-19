@@ -6,6 +6,7 @@ these tests never touch the DB.
 from __future__ import annotations
 
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 from server.automations.capacity_readout import CapacitySources, build_readout, readout_to_inputs
@@ -100,7 +101,7 @@ def test_readout_binds_on_product_constraint_when_no_defect():
     assert r["binding"]["layer"] == "product"
 
 
-# --- IMPORTANT 2: defect predicate is CAPACITY_EXEMPT_STATUSES ∪ {None}, not
+# --- IMPORTANT 2: defect predicate is DEAD_CLAIM_STATUSES ∪ {None} (terminal + `complete`), not
 # INACTIVE_SESSION_STATUSES (#2009: a `complete` session wedged a claim forever). ---
 
 def test_defect_when_session_status_is_complete():
@@ -127,13 +128,27 @@ def test_defect_when_session_row_is_gone():
 
 
 def test_no_defect_when_session_is_idle():
-    """`idle` is neither gone nor CAPACITY_EXEMPT_STATUSES — ordinary live load,
-    not a defect."""
+    """`idle` is neither gone nor terminal — ordinary live load, not a defect."""
     async def run():
         return await build_readout(_sources(session_status_value="idle"))
 
     r = asyncio.run(run())
     assert r["defects"] == []
+
+
+@pytest.mark.parametrize("pending_status", ["queued", "pending_approval"])
+def test_no_defect_when_session_is_pending(pending_status):
+    """A claim held by a session that has not STARTED yet is a legitimate pending
+    claim, not a dead one: it is capacity-exempt (holds no runtime slot) but it
+    will start. The first live tick after deploy flagged viberpit#1831's queued
+    runner session as a defect — the predicate must be the terminal set plus
+    ``complete``, not the whole exempt set."""
+    async def run():
+        return await build_readout(_sources(session_status_value=pending_status))
+
+    r = asyncio.run(run())
+    assert r["defects"] == []
+    assert r["binding"]["layer"] == "product"
 
 
 # --- Generic source builder for the fallback/containment tests below: unlike
