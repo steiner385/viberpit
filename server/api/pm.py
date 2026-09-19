@@ -955,8 +955,14 @@ async def get_onboarding(
     map_pr = None
     if primary is not None and primary.repo:
         branch = map_branch_name(slug)
-        # The PR number is not stored (Feature.pr_number is never written); the
-        # branch is deterministic, so a GitHub PR search on it is the link.
+        # No PR number to link: this is the ARCHAEOLOGY map PR
+        # (`classification.map_branch_name`, a one-shot synthesis), which has no
+        # pointer row and nothing that records its number. Deliberately not to be
+        # confused with `Feature.pr_number`, which IS written — by the index pass
+        # over the long-lived map-changes branch (`pm_sync` → `plan_feature_index
+        # (proposed=…)`, R8b-4), for the DIFFERENT branch
+        # `map_changes.map_changes_branch_name`. The branch here is
+        # deterministic, so a GitHub PR search on it is the link.
         map_pr = {
             "branch": branch,
             "url": f"https://github.com/{primary.repo}/pulls?q="

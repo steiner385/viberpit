@@ -9,18 +9,21 @@ export interface FoldChevronProps {
   expanded: boolean
   /** The row's own title, folded into `aria-label` ("Collapse <label>" / "Expand <label>"). */
   label: string
-  /** Roving tabindex: only the tree's one focusable row keeps this a tab stop. */
-  focusable: boolean
   onToggle: () => void
 }
 
-export function FoldChevron({ expanded, label, focusable, onToggle }: FoldChevronProps) {
+export function FoldChevron({ expanded, label, onToggle }: FoldChevronProps) {
   return (
     <button
       type="button"
-      // Same roving tab stop as the open control beside it: one Tab enters
-      // the tree, `←`/`→` fold and unfold from there.
-      tabIndex={focusable ? 0 : -1}
+      // NEVER a tab stop. The WAI-ARIA tree pattern is ONE tab stop for the whole
+      // tree, and this button sits on the same row as that tab stop — so making
+      // it roving too (which it was) put a SECOND stop on the roving row: Tab
+      // into the tree landed on the chevron, Tab again on the row's open control,
+      // and only the third Tab left. `←`/`→` already fold and unfold from the row
+      // (`useTreeKeys`), which is how a tree is meant to be folded; the chevron is
+      // the POINTER affordance for the same thing.
+      tabIndex={-1}
       aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
       onClick={(e) => { e.stopPropagation(); onToggle() }}
       className={cn(

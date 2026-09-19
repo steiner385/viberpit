@@ -168,14 +168,47 @@ def test_unblock_waits_for_a_pending_materialization():
 
 
 def test_unblock_refuses_a_plan_the_synthesizer_gave_up_on():
-    """The endpoint's third 409 (``materialize_exhausted``) explained, not 409'd."""
+    """The endpoint's third 409 (``materialize_exhausted``) explained, not 409'd —
+    and it NAMES the control that works instead (#1582), because an unavailable
+    reason that only says "no" is the dead end the retry route exists to remove."""
     g = explain(_ctx(_view(stage="plan", status="blocked"), [_art("plan", sha="c")],
                      materialize_exhausted=True))
     c = g.actions["unblock"]
     assert c.available is False
-    assert c.unavailable_reason == ("Decomposition gave up after repeated attempts; reject or "
-                                    "remove the stale proposals first.")
+    assert c.unavailable_reason == ("Decomposition gave up after repeated attempts; "
+                                    "use Decompose again instead.")
     assert c.gate == "initiative.blocked"
+    # …and that control really is available on the same row, so the copy above is
+    # not pointing at another closed door.
+    assert g.actions["decompose_again"].available is True
+
+
+def test_decompose_again_is_only_offered_for_a_plan_awaiting_decomposition():
+    """The retry is for the ONE shape the synthesizer's exhaustion path produces:
+    a blocked plan with no epic yet. A failed-materialize block that already made
+    an epic, and a block at any later stage, have no decomposition to retry — there
+    `unblock` is the only disposition."""
+    with_epic = explain(_ctx(_view(stage="plan", status="blocked", epic="o/r#1"),
+                             [_art("plan", sha="c")]))
+    assert with_epic.actions["decompose_again"].available is False
+    later = explain(_ctx(_view(stage="build", status="blocked"), [_art("plan", sha="c")]))
+    assert later.actions["decompose_again"].available is False
+    not_blocked = explain(_ctx(_view(stage="plan", status="active"), [_art("plan", sha="c")]))
+    assert not_blocked.actions["decompose_again"].unavailable_reason == "Not blocked."
+
+
+def test_decompose_again_says_the_history_is_kept():
+    """The one thing a human needs to know before tapping it: the past proposals
+    are NOT deleted (that is what makes the baseline a baseline — #1582), and a
+    failed materialize's GitHub issues still need closing by hand."""
+    g = explain(_ctx(_view(stage="plan", status="blocked"), [_art("plan", sha="c")],
+                     materialize_exhausted=True))
+    c = g.actions["decompose_again"]
+    assert c.available is True
+    assert "kept as history" in c.immediate[0].text
+    assert "sub-issues on GitHub" in c.immediate[1].text
+    # No GitHub write and no session of its own: the DB row moves, the loop acts.
+    assert [s.writes_github for s in c.immediate] == [False, False]
 
 
 def test_unblock_at_plan_with_no_epic_warns_about_orphaned_github_issues():

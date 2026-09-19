@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.automations.model_pick import SpawnModelChoice
+    from server.automations.sdlc_synthesizer import MaterializeAttempts
     from server.codex.driver import CodexAgentDriver
     from server.codex.replay import CodexThreadReplay
     from server.github.merge_queue import QueueEntry
@@ -10197,9 +10198,14 @@ class SessionOrchestrator:
         if not repo or not slug:
             return None
         async with db_session() as db:
-            attempt = await self._sdlc_materialization_attempts(
+            attempts = await self._sdlc_materialization_attempts(
                 db, str(ini.get("id") or ""))
-        origin_ref = f"{slug}:materialize:{attempt}"
+        # `.total`, never `.budget`: the key must be unique over the initiative's
+        # whole history. A retry (#1582) resets the BUDGET, and keying on that
+        # would re-mint `<slug>:materialize:0` — whose finished session the dedupe
+        # would hand straight back, re-ingesting a transcript this tick did not
+        # produce (C4-R15). The total only ever goes up.
+        origin_ref = f"{slug}:materialize:{attempts.total}"
         # Both no-op cases up front, before the account probe and the clone: a
         # refusal must cost nothing, and BOTH conditions persist across ticks.
         prior = await self._sdlc_dedupe_session_for(origin_ref)
@@ -10501,17 +10507,28 @@ class SessionOrchestrator:
         return result
 
     @staticmethod
-    async def _sdlc_materialization_attempts(db, initiative_id: str) -> int:
-        """How many decomposition proposals this initiative has, ANY status.
+    async def _sdlc_materialization_attempts(db, initiative_id: str) -> "MaterializeAttempts":
+        """Both decomposition counts for this initiative, as a ``MaterializeAttempts``.
 
-        The attempt number in the decompose session's dedupe key (C4-R15). Counting
-        every status is the point: a rejected attempt must still bump the key, or
-        its finished session is handed back by the dedupe and re-ingested."""
+        ``total`` is every proposal row, ANY status — the attempt number in the
+        decompose session's dedupe key (C4-R15). Counting every status is the
+        point: a rejected attempt must still bump the key, or its finished session
+        is handed back by the dedupe and re-ingested.
+
+        ``budget`` is that total net of ``Initiative.materialize_retry_baseline``,
+        which is what a human's "Decompose again" writes (#1582) — so the
+        exhaustion gate can be reset without deleting a row the dedupe key
+        depends on. ONE query for both; the derivation itself lives with
+        ``MATERIALIZE_MAX_ATTEMPTS`` so the loop and the two API readers share it."""
         from sqlalchemy import func, select
-        from server.db.models import MaterializationProposal
-        return int((await db.execute(
+        from server.automations.sdlc_synthesizer import MaterializeAttempts
+        from server.db.models import Initiative, MaterializationProposal
+        total = int((await db.execute(
             select(func.count()).select_from(MaterializationProposal).where(
                 MaterializationProposal.initiative_id == initiative_id))).scalar() or 0)
+        baseline = (await db.execute(select(Initiative.materialize_retry_baseline).where(
+            Initiative.id == initiative_id))).scalars().first()
+        return MaterializeAttempts.of(total, baseline)
 
     @staticmethod
     async def _sdlc_pending_materialization_id(db, initiative_id: str) -> str | None:
@@ -10537,11 +10554,11 @@ class SessionOrchestrator:
             return (await self._sdlc_pending_materialization_id(
                 db, initiative_id)) is not None
 
-    async def _sdlc_materialization_attempts_for(self, initiative_id: str) -> int:
-        """Loop seam: how many decompositions this initiative has already spent.
+    async def _sdlc_materialization_attempts_for(self, initiative_id: str) -> "MaterializeAttempts":
+        """Loop seam: this initiative's decomposition counts (``MaterializeAttempts``).
 
         The loop's neighbour of ``_sdlc_has_pending_materialization`` and the same
-        count the spawn key uses (``_sdlc_materialization_attempts``, one query for
+        read the spawn key uses (``_sdlc_materialization_attempts``, one query for
         both) — a decompose that keeps failing to parse must stop after
         ``MATERIALIZE_MAX_ATTEMPTS`` rather than burning a session every tick."""
         async with db_session() as db:

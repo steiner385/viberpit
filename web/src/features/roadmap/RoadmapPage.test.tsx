@@ -11,7 +11,9 @@ import { clearInboxOrder, setInboxOrder } from './inbox/inboxOrderStore'
 import { RoadmapPage } from './RoadmapPage'
 import { CAPABILITY_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH } from './roadmapNavState'
 
-const map = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
+const map = vi.hoisted(() => ({
+  data: undefined as unknown, isLoading: false, isFetching: false, isError: false,
+}))
 const sync = vi.hoisted(() => ({
   mutate: vi.fn(), isPending: false, isError: false, error: null as unknown,
 }))
@@ -100,8 +102,8 @@ function Location() {
 }
 
 function mount(path: string, over: Partial<typeof map> = {}) {
-  Object.assign(map, { data: MAP, isLoading: false, isError: false }, over)
-  render(
+  Object.assign(map, { data: MAP, isLoading: false, isFetching: false, isError: false }, over)
+  return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((p) => (
@@ -248,6 +250,36 @@ describe('RoadmapPage', () => {
   it('holds the Not found back while the map is still loading', () => {
     mount('/roadmap/nope', { data: undefined, isLoading: true })
     expect(screen.queryByText('Not found')).toBeNull()
+  })
+
+  it('holds the Not found back while a CACHED map is being re-read (#1474)', () => {
+    // The shape a freshly registered product lands in: `NewProductDialog`
+    // navigates here the moment the POST answers, so the cached map is the
+    // pre-create one — defined, missing this product, and `isLoading` false
+    // because this is a refetch rather than a first load. Announcing "Not found"
+    // for a product the user just created is the bug.
+    mount('/roadmap/nope', { data: MAP, isFetching: true })
+    expect(screen.queryByText('Not found')).toBeNull()
+  })
+
+  it('once the map has answered, a later poll does not blank the Not found (#1474)', () => {
+    // The gate is latched per address rather than read straight off `isFetching`:
+    // the list column refetches this same cache entry every 15 s, and a bare
+    // `!isFetching` would flicker a verdict that has not changed.
+    const { rerender } = mount('/roadmap/nope')
+    expect(screen.getByText('Not found')).toBeInTheDocument()
+    Object.assign(map, { isFetching: true })
+    rerender(
+      <MemoryRouter initialEntries={['/roadmap/nope']}>
+        <Routes>
+          {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((pth) => (
+            <Route key={pth} path={pth} element={<RoadmapPage />} />
+          ))}
+        </Routes>
+        <Location />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Not found')).toBeInTheDocument()
   })
 
   it('blames the failed fetch, not the address, when the map could not load', () => {

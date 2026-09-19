@@ -1404,6 +1404,17 @@ class Initiative(Base):
     # detail} — overwritten by each resolution. NULL = never auto-resolved.
     # Nullable so reconcile ALTER-ADDs it on both dialects (0046 records it).
     last_auto_gate: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # How many MaterializationProposal rows existed when a human last tapped
+    # "Decompose again" (#1582). The synthesizer's exhaustion budget is counted
+    # from HERE, not from zero, so a deliberate retry buys real attempts back.
+    #
+    # A baseline rather than a delete: the attempt ORDINAL (the same total count)
+    # is the decompose session's dedupe key, so removing the rows to lower the
+    # count — the only way out before this column — would mint a key that has
+    # already been used and hand the loop the previous attempt's finished session
+    # (C4-R15). NULL = never retried, which is the same budget as 0.
+    materialize_retry_baseline: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(

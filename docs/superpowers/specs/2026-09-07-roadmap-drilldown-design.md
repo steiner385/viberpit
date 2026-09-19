@@ -241,6 +241,7 @@ add-repo form; the onboarding-state chip uses the wizard's friendly labels.
 | Remove issue dependency | `Remove` beside each blocker on the leaf row | GitHub native `removeBlockedBy` through the reconciler journal (`DELETE /api/pm/work-items/{id}/deps?blocker=`); add stays a GitHub-side edit for now; an initiative's epic-blocked count reads the board Status and lags the leaf by one reconcile cycle |
 | Product dependency | Chip editor on the product's Dependencies tab | ccswitch DB (endpoints exist) |
 | Advance / step back / unblock | Header buttons with confirm; Advance and Step back refuse a blocked row, Unblock returns it to awaiting-human without moving the gate | ccswitch DB (`/advance`, `/step-back`, `/unblock`); back-synced to the board Stage field |
+| Decompose again | Header button beside Unblock, offered only when the server says it applies (`guidance.actions.decompose_again`), with confirm | ccswitch DB (`/decompose-again`, #1582): records `Initiative.materialize_retry_baseline` and unblocks in one call, so the synthesizer's attempt budget starts over while every past `MaterializationProposal` stays as history. A baseline rather than a delete — the same total is the decompose session's dedupe key |
 | Retry / Implement now on an owner-action hold | Hold panel buttons in the detail pane, each with server-computed consequence copy | Retry: `POST /api/pm/work-items/{id}/hold/release`; Implement now: `POST /api/automations/backlog-runner/dispatch`, which releases the hold with `signal = implement` first |
 
 All writes are optimistic with rollback and toast, as the triage hooks do today.
@@ -305,7 +306,12 @@ migration revision chained off the newest.
   pointer. `DELETE` abandons.
 - `PATCH /api/sdlc/initiatives/{slug}` `{title?, primaryCapabilityId?,
   capabilityIds?}`; `POST /api/sdlc/initiatives/{slug}/step-back`;
-  `POST /api/sdlc/initiatives/{slug}/unblock`.
+  `POST /api/sdlc/initiatives/{slug}/unblock`;
+  `POST /api/sdlc/initiatives/{slug}/decompose-again` (#1582) — the way out of
+  `unblock`'s `materialize_exhausted` 409: it resets the decomposition budget by
+  moving `Initiative.materialize_retry_baseline` to the current proposal count and
+  returns the row to `awaiting_human`. Unblock keeps refusing an exhausted plan on
+  purpose, so a retry is a deliberate act rather than a side effect.
 - `DELETE /api/pm/work-items/{id}/deps?blocker=` → journaled `removeBlockedBy`
   (shipped); `POST` (add) is a GitHub-side edit for now.
 - `POST /api/pm/triage/{id}/undo` → returns an accepted or rejected proposal to

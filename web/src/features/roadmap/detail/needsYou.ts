@@ -11,13 +11,32 @@ export interface NeedsYouRows {
 
 const NEEDS_YOU_TIERS: readonly RoadmapTier[] = ['needs-you', 'blocked']
 
+/**
+ * Newest first, WITHIN one tier (spec §7). The tier array above is the primary
+ * order and stays so: a stale `needs-you` decision still outranks a fresh
+ * `blocked` one, because the tiers are different asks.
+ *
+ * ISO strings compared as strings — the same idiom as the Inbox's `newest` sort
+ * (`inbox/inboxOrdering.ts`), and correct because the server emits UTC with a
+ * fixed offset. A node with no `updatedAt` (an older server, a hand-built
+ * fixture) sorts last rather than first: `''` loses every comparison, so an
+ * absent timestamp never jumps the queue. The slug tiebreak keeps the order
+ * total, so a re-render of the same data never reshuffles the list.
+ */
+const newestFirst = (a: InitiativeNode, b: InitiativeNode) =>
+  (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || a.slug.localeCompare(b.slug)
+
 export function needsYouRows(products: readonly ProductNode[], scope?: CapabilityNode): NeedsYouRows {
   const scopedCaps = scope ? flattenCapabilities([scope]).map(({ node }) => node) : null
   return {
     initiatives: NEEDS_YOU_TIERS.flatMap((tier) => products.flatMap((product) =>
       product.initiatives.filter((i) => i.tier === tier && (!scopedCaps || scopedCaps.some((c) =>
         i.primaryCapability === c.slug || c.initiatives.includes(i.slug),
-      ))).map((initiative) => ({ product, initiative })))),
+      ))).map((initiative) => ({ product, initiative })))
+      // Sorted across the whole tier, after every product has contributed: a
+      // per-product sort would interleave by product first and answer "newest
+      // in KinDash, then newest in ViberPit", which is not one queue.
+      .sort((x, y) => newestFirst(x.initiative, y.initiative))),
     issues: products.flatMap((product) =>
       (scopedCaps ?? flattenCapabilities(product.capabilities).map(({ node }) => node)).flatMap((capability) => {
         // Server counts include child rollups AND primary leaf initiatives.

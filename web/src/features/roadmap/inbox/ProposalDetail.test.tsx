@@ -161,6 +161,27 @@ describe('ProposalDetail', () => {
     expect((select as HTMLSelectElement).options[0]!.textContent).toBe('— no fit —')
   })
 
+  it('says the capabilities are still loading rather than looking empty (#1496)', () => {
+    // The options come from `/pm/map`, a different query from the one that
+    // delivered this proposal, so the editor can render complete with an empty
+    // select. Undifferentiated that reads as "this product has no capabilities",
+    // and accepting on that belief homes the issue nowhere.
+    mount({ capabilities: [], capabilitiesLoading: true })
+    const select = screen.getByRole('combobox', { name: 'Capability' }) as HTMLSelectElement
+    const loading = [...select.options].find((o) => o.textContent === 'Loading capabilities…')
+    expect(loading).toBeDefined()
+    // Never selectable: it is a sentence, not a home for the issue.
+    expect(loading!.disabled).toBe(true)
+  })
+
+  it('says nothing about loading once the map has answered', () => {
+    // A product that genuinely has no capability yet gets the honest empty
+    // select — the note is about the QUERY, not about the count.
+    mount({ capabilities: [] })
+    const select = screen.getByRole('combobox', { name: 'Capability' }) as HTMLSelectElement
+    expect([...select.options].map((o) => o.textContent)).toEqual(['— keep proposal —'])
+  })
+
   it('says what Accept and Reject do under the product policy', () => {
     mount({ proposal: { ...proposal, guidance: {
       accept: { available: true, unavailableReason: null,

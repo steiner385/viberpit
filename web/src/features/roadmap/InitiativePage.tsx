@@ -10,7 +10,7 @@ import { Link, useParams } from 'react-router-dom'
 import {
   useAcceptMaterialization, useAdvanceInitiative, useInitiative,
   useMaterialization, useRejectMaterialization, useRoadmapMap,
-  useStepBackInitiative, useUnblockInitiative,
+  useDecomposeAgain, useStepBackInitiative, useUnblockInitiative,
 } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
 import type { ProductNode } from '@/api/roadmap'
@@ -417,11 +417,13 @@ function InitiativePageContent() {
   const advance = useAdvanceInitiative()
   const stepBack = useStepBackInitiative()
   const unblock = useUnblockInitiative()
+  const decomposeAgain = useDecomposeAgain()
   const { data: proposal } = useMaterialization(initiativeSlug || null)
   const [tab, setTab] = useTabParam(TABS, 'track')
   const [confirming, setConfirming] = useState(false)
   const [confirmingBack, setConfirmingBack] = useState(false)
   const [confirmingUnblock, setConfirmingUnblock] = useState(false)
+  const [confirmingRetry, setConfirmingRetry] = useState(false)
   const [editing, setEditing] = useState(false)
 
   // The slug is the fallback title, so a deep link names something rather than
@@ -439,6 +441,11 @@ function InitiativePageContent() {
   const proposalPending = proposal?.status === 'pending'
 
   const guidance = initiative?.guidance ?? null
+  // The server owns "does a retry apply to this block?" — it is the only side
+  // that can see the attempt budget and the retry baseline. An older build with
+  // no `decompose_again` in its guidance simply does not offer the button, rather
+  // than offering one that 409s.
+  const retryAvailable = guidance?.actions.decompose_again?.available === true
   // The server's availability reason wins over the client's guess: the two agree
   // by construction (explain.py mirrors the 409 rules), but only one is authoritative.
   const tip = (control: keyof InitiativeGuidance['actions'], fallback: string | undefined) =>
@@ -560,6 +567,23 @@ function InitiativePageContent() {
                 Unblock
               </Button>
             )}
+            {/* The OTHER disposition for a blocked row, beside Unblock and only
+                when the server says it applies: a plan the synthesizer gave up
+                decomposing (#1582). Present rather than disabled-everywhere for
+                the same reason Unblock is — its availability is the server's
+                answer (`guidance.actions.decompose_again`), which is also what
+                makes this the only control that knows the shape of the block. */}
+            {blocked && retryAvailable && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={proposalPending || decomposeAgain.isPending}
+                onClick={() => setConfirmingRetry(true)}
+                title={tip('decompose_again', 'Spend a fresh set of decomposition attempts on this plan')}
+              >
+                Decompose again
+              </Button>
+            )}
             {/* Disabled rather than absent at the end of the lifecycle: the gate is
                 the page's one action, and a header that loses its only button reads
                 as a page that failed to load. A PROGRAM is the one exception — it
@@ -597,6 +621,13 @@ function InitiativePageContent() {
         )}
         {unblock.isError && (
           <Banner tone="danger" className="mb-4" title={extractMutationErrorMessage(unblock.error, 'Could not clear the block')} />
+        )}
+        {decomposeAgain.isError && (
+          <Banner
+            tone="danger"
+            className="mb-4"
+            title={extractMutationErrorMessage(decomposeAgain.error, 'Could not retry the decomposition')}
+          />
         )}
         {initiative && (
           <div className="flex flex-col gap-4">
@@ -722,6 +753,31 @@ function InitiativePageContent() {
               onClick={() => unblock.mutate(initiative.slug, { onSettled: () => setConfirmingUnblock(false) })}
             >
               Unblock
+            </Button>
+          </div>
+        </Dialog>
+      )}
+      {/* No static-copy fallback, unlike the three confirms above: this control
+          only EXISTS when the guidance says the retry applies, so a "without
+          guidance" branch here would be unreachable code pretending to be a
+          safety net. `guidance &&` is what says so to the type checker too. */}
+      {initiative && blocked && guidance && retryAvailable && (
+        <Dialog
+          open={confirmingRetry}
+          onClose={() => setConfirmingRetry(false)}
+          title="Decompose this plan again?"
+          size="sm"
+          description={<ConsequenceList consequence={guidance.actions.decompose_again} tickSeconds={guidance.tickSeconds} />}
+        >
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmingRetry(false)}>Cancel</Button>
+            <Button
+              size="lg"
+              aria-label="Confirm decompose again"
+              loading={decomposeAgain.isPending}
+              onClick={() => decomposeAgain.mutate(initiative.slug, { onSettled: () => setConfirmingRetry(false) })}
+            >
+              Decompose again
             </Button>
           </div>
         </Dialog>
