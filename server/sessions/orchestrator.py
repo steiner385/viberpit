@@ -6212,6 +6212,11 @@ class SessionOrchestrator:
         for st in states.values():
             if st.get("gave_up"):
                 continue
+            # A token-less handed_off row predates ownership (#1648) and the sweep
+            # cannot close it out until it has durable evidence (#1891): counting
+            # it would pin the repo's load high for rows that represent nothing.
+            if st.get("handed_off") and not st.get("ownership_token"):
+                continue
             repo = st.get("repo")
             if repo:
                 load[repo] = load.get(repo, 0) + 1

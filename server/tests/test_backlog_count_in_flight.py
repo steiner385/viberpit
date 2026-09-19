@@ -102,7 +102,9 @@ def test_repo_load_counts_handed_off_rows(tmp_path):
         ctx = orch._backlog_ctx
         await ctx.set_target_state("o/r#1", {"claimed": True, "repo": "o/r"})
         await ctx.set_target_state("o/r#2", {"claimed": True, "repo": "o/r",
-                                             "handed_off": True})
+                                             "handed_off": True, "ownership_token": "t"})
+        await ctx.set_target_state("o/r#4", {"claimed": True, "repo": "o/r",
+                                             "handed_off": True})  # legacy: no load (#1891)
         await ctx.set_target_state("o/k#3", {"gave_up": True, "repo": "o/k"})
         assert await orch._backlog_repo_load() == {"o/r": 2}
 

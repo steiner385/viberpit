@@ -1747,12 +1747,18 @@ class BacklogRunnerLoop:
         Scoped to rows that actually HOLD A SLOT, via the shared ``is_in_flight``
         predicate rather than a second hand-rolled filter: the harm being undone
         is a slot held forever. ``_sweep`` already skips ``gave_up`` (a human
-        cooldown), but a ``handed_off`` row belongs to PR Doctor and reaches here
-        — deleting one would yank a target out from under another automation."""
-        if self._session_gone is None or not is_in_flight(st):
+        cooldown). A ``handed_off`` row belongs to PR Doctor, so it is deleted
+        only on durable evidence it carries nothing (``_handed_off_legacy_is_over``,
+        #1891) — never on session absence alone."""
+        if self._session_gone is None:
             return
         sid = st.get("session_id")
-        if sid:
+        if st.get("handed_off"):
+            if not await self._handed_off_legacy_is_over(target, st, sid):
+                return
+        elif not is_in_flight(st):
+            return
+        elif sid:
             try:
                 if not await self._session_gone(sid):
                     return
@@ -1769,6 +1775,27 @@ class BacklogRunnerLoop:
             kind="legacy_claim_released", target=target,
             detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
                     "issues": st.get("issues")})
+
+    async def _handed_off_legacy_is_over(self, target: str, st: dict,
+                                         sid: "str | None") -> bool:
+        """Durable evidence that a token-less ``handed_off`` row (#1891) carries
+        nothing: the PR it handed off is ``merged`` or ``closed``, or its session
+        row is gone AND the issue is closed on GitHub. Anything unknown keeps the
+        row — PR Doctor may still carry the PR."""
+        if self._session_gone is None:
+            return False
+        try:
+            info = await self._pr_status_for(target)
+            if info is not None and info.state in ("merged", "closed"):
+                return True
+            if sid and not await self._session_gone(sid):
+                return False
+            state = await self._investigation_state(target, sid)
+        except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+            log.warning("backlog_runner.legacy_handed_off_probe_failed target=%s",
+                        target, exc_info=True)
+            return False
+        return state.get("issue_state") == "closed"
 
     async def _dial_stops_the_ladder(self, target: str, policy: dict) -> "str | None":
         """The operator's ``give_up_after_bounces`` hand-off reason for the bounce
