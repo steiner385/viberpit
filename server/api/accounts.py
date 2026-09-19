@@ -32,8 +32,9 @@ from ccswitch import account_registry, copilot, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
-from ccswitch.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
-from ccswitch.selector import rank_accounts
+from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow re-exported for server.tests.test_account_headroom
+                            QuotaWindow, unknown_snapshot)
+from ccswitch.selector import at_ceiling, rank_accounts
 from server.audit import record_audit
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
@@ -206,6 +207,45 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
     """
     results = await asyncio.gather(*(_safe_usage(orch, n, timeout) for n in names))
     return dict(zip(names, results))
+
+
+async def account_headroom(orch, *, reserve_pct: float,
+                           timeout: float = USAGE_FETCH_TIMEOUT) -> list[dict]:
+    """Per-account availability for the capacity governor (spec 2026-09-19 §5).
+
+    Lives here, not in a new module: this file already imports the selector, and the
+    brand ratchet has no slack for another import of the legacy package. ``available``
+    uses ``at_ceiling`` with ``ceiling = 100 - reserve_pct`` so the governor and the
+    account selector agree on what "usable" means; an unmetered engine (Codex,
+    Copilot — D4) counts zero and says so.
+    """
+    infos = await asyncio.to_thread(list_accounts)
+    usages = await _gather_usages(orch, [a["name"] for a in infos], timeout)
+    ceiling = 100.0 - float(reserve_pct)
+    rows: list[dict] = []
+    for acct in infos:
+        name = acct["name"]
+        usage, _stale = usages.get(name, (None, None))
+        enabled = bool(acct.get("enabled", True))
+        metered = usage is not None and usage.provider == "anthropic" and usage.availability == AVAILABLE
+        reason = None
+        next_reset = None
+        if not metered:
+            reason = "not_metered"
+        elif not enabled:
+            reason = "disabled"
+        elif at_ceiling(usage, ceiling):
+            reason = "at_ceiling"
+            resets = [w.resets_at for w in usage.windows_at_or_over(ceiling) if w.resets_at]
+            next_reset = iso_utc(min(resets)) if resets else None
+        rows.append({
+            "name": name, "engine": acct.get("engine") or ("codex" if acct.get("provider") == "openai" else "claude_code"),
+            "provider": acct.get("provider"), "enabled": enabled, "metered": metered,
+            "available": reason is None, "reason": reason, "nextResetAt": next_reset,
+            "windows": [{"key": w.key, "pct": w.used_pct, "resetsAt": iso_utc(w.resets_at)}
+                        for w in (usage.windows if usage is not None else ())],
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
