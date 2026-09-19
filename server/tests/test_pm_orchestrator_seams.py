@@ -2205,9 +2205,7 @@ _DOCS = "docs/product/features"
 
 
 def _clone_with_docs(root: str, docs: dict[str, str]) -> str:
-    """A clone at ``gitrepos.clone_path(root, repo)`` whose
-    ``refs/remotes/origin/main`` carries *docs* — no remote, so the seam's
-    best-effort fetch fails quietly and the cached ref is what gets read."""
+    """A local clone whose fetchable origin/main carries the fixture docs."""
     # The seam resolves the clone through the orchestrator's own gitrepos binding,
     # so the test derives the path from the SAME binding rather than re-importing.
     from server.sessions import orchestrator as _orch_mod
@@ -2223,7 +2221,8 @@ def _clone_with_docs(root: str, docs: dict[str, str]) -> str:
         p.write_text(text)
     _git("add", "-A", cwd=clone)
     _git("commit", "-q", "--allow-empty", "-m", "docs", cwd=clone)
-    _git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=clone)
+    _git("remote", "add", "origin", str(clone), cwd=clone)
+    _git("fetch", "-q", "origin", cwd=clone)
     return str(clone)
 
 
@@ -2267,12 +2266,12 @@ def _observe_orch(root: str):
 
 
 @pytest.mark.asyncio
-async def test_observe_confirms_when_most_driving_items_are_already_cited(db_env):
+async def test_observe_confirms_when_all_driving_items_are_already_cited(db_env):
     await _seed(db_env)
     await _no_fit_cluster("offline-mode")
     with tempfile.TemporaryDirectory() as root:
         _clone_with_docs(root, {
-            f"{_DOCS}/gtk-targets.md": "# GTK\n\n## Evidence\n- #100 and #101 argue this.\n"})
+            f"{_DOCS}/gtk-targets.md": "# GTK\n\n## Evidence\n- #100 and #101 and #102 argue this.\n"})
         assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
             _map_diff_rec()) is True
 
@@ -2324,3 +2323,131 @@ async def test_observe_declines_without_a_readable_clone(db_env):
     with tempfile.TemporaryDirectory() as root:
         assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
             _map_diff_rec()) is False
+
+
+@pytest.mark.asyncio
+async def test_map_resolution_survives_deleted_session_and_new_orchestrator(db_env):
+    from sqlalchemy import delete, select
+    from server.db.models import Session as DbSession
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": "# Feature\n#100 #101 #102\n"})
+        orch = _observe_orch(root)
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="map diff", account_name="a", cwd="/tmp",
+                             origin="pm-onboard", origin_ref="viberpit:map-diff:offline-mode",
+                             repo=_OBS_REPO, status="archived", archived_by="completion"))
+        assert await orch._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+        async with db_session() as db:
+            await db.execute(delete(DbSession).where(DbSession.id == "s1"))
+            proposals = (await db.execute(select(TriageProposal))).scalars().all()
+            assert all(p.map_resolution["commit"] for p in proposals)
+        fresh = _observe_orch(root)
+        state = await fresh._pm_triage_count_state()
+        assert state.no_fit_clusters == ()
+        async with db_session() as db:
+            item = (await db.execute(select(WorkItem).where(WorkItem.number == 100))).scalars().one()
+            item.body = "new scope for the same work"
+        state = await fresh._pm_triage_count_state()
+        assert state.no_fit_clusters[0].item_numbers == (100,)
+
+
+@pytest.mark.asyncio
+async def test_map_resolution_never_disposes_uncovered_minority(db_env):
+    from sqlalchemy import select
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": "# Feature\n#100 #101\n"})
+        assert not await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+        async with db_session() as db:
+            assert all(p.map_resolution is None for p in
+                       (await db.execute(select(TriageProposal))).scalars())
+
+
+@pytest.mark.asyncio
+async def test_map_preflight_resolves_renamed_doc_without_spawning(db_env):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": "# Feature\n#100 #101 #102\n"})
+        orch = _observe_orch(root)
+        async def never_spawn(*args, **kwargs):
+            raise AssertionError("covered cluster must never launch a session")
+        orch.pm_onboard_spawn_map = never_spawn
+        assert await orch._pm_triage_propose_map_diff("offline-mode", (100, 101, 102), _OBS_REPO) is None
+        assert (await orch._pm_triage_count_state()).no_fit_clusters == ()
+
+
+@pytest.mark.asyncio
+async def test_human_map_disposition_survives_cleanup_but_new_proposals_are_eligible(db_env):
+    from sqlalchemy import select
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    orch = _observe_orch("/missing-clone")
+    assert await orch._pm_onboard_observe_map_diff_not_needed(
+        _map_diff_rec(), disposition_source="human-archive")
+    assert (await _observe_orch("/missing")._pm_triage_count_state()).no_fit_clusters == ()
+    async with db_session() as db:
+        item = (await db.execute(select(WorkItem).where(WorkItem.number == 100))).scalars().one()
+        db.add(TriageProposal(work_item_id=item.id, status="accepted", no_fit_suggestion="offline-mode"))
+    state = await _observe_orch("/missing")._pm_triage_count_state()
+    assert state.no_fit_clusters[0].item_numbers == (100,)
+
+
+@pytest.mark.asyncio
+async def test_observation_does_not_absorb_proposals_arriving_during_git_read(db_env, monkeypatch):
+    from sqlalchemy import select
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    async def raced_read(*args, **kwargs):
+        async with db_session() as db:
+            item = (await db.execute(select(WorkItem).where(WorkItem.number == 100))).scalars().one()
+            db.add(TriageProposal(id="new-proposal", work_item_id=item.id, status="accepted",
+                                  no_fit_suggestion="offline-mode"))
+        return False, {100, 101, 102}, "verified-sha", ["renamed.md"]
+    monkeypatch.setattr("server.sessions.orchestrator.asyncio.to_thread", raced_read)
+    assert not await _observe_orch("/missing")._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+    async with db_session() as db:
+        assert (await db.get(TriageProposal, "new-proposal")).map_resolution is None
+    state = await _observe_orch("/missing")._pm_triage_count_state()
+    assert state.no_fit_clusters[0].item_numbers == (100,)
+
+
+@pytest.mark.asyncio
+async def test_observation_rejects_stale_cached_ref(db_env):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _clone_with_docs(root, {f"{_DOCS}/offline-mode.md": "# Offline\n"})
+        _git("remote", "set-url", "origin", "/nonexistent-remote", cwd=clone)
+        assert not await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())
+
+
+@pytest.mark.asyncio
+async def test_preflight_preserves_legacy_human_disposition(db_env):
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from server.db.models import Session as DbSession
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    async with db_session() as db:
+        db.add(DbSession(id="legacy", name="map diff", account_name="a", cwd="/tmp",
+                         origin="pm-onboard", origin_ref="viberpit:map-diff:offline-mode",
+                         repo=_OBS_REPO, status="archived", archived_by="user",
+                         archived_at=datetime.now(timezone.utc)))
+    orch = _observe_orch("/no-clone")
+    assert await orch._pm_triage_propose_map_diff("offline-mode", (100, 101, 102), _OBS_REPO) is None
+    async with db_session() as db:
+        assert all(p.map_resolution["source"] == "human-archive" for p in
+                   (await db.execute(select(TriageProposal))).scalars())
+
+
+@pytest.mark.asyncio
+async def test_citations_to_other_repository_do_not_resolve_local_work(db_env):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/renamed.md": "other/repo#100 other/repo#101 other/repo#102\n"})
+        assert not await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(_map_diff_rec())

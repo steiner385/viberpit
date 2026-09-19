@@ -1657,8 +1657,21 @@ def test_triage_undo_restores_overlay_and_pending():
         r = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": {"impact": 9}},
                    headers=IDENTITY_HEADERS)
         assert r.status_code == 200
+        async def mark_map_resolved():
+            from server.db import db_session
+            from server.db.models import TriageProposal
+            async with db_session() as db:
+                proposal = await db.get(TriageProposal, pid)
+                proposal.map_resolution = {"source": "observed"}
+        c.portal.call(mark_map_resolved)
         r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
+        async def assert_resolution_cleared():
+            from server.db import db_session
+            from server.db.models import TriageProposal
+            async with db_session() as db:
+                assert (await db.get(TriageProposal, pid)).map_resolution is None
+        c.portal.call(assert_resolution_cleared)
         assert r.json() == {"id": pid, "status": "pending", "workItemId": wid,
                             "triageState": pre["triageState"]}
         # the proposal is pending again and listed
