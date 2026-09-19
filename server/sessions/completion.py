@@ -123,8 +123,21 @@ _AWAITING_DECISION_RE = re.compile(rf"\b{re.escape(AWAITING_DECISION)}\b", re.IG
 # Claude. These are ViberPit's OWN attribution strings — the Claude line matches
 # the trailer the Claude Code harness already asks for; the Codex line is a plain
 # git trailer ViberPit chose, not a claim about an OpenAI convention.
+#
+# The Claude line names no model VERSION, and must not regain one. It read
+# "Claude Opus 4.8" until Opus 5 shipped, after which every automation-seeded
+# commit was misattributed — the drift is silent because nothing downstream
+# validates the string. No builder can fix that by looking the version up:
+# seed prompts are composed BEFORE the session launches, and the only model
+# ViberPit persists is a tier alias ("opus", `Session.model`) which carries no
+# version at all. The resolved id (`claude-opus-5`) exists solely as a live
+# event — the SDK's `init` message and every `AssistantMessage.model`, which
+# `sessions/translator.py` turns into SessionMeta/TurnModel for the UI and
+# never stores. So the trailer delegates to the one party that always knows:
+# the running session substitutes its own model. `AGENTS.md` states the same
+# rule for humans and agents reading the repo directly.
 _COMMIT_TRAILERS: dict[str, str] = {
-    "claude_code": "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+    "claude_code": "Co-Authored-By: Claude <your model> <noreply@anthropic.com>",
     "codex": "Co-Authored-By: Codex <noreply@openai.com>",
 }
 
@@ -135,6 +148,12 @@ def commit_trailer(engine: object = None) -> str:
     *engine* accepts an ``AgentEngine`` or its string value; anything unknown or
     absent gets the Claude trailer, which is the pre-Phase-7 behavior every seed
     prompt had hardcoded.
+
+    The Claude trailer is a TEMPLATE, not a literal: ``<your model>`` is a
+    placeholder the session replaces with the model it is actually running on.
+    Callers interpolate this inside backticks after "End the commit message
+    with:", where a placeholder in angle brackets reads as one. Do not
+    substitute a version here — see the note above ``_COMMIT_TRAILERS``.
     """
     key = getattr(engine, "value", engine)
     return _COMMIT_TRAILERS.get(str(key), _COMMIT_TRAILERS["claude_code"])
