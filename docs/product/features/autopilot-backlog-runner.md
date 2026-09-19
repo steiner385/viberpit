@@ -491,6 +491,15 @@ PR linkage, never on labels alone.
   claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never
   a session spawned on stale work. The old `eligible_label` gate is retired: board status,
   not a label, says what is workable.
+  **The propose-mode tap re-verifies too** (`BacklogRunnerLoop.live_check_ok`, #1523). A
+  `proposed` claim was verified when the proposal was *made*, which can be hours before a person
+  taps Implement, so the tap runs the same gate — one fail-closed rule, one cooldown ledger, one
+  `skipped_live_check` event distinguishing `not_ready` (GitHub says no) from `check_failed`
+  (GitHub could not be asked). A tap that does not pass returns `not_ready` and **keeps its
+  claim**: the refusal is about this attempt, not the work, and releasing would drop the batch
+  back into a pool whose next pick hits the same blocker. `backlog_runner_dispatch` is an
+  explicit operator override and stays ungated — an operator must be able to dispatch work the
+  mirror or GitHub is currently wrong about.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
   per-repo fairness (#771) — `priority` now serves the ON products' repos oldest-first by

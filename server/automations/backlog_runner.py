@@ -1128,6 +1128,21 @@ class BacklogRunnerLoop:
             detail={"result": result, "issues": batch.issues})
         return False
 
+    async def live_check_ok(self, batch: "Batch") -> bool:
+        """THE live-check gate for every caller, refill loop and tap alike.
+
+        The propose tap spawns the same session the loop would, so it owes the
+        same spec 003 §7a re-verification — and routing it here rather than
+        calling the seam again from the orchestrator keeps one gate: one
+        fail-closed rule, one cooldown ledger, one ``skipped_live_check`` event
+        with its ``not_ready`` / ``check_failed`` distinction (#1523).
+
+        An unwired seam is a pass: ``verify_ready`` is optional on the loop, and
+        a constructor that omits it is asking for no check, not a failed one."""
+        if self._verify_ready is None:
+            return True
+        return await self._live_check(batch)
+
     async def _emit_pick(self, batch: "Batch") -> None:
         """Queue provenance for a successful spawn (#990): which ranked
         candidate the batch's primary was, its score/product, and the refs it
@@ -1287,7 +1302,7 @@ class BacklogRunnerLoop:
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
-            if self._verify_ready is not None and not await self._live_check(batch):
+            if not await self.live_check_ok(batch):
                 # break, not continue: ``select_batch`` already consumed this
                 # pick's plan group, so continuing would burn the REST of the
                 # plan on what is usually one GitHub hiccup. The slot waits a
