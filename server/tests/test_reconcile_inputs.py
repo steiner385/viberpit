@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from server.db.models import (Automation, Base, GhProject, GhProjectItem,
                               Initiative, Project, ProjectRepo, Session as DbSession, WorkItem,
                               WorkItemDep)
-from server.pm.desired_state import Decision, STATUS_NEEDS_HUMAN, derive_status
+from server.pm.desired_state import Decision, STATUS_HELD, derive_status
 from server.pm.mirror_store import list_product_views
 from server.pm.reconcile_inputs import load_product_facts
 
@@ -99,7 +99,7 @@ def test_a_program_initiative_yields_no_stage_field():
 
 
 def test_a_held_items_decision_is_dated_from_the_hold():
-    """Spec §7: the hold — not a runner give-up row — is the ``Needs human`` input.
+    """Spec §7: the hold — not a runner give-up row — is the ``Held`` input.
     The hold's own timestamp is the decision. Uses issue #4 (no session attached):
     #3 carries a ``waiting_question`` session, which would outrank the hold and
     mask this assertion."""
@@ -111,11 +111,11 @@ def test_a_held_items_decision_is_dated_from_the_hold():
     db.commit()
 
     by_ref = {f.ref: f for f in load_product_facts(db, list_product_views(db)[0], now=T).items}
-    assert derive_status(by_ref[f"{REPO}#4"]) == Decision(STATUS_NEEDS_HUMAN, at)
+    assert derive_status(by_ref[f"{REPO}#4"]) == Decision(STATUS_HELD, at)
 
 
 def test_a_hold_makes_the_mirror_stale():
-    """A hold is a DECISION — it flips the board to ``Needs human`` — so a hold set
+    """A hold is a DECISION — it flips the board to ``Held`` — so a hold set
     after the last sync must make the mirror stale, exactly like a dep edge. Otherwise
     the reconciler plans that push against a board it has not re-read."""
     db = _db(); _seed(db)

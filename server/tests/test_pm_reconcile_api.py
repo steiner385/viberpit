@@ -81,7 +81,7 @@ def _seed_rows(c) -> None:
                 journal.mark_applied(s, applied_ids, now)
                 parked_ids = journal.record_pending(
                     s, [Mutation(kind="set_field", target_node_id="n3", field="Status",
-                                old_value=None, new_value="Needs human", initiated_by="reconciler")],
+                                old_value=None, new_value="Held", initiated_by="reconciler")],
                     batch_id="b3", now=now, dry_run=False)
                 journal.park(s, parked_ids[0], "GraphQL error", now)
                 _ = dry_run_ids
@@ -107,7 +107,7 @@ def test_journal_endpoint_lists_and_counts():
         row = body["rows"][0]
         assert row["targetNodeId"] == "n3"
         assert row["field"] == "Status"
-        assert row["newValue"] == "Needs human"
+        assert row["newValue"] == "Held"
         assert row["error"] == "parked: GraphQL error"
         assert row["batchId"] == "b3"
         assert row["initiatedBy"] == "reconciler"

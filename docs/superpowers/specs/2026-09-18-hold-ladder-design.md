@@ -287,7 +287,20 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
 
 ## 14. Open follow-ups
 
-- Read-alias removal after all boards are renamed (§9).
+- The read alias (`desired_state.LEGACY_STATUS_NEEDS_HUMAN`, §9) is dropped in a follow-up PR once
+  `scripts/rename_board_held.py` reports every board `done`. `scripts/convert_legacy_needs_human.py`
+  (the pre-ladder `needs_human` triage-state migration, a different concept — §10, already run on
+  the live DB) is unrelated but the same shape of one-shot with nothing left to do; bundle its
+  removal into the same cleanup PR rather than a third pass over the `scripts/` directory.
+- `scripts/` one-shots that import `server.pm.*` at module level can fail standalone:
+  `server.pm.mirror_store` and `server.automations` import each other, and the cycle resolves in
+  only one direction — `server.automations` first, because `server.pm.dep_plan` needs only a
+  submodule of a half-initialised `server.automations` while `server.pm.mirror_store` needs a NAME
+  out of a half-initialised `server.automations` and raises `ImportError` the other way round. The
+  app and the test suite take the working direction by accident (they import the app first); a bare
+  script does not. `rename_board_held.py` works around it by importing `server.automations` first,
+  right before it needs `server.pm.mirror_store`; any new one-shot with the same shape needs the
+  same import order, not a fresh diagnosis.
 - Whether the evidence investigation prompt should run at a lower tier than the product default
   to save spend; start at the default and let outcome data decide.
 - A sub-agent's `set_hold` call takes effect in the handler (no `parent_tool_use_id` is available

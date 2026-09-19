@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping, Set
 from dataclasses import dataclass
 from datetime import datetime
 
-from .desired_state import DesiredItem
+from .desired_state import DesiredItem, is_held_status
 
 
 @dataclass(frozen=True)
@@ -52,12 +52,20 @@ def should_push(decided_at: datetime | None, gh_updated_at: datetime | None,
     return decided_at > gh_updated_at
 
 
-def _same(a: object, b: object) -> bool:
+def _same(a: object, b: object, *, field: str | None) -> bool:
     if isinstance(a, float) or isinstance(b, float):
         try:
             return abs(float(a) - float(b)) < 1e-6  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
+    # Rollout tolerance (spec 2026-09-18 §9): a board whose Status option is still
+    # spelled "Needs human" already holds the card our decision calls "Held" — the
+    # two are ONE column. Without this the diff would re-plan the same mutation on
+    # every tick, and `_render` would keep resolving it to that same option id.
+    # Status-scoped on purpose: no other field carries the alias.
+    if (field == "Status" and isinstance(a, str) and isinstance(b, str)
+            and is_held_status(a) and is_held_status(b)):
+        return True
     return a == b
 
 
@@ -80,10 +88,10 @@ def diff_fields(desired: DesiredItem, mirror: MirrorItem,
             ("Status", desired.status, mirror.status, "status"),
             ("Score", desired.score, mirror.score, "score"),
             ("Stage", desired.stage, mirror.stage, "stage")):
-        if decision.value is None or _same(decision.value, current):
+        if decision.value is None or _same(decision.value, current, field=field):
             continue
         own = own_values.get((mirror.item_node_id, field))
-        mirrored = None if (own is not None and _same(current, own)) else current
+        mirrored = None if (own is not None and _same(current, own, field=field)) else current
         if not should_push(decision.decided_at, mirror.gh_updated_at, mirrored):
             continue
         out.append(Mutation("set_field", mirror.item_node_id, field, current,

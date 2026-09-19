@@ -25,7 +25,7 @@ const h = vi.hoisted(() => {
     }],
     epic: {
       ref: 'cairnea/KinDash#15727', url: 'https://github.com/cairnea/KinDash/issues/15727',
-      total: 2, done: 2, blocked: 0, needsHuman: 0,
+      total: 2, done: 2, blocked: 0, held: 0,
       children: [
         { ref: 'cairnea/KinDash#1', title: 'Child one', state: 'closed', status: 'Done' },
         { ref: 'cairnea/KinDash#2', title: 'Child two', state: 'closed', status: 'Done' },
@@ -247,11 +247,11 @@ describe('InitiativePage', () => {
     }]
     mount('/initiatives/views?tab=phases')
     // The program's own roll-up epic (`h.initiative.epic`: done 2, total 2,
-    // blocked 0, needs human 0) — the same tiles `EpicTab` renders.
+    // blocked 0, held 0) — the same tiles `EpicTab` renders.
     expect(screen.getByText('Done')).toBeInTheDocument()
     expect(screen.getByText('Total')).toBeInTheDocument()
     expect(screen.getByText('Blocked')).toBeInTheDocument()
-    expect(screen.getByText('Needs human')).toBeInTheDocument()
+    expect(screen.getByText('Held')).toBeInTheDocument()
     // The leaves scoped to this program render below the tiles.
     expect(screen.getByRole('button', { name: '#1 Child one' })).toBeInTheDocument()
   })

@@ -1,5 +1,8 @@
 # 003 Phase D runbook — retiring the claim labels
 
+Completed 2026-09-11; the sweep code (`scripts/retire_claim_labels.py`,
+`server/pm/label_retirement.py`) was removed afterwards — this file is the record.
+
 Phase D made the runner's durable rows the carrier of claim and give-up state (#994): a claim is
 the backlog runner's target-state row, a give-up is its `gave_up` row, and the reconciler turns
 that row into board Status `Needs human`. Nothing reads `in-progress` / `needs-human` any more.

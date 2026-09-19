@@ -46,7 +46,7 @@ describe('InitiativeTrack', () => {
   it('shows the epic sub-issue count on the Build node and deep-links to GitHub', () => {
     const epic: InitiativeEpic = {
       ref: 'o/r#997', url: 'https://github.com/o/r/issues/997',
-      total: 10, done: 3, blocked: 1, needsHuman: 0, children: [],
+      total: 10, done: 3, blocked: 1, held: 0, children: [],
     }
     const { container } = render(<InitiativeTrack stage="build" status="active" epic={epic} />)
     expect(container.querySelector('.node.active .node-label')?.textContent).toBe('Build 3/10')
@@ -60,7 +60,7 @@ describe('InitiativeTrack', () => {
     // pointer of its own (`ref`/`url: null`) — same guard `InitiativePage`'s
     // `EpicTab` uses: no anchor without a target to link to.
     const epic: InitiativeEpic = {
-      ref: null, url: null, total: 4, done: 1, blocked: 0, needsHuman: 0, children: [],
+      ref: null, url: null, total: 4, done: 1, blocked: 0, held: 0, children: [],
     }
     const { container } = render(<InitiativeTrack stage="build" status="active" epic={epic} />)
     expect(container.querySelector('.node.active .node-label')?.textContent).toBe('Build 1/4')
@@ -74,7 +74,7 @@ describe('InitiativeTrack', () => {
     // "Build 3/10" alone doesn't say what activating it does.
     const epic: InitiativeEpic = {
       ref: 'o/r#997', url: 'https://github.com/o/r/issues/997',
-      total: 10, done: 3, blocked: 1, needsHuman: 0, children: [],
+      total: 10, done: 3, blocked: 1, held: 0, children: [],
     }
     const { container, getByRole } = render(
       <InitiativeTrack stage="build" status="active" epic={epic} />)

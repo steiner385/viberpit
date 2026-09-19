@@ -41,6 +41,8 @@ def test_issue_and_capability_and_incident_tiers():
     assert issue_tier("open", "classified", False, "in_progress") == "in-flight"
     assert issue_tier("open", "classified", False, None) == "idle"
     # Board Status tier rows (spec §11): GhProjectItem.status mirrors the board.
+    # Both spellings: a board mid-rollout still reports the legacy option (spec §9).
+    assert issue_tier("open", "classified", False, None, board_status="Held") == "needs-you"
     assert issue_tier("open", "classified", False, None, board_status="Needs human") == "needs-you"
     assert issue_tier("open", "classified", False, None, board_status="Blocked") == "blocked"
     assert issue_tier("open", "classified", False, None, board_status="In progress") == "in-flight"
@@ -102,7 +104,7 @@ def test_build_product_tree_nests_and_rolls_up():
         initiatives=(
             InitiativeIn(slug="whisper", title="Whisper", stage="build", status="active",
                          primary_slug="stt", capability_slugs=("stt", "dictation"),
-                         epic={"ref": "o/r#1", "url": "u", "total": 7, "done": 3, "blocked": 0, "needsHuman": 1}),
+                         epic={"ref": "o/r#1", "url": "u", "total": 7, "done": 3, "blocked": 0, "held": 1}),
             InitiativeIn(slug="orphan", title="Orphan", stage="intake", status="proposed",
                          primary_slug=None, capability_slugs=(), epic=None),
         ),
@@ -114,7 +116,7 @@ def test_build_product_tree_nests_and_rolls_up():
     dictation = roots["sessions"]["children"][0]
     stt = dictation["children"][0]
     assert stt["initiatives"] == ["whisper"]
-    assert stt["tier"] == "needs-you"                      # epic needsHuman=1 → initiative needs-you → rolls up
+    assert stt["tier"] == "needs-you"                      # epic held=1 → initiative needs-you → rolls up
     assert dictation["tier"] == "needs-you"
     assert dictation["counts"] == {"openIssues": 2, "inFlight": 0, "blocked": 1, "needsYou": 1}
     assert roots["sessions"]["tier"] == "needs-you"
@@ -190,7 +192,7 @@ def test_map_node_carries_reason():
     ini = InitiativeIn(slug="s", title="S", stage="build", status="active",
                        primary_slug="cap", capability_slugs=("cap",),
                        epic={"ref": "o/r#1", "url": "u", "total": 2, "done": 2,
-                             "blocked": 0, "needsHuman": 0})
+                             "blocked": 0, "held": 0})
     cap = CapabilityIn(id="f1", slug="cap", title="Cap", state="live", summary=None,
                        doc_path=None, commit_sha=None, pr_number=None, parent_slug=None,
                        issue_tiers=())
@@ -217,14 +219,14 @@ def test_blocked_initiative_node_carries_its_reason():
     """The map row is the only place the reason is computed (constitution VI):
     a blocked row says why, and a needs-you row keeps the advance reason it had."""
     from server.pm.tree import InitiativeIn, _initiative_node
-    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 2, "needsHuman": 0}
+    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 2, "held": 0}
     node = _initiative_node(InitiativeIn("x", "X", "build", "active", None, (), epic), "p")
     assert node["tier"] == "blocked"
     assert node["reason"] == "epic_blocked"
     own = _initiative_node(InitiativeIn("y", "Y", "plan", "blocked", None, (), None), "p")
     assert (own["tier"], own["reason"]) == ("blocked", "blocked")
     # Needs-you outranks blocked and keeps its own reason.
-    ready = {"ref": "o/r#1", "url": "u", "total": 3, "done": 3, "blocked": 0, "needsHuman": 0}
+    ready = {"ref": "o/r#1", "url": "u", "total": 3, "done": 3, "blocked": 0, "held": 0}
     adv = _initiative_node(InitiativeIn("z", "Z", "build", "active", None, (), ready), "p")
     assert (adv["tier"], adv["reason"]) == ("needs-you", "advance")
     # An awaiting_human row with a blocked sub-issue is needs-you with NO reason:
@@ -235,23 +237,23 @@ def test_blocked_initiative_node_carries_its_reason():
 
 def test_rollup_sums_leaf_descendants_and_leaves_leaves_alone():
     entries = {
-        "prog": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 0, "blocked": 0, "needsHuman": 0},
-        "p1": {"ref": "o/r#2", "url": "u2", "total": 4, "done": 1, "blocked": 1, "needsHuman": 0},
-        "p2": {"ref": "o/r#3", "url": "u3", "total": 6, "done": 3, "blocked": 0, "needsHuman": 2},
-        "solo": {"ref": "o/r#9", "url": "u9", "total": 5, "done": 5, "blocked": 0, "needsHuman": 0},
+        "prog": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 0, "blocked": 0, "held": 0},
+        "p1": {"ref": "o/r#2", "url": "u2", "total": 4, "done": 1, "blocked": 1, "held": 0},
+        "p2": {"ref": "o/r#3", "url": "u3", "total": 6, "done": 3, "blocked": 0, "held": 2},
+        "solo": {"ref": "o/r#9", "url": "u9", "total": 5, "done": 5, "blocked": 0, "held": 0},
         "noepic": None,
     }
     parent_of = {"prog": None, "p1": "prog", "p2": "prog", "solo": None, "noepic": None}
     out = rollup_epic_progress(entries, parent_of)
-    assert out["prog"] == {"ref": "o/r#1", "url": "u1", "total": 10, "done": 4, "blocked": 1, "needsHuman": 2, "priority": None}
+    assert out["prog"] == {"ref": "o/r#1", "url": "u1", "total": 10, "done": 4, "blocked": 1, "held": 2, "priority": None}
     assert out["p1"] == entries["p1"] and out["solo"] == entries["solo"] and out["noepic"] is None
 
 
 def test_rollup_walks_grandchildren_and_a_program_without_an_epic_entry():
-    entries = {"prog": None, "mid": None, "leaf": {"ref": "o/r#5", "url": "u", "total": 3, "done": 1, "blocked": 0, "needsHuman": 0}}
+    entries = {"prog": None, "mid": None, "leaf": {"ref": "o/r#5", "url": "u", "total": 3, "done": 1, "blocked": 0, "held": 0}}
     parent_of = {"prog": None, "mid": "prog", "leaf": "mid"}
     out = rollup_epic_progress(entries, parent_of)
-    assert out["prog"] == {"ref": None, "url": None, "total": 3, "done": 1, "blocked": 0, "needsHuman": 0, "priority": None}
+    assert out["prog"] == {"ref": None, "url": None, "total": 3, "done": 1, "blocked": 0, "held": 0, "priority": None}
     assert out["mid"] == out["prog"] | {"ref": None, "url": None}
 
 
@@ -278,13 +280,13 @@ def test_derived_stage_is_the_earliest_unfinished_phase():
 
 
 def test_program_reason_tier_and_counts_come_from_its_phases():
-    phase_epic = {"ref": "o/r#2", "url": "u", "total": 4, "done": 4, "blocked": 0, "needsHuman": 0}
+    phase_epic = {"ref": "o/r#2", "url": "u", "total": 4, "done": 4, "blocked": 0, "held": 0}
     product = ProductIn(
         slug="p", name="P", capabilities=(_cap("a11y"),),
         initiatives=(
             InitiativeIn(slug="audit", title="UI audit", stage="design", status="active",
                          primary_slug="a11y", capability_slugs=("a11y",),
-                         epic={"ref": "o/r#1", "url": "u", "total": 4, "done": 4, "blocked": 0, "needsHuman": 0}),
+                         epic={"ref": "o/r#1", "url": "u", "total": 4, "done": 4, "blocked": 0, "held": 0}),
             InitiativeIn(slug="audit-01", title="01", stage="build", status="active",
                          primary_slug="a11y", capability_slugs=("a11y",), epic=phase_epic,
                          parent_slug="audit"),
@@ -310,8 +312,8 @@ def test_rollup_breaks_a_cycle_into_roots():
     parent counts as a root' applies here too, so each entry passes through
     unchanged — both are simultaneously roots and leaves of themselves."""
     entries = {
-        "a": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 1, "blocked": 0, "needsHuman": 0},
-        "b": {"ref": "o/r#2", "url": "u2", "total": 3, "done": 0, "blocked": 1, "needsHuman": 0},
+        "a": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 1, "blocked": 0, "held": 0},
+        "b": {"ref": "o/r#2", "url": "u2", "total": 3, "done": 0, "blocked": 1, "held": 0},
     }
     parent_of = {"a": "b", "b": "a"}
     out = rollup_epic_progress(entries, parent_of)
@@ -344,22 +346,22 @@ def test_cyclic_initiative_parents_become_roots():
 def test_rollup_carries_priority_as_a_max_over_leaves():
     entries = {
         "prog": None,
-        "a": {"ref": "o/r#1", "url": "u", "total": 2, "done": 1, "blocked": 0, "needsHuman": 0, "priority": 8.0},
-        "b": {"ref": "o/r#2", "url": "u", "total": 1, "done": 0, "blocked": 0, "needsHuman": 0, "priority": None},
-        "c": {"ref": "o/r#3", "url": "u", "total": 1, "done": 0, "blocked": 0, "needsHuman": 0, "priority": 21.0},
+        "a": {"ref": "o/r#1", "url": "u", "total": 2, "done": 1, "blocked": 0, "held": 0, "priority": 8.0},
+        "b": {"ref": "o/r#2", "url": "u", "total": 1, "done": 0, "blocked": 0, "held": 0, "priority": None},
+        "c": {"ref": "o/r#3", "url": "u", "total": 1, "done": 0, "blocked": 0, "held": 0, "priority": 21.0},
     }
     out = rollup_epic_progress(entries, {"prog": None, "a": "prog", "b": "prog", "c": "prog"})
     assert out["prog"]["priority"] == 21.0
     assert out["a"]["priority"] == 8.0            # leaves pass through
     only_unscored = rollup_epic_progress(
-        {"p": None, "x": {"ref": None, "url": None, "total": 0, "done": 0, "blocked": 0, "needsHuman": 0, "priority": None}},
+        {"p": None, "x": {"ref": None, "url": None, "total": 0, "done": 0, "blocked": 0, "held": 0, "priority": None}},
         {"p": None, "x": "p"})
     assert only_unscored["p"]["priority"] is None
 
 
 def test_initiative_node_exposes_the_epic_entrys_priority():
     from server.pm.tree import _initiative_node
-    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 0, "needsHuman": 0, "priority": 15.25}
+    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 0, "held": 0, "priority": 15.25}
     node = _initiative_node(InitiativeIn("x", "X", "build", "active", None, (), epic), "p")
     assert node["priority"] == 15.25
     bare = _initiative_node(InitiativeIn("y", "Y", "design", "active", None, (), None), "p")

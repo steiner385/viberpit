@@ -87,7 +87,7 @@ Custom fields per product Project — deliberately minimal:
 
 | Field | Type | Written by | Meaning |
 |---|---|---|---|
-| `Status` | built-in single-select | reconciler + humans | `Backlog · Ready · In progress · Blocked · Needs human · Done` |
+| `Status` | built-in single-select | reconciler + humans | `Backlog · Ready · In progress · Blocked · Held · Done` |
 | `Score` | number | reconciler | global-queue rank input; higher = sooner |
 | `Stage` | single-select | reconciler | initiative lifecycle stage; meaningful on epic items only |
 
@@ -138,7 +138,7 @@ Converge cycle, per product:
    materialization list order → missing native edges); field values (Score from accepted RICE,
    Stage from the stage machine, Status from live signals — active session → `In progress`,
    merged closing PR → `Done`, open blockers → `Blocked`, human-gated decisions →
-   `Needs human`); membership (open issues in product repos not yet in the Project → add).
+   `Held`); membership (open issues in product repos not yet in the Project → add).
 3. **Diff** vs. mirror, applying the ownership timestamp rule (§3).
 4. **Apply** as aliased GraphQL mutation batches (~10–20/document), write-ahead journaled: the
    journal row exists before the call, so a crash mid-batch leaves a verifiable entry, never an

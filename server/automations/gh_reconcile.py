@@ -15,13 +15,18 @@ from .context import observation_failed, publish_observation
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
 from server.db.models import INITIATIVE_STAGES
-from server.pm.desired_state import STATUS_OPTIONS, derive
-from server.pm.gh_mutations import (UnknownOption, build_batch, build_create_field,
+from server.pm.desired_state import (
+    HELD_STATUS_SPELLINGS,
+    STATUS_HELD,
+    STATUS_OPTIONS,
+    derive,
+)
+from server.pm.gh_mutations import (UnknownOption, as_written, build_batch, build_create_field,
                                     build_rate_limit_query, build_update_field_options, chunk,
                                     parse_batch, parse_rate_limit)
 from server.pm.gh_projects import parse_created_field
@@ -71,6 +76,22 @@ NowUtc = Callable[[], datetime]
 def _owner_of(product: ProductSyncView) -> str:
     """Owner login for a product's GraphQL calls (same derivation as the facts loader)."""
     return product.repos[0].split("/", 1)[0] if product.repos else ""
+
+
+def _missing_status_options(have: Iterable[str]) -> list[str]:
+    """The spec Status options this board's field does NOT have, in spec order.
+
+    ``STATUS_HELD`` counts as present when the board still spells that column the
+    legacy way (spec 2026-09-18 §9): the two are ONE column, and appending "Held"
+    beside "Needs human" would split every parked card across two options and leave
+    a rename no script can do safely afterwards. The board's own rename is the only
+    thing that changes the spelling; until then `gh_mutations._render` writes the
+    cached one. Used by BOTH the bootstrap and ``_field_gap`` so the repair and the
+    gate that demands it cannot disagree."""
+    present = set(have)
+    if present & HELD_STATUS_SPELLINGS:
+        present.add(STATUS_HELD)
+    return [o for o in STATUS_OPTIONS if o not in present]
 
 
 class GhReconcile:
@@ -315,8 +336,9 @@ class GhReconcileLoop:
                                               list(INITIATIVE_STAGES))))
         status = cache.get("Status") or {}
         have = list(status.get("options") or {})
-        if status.get("field_id") and not set(STATUS_OPTIONS) <= set(have):
-            union = have + [n for n in STATUS_OPTIONS if n not in have]
+        missing = _missing_status_options(have)
+        if status.get("field_id") and missing:
+            union = have + missing
             wanted.append((Mutation("set_field_options", status["field_id"], "Status",
                                     have, union, f"fields:{facts.slug}"),
                            build_update_field_options(status["field_id"], union,
@@ -376,7 +398,7 @@ class GhReconcileLoop:
             gap.append("Status")
             return gap
         options = status.get("options") or {}
-        missing = [o for o in STATUS_OPTIONS if o not in options]
+        missing = _missing_status_options(options)
         if missing:
             gap.append("Status options: " + ", ".join(missing))
         return gap
@@ -456,6 +478,10 @@ class GhReconcileLoop:
                 planned.extend(diff_fields(derive(item), mirror, own_values or {}))
         planned.extend(membership(facts.open_issue_nodes, set(facts.mirror), facts.project_node_id))
         planned.extend(compile_edges(facts.deps, facts.node_ids, applied_keys))
+        # Restate every plan in the board's own vocabulary BEFORE it is journaled, so the
+        # write-ahead row (and therefore the echo-suppression key the next sync reads back)
+        # carries the spelling we actually send — see ``gh_mutations.as_written``.
+        planned = [as_written(m, cache) for m in planned]
         keep: list[Mutation] = []
         for m in planned:
             if await self._j_parked(m.key()):

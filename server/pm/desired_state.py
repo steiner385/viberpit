@@ -2,7 +2,7 @@
 
 Every value carries the timestamp of the decision that produced it so the diff engine can apply
 the ownership rule (§3): push only when decided_at is strictly newer than GitHub's gh_updated_at.
-Status precedence: Done > session signals > needs-human (hold) > Blocked > Ready > Backlog.
+Status precedence: Done > session signals > Held (hold) > Blocked > Ready > Backlog.
 """
 from __future__ import annotations
 
@@ -15,10 +15,20 @@ STATUS_BACKLOG = "Backlog"
 STATUS_READY = "Ready"
 STATUS_IN_PROGRESS = "In progress"
 STATUS_BLOCKED = "Blocked"
-STATUS_NEEDS_HUMAN = "Needs human"
+STATUS_HELD = "Held"
 STATUS_DONE = "Done"
+#: The pre-rename spelling of :data:`STATUS_HELD` (spec 2026-09-18 §9). READ-ONLY
+#: alias: nothing derives it any more, but a board whose Status option has not been
+#: renamed yet still reports it, so every read normalises through
+#: :func:`is_held_status` and the single write path (``gh_mutations._render``)
+#: resolves whichever spelling that board's field cache carries. Dropped in the
+#: follow-up PR once every board reports "Held".
+LEGACY_STATUS_NEEDS_HUMAN = "Needs human"
+#: THE definition of the two spellings. One set, so no module re-spells the legacy name.
+HELD_STATUS_SPELLINGS: frozenset[str] = frozenset({STATUS_HELD, LEGACY_STATUS_NEEDS_HUMAN})
 STATUS_OPTIONS: tuple[str, ...] = (
-    STATUS_BACKLOG, STATUS_READY, STATUS_IN_PROGRESS, STATUS_BLOCKED, STATUS_NEEDS_HUMAN, STATUS_DONE)
+    STATUS_BACKLOG, STATUS_READY, STATUS_IN_PROGRESS, STATUS_BLOCKED, STATUS_HELD, STATUS_DONE)
+
 
 ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
 # A person's turn: a question, a permission prompt, a plan awaiting review.
@@ -33,6 +43,14 @@ LIVE_SESSION_STATUSES = (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 #: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
 #: on their own and never reach the board.
 HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision"})
+
+
+def is_held_status(value: str | None) -> bool:
+    """True when a board Status value is the held column, under either spelling.
+
+    THE normaliser every read path uses (diff comparison, tier derivation, the SDLC
+    count) so a mixed fleet mid-rename cannot disagree about which cards are held."""
+    return value in HELD_STATUS_SPELLINGS
 
 
 @dataclass(frozen=True)
@@ -82,7 +100,7 @@ def derive_status(f: ItemFacts) -> Decision:
     if f.issue_state == "closed":
         return Decision(STATUS_DONE, f.issue_closed_at)
     if f.session_status in HUMAN_WAIT_SESSION_STATUSES:
-        return Decision(STATUS_NEEDS_HUMAN, f.session_at)
+        return Decision(STATUS_HELD, f.session_at)
     # A failed turn is in-flight, not Ready: the session is still live, the runner's
     # sweep owns the bounce, and ``pm.tree.issue_tier`` reads this exact union for
     # its ``in-flight`` tier. Letting it fall through would push a dying session's
@@ -90,7 +108,7 @@ def derive_status(f: ItemFacts) -> Decision:
     if f.session_status in (ACTIVE_SESSION_STATUSES | FAILED_TURN_SESSION_STATUSES):
         return Decision(STATUS_IN_PROGRESS, f.session_at)
     if f.hold_kind in HELD_KINDS:
-        return Decision(STATUS_NEEDS_HUMAN, f.hold_set_at or f.classified_at)
+        return Decision(STATUS_HELD, f.hold_set_at or f.classified_at)
     if f.open_blocker_refs:
         return Decision(STATUS_BLOCKED, f.blockers_at)
     if f.triage_state == "classified":

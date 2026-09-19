@@ -1,6 +1,6 @@
 from server.pm.gh_projects import (
-    build_owner_projects_query, build_project_items_query,
-    parse_created_field, parse_project_fields, parse_project_items,
+    build_owner_projects_query, build_project_fields_query, build_project_items_query,
+    parse_created_field, parse_field_options, parse_project_fields, parse_project_items,
     parse_viewer_projects, build_issue_relations_query, parse_issue_relations)
 
 
@@ -110,6 +110,34 @@ def test_parse_project_fields_caches_ids_and_options():
     assert cache["Status"] == {"field_id": "F_status",
                                "options": {"Ready": "O_ready", "Done": "O_done"}}
     assert cache["Score"] == {"field_id": "F_score", "options": {}}
+
+
+def test_fields_query_selects_the_option_attributes_a_writer_must_send_back():
+    """Anything that REPLACES a single-select's option set has to resend each option's
+    colour and description, so the one fields query reads them."""
+    assert "options { id name color description }" in build_project_fields_query("PVT_1")
+
+
+def test_parse_field_options_keeps_board_order_and_attributes():
+    payload = {"data": {"node": {"fields": {"nodes": [
+        {"id": "F_status", "name": "Status", "options": [
+            {"id": "O_ready", "name": "Ready", "color": "GREEN", "description": "picked"},
+            {"id": "O_done", "name": "Done"}]}]}}}}
+    assert parse_field_options(payload, "Status") == [
+        {"id": "O_ready", "name": "Ready", "color": "GREEN", "description": "picked"},
+        {"id": "O_done", "name": "Done", "color": "", "description": ""}]
+    assert parse_field_options(payload, "Stage") == []
+    assert parse_field_options({}, "Status") == []
+
+
+def test_parse_field_options_keeps_duplicate_names_the_cache_collapses():
+    """The cache is ``{name: id}``: two options sharing a name keep only the last id, and a
+    writer rebuilding from it would delete the other. The raw list is how that is caught."""
+    payload = {"data": {"node": {"fields": {"nodes": [
+        {"id": "F_status", "name": "Status", "options": [
+            {"id": "O_a", "name": "Held"}, {"id": "O_b", "name": "Held"}]}]}}}}
+    assert [o["id"] for o in parse_field_options(payload, "Status")] == ["O_a", "O_b"]
+    assert parse_project_fields(payload)["Status"]["options"] == {"Held": "O_b"}
 
 
 def test_parse_project_items_extracts_fields_and_marks_drafts():

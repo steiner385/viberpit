@@ -301,7 +301,7 @@ def _is_bot(row: QueueRow) -> bool:
 
 def skip_reason(row, *, min_status, respect_dependencies, needs_human_retry_days, now):
     if row.status not in (STATUS_BACKLOG, STATUS_READY, STATUS_BLOCKED):
-        return "status"                       # Done / In progress / Needs human / unset
+        return "status"                       # Done / In progress / Held / unset
     if row.status == STATUS_BLOCKED or (respect_dependencies and row.open_blockers):
         return "blocked"
     if _STATUS_RANK[row.status] < _STATUS_RANK[min_status]:

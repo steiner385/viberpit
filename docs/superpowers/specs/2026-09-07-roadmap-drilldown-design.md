@@ -320,7 +320,7 @@ migration revision chained off the newest.
 
 | Tier | Sources |
 |------|---------|
-| needs-you | initiative `awaiting_human`; artifact or map-changes PR open; proposal pending; item `needs_human`; board Status "Needs human"; incident `open` or `scheduled` for a repo of this product |
+| needs-you | initiative `awaiting_human`; artifact or map-changes PR open; proposal pending; item `needs_human`; board Status "Held"; incident `open` or `scheduled` for a repo of this product |
 | blocked | active blocked-by edge with open blocker; initiative status `blocked`; board Status "Blocked" |
 | in-flight | initiative stage between intake and deploy with status `active`; item with a live session; board "In progress"; incident `diagnosing` or `queued` |
 | proposed | capability on an unmerged map-changes branch; initiative status `proposed` |

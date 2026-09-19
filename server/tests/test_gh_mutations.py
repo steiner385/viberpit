@@ -47,6 +47,55 @@ def test_build_batch_rejects_unknown_option_and_oversize():
     assert [len(c) for c in chunk(too_many)] == [MAX_ALIASES, 1]
 
 
+@pytest.mark.parametrize("options,expect", [
+    ({"Held": "O_held"}, "O_held"),
+    ({"Needs human": "O_legacy"}, "O_legacy"),
+    ({"Needs human": "O_legacy", "Held": "O_held"}, "O_held"),
+])
+def test_held_resolves_to_whichever_spelling_the_board_has(options, expect):
+    """Rollout tolerance (spec 2026-09-18 §9): the engine only ever decides ``Held``,
+    but the board's own Status option may still be spelled ``Needs human``. The write
+    path resolves against the cached spelling — preferring ``Held`` when both exist —
+    so a mixed fleet keeps writing instead of parking on ``UnknownOption``."""
+    from server.pm.desired_state import STATUS_HELD
+    cache = {"Status": {"field_id": "F_s", "options": options}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    doc, _ = build_batch([m], project_node_id="PVT_1", field_cache=cache)
+    assert f'value: {{singleSelectOptionId: "{expect}"}}' in doc
+
+
+def test_held_with_neither_spelling_cached_is_an_unknown_option():
+    from server.pm.desired_state import STATUS_HELD
+    cache = {"Status": {"field_id": "F_s", "options": {"Ready": "O_ready"}}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    with pytest.raises(UnknownOption):
+        build_batch([m], project_node_id="PVT_1", field_cache=cache)
+    # The alias is one-way: a board that somehow still DECIDES the legacy spelling
+    # gets no help from a "Held" option — nothing produces that value any more.
+    legacy = Mutation("set_field", "PVTI_1", "Status", None, "Needs human", "status:o/r#1")
+    with pytest.raises(UnknownOption):
+        build_batch([legacy], project_node_id="PVT_1",
+                    field_cache={"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}})
+
+
+def test_as_written_stamps_the_mutation_with_the_spelling_the_board_carries():
+    """What we journal must be what we send (spec 2026-09-18 §9): the echo-suppression
+    key is built from the journal row, so a row saying "Held" against a board that
+    stores "Needs human" would read our own write back as a human edit."""
+    from server.pm.desired_state import STATUS_HELD
+    from server.pm.gh_mutations import as_written
+    legacy = {"Status": {"field_id": "F_s", "options": {"Needs human": "O_legacy"}}}
+    renamed = {"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}}
+    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
+    assert as_written(m, legacy).new_value == "Needs human"
+    assert as_written(m, renamed) is m          # already the board's spelling
+    assert as_written(m, {}) is m               # no option at all -> _render still raises
+    # Score and non-field mutations are never restated.
+    score = Mutation("set_field", "PVTI_1", "Score", None, 480.0, "score:o/r#1")
+    add = Mutation("add_item", "PVT_1", None, None, "I_9", "membership:o/r#9")
+    assert as_written(score, legacy) is score and as_written(add, legacy) is add
+
+
 def test_parse_batch_maps_errors_per_alias():
     payload = {"data": {"m0": {"projectV2Item": {"id": "PVTI_1"}}, "m1": None},
                "errors": [{"path": ["m1"], "message": "Could not resolve to a node"}]}
@@ -91,6 +140,33 @@ def test_update_field_options_echoes_existing_option_ids():
     assert '{name: "Backlog", color: GRAY, description: ""}' in doc   # no id ⇒ created fresh
     # no map (or a name the board doesn't have) degrades to the create-fresh form
     assert '{id:' not in build_update_field_options("F_s", ["Todo"])
+
+
+def test_update_field_options_preserves_colour_and_description_when_given():
+    """``color``/``description`` are required members of the option input and the mutation
+    REPLACES the set, so a caller holding the board's current values must be able to send
+    them back — otherwise every preserved column is repainted gray and its description
+    erased (the rename one-shot's hazard)."""
+    doc = build_update_field_options(
+        "F_s", ["Todo", "Held", "New"],
+        option_ids={"Todo": "o1", "Held": "o2"},
+        option_attrs={"Todo": {"color": "blue", "description": 'the "next" pile'},
+                      "Held": {"color": "PURPLE", "description": ""},
+                      "New": {"color": "NOT_A_COLOR", "description": None}})
+    assert '{id: "o1", name: "Todo", color: BLUE, description: "the \\"next\\" pile"}' in doc
+    assert '{id: "o2", name: "Held", color: PURPLE, description: ""}' in doc
+    # An unknown colour (or a missing/non-string description) falls back to the default
+    # rather than interpolating an arbitrary token into the enum position.
+    assert '{name: "New", color: GRAY, description: ""}' in doc
+
+
+def test_update_field_options_without_attrs_is_unchanged_for_the_bootstrap():
+    """The reconciler's field bootstrap passes no attrs and must keep its old rendering:
+    a brand-new option gets GitHub's defaults, which is what a new option should get."""
+    assert (build_update_field_options("F_s", ["Todo", "Backlog"], option_ids={"Todo": "o1"})
+            == build_update_field_options("F_s", ["Todo", "Backlog"], option_ids={"Todo": "o1"},
+                                          option_attrs=None))
+    assert 'color: GRAY, description: ""' in build_update_field_options("F_s", ["Todo"])
 
 
 def test_rate_limit_query_and_parser():

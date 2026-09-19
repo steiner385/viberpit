@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from server.pm.desired_state import (
-    ItemFacts, Decision, derive, derive_status, STATUS_BACKLOG, STATUS_BLOCKED, STATUS_DONE,
-    STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN, STATUS_READY)
+    HELD_STATUS_SPELLINGS, ItemFacts, Decision, LEGACY_STATUS_NEEDS_HUMAN, derive, derive_status,
+    is_held_status, STATUS_BACKLOG, STATUS_BLOCKED, STATUS_DONE, STATUS_HELD, STATUS_IN_PROGRESS,
+    STATUS_OPTIONS, STATUS_READY)
 from server.pm.score import rice_score
 
 T1 = datetime(2026, 9, 1, tzinfo=timezone.utc)
@@ -33,22 +34,22 @@ def test_status_precedence_done_beats_everything():
 
 def test_status_session_signals():
     assert derive_status(_f(session_status="in_progress", session_at=T2)) == Decision(STATUS_IN_PROGRESS, T2)
-    assert derive_status(_f(session_status="waiting_question", session_at=T2)) == Decision(STATUS_NEEDS_HUMAN, T2)
+    assert derive_status(_f(session_status="waiting_question", session_at=T2)) == Decision(STATUS_HELD, T2)
 
 
 def test_status_hold_blocked_ready_backlog():
-    # An owner_action or pending decision hold is the board's "Needs human"; the
+    # An owner_action or pending decision hold is the board's "Held"; the
     # hold's own timestamp is the decision (spec 2026-09-18 §7).
-    assert derive_status(_f(hold_kind="owner_action", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
-    assert derive_status(_f(hold_kind="decision", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
+    assert derive_status(_f(hold_kind="owner_action", classified_at=T1)) == Decision(STATUS_HELD, T1)
+    assert derive_status(_f(hold_kind="decision", classified_at=T1)) == Decision(STATUS_HELD, T1)
     # …and hold_set_at is that timestamp, ahead of classified_at: reject_triage,
     # apply_session_hold and _restore_overlay all write a hold WITHOUT touching
     # classified_at, so on a freshly-proposed item it is NULL and should_push(None, …)
-    # is False — the board would never be stamped Needs human at all (F5).
+    # is False — the board would never be stamped Held at all (F5).
     assert derive_status(_f(hold_kind="owner_action", classified_at=None,
-                            hold_set_at=T2)) == Decision(STATUS_NEEDS_HUMAN, T2)
+                            hold_set_at=T2)) == Decision(STATUS_HELD, T2)
     assert derive_status(_f(hold_kind="owner_action", classified_at=T1,
-                            hold_set_at=T2)) == Decision(STATUS_NEEDS_HUMAN, T2)
+                            hold_set_at=T2)) == Decision(STATUS_HELD, T2)
     # evidence and stronger_model holds never park the card
     assert derive_status(_f(hold_kind="evidence", triage_state="classified", classified_at=T1)) == Decision(STATUS_READY, T1)
     assert derive_status(_f(hold_kind="stronger_model")) == Decision(STATUS_BACKLOG, None)
@@ -72,7 +73,24 @@ def test_failed_turn_is_not_a_human_wait():
     d = derive_status(_f(session_status="needs_attention", session_at=T2,
                          triage_state="classified", classified_at=T1))
     assert d == Decision(STATUS_IN_PROGRESS, T2)
-    assert d.value != STATUS_NEEDS_HUMAN
+    assert d.value != STATUS_HELD
+
+
+def test_held_is_the_only_spelling_the_engine_produces():
+    """Spec 2026-09-18 §9: the board value is ``Held``. ``Needs human`` survives
+    ONLY as a read alias for a board that has not been renamed yet — the engine
+    never derives it and the bootstrap never offers it as a column."""
+    assert STATUS_HELD == "Held" and LEGACY_STATUS_NEEDS_HUMAN == "Needs human"
+    assert STATUS_HELD in STATUS_OPTIONS and LEGACY_STATUS_NEEDS_HUMAN not in STATUS_OPTIONS
+    # the old slot: between Blocked and Done, so the board's column order is unchanged
+    assert STATUS_OPTIONS.index(STATUS_HELD) == STATUS_OPTIONS.index(STATUS_BLOCKED) + 1
+    assert HELD_STATUS_SPELLINGS == frozenset({STATUS_HELD, LEGACY_STATUS_NEEDS_HUMAN})
+
+
+def test_is_held_status_reads_both_spellings():
+    assert is_held_status(STATUS_HELD) and is_held_status(LEGACY_STATUS_NEEDS_HUMAN)
+    assert not is_held_status(STATUS_READY)
+    assert not is_held_status(None)
 
 
 def test_derive_bundles_score_and_stage():

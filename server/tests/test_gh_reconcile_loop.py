@@ -295,8 +295,26 @@ def test_ensure_fields_creates_missing_and_extends_status_options():
     asyncio.run(loop.tick())
     kinds = [m.kind for m in sum((r[0] for r in calls["record"]), [])]
     assert kinds == ["create_field", "create_field", "set_field_options"]
-    assert calls["cache"] and calls["cache"][-1][1]["Status"]["options"]["Needs human"] == "O_Needs human"
+    assert calls["cache"] and calls["cache"][-1][1]["Status"]["options"]["Held"] == "O_Held"
     assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc"
+
+
+def test_ensure_fields_never_adds_held_beside_the_legacy_spelling():
+    """Rollout tolerance (spec 2026-09-18 §9): ``Held`` and ``Needs human`` are ONE
+    column. A board still on the old spelling is complete — adding a second option
+    would split every parked card across two columns and needs a human's rename."""
+    from server.pm.desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
+    legacy_options = {(LEGACY_STATUS_NEEDS_HUMAN if n == STATUS_HELD else n): f"O_{n}"
+                      for n in STATUS_OPTIONS}
+    legacy = _facts(field_cache={**CACHE, "Status": {"field_id": "F_s",
+                                                     "options": legacy_options}},
+                    items=[], mirror={}, open_issue_nodes={})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=legacy, config={"migrate": True})
+    asyncio.run(loop.tick())
+    assert calls["record"] == [] and calls["cache"] == []
+    # …and the product is not parked as "incomplete" either: the gap check reads the
+    # same pair, so item writes proceed against the legacy option id.
+    assert GhReconcileLoop._field_gap(legacy.field_cache) == []
 
 
 def test_status_option_repair_is_a_union_and_never_drops_a_human_column():

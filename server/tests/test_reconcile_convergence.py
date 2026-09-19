@@ -24,6 +24,7 @@ from server.db.models import (Base, GhProject, GhProjectItem, Project, ProjectRe
                               Session as DbSession, WorkItem)
 from server.pm import journal, mirror_store
 from server.pm.desired_state import derive
+from server.pm.gh_mutations import as_written
 from server.pm.gh_projects import GhProjectItemView
 from server.pm.mirror_store import list_product_views
 from server.pm.reconcile_diff import diff_fields, membership
@@ -68,6 +69,9 @@ def _plan(db, product, now):
         if mirror is not None:
             muts.extend(diff_fields(derive(item), mirror, own_values))
     muts.extend(membership(facts.open_issue_nodes, set(facts.mirror), facts.project_node_id))
+    # As _converge does, restate each plan in the board's own vocabulary before it is
+    # journaled (spec 2026-09-18 §9) — the step the echo key depends on.
+    muts = [as_written(m, facts.field_cache) for m in muts]
     return facts, muts
 
 
@@ -152,6 +156,33 @@ def test_reconciler_converges_and_own_writes_never_stick():
     # ...and that push converges too.
     muts, _ = _cycle(db, product, gid, T + timedelta(minutes=8))
     assert muts == []
+
+
+def test_a_legacy_spelled_board_does_not_report_our_own_write_as_a_human_edit():
+    """Rollout tolerance (spec 2026-09-18 §9), end to end. On a board the one-time
+    rename has not reached, a decision of ``Held`` lands on the ``Needs human`` option,
+    so GitHub reads back ``Needs human``. The journal must carry THAT spelling or the
+    echo misses ``own_write_key`` and our own write surfaces as a ``HumanEdit`` — which
+    `pm_sync` reports as a ``gh_human_edit`` observation, once per parked card."""
+    db = _db()
+    gid = _seed(db)
+    gp = db.get(GhProject, gid)
+    gp.field_cache = {"Status": {"field_id": "F_s",
+                                 "options": {"Backlog": "O_b", "Needs human": "O_legacy"}},
+                      "Score": {"field_id": "F_sc", "options": {}}}
+    db.query(DbSession).one().status = "waiting_question"   # a person's turn -> Held
+    db.commit()
+    product = list_product_views(db)[0]
+
+    muts, edits = _cycle(db, product, gid, T)
+    assert [(m.target_node_id, m.new_value) for m in muts if m.field == "Status"] == [
+        ("PVTI_5", "Needs human")]
+    assert edits == []              # the readback is OUR write, not a human's
+
+    # …and it converges: `_same` reads the two spellings as one value, so the legacy
+    # board is not re-diffed every tick either. (#9's initial fill is unrelated.)
+    _facts, again = _plan(db, product, T + timedelta(minutes=2))
+    assert [m.field for m in again if m.target_node_id == "PVTI_5"] == []
 
 
 def test_a_real_human_edit_is_detected_and_wins():
