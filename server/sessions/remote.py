@@ -1053,7 +1053,14 @@ class RemoteOrchestrator:
                                         timeout=USAGE_RPC_TIMEOUT if timeout is None else timeout)
         except DaemonUnavailable:
             # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
-            log.warning("usage RPC for %s unavailable — returning None", name)
+            # INFO, not WARNING (#1684): a real pool wedge is already reported, once and
+            # throttled, by the client's own `_note_pool_timeout`; an isolated connection
+            # blip here is absorbed by `_safe_usage`'s stale-ledger fallback (which logs
+            # its own INFO line) and self-heals on the next poll. An unthrottled WARNING
+            # per affected account per RPC just duplicated that signal at the wrong
+            # severity, which is what made the error-triage bot re-file this as a
+            # recurring incident for weeks over a condition nobody needed to act on.
+            log.info("usage RPC for %s unavailable — returning None", name)
             return None
         return QuotaSnapshot.from_dict(r["usage"]) if r["usage"] is not None else None
 
