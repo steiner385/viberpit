@@ -9,6 +9,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=viberpit
 User=tony
+# Per-HOST log dir (/var/log/viberpit), created and chowned to User= by systemd.
+# The edge and the daemon must not share one file: they are separate processes and
+# on the deployed fleet separate HOSTS, and the pre-#1010 default put both in the
+# sshfs-shared account store. See server/obs/logdir.py.
+LogsDirectory=viberpit
 WorkingDirectory=/home/tony/GitHub/viberpit-deploy
 # Runtime secrets/config (DB url, signing keys, tailnet allowlist) + PATH/HOME so
 # the server can find git/node/claude. Created out-of-band; NOT in the repo.

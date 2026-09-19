@@ -181,6 +181,62 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_sessions_kind_owner ON sessions (kind,
   owner_identity);` — the assistant works without it, just slower once session volume grows.
 
+## Where the logs are (`/var/log/viberpit`, per host, per process) — #1010
+
+Each process writes JSON lines to **journald** (`journalctl -u viberpit`,
+`journalctl -u viberpit-daemon`) *and* to a rotating file. The file is chosen by
+`server/obs/logdir.py` and is unique per **host** and per **process**:
+
+```
+/var/log/viberpit/viberpit-edge.jsonl      # viberpit.service
+/var/log/viberpit/viberpit-daemon.jsonl    # viberpit-daemon.service
+```
+
+Before #1010 there was no per-host part. The default asked
+`os.access("/var/log", os.W_OK)` — writability of the *parent*, which is root-owned
+— so under `User=tony` it was always false and every process fell through to
+`~/.claude-accounts/logs`. On a session runner that directory is the **sshfs mount
+of dobby's account store**, so rocky's daemon appended to dobby's file and both
+hosts rotated it. When #1009 needed rocky's daemon logs, nothing it had written was
+recoverable; the timeline had to be rebuilt from the replay ring.
+
+Three things keep that from coming back, and all three need to hold:
+
+1. `LogsDirectory=viberpit` in each unit — systemd creates `/var/log/viberpit`
+   owned by `User=` on **that host**, so locality is a property of the unit, the
+   same way `StateDirectory=` fixed `CODEX_HOME` for #1005.
+2. The resolver refuses any directory that is not provably on a local filesystem,
+   via the same mount-table reader (`server/fsmounts.py`) that refuses a
+   `CODEX_HOME` on sshfs. A log directory pointed at a share (the `*_LOG_DIR`
+   override under Runtime env, above) degrades to
+   **stdout-only with a warning** — the journal still has every line.
+3. The filename carries the process, so the edge and the daemon never share one
+   `RotatingFileHandler` target (rollover renames the live file out from under the
+   other writer).
+
+**Applying this on a host that predates it** — unit files do not auto-apply (see
+Notes above):
+
+```bash
+sudo install -m644 deploy/viberpit.service deploy/viberpit-daemon.service /etc/systemd/system/
+sudo systemctl daemon-reload
+# /var/log/viberpit may already exist root-owned from an earlier install:
+sudo chown tony:tony /var/log/viberpit
+sudo systemctl restart viberpit.service          # daemon: see the stop/restart warning below
+```
+
+Until that is done the resolver falls back to `/var/lib/viberpit/logs`
+(`StateDirectory=`, already per-host), so an un-migrated host still logs locally —
+just not under `/var/log`. Confirm with:
+
+```bash
+ls -l /var/log/viberpit/          # expect viberpit-<process>.jsonl owned by tony
+journalctl -u viberpit-daemon -p warning --since '-1h' | grep -c 'not provably host-local'
+```
+
+The old log file under `~/.claude-accounts/logs/` is not migrated or deleted by this
+change — it is a mixed-host, mixed-process file and is only useful as history.
+
 ## Session daemon (`viberpit-daemon.service`)
 
 `viberpit-daemon.service` runs `python -m server.ipc` — the session daemon that owns
