@@ -5546,7 +5546,7 @@ class SessionOrchestrator:
     # Backlog Runner control-loop dependencies (injected into BacklogRunnerLoop)
     # ------------------------------------------------------------------
 
-    async def _backlog_read_config(self) -> tuple[str, dict]:
+    async def _backlog_read_config(self, *, apply_plan: bool = True) -> tuple[str, dict]:
         """The backlog-runner row's (mode, config) merged onto the schema defaults.
 
         Mode is ``off`` unless the row is enabled AND carries a mode; an
@@ -5569,12 +5569,27 @@ class SessionOrchestrator:
         ``default_mode="on"`` for the same reason every other two-mode automation
         passes one: with exactly two modes the UI hides the mode select, so its
         toggle enables the row with ``mode`` still NULL — without the default an
-        enabled runner would read ``off`` forever."""
+        enabled runner would read ``off`` forever.
+
+        ``max_concurrent`` is then capped at the capacity governor's live plan
+        (phase 2, spec §6.4) — the operator's stored value is never overwritten,
+        only overlaid downward for this read — UNLESS ``apply_plan=False``: the
+        governor's own planner reads through this seam too (via
+        ``capacity_wiring.sources_for``'s ``runner_config``) to learn the
+        operator's ceiling, and it must derive the next plan from THAT, never
+        from its own prior output. Feeding the overlaid value back in would
+        ratchet ``fleetConcurrency`` down every tick (each plan's ceiling could
+        only ever be <= the last) with no way back up when an account resets or
+        the operator raises the stored cap."""
         from server.automations.backlog_runner import BacklogRunner, fold_global_mode
+        from server.automations.capacity_apply import apply_fleet_plan
+        from server.automations.capacity_store import live_plan
         from server.automations.config_store import read_automation_config
         mode, config = await read_automation_config(
             BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
             log_key="backlog_runner")
+        if apply_plan:
+            config = apply_fleet_plan(config, await live_plan())
         return fold_global_mode(mode), config
 
     async def _backlog_read_raw_config(self) -> "tuple[bool, str | None, dict]":

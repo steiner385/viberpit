@@ -4,10 +4,12 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
 
+from server.automations.capacity_apply import apply_fleet_plan, apply_product_plan
+from server.automations.capacity_store import live_plan
 from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
 from server.pm.repo_project import RepoOwnership, gather_repo_identities, resolve_repo_ownership
@@ -28,11 +30,26 @@ class ProductCoverage:
     observed_at: str
 
 
+#: Sentinel default for ``gather_product_coverage``'s ``plan`` — distinguishes
+#: "caller didn't pass one, read it yourself" from an explicit ``plan=None``
+#: (a caller who already read ``live_plan()`` and got "not live"). Typed
+#: ``Any`` so it satisfies the ``dict | None`` annotation for mypy while still
+#: being identity-distinguishable from a real ``None`` at runtime.
+_PLAN_UNSET: Any = object()
+
+
 async def gather_product_coverage(
     repos: Collection[str] | None = None, *, requested_product: str | None = None,
     verified_repos: Mapping[str, str | None] | None = None,
+    plan: dict | None = _PLAN_UNSET,
 ) -> ProductCoverage:
-    """Resolve identities outside DB sessions, then read ownership and policy anew."""
+    """Resolve identities outside DB sessions, then read ownership and policy anew.
+
+    ``plan``: the live capacity-governor plan, already read by the caller
+    (``gather_implementation_snapshot`` passes its own ``live_plan()`` read
+    through so one snapshot makes exactly one plan read — fix round 1, F3).
+    Omit it (the default) to have this function read ``live_plan()`` itself,
+    which is every other caller's behaviour."""
     async with db_session() as db:
         project = None
         if requested_product is not None:
@@ -44,6 +61,8 @@ async def gather_product_coverage(
             repo for pid, repo in registrations if project is not None and pid == project.id and repo})
         candidates = {repo for _, repo in registrations if repo} | set(requested)
     identities = await gather_repo_identities(candidates, verified_repos=verified_repos) if requested else {}
+    if plan is _PLAN_UNSET:
+        plan = await live_plan()
     async with db_session() as db:
         if requested_product is not None:
             project = await db.scalar(select(Project).where(Project.slug == requested_product))
@@ -56,6 +75,7 @@ async def gather_product_coverage(
         ownership = await resolve_repo_ownership(db, requested, canonical_repos=identities)
         policies = {slug: raw for slug, raw in (await db.execute(
             select(Project.slug, Project.automation_policy))).all() if slug is not None}
+    policies = apply_product_plan(policies, plan)
     return ProductCoverage(ownership, policies, datetime.now(timezone.utc).isoformat())
 
 
@@ -142,11 +162,17 @@ async def gather_implementation_snapshot(
     from .backlog_runner import BacklogRunner, fold_global_mode
     from .config_store import read_automation_config
 
+    # ONE plan read for the whole snapshot (fix round 1, F3): both the
+    # per-product overlay (coverage.policies, below) and the fleet ceiling
+    # overlay (`config["max_concurrent"]`, decide()'s `global_cap`) must agree
+    # on the same plan, not two reads that could straddle a concurrent write.
+    plan = await live_plan()
     coverage = await gather_product_coverage(
-        repos, requested_product=requested_product, verified_repos=verified_repos)
+        repos, requested_product=requested_product, verified_repos=verified_repos, plan=plan)
     mode, config = await read_automation_config(
         BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
         log_key="backlog_runner")
+    config = apply_fleet_plan(config, plan)
     try:
         states = await (context or AutomationContext(BacklogRunner.id)).list_target_states()
     except Exception:

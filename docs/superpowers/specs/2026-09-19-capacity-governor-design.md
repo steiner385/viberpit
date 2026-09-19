@@ -3,7 +3,9 @@
 **Status:** approved direction (2026-09-19, three macro decisions taken by the owner: intent knob =
 priority rank + push level; existing caps become pins; phase-1 availability = Claude account quota +
 host capacity) · phase 1 implemented on branch feat/capacity-governor-phase1 (plan
-`docs/superpowers/plans/2026-09-19-capacity-governor-phase1.md`) · **Date:** 2026-09-19 · **Related:** `2026-09-12-product-automation-policy-design.md`
+`docs/superpowers/plans/2026-09-19-capacity-governor-phase1.md`) · phase 2 implemented on branch
+feat/capacity-governor-phase2 (plan `docs/superpowers/plans/2026-09-19-capacity-governor-phase2.md`)
+· **Date:** 2026-09-19 · **Related:** `2026-09-12-product-automation-policy-design.md`
 (per-product policy, `max_in_flight`), `2026-09-04-settings-redesign-design.md` (Settings IA; D8
 deferred search), `2026-09-18-hold-ladder-design.md`, #1517 (host at cap alarms), #1891 (KinDash
 repo-load starvation), #2009 / PR #2020 (dead claims hold slots), #1611 (automation consolidation
@@ -145,18 +147,27 @@ explains its cap.
 
 ### 6.3 Applying the plan
 
-One pure merge, `server/automations/capacity_plan.py:apply_plan(policies, runner_config, plan)`,
-called in the two read seams the runner already has:
+Two pure merges in `server/automations/capacity_apply.py` — `apply_fleet_plan(config, plan)` and
+`apply_product_plan(policies, plan)` — called at the seams the runner and its readers already have,
+never at a new one:
 
-- `SessionOrchestrator._backlog_read_config`: `config["max_concurrent"] = min(config["max_concurrent"],
-  plan.fleet_concurrency)` when `plan.applied`.
-- `policies_by_slug` consumers (`ProductAdmission` coverage refresh): for each product with
-  `capacity_mode == "auto"` and a plan entry, `policy["max_in_flight"] = plan.per_product[slug]`.
-  Pinned products and products absent from the plan keep their stored value (today's behaviour).
+- **Admission** — `gather_product_coverage` (product-policy overlay) and `gather_implementation_snapshot`
+  (fleet-ceiling overlay, `config["max_concurrent"]` feeding `decide_implementation`'s `global_cap`)
+  both read `capacity_store.live_plan()` once per call and apply it; `gather_implementation_snapshot`
+  makes exactly one plan read for both overlays so they can never straddle a concurrent write.
+- **Queue scope, card, PM reads** — `product_policy.py:policies_by_slug` and `load_policies` apply
+  `apply_product_plan` the same way, so every consumer of a product's effective policy (not just the
+  admission path) sees the governed `max_in_flight`.
+- **The runner loop** — `SessionOrchestrator._backlog_read_config(apply_plan=True)` (the default) caps
+  `max_concurrent` at the live plan's `fleet_concurrency`, never raises it. The governor/readout's own
+  read of that seam passes `apply_plan=False` so it learns the operator's stored ceiling, not its own
+  last output — otherwise `fleet_concurrency` would only ever ratchet down.
 
-Nothing else changes in the runner: `decide_implementation` still reads `effective["max_in_flight"]`
-and `config["max_concurrent"]`; it just receives merged values. The `_refill` per-tick attempt count
-follows `max_concurrent` as today.
+Pinned products and products absent from the plan keep their stored value (today's behaviour); a
+plan older than 10 minutes, written in `monitor` mode, or written while the kill switch is off is
+treated as not live and every seam falls back to the human-owned value. `decide_implementation`
+still reads `effective["max_in_flight"]` and `config["max_concurrent"]`; it just receives merged
+values. The `_refill` per-tick attempt count follows `max_concurrent` as today.
 
 ### 6.4 Failure modes
 

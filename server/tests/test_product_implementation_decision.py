@@ -84,12 +84,43 @@ def test_manual_does_not_bypass_caps(changes):
     assert decision(trigger="manual", runner_mode="off", **changes).state == "refused"
 
 
-def test_existing_proposal_counts_once_but_zero_cap_still_pauses():
+def test_existing_proposal_counts_once_and_a_new_claim_still_needs_headroom():
     assert decision(global_count=2, product_count=1, existing_slot=True).permitted
     assert not decision(global_count=2, product_count=1).permitted
-    assert decision(global_cap=0, existing_slot=True).state == "refused"
-    assert decision(policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=True).state == "refused"
+    # `daily_budget` has no `occupied` exemption (not a per-slot ceiling; it
+    # is not part of Ruling 20's "already holds its slot" guarantee), so it
+    # still refuses regardless of `existing_slot`.
     assert decision(daily_count=10, existing_slot=True).state == "refused"
+
+
+def test_ruling_20_an_occupied_claim_is_never_refused_on_capacity():
+    """D8: admission refuses new claims; it never kills a session. A claim
+    that already holds its slot (`existing_slot=True`) is permitted regardless
+    of a moved-under-it ceiling — including a cap of 0 (paused) and a count
+    that has since exceeded the cap. A NEW claim (`existing_slot=False`) is
+    unaffected: a 0 cap still refuses it."""
+    occupied_paused = decision(global_cap=0, existing_slot=True)
+    assert occupied_paused.permitted
+    assert any(c.code == "global_capacity_held" for c in occupied_paused.constraints)
+
+    occupied_product_paused = decision(
+        policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=True)
+    assert occupied_product_paused.permitted
+    assert any(c.code == "product_capacity_held" for c in occupied_product_paused.constraints)
+
+    occupied_over_cap = decision(
+        product_count=5, policy={"dispatch": "auto", "max_in_flight": 1}, existing_slot=True)
+    assert occupied_over_cap.permitted
+    assert any(c.code == "product_capacity_held" for c in occupied_over_cap.constraints)
+
+    new_claim_paused = decision(global_cap=0, existing_slot=False)
+    assert new_claim_paused.state == "refused"
+    assert any(c.code == "global_capacity_full" for c in new_claim_paused.constraints)
+
+    new_claim_product_paused = decision(
+        policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=False)
+    assert new_claim_product_paused.state == "refused"
+    assert any(c.code == "product_capacity_full" for c in new_claim_product_paused.constraints)
 
 
 def test_scheduled_runner_off_manual_and_unknown():

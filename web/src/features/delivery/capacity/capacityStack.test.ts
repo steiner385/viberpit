@@ -11,11 +11,12 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     global: { cap: 20, active: 10, free: 10 },
     hosts: [],
     accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [] },
-    runner: { ceiling: 5, inFlight: 3, derived: 4 },
+    runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
     products: [],
     binding: null,
     defects: [],
     plan: null,
+    planLive: false,
     ...overrides,
   }
 }
@@ -80,5 +81,27 @@ describe('buildCapacityStack — Hosts row (fix round 1 / I4)', () => {
     expect(hosts.free).toBeNull()
     expect(hosts.used).toBe(3)
     expect(hosts.secondary).toBe('1 host excluded: disabled or unhealthy')
+  })
+})
+
+describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
+  it('uses the live plan-derived effective cap, not the stored ceiling, and notes the stored value', () => {
+    const r = readout({
+      runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 3 },
+    })
+    const runner = buildCapacityStack(r).find((row) => row.key === 'runner')!
+    expect(runner.cap).toBe(3)
+    expect(runner.free).toBe(1)
+    expect(runner.secondary).toBe('stored ceiling 6')
+  })
+
+  it('falls back to the stored ceiling with no secondary note when not live', () => {
+    const r = readout({
+      runner: { ceiling: 6, effective: 6, inFlight: 2, derived: null },
+    })
+    const runner = buildCapacityStack(r).find((row) => row.key === 'runner')!
+    expect(runner.cap).toBe(6)
+    expect(runner.free).toBe(4)
+    expect(runner.secondary).toBeUndefined()
   })
 })

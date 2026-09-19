@@ -83,6 +83,24 @@ def test_never_below_in_flight_or_above_eligible():
     assert caps2["kindash"] >= 4
 
 
+def test_hysteresis_carry_is_floored_at_in_flight():
+    """The pending/carry branch used to carry forward the PREVIOUS tick's cap
+    verbatim, which could be lower than what the product already holds — a
+    plan-in-flux moment where the plan itself would (transiently) show a cap
+    the runner's own in-flight count already exceeds. The carried value must
+    never drop below `in_flight`, the same floor `_split` and `_fleet` apply
+    elsewhere."""
+    from server.automations.capacity_plan import CapacityPlan
+
+    previous = CapacityPlan(push_level="steady", fleet_concurrency=1,
+                            per_product={"kindash": 1}, pending={}, budget={})
+    i = _inputs(products=(_prod("kindash", 1, eligible=50, in_flight=3),),
+               runner_ceiling=4, hosts=(_host("d", 3, 8),), runner_in_flight=3)
+    plan = plan_capacity(i, push_level="steady", previous=previous)
+    assert plan.per_product["kindash"] == 3   # carried, floored at in_flight — not the stale 1
+    assert plan.pending["kindash"] == 4       # the newly proposed value, unchanged
+
+
 def test_hysteresis_applies_on_second_tick():
     i = _inputs()
     first = plan_capacity(i, push_level="steady")
@@ -106,6 +124,22 @@ def test_zero_available_accounts_idles_with_reset():
     assert any("08:00" in r for r in plan.reasons)
 
 
+def test_fleet_never_drops_below_the_runners_own_in_flight():
+    """N2, fix round 2: zero available accounts would otherwise compute fleet
+    0 even with sessions already running — the floor keeps the plan from
+    refusing capacity the runner already holds (decide_implementation would
+    short-circuit on cap == 0 before its `occupied` adjustment, and a refusal
+    on an already-claimed target raises StaleOwnership)."""
+    i = _inputs(accounts=(
+        _acct("a1", available=False), _acct("a2", available=False),
+        _acct("a3", available=False), _acct("a4", available=False),
+    ), runner_in_flight=2)
+    plan = plan_capacity(i, push_level="steady")
+    assert plan.fleet_concurrency == 2
+    assert plan.limiting == "account"
+    assert any("floored" in r for r in plan.reasons)
+
+
 def test_off_products_and_empty_backlogs_get_nothing():
     i = _inputs(products=(
         _prod("kindash", 1, 50, dispatch="off"),
@@ -116,3 +150,33 @@ def test_off_products_and_empty_backlogs_get_nothing():
     assert "kindash" not in plan.per_product
     assert "viberpit" not in plan.per_product
     assert "ghostdriver" in plan.per_product
+
+
+def test_a_product_with_live_claims_stays_in_the_plan_even_with_an_empty_backlog():
+    """A product with `eligible == 0` but `in_flight > 0` is not dropped from
+    the plan the way a truly idle product is: its cap is its in-flight floor.
+    An empty backlog with NO in-flight claim still gets nothing (the case
+    above)."""
+    caps = _split(6, [_prod("kindash", 1, eligible=0, in_flight=2)])
+    assert caps == {"kindash": 2}
+
+    i = _inputs(products=(_prod("kindash", 1, eligible=0, in_flight=2),))
+    plan = plan_capacity(i, push_level="steady")
+    assert plan.per_product.get("kindash") == 2
+
+
+def test_floor_never_lifts_a_cap_above_eligible_or_the_fleet_sum():
+    from server.automations.capacity_plan import _split
+    prods = [_prod("kindash", 1, eligible=2, in_flight=4), _prod("viberpit", 2, eligible=10)]
+    caps = _split(5, prods)
+    assert caps["kindash"] == 4                      # floor: never below in-flight
+    assert caps["viberpit"] == 1                     # 5 - 4 already held = 1 slot left
+    assert sum(caps.values()) == 5
+
+
+def test_pinned_floor_is_deducted_before_the_round_robin():
+    from server.automations.capacity_plan import _split
+    prods = [_prod("viberpit", 1, eligible=1, in_flight=3, mode="pinned", pin=1),
+             _prod("kindash", 2, eligible=10)]
+    caps = _split(4, prods)
+    assert caps["viberpit"] == 3 and caps["kindash"] == 1 and sum(caps.values()) == 4

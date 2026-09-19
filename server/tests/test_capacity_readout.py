@@ -6,6 +6,8 @@ these tests never touch the DB.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from types import SimpleNamespace
 
@@ -276,6 +278,89 @@ def test_binding_falls_back_to_hosts_full():
                             "text": "every enabled healthy host is at its session cap"}
 
 
+# --- Task 4: `effectiveCap` follows the live plan; readout gains `planLive`. ---
+
+_PERMITTED_DECISION = SimpleNamespace(constraints=[
+    SimpleNamespace(code="dispatch_allowed", state="permitted", text="ok"),
+])
+
+
+def _auto_product(capacity_mode: str | None = None) -> list[dict]:
+    policy: dict = {"dispatch": "auto"}
+    if capacity_mode is not None:
+        policy["capacity_mode"] = capacity_mode
+    return [{"slug": "viberpit", "name": "ViberPit", "priorityRank": 1, "createdAt": "2026-09-01",
+             "policy": policy, "primaryRepo": "o/r"}]
+
+
+_VIBERPIT_CANDIDATES = (10, 0, 0, {"viberpit": {"dispatch": "auto", "eligible": 10, "cap": 1}})
+
+
+async def _decide_permitted(repo, slug):
+    return _PERMITTED_DECISION, {}
+
+
+def test_effective_cap_follows_live_plan_for_auto_product():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 3
+    assert row["pin"] == 1
+    assert r["planLive"] is True
+
+
+def test_effective_cap_stays_pinned_when_product_is_pinned():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product("pinned"), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is True
+
+
+def test_effective_cap_falls_back_to_pin_when_plan_is_stale():
+    stale = datetime.now(timezone.utc) - timedelta(minutes=11)
+    plan = {"computedAt": stale.isoformat(), "applied": True, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is False
+
+
+def test_effective_cap_falls_back_to_pin_when_plan_not_applied():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": False, "perProduct": {"viberpit": 3}}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES,
+            decide=_decide_permitted, plan=plan))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1
+    assert r["planLive"] is False
+
+
 def test_binding_falls_back_to_global_cap_full():
     accounts = [{"name": "acct1", "engine": "claude_code", "provider": "anthropic",
                 "enabled": True, "metered": True, "available": True,
@@ -292,3 +377,63 @@ def test_binding_falls_back_to_global_cap_full():
     r = asyncio.run(run())
     assert r["binding"] == {"layer": "global", "code": "global_cap_full",
                             "text": "the global active-session cap (6) is reached"}
+
+
+# --- N1, fix round 2: the runner row gains `effective` (what's actually       ---
+# --- enforced) alongside the unchanged operator `ceiling`, and `derived`     ---
+# --- (the plan's own fleetConcurrency) is gated on `planLive` like every     ---
+# --- other overlay. ---
+
+def test_runner_row_effective_follows_live_plan_fleet_concurrency():
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {},
+            "fleetConcurrency": 3}
+
+    async def run():
+        return await build_readout(_make_sources(
+            runner_config=("on", {"max_concurrent": 6, "max_spawns_per_day": 500}), plan=plan))
+
+    r = asyncio.run(run())
+    assert r["planLive"] is True
+    assert r["runner"]["ceiling"] == 6     # the operator's own stored value, unchanged
+    assert r["runner"]["effective"] == 3   # min(ceiling, the live plan's fleetConcurrency)
+    assert r["runner"]["derived"] == 3
+
+
+def test_runner_row_effective_falls_back_to_ceiling_when_plan_is_not_live():
+    stale = datetime.now(timezone.utc) - timedelta(minutes=11)
+    plan = {"computedAt": stale.isoformat(), "applied": True, "perProduct": {},
+            "fleetConcurrency": 3}
+
+    async def run():
+        return await build_readout(_make_sources(
+            runner_config=("on", {"max_concurrent": 6, "max_spawns_per_day": 500}), plan=plan))
+
+    r = asyncio.run(run())
+    assert r["planLive"] is False
+    assert r["runner"]["ceiling"] == 6
+    assert r["runner"]["effective"] == 6   # not live: falls back to the stored ceiling
+    assert r["runner"]["derived"] is None  # never shown as if it still governs
+
+
+def test_product_and_runner_rows_both_fall_back_when_plan_not_applied():
+    """Deferred-now 2, fix round 2: an unapplied (monitor-mode) plan must not
+    overlay the per-product effectiveCap OR the runner row, in the same
+    readout — a plan that applies to one but not the other would be a new
+    way for the two halves of the same tick to disagree."""
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": False, "perProduct": {"viberpit": 3},
+            "fleetConcurrency": 3}
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_auto_product(), candidates=_VIBERPIT_CANDIDATES, decide=_decide_permitted,
+            runner_config=("on", {"max_concurrent": 6, "max_spawns_per_day": 500}), plan=plan))
+
+    r = asyncio.run(run())
+    assert r["planLive"] is False
+    row = r["products"][0]
+    assert row["effectiveCap"] == 1        # the stored pin, not the plan's 3
+    assert r["runner"]["ceiling"] == 6
+    assert r["runner"]["effective"] == 6   # the stored ceiling, not the plan's 3
+    assert r["runner"]["derived"] is None

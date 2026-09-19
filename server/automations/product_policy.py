@@ -252,9 +252,17 @@ def is_on(policy: "dict | None") -> bool:
 
 
 def policies_by_slug(db: Session) -> dict[str, dict]:
-    """slug -> effective policy for every Project (sync session; the queue loader's session)."""
-    rows = db.execute(select(Project.slug, Project.automation_policy)).all()
-    return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+    """slug -> effective policy for every Project (sync session; the queue loader's session).
+
+    Overlaid with the capacity governor's live plan (phase 2, spec §6.3) before
+    ``effective_policy`` validates each entry — a lazy import avoids a module
+    cycle (``capacity_apply`` imports ``effective_policy`` from this module)."""
+    from server.automations.capacity_apply import apply_product_plan
+    from server.automations.capacity_store import live_plan_sync
+    rows = {slug: policy for slug, policy in
+            db.execute(select(Project.slug, Project.automation_policy)).all() if slug is not None}
+    plan = live_plan_sync(db)
+    return {slug: effective_policy(raw) for slug, raw in apply_product_plan(rows, plan).items()}
 
 
 # The reserved key a runner policy SNAPSHOT carries its no-product default under
@@ -287,10 +295,17 @@ def policy_for_product(policies: "dict[str, dict]", product: "str | None") -> di
 
 
 async def load_policies(db: AsyncSession) -> dict[str, dict]:
-    """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same reading, no
-    second rule."""
+    """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same
+    reading, same capacity-governor overlay, no second rule (fix round 1, F5).
+    ``live_plan()`` opens its own session (it has no sync/async session to
+    share, unlike ``policies_by_slug``'s ``live_plan_sync(db)``), read before
+    the query on the session this function was given."""
+    from server.automations.capacity_apply import apply_product_plan
+    from server.automations.capacity_store import live_plan
+    plan = await live_plan()
     rows = (await db.execute(select(Project.slug, Project.automation_policy))).all()
-    return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+    policies = {slug: policy for slug, policy in rows if slug is not None}
+    return {slug: effective_policy(raw) for slug, raw in apply_product_plan(policies, plan).items()}
 
 
 DecisionState = Literal["permitted", "refused", "unknown"]
@@ -408,7 +423,17 @@ def decide_implementation(
     def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False) -> None:
         if type(count) is not int or type(cap) is not int or count < 0 or cap < 0:
             add(f"{name}_unknown", "unknown", f"The {name.replace('_', ' ')} capacity is unavailable.")
-        elif cap == 0 or count - int(occupied and count > 0) >= cap:
+            return
+        # Ruling 20 (D8: "admission refuses new claims; it never kills a
+        # session"): a claim that already holds its slot is never refused by
+        # a cap that moved under it. This is the whole ceiling check for an
+        # occupied claim — a cap of 0 (paused) or a count that has since
+        # exceeded the cap does not refuse it. `occupied=False` (a NEW claim)
+        # keeps the prior behaviour unchanged, including `cap == 0` refusing.
+        if occupied:
+            add(f"{name}_held", "permitted",
+                f"This claim already holds a {name.replace('_', ' ')} slot ({count}/{cap}).")
+        elif cap == 0 or count >= cap:
             add(f"{name}_full", "refused", f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
         else:
             add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")

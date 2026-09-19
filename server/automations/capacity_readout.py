@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from server.db.models import INACTIVE_SESSION_STATUSES
 
 from .backlog_runner import in_flight_by_product, is_in_flight
+from .capacity_apply import apply_product_plan, plan_is_live
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, product_order)
 from .product_policy import effective_policy, is_on
@@ -31,7 +32,14 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "global_capacity_full": "ru
                  "daily_budget_full": "runner", "dispatch_off": "product",
                  "approval_required": "product", "runner_off": "runner",
                  "no_account_headroom": "account", "hosts_full": "host",
-                 "global_cap_full": "global"}
+                 "global_cap_full": "global",
+                 # Ruling 20 (product_policy.capacity()): an occupied claim's
+                 # ceiling constraint is now "permitted" (`*_held`), so it never
+                 # refuses and never binds — these entries exist only so a
+                 # future reader of one of these codes (e.g. a diagnostic view
+                 # that doesn't filter by state) maps it to the same layer as
+                 # its `_full` sibling rather than the "product" default.
+                 "global_capacity_held": "runner", "product_capacity_held": "product"}
 
 
 def _layer_for(code: str) -> str:
@@ -110,6 +118,10 @@ async def build_readout(src: CapacitySources) -> dict:
     # it still surfaces in `defects` for the card.
     defect_products = {d["product"] for d in defects}
 
+    now = datetime.now(timezone.utc)
+    plan = await src.plan()
+    live = plan_is_live(plan, now=now, enabled=src.kill_switch())
+
     products: list[dict] = []
     for p in await src.products():
         slug = p["slug"]
@@ -135,11 +147,17 @@ async def build_readout(src: CapacitySources) -> dict:
                 refused = [c for c in decision.constraints if c.state != "permitted"]
                 if refused:
                     constraint, waiting = refused[0].code, refused[0].text
+        # THE overlay rule (fix round 1, F4): the same `apply_product_plan` +
+        # `effective_policy` composition every other read seam uses, not a
+        # second hand-rolled "auto + slug in perProduct" check that could
+        # silently drift from the real one (e.g. the pinned-mode guard).
+        overlaid_policy = apply_product_plan({slug: p.get("policy")}, plan if live else None)[slug]
+        effective_cap = effective_policy(overlaid_policy)["max_in_flight"]
         products.append({
             "slug": slug, "name": p.get("name"), "rank": p.get("priorityRank"),
             "createdAt": p.get("createdAt"), "dispatch": policy["dispatch"],
             "capacityMode": policy["capacity_mode"], "pin": policy["max_in_flight"],
-            "effectiveCap": policy["max_in_flight"], "inFlight": by_product.get(slug, 0),
+            "effectiveCap": effective_cap, "inFlight": by_product.get(slug, 0),
             "eligible": int(counts.get("eligible") or 0), "constraint": constraint,
             "waitingOn": waiting, "defect": slug in defect_products,
         })
@@ -182,18 +200,35 @@ async def build_readout(src: CapacitySources) -> dict:
             binding = {"layer": "global", "code": "global_cap_full",
                        "text": f"the global active-session cap ({global_cap}) is reached"}
 
-    plan = await src.plan()
+    # `ceiling` is the OPERATOR's stored value — unchanged, it is the planner's
+    # own input (``readout_to_inputs`` reads it as ``runner_ceiling``) and must
+    # never itself be overlaid or the governor would feed its own prior output
+    # back into the next tick (fix round 1, F1). `derived`/`effective` are the
+    # UI-facing "what the runner is actually enforcing right now" pair, gated
+    # on `live` the same way every other overlay is (N1, fix round 2): a
+    # stale/disabled/unapplied plan must never show as if it still governs.
+    ceiling = int(runner_cfg.get("max_concurrent") or 0)
+    derived: int | None = None
+    if live and plan:
+        try:
+            fleet_concurrency = plan.get("fleetConcurrency")
+            derived = None if fleet_concurrency is None else int(fleet_concurrency)
+        except (TypeError, ValueError):
+            derived = None
+    effective = ceiling if derived is None else min(ceiling, derived)
+
     return {
-        "computedAt": datetime.now(timezone.utc).isoformat(), "pushLevel": push_level,
+        "computedAt": now.isoformat(), "pushLevel": push_level,
         "governorMode": mode, "killSwitch": src.kill_switch(),
         "global": {"cap": global_cap, "active": global_active, "free": global_free},
         "hosts": hosts,
         "accounts": {"available": accounts_available,
                      "total": len(account_rows), "reservePct": reserve,
                      "nextResetAt": resets[0] if resets else None, "rows": account_rows},
-        "runner": {"ceiling": int(runner_cfg.get("max_concurrent") or 0), "inFlight": in_flight_total,
-                   "derived": (plan or {}).get("fleetConcurrency")},
+        "runner": {"ceiling": ceiling, "effective": effective, "inFlight": in_flight_total,
+                   "derived": derived},
         "products": products, "binding": binding, "defects": defects, "plan": plan,
+        "planLive": live,
     }
 
 
