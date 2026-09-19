@@ -241,19 +241,20 @@ def test_admission_end_to_end_respects_plan_fleet_ceiling(tmp_path, monkeypatch)
 
 
 def test_admission_end_to_end_the_floored_planner_never_starves_an_in_flight_claim(tmp_path, monkeypatch):
-    """N2, fix round 2: ``decide_implementation``'s ``capacity()`` treats
-    ``cap == 0`` as an unconditional refusal — it short-circuits before the
-    ``occupied`` adjustment even reads, so an admission-seam test that writes
-    ``fleetConcurrency: 0`` directly and expects an occupied claim to be
-    permitted cannot pass; that would require changing the 0-means-paused
-    semantics ``product_policy.capacity()`` deliberately keeps (see its
-    ``max_in_flight`` ConfigField help text), which N2 does not ask for.
-    Instead this proves the INVARIANT N2 actually establishes: the planner's
-    own fleet floor (``capacity_plan._fleet``) means a real plan computed
-    while every account is at its reserve ceiling still never drops
-    ``fleetConcurrency`` below the runner's own in-flight count — so the cap
-    this admission seam reads is never 0 while a claim is live, and an
-    already-claimed target is never refused on global capacity."""
+    """N2, fix round 2: this proves the planner's own fleet floor
+    (``capacity_plan._fleet``) means a real plan computed while every account
+    is at its reserve ceiling still never drops ``fleetConcurrency`` below the
+    runner's own in-flight count — so the cap this admission seam reads is
+    never 0 while a claim is live.
+
+    Ruling 20 (final fix wave) now ALSO makes this direct: an occupied claim
+    (``existing_slot=True`` with a matching token) is never refused on
+    capacity regardless of the cap it reads, including a real
+    ``fleetConcurrency: 0`` — see
+    ``test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity``
+    below, which writes that cap directly rather than relying on the floor.
+    Both guarantees hold independently and this test still proves the
+    floor's own invariant."""
     async def run():
         await _init(tmp_path, "seams_fleet_floor.db")
         _identity(monkeypatch)
@@ -301,6 +302,88 @@ def test_admission_end_to_end_the_floored_planner_never_starves_an_in_flight_cla
 
 
 # --------------------------------------------------------------------------- #
+# Ruling 20 (final fix wave, D8): an occupied claim is never refused on       #
+# capacity — under an applied live plan, a stale plan, the kill switch off,   #
+# or a plan whose fleet ceiling is literally 0.                              #
+# --------------------------------------------------------------------------- #
+
+async def _seed_occupied_claim(repo: str, slug: str, *, max_in_flight: int) -> None:
+    await _seed(slug, repo, policy={"dispatch": "auto", "max_in_flight": max_in_flight})
+    async with db_session() as db:
+        db.add(AutomationTargetState(automation_id="backlog-runner", target=f"{repo}#1",
+                                      state={"product": slug, "ownership_token": "tok"}))
+        await db.flush()
+
+
+async def _decide_occupied(repo: str, slug: str):
+    snapshot = await gather_implementation_snapshot([repo], requested_product=slug)
+    decision, _ = snapshot.decide(
+        repo, requested_product=slug, trigger="automatic", effect="dispatch",
+        existing_slot=True, existing_token="tok")
+    return decision
+
+
+def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp_path, monkeypatch):
+    """D8: an occupied claim (one already holding its slot) is permitted
+    under every one of these, because the product-policy capacity check skips
+    the ceiling entirely for ``existing_slot=True`` — never because the plan
+    happens to compute a headroom-preserving number:
+
+    (a) the plan's ``perProduct`` lacks the product (a drained backlog no
+        longer allocates it a slot at all);
+    (b) the plan is 11 minutes stale (falls back to the stored policy, whose
+        own ``max_in_flight`` is set below the actual in-flight count here);
+    (c) the kill switch is off (same fallback as (b));
+    (d) the plan is live and applied but ``fleetConcurrency: 0``.
+    """
+    async def run():
+        await _init(tmp_path, "seams_occupied_claim.db")
+        _identity(monkeypatch)
+        await _set_runner_row(mode="on", config={"max_concurrent": 6, "max_spawns_per_day": 10})
+
+        # (a) product absent from a live plan's perProduct.
+        await _seed_occupied_claim("o/a", "product-a", max_in_flight=1)
+        await write_plan(_plan({"other-product": 3}))
+        decision = await _decide_occupied("o/a", "product-a")
+        assert decision.permitted, decision.constraints
+        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+                   for c in decision.constraints)
+
+        # (b) plan is stale (11 minutes old) — falls back to the stored
+        # policy, whose max_in_flight (1) is already below the 1 in-flight
+        # claim seeded above but is never even evaluated because the claim
+        # is occupied.
+        await _seed_occupied_claim("o/b", "product-b", max_in_flight=1)
+        await write_plan(_plan({"product-b": 1}))
+        await _backdate_plan(11)
+        decision = await _decide_occupied("o/b", "product-b")
+        assert decision.permitted, decision.constraints
+        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+                   for c in decision.constraints)
+
+        # (c) kill switch off — same fallback as (b), live plan ignored.
+        await _seed_occupied_claim("o/c", "product-c", max_in_flight=1)
+        await write_plan(_plan({"product-c": 1}))
+        monkeypatch.setenv("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "false")
+        decision = await _decide_occupied("o/c", "product-c")
+        assert decision.permitted, decision.constraints
+        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+                   for c in decision.constraints)
+        monkeypatch.delenv("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", raising=False)
+
+        # (d) live, applied plan with fleetConcurrency literally 0 — the
+        # global ceiling every new claim would be refused under.
+        await _seed_occupied_claim("o/d", "product-d", max_in_flight=5)
+        await write_plan(_plan({"product-d": 5}, fleet=0))
+        decision = await _decide_occupied("o/d", "product-d")
+        assert decision.permitted, decision.constraints
+        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+                   for c in decision.constraints)
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
 # live_plan / live_plan_sync never raise (F2, fix round 1)                    #
 # --------------------------------------------------------------------------- #
 
@@ -332,7 +415,7 @@ def test_live_plan_sync_never_raises_on_a_broken_read():
 # load_policies (the async twin) overlays exactly like policies_by_slug (F5)  #
 # --------------------------------------------------------------------------- #
 
-def test_load_policies_matches_policies_by_slug_on_the_same_data(tmp_path):
+def test_load_policies_matches_policies_by_slug_on_quiescent_data(tmp_path):
     """Deferred-now 2, fix round 2: don't just assert the same literal on each
     side (which would pass even if the two functions diverged in some OTHER
     field) — read both over the identical seeded data and compare the whole

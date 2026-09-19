@@ -63,16 +63,27 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   `policies_by_slug` for each auto product's `max_in_flight`). Nothing else in the runner changes —
   `decide_implementation` still reads the same merged values it always did.
 - **Kill switch** — `VIBERPIT_CAPACITY_GOVERNOR_ENABLED` (default true); setting it to `false` stops
-  plan application. The readout keeps working either way, since it is built from the same
+  plan application. It is re-read on every seam read (`capacity_store.live_plan` /
+  `live_plan_sync`), not baked in at write time: turning it off stops an already-written,
+  already-`applied=True` plan from governing on the very next read, with no need to wait for the
+  loop to write a new row. The readout keeps working either way, since it is built from the same
   `decide_implementation` counts the runner already uses, not from the plan.
 - **Phase 2 (shipped)** applies the plan through those read seams. A plan is only "live" — and so only
-  applied — when it is fresh (computed within the last 10 minutes), was written in `act` mode
-  (`applied=True`), and the kill switch was on when it was written; a stale plan, one written in
-  `monitor` mode, or one written while the kill switch was off is ignored and every seam falls back
-  to the human-owned stored value. The deployed governor stays in `monitor` until the owner (or the
-  next session, after a day of sensible plans reading on the Capacity page) flips it to `act`. The
-  Capacity page's runner row shows the enforced cap (`effective`) next to the stored ceiling, so a
-  plan-derived cap is visibly distinct from what the operator set.
+  applied — when it was written in `act` mode (`applied=True`), the kill switch reads on *now* (not
+  at write time), and it is fresh: computed within the last 10 minutes and not in the future (a small
+  60s tolerance absorbs ordinary clock skew between the writer and a reader). A stale plan, one
+  written in `monitor` mode, one computed in the future, or a currently-disabled kill switch is
+  ignored and every seam falls back to the human-owned stored value. The deployed governor stays in
+  `monitor` until the owner (or the next session, after a day of sensible plans reading on the
+  Capacity page) flips it to `act`. The Capacity page's runner row shows the enforced cap
+  (`effective`) next to the stored ceiling, so a plan-derived cap is visibly distinct from what the
+  operator set.
+- **An occupied claim is never refused on capacity** (D8: "admission refuses new claims; it never
+  kills a session"). `product_policy.decide_implementation`'s capacity check skips the ceiling
+  entirely for a claim that already holds its slot (`existing_slot=True` with a matching ownership
+  token) — a cap that moved under it (a plan re-tick, a pause to 0, a product falling out of the
+  plan) can never turn an in-flight claim's next revalidation into a refusal. A brand-new claim is
+  still refused by a 0 cap exactly as before.
 
 **Evidence** — Spec: `docs/superpowers/specs/2026-09-19-capacity-governor-design.md`. Plan:
 `docs/superpowers/plans/2026-09-19-capacity-governor-phase1.md`.

@@ -50,7 +50,14 @@ def plan_is_live(plan: dict | None, *, now: datetime, enabled: bool, max_age_s: 
     if computed.tzinfo is None:
         computed = computed.replace(tzinfo=timezone.utc)
     at = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    return abs((at - computed).total_seconds()) <= max_age_s
+    # Freshness is a WINDOW, not a distance: `abs()` treated a plan computed in
+    # the future (clock skew between the writer and this reader, or a corrupt
+    # `computedAt`) as equally live as one that many minutes old, which is
+    # backwards — a plan from the future was never actually computed against
+    # the world this reader sees. A small negative tolerance (60s) absorbs
+    # ordinary clock skew without opening the same hole `abs()` did.
+    age = (at - computed).total_seconds()
+    return -60 <= age <= max_age_s
 
 
 def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -> dict[str, dict | None]:

@@ -99,7 +99,13 @@ def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str,
 
 
 def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
-    working = [p for p in products if p.dispatch != "off" and p.eligible > 0]
+    # A product with live claims stays in the plan even with an empty backlog
+    # (`eligible == 0`): its cap is its in-flight floor, so it gets no
+    # round-robin slots (`caps < eligible` is false) but is not dropped from
+    # `per_product` either — dropping it would let a later, unfloored read
+    # treat its cap as absent rather than as "its current in-flight count".
+    # An empty backlog with NO in-flight claim still gets nothing.
+    working = [p for p in products if p.dispatch != "off" and (p.eligible > 0 or p.in_flight > 0)]
     caps: dict[str, int] = {}
     for p in working:
         if p.capacity_mode == "pinned":
@@ -158,8 +164,14 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
             reasons.append(f"{slug}: {value} (rank {p.rank if p.rank is not None else '—'}, "
                            f"{'pinned' if p.capacity_mode == 'pinned' else 'auto'}, {p.eligible} eligible)")
         else:
-            per_product[slug] = current
+            # The carried value is floored at the product's current in-flight
+            # count too (D8's own floor, not just the confirmed-value path
+            # above): hysteresis must never carry forward a stale cap LOWER
+            # than what the product already holds, or an occupied claim would
+            # read a shrunk cap on the seam that still checks it directly.
+            carried = max(current, p.in_flight)
+            per_product[slug] = carried
             pending[slug] = value
-            reasons.append(f"{slug}: {current} → {value} pending confirmation next tick")
+            reasons.append(f"{slug}: {carried} → {value} pending confirmation next tick")
     return CapacityPlan(push_level=push_level, fleet_concurrency=fleet, per_product=per_product,
                         pending=pending, budget=budget, reasons=reasons, limiting=limiting)

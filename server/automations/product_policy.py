@@ -423,7 +423,17 @@ def decide_implementation(
     def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False) -> None:
         if type(count) is not int or type(cap) is not int or count < 0 or cap < 0:
             add(f"{name}_unknown", "unknown", f"The {name.replace('_', ' ')} capacity is unavailable.")
-        elif cap == 0 or count - int(occupied and count > 0) >= cap:
+            return
+        # Ruling 20 (D8: "admission refuses new claims; it never kills a
+        # session"): a claim that already holds its slot is never refused by
+        # a cap that moved under it. This is the whole ceiling check for an
+        # occupied claim — a cap of 0 (paused) or a count that has since
+        # exceeded the cap does not refuse it. `occupied=False` (a NEW claim)
+        # keeps the prior behaviour unchanged, including `cap == 0` refusing.
+        if occupied:
+            add(f"{name}_held", "permitted",
+                f"This claim already holds a {name.replace('_', ' ')} slot ({count}/{cap}).")
+        elif cap == 0 or count >= cap:
             add(f"{name}_full", "refused", f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
         else:
             add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")

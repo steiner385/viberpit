@@ -83,6 +83,24 @@ def test_never_below_in_flight_or_above_eligible():
     assert caps2["kindash"] >= 4
 
 
+def test_hysteresis_carry_is_floored_at_in_flight():
+    """The pending/carry branch used to carry forward the PREVIOUS tick's cap
+    verbatim, which could be lower than what the product already holds — a
+    plan-in-flux moment where the plan itself would (transiently) show a cap
+    the runner's own in-flight count already exceeds. The carried value must
+    never drop below `in_flight`, the same floor `_split` and `_fleet` apply
+    elsewhere."""
+    from server.automations.capacity_plan import CapacityPlan
+
+    previous = CapacityPlan(push_level="steady", fleet_concurrency=1,
+                            per_product={"kindash": 1}, pending={}, budget={})
+    i = _inputs(products=(_prod("kindash", 1, eligible=50, in_flight=3),),
+               runner_ceiling=4, hosts=(_host("d", 3, 8),), runner_in_flight=3)
+    plan = plan_capacity(i, push_level="steady", previous=previous)
+    assert plan.per_product["kindash"] == 3   # carried, floored at in_flight — not the stale 1
+    assert plan.pending["kindash"] == 4       # the newly proposed value, unchanged
+
+
 def test_hysteresis_applies_on_second_tick():
     i = _inputs()
     first = plan_capacity(i, push_level="steady")
@@ -132,6 +150,19 @@ def test_off_products_and_empty_backlogs_get_nothing():
     assert "kindash" not in plan.per_product
     assert "viberpit" not in plan.per_product
     assert "ghostdriver" in plan.per_product
+
+
+def test_a_product_with_live_claims_stays_in_the_plan_even_with_an_empty_backlog():
+    """A product with `eligible == 0` but `in_flight > 0` is not dropped from
+    the plan the way a truly idle product is: its cap is its in-flight floor.
+    An empty backlog with NO in-flight claim still gets nothing (the case
+    above)."""
+    caps = _split(6, [_prod("kindash", 1, eligible=0, in_flight=2)])
+    assert caps == {"kindash": 2}
+
+    i = _inputs(products=(_prod("kindash", 1, eligible=0, in_flight=2),))
+    plan = plan_capacity(i, push_level="steady")
+    assert plan.per_product.get("kindash") == 2
 
 
 def test_floor_never_lifts_a_cap_above_eligible_or_the_fleet_sum():

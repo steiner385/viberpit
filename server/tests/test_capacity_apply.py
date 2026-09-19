@@ -81,6 +81,24 @@ def test_plan_is_live_false_when_computed_at_unparseable():
     assert plan_is_live(_plan(computedAt="not-a-timestamp"), now=NOW, enabled=True) is False
 
 
+def test_plan_is_live_false_when_computed_11_minutes_in_the_future():
+    """Freshness is a window, not a distance from `now`: `abs()` used to treat
+    a plan from 11 minutes in the future as equally live as one 11 minutes
+    stale. A plan that far in the future was never computed against the
+    world this reader sees."""
+    computed = NOW + timedelta(minutes=11)
+    plan = _plan(computedAt=computed.isoformat())
+    assert plan_is_live(plan, now=NOW, enabled=True) is False
+
+
+def test_plan_is_live_true_when_computed_30_seconds_in_the_future():
+    """A small future skew (ordinary clock drift between the writer and this
+    reader) is tolerated."""
+    computed = NOW + timedelta(seconds=30)
+    plan = _plan(computedAt=computed.isoformat())
+    assert plan_is_live(plan, now=NOW, enabled=True) is True
+
+
 # --- apply_product_plan -------------------------------------------------
 
 
@@ -98,7 +116,7 @@ def test_apply_product_plan_leaves_pinned_untouched():
     plan = _plan(perProduct={"viberpit": 3})
     out = apply_product_plan(policies, plan)
     assert out["viberpit"] == raw
-    assert out["viberpit"] is not raw or out["viberpit"] == raw  # untouched value either way
+    assert out["viberpit"] is raw  # a pinned product's entry passes through unchanged, same object
 
 
 def test_apply_product_plan_leaves_absent_slug_untouched():
