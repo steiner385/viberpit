@@ -17,6 +17,9 @@ from server.pm.classification import (
     parse_classification_output,
 )
 from server.pm.fenced_json import FencedJsonError, extract_fenced_json
+from server.sessions.completion import commit_trailer
+
+from ccswitch.engines import AgentEngine
 
 
 def _item(n: int) -> WorkItemBrief:
@@ -47,7 +50,10 @@ def test_map_prompt_is_propose_only_one_pr():
     assert "auto-merge" in p.lower()          # explicitly forbidden
     assert "Evidence" in p                    # outcome-driven template marker
     assert "120" in p and "800" in p          # backlog scale is context
-    assert "Co-Authored-By: Claude Opus 4.8" in p  # commit trailer
+    # Commit trailer, interpolated from the single source of truth rather than
+    # pinned here — a second copy of the literal is how the stale "Opus 4.8"
+    # version survived a model bump in the first place.
+    assert commit_trailer(AgentEngine.CLAUDE_CODE) in p
     assert "origin/" in p                    # origin/ branch instruction
 
 
