@@ -498,6 +498,11 @@ class RemoteOrchestrator:
         result = await self._client.call("automation_overview")
         return result if isinstance(result, dict) else {}
 
+    async def capacity_readout(self) -> dict:
+        """The capacity governor's ceiling stack (spec 2026-09-19 §5), via the daemon."""
+        result = await self._client.call("capacity_readout")
+        return result if isinstance(result, dict) else {}
+
     async def automation_statuses(self) -> "dict[str, dict]":
         """Rendered live status per automation id (badge text/level), via the daemon."""
         return await self._client.call("automation_statuses")
