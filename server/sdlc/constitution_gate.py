@@ -102,6 +102,7 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
         violations.append(
             "the pull request description carries no owner acknowledgment — add a line "
             f"beginning {ACKNOWLEDGMENT_MARKER!r} stating what is approved"
+            f"{_missing_acknowledgment_detail(pr_body)}"
         )
 
     return violations
@@ -111,15 +112,31 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
 # not an acknowledgment — it is usually the template *asking* for one. Stripping
 # comments first is what stops a checklist from satisfying its own checklist item.
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# The label without its trailing colon, so the colon can be matched separately —
+# see the closing-decoration comment below.
+_ACK_LABEL = ACKNOWLEDGMENT_MARKER.rstrip(":")
 # The marker must open a line, so merely discussing the gate in prose does not
 # clear it. Everything before it may only be whitespace or decoration: emphasis,
 # heading, blockquote, list bullet, bracket, or backtick. Brackets matter in
 # practice — a template placeholder is usually written `[ ... ]` and authors
 # reasonably type the acknowledgment inside the brackets they were given.
 # Widening here cannot admit prose: the marker still has to open the line.
+#
+# Between the label and its colon, also allow closing emphasis/code decoration
+# (``**Owner acknowledgment**:``) — not just opening decoration before the label.
+# `**Label**:` is at least as idiomatic as `**Label:**`, and the original regex,
+# which escaped the label and colon as one literal, rejected it (#1831).
 _ACK_LINE = re.compile(
-    r"^[\s>*_#\-\[\]()`\"']*" + re.escape(ACKNOWLEDGMENT_MARKER) + r"\s*\S",
+    r"^[\s>*_#\-\[\]()`\"']*" + re.escape(_ACK_LABEL) + r"[\s*_`]*:\s*\S",
     re.IGNORECASE | re.MULTILINE,
+)
+
+# Shown when the body already talks about "acknowledgment" but no line matches
+# _ACK_LINE — the author likely wrote one in a shape the gate doesn't recognize,
+# so naming the accepted forms is more useful than repeating the generic ask.
+_ACCEPTED_FORMS = (
+    "'Owner acknowledgment: ...', '**Owner acknowledgment:** ...', "
+    "or '**Owner acknowledgment**: ...'"
 )
 
 
@@ -129,8 +146,28 @@ def _acknowledged(pr_body: str) -> bool:
     Requires a non-empty statement after the marker: a bare ``Owner
     acknowledgment:`` with nothing following it acknowledges nothing.
     """
-    visible = _HTML_COMMENT.sub("", pr_body or "")
-    return bool(_ACK_LINE.search(visible))
+    return bool(_ACK_LINE.search(_visible(pr_body)))
+
+
+def _visible(pr_body: str) -> str:
+    return _HTML_COMMENT.sub("", pr_body or "")
+
+
+def _missing_acknowledgment_detail(pr_body: str) -> str:
+    """Extra detail for a missing-acknowledgment violation.
+
+    When the description already mentions "acknowledgment" but no line matches
+    the marker, say so and list the accepted forms — the generic instruction
+    looks satisfied to an author who already wrote *a* line, and diffing their
+    own text against the regex is not a reasonable ask (cost a round trip on
+    #1830).
+    """
+    if re.search(r"acknowledg", _visible(pr_body), re.IGNORECASE):
+        return (
+            f" — the description already mentions acknowledgment, but no line "
+            f"matches; accepted forms: {_ACCEPTED_FORMS}"
+        )
+    return ""
 
 
 def check_guardrail_change(changed_paths: list[str], pr_body: str) -> list[str]:
@@ -152,5 +189,5 @@ def check_guardrail_change(changed_paths: list[str], pr_body: str) -> list[str]:
     return [
         f"this pull request changes governance enforcement ({listed}) but carries no "
         f"owner acknowledgment — add a line beginning {ACKNOWLEDGMENT_MARKER!r} saying "
-        "what you intend to change and why"
+        f"what you intend to change and why{_missing_acknowledgment_detail(pr_body)}"
     ]
