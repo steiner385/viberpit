@@ -295,10 +295,17 @@ def policy_for_product(policies: "dict[str, dict]", product: "str | None") -> di
 
 
 async def load_policies(db: AsyncSession) -> dict[str, dict]:
-    """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same reading, no
-    second rule."""
+    """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same
+    reading, same capacity-governor overlay, no second rule (fix round 1, F5).
+    ``live_plan()`` opens its own session (it has no sync/async session to
+    share, unlike ``policies_by_slug``'s ``live_plan_sync(db)``), read before
+    the query on the session this function was given."""
+    from server.automations.capacity_apply import apply_product_plan
+    from server.automations.capacity_store import live_plan
+    plan = await live_plan()
     rows = (await db.execute(select(Project.slug, Project.automation_policy))).all()
-    return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+    policies = {slug: policy for slug, policy in rows if slug is not None}
+    return {slug: effective_policy(raw) for slug, raw in apply_product_plan(policies, plan).items()}
 
 
 DecisionState = Literal["permitted", "refused", "unknown"]

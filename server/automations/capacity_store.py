@@ -8,6 +8,7 @@ still good" for itself (phase 2, spec §6).
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 from server.config import get_settings
 from server.db import db_session
 from server.db.models import CapacityPlanRow
+
+log = logging.getLogger(__name__)
 
 PLAN_ID = "current"
 
@@ -44,18 +47,31 @@ def read_plan_sync(db: Session) -> dict | None:
 
 
 async def live_plan() -> dict | None:
-    """The current plan, or ``None`` if it is not live (spec §6.3/D3/D5/§6.4)."""
+    """The current plan, or ``None`` if it is not live (spec §6.3/D3/D5/§6.4).
+
+    Never raises: every read seam calls this unconditionally on its own path
+    (admission, the queue loader, fleet config), so a DB hiccup here must
+    degrade to "no plan" — the pre-governor behaviour — rather than taking the
+    caller down with it (fix round 1, F2)."""
     from server.automations.capacity_apply import plan_is_live
-    plan = await read_plan()
+    try:
+        plan = await read_plan()
+    except Exception:
+        log.warning("capacity_store.plan_read_failed", exc_info=True)
+        return None
     enabled = bool(get_settings().capacity_governor_enabled)
     now = datetime.now(timezone.utc)
     return plan if plan_is_live(plan, now=now, enabled=enabled) else None
 
 
 def live_plan_sync(db: Session) -> dict | None:
-    """Sync-session counterpart of ``live_plan``."""
+    """Sync-session counterpart of ``live_plan``. Never raises (see above)."""
     from server.automations.capacity_apply import plan_is_live
-    plan = read_plan_sync(db)
+    try:
+        plan = read_plan_sync(db)
+    except Exception:
+        log.warning("capacity_store.plan_read_failed", exc_info=True)
+        return None
     enabled = bool(get_settings().capacity_governor_enabled)
     now = datetime.now(timezone.utc)
     return plan if plan_is_live(plan, now=now, enabled=enabled) else None

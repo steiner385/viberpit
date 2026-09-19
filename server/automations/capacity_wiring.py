@@ -87,7 +87,11 @@ def sources_for(orch) -> CapacitySources:
         global_active=orch._active_session_count,
         hosts=hosts,
         accounts=lambda reserve: account_headroom(orch, reserve_pct=reserve),
-        runner_config=orch._backlog_read_config,
+        # apply_plan=False: the governor derives its next plan from the
+        # OPERATOR's stored ceiling, never from a prior tick's own overlaid
+        # output — feeding that back in would ratchet fleetConcurrency down
+        # every tick with no way back up (F1, fix round 1).
+        runner_config=lambda: orch._backlog_read_config(apply_plan=False),
         target_states=orch._backlog_ctx.list_target_states,
         candidates=orch._backlog_count_candidates,
         products=products,

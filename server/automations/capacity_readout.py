@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from server.db.models import INACTIVE_SESSION_STATUSES
 
 from .backlog_runner import in_flight_by_product, is_in_flight
-from .capacity_apply import plan_is_live
+from .capacity_apply import apply_product_plan, plan_is_live
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, product_order)
 from .product_policy import effective_policy, is_on
@@ -140,12 +140,12 @@ async def build_readout(src: CapacitySources) -> dict:
                 refused = [c for c in decision.constraints if c.state != "permitted"]
                 if refused:
                     constraint, waiting = refused[0].code, refused[0].text
-        effective_cap = policy["max_in_flight"]
-        if live and policy["capacity_mode"] == "auto" and plan and slug in (plan.get("perProduct") or {}):
-            try:
-                effective_cap = int(plan["perProduct"][slug])
-            except (TypeError, ValueError):
-                effective_cap = policy["max_in_flight"]
+        # THE overlay rule (fix round 1, F4): the same `apply_product_plan` +
+        # `effective_policy` composition every other read seam uses, not a
+        # second hand-rolled "auto + slug in perProduct" check that could
+        # silently drift from the real one (e.g. the pinned-mode guard).
+        overlaid_policy = apply_product_plan({slug: p.get("policy")}, plan if live else None)[slug]
+        effective_cap = effective_policy(overlaid_policy)["max_in_flight"]
         products.append({
             "slug": slug, "name": p.get("name"), "rank": p.get("priorityRank"),
             "createdAt": p.get("createdAt"), "dispatch": policy["dispatch"],
