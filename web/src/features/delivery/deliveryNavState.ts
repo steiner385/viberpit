@@ -10,8 +10,8 @@ export const DELIVERY_PATH = '/delivery'
 export const AUTOMATION_ROUTE = `${DELIVERY_PATH}/automations/:automationId`
 export const CI_REPO_ROUTE = `${DELIVERY_PATH}/ci/:owner/:repo`
 
-export type DeliveryScope = 'automations' | 'ci'
-export const DELIVERY_SCOPES: readonly DeliveryScope[] = ['automations', 'ci']
+export type DeliveryScope = 'automations' | 'ci' | 'capacity'
+export const DELIVERY_SCOPES: readonly DeliveryScope[] = ['automations', 'ci', 'capacity']
 
 export function deliveryScopeForSearch(search: string): DeliveryScope {
   const v = new URLSearchParams(search).get('scope')

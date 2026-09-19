@@ -7,6 +7,7 @@ import { act, render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { AutomationStatus } from '@/api/automations'
 import { AUTOMATIONS } from './__fixtures__/automations'
+import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryPage } from './DeliveryPage'
 import { AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
 
@@ -46,6 +47,12 @@ vi.mock('@/api/hooks', () => ({
   useGithubRepos: () => ({ data: [], isLoading: false }),
   useConsolidation: () => ({ data: undefined }),
   useConsolidate: () => ({ mutate: vi.fn(), isPending: false }),
+  // CapacityDetail's own reads — see CapacityDetail.test.tsx for the detailed
+  // behaviour; this file only needs the scope to render without crashing.
+  useCapacity: () => ({ data: CAPACITY, isLoading: false, isError: false }),
+  useUpdateProject: () => ({ mutate: vi.fn() }),
+  useUpdateProductPolicy: () => ({ mutate: vi.fn() }),
+  useProject: () => ({ data: undefined }),
 }))
 vi.mock('./automation/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
 vi.mock('./automation/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
@@ -116,6 +123,13 @@ describe('DeliveryPage', () => {
     expect(h1()).toHaveTextContent('Delivery')
     expect(screen.getByText('Pick an automation')).toBeInTheDocument()
     expect(screen.getByText(/3 registered/)).toBeInTheDocument()
+  })
+
+  it('the Capacity scope has no welcome pane — it always shows the readout', () => {
+    mount('/delivery?scope=capacity')
+    expect(h1()).toHaveTextContent('Delivery')
+    expect(screen.getByText('Push level')).toBeInTheDocument()
+    expect(screen.queryByText('Pick an automation')).not.toBeInTheDocument()
   })
 
   it('the CI scope keeps the section title and invites a repository pick', () => {

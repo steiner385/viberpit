@@ -51,6 +51,7 @@ import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
 } from './roadmap'
+import { fetchCapacity, type CapacityReadout } from './capacity'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
   fetchDecisions, acceptDecision, rejectDecision,
@@ -131,6 +132,7 @@ export const QK = {
   policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
+  capacity: ['capacity'] as const,
 }
 
 /**
@@ -1175,6 +1177,20 @@ export function useAutomations({ poll = false }: { poll?: boolean } = {}) {
   return useQuery<Automation[]>({
     queryKey: QK.automations, queryFn: fetchAutomations, staleTime: 10_000,
     refetchInterval: poll ? 30_000 : false })
+}
+
+/** The capacity governor's readout (design §5). `poll` is owned by whichever
+ *  caller is the live page (`CapacityDetail`); the list column's copy (via
+ *  `useDeliveryWorkspace`) reads the same cache entry without a second timer —
+ *  the same split as `useAutomations`/`useStageModels` above. */
+export function useCapacity({ poll = false, enabled = true }: { poll?: boolean; enabled?: boolean } = {}) {
+  return useQuery<CapacityReadout>({
+    queryKey: QK.capacity,
+    queryFn: fetchCapacity,
+    staleTime: 10_000,
+    refetchInterval: poll ? 30_000 : false,
+    enabled,
+  })
 }
 
 export function useAutomationEvents(id: string, enabled = true) {

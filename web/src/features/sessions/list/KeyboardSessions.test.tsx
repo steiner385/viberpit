@@ -62,9 +62,11 @@ vi.mock('@/api/hooks', () => ({
   useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
-  // The Delivery list column's two reads (finish-line row 4). Gated off on
-  // every Sessions route, but the shell calls the hook unconditionally.
+  // The Delivery list column's reads (finish-line row 4; capacity per
+  // design 2026-09-19 §7.1). Gated off on every Sessions route, but the
+  // shell calls the hooks unconditionally.
   useStageModels: () => ({ data: undefined, isLoading: false, isError: false }),
+  useCapacity: () => ({ data: undefined, isLoading: false, isError: false }),
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),

@@ -13,6 +13,9 @@ export interface DeliveryScopeSegmentProps {
   scope: DeliveryScope
   automationCount: number
   ciCount: number
+  /** 1 when the readout has a binding constraint, else 0 — Capacity has no
+   *  actionable-item count of its own, just whether the fleet is blocked. */
+  capacityCount: number
 }
 
 const item = cn(
@@ -39,7 +42,7 @@ function ScopeLink({ to, label, count, current }: ScopeLinkProps) {
   )
 }
 
-export function DeliveryScopeSegment({ scope, automationCount, ciCount }: DeliveryScopeSegmentProps) {
+export function DeliveryScopeSegment({ scope, automationCount, ciCount, capacityCount }: DeliveryScopeSegmentProps) {
   return (
     <nav aria-label="Delivery scope" className="flex gap-1 rounded-md border border-edge bg-surface p-1">
       <ScopeLink
@@ -49,6 +52,12 @@ export function DeliveryScopeSegment({ scope, automationCount, ciCount }: Delive
         current={scope === 'automations'}
       />
       <ScopeLink to={deliveryPath('ci')} label={DELIVERY.ci} count={ciCount} current={scope === 'ci'} />
+      <ScopeLink
+        to={deliveryPath('capacity')}
+        label={DELIVERY.capacity}
+        count={capacityCount}
+        current={scope === 'capacity'}
+      />
     </nav>
   )
 }
