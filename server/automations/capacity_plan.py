@@ -91,11 +91,11 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
     caps: dict[str, int] = {}
     for p in working:
         if p.capacity_mode == "pinned":
-            caps[p.slug] = min(p.pin, p.eligible)
-            fleet -= caps[p.slug]
+            caps[p.slug] = max(min(p.pin, p.eligible), p.in_flight)
+        else:
+            caps[p.slug] = p.in_flight
+        fleet -= caps[p.slug]
     auto = [p for p in working if p.capacity_mode != "pinned"]
-    for p in auto:
-        caps[p.slug] = 0
     changed = True
     while fleet > 0 and changed:
         changed = False
@@ -106,8 +106,6 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
                 caps[p.slug] += 1
                 fleet -= 1
                 changed = True
-    for p in working:
-        caps[p.slug] = max(caps[p.slug], p.in_flight)
     return caps
 
 

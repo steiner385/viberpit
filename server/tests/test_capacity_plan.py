@@ -116,3 +116,20 @@ def test_off_products_and_empty_backlogs_get_nothing():
     assert "kindash" not in plan.per_product
     assert "viberpit" not in plan.per_product
     assert "ghostdriver" in plan.per_product
+
+
+def test_floor_never_lifts_a_cap_above_eligible_or_the_fleet_sum():
+    from server.automations.capacity_plan import _split
+    prods = [_prod("kindash", 1, eligible=2, in_flight=4), _prod("viberpit", 2, eligible=10)]
+    caps = _split(5, prods)
+    assert caps["kindash"] == 4                      # floor: never below in-flight
+    assert caps["viberpit"] == 1                     # 5 - 4 already held = 1 slot left
+    assert sum(caps.values()) == 5
+
+
+def test_pinned_floor_is_deducted_before_the_round_robin():
+    from server.automations.capacity_plan import _split
+    prods = [_prod("viberpit", 1, eligible=1, in_flight=3, mode="pinned", pin=1),
+             _prod("kindash", 2, eligible=10)]
+    caps = _split(4, prods)
+    assert caps["viberpit"] == 3 and caps["kindash"] == 1 and sum(caps.values()) == 4
