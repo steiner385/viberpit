@@ -15,7 +15,7 @@ export const CAPACITY: CapacityReadout = {
       { name: 'primary', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, windows: [] },
     ],
   },
-  runner: { ceiling: 5, inFlight: 3, derived: 4 },
+  runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
   products: [
     {
       slug: 'kindash', name: 'KinDash', rank: 1, createdAt: '2026-01-01T00:00:00Z',

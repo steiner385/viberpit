@@ -41,7 +41,10 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
   const hostsFree = hostsUnbounded ? null : countedHosts.reduce((s, h) => s + (h.free ?? 0), 0)
   const hostsActive = countedHosts.reduce((s, h) => s + h.active, 0)
   const accountsUsed = Math.max(0, r.accounts.total - r.accounts.available)
-  const runnerFree = Math.max(0, r.runner.ceiling - r.runner.inFlight)
+  // `effective`, not `ceiling`: what the runner is actually enforcing right
+  // now (the live plan's overlay), not the operator's stored value alone —
+  // fix round 2, N1.
+  const runnerFree = Math.max(0, r.runner.effective - r.runner.inFlight)
   const productsCap = r.products.reduce((s, p) => s + p.effectiveCap, 0)
   const productsUsed = r.products.reduce((s, p) => s + p.inFlight, 0)
 
@@ -62,8 +65,10 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
       href: '/settings/accounts', binding: isBindingLayer(r.binding, 'account'),
     },
     {
-      key: 'runner', label: 'Runner ceiling', used: r.runner.inFlight, cap: r.runner.ceiling, free: runnerFree,
+      key: 'runner', label: 'Runner ceiling', used: r.runner.inFlight, cap: r.runner.effective, free: runnerFree,
       href: `${automationPath('backlog-runner')}?tab=config`, binding: isBindingLayer(r.binding, 'runner'),
+      secondary: r.runner.effective !== r.runner.ceiling
+        ? `stored ceiling ${r.runner.ceiling}` : undefined,
     },
     {
       key: 'products', label: 'Products', used: productsUsed, cap: productsCap,

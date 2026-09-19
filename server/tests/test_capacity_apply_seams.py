@@ -240,6 +240,66 @@ def test_admission_end_to_end_respects_plan_fleet_ceiling(tmp_path, monkeypatch)
     asyncio.run(run())
 
 
+def test_admission_end_to_end_the_floored_planner_never_starves_an_in_flight_claim(tmp_path, monkeypatch):
+    """N2, fix round 2: ``decide_implementation``'s ``capacity()`` treats
+    ``cap == 0`` as an unconditional refusal — it short-circuits before the
+    ``occupied`` adjustment even reads, so an admission-seam test that writes
+    ``fleetConcurrency: 0`` directly and expects an occupied claim to be
+    permitted cannot pass; that would require changing the 0-means-paused
+    semantics ``product_policy.capacity()`` deliberately keeps (see its
+    ``max_in_flight`` ConfigField help text), which N2 does not ask for.
+    Instead this proves the INVARIANT N2 actually establishes: the planner's
+    own fleet floor (``capacity_plan._fleet``) means a real plan computed
+    while every account is at its reserve ceiling still never drops
+    ``fleetConcurrency`` below the runner's own in-flight count — so the cap
+    this admission seam reads is never 0 while a claim is live, and an
+    already-claimed target is never refused on global capacity."""
+    async def run():
+        await _init(tmp_path, "seams_fleet_floor.db")
+        _identity(monkeypatch)
+        await _seed("auto-product", "o/r", policy={"dispatch": "auto", "max_in_flight": 5})
+        await _set_runner_row(mode="on", config={"max_concurrent": 6, "max_spawns_per_day": 10})
+        async with db_session() as db:
+            db.add(AutomationTargetState(automation_id="backlog-runner", target="o/r#1",
+                                          state={"product": "auto-product",
+                                                 "ownership_token": "tok"}))
+            await db.flush()
+
+        from server.automations.capacity_plan import (
+            AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity, plan_capacity,
+        )
+        # Every account at its reserve ceiling (none available) — without the
+        # floor this computes fleet 0 despite the runner already holding 1
+        # in-flight session.
+        inputs = CapacityInputs(
+            global_cap=10, global_active=1,
+            hosts=(HostCapacity("d", True, True, 1, 6),),
+            accounts=(AccountHeadroom("a1", "claude", True, False),
+                     AccountHeadroom("a2", "claude", True, False)),
+            runner_ceiling=6, runner_in_flight=1,
+            products=(ProductCapacity("auto-product", 1, "2026-01-01T00:00:00+00:00",
+                                      "auto", "auto", 5, 1, 5),),
+        )
+        plan = plan_capacity(inputs, push_level="steady")
+        assert plan.fleet_concurrency >= inputs.runner_in_flight  # the N2 floor itself
+        assert plan.limiting == "account"
+
+        await write_plan({"pushLevel": plan.push_level, "applied": True,
+                          "fleetConcurrency": plan.fleet_concurrency,
+                          "perProduct": plan.per_product, "pending": plan.pending,
+                          "budget": plan.budget, "binding": None,
+                          "reasons": plan.reasons, "defects": []})
+
+        snapshot = await gather_implementation_snapshot(["o/r"], requested_product="auto-product")
+        decision, _ = snapshot.decide(
+            "o/r", requested_product="auto-product", trigger="automatic", effect="dispatch",
+            existing_slot=True, existing_token="tok")
+        assert decision.permitted, decision.constraints
+        assert all(c.code != "global_capacity_full" for c in decision.constraints)
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # live_plan / live_plan_sync never raise (F2, fix round 1)                    #
 # --------------------------------------------------------------------------- #
@@ -272,16 +332,25 @@ def test_live_plan_sync_never_raises_on_a_broken_read():
 # load_policies (the async twin) overlays exactly like policies_by_slug (F5)  #
 # --------------------------------------------------------------------------- #
 
-def test_load_policies_agrees_with_policies_by_slug(tmp_path):
+def test_load_policies_matches_policies_by_slug_on_the_same_data(tmp_path):
+    """Deferred-now 2, fix round 2: don't just assert the same literal on each
+    side (which would pass even if the two functions diverged in some OTHER
+    field) — read both over the identical seeded data and compare the whole
+    dicts."""
     async def run():
         await _init(tmp_path, "seams_load_policies.db")
         await _seed("auto-product", "o/auto", policy={"dispatch": "auto", "max_in_flight": 1})
-        await write_plan(_plan({"auto-product": 3}))
+        await _seed("pinned-product", "o/pinned",
+                    policy={"dispatch": "auto", "capacity_mode": "pinned", "max_in_flight": 5})
+        await write_plan(_plan({"auto-product": 3, "pinned-product": 9}))
 
         from server.automations.product_policy import load_policies
         async with db_session() as db:
-            policies = await load_policies(db)
-        assert policies["auto-product"]["max_in_flight"] == 3
+            via_load_policies = await load_policies(db)
+            via_policies_by_slug = await db.run_sync(policies_by_slug)
+        assert via_load_policies == via_policies_by_slug
+        assert via_load_policies["auto-product"]["max_in_flight"] == 3
+        assert via_load_policies["pinned-product"]["max_in_flight"] == 5
 
     asyncio.run(run())
 
@@ -305,7 +374,23 @@ def test_monitor_mode_applied_false_overlays_nothing(tmp_path):
             policies = await db.run_sync(policies_by_slug)
         assert policies["auto-product"]["max_in_flight"] == 1
 
+        from server.automations.product_policy import load_policies
+        async with db_session() as db:
+            loaded = await load_policies(db)
+        assert loaded["auto-product"]["max_in_flight"] == 1
+
         _mode, config = await orch._backlog_read_config()
         assert config["max_concurrent"] == 6
 
     asyncio.run(run())
+
+
+# The readout's per-product `effectiveCap` and runner `effective`/`derived`
+# under `applied=False` (deferred-now 2, fix round 2) are covered with the
+# pure fake-``CapacitySources`` harness in ``test_capacity_readout.py`` —
+# `test_effective_cap_falls_back_to_pin_when_plan_not_applied` and
+# `test_runner_row_effective_falls_back_to_ceiling_when_plan_is_not_live` —
+# rather than here: `build_readout` wired onto a real orchestrator
+# (`capacity_wiring.sources_for`) reads LIVE account/credential state through
+# `account_headroom`, which this seam suite's isolated-DB fixture does not
+# isolate from the real ``~/.claude-accounts`` store.

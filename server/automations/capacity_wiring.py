@@ -3,6 +3,7 @@
 number comes from."""
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from sqlalchemy import and_, select
@@ -19,6 +20,20 @@ from .capacity_readout import CapacitySources
 
 if TYPE_CHECKING:
     from server.automations.product_admission import ImplementationSnapshot
+
+log = logging.getLogger(__name__)
+
+
+async def _safe_plan() -> dict | None:
+    """The readout's ``plan`` seam: the RAW plan (not ``live_plan()`` — the
+    readout computes ``planLive`` itself from this same raw value, so this
+    must not pre-filter it), but never letting a DB blip 500 ``GET
+    /api/capacity`` (deferred-now 1, fix round 2)."""
+    try:
+        return await read_plan()
+    except Exception:
+        log.warning("capacity_wiring.plan_read_failed", exc_info=True)
+        return None
 
 
 def sources_for(orch) -> CapacitySources:
@@ -97,7 +112,7 @@ def sources_for(orch) -> CapacitySources:
         products=products,
         decide=decide,
         session_status=session_status,
-        plan=read_plan,
+        plan=_safe_plan,
         governor_config=orch._capacity_governor_read_config,
         kill_switch=lambda: bool(get_settings().capacity_governor_enabled),
     )

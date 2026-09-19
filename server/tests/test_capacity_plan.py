@@ -106,6 +106,22 @@ def test_zero_available_accounts_idles_with_reset():
     assert any("08:00" in r for r in plan.reasons)
 
 
+def test_fleet_never_drops_below_the_runners_own_in_flight():
+    """N2, fix round 2: zero available accounts would otherwise compute fleet
+    0 even with sessions already running — the floor keeps the plan from
+    refusing capacity the runner already holds (decide_implementation would
+    short-circuit on cap == 0 before its `occupied` adjustment, and a refusal
+    on an already-claimed target raises StaleOwnership)."""
+    i = _inputs(accounts=(
+        _acct("a1", available=False), _acct("a2", available=False),
+        _acct("a3", available=False), _acct("a4", available=False),
+    ), runner_in_flight=2)
+    plan = plan_capacity(i, push_level="steady")
+    assert plan.fleet_concurrency == 2
+    assert plan.limiting == "account"
+    assert any("floored" in r for r in plan.reasons)
+
+
 def test_off_products_and_empty_backlogs_get_nothing():
     i = _inputs(products=(
         _prod("kindash", 1, 50, dispatch="off"),

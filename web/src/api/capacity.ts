@@ -42,8 +42,15 @@ export interface CapacityAccounts {
 }
 
 export interface CapacityRunner {
+  /** The operator's own stored `max_concurrent` — unchanged by any plan overlay,
+   *  it is the governor's own planner input. */
   ceiling: number
+  /** What the runner actually enforces right now: `min(ceiling, derived)` while
+   *  the plan is live, else `ceiling` itself. */
+  effective: number
   inFlight: number
+  /** The live plan's own `fleetConcurrency`, or `null` when no plan is governing
+   *  this tick (not live) — never shown as if a stale/disabled plan still governs. */
   derived: number | null
 }
 

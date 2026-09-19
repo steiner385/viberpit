@@ -79,11 +79,23 @@ def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str,
         "global": global_free + inputs.runner_in_flight,
     }
     limiting = min(candidates, key=lambda k: (candidates[k], ("runner", "account", "host", "global").index(k)))
+    raw_fleet = max(0, candidates[limiting])
     budget = {"accountsAvailable": len(available), "accountsTotal": len(inputs.accounts),
               "sessionsPerAccount": sessions_per_account, "accountCap": account_cap,
               "hostFree": min(host_free, UNBOUNDED), "globalFree": global_free,
-              "runnerCeiling": inputs.runner_ceiling, "runnerInFlight": inputs.runner_in_flight}
-    return max(0, candidates[limiting]), limiting, budget
+              "runnerCeiling": inputs.runner_ceiling, "runnerInFlight": inputs.runner_in_flight,
+              "floor": inputs.runner_in_flight, "rawFleet": raw_fleet}
+    # Never below the runner's own in-flight count — the fleet-layer twin of
+    # `_split`'s per-product floor (fix round 2, N2). Without this, a live
+    # plan can compute e.g. fleet 0 when every account is at its reserve
+    # ceiling even though the runner already holds 2 sessions:
+    # `decide_implementation` short-circuits on `cap == 0` before it ever
+    # reaches the `occupied` adjustment, so a session the runner already
+    # reserved gets refused capacity on its next claim revalidation and
+    # `_automation_before_execution` raises StaleOwnership on the refusal.
+    # `limiting` is left naming the layer that WOULD have bound (unfloored) —
+    # the floor is a safety clamp on the number, not a change of cause.
+    return max(raw_fleet, inputs.runner_in_flight), limiting, budget
 
 
 def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
@@ -119,15 +131,20 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     ordered = product_order(inputs.products)
     proposed = _split(fleet, ordered)
     reasons: list[str] = []
+    floored = budget["rawFleet"] < inputs.runner_in_flight
     if fleet == 0 and limiting == "account":
         resets = sorted(a.next_reset_at for a in inputs.accounts if a.next_reset_at)
         reasons.append("no account has headroom under the %d%% reserve%s" % (
             reserve, f"; earliest reset {resets[0]}" if resets else ""))
     else:
-        reasons.append(f"fleet {fleet}: limited by {limiting} "
-                       f"(accounts {budget['accountsAvailable']}×{sessions_per_account}, "
-                       f"host free {budget['hostFree']}, global free {budget['globalFree']}, "
-                       f"runner ceiling {inputs.runner_ceiling})")
+        reason = (f"fleet {fleet}: limited by {limiting} "
+                 f"(accounts {budget['accountsAvailable']}×{sessions_per_account}, "
+                 f"host free {budget['hostFree']}, global free {budget['globalFree']}, "
+                 f"runner ceiling {inputs.runner_ceiling})")
+        if floored:
+            reason += (f"; floored at the runner's {inputs.runner_in_flight} in-flight "
+                       f"(would have been {budget['rawFleet']})")
+        reasons.append(reason)
     per_product: dict[str, int] = {}
     pending: dict[str, int] = {}
     prev_caps = previous.per_product if previous else {}

@@ -193,6 +193,23 @@ async def build_readout(src: CapacitySources) -> dict:
             binding = {"layer": "global", "code": "global_cap_full",
                        "text": f"the global active-session cap ({global_cap}) is reached"}
 
+    # `ceiling` is the OPERATOR's stored value — unchanged, it is the planner's
+    # own input (``readout_to_inputs`` reads it as ``runner_ceiling``) and must
+    # never itself be overlaid or the governor would feed its own prior output
+    # back into the next tick (fix round 1, F1). `derived`/`effective` are the
+    # UI-facing "what the runner is actually enforcing right now" pair, gated
+    # on `live` the same way every other overlay is (N1, fix round 2): a
+    # stale/disabled/unapplied plan must never show as if it still governs.
+    ceiling = int(runner_cfg.get("max_concurrent") or 0)
+    derived: int | None = None
+    if live and plan:
+        try:
+            fleet_concurrency = plan.get("fleetConcurrency")
+            derived = None if fleet_concurrency is None else int(fleet_concurrency)
+        except (TypeError, ValueError):
+            derived = None
+    effective = ceiling if derived is None else min(ceiling, derived)
+
     return {
         "computedAt": now.isoformat(), "pushLevel": push_level,
         "governorMode": mode, "killSwitch": src.kill_switch(),
@@ -201,8 +218,8 @@ async def build_readout(src: CapacitySources) -> dict:
         "accounts": {"available": accounts_available,
                      "total": len(account_rows), "reservePct": reserve,
                      "nextResetAt": resets[0] if resets else None, "rows": account_rows},
-        "runner": {"ceiling": int(runner_cfg.get("max_concurrent") or 0), "inFlight": in_flight_total,
-                   "derived": (plan or {}).get("fleetConcurrency")},
+        "runner": {"ceiling": ceiling, "effective": effective, "inFlight": in_flight_total,
+                   "derived": derived},
         "products": products, "binding": binding, "defects": defects, "plan": plan,
         "planLive": live,
     }
