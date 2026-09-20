@@ -258,6 +258,26 @@ async def init_db(db_url: str | None = None) -> None:
             # which Postgres rejects outright (its json type has no equality operator).
             # It is also a legacy fix for rows written by the pre-none_as_null SQLite code.
             await conn.run_sync(_normalize_pending_rearm_null)
+    # Outside the DDL connection: this one is an ORM pass, because it reads and
+    # writes JSON columns and raw SQL for those is not portable across the two
+    # dialects. Safe here — the session factory is bound above.
+    await _repair_former_slugs()
+
+
+async def _repair_former_slugs() -> None:
+    """Rebuild product slug aliases for renames that predate the column (#1880).
+
+    Same rationale as ``_backfill_session_engine``: production startup reconciles
+    rather than running Alembic, so a data repair has to live on the startup path
+    to reach the live database at all. Idempotent — a no-op once every recorded
+    rename is represented, and on the empty DB every test builds.
+    """
+    from server.pm.project_slugs import backfill_former_slugs
+
+    async with db_session() as db:
+        repaired = await backfill_former_slugs(db)
+    if repaired:
+        log.info("db.former_slugs_backfilled products=%s", sorted(repaired))
 
 
 async def dispose_db() -> None:
