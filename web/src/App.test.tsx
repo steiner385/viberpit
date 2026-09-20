@@ -99,7 +99,7 @@ vi.mock('./api/client', () => ({
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
-      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      // /capacity is read by useNavBadges (the Delivery dot) and, on Hosts/Accounts, by the live-readout card.
       if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     }),
@@ -170,7 +170,7 @@ describe('App routing', () => {
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
-      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      // /capacity is read by useNavBadges (the Delivery dot) and, on Hosts/Accounts, by the live-readout card.
       if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     })
@@ -260,7 +260,7 @@ describe('App deploy overlay', () => {
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
-      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      // /capacity is read by useNavBadges (the Delivery dot) and, on Hosts/Accounts, by the live-readout card.
       if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     })

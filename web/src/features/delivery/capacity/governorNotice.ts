@@ -15,7 +15,7 @@ export function governorNotice(
     return {
       tone: 'warning',
       title: 'Governor kill switch is off',
-      body: 'VIBERPIT_CAPACITY_GOVERNOR_ENABLED is false on the server: plans are computed and shown but never applied.',
+      body: 'VIBERPIT_CAPACITY_GOVERNOR_ENABLED is false on the server: no plan is ever applied (and, unless the mode is off, plans are still computed and shown).',
     }
   }
   if (r.governorMode === 'off') {

@@ -38,6 +38,10 @@ describe('settingsDefs', () => {
       .toEqual(['general', 'appearance', 'sessions', 'capacity', 'deploy', 'about'])
   })
 
+  it('a def never has both ownsChassis and readout (the slot is HostedSection’s)', () => {
+    expect(SETTINGS_DEFS.filter((d) => d.ownsChassis && d.readout)).toEqual([])
+  })
+
   it('groups sections in nav order; Accounts carries the attention badge', () => {
     expect(sectionsInGroup('workspace').map((d) => d.id)).toEqual(['general', 'appearance', 'notifications'])
     expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles'])

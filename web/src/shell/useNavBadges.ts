@@ -50,9 +50,11 @@ export function useNavBadges(): NavBadges {
   const { data: decisions = [] } = useDecisions()
   const deploy = useDeployState()
   // C8: a binding capacity constraint is "nothing can run" — visible from any
-  // section. Read WITHOUT a poll: the Delivery page owns the readout's timer,
-  // this only shares the cache (plus react-query's mount/focus refetch), so
-  // the badge costs no app-wide request loop of its own.
+  // section. Read WITHOUT a poll (the plan's no-new-timers rule: /api/capacity
+  // runs the candidates read and the per-repo gh snapshot on every call): the
+  // dot refreshes on mount, on window focus, and whenever another observer
+  // (the Delivery page's 30 s poll) fetches — it has no timer of its own.
+  // Refresh policy is tracked as a follow-up issue.
   const { data: capacity } = useCapacity()
 
   const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
