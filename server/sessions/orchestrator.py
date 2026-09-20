@@ -1063,6 +1063,7 @@ class SessionOrchestrator:
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
+            session_absent=self._backlog_session_absent,
             session_ran=self._backlog_session_ran,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
@@ -6677,6 +6678,16 @@ class SessionOrchestrator:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
         return status is None or status in INACTIVE_SESSION_STATUSES
+
+    async def _backlog_session_absent(self, session_id: str) -> bool:
+        """True only when *session_id*'s row no longer exists (permanently
+        deleted). Unlike ``_backlog_session_gone`` a terminal row is NOT absent:
+        it can still be resumed, so it never releases a token-holding claim."""
+        from sqlalchemy import select as _select
+        async with db_session() as db:
+            found = (await db.execute(_select(DbSession.id).where(
+                DbSession.id == session_id))).scalar_one_or_none()
+        return found is None
 
     async def _backlog_session_ran(self, session_id: str) -> bool:
         """True if the runner session *session_id* ever started turn one (#1100).
