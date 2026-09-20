@@ -30,6 +30,7 @@ import type { Session, Account } from './api/types'
 import { anthropicUsage, session } from '@/test/factories'
 import { api } from './api/client'
 import { renderApp } from './test/renderApp'
+import { CAPACITY } from '@/features/delivery/capacity/__fixtures__/capacity'
 
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
@@ -98,6 +99,8 @@ vi.mock('./api/client', () => ({
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     }),
     post: vi.fn(),
@@ -167,6 +170,8 @@ describe('App routing', () => {
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     })
     const app = renderApp({ path: '/sessions/arch-1' })
@@ -255,6 +260,8 @@ describe('App deploy overlay', () => {
       // which sends `useArchiveAdvance` into an endless advance loop.
       if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+      if (path === '/capacity') return Promise.resolve(CAPACITY)
       return Promise.resolve([])
     })
     renderApp({ path: '/sessions' })
