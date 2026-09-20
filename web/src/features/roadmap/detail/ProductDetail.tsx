@@ -110,7 +110,6 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             {/* Below the tiles above: a notice, not a tile, so it does not
                 compete with the counts for the top of the page. */}
             <NeedsYouList products={[product]} overview />
-            <RoadmapHealthCard productSlug={product.slug} />
             {isLoading && !project
               ? <Skeleton lines={3} />
               : project && (
@@ -187,9 +186,17 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           </>
         )}
         {tab === 'in-flight' && <InitiativeList initiatives={inFlight} programTitleFor={programTitleFor} />}
-        {tab === 'needs-you' && (incidentScope
-          ? <NeedsYouList products={[product]} repos={incidentScope} />
-          : <Skeleton lines={3} />)}
+        {tab === 'needs-you' && (
+          <>
+            {/* Self-hides when there is nothing to say — a hygiene issue is
+                itself a "needs a person" question (docs/PAGE-TABS.md §5), not
+                an Overview summary block. */}
+            <RoadmapHealthCard productSlug={product.slug} />
+            {incidentScope
+              ? <NeedsYouList products={[product]} repos={incidentScope} />
+              : <Skeleton lines={3} />}
+          </>
+        )}
         {tab === 'ranked' && <RankedList productSlug={product.slug} />}
         {tab === 'dependencies' && (
           <div className="flex flex-col gap-4">

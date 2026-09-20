@@ -21,6 +21,10 @@ const onboardingQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoadin
 // assert on, since the card's own "Automation" heading collides with the tab
 // of the same name.
 const policySchemaQuery = vi.hoisted(() => ({ data: [] as unknown[], isLoading: false }))
+// The Needs-you tab's hygiene notice (`RoadmapHealthCard`) — hoisted so one
+// test can give it real data; every other test leaves it `undefined`, which
+// renders nothing and stays out of their assertions.
+const projectHealthQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
 
 // Every hook the tree under test reaches: `useProject` here, `useQueue` in
 // `RankedList`, the two incident hooks in `IncidentQueue` (mounted by
@@ -72,9 +76,8 @@ vi.mock('@/api/hooks', () => ({
   // open pointer by default, so these are exercised by MapChangesCard's own tests.
   useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
-  // The Overview's hygiene notice — no data, so `RoadmapHealthCard` renders
-  // nothing and stays out of this file's assertions.
-  useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
+  // The Needs-you tab's hygiene notice.
+  useProjectHealth: () => projectHealthQuery,
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -125,6 +128,7 @@ beforeEach(() => {
   Object.assign(projectQuery, { data: PROJECT, isLoading: false, isError: false })
   Object.assign(onboardingQuery, { data: ONBOARDING, isLoading: false })
   Object.assign(policySchemaQuery, { data: [], isLoading: false })
+  Object.assign(projectHealthQuery, { data: undefined, isLoading: false, isError: false })
 })
 
 describe('ProductDetail', () => {
@@ -198,6 +202,18 @@ describe('ProductDetail', () => {
     // The incident row is named by its summary (the visible line is the metric).
     expect(screen.getByLabelText('CI failing')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Incidents' })).toBeInTheDocument()
+  })
+
+  it('the roadmap hygiene notice is on Needs you, not the Overview', () => {
+    Object.assign(projectHealthQuery, {
+      data: { unparentedCapabilities: ['orphan-cap'], unlinkedInitiatives: [], staleProposed: [], staleInbox: 0 },
+      isLoading: false,
+      isError: false,
+    })
+    mount()
+    expect(screen.queryByText('Roadmap hygiene')).not.toBeInTheDocument()
+    mount('/roadmap/kindash?tab=needs-you')
+    expect(screen.getByText('Roadmap hygiene')).toBeInTheDocument()
   })
 
   it('shows no incidents at all until the repo list has arrived', () => {
