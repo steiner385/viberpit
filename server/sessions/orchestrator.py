@@ -18856,9 +18856,22 @@ class SessionOrchestrator:
         await self._delete_codex_item_times(row)
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
+            from sqlalchemy import update as sa_update
+
+            from server.db.models import DispatchOutcome
             # Remove the session's attachment rows + (dedup-aware) on-disk files
             # before the session row itself.
             n_att = await _attachments.delete_for_session(db, session_id)
+            # Detach (never delete) dispatch-outcome history: DispatchOutcome.session_id
+            # FK-references this row with no ON DELETE clause, so on Postgres the row
+            # delete below throws ForeignKeyViolationError for any purged session that
+            # was ever dispatched — silently wedging the archive cap purge on exactly
+            # the automation-origin sessions it prioritizes first (#921). SQLite tests
+            # never caught this: FK enforcement isn't on by default there.
+            await db.execute(
+                sa_update(DispatchOutcome).where(DispatchOutcome.session_id == session_id)
+                .values(session_id=None)
+            )
             await db.execute(
                 sa_delete(DbSession).where(DbSession.id == session_id)
             )
