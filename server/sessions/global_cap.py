@@ -33,6 +33,21 @@ from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS, AppSettings, Host
 
 log = logging.getLogger(__name__)
 
+# Strong references to in-flight drains: an unreferenced asyncio task can be
+# collected mid-run, and nothing awaits these, so the done-callback is also
+# where a failed drain gets logged instead of "Task exception was never retrieved".
+_DRAIN_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _drain_done(task: asyncio.Task[Any]) -> None:
+    _DRAIN_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning("global_cap: queue drain after a cap raise failed", exc_info=exc)
+
+
 Binding = Literal["physical", "attention", "default"]
 
 
@@ -96,5 +111,7 @@ def drain_if_raised(orch: Any, before: GlobalCap, after: GlobalCap) -> bool:
     if orch is None or not hasattr(orch, "maybe_start_queued"):
         log.debug("global_cap: orchestrator unavailable for queue drain")
         return False
-    asyncio.create_task(orch.maybe_start_queued())
+    task = asyncio.create_task(orch.maybe_start_queued())
+    _DRAIN_TASKS.add(task)
+    task.add_done_callback(_drain_done)
     return True

@@ -80,6 +80,27 @@ def test_drain_if_raised_fires_only_when_the_effective_cap_rose():
     asyncio.run(run())
 
 
+def test_a_failing_drain_is_logged_not_raised(caplog):
+    import logging
+    from server.sessions import global_cap as gc_mod
+
+    orch = AsyncMock()
+    orch.maybe_start_queued.side_effect = RuntimeError("boom")
+    lower = GlobalCap(10, 4, 4, "attention", ())
+    higher = GlobalCap(10, 8, 8, "attention", ())
+
+    async def run():
+        with caplog.at_level(logging.WARNING, logger="server.sessions.global_cap"):
+            assert drain_if_raised(orch, lower, higher) is True
+            assert len(gc_mod._DRAIN_TASKS) == 1  # held while in flight
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # let the done-callback run
+        assert gc_mod._DRAIN_TASKS == set()
+        assert any("queue drain after a cap raise failed" in r.message for r in caplog.records)
+
+    asyncio.run(run())
+
+
 @pytest.mark.usefixtures("isolated_db")
 def test_read_global_cap_reads_enabled_hosts_and_the_settings_row():
     from server.db import db_session
