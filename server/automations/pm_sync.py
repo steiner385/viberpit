@@ -15,7 +15,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.context import log_event
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.pm.feature_index import (
     FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
@@ -628,9 +629,12 @@ class PmSyncLoop:
             try:
                 doc = parse_feature_doc(text, path=path)
             except FeatureDocError as e:
-                log_throttled(log, self._bad_doc_log, f"{view.repo}\0{path}\0{e}",
-                              logging.WARNING, "pm_sync.bad_feature_doc repo=%s path=%s",
-                              view.repo, path, exc_info=True)
+                # repo and path are names, so a plain message would give every
+                # broken doc its own fingerprint and its own filed issue — the
+                # #1874/#1635 fan-out. Keyed on the event, they are one.
+                log_event_throttled(log, self._bad_doc_log, f"{view.repo}\0{path}\0{e}",
+                                    logging.WARNING, "pm_sync.bad_feature_doc",
+                                    exc_info=True, repo=view.repo, path=path)
                 skipped.append(f"{path}: {e}")
                 continue  # one bad doc never poisons the index (spec §4)
             docs_by_slug[doc.slug] = (path, doc)
@@ -695,8 +699,11 @@ class PmSyncLoop:
             # disagree about whether this pass reported.
             key = f"{view.repo}\0" + "\0".join(sorted(skipped))
             if self._skipped_docs_log.should_log(key):
-                log.warning("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
-                            view.repo, len(skipped), total_read)
+                # Structured for the same reason as bad_feature_doc above: the
+                # counts normalize to <n> but the repo does not, so a plain
+                # message files one issue per repo (#1902/#1903).
+                log_event(log, logging.WARNING, "pm_sync.feature_docs_skipped",
+                          repo=view.repo, skipped=len(skipped), of=total_read)
                 await self._ctx.emit(
                     "warn",
                     f"{len(skipped)} of {total_read} feature docs in {view.repo} "
@@ -705,8 +712,8 @@ class PmSyncLoop:
                     + ("; …" if len(skipped) > 5 else ""),
                     kind="feature_doc_skipped", target=view.repo)
             else:
-                log.debug("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
-                          view.repo, len(skipped), total_read)
+                log_event(log, logging.DEBUG, "pm_sync.feature_docs_skipped",
+                          repo=view.repo, skipped=len(skipped), of=total_read)
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(
             rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)

@@ -117,7 +117,7 @@ from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, reso
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
 from server.obs.context import log_event, PROC_EPOCH
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
@@ -8513,12 +8513,18 @@ class SessionOrchestrator:
                     dst_project = projects.get(link.project)
                     dst_id = targets.get((dst_project, link.feature)) if dst_project else None
                     if src is None or dst_id is None:
-                        log_throttled(
+                        # Structured, not interpolated: the slugs below are the
+                        # only thing that differs between one broken edge and
+                        # the next, and in a plain message they land in the
+                        # error-sink fingerprint — one filed issue per edge
+                        # (#1533/#1877 vs #1531/#1875). The throttle key stays
+                        # per-edge so a newly broken edge still reports at once.
+                        log_event_throttled(
                             log, _PM_SYNC_LINK_LOG,
                             f"{project_id}\0{src_slug}\0{link.project}\0{link.feature}",
-                            logging.WARNING,
-                            "pm_sync.feature_link_unresolved project=%s src=%s -> %s/%s",
-                            project_id, src_slug, link.project, link.feature)
+                            logging.WARNING, "pm_sync.feature_link_unresolved",
+                            project=project_id, src=src_slug,
+                            dst_project=link.project, dst_feature=link.feature)
                         continue
                     db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
 
