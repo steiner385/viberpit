@@ -13,6 +13,45 @@ def _doc(slug: str, body: str = "## Problem\n\nSummary line here.") -> FeatureDo
     return FeatureDoc(slug=slug, title=slug.title(), state="live", links=(), body=body)
 
 
+def _linked(kind: str, project: str, feature: str, slug: str = "a") -> FeatureDoc:
+    return FeatureDoc(slug=slug, title=slug.title(), state="live", body="x",
+                      links=(FeatureLinkRef(kind=kind, project=project, feature=feature),))
+
+
+def feature_doc_edge_problems(
+    docs: list[tuple[str, FeatureDoc]], slugs: set[str]
+) -> list[str]:
+    """Every parent/link edge in *docs* that this checkout cannot resolve.
+
+    Resolved PER EDGE. The predecessor gated the link half on a repo-wide
+    ``len({link.project for ...}) == 1`` flag, so a single doc whose
+    ``project:`` had drifted made the set size two and switched the link check
+    off for every doc at once — the #1879 failure mode, in which the guard went
+    dark on exactly the drift it was added to catch and took an unrelated
+    dangling edge down with it.
+
+    The one-project precondition is therefore an OUTPUT now, not a switch: a
+    disagreement is reported, and every feature target is still resolved
+    against this repo either way. When a genuinely cross-project link lands,
+    that report is the prompt to teach this function which project slugs are
+    external — a call a human should make once, in the open, rather than one
+    the guard makes silently on every run.
+    """
+    problems: list[str] = []
+    for name, doc in docs:
+        if doc.parent and doc.parent not in slugs:
+            problems.append(f"{name}: parent '{doc.parent}'")
+        problems += [f"{name}: {link.kind} -> {link.project}/{link.feature}"
+                     for link in doc.links if link.feature not in slugs]
+    projects = sorted({link.project for _, doc in docs for link in doc.links})
+    if len(projects) > 1:
+        problems.append(
+            f"docs name more than one project ({', '.join(projects)}); every link's "
+            "project must be this repo's own product slug until this guard is taught "
+            "which ones are external")
+    return problems
+
+
 def test_new_docs_become_upserts():
     plan = plan_feature_index([], [("docs/product/features/a.md", _doc("a"))])
     assert len(plan.upserts) == 1
@@ -143,6 +182,55 @@ def test_every_checked_in_feature_doc_is_canonical():
     assert not problems
 
 
+def test_a_drifted_project_slug_is_reported_instead_of_disabling_the_guard():
+    """#1879: the guard must not go dark on the very drift it exists to catch.
+
+    The check below used to gate the whole link half on a repo-wide
+    ``len({link.project for ...}) == 1``. That flag is computed ACROSS docs, so
+    one doc whose ``project:`` still named the pre-rebrand product made the set
+    size two and switched the link check off for *every* doc — silently, and
+    precisely in the state the guard is meant to flag. #1879 is that shape: one
+    stale ``project:``, 520 runtime warnings, and a green CI guard.
+
+    A second project slug is now a finding in its own right, and the per-edge
+    feature check keeps running regardless.
+    """
+    docs = [
+        ("command-line-interface.md", _linked("integrates_with", "old-product-slug",
+                                              "multi-account-management")),
+        ("config-dir-isolation.md", _linked("powered_by", "viberpit",
+                                            "multi-account-management")),
+    ]
+    slugs = {"command-line-interface", "config-dir-isolation", "multi-account-management"}
+    problems = feature_doc_edge_problems(docs, slugs)
+    assert any("old-product-slug" in p and "viberpit" in p for p in problems), problems
+
+
+def test_an_unverifiable_link_does_not_silence_a_sibling_edge():
+    """The regression pin: one bad edge must cost exactly one edge.
+
+    Under the repo-wide flag this pair reported nothing at all — the odd
+    ``project:`` disabled the check, so the genuinely dangling target in the
+    *other* doc sailed through too. Both are reported now.
+    """
+    docs = [
+        ("a.md", _linked("integrates_with", "old-product-slug", "b")),
+        ("b.md", _linked("powered_by", "viberpit", "does-not-exist")),
+    ]
+    problems = feature_doc_edge_problems(docs, {"a", "b"})
+    assert any("does-not-exist" in p for p in problems), problems
+
+
+def test_a_clean_single_project_doc_set_has_no_problems():
+    docs = [("a.md", _linked("powered_by", "viberpit", "b")), ("b.md", _doc("b"))]
+    assert feature_doc_edge_problems(docs, {"a", "b"}) == []
+
+
+def test_an_unknown_parent_is_reported():
+    doc = FeatureDoc(slug="a", title="A", state="live", links=(), body="x", parent="nope")
+    assert feature_doc_edge_problems([("a.md", doc)], {"a"}) == ["a.md: parent 'nope'"]
+
+
 def test_every_checked_in_feature_doc_targets_a_slug_this_repo_has():
     """A dangling intra-repo target logs on every pm-sync tick, forever (#1878).
 
@@ -151,26 +239,11 @@ def test_every_checked_in_feature_doc_targets_a_slug_this_repo_has():
     design, since ViberPit indexes repos whose docs it cannot gate and a bad
     edge must never fail the sync. The cost is that the warning has no
     terminating condition: it fires again next tick, and the tick after, until
-    someone edits the doc. #1878 is two days of exactly that. Runtime stays
-    forgiving; CI holds *our* docs to a target that exists.
-
-    Scope is what is checkable from a checkout. A ``parent`` is always
-    intra-repo. A link is only checkable while this repo's docs all name one
-    project — their own — which is the case today; the first genuine
-    cross-project link makes the target another repo's business and turns the
-    link half off deliberately. The half #1878 actually tripped on — a
-    ``project:`` naming the pre-rebrand slug, left behind by the rename —
-    belongs to the brand ratchet, which is what swept it.
+    someone edits the doc. #1878 is two days of exactly that, #1879 another
+    520 warnings off one stale ``project:``. Runtime stays forgiving; CI holds
+    *our* docs to a target that exists.
     """
     docs = [(p.name, parse_feature_doc(p.read_text(), path=f"docs/product/features/{p.name}"))
             for p in sorted(FEATURE_DOCS_DIR.glob("*.md"))]
     slugs = {p.stem for p in FEATURE_DOCS_DIR.glob("*.md")}
-    intra_repo = len({link.project for _, doc in docs for link in doc.links}) == 1
-    dangling = []
-    for name, doc in docs:
-        if doc.parent and doc.parent not in slugs:
-            dangling.append(f"{name}: parent '{doc.parent}'")
-        if intra_repo:
-            dangling += [f"{name}: {link.kind} -> {link.project}/{link.feature}"
-                         for link in doc.links if link.feature not in slugs]
-    assert not dangling
+    assert feature_doc_edge_problems(docs, slugs) == []
