@@ -1,16 +1,19 @@
 // The product Overview's Automation card (product automation policy phase 1
-// design §9): every `PRODUCT_POLICY_SCHEMA` field rendered through the SAME
-// `ConfigInput` the automations Config tab uses, reading `project.automationPolicy`
-// (the raw stored blob, or null when the product never opted in) against the
-// server's defaults. Disabled — with an explanatory note — until the product is
-// live: the onboarding wizard above it is what gets it there.
+// design §9): every editable `PRODUCT_POLICY_SCHEMA` field rendered through the
+// SAME `ConfigInput` the automations Config tab uses, reading
+// `project.automationPolicy` (the raw stored blob, or null when the product
+// never opted in) against the server's defaults (Capacity-owned dials appear
+// as one read-only line, deprecated ones not at all — spec 2026-09-20 D5/D6).
+// Disabled — with an explanatory note — until the product is live: the
+// onboarding wizard above it is what gets it there.
 import { Link } from 'react-router-dom'
 import { productPath } from '../roadmapNavState'
 import type { ConfigField } from '@/api/automations'
+import type { CapacityProduct } from '@/api/capacity'
 import type { Project, ProductImplementationDecision } from '@/api/pm'
 import type { ProductNode } from '@/api/roadmap'
 import type { GateSpec } from '@/api/sdlc'
-import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy, useSdlcGates } from '@/api/hooks'
+import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy, useSdlcGates, useCapacity } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
@@ -19,37 +22,51 @@ import { Field } from '@/ui/Field'
 import { Skeleton } from '@/ui/Skeleton'
 
 /** `dispatch` first — the issue-dispatch setting is the first
- *  thing a human should see, not buried among caps and weights. */
+ *  thing a human should see, not buried among the other dials. */
 function orderedFields(schema: ConfigField[]): ConfigField[] {
   const dispatch = schema.filter((f) => f.key === 'dispatch')
   const rest = schema.filter((f) => f.key !== 'dispatch')
   return [...dispatch, ...rest]
 }
 
-// Findability (spec D9): every capacity-shaped knob groups under one legend
-// with a link to the real capacity page, rather than sitting flat among the
-// model and gate dials. A key this schema does not yet know about — a field
-// shipped before this list is updated — falls into Capacity rather than
-// vanishing, since Capacity is the safest place for a stranger to surface.
+// Findability (spec 2026-09-12 D9, reshaped by 2026-09-20 D5): the dials group
+// under three legends. *Dispatch* holds what this card OWNS (dispatch, reach,
+// eligibility); rank, cap mode and pin are owned by Delivery → Capacity
+// (`surface: 'capacity'`) and appear here as one read-only line; a deprecated
+// field (D6) appears nowhere. A key this schema does not yet know about falls
+// into Dispatch rather than vanishing.
 const MODELS_FIELD_KEYS = new Set(['default_model', 'ladder_top', 'unattended_model_floor'])
 const GATES_FIELD_KEYS = new Set([
   'risk_tolerance', 'triage_auto_accept', 'give_up_after_bounces', 'max_initiatives_in_flight',
 ])
 
 interface FieldGroups {
-  capacity: ConfigField[]
+  dispatch: ConfigField[]
   models: ConfigField[]
   gates: ConfigField[]
 }
 
 function groupFields(fields: ConfigField[]): FieldGroups {
-  const groups: FieldGroups = { capacity: [], models: [], gates: [] }
+  const groups: FieldGroups = { dispatch: [], models: [], gates: [] }
   for (const field of fields) {
+    if (field.deprecated || field.surface === 'capacity') continue
     if (MODELS_FIELD_KEYS.has(field.key)) groups.models.push(field)
     else if (GATES_FIELD_KEYS.has(field.key)) groups.gates.push(field)
-    else groups.capacity.push(field)
+    else groups.dispatch.push(field)
   }
   return groups
+}
+
+/** The one sentence that replaces the rank / cap mode / pin controls (spec
+ *  2026-09-20 §5.3), read from the capacity READOUT so it shows the effective
+ *  cap the governor actually set, not the stored pin. Two sentences and a
+ *  middle dot, never an em dash (house rule). */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with a later PR, not a component
+export function capacityLine(row: CapacityProduct | undefined): string {
+  if (!row) return 'Capacity: rank, cap mode and pin are set on Delivery → Capacity.'
+  const rank = row.rank === null ? 'unranked' : `rank ${row.rank}`
+  const cap = row.capacityMode === 'pinned' ? `pinned (pin ${row.pin})` : `auto (effective cap ${row.effectiveCap})`
+  return `Capacity: ${rank} · ${cap} · ${row.inFlight} in flight.`
 }
 
 function ImplementationEligibility({ label, decision }: { label: string; decision: ProductImplementationDecision }) {
@@ -79,6 +96,10 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   const live = project.onboardingState === 'live'
   const policy = project.automationPolicy ?? {}
   const gates = useSdlcGates()
+  // Unpolled: the roadmap card is not a live surface; `QK.capacity` is
+  // invalidated by every dial mutation (spec D10), which is what keeps it honest.
+  const capacity = useCapacity()
+  const capacityRow = capacity.data?.products.find((p) => p.slug === product.slug)
 
   // A failed schema fetch is a real failure, not a slow one: without the banner
   // the card renders its loading skeleton forever, so an operator is left waiting
@@ -169,11 +190,12 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
           automations Config tab, which never disables a field). */}
       <fieldset disabled={!live || update.isPending} className="flex flex-col gap-4 disabled:opacity-60">
         <fieldset className="flex flex-col gap-3">
-          <legend className="text-sm font-medium">Capacity</legend>
-          <Link to={deliveryPath('capacity')} className="text-xs text-accent hover:underline">
-            See the fleet&apos;s capacity
-          </Link>
-          {groups.capacity.map(renderField)}
+          <legend className="text-sm font-medium">Dispatch</legend>
+          {groups.dispatch.map(renderField)}
+          <p className="text-xs text-ink-muted">
+            {capacityLine(capacityRow)}{' '}
+            <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Adjust on Delivery → Capacity</Link>
+          </p>
         </fieldset>
         <fieldset className="flex flex-col gap-3">
           <legend className="text-sm font-medium">Models</legend>

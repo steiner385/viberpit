@@ -12,12 +12,9 @@ import { AutomationPolicyCard } from './AutomationPolicyCard'
 const SCHEMA = [
   { key: 'dispatch', label: 'Dispatch', type: 'enum', default: 'off', help: 'Whether the runner works this board.', choices: ['off', 'propose', 'auto'] },
   { key: 'queue_min_status', label: 'Minimum board status', type: 'enum', default: 'ready', help: '', choices: ['ready', 'triaged'] },
-  { key: 'max_in_flight', label: 'Max in flight', type: 'int', default: 1, help: '', choices: null },
-  // The grouping test needs a field the earlier flat schema mock never carried
-  // (task 9): without it, "every unmapped key falls into Capacity" reads as
-  // true only because every key already IS a Capacity key.
-  { key: 'capacity_mode', label: 'In-flight cap', type: 'enum', default: 'auto', help: '', choices: ['auto', 'pinned'] },
-  { key: 'weight', label: 'Weight', type: 'int', default: 1, help: '', choices: null },
+  { key: 'max_in_flight', label: 'Pin', type: 'int', default: 1, help: '', choices: null, surface: 'capacity' },
+  { key: 'capacity_mode', label: 'Cap mode', type: 'enum', default: 'auto', help: '', choices: ['auto', 'pinned'], surface: 'capacity' },
+  { key: 'weight', label: 'Weight', type: 'int', default: 1, help: '', choices: null, deprecated: true },
   { key: 'ladder_top', label: 'Ladder top tier', type: 'enum', default: 'fable', help: '', choices: ['haiku', 'sonnet', 'opus', 'fable'] },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
@@ -36,11 +33,20 @@ const GATES = {
   autoresolveEnabled: true,
 }
 
+// The readout row the card's read-only capacity line reads (spec 2026-09-20 D5).
+const CAPACITY = {
+  products: [
+    { slug: 'kindash', name: 'KinDash', rank: 2, createdAt: null, dispatch: 'auto', capacityMode: 'auto', pin: 1, effectiveCap: 4, inFlight: 1, eligible: 9, constraint: null, waitingOn: null, defect: false },
+    { slug: 'other', name: 'Other', rank: null, createdAt: null, dispatch: 'off', capacityMode: 'pinned', pin: 2, effectiveCap: 2, inFlight: 0, eligible: 0, constraint: 'dispatch_off', waitingOn: 'off', defect: false },
+  ],
+}
+
 const h = vi.hoisted(() => ({
   implementation: { data: undefined as unknown, isPending: false, isError: false },
   coverage: { data: undefined as unknown, isPending: false, isError: false },
   schema: { data: undefined as unknown, isLoading: false, isError: false },
   gates: { data: undefined as unknown, isPending: false, isError: false },
+  capacity: { data: undefined as unknown, isPending: false, isError: false },
   update: vi.fn(),
   updateState: { isPending: false, isError: false, error: null as unknown },
 }))
@@ -51,6 +57,7 @@ vi.mock('@/api/hooks', () => ({
   useUpdateProductPolicy: () => ({ mutate: h.update, ...h.updateState }),
   useGithubRepos: () => ({ data: [], isLoading: false }),
   useSdlcGates: () => h.gates,
+  useCapacity: () => h.capacity,
 }))
 
 const product = { slug: 'kindash', name: 'KinDash' } as ProductNode
@@ -72,6 +79,7 @@ beforeEach(() => {
   Object.assign(h.schema, { data: SCHEMA, isLoading: false, isError: false })
   Object.assign(h.updateState, { isPending: false, isError: false, error: null })
   Object.assign(h.gates, { data: GATES, isPending: false, isError: false })
+  Object.assign(h.capacity, { data: CAPACITY, isPending: false, isError: false })
 })
 
 // Every render needs Router context now: the Capacity fieldset always links
@@ -92,13 +100,11 @@ describe('AutomationPolicyCard', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     expect(screen.getByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toHaveValue('off')
-    expect(screen.getByLabelText('Max in flight')).toHaveValue(1)
-    expect(screen.getByLabelText('Weight')).toHaveValue(1)
     expect(screen.getByLabelText('Ladder top tier')).toHaveValue('fable')
     expect(screen.getByLabelText('Session model')).toHaveValue('auto')
     expect(screen.getByLabelText('Respect issue dependencies')).toBeChecked()
     // dispatch listed first
-    const labels = screen.getAllByText(/Dispatch|Minimum board status|Max in flight|Weight|Ladder top tier|Session model|Respect issue dependencies/)
+    const labels = screen.getAllByText(/Dispatch|Minimum board status|Ladder top tier|Session model|Respect issue dependencies/)
     expect(labels[0]).toHaveTextContent('Dispatch')
   })
 
@@ -122,13 +128,11 @@ describe('AutomationPolicyCard', () => {
 
   it('reads existing policy values over the defaults', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({
-      automationPolicy: { dispatch: 'propose', max_in_flight: 3 },
+      automationPolicy: { dispatch: 'propose', queue_min_status: 'triaged' },
     })} />)
     expect(screen.queryByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeNull()
     expect(screen.getByLabelText('Dispatch')).toHaveValue('propose')
-    expect(screen.getByLabelText('Max in flight')).toHaveValue(3)
-    // Unset keys still fall back to the schema default.
-    expect(screen.getByLabelText('Weight')).toHaveValue(1)
+    expect(screen.getByLabelText('Minimum board status')).toHaveValue('triaged')
   })
 
   it('a failed schema fetch banners instead of skeletoning forever', () => {
@@ -153,7 +157,7 @@ describe('AutomationPolicyCard', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({ onboardingState: 'map_merged' })} />)
     expect(screen.getByText('Automation settings can be edited once the product is live.')).toBeInTheDocument()
     expect(screen.getByLabelText('Dispatch')).toBeDisabled()
-    expect(screen.getByLabelText('Max in flight')).toBeDisabled()
+    expect(screen.getByLabelText('Minimum board status')).toBeDisabled()
     expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
   })
 
@@ -198,38 +202,59 @@ describe('AutomationPolicyCard', () => {
   // dials among model and gate settings with no way back to the real capacity
   // page. Grouping is verified at the DOM level (which fieldset's legend an
   // input sits under), not just "the legend text exists somewhere".
-  it('groups fields into Capacity / Models / Gates fieldsets, in that order', () => {
+  it('groups fields into Dispatch / Models / Gates fieldsets, in that order', () => {
     const { container } = renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     // Only the three grouped inner fieldsets carry a `<legend>` — the outer
     // disabled fieldset that gates every control at once does not.
     const legends = Array.from(container.querySelectorAll('legend')).map((el) => el.textContent)
-    expect(legends).toEqual(['Capacity', 'Models', 'Gates'])
-    expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('Max in flight'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('In-flight cap'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('Weight'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Capacity')
-    expect(legendFor(screen.getByLabelText('Labels to skip'))).toBe('Capacity')
+    expect(legends).toEqual(['Dispatch', 'Models', 'Gates'])
+    expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Dispatch')
+    expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Dispatch')
+    expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Dispatch')
+    expect(legendFor(screen.getByLabelText('Labels to skip'))).toBe('Dispatch')
     expect(legendFor(screen.getByLabelText('Ladder top tier'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Session model'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
   })
 
-  it('links the Capacity group to the fleet capacity page', () => {
-    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
-    const link = screen.getByRole('link', { name: "See the fleet's capacity" })
-    expect(link).toHaveAttribute('href', '/delivery?scope=capacity')
-    expect(legendFor(link)).toBe('Capacity')
+  it('renders no control for a Capacity-owned or deprecated field (spec 2026-09-20 D5/D6)', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { max_in_flight: 3, weight: 7 } })} />)
+    expect(screen.queryByLabelText('Pin')).toBeNull()
+    expect(screen.queryByLabelText('Cap mode')).toBeNull()
+    expect(screen.queryByLabelText('Weight')).toBeNull()
+    expect(screen.queryByText('Weight')).toBeNull()
+    // …and the line reads the READOUT (effective cap 4), not the stored pin (3).
+    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
   })
 
-  it('places a field the grouping lists do not recognize into Capacity rather than dropping it', () => {
+  it('a pinned product says pin, an unranked one says unranked', () => {
+    renderCard(<AutomationPolicyCard product={{ slug: 'other', name: 'Other' } as ProductNode} project={makeProject({ slug: 'other' })} />)
+    expect(screen.getByText('Capacity: unranked · pinned (pin 2) · 0 in flight.')).toBeInTheDocument()
+  })
+
+  it('without a readout row the line still links to the capacity page', () => {
+    Object.assign(h.capacity, { data: undefined })
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Capacity: rank, cap mode and pin are set on Delivery → Capacity.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
+  })
+
+  it('the Dispatch group carries the read-only capacity line linking to the capacity page', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })
+    expect(link).toHaveAttribute('href', '/delivery?scope=capacity')
+    expect(legendFor(link)).toBe('Dispatch')
+    expect(screen.queryByRole('link', { name: "See the fleet's capacity" })).toBeNull()
+  })
+
+  it('places a field the grouping lists do not recognize into Dispatch rather than dropping it', () => {
     Object.assign(h.schema, { data: [
       ...SCHEMA,
       { key: 'not_yet_categorized', label: 'Not yet categorized', type: 'bool', default: false, help: '', choices: null },
     ] })
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
-    expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Dispatch')
   })
 })
 
@@ -350,13 +375,13 @@ it('disables all settings while a save is pending', () => {
   h.updateState.isPending = true
   renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
   expect(screen.getByLabelText('Dispatch')).toBeDisabled()
-  expect(screen.getByLabelText('Max in flight')).toBeDisabled()
+  expect(screen.getByLabelText('Minimum board status')).toBeDisabled()
   expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
 })
 
 it('preserves the exact revision without rounding microseconds', () => {
   const revision = '2026-09-17T01:00:00.123456+00:00'
   renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicyUpdatedAt: revision })} />)
-  fireEvent.change(screen.getByLabelText('Weight'), { target: { value: '4' } })
-  expect(h.update).toHaveBeenCalledWith({ policy: { weight: 4 }, expectedUpdatedAt: revision })
+  fireEvent.change(screen.getByLabelText('Dispatch'), { target: { value: 'auto' } })
+  expect(h.update).toHaveBeenCalledWith({ policy: { dispatch: 'auto' }, expectedUpdatedAt: revision })
 })
