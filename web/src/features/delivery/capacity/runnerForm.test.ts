@@ -46,4 +46,8 @@ describe('parseRunnerDraft', () => {
     expect(parseRunnerDraft({ ...base, [RUNNER_KEYS.budget]: '', [RUNNER_KEYS.perAccount]: '' }, { ...CURRENT, budget: null, perAccount: null }))
       .toEqual({ runner: null, governor: null, ceilingRaised: false })
   })
+  it('a registered automation whose row never stored the key still takes a typed value', () => {
+    expect(parseRunnerDraft({ ...base, [RUNNER_KEYS.budget]: '12', [RUNNER_KEYS.perAccount]: '3' }, { ...CURRENT, budget: null, perAccount: null }))
+      .toEqual({ runner: { max_spawns_per_day: 12 }, governor: { sessions_per_account: 3 }, ceilingRaised: false })
+  })
 })

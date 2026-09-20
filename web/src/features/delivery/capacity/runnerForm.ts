@@ -60,13 +60,21 @@ export function parseRunnerDraft(
   }
   const runner: Record<string, number> = {}
   if (ceiling !== current.ceiling) runner.max_concurrent = ceiling
-  if (current.budget !== null) {
-    const budget = whole(draft[RUNNER_KEYS.budget] ?? '', 'Daily budget', 0)
+  // A REGISTERED automation whose row never stored the key (rows are created
+  // with no config; GET /api/automations serves `row.config or {}` raw) has
+  // `current.budget === null` even though the field renders enabled and
+  // editable. Gating parsing on `current.budget !== null` alone silently
+  // dropped a typed value in that case — check the draft too, not just the
+  // stored current value.
+  const budgetRaw = draft[RUNNER_KEYS.budget] ?? ''
+  if (current.budget !== null || budgetRaw.trim() !== '') {
+    const budget = whole(budgetRaw, 'Daily budget', 0)
     if (budget !== current.budget) runner.max_spawns_per_day = budget
   }
   let governor: Record<string, number> | null = null
-  if (current.perAccount !== null) {
-    const perAccount = whole(draft[RUNNER_KEYS.perAccount] ?? '', 'Sessions per account', 1)
+  const perAccountRaw = draft[RUNNER_KEYS.perAccount] ?? ''
+  if (current.perAccount !== null || perAccountRaw.trim() !== '') {
+    const perAccount = whole(perAccountRaw, 'Sessions per account', 1)
     if (perAccount !== current.perAccount) governor = { sessions_per_account: perAccount }
   }
   return {
