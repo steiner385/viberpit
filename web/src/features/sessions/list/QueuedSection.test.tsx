@@ -44,4 +44,11 @@ describe('QueuedSection', () => {
     expect(screen.getByText(/Waiting for a free slot under the global cap/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'See capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })
+
+  it('collapsing the section hides the wait explanation with the list', () => {
+    render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Queued \(1\)/ }))
+    expect(screen.queryByText(/Waiting for a free slot/)).toBeNull()
+    expect(screen.queryByRole('link', { name: 'See capacity' })).toBeNull()
+  })
 })
