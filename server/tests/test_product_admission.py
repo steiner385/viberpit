@@ -44,9 +44,9 @@ def test_dispatch_effect_comes_from_current_policy():
 
 @pytest.mark.asyncio
 async def test_runtime_failures_stay_unknown(monkeypatch):
-    from server.automations import config_store
+    from server.automations import runner_config
     monkeypatch.setattr(admission, "gather_product_coverage", AsyncMock(return_value=coverage()))
-    monkeypatch.setattr(config_store, "read_automation_config", AsyncMock(return_value=(
+    monkeypatch.setattr(runner_config, "read_automation_config", AsyncMock(return_value=(
         "auto", {"max_concurrent": 5, "max_spawns_per_day": 5})))
     monkeypatch.setattr(admission, "read_dispatch_accounting", AsyncMock(side_effect=ValueError("bad")))
     context = AsyncMock()
