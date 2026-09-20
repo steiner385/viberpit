@@ -18,6 +18,7 @@ import { ManagedEnvTable } from '../chassis/ManagedEnvTable'
 import { useSettingsForm } from '../useSettingsForm'
 
 /** Env-managed ceilings that sit OUTSIDE the five-layer stack (spec 2026-09-20 D9). */
+// eslint-disable-next-line react-refresh/only-export-components
 export const CAPACITY_MANAGED_KEYS = [
   'CCSWITCH_TEST_SLOT_CAP',
   'CCSWITCH_CHILD_SESSION_CAP',
@@ -41,6 +42,7 @@ function toPayload(d: LimitsDraft): Partial<AppSettings> {
   return { maxActiveSessions: Number.isFinite(n) && n >= 1 ? n : null }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function physicalLine(gc: GlobalCapDefaults): string {
   if (gc.hosts.length === 0) return 'unbounded — no hosts registered'
   const uncapped = gc.hosts.filter((h) => h.cap === null).map((h) => h.name)
@@ -50,6 +52,7 @@ export function physicalLine(gc: GlobalCapDefaults): string {
   return `${gc.physical} — ${gc.hosts.map((h) => `${h.name} ${h.cap}`).join(' · ')}`
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function effectiveLine(gc: GlobalCapDefaults): string {
   switch (gc.binding) {
     case 'physical':
@@ -106,7 +109,7 @@ export function LimitsSection() {
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
 
       <SettingsGroup
-        legend="Global cap"
+        legend="Ceilings"
         description="Sessions beyond the effective cap queue and start when a slot frees. The cap is the lower of the two ceilings."
       >
         <SettingRow

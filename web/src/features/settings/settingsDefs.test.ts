@@ -6,9 +6,9 @@ import {
 import { readLastSection, writeLastSection, LAST_SECTION_KEY } from './lastSection'
 
 describe('settingsDefs', () => {
-  it('has 17 sections in 5 groups, ids unique and URL-safe, every def described', () => {
-    expect(SETTINGS_DEFS).toHaveLength(17)
-    expect(SETTINGS_GROUPS.map((g) => g.id)).toEqual(['workspace', 'sessions', 'accounts', 'claude', 'about'])
+  it('has 18 sections in 5 groups, ids unique and URL-safe, every def described', () => {
+    expect(SETTINGS_DEFS).toHaveLength(18)
+    expect(SETTINGS_GROUPS.map((g) => g.id)).toEqual(['workspace', 'sessions', 'capacity', 'claude', 'about'])
     const ids = SETTINGS_DEFS.map((d) => d.id)
     expect(new Set(ids).size).toBe(ids.length)
     for (const d of SETTINGS_DEFS) {
@@ -35,16 +35,18 @@ describe('settingsDefs', () => {
     // sections NOT wrapped in `HostedSection`. PRs 5b–5e each add an id here in
     // the same change that migrates the section. `deploy` was born with it.
     expect(SETTINGS_DEFS.filter((d) => d.ownsChassis).map((d) => d.id))
-      .toEqual(['general', 'appearance', 'sessions', 'deploy', 'about'])
+      .toEqual(['general', 'appearance', 'sessions', 'capacity', 'deploy', 'about'])
   })
 
   it('groups sections in nav order; Accounts carries the attention badge', () => {
     expect(sectionsInGroup('workspace').map((d) => d.id)).toEqual(['general', 'appearance', 'notifications'])
     expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles'])
+    expect(sectionsInGroup('capacity').map((d) => d.id)).toEqual(['capacity', 'fleet', 'accounts'])
     expect(sectionsInGroup('about').map((d) => d.id)).toEqual(['deploy', 'about'])
     expect(SETTINGS_BY_ID.accounts.badge).toBe('accountsAttention')
     expect(SETTINGS_BY_ID.appearance.scope).toBe('browser')
     expect(SETTINGS_BY_ID.about.scope).toBe('none')
+    expect(SETTINGS_BY_ID.capacity.scope).toBe('server')
   })
 
   // Settings › Deploy is the phone's only deploy surface, since
