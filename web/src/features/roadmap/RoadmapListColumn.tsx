@@ -74,8 +74,13 @@ interface InitiativeEntry {
 }
 
 export function RoadmapListColumn({
-  scope, map, isLoading, isError, selectedKey, onOpen, onOpenInbox, inbox,
+  scope, map: rawMap, isLoading, isError: queryError, selectedKey, onOpen, onOpenInbox, inbox,
 }: RoadmapListColumnProps) {
+  // Guard on shape, not truthiness: a truthy-but-malformed `/pm/map` payload
+  // would otherwise throw inside `flattenMap` and take the column down.
+  const malformed = !!rawMap && !Array.isArray(rawMap.products)
+  const map = malformed ? undefined : rawMap
+  const isError = queryError || malformed
   const products = useMemo(() => map?.products ?? [], [map])
   const entries = useMemo<InitiativeEntry[]>(
     () => products.flatMap((product) => product.initiatives.map((initiative) => ({ product, initiative }))),

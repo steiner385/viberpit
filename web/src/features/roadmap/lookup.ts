@@ -6,7 +6,8 @@
 import type { CapabilityNode, InitiativeNode, MapChangesPointer, ProductNode, RoadmapMap } from '@/api/roadmap'
 
 export function findProduct(map: RoadmapMap | undefined, slug: string): ProductNode | null {
-  return map?.products.find((p) => p.slug === slug) ?? null
+  if (!map || !Array.isArray(map.products)) return null
+  return map.products.find((p) => p.slug === slug) ?? null
 }
 
 /**
@@ -51,13 +52,15 @@ export function programTitleOf(
   source: ProductNode | RoadmapMap,
 ): ((initiative: InitiativeNode) => string | null) | ((parentSlug: string | null) => string | null) {
   if ('products' in source) {
-    const byslug = new Map(source.products.flatMap((p) => p.initiatives).map((i) => [i.slug, i.title]))
+    const products = Array.isArray(source.products) ? source.products : []
+    const byslug = new Map(products.flatMap((p) => p.initiatives).map((i) => [i.slug, i.title]))
     return (parentSlug: string | null) => {
       if (!parentSlug) return null
       return byslug.get(parentSlug) ?? parentSlug
     }
   }
-  const byslug = new Map(source.initiatives.map((i) => [i.slug, i.title]))
+  const initiatives = Array.isArray(source.initiatives) ? source.initiatives : []
+  const byslug = new Map(initiatives.map((i) => [i.slug, i.title]))
   return (initiative: InitiativeNode) => {
     if (!initiative.parentInitiative) return null
     return byslug.get(initiative.parentInitiative) ?? initiative.parentInitiative
