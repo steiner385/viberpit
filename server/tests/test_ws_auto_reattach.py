@@ -36,14 +36,27 @@ pytestmark = pytest.mark.slow
 
 
 def _teardown_timeline(caplog) -> str:
-    """The `ws.teardown` phase timeline, for a failure message (#1383).
+    """The `ws.teardown` phases recorded so far, for a failure message (#1383, #1547).
+
+    Reads the live per-phase `ws.teardown.mark` breadcrumbs, not the terminal
+    `ws.teardown` / `ws.teardown OVER BUDGET` summary — that summary is logged from
+    the same `finally` as `unsubscribe_events`, so on the exact failure this exists
+    to diagnose (teardown stalls before reaching that call) it never fires either,
+    and grepping for it always reports "NONE RECORDED" regardless of where teardown
+    actually stopped (#1547). The breadcrumbs are strictly upstream of that call, so
+    the last phase name here localises the stall immediately, and a genuinely empty
+    result means the teardown `finally` was never entered at all.
 
     Returns the sentinel rather than an empty list when nothing was emitted: "no
-    timeline" is itself the finding — it means the teardown `finally` never ran —
-    and an empty `[]` in a CI log reads like a formatting slip instead.
+    marks" is itself the finding, and an empty `[]` in a CI log reads like a
+    formatting slip instead.
     """
-    lines = [r.getMessage() for r in caplog.records if "ws.teardown" in r.getMessage()]
-    return "; ".join(lines) if lines else "NONE RECORDED"
+    phases = [
+        r.getMessage().removeprefix("ws.teardown.mark ")
+        for r in caplog.records
+        if r.getMessage().startswith("ws.teardown.mark ")
+    ]
+    return " ".join(phases) if phases else "NONE RECORDED"
 
 
 def _with_history(orch) -> None:
@@ -421,12 +434,16 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path, ca
                 # phases are each individually bounded (a 105s work drain plus four
                 # 0.5s reaps), so overrunning 240s means either a phase broke its own
                 # bound or the `finally` never ran, and nothing recorded which.
-                # `ws.py` now marks each phase and logs the timeline, so a failure
-                # here arrives naming the culprit.
+                # The first cut of this instrumentation (#1383) logged only a
+                # terminal summary from the same `finally` as `unsubscribe_events` —
+                # strictly downstream of the very call this assertion waits for — so
+                # it could never fire on this failure and always read "NONE
+                # RECORDED", carrying no information at all (#1547). `ws.py` now logs
+                # each phase mark live as it happens, so a failure here arrives
+                # naming the phase it actually stalled in.
                 # Sampled INSIDE the message, which Python only evaluates once the
-                # wait has already failed — reading it beforehand would snapshot the
-                # timeline before teardown had a chance to emit one and report
-                # "NONE RECORDED" every time.
+                # wait has already failed — reading it beforehand would snapshot
+                # whatever marks had landed by then instead of the full timeline.
                 assert _wait_until(lambda: bool(unsubscribed), timeout=240.0), (
                     "teardown must unsubscribe the lifecycle queue even with an "
                     "auto re-attach in flight.\n"

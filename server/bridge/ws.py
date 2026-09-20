@@ -153,6 +153,26 @@ def _emit_teardown_timeline(marks: list[tuple[str, float]]) -> None:
         log.debug("ws.teardown %.2fs — %s", total, line)
 
 
+class _TeardownMarks:
+    """Per-phase teardown timeline (#1383), made observable AS IT HAPPENS.
+
+    The original version of this only logged via `_emit_teardown_timeline`, called
+    from the same `finally` as `unsubscribe_events` — so on the exact failure this
+    exists to diagnose (teardown stalls before reaching that call) the summary never
+    fires either, and "NONE RECORDED" carries no information at all (#1547). Each
+    `mark()` now logs its own phase immediately, so the last `ws.teardown.mark` seen
+    names where teardown stopped even when it never reaches the terminal summary.
+    """
+
+    def __init__(self) -> None:
+        self._t0 = time.monotonic()
+        self.marks: list[tuple[str, float]] = []
+
+    def mark(self, phase: str) -> None:
+        self.marks.append((phase, time.monotonic() - self._t0))
+        log.debug("ws.teardown.mark %s", phase)
+
+
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
     """Forward a driver stream's live events into *out_q* as wire dicts.
 
@@ -1920,22 +1940,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                  "message": f"Unknown message type: {msg_type!r}"})
 
         finally:
-            # Per-phase teardown timeline (#1383). This path's phases are each
-            # individually bounded, yet CI has repeatedly observed
-            # `unsubscribe_events` uncalled 240s after the socket closed — more than
-            # twice the ceiling every bound here adds up to. The forensics could
-            # never separate the only two ways that happens: a phase overran its own
-            # bound, or this `finally` was never entered at all. Marks are cheap
-            # (a monotonic read and a tuple) and settle it on the next occurrence:
-            # a timeline names the phase that stalled, and NO timeline at all means
-            # teardown never ran, which points at the receive loop instead.
-            _td_t0 = time.monotonic()
-            _td_marks: list[tuple[str, float]] = []
-
-            def _td_mark(phase: str) -> None:
-                _td_marks.append((phase, time.monotonic() - _td_t0))
-
-            _td_mark("enter")
+            # Per-phase teardown timeline (#1383, made live-observable by #1547). This
+            # path's phases are each individually bounded, yet CI has repeatedly
+            # observed `unsubscribe_events` uncalled 240s after the socket closed —
+            # more than twice the ceiling every bound here adds up to. The forensics
+            # could never separate the only two ways that happens: a phase overran its
+            # own bound, or this `finally` was never entered at all. Each mark logs
+            # itself immediately (see `_TeardownMarks`), so a stalled phase is visible
+            # even on the exact failure where `unsubscribe_events` — and therefore
+            # `_emit_teardown_timeline` below — is never reached.
+            _td = _TeardownMarks()
+            _td.mark("enter")
             # Let queued/in-flight per-session work finish first (a disconnect
             # mid-resume must still deliver the prompt), THEN cancel whatever is
             # left. The drain runs in its own try so a cancellation arriving during
@@ -1945,13 +1960,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 try:
                     await _drain_work_chains()
                 finally:
-                    _td_mark("drain_work_chains")
+                    _td.mark("drain_work_chains")
             finally:
                 for sid, work_task in list(work_tasks.items()):
                     await cancel_and_reap(work_task, phase=f"ws.work:{sid}", timeout=0.5)
                 work_tasks.clear()
                 work_queues.clear()
-                _td_mark("reap_work")
+                _td.mark("reap_work")
 
                 # Fence the auto re-attach path with plain assignments, BEFORE any
                 # await. event_task is still running here and can still spawn one,
@@ -1974,18 +1989,18 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # Reap the forwarder first — it is the only spawner of auto
                     # re-attach tasks, so the set below cannot grow while we drain it.
                     await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
-                    _td_mark("reap_events")
+                    _td.mark("reap_events")
                     for sid, auto_task in list(auto_reattach_tasks.items()):
                         await cancel_and_reap(auto_task, phase=f"ws.auto_reattach:{sid}",
                                               timeout=0.5)
                     auto_reattach_tasks.clear()
-                    _td_mark("reap_auto_reattach")
+                    _td.mark("reap_auto_reattach")
                     # Cancel live streams (bounded per session by _teardown_live_task).
                     for sid in list(live_tasks.keys()):
                         await _handle_detach(sid)
-                    _td_mark("detach_live")
+                    _td.mark("detach_live")
                     await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
-                    _td_mark("reap_batcher")
+                    _td.mark("reap_batcher")
                 finally:
                     # Unconditional: an unsubscribed-from queue is one the orchestrator
                     # keeps publishing into for the life of the process, so it must
@@ -1993,8 +2008,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     try:
                         await orchestrator.unsubscribe_events(event_q)
                     finally:
-                        _td_mark("unsubscribe_events")
-                        _emit_teardown_timeline(_td_marks)
+                        _td.mark("unsubscribe_events")
+                        _emit_teardown_timeline(_td.marks)
                 log.debug("ws.disconnect identity=%s", identity)
 
     return router

@@ -14,7 +14,7 @@ without reproducing a flake nobody can reproduce on demand.
 
 import logging
 
-from server.bridge.ws import _TEARDOWN_BUDGET_S, _emit_teardown_timeline
+from server.bridge.ws import _TEARDOWN_BUDGET_S, _TeardownMarks, _emit_teardown_timeline
 
 _LOGGER = "server.bridge.ws"
 
@@ -79,3 +79,33 @@ def test_no_marks_emits_nothing(caplog):
     caplog.set_level(logging.DEBUG, logger=_LOGGER)
     _emit_teardown_timeline([])
     assert not caplog.records
+
+
+def test_marks_are_visible_even_when_unsubscribe_events_is_never_reached(caplog):
+    """Pins the property the original #1383 instrumentation lacked (#1547).
+
+    `_emit_teardown_timeline` is called from the same `finally` as
+    `unsubscribe_events`, so a teardown that stalls before reaching that call never
+    produces a summary either — the diagnostic and the failure it exists to explain
+    are gated on the same event. `_TeardownMarks.mark()` must not depend on the
+    summary ever running: each phase has to log itself the moment it happens, so a
+    stall's last-recorded phase is still visible with the terminal call never made.
+    """
+    caplog.set_level(logging.DEBUG, logger=_LOGGER)
+    td = _TeardownMarks()
+    td.mark("enter")
+    td.mark("drain_work_chains")
+    td.mark("reap_work")
+    # `unsubscribe_events` / `_emit_teardown_timeline` deliberately never called —
+    # this IS the stalled-before-the-summary case.
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages == [
+        "ws.teardown.mark enter",
+        "ws.teardown.mark drain_work_chains",
+        "ws.teardown.mark reap_work",
+    ]
+    assert not any(m.startswith("ws.teardown ") for m in messages), (
+        "the terminal summary must NOT be required for the phase marks to be "
+        "observable — that was exactly the tautology"
+    )
