@@ -7,8 +7,10 @@
  * `AutomationPolicyCard` — renders through the SAME field-type switch rather
  * than growing a parallel copy of it.
  */
+import { useState, type KeyboardEvent } from 'react'
 import type { ConfigField } from '@/api/automations'
 import { useGithubRepos } from '@/api/hooks'
+import { Badge } from '@/ui/Badge'
 import { Checkbox } from '@/ui/Checkbox'
 import { Input } from '@/ui/Input'
 import { Select } from '@/ui/Select'
@@ -96,6 +98,65 @@ function RepoNumberMap({ field, value, onChange, enabledRepos }: FieldValueProps
   )
 }
 
+// A freeform list of tags (e.g. product `skip_labels`): unlike `RepoMultiselect`,
+// there is no fixed catalog to pick from, so this is type-and-commit rather than
+// check-a-box. Enter or comma commits the draft as a chip; Backspace on an empty
+// draft pops the last one, matching common tag-input muscle memory.
+function TagListInput({ field, value, onChange }: FieldValueProps) {
+  const tags: string[] = Array.isArray(value) ? (value as string[]) : []
+  const [draft, setDraft] = useState('')
+
+  function addTag(raw: string) {
+    const tag = raw.trim()
+    if (!tag) { setDraft(''); return }
+    if (tags.some((t) => t.toLowerCase() === tag.toLowerCase())) { setDraft(''); return }
+    onChange(field.key, [...tags, tag])
+    setDraft('')
+  }
+
+  function removeTag(tag: string) {
+    onChange(field.key, tags.filter((t) => t !== tag))
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault()
+      addTag(draft)
+    } else if (e.key === 'Backspace' && draft === '' && tags.length > 0) {
+      removeTag(tags[tags.length - 1])
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-edge bg-surface p-1.5">
+      {tags.map((tag) => (
+        <Badge key={tag} tone="neutral" className="gap-1 pr-1">
+          {tag}
+          <button
+            type="button"
+            onClick={() => removeTag(tag)}
+            aria-label={`Remove ${tag}`}
+            className="leading-none text-ink-muted hover:text-ink"
+          >
+            ×
+          </button>
+        </Badge>
+      ))}
+      <Input
+        id={field.key}
+        type="text"
+        size="sm"
+        value={draft}
+        placeholder={tags.length === 0 ? 'Add a label…' : ''}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={() => addTag(draft)}
+        className="min-w-[8rem] flex-1 border-none bg-transparent shadow-none focus:ring-0"
+      />
+    </div>
+  )
+}
+
 export function ConfigInput({ field, value, onChange, enabledRepos }: FieldValueProps & {
   enabledRepos?: string[]
 }) {
@@ -149,6 +210,8 @@ export function ConfigInput({ field, value, onChange, enabledRepos }: FieldValue
       )
     case 'repo-multiselect':
       return <RepoMultiselect field={field} value={value} onChange={onChange} />
+    case 'string-list':
+      return <TagListInput field={field} value={value} onChange={onChange} />
     case 'repo-number-map':
       return <RepoNumberMap field={field} value={value} onChange={onChange}
         enabledRepos={enabledRepos ?? []} />

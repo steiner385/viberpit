@@ -11,15 +11,25 @@ def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "weight",
                     "ladder_top", "give_up_after_bounces", "default_model",
-                    "respect_dependencies", "triage_auto_accept",
+                    "respect_dependencies", "skip_labels", "triage_auto_accept",
                     "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "capacity_mode": "auto", "weight": 1,
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
-        "respect_dependencies": True, "triage_auto_accept": "off",
+        "respect_dependencies": True, "skip_labels": [], "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
         "unattended_model_floor": "none"}
+
+
+def test_skip_labels_is_additive_string_list_defaulting_empty():
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["skip_labels"]
+    assert field.type == "string-list" and field.default == []
+    assert effective_policy({"dispatch": "auto", "skip_labels": ["on-hold", "needs-design"]}
+                            )["skip_labels"] == ["on-hold", "needs-design"]
+    # A non-list value is a corrupt row, not a schema violation the client fixes:
+    # falls back to pure defaults like any other unparseable field (never raises).
+    assert effective_policy({"dispatch": "auto", "skip_labels": "on-hold"})["skip_labels"] == []
 
 
 def test_ladder_top_choices_are_the_tier_order_and_max_attempts_is_gone():

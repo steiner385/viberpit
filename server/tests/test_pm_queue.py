@@ -50,6 +50,25 @@ def test_live_session_claim_assignee_epic_and_bot_are_excluded():
     assert skip_reason(_row(title="Dependency Dashboard"), **kw) == "bot"
 
 
+def test_extra_skip_labels_add_to_the_global_bot_filter_without_replacing_it():
+    """Per-product ``skip_labels`` (product_policy schema) is additive: it never
+    turns off the built-in dependencies/renovate filter, it only adds to it."""
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    # A product-specific label skips only when passed.
+    assert skip_reason(_row(labels=("on-hold",)), **kw) is None
+    assert skip_reason(_row(labels=("on-hold",)), extra_skip_labels=frozenset({"on-hold"}),
+                       **kw) == "bot"
+    # Case-insensitive, matching the global filter's own comparison.
+    assert skip_reason(_row(labels=("On-Hold",)), extra_skip_labels=frozenset({"on-hold"}),
+                       **kw) == "bot"
+    # The global filter still fires with no product labels configured at all.
+    assert skip_reason(_row(labels=("dependencies",)), extra_skip_labels=frozenset(),
+                       **kw) == "bot"
+    # And still fires even when the product has its OWN unrelated list configured.
+    assert skip_reason(_row(labels=("renovate",)), extra_skip_labels=frozenset({"on-hold"}),
+                       **kw) == "bot"
+
+
 def test_held_rows_are_skipped_regardless_of_time():
     """Spec 2026-09-18 §7: an owner_action or decision hold parks the row until a
     human signal releases it — there is no timer to wait out."""

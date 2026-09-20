@@ -21,6 +21,7 @@ const SCHEMA = [
   { key: 'ladder_top', label: 'Ladder top tier', type: 'enum', default: 'fable', help: '', choices: ['haiku', 'sonnet', 'opus', 'fable'] },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
+  { key: 'skip_labels', label: 'Labels to skip', type: 'string-list', default: [], help: '', choices: null },
   { key: 'risk_tolerance', label: 'Risk tolerance', type: 'enum', default: 'cautious', help: '', choices: ['cautious', 'balanced', 'bold'] },
 ] as const
 
@@ -99,6 +100,18 @@ describe('AutomationPolicyCard', () => {
     // dispatch listed first
     const labels = screen.getAllByText(/Dispatch|Minimum board status|Max in flight|Weight|Ladder top tier|Session model|Respect issue dependencies/)
     expect(labels[0]).toHaveTextContent('Dispatch')
+  })
+
+  it('adding a skip label sends the full list, additive to whatever is already there', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({
+      automationPolicy: { skip_labels: ['renovate'] },
+    })} />)
+    const input = screen.getByLabelText('Labels to skip')
+    fireEvent.change(input, { target: { value: 'on-hold' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(h.update).toHaveBeenCalledWith({
+      policy: { skip_labels: ['renovate', 'on-hold'] }, expectedUpdatedAt: null,
+    })
   })
 
   it('a change sends only the edited key and the observed revision', () => {
@@ -197,6 +210,7 @@ describe('AutomationPolicyCard', () => {
     expect(legendFor(screen.getByLabelText('Weight'))).toBe('Capacity')
     expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Capacity')
     expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Capacity')
+    expect(legendFor(screen.getByLabelText('Labels to skip'))).toBe('Capacity')
     expect(legendFor(screen.getByLabelText('Ladder top tier'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Session model'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
