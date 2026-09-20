@@ -509,6 +509,13 @@ _TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S",
 _REPLAY_FAILURE_LOG = LogThrottle()
 _PAUSE_LOG = LogThrottle()
 
+# A feature-doc link to a project/feature that doesn't resolve stays unresolved
+# on every pm-sync tick until someone edits the doc, so this repeated the same
+# warning every 60s tick (#1531, re-filed as #1875 once #1531 was closed with
+# the link still broken — same fingerprint, same first-seen timestamp). Keyed
+# by the unresolved edge's identity, not the tick.
+_PM_SYNC_LINK_LOG = LogThrottle()
+
 # stop() runs inside the app lifespan shutdown; every await in it is bounded so a
 # single cancel-ignoring task or wedged driver close can't hang teardown (#846).
 # Per-item budgets: reaping a cancelled task should be near-instant; a driver close
@@ -8506,8 +8513,12 @@ class SessionOrchestrator:
                     dst_project = projects.get(link.project)
                     dst_id = targets.get((dst_project, link.feature)) if dst_project else None
                     if src is None or dst_id is None:
-                        log.warning("pm_sync.feature_link_unresolved project=%s src=%s -> %s/%s",
-                                    project_id, src_slug, link.project, link.feature)
+                        log_throttled(
+                            log, _PM_SYNC_LINK_LOG,
+                            f"{project_id}\0{src_slug}\0{link.project}\0{link.feature}",
+                            logging.WARNING,
+                            "pm_sync.feature_link_unresolved project=%s src=%s -> %s/%s",
+                            project_id, src_slug, link.project, link.feature)
                         continue
                     db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
 
