@@ -1,6 +1,6 @@
 import { automationTier } from '@/features/delivery/automationTier'
 import type { NavBadgeKey, NavDef } from './navDefs'
-import { useAccounts, useSessions, useAllPrs, useAutomations, useDecisions, useTriage } from '@/api/hooks'
+import { useAccounts, useSessions, useAllPrs, useAutomations, useCapacity, useDecisions, useTriage } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
@@ -17,7 +17,9 @@ export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
  * an artifact of it never rendering PendingApprovalSection. Quiet maintenance
  * sessions are NOT counted: they live in the Background scope precisely so
  * they do not draw the eye, and a nav badge is the eye-drawing surface. One
- * that needs a human lifts into Active and is counted then.
+ * that needs a human lifts into Active and is counted then. The Delivery dot
+ * also lights while the capacity readout names a binding constraint (spec
+ * 2026-09-20 C8).
  *
  * A zero count comes back as `undefined`, not `0`, so no badge renders.
  * `settings` is boolean-or-undefined — an amber attention dot, never a count.
@@ -47,6 +49,11 @@ export function useNavBadges(): NavBadges {
   // the Roadmap column passes `poll: false`.
   const { data: decisions = [] } = useDecisions()
   const deploy = useDeployState()
+  // C8: a binding capacity constraint is "nothing can run" — visible from any
+  // section. Read WITHOUT a poll: the Delivery page owns the readout's timer,
+  // this only shares the cache (plus react-query's mount/focus refetch), so
+  // the badge costs no app-wide request loop of its own.
+  const { data: capacity } = useCapacity()
 
   const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
   const automationAttention = automationsError || automationsData.some((a) => automationTier(a) === 'needs-you')
@@ -58,7 +65,7 @@ export function useNavBadges(): NavBadges {
     sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     // Shared list snapshot; an unknown observation gets a dot, never a fabricated count.
-    delivery: automationActions || automationAttention || undefined,
+    delivery: automationActions || automationAttention || Boolean(capacity?.binding) || undefined,
     // Proposals awaiting a decision — the count the deleted Triage nav row wore.
     // The queue is the Roadmap section's Inbox scope now (finish-line row 3), so
     // the badge follows it onto Roadmap rather than disappearing with the row.

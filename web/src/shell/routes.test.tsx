@@ -102,6 +102,13 @@ vi.mock('@/api/client', async (importOriginal) => {
       get: vi.fn(async (path: string): Promise<unknown> => {
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
+        // The real `RoadmapListColumn` (not `RoadmapPage`, which is stubbed
+        // above) mounts here as `app.list` whenever the Roadmap section is
+        // active, reading this key through `useRoadmapMap`. It needs the real
+        // `RoadmapMap` shape (`{ products, generatedAt }`), not the generic
+        // `[]` fallback below — an array has no `.products`, and
+        // `MapScopeBody`'s tree flattening reads it unguarded.
+        if (path === '/pm/map') return { products: [], generatedAt: '2024-01-01T00:00:00Z' }
         return []
       }),
       post: vi.fn(async () => ({})),
