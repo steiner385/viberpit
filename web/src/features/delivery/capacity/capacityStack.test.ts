@@ -114,7 +114,7 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
   })
   it('says when account quota binds below the stored ceiling, alongside the stored-ceiling note', () => {
     const r = readout({
-      runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 3 },
+      runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 4 },
       accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
     })
     expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary)
@@ -124,6 +124,13 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
     const r = readout({
       runner: { ceiling: 4, effective: 4, inFlight: 2, derived: null },
       accounts: { available: 3, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 6 },
+    })
+    expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary).toBeUndefined()
+  })
+  it('does not claim quota binds without a live plan, even when accounts could not carry the ceiling', () => {
+    const r = readout({
+      runner: { ceiling: 6, effective: 6, inFlight: 2, derived: null },
+      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
     })
     expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary).toBeUndefined()
   })

@@ -110,7 +110,12 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
       href: '#runner', binding: isBindingLayer(r.binding, 'runner'),
       secondary: joinClauses(
         r.runner.effective !== r.runner.ceiling ? `stored ceiling ${r.runner.ceiling}` : null,
-        r.accounts.accountCap < r.runner.ceiling
+        // Quota only "binds" when there IS a live plan and the plan's derived
+        // value is what the account leg actually produced — `derived` may
+        // instead reflect the host or global leg binding, and with no live
+        // plan at all (the default production posture) nothing caps the
+        // runner on accounts yet, however small `accountCap` looks.
+        r.runner.derived !== null && r.runner.derived === r.accounts.accountCap && r.accounts.accountCap < r.runner.ceiling
           ? `quota binds: ${r.accounts.available} account${r.accounts.available === 1 ? '' : 's'} × ${r.accounts.sessionsPerAccount} = ${r.accounts.accountCap}`
           : null,
       ),
