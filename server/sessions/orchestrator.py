@@ -415,6 +415,16 @@ _TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
     "automation_ownership_stale",
 })
 
+# Pause reason for a rebuild the session lease refused: another host holds this
+# conversation and would be handed a second live CLI (#1379). Deliberately NOT in
+# _TERMINAL_PAUSE_REASONS — the two above are settled forever, whereas a lease LAPSES
+# once its holder stops heartbeating, and a session whose owning daemon died must
+# still come back without a human. So it is retryable, but the two automatic loops
+# (_sweep_needs_attention, _restart_driverless) gate their retry on the live condition
+# via _lease_held_elsewhere instead of rediscovering the refusal once per tick: that
+# rediscovery is what logged 199 session.lease_denied warnings for one session (#1778).
+_LEASE_HELD_PAUSE_REASON: str = "lease_held"
+
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
 # debounce a fleet of healthy accounts would re-run the sweep every few seconds.
@@ -2336,6 +2346,36 @@ class SessionOrchestrator:
         clock = getattr(self, "_clock", None)
         return clock() if clock is not None else time.monotonic()
 
+    def _lease_denials(self) -> dict[str, tuple[str, str]]:
+        """sid → the (holder, layer) its last logged refusal named. Created on
+        demand for the same reason as ``_lease_fences``."""
+        seen = getattr(self, "_session_lease_denials", None)
+        if seen is None:
+            seen = {}
+            self._session_lease_denials = seen
+        return seen
+
+    def _lease_denial_is_news(self, session_id: str, holder: str, layer: str) -> bool:
+        """Should this refusal be logged in full, or is it a repeat of the last one?
+
+        A refusal is a STEADY STATE, not an event: while another host legitimately
+        owns a session, every loop that retries a build is refused identically, and
+        one WARNING + ``session.lease_denied`` per attempt turned a single stuck
+        session into an auto-filed issue with 199 occurrences (#1778). The first
+        refusal is the news and still logs in full, as does any change of holder or
+        layer; identical repeats drop to DEBUG until a claim succeeds or the lease is
+        released, either of which re-arms the warning.
+
+        Deliberately not time-based: the point is one line per distinct FACT, so a
+        holder that changes is never hidden by a timer that has not expired yet.
+        """
+        seen = self._lease_denials()
+        key = (holder, layer)
+        if seen.get(session_id) == key:
+            return False
+        seen[session_id] = key
+        return True
+
     async def _claim_session(self, session_id: str, *, why: str,
                              adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
@@ -2374,13 +2414,18 @@ class SessionOrchestrator:
             if not self._owns_record(rec, enabled):
                 stamp = getattr(rec, "host", None)
                 if session_lease_enforced():
-                    log.warning(
-                        "session-lease: refusing to %s session %s — its row is stamped "
-                        "for host %r, not %r; leaving it to its owner (layer 1).",
-                        why, session_id, stamp, me)
-                    log_event(log, logging.WARNING, "session.lease_denied",
-                              session_id=session_id, holder=stamp,
-                              reason=f"foreign_stamp:{why}")
+                    if self._lease_denial_is_news(session_id, str(stamp), "foreign_stamp"):
+                        log.warning(
+                            "session-lease: refusing to %s session %s — its row is stamped "
+                            "for host %r, not %r; leaving it to its owner (layer 1).",
+                            why, session_id, stamp, me)
+                        log_event(log, logging.WARNING, "session.lease_denied",
+                                  session_id=session_id, holder=stamp,
+                                  reason=f"foreign_stamp:{why}")
+                    else:
+                        log.debug(
+                            "session-lease: still refusing to %s session %s — row "
+                            "stamped for %r (layer 1).", why, session_id, stamp)
                     return False
                 log.warning(
                     "session-lease: session %s is stamped for %r but enforcement is "
@@ -2395,6 +2440,7 @@ class SessionOrchestrator:
         if fence is not None:
             self._lease_fences()[session_id] = fence
             self._lease_building()[session_id] = self._lease_clock()
+            self._lease_denials().pop(session_id, None)
             return True
         state = await _lease_state(session_id)
         holder = state.holder if state is not None else "<unknown>"
@@ -2405,18 +2451,45 @@ class SessionOrchestrator:
                 "OFF — building a SECOND driver for it anyway (%s)",
                 session_id, holder, age, why)
             return True
-        log.warning(
-            "session-lease: refusing to %s session %s — host %r holds its lease "
-            "(renewed %s). Two live CLIs on one conversation race on git and split "
-            "its worktree (#1379); leaving it to its owner.",
-            why, session_id, holder, age)
-        log_event(log, logging.WARNING, "session.lease_denied",
-                  session_id=session_id, holder=holder, reason=why)
+        if self._lease_denial_is_news(session_id, holder, "lease"):
+            log.warning(
+                "session-lease: refusing to %s session %s — host %r holds its lease "
+                "(renewed %s). Two live CLIs on one conversation race on git and split "
+                "its worktree (#1379); leaving it to its owner.",
+                why, session_id, holder, age)
+            log_event(log, logging.WARNING, "session.lease_denied",
+                      session_id=session_id, holder=holder, reason=why)
+        else:
+            log.debug(
+                "session-lease: still refusing to %s session %s — %r holds its lease "
+                "(renewed %s).", why, session_id, holder, age)
         return False
+
+    async def _lease_held_elsewhere(self, session_id: str) -> bool:
+        """Is a DIFFERENT host still holding *session_id*'s lease with a live heartbeat?
+
+        Exactly the condition ``session_lease.acquire`` refuses on, asked WITHOUT
+        taking the lease, so an automatic retry loop can back off for as long as its
+        refusal is certain instead of rediscovering it every tick (#1778). Keep the
+        freshness rule identical to acquire's: a stricter one strands a session whose
+        holder has died, a looser one leaves the loop spinning.
+
+        A DB error answers False — the caller then attempts and is refused, which is
+        the pre-fix behaviour, and the same fail-open choice ``_claim_session`` makes.
+        """
+        state = await _lease_state(session_id)
+        if state is None:
+            return False
+        if state.holder == self_host_name():
+            return False
+        return state.age_s < SESSION_LEASE_TTL_S
 
     async def _release_session_lease(self, session_id: str) -> None:
         """Drop our claim on *session_id* so another host need not wait out the TTL."""
         self._lease_building().pop(session_id, None)
+        # Re-arm the refusal warning: handing the lease back changes who owns this
+        # session, so the next refusal is news again rather than a repeat.
+        self._lease_denials().pop(session_id, None)
         fence = self._lease_fences().pop(session_id, None)
         if fence is None:
             return
@@ -2488,6 +2561,15 @@ class SessionOrchestrator:
                 "driver for it is still live here — TWO hosts may now be running "
                 "this conversation (#1379).",
                 sid, state.holder if state is not None else "<released>")
+        # Prune refusal-dedupe entries for sessions this daemon no longer tracks, so
+        # the map cannot outgrow _records in a daemon that runs for weeks. A refusal
+        # for a session with no record is a one-off spawn, not a loop, so re-arming
+        # its warning is the right side to err on.
+        records = getattr(self, "_records", None)
+        if records is not None:
+            denials = self._lease_denials()
+            for sid in [s for s in denials if s not in records]:
+                del denials[sid]
 
     async def _reconcile_foreign_lease(self, sid: str, rec: SessionRecord,
                                        enabled: frozenset[str] | None) -> bool:
@@ -17209,6 +17291,14 @@ class SessionOrchestrator:
             log.debug("rotation.skip_terminal session=%s reason=%s",
                       record.id, record.paused_reason)
             return
+        if (record.paused_reason == _LEASE_HELD_PAUSE_REASON
+                and await self._lease_held_elsewhere(record.id)):
+            # Refused by the lease last time and the holder is still live, so this
+            # rebuild would be refused identically — and this loop fires on account
+            # usage alone, so it re-picks the session every time the account crosses
+            # the ceiling. Wait for the lease to lapse (#1778).
+            log.debug("rotation.skip_lease_held session=%s", record.id)
+            return
         log.info("rotation.restart_driverless session=%s reason=%s", record.id, reason)
         await self._rotate_away(record, reason=reason)
 
@@ -17272,6 +17362,13 @@ class SessionOrchestrator:
             if not self._owns_record(record, enabled_hosts):
                 log.debug("stuck-sweep.skip_foreign session=%s host=%s",
                           record.id, record.host)
+                continue
+            if (record.paused_reason == _LEASE_HELD_PAUSE_REASON
+                    and await self._lease_held_elsewhere(record.id)):
+                # We own the ROW but another live host holds the LEASE — the
+                # split-brain of #1824. Retrying is refused identically every tick;
+                # back off until the lease lapses, then recover as usual (#1778).
+                log.debug("stuck-sweep.skip_lease_held session=%s", record.id)
                 continue
             log.info(
                 "stuck-sweep.retry session=%s account=%s", record.id, record.account,
@@ -18190,11 +18287,26 @@ class SessionOrchestrator:
             # automation ownership is settled — the execution fence will refuse every
             # future rebuild identically — so parking it as `reassign_failed:<trigger>`
             # fed it straight back to the stuck-session sweep, which re-enters on that
-            # very reason. Every other failure here is genuinely worth retrying and
-            # keeps the retryable reason.
+            # very reason. A lease another host holds is the same trap for as long as
+            # it holds; unlike ownership it can lapse, so it gets its own reason the
+            # retry loops gate on rather than a place in _TERMINAL_PAUSE_REASONS. Every
+            # other failure here is genuinely worth retrying and keeps the retryable
+            # reason.
             from server.automations.ownership import StaleOwnership
             terminal = isinstance(exc, StaleOwnership)
-            if terminal:
+            lease_held = isinstance(exc, SessionLeaseHeld)
+            if lease_held:
+                # Sibling of the branch below, one incident later (#1778): another
+                # host holds this conversation, so every rebuild here is refused
+                # identically while that stays true. Also an expected outcome of a
+                # working fence, so no ERROR and no traceback — `reassign.error`
+                # here filed a SECOND auto-error issue on top of the
+                # `session.lease_denied` one, for a refusal that is the design.
+                log.warning(
+                    "reassign.lease_held session=%s trigger=%s — another host holds "
+                    "this session's lease; backing off until it lapses: %s",
+                    record.id, reason, exc)
+            elif terminal:
                 # An expected, handled outcome — not a fault. Logging it as
                 # ERROR-with-traceback is what filed #1767 (83 occurrences) and would
                 # keep re-filing it once per genuine ownership loss even now that the
@@ -18205,8 +18317,12 @@ class SessionOrchestrator:
                     "retry: %s", record.id, reason, exc)
             else:
                 log.exception("reassign.error session=%s", record.id)
-            paused_reason = ("automation_ownership_stale" if terminal
-                             else f"reassign_failed:{reason}")
+            if lease_held:
+                paused_reason = _LEASE_HELD_PAUSE_REASON
+            elif terminal:
+                paused_reason = "automation_ownership_stale"
+            else:
+                paused_reason = f"reassign_failed:{reason}"
             try:
                 await self._pause_session(record, reason=paused_reason)
             except Exception:
