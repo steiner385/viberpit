@@ -35,9 +35,9 @@ _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
 def test_repark_makes_the_prompt_poppable_again():
     # __new__, not a real constructor: both methods under test touch only
-    # _pending_initial_prompt, and a real SessionOrchestrator() reaches out to
-    # this machine's actual accounts/config (no CCSWITCH_HOME override here) —
-    # unnecessary and unsafe for a pure dict round-trip test.
+    # _pending_initial_prompt, and a real orchestrator constructor reaches out
+    # to this machine's actual accounts/config unless its home directory is
+    # overridden — unnecessary and unsafe for a pure dict round-trip test.
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._pending_initial_prompt = {}
     orch._pending_initial_prompt["s1"] = "original seed"
