@@ -81,7 +81,16 @@ more.
 - **Touch targets** — the `--target` token (44px, `web/src/index.css`) is exposed as
   `min-h-target`/`min-w-target`. `IconButton` and `Menu`/`Tabs` items carry it by default; an
   on-screen `Button` in a touch context must be `size="lg"` (`sm`/`md` are 36/40px — tracked as a
-  base-class change in issue #953).
+  base-class change in issue #953). A dense inline control (a per-row icon trigger, a list's
+  search/filter/sort chrome) cannot take the flat `min-h-target` floor without visually bloating a
+  desktop-mouse strip, so these instead float the floor on pointer capability — `min-h-11 (44px)
+  [@media(hover:hover)]:min-h-0`, restoring the coarse-pointer floor only where `hover: hover` does
+  not match. `CardMenu`'s `actionBtn` (the per-row `⋯` trigger) established the pattern; `ui/list/
+  listControlStyles.ts`'s `listControlClass` (every list's search input and group/sort/filter
+  selects) and `SessionListControls`'s "Clear filters" / `ListSearchInput`'s "Clear search" carry it
+  too — `web/e2e/touch-targets.spec.ts` measures real rendered boxes under an emulated coarse
+  pointer (`hasTouch`/`isMobile`), since desktop Chromium reports `hover: hover` even at a
+  phone-sized viewport.
 - **`StatusPill`** (`ui/StatusPill.tsx`) — colour is never the only signal: every pill pairs an icon
   with a text label (`aria-label="Status: <label>"`), so a status reads correctly with colour vision
   off. `features/accounts/UsageBadge.tsx` re-exports a thin `StatusPill` adapter over this primitive
@@ -143,6 +152,12 @@ at `index.css:266` that stops the working-shimmer animation. This matches `web/R
   `playwright.config.ts:17-22` defines one project — `chromium` on `devices['Desktop Chrome']`,
   whose viewport is what a spec that sets none inherits. What does not exist is a viewport *matrix*:
   the per-spec widths cover what one would, without multiplying specs that already loop on their own.
+- **Touch targets**: `touch-targets.spec.ts` is the one spec that additionally sets
+  `hasTouch`/`isMobile` (393×852) rather than only a phone-sized viewport — the default `Desktop
+  Chrome` device reports `hover: hover`/`pointer: fine` regardless of viewport width, so a
+  hover-media-gated target size only shrinks back to the coarse-pointer floor under an emulated
+  touch context. A sibling desktop-mouse describe (1440×900, no touch emulation) asserts the same
+  controls stay in their dense, non-floored state.
 
 ## 7. Retired
 
