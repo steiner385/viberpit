@@ -199,4 +199,7 @@ describe('accountRowLine (spec 2026-09-20 C21)', () => {
   it("an override shows as that account's own reserve", () => {
     expect(accountRowLine({ ...base, reservePct: 60, available: false, reason: 'at_ceiling' })).toBe('acct — at ceiling · 60% reserve')
   })
+  it('the over_reserve reason renders generically, same as any other reason code', () => {
+    expect(accountRowLine({ ...base, reservePct: 60, available: false, reason: 'over_reserve' })).toBe('acct — over reserve · 60% reserve')
+  })
 })
