@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CapacityReadout } from '@/api/capacity'
-import { buildCapacityStack } from './capacityStack'
+import { buildCapacityStack, accountRowLine, capacityRowLink, type CapacityStackRow } from './capacityStack'
 
 function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
   return {
@@ -8,6 +8,7 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     pushLevel: 'steady',
     governorMode: 'monitor',
     killSwitch: true,
+    reservePctByLevel: { conserve: 40, steady: 20, max: 5 },
     global: { cap: 20, active: 10, free: 10, physical: null, attention: null, binding: null },
     hosts: [],
     accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [] },
@@ -112,5 +113,57 @@ describe('buildCapacityStack — row links (spec 2026-09-20 C4, D10)', () => {
     expect(rows.global).toBe('/settings/capacity')
     expect(rows.hosts).toBe('/settings/fleet')
     expect(rows.accounts).toBe('/settings/accounts')
+  })
+})
+
+describe('buildCapacityStack — Global row (spec 2026-09-20 §5.2)', () => {
+  it('names both ceilings and which one binds', () => {
+    const r = readout({ global: { cap: 10, active: 5, free: 5, physical: 10, attention: 10, binding: 'attention' } })
+    expect(buildCapacityStack(r).find((row) => row.key === 'global')!.secondary)
+      .toBe('physical 10 · attention 10 · attention binds')
+  })
+  it('spells an unbounded physical ceiling and a missing attention ceiling', () => {
+    const r = readout({ global: { cap: 5, active: 1, free: 4, physical: null, attention: null, binding: 'default' } })
+    expect(buildCapacityStack(r).find((row) => row.key === 'global')!.secondary)
+      .toBe('physical ∞ · attention none · default floor')
+  })
+  it('omits the secondary when the server has no derivation', () => {
+    expect(buildCapacityStack(readout()).find((row) => row.key === 'global')!.secondary).toBeUndefined()
+  })
+  it('Products links to the table on the same page', () => {
+    expect(buildCapacityStack(readout()).find((row) => row.key === 'products')!.href).toBe('#products')
+  })
+})
+
+describe('capacityRowLink (spec 2026-09-20 D10)', () => {
+  const row = (over: Partial<CapacityStackRow> = {}): CapacityStackRow => ({
+    key: 'global', label: 'Global cap', used: 1, cap: 2, free: 1, href: null, binding: false, ...over,
+  })
+  it('a route href becomes a route link', () => {
+    expect(capacityRowLink(row({ href: '/settings/capacity' }))).toEqual({ kind: 'route', to: '/settings/capacity' })
+  })
+  it('a "#…" href becomes an in-page anchor', () => {
+    expect(capacityRowLink(row({ key: 'products', href: '#products' }))).toEqual({ kind: 'anchor', targetId: 'products' })
+  })
+  it('a null href is no link', () => {
+    expect(capacityRowLink(row({ href: null }))).toBeNull()
+  })
+})
+
+describe('accountRowLine (spec 2026-09-20 C21)', () => {
+  const base = { name: 'acct', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, windows: [] }
+  it('available', () => { expect(accountRowLine(base)).toBe('acct — available') })
+  it('unavailable with a reason', () => {
+    expect(accountRowLine({ ...base, available: false, reason: 'at_ceiling' })).toBe('acct — at ceiling')
+  })
+  it('unavailable with a reason and a reset time', () => {
+    const line = accountRowLine({ ...base, available: false, reason: 'at_ceiling', nextResetAt: new Date(Date.now() + 3_600_000).toISOString() })
+    expect(line.startsWith('acct — at ceiling · resets ')).toBe(true)
+  })
+  it('not metered', () => {
+    expect(accountRowLine({ ...base, engine: 'codex', metered: false, available: false, reason: 'not_metered' })).toBe('acct — not metered')
+  })
+  it('disabled', () => {
+    expect(accountRowLine({ ...base, enabled: false, available: false, reason: 'disabled' })).toBe('acct — disabled')
   })
 })

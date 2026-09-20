@@ -108,6 +108,8 @@ export interface CapacityReadout {
   pushLevel: PushLevel
   governorMode: string
   killSwitch: boolean
+  /** The weekly reserve each push level keeps (server `RESERVE_PCT`); the radio's descriptions. */
+  reservePctByLevel: Record<PushLevel, number>
   global: {
     cap: number; active: number; free: number
     /** The derivation (spec 2026-09-20 D3); null when the server has no seam wired. */

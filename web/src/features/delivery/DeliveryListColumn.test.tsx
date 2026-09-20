@@ -87,4 +87,23 @@ describe('DeliveryListColumn', () => {
     mount({ automations: [], automationsLoading: true })
     expect(screen.getAllByTestId('skeleton').length).toBeGreaterThan(0)
   })
+  it('Capacity scope: every row with an owner page links to it (spec 2026-09-20 C3)', () => {
+    mount({ scope: 'capacity', capacity: CAPACITY })
+    const list = screen.getByRole('list', { name: 'Capacity' })
+    expect(within(list).getByRole('link', { name: 'Global cap' })).toHaveAttribute('href', '/settings/capacity')
+    expect(within(list).getByRole('link', { name: 'Hosts' })).toHaveAttribute('href', '/settings/fleet')
+    expect(within(list).getByRole('link', { name: 'Accounts' })).toHaveAttribute('href', '/settings/accounts')
+    expect(within(list).getByRole('link', { name: 'Products' })).toHaveAttribute('href', '#products')
+  })
+  it('Capacity scope: the Products link scrolls the in-page anchor rather than navigating (spec 2026-09-20 D10, F2)', () => {
+    mount({ scope: 'capacity', capacity: CAPACITY })
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const products = document.createElement('div')
+    products.id = 'products'
+    document.body.appendChild(products)
+    fireEvent.click(screen.getByRole('link', { name: 'Products' }))
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    document.body.removeChild(products)
+  })
 })

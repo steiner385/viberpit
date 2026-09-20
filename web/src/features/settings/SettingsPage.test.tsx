@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { CAPACITY } from '@/features/delivery/capacity/__fixtures__/capacity'
 
 // The fixtures are imported INSIDE the factory: `vi.mock` is hoisted above every
 // import, so a factory that closed over a module-scope binding would read it
@@ -43,6 +44,8 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/library/commands') return { commands: [] }
         if (path === '/library/mcp') return { servers: [] }
         if (path === '/settings') return appSettings()
+        // The live-readout card (HostedSection's readout slot) reads /capacity on Hosts and Accounts.
+        if (path === '/capacity') return CAPACITY
         // Two accounts needing re-auth, so the in-Settings badge (C20) has a
         // count to announce on every render rather than only in its own test.
         if (path === '/accounts') {

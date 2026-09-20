@@ -1,20 +1,19 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
 import {
-  useSettings, useUpdateSettings, useCapacity, type AppSettings, type GlobalCapDefaults,
+  useSettings, useUpdateSettings, type AppSettings, type GlobalCapDefaults,
 } from '@/api/hooks'
 import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
 import { Skeleton } from '@/ui/Skeleton'
 import { settingsSectionPath } from '@/shell/navDefs'
-import { deliveryPath } from '@/features/delivery/deliveryNavState'
-import { buildCapacityStack } from '@/features/delivery/capacity/capacityStack'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { ManagedEnvTable } from '../chassis/ManagedEnvTable'
+import { LiveReadoutCard } from '../chassis/LiveReadoutCard'
 import { useSettingsForm } from '../useSettingsForm'
 
 /** Env-managed ceilings that sit OUTSIDE the five-layer stack (spec 2026-09-20 D9). */
@@ -93,7 +92,6 @@ export function LimitsSection() {
   const def = SETTINGS_BY_ID.capacity
   const { data: settings, isError, error } = useSettings()
   const update = useUpdateSettings()
-  const { data: capacity } = useCapacity()
   const initial = React.useMemo(() => (settings ? toDraft(settings) : undefined), [settings])
   const form = useSettingsForm<LimitsDraft>({
     initial,
@@ -121,7 +119,6 @@ export function LimitsSection() {
   if (!form.draft) return null
   const { draft, set } = form
   const gc = settings.effectiveDefaults.globalCap
-  const stack = capacity ? buildCapacityStack(capacity) : null
   const attnError = attentionError(draft.attention)
 
   return (
@@ -183,33 +180,7 @@ export function LimitsSection() {
         </SettingRow>
       </SettingsGroup>
 
-      <SettingsGroup
-        legend="Live readout"
-        description={(
-          <>
-            The whole ceiling stack as automation sees it.{' '}
-            <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Open Delivery → Capacity</Link>
-          </>
-        )}
-      >
-        {stack === null
-          ? <p className="py-3 text-sm text-ink-muted">Loading the readout…</p>
-          : (
-            <ul className="divide-y divide-edge">
-              {stack.map((row) => (
-                <li key={row.key} className="flex items-baseline justify-between gap-3 py-2 text-sm">
-                  <span className={row.binding ? 'font-medium text-warning' : 'text-ink'}>{row.label}</span>
-                  <span className="tabular-nums text-ink-muted">
-                    {`${row.used} / ${row.cap ?? '∞'} · ${row.free ?? '∞'} free`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        {capacity?.binding && (
-          <Banner tone="warning" role="status" title="Binding constraint">{capacity.binding.text}</Banner>
-        )}
-      </SettingsGroup>
+      <LiveReadoutCard />
 
       <SettingsGroup
         legend="Managed by env"

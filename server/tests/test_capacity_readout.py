@@ -458,6 +458,15 @@ def test_global_row_degrades_to_nulls_without_the_seam():
     assert r["global"]["binding"] is None
 
 
+def test_readout_carries_the_reserve_for_every_push_level():
+    """spec 2026-09-20 C22: the web no longer mirrors RESERVE_PCT."""
+    from server.automations.capacity_plan import RESERVE_PCT
+
+    r = asyncio.run(build_readout(_make_sources()))
+    assert r["reservePctByLevel"] == dict(RESERVE_PCT)
+    assert set(r["reservePctByLevel"]) == {"conserve", "steady", "max"}
+
+
 def test_wired_global_limits_degrades_to_null_when_the_read_fails(monkeypatch):
     """A DB blip in the Global row's derivation must not 500 the readout (same
     contract as the plan seam's _safe_plan)."""

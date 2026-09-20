@@ -170,6 +170,13 @@ describe('CapacityDetail', () => {
     expect(calls % 2).toBe(0)
   })
 
+  it('push-level descriptions come from the wire, not a client constant', () => {
+    setup({ readout: { ...CAPACITY, reservePctByLevel: { conserve: 45, steady: 25, max: 7 } } })
+    expect(screen.getByText('45% weekly reserve')).toBeInTheDocument()
+    expect(screen.getByText('25% weekly reserve')).toBeInTheDocument()
+    expect(screen.getByText('7% weekly reserve')).toBeInTheDocument()
+  })
+
   it('the push-level radio patches the governor config', () => {
     setup()
     fireEvent.click(screen.getByRole('radio', { name: 'Max' }))
@@ -244,20 +251,61 @@ describe('CapacityDetail', () => {
     }
   })
 
-  it('shows no stale-plan banner when the plan is only proposed (not applied)', () => {
-    setup()
-    expect(screen.queryByText('This plan is stale')).not.toBeInTheDocument()
+  // These three used to assert the plan card's own "This plan is stale"
+  // banner; that banner is gone (governorNotice.ts now owns the one
+  // sentence, single-sourced — see the component's comment), so they
+  // retarget to governorNotice's title "The last plan is stale" and force
+  // `governorMode: 'act'` to reach the staleness branch (the fixture's
+  // default 'monitor' mode would otherwise short-circuit to its own notice).
+  it('shows no stale-plan notice when the plan is only proposed (not applied)', () => {
+    setup({ readout: { ...CAPACITY, governorMode: 'act' } })
+    expect(screen.queryByText('The last plan is stale')).not.toBeInTheDocument()
   })
 
-  it('shows a stale-plan banner when an applied plan is no longer live', () => {
-    setup({ readout: { ...CAPACITY, planLive: false, plan: { ...CAPACITY.plan!, applied: true } } })
-    expect(screen.getByText('This plan is stale')).toBeInTheDocument()
+  it('shows a stale-plan notice when an applied plan is no longer live', () => {
+    setup({ readout: { ...CAPACITY, governorMode: 'act', planLive: false, plan: { ...CAPACITY.plan!, applied: true } } })
+    expect(screen.getByText('The last plan is stale')).toBeInTheDocument()
     expect(screen.getByText(/is using stored caps until the governor ticks again/)).toBeInTheDocument()
   })
 
-  it('shows no stale-plan banner when an applied plan is live', () => {
-    setup({ readout: { ...CAPACITY, planLive: true, plan: { ...CAPACITY.plan!, applied: true } } })
-    expect(screen.queryByText('This plan is stale')).not.toBeInTheDocument()
+  it('shows no stale-plan notice when an applied plan is live', () => {
+    setup({ readout: { ...CAPACITY, governorMode: 'act', planLive: true, plan: { ...CAPACITY.plan!, applied: true } } })
+    expect(screen.queryByText('The last plan is stale')).not.toBeInTheDocument()
+  })
+
+  it('surfaces the governor state above the stack, and one Accounts expansion per account (C18, C21)', () => {
+    setup({ readout: { ...CAPACITY, killSwitch: false } })
+    // `getByRole('status', { name })` can't resolve Banner's accessible name
+    // in this jsdom (the title is a plain <p>, not aria-labelledby) — see
+    // governorNotice's own test for the tone/title/body contract; this just
+    // confirms the notice renders in the component.
+    expect(screen.getByText('Governor kill switch is off')).toBeInTheDocument()
+    const accounts = screen.getByTestId('capacity-stack-accounts')
+    const details = within(accounts).getByRole('group')
+    expect(within(details).getByText('primary — available')).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Products' })).toHaveAttribute('id', 'products')
+    expect(screen.getByRole('link', { name: 'Products' })).toHaveAttribute('href', '#products')
+  })
+
+  it('the Products link scrolls the in-page table into view rather than navigating (spec 2026-09-20 D10, F2)', () => {
+    setup()
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    fireEvent.click(screen.getByRole('link', { name: 'Products' }))
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+  })
+
+  it('T4: the Accounts row still expands when it is the binding row', () => {
+    setup({
+      readout: {
+        ...CAPACITY,
+        binding: { layer: 'account', code: 'no_account_headroom', text: 'no account has headroom under the 20% reserve' },
+      },
+    })
+    const accounts = screen.getByTestId('capacity-stack-accounts')
+    expect(within(accounts).getByText('no account has headroom under the 20% reserve')).toBeInTheDocument()
+    const details = within(within(accounts).getByRole('group'))
+    expect(details.getByText('primary — available')).toBeInTheDocument()
   })
 
   it('I6: the pin input has min=0 and step=1', () => {

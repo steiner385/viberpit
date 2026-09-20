@@ -5,7 +5,8 @@
  * numbers from the same fields rather than two hand-rolled reductions that
  * could drift.
  */
-import type { CapacityBindingLayer, CapacityReadout } from '@/api/capacity'
+import type { CapacityAccountRow, CapacityBindingLayer, CapacityReadout } from '@/api/capacity'
+import { formatResetTime } from '@/lib/formatReset'
 import { automationPath } from '../deliveryNavState'
 import { settingsSectionPath } from '@/shell/navDefs'
 
@@ -16,8 +17,7 @@ export interface CapacityStackRow {
   /** null only for the Hosts row, when at least one enabled host has no max. */
   cap: number | null
   free: number | null
-  /** The settings/automation page that owns this row's dial, or null when
-   *  there is none (Products — its own dial is the table on this same page). */
+  /** The page that owns this row's dial; Products uses an in-page anchor to its own table. */
   href: string | null
   binding: boolean
   /** Secondary line under the row — today only the Hosts row's excluded-host
@@ -27,6 +27,39 @@ export interface CapacityStackRow {
 
 function isBindingLayer(binding: CapacityReadout['binding'], ...layers: CapacityBindingLayer[]): boolean {
   return binding !== null && layers.includes(binding.layer)
+}
+
+const GLOBAL_BINDING_TEXT = { physical: 'physical binds', attention: 'attention binds', default: 'default floor' } as const
+
+/** The Global row's second line (spec 2026-09-20 §5.2): both ceilings and which binds. */
+function globalSecondary(g: CapacityReadout['global']): string | undefined {
+  // == (not ===): guards `undefined` too, in case an older server omits the field.
+  if (g.binding == null) return undefined
+  return `physical ${g.physical ?? '∞'} · attention ${g.attention ?? 'none'} · ${GLOBAL_BINDING_TEXT[g.binding]}`
+}
+
+/** One per-account line for the Accounts row's expansion (C21). Reasons are the
+ *  server's snake_case codes from `account_headroom`; spelled out here once. */
+export function accountRowLine(row: CapacityAccountRow): string {
+  if (row.available) return `${row.name} — available`
+  const reason = (row.reason ?? 'unavailable').replace(/_/g, ' ')
+  const reset = formatResetTime(row.nextResetAt)
+  return reset ? `${row.name} — ${reason} · resets ${reset}` : `${row.name} — ${reason}`
+}
+
+export type CapacityRowLink =
+  | { kind: 'route'; to: string }
+  | { kind: 'anchor'; targetId: string }
+  | null
+
+/** How a stack row's label should link (D10). `'#…'` hrefs are same-page anchors:
+ *  both renderers only mount under `?scope=capacity`, and the router never
+ *  scrolls to a fragment on pushState, so they are rendered as plain anchors
+ *  that scroll the target into view themselves. */
+export function capacityRowLink(row: CapacityStackRow): CapacityRowLink {
+  if (row.href === null) return null
+  if (row.href.startsWith('#')) return { kind: 'anchor', targetId: row.href.slice(1) }
+  return { kind: 'route', to: row.href }
 }
 
 export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
@@ -53,6 +86,7 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
     {
       key: 'global', label: 'Global cap', used: r.global.active, cap: r.global.cap, free: r.global.free,
       href: settingsSectionPath('capacity'), binding: isBindingLayer(r.binding, 'global'),
+      secondary: globalSecondary(r.global),
     },
     {
       key: 'hosts', label: 'Hosts', used: hostsActive, cap: hostsCap, free: hostsFree,
@@ -74,7 +108,7 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
     {
       key: 'products', label: 'Products', used: productsUsed, cap: productsCap,
       free: Math.max(0, productsCap - productsUsed),
-      href: null, binding: isBindingLayer(r.binding, 'product', 'defect'),
+      href: '#products', binding: isBindingLayer(r.binding, 'product', 'defect'),
     },
   ]
 }

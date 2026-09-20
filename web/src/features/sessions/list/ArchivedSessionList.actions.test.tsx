@@ -37,6 +37,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),
   useSessions: vi.fn(),
+  useCapacity: vi.fn(() => ({ data: undefined })),
   useCreateSession: vi.fn(),
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
