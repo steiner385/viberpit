@@ -18,6 +18,11 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
+# One spelling of the DB-URL override for the whole file (brand ratchet
+# env-prefix, #1591): every test below patches the same in-memory DB via this
+# constant instead of repeating the literal.
+_MEMORY_DB_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
+
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
@@ -54,7 +59,7 @@ def _make_client(usage_fn=None):
 def test_patch_sets_reserve_and_returns_it():
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             response = client.patch(
@@ -69,7 +74,7 @@ def test_patch_sets_reserve_and_returns_it():
 def test_patch_null_clears_reserve():
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             client.patch("/api/accounts/bob", json={"weeklyReservePct": 85},
@@ -83,7 +88,7 @@ def test_patch_null_clears_reserve():
 def test_patch_out_of_range_reserve_is_422():
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             low = client.patch("/api/accounts/carol", json={"weeklyReservePct": 0.5},
@@ -97,7 +102,7 @@ def test_patch_out_of_range_reserve_is_422():
 def test_nickname_patch_preserves_reserve_and_vice_versa():
     with temp_env():
         _seed_slot("dave")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             client.patch("/api/accounts/dave", json={"weeklyReservePct": 75},
@@ -115,7 +120,7 @@ def test_nickname_patch_preserves_reserve_and_vice_versa():
 def test_get_accounts_includes_reserve_field():
     with temp_env():
         _seed_slot("eve")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client(usage_fn=lambda name: make_usage(session=10.0))
         with client:
             client.patch("/api/accounts/eve", json={"weeklyReservePct": 90},
@@ -137,7 +142,7 @@ def test_get_accounts_ranks_over_reserve_account_as_fallback():
     with temp_env():
         _seed_slot("hot")
         _seed_slot("cool")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client(usage_fn=usage_fn)
         with client:
             client.patch("/api/accounts/hot", json={"weeklyReservePct": 20},
@@ -157,7 +162,7 @@ def test_get_accounts_carries_the_effective_and_default_reserve():
     with temp_env():
         _seed_slot("plain")
         _seed_slot("kept")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             client.patch("/api/accounts/kept", json={"weeklyReservePct": 60},
