@@ -127,6 +127,97 @@ async def test_enforcement_off_claims_a_foreign_row_and_warns(claiming, monkeypa
     assert any("enforcement is OFF" in r.getMessage() for r in caplog.records)
 
 
+# ---------------------------------------------------------------------------
+# Refusal logging: one line per distinct fact, not per attempt (#1778)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def refusing(primary, monkeypatch):
+    """A primary whose lease is always held by rocky, so every claim is refused."""
+    class _State:
+        holder = "rocky"
+        fence = 1
+        age_s = 3.0
+
+    async def no_fence(session_id, holder, *, ttl_s):
+        return None
+
+    async def current(session_id):
+        return _State()
+
+    monkeypatch.setattr(session_lease, "acquire", no_fence)
+    monkeypatch.setattr(session_lease, "current", current)
+    primary.lease_state = _State
+    return primary
+
+
+def _denials(caplog):
+    return [r for r in caplog.records
+            if getattr(r, "event", None) == "session.lease_denied"]
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_refusal_is_logged_once(refusing, caplog):
+    """The retry loops re-enter on a cadence; one warning per attempt is what filed
+    an auto-error issue with 199 occurrences for a single stuck session (#1778)."""
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        for _ in range(5):
+            assert await refusing._claim_session("s1", why="resume") is False
+    assert len(_denials(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_holder_is_logged_again(refusing, caplog):
+    """De-duplication must never hide a CHANGE — a different holder is new news."""
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await refusing._claim_session("s1", why="resume")
+        refusing.lease_state.holder = "vega"
+        await refusing._claim_session("s1", why="resume")
+    assert [r.fields["holder"] for r in _denials(caplog)] == ["rocky", "vega"]
+
+
+@pytest.mark.asyncio
+async def test_both_layers_are_distinct_news(refusing, caplog):
+    """Layer 1 and the lease answer different questions, so a refusal that moves
+    from one to the other is a fact worth a line of its own."""
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await refusing._claim_session("s1", why="resume")          # lease
+        refusing._records["s1"] = _record("s1", "rocky", "idle")
+        await refusing._claim_session("s1", why="resume")          # foreign stamp
+    assert [r.fields["reason"] for r in _denials(caplog)] == [
+        "resume", "foreign_stamp:resume"]
+
+
+@pytest.mark.asyncio
+async def test_refusals_are_deduped_per_session(refusing, caplog):
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await refusing._claim_session("s1", why="resume")
+        await refusing._claim_session("s2", why="resume")
+        await refusing._claim_session("s1", why="resume")
+    assert [r.fields["session_id"] for r in _denials(caplog)] == ["s1", "s2"]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_claim_re_arms_the_warning(refusing, caplog, monkeypatch):
+    """A claim that wins means the standoff is over; a LATER refusal is news again."""
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await refusing._claim_session("s1", why="resume")
+
+        async def with_fence(session_id, holder, *, ttl_s):
+            return 7
+
+        monkeypatch.setattr(session_lease, "acquire", with_fence)
+        assert await refusing._claim_session("s1", why="resume") is True
+
+        async def no_fence(session_id, holder, *, ttl_s):
+            return None
+
+        monkeypatch.setattr(session_lease, "acquire", no_fence)
+        await refusing._claim_session("s1", why="resume")
+    assert len(_denials(caplog)) == 2
+
+
 @pytest.fixture
 def ticking(claiming, monkeypatch):
     """A primary whose renew/release are recorded; the clock is injectable."""
