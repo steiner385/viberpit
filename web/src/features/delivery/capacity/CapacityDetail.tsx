@@ -31,7 +31,9 @@ import { RadioGroup, type RadioOption } from '@/ui/RadioGroup'
 import { Select } from '@/ui/Select'
 import { Skeleton } from '@/ui/Skeleton'
 import { Switch } from '@/ui/Switch'
-import { buildCapacityStack } from './capacityStack'
+import { accountRowLine, buildCapacityStack } from './capacityStack'
+import { deliveryPath } from '../deliveryNavState'
+import { governorNotice } from './governorNotice'
 import { RowStatus, type MutationLike, type RowStatusProps } from './RowStatus'
 import { swapRanks } from './swapRanks'
 
@@ -302,7 +304,7 @@ export function CapacityDetail() {
           <Select
             id="governor-mode"
             size="sm"
-            value={governor?.mode ?? ''}
+            value={readout.governorMode}
             disabled={!governor}
             onChange={(e) => governor && governorModePatch.mutate({
               id: governor.id, body: { mode: e.target.value },
@@ -317,17 +319,41 @@ export function CapacityDetail() {
         </div>
       </div>
 
+      {(() => {
+        const notice = governorNotice(readout)
+        return notice && (
+          <Banner tone={notice.tone} role="status" title={notice.title}>{notice.body}</Banner>
+        )
+      })()}
+
       <ul className="flex flex-col gap-1" aria-label="Capacity stack">
         {stack.map((row) => {
           const content = (
             <div>
               <div className="flex items-center justify-between gap-2 text-sm">
                 {row.href
-                  ? <Link to={row.href} className="text-accent hover:underline">{row.label}</Link>
+                  ? (
+                    <Link
+                      to={row.href.startsWith('#') ? `${deliveryPath('capacity')}${row.href}` : row.href}
+                      className="text-accent hover:underline"
+                    >
+                      {row.label}
+                    </Link>
+                  )
                   : <span className="text-ink">{row.label}</span>}
                 <span className="tabular-nums text-ink-muted">{row.used} / {row.cap ?? '∞'} · {row.free ?? '∞'} free</span>
               </div>
               {row.secondary && <p className="text-xs text-ink-muted">{row.secondary}</p>}
+              {row.key === 'accounts' && readout.accounts.rows.length > 0 && (
+                <details className="mt-1 text-xs text-ink-muted">
+                  <summary className="cursor-pointer select-none">
+                    {readout.accounts.available} of {readout.accounts.total} available under the {readout.accounts.reservePct}% reserve
+                  </summary>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                    {readout.accounts.rows.map((a) => <li key={a.name}>{accountRowLine(a)}</li>)}
+                  </ul>
+                </details>
+              )}
             </div>
           )
           return (
@@ -345,7 +371,7 @@ export function CapacityDetail() {
       </ul>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-left" aria-label="Products">
+        <table id="products" className="w-full text-left" aria-label="Products">
           <thead>
             <tr className="text-xs font-medium text-ink-muted">
               <th scope="col" className="px-2 py-1.5">Rank</th>
@@ -384,12 +410,6 @@ export function CapacityDetail() {
           <p className="text-sm font-medium text-ink">
             {plan.applied ? 'Governor set…' : 'Governor would set…'}
           </p>
-          {plan.applied && !readout.planLive && (
-            <Banner tone="warning" title="This plan is stale" className="mt-2">
-              It is older than 10 minutes, so the runner is using stored caps until the governor
-              ticks again.
-            </Banner>
-          )}
           {plan.reasons.length > 0 && (
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-muted">
               {plan.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
