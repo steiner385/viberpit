@@ -40,7 +40,7 @@ describe('GeneralSection', () => {
     mutateAsync.mockClear()
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       repoRoot: null, archiveHome: null, maxArchivedSessions: 100, maxActiveSessions: null, autoArchiveEnabled: true,
-      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: '/var/ccswitch/archives', modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5 },
+      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: '/var/ccswitch/archives', modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] } },
     })))
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync }))
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(Array.from({ length: 3 }, (_, i) => ({ id: `s${i}` })) as never))
@@ -108,7 +108,7 @@ describe('GeneralSection', () => {
     // The common deployment: the server has no ARCHIVE_HOME, so there is no path
     // to name and the suffix form would read "Server default · server default".
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
-      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5 },
+      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] } },
     })))
     mount()
     expect(screen.getByLabelText('Archive storage path')).toHaveAttribute('placeholder', 'Server default')

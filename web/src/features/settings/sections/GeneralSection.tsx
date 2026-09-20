@@ -289,7 +289,7 @@ export function GeneralSection() {
             min={1}
             step={1}
             inputMode="numeric"
-            placeholder={`${eff.maxActiveSessions} · server default`}
+            placeholder={`${eff.globalCap.effective} · server default`}
             value={draft.maxActive}
             onChange={(e) => set('maxActive', e.target.value)}
           />

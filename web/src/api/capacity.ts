@@ -108,7 +108,12 @@ export interface CapacityReadout {
   pushLevel: PushLevel
   governorMode: string
   killSwitch: boolean
-  global: { cap: number; active: number; free: number }
+  global: {
+    cap: number; active: number; free: number
+    /** The derivation (spec 2026-09-20 D3); null when the server has no seam wired. */
+    physical: number | null; attention: number | null
+    binding: 'physical' | 'attention' | 'default' | null
+  }
   hosts: CapacityHost[]
   accounts: CapacityAccounts
   runner: CapacityRunner

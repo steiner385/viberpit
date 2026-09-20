@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
-import { usePendingDeploy, useFleetHostPatch } from '@/api/hooks'
+import { QK, usePendingDeploy, useFleetHostPatch } from '@/api/hooks'
 // The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
 // shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
 // below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
@@ -105,6 +105,7 @@ export function FleetSection() {
       setDraft({ name: '', endpoint: '' })
       setAddError(null)
       void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      void queryClient.invalidateQueries({ queryKey: QK.capacity })
     },
     onError: (err: unknown) => {
       const body = (err as { body?: { detail?: { message?: string } } })?.body
@@ -114,7 +115,10 @@ export function FleetSection() {
 
   const remove = useMutation({
     mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      void queryClient.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 
   const upgrade = useMutation({

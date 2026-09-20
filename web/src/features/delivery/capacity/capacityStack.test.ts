@@ -8,7 +8,7 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     pushLevel: 'steady',
     governorMode: 'monitor',
     killSwitch: true,
-    global: { cap: 20, active: 10, free: 10 },
+    global: { cap: 20, active: 10, free: 10, physical: null, attention: null, binding: null },
     hosts: [],
     accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [] },
     runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
