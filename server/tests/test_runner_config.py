@@ -39,16 +39,20 @@ def test_overlay_caps_the_stored_ceiling_at_the_live_plan():
 
 
 def test_a_given_plan_is_used_instead_of_a_fresh_read():
+    """`plan=` is what a prior live_plan() returned; the seam applies it as-is
+    and does NOT read the store again (which would see fleetConcurrency 3)."""
+    from datetime import datetime, timezone
+
     from server.automations.runner_config import read_runner_config
 
     async def run():
         await _seed(6, plan_fleet=3)
-        _mode, config = await read_runner_config(plan={"applied": True, "fleetConcurrency": 2,
-                                                       "computedAt": None})
-        # apply_fleet_plan only honours a LIVE plan; a plan dict with no computedAt
-        # is not live, so the given plan is "no change" — the point is that no
-        # fresh live_plan() read happened (which would have capped at 3).
-        assert config["max_concurrent"] == 6
+        given = {"applied": True, "fleetConcurrency": 2,
+                 "computedAt": datetime.now(timezone.utc).isoformat()}
+        _mode, config = await read_runner_config(plan=given)
+        assert config["max_concurrent"] == 2
+        _mode, config = await read_runner_config(plan=None)
+        assert config["max_concurrent"] == 6, "plan=None means no live plan: stored ceiling"
 
     asyncio.run(run())
 
