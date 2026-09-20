@@ -49,6 +49,8 @@ interface SettingsDefShape {
   description: string
   keywords?: readonly string[]
   badge?: SettingsBadgeKey
+  /** Mount the live capacity readout after the body, with this stack row marked current (spec 2026-09-20 D10). */
+  readout?: 'hosts' | 'accounts'
   /**
    * The component instantiates `SettingsSection` itself, so `SettingsPage`
    * renders it BARE. Everything else is wrapped in `HostedSection`, which builds
@@ -86,9 +88,9 @@ const DEFS = [
   // Capacity is the other half — how automation spends it — and the two link.
   { id: 'capacity',      group: 'capacity',  label: 'Limits',              icon: Gauge,             scope: 'server',  component: LimitsSection, ownsChassis: true,
     description: 'The global cap as its two ceilings — what the hosts can run and how much you want running — plus the env-managed limits outside the stack.', keywords: ['global cap', 'attention', 'physical', 'max active sessions'] },
-  { id: 'fleet',         group: 'capacity',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection,
+  { id: 'fleet',         group: 'capacity',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection, readout: 'hosts',
     description: 'Machines that can run sessions: each host’s cap, dispatch weight and health.' },
-  { id: 'accounts',      group: 'capacity',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention',
+  { id: 'accounts',      group: 'capacity',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention', readout: 'accounts',
     description: 'Claude Max and Copilot accounts the rotation can pick from.' },
   { id: 'plugins',       group: 'claude',    label: 'Plugins',             icon: Puzzle,            scope: 'server',  component: PluginsSection,
     description: 'Installed Claude Code plugins and what each one adds.' },

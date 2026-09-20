@@ -47,6 +47,9 @@ describe('settingsDefs', () => {
     expect(SETTINGS_BY_ID.appearance.scope).toBe('browser')
     expect(SETTINGS_BY_ID.about.scope).toBe('none')
     expect(SETTINGS_BY_ID.capacity.scope).toBe('server')
+    expect(SETTINGS_BY_ID.fleet.readout).toBe('hosts')
+    expect(SETTINGS_BY_ID.accounts.readout).toBe('accounts')
+    expect(SETTINGS_BY_ID.capacity.readout).toBeUndefined()
   })
 
   // Settings › Deploy is the phone's only deploy surface, since
