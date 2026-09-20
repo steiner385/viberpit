@@ -100,9 +100,16 @@ export interface Command {
   source?: 'vendor' | 'app'
 }
 
+// Keyed by every SessionEvent['type']: `Record` makes the compiler reject a new event
+// type that is not listed here, so the set below can never silently fall behind the union.
+const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
+  user: true, turnStart: true, turnEnd: true, textDelta: true, thinkingDelta: true,
+  toolCall: true, toolResult: true, permissionRequest: true, permissionResolved: true,
+  question: true, questionResolved: true, sessionMeta: true, turnModel: true, title: true,
+  status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,
+  suggestions: true, condensing: true, contextUsage: true, recovering: true, notice: true,
+  subAgentStarted: true, subAgentProgress: true, subAgentEnded: true,
+}
+
 // The set of `type` strings that are session events (used by the WS fan-out).
-export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
-  'permissionRequest','permissionResolved','question','questionResolved','sessionMeta','turnModel','title','status','replayReset','replayComplete','error','queueUpdate',
-  'suggestions','condensing','contextUsage','recovering',
-])
+export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(SESSION_EVENT_TYPE_FLAGS))
