@@ -7,6 +7,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
@@ -14,9 +15,11 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function renderWithQuery(ui: React.ReactElement) {
+function renderWithQuery(ui: React.ReactElement, path = '/sessions/s1') {
   return render(
-    <QueryClientProvider client={makeQueryClient()}>{ui}</QueryClientProvider>
+    <QueryClientProvider client={makeQueryClient()}>
+      <MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -149,5 +152,26 @@ describe('SessionBody — Browser tab gating', () => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
     })
     expect(screen.queryByRole('tabpanel')).toBeNull()
+  })
+
+  it('the strip is the shared Tabs primitive: roving tabindex, ?view=browser deep-links', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ active_displays: 1, total_sessions: 1 }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    renderWithQuery(<SessionBody rt={makeRuntime()} />, '/sessions/s1?view=browser')
+    await waitFor(() => expect(screen.getByRole('tab', { name: /browser/i })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getByRole('tab', { name: /conversation/i })).toHaveAttribute('tabindex', '-1')
+    expect(screen.getByTestId('browser-tab-stub')).toBeInTheDocument()
+  })
+
+  it('?view=browser is ignored while the Browser view is unavailable', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    renderWithQuery(<SessionBody rt={makeRuntime()} />, '/sessions/s1?view=browser')
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull())
+    expect(screen.queryByTestId('browser-tab-stub')).toBeNull()
   })
 })

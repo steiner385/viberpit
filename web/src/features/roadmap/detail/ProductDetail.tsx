@@ -1,6 +1,8 @@
-// `/roadmap/:productSlug` — one product, answered the same way the portfolio is:
-// the tiles say how big it is, and the tabs answer what it is, what is moving,
-// what needs me, what is next, and what it waits on (finish-line spec §7).
+// `/roadmap/:productSlug` — one product, on the page-tabs standard
+// (`docs/PAGE-TABS.md`): Overview · In flight · Needs you · Ranked ·
+// Dependencies · Automation. The tiles say how big it is; the tabs answer
+// what it is, what is moving, what needs me, what is next, what it waits on,
+// and what it is configured to do.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
@@ -13,7 +15,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
 import { OnboardingWizard } from '@/projects/OnboardingWizard'
 import { DependencyPanel } from '@/projects/DependencyPanel'
-import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
+import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TAB_LABEL, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
 import { programTitleOf } from '../lookup'
@@ -30,7 +32,11 @@ import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
 
-const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
+const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies', 'automation'] as const
+
+/** The Overview previews this many in-flight initiatives; the In-flight tab
+ *  lists them all (`docs/PAGE-TABS.md` §5). */
+const OVERVIEW_PREVIEW_ROWS = 3
 
 const panelId = (id: string) => `product-panel-${id}`
 
@@ -90,11 +96,12 @@ export function ProductDetail({ product }: { product: ProductNode }) {
         onChange={(id) => setTab(id as (typeof TABS)[number])}
         panelId={panelId}
         items={[
-          { id: 'overview', label: 'Overview' },
+          { id: 'overview', label: TAB_LABEL.overview },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
-          { id: 'ranked', label: 'Ranked' },
-          { id: 'dependencies', label: 'Dependencies' },
+          { id: 'ranked', label: TAB_LABEL.ranked },
+          { id: 'dependencies', label: TAB_LABEL.dependencies },
+          { id: 'automation', label: TAB_LABEL.automation },
         ]}
       />
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
@@ -103,7 +110,6 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             {/* Below the tiles above: a notice, not a tile, so it does not
                 compete with the counts for the top of the page. */}
             <NeedsYouList products={[product]} overview />
-            <RoadmapHealthCard productSlug={product.slug} />
             {isLoading && !project
               ? <Skeleton lines={3} />
               : project && (
@@ -130,7 +136,6 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                       {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
                     </p>
                   </section>
-                  <AutomationPolicyCard product={product} project={project} />
                   {/* Mounted only while open, like `NewCapabilityDialog` below — each
                       opening starts from the project's current values rather than
                       whatever a previous, abandoned edit left the fields holding. */}
@@ -145,14 +150,20 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                 + {CAPABILITY.singular}
               </Button>
             </div>
-            {/* Renders nothing unless the product has an open map-changes PR (R8c-3). */}
-            <MapChangesCard product={product} />
+            {/* The wizard owns the map-PR link until the product is live (its
+                `await_map_pr` action links the same PR); showing the card too
+                would put two links to one PR in the same "what is the map
+                waiting on" notice (docs/PAGE-TABS.md §5). Once live, the
+                wizard has already unmounted itself, so the card is the only
+                one left to show a late-arriving pointer. Renders nothing
+                unless the product has an open map-changes PR (R8c-3). */}
+            {(!project || project.onboardingState === 'live') && <MapChangesCard product={product} />}
             {/* Renders nothing once the product is live. */}
             <OnboardingWizard slug={product.slug} />
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">
               {inFlight.length === 0
                 ? <p className="text-sm text-ink-muted">Nothing in flight.</p>
-                : inFlight.map((i) => {
+                : inFlight.slice(0, OVERVIEW_PREVIEW_ROWS).map((i) => {
                   const programTitle = programTitleFor(i)
                   return (
                     <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
@@ -161,11 +172,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                           {i.title ?? i.slug}
                         </Link>
                         {programTitle && (
-                          <Badge
-                            tone="neutral"
-                            title={`Part of ${programTitle}`}
-                            aria-label={`Part of ${programTitle}`}
-                          >
+                          <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
                             {programTitle}
                           </Badge>
                         )}
@@ -174,13 +181,28 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                     </div>
                   )
                 })}
+              {inFlight.length > OVERVIEW_PREVIEW_ROWS && (
+                <div>
+                  <Button size="sm" variant="ghost" onClick={() => setTab('in-flight')}>
+                    See all {inFlight.length} in flight
+                  </Button>
+                </div>
+              )}
             </section>
           </>
         )}
         {tab === 'in-flight' && <InitiativeList initiatives={inFlight} programTitleFor={programTitleFor} />}
-        {tab === 'needs-you' && (incidentScope
-          ? <NeedsYouList products={[product]} repos={incidentScope} />
-          : <Skeleton lines={3} />)}
+        {tab === 'needs-you' && (
+          <>
+            {/* Self-hides when there is nothing to say — a hygiene issue is
+                itself a "needs a person" question (docs/PAGE-TABS.md §5), not
+                an Overview summary block. */}
+            <RoadmapHealthCard productSlug={product.slug} />
+            {incidentScope
+              ? <NeedsYouList products={[product]} repos={incidentScope} />
+              : <Skeleton lines={3} />}
+          </>
+        )}
         {tab === 'ranked' && <RankedList productSlug={product.slug} />}
         {tab === 'dependencies' && (
           <div className="flex flex-col gap-4">
@@ -194,6 +216,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             </section>
           </div>
         )}
+        {tab === 'automation' && (isLoading && !project
+          ? <Skeleton lines={3} />
+          : project && <AutomationPolicyCard product={product} project={project} />)}
       </div>
       {/* Mounted only while open (the RoadmapPage idiom), so each opening starts
           on a blank form rather than on whatever the last one was abandoned

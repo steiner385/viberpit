@@ -28,13 +28,37 @@ const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {
 
 describe('AutomationDetail', () => {
   beforeEach(() => { patch.mockReset(); trigger.mockClear() })
-  it('Status tab: actionable items with their actions, and the pr-doctor consolidation panel', async () => {
+  it('Overview: description, oversight and actionable items — no queue surface', async () => {
     mount()
-    expect(screen.getByRole('tab', { name: 'Status', selected: true })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
     expect(screen.getByText('CI red on #1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Fix' }))
     await waitFor(() => expect(trigger).toHaveBeenCalledWith({ item_id: 'o/r#1', kind: 'fix' }))
+    // The consolidation panel is the Queue tab's, not the Overview's.
+    expect(screen.queryByTestId('consolidate')).not.toBeInTheDocument()
+  })
+  it('Queue: the PR doctor consolidation panel', () => {
+    mount(prDoctor, '/delivery/automations/pr-doctor?tab=queue')
+    expect(screen.getByRole('tab', { name: 'Queue', selected: true })).toBeInTheDocument()
     expect(screen.getByTestId('consolidate')).toBeInTheDocument()
+  })
+  it('Queue: the runner’s products table, groups panel and custom dispatch', () => {
+    const runner = {
+      ...AUTOMATIONS[1],
+      status: {
+        ...AUTOMATIONS[1].status,
+        products: [{ slug: 'viberpit', dispatch: 'auto', inFlight: 1, cap: 1, eligible: 12, bounced: 2 }],
+      },
+    }
+    mount(runner, '/delivery/automations/backlog-runner?tab=queue')
+    expect(screen.getByRole('link', { name: 'viberpit' })).toHaveAttribute('href', '/roadmap/viberpit')
+    expect(screen.getByTestId('groups')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Custom dispatch…' })).toBeInTheDocument()
+  })
+  it('an automation with no dispatchable work has no Queue tab, and ?tab=status lands on Overview', () => {
+    mount(AUTOMATIONS[2], '/delivery/automations/pm-classify?tab=status')
+    expect(screen.queryByRole('tab', { name: 'Queue' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
   })
   it('tabs are URL state', () => {
     mount(prDoctor, '/delivery/automations/pr-doctor?tab=events')
@@ -64,7 +88,7 @@ describe('AutomationDetail', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'PR doctor enabled' }))
     expect(patch).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: false } })
   })
-  it('Status tab: a per-product table when status.products is non-empty, linking to the roadmap', () => {
+  it('Queue: a per-product table when status.products is non-empty, linking to the roadmap', () => {
     const runner = {
       ...AUTOMATIONS[1],
       status: {
@@ -72,7 +96,7 @@ describe('AutomationDetail', () => {
         products: [{ slug: 'viberpit', dispatch: 'auto', inFlight: 1, cap: 1, eligible: 12, bounced: 2 }],
       },
     }
-    mount(runner, '/delivery/automations/backlog-runner')
+    mount(runner, '/delivery/automations/backlog-runner?tab=queue')
     expect(screen.getByRole('link', { name: 'viberpit' })).toHaveAttribute('href', '/roadmap/viberpit')
     expect(screen.getByText('auto')).toBeInTheDocument()
     expect(screen.getByText('1/1')).toBeInTheDocument()
@@ -80,28 +104,30 @@ describe('AutomationDetail', () => {
     expect(screen.getByText('2')).toBeInTheDocument()
   })
   it('shows active dispatch-off work and explicitly accounts for unassigned work', () => {
-    mount({ ...AUTOMATIONS[1], status: { text: '3 work items in flight', level: 'active', counts: { unassigned_in_flight: 2 },
-      products: [{ slug: 'paused-product', dispatch: 'off', inFlight: 1, cap: 2, eligible: 0, bounced: 0 }] } })
+    const runner = { ...AUTOMATIONS[1], status: { text: '3 work items in flight', level: 'active' as const, counts: { unassigned_in_flight: 2 },
+      products: [{ slug: 'paused-product', dispatch: 'off', inFlight: 1, cap: 2, eligible: 0, bounced: 0 }] } }
+    mount(runner)
+    expect(screen.getByText('2 in-flight work items are not assigned to a product.')).toBeInTheDocument()
+    mount(runner, '/delivery/automations/backlog-runner?tab=queue')
     expect(screen.getByText('off')).toBeInTheDocument()
     expect(screen.getByText('1/2')).toBeInTheDocument()
-    expect(screen.getByText('2 in-flight work items are not assigned to a product.')).toBeInTheDocument()
   })
   it('does not turn unavailable product or unassigned workload into zero', () => {
     mount({ ...AUTOMATIONS[1], status: { text: 'Unavailable', level: 'unknown', counts: null, products: null } })
     expect(screen.getByText('Product workload unavailable.')).toBeInTheDocument()
     expect(screen.getByText('Unassigned workload unknown.')).toBeInTheDocument()
   })
-  it('Status tab: no per-product table when status.products is null', () => {
-    mount(prDoctor)
+  it('Queue: no per-product table when status.products is null', () => {
+    mount(prDoctor, '/delivery/automations/pr-doctor?tab=queue')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
-  it('Status tab: no per-product section at all when status.products is empty', () => {
+  it('Queue: no per-product section at all when status.products is empty', () => {
     // The runner answers `[]` while no product has dispatch on. `CheckTable` with
     // no rows renders its heading and empty state but NO <table>, so a bare
     // "no table" assertion would miss a dropped `.length > 0` guard — the card
     // would grow an empty "Products" section reading like a broken read.
     const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status, products: [] } }
-    mount(runner, '/delivery/automations/backlog-runner')
+    mount(runner, '/delivery/automations/backlog-runner?tab=queue')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Products' })).not.toBeInTheDocument()
     expect(screen.queryByText('No products yet.')).not.toBeInTheDocument()

@@ -166,9 +166,22 @@ export const DELIVERY = {
   capacityError: 'Could not load capacity.',
 } as const
 
-/** The automation detail's tabs, in order (finish-line spec §4.4). */
+/** Tab labels shared by more than one page (`docs/PAGE-TABS.md` §3/§7): the
+ *  same question reads the same on every object. Tier words come from
+ *  `TIER_LABEL`; object words from `CAPABILITY`/`INITIATIVE`/`EPIC`. */
+export const TAB_LABEL = {
+  overview: 'Overview', ranked: 'Ranked', dependencies: 'Dependencies', automation: 'Automation',
+  track: 'Track', phases: 'Phases', sessions: 'Sessions', queue: 'Queue', schedule: 'Schedule',
+  config: 'Config', events: 'Events',
+} as const
+
+/** The automation detail's tabs, in order (`docs/PAGE-TABS.md` §3, §4: one
+ *  tab, one question; configuration before history). `queue` is offered only
+ *  to automations that have dispatchable work (`QUEUE_AUTOMATIONS` in
+ *  `AutomationDetail.tsx`). */
 export const AUTOMATION_TAB = {
-  status: 'Status', schedule: 'Schedule', events: 'Events', sessions: 'Sessions', config: 'Config',
+  overview: TAB_LABEL.overview, queue: TAB_LABEL.queue, schedule: TAB_LABEL.schedule,
+  config: TAB_LABEL.config, events: TAB_LABEL.events, sessions: TAB_LABEL.sessions,
 } as const
 export type AutomationTab = keyof typeof AUTOMATION_TAB
 export const AUTOMATION_TABS = Object.keys(AUTOMATION_TAB) as readonly AutomationTab[]

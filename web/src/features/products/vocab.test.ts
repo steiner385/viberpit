@@ -76,11 +76,11 @@ describe('holdLabel', () => {
 })
 
 describe('DELIVERY vocabulary (finish-line D9)', () => {
-  it('names the section, both scopes and the five automation tabs', async () => {
+  it('names the section, both scopes and the six automation tabs', async () => {
     const { DELIVERY, AUTOMATION_TAB } = await import('./vocab')
     expect(DELIVERY.label).toBe('Delivery')
     expect([DELIVERY.automations, DELIVERY.ci]).toEqual(['Automations', 'CI health'])
-    expect(Object.values(AUTOMATION_TAB)).toEqual(['Status', 'Schedule', 'Events', 'Sessions', 'Config'])
+    expect(Object.values(AUTOMATION_TAB)).toEqual(['Overview', 'Queue', 'Schedule', 'Config', 'Events', 'Sessions'])
     expect(DELIVERY.help.length).toBeGreaterThan(40)
   })
 

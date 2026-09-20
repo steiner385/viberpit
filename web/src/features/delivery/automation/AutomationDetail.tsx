@@ -1,5 +1,6 @@
 /**
- * The automation detail pane: five tabs over one automation, re-homing both
+ * The automation detail pane: Overview · Queue · Schedule · Events ·
+ * Sessions · Config (`docs/PAGE-TABS.md`) over one automation, re-homing both
  * the deleted monitor page (`automations/AutomationsTab.tsx`) and the old
  * Settings card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
  * (finish-line spec §4.4). `AutomationControls` (header actions) is a sibling
@@ -33,6 +34,12 @@ const PRODUCT_COLUMNS: Column<AutomationStatusProduct>[] = [
   { header: 'Bounced', cell: (p) => p.bounced },
 ]
 
+/** Automations whose work can be inspected and dispatched by hand — the only
+ *  ones that get a Queue tab (standard §4: hide a tab by object kind, never
+ *  because it is empty right now).
+ */
+const QUEUE_AUTOMATIONS: ReadonlySet<string> = new Set(['backlog-runner', 'pr-doctor'])
+
 export function AutomationDetail({ automation: a, automations = [], onOpenSession }: {
   automation: Automation
   automations?: readonly Automation[]
@@ -40,8 +47,12 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
 }) {
   const operatorTriggered = a.operatorTriggered ?? a.modes.length === 0
   const items = AUTOMATION_TABS.filter((t) =>
-    !(t === 'schedule' && operatorTriggered) && !(t === 'config' && a.configSchema.length === 0))
-  const [tab, setTab] = useSearchParamState<AutomationTab>('tab', items, 'status')
+    !(t === 'queue' && !QUEUE_AUTOMATIONS.has(a.id))
+    && !(t === 'schedule' && operatorTriggered)
+    && !(t === 'config' && a.configSchema.length === 0))
+  // `?tab=status` (the pre-standard name of the first tab) is not in `items`,
+  // so an old bookmark falls back to Overview — no redirect needed.
+  const [tab, setTab] = useSearchParamState<AutomationTab>('tab', items, 'overview')
   const [customDispatch, setCustomDispatch] = useState(false)
 
   return (
@@ -55,7 +66,7 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
         className="mb-4"
       />
       <div role="tabpanel" id={`automation-panel-${tab}`} aria-labelledby={`tab-${tab}`} className="space-y-4">
-        {tab === 'status' && (
+        {tab === 'overview' && (
           <>
             {a.description && <p className="text-sm text-ink-muted">{a.description}</p>}
             {/* The tier dot and `status.text` are NOT repeated here: the page
@@ -91,7 +102,13 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                   : a.status.counts.unassigned_in_flight > 0 && <p>{a.status.counts.unassigned_in_flight} in-flight work items are not assigned to a product.</p>}
               </div>
             )}
+            {/* The Overview's "needs you" notice: renders nothing when there is
+                nothing actionable (standard §5). */}
             <AutomationActions automationId={a.id} enabled />
+          </>
+        )}
+        {tab === 'queue' && (
+          <>
             {a.status.products && a.status.products.length > 0 && (
               <CheckTable<AutomationStatusProduct>
                 title="Products"
@@ -107,7 +124,6 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                   <Button size="sm" variant="secondary" onClick={() => setCustomDispatch(true)}>Custom dispatch…</Button>
                 </div>
                 <BacklogGroupsPanel enabled onOpenSession={onOpenSession} />
-                <ManualDispatchDialog open={customDispatch} onClose={() => setCustomDispatch(false)} onOpenSession={onOpenSession} />
               </>
             )}
           </>
@@ -117,6 +133,11 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
         {tab === 'sessions' && <SessionsList automation={a} />}
         {tab === 'config' && <ConfigPanel automation={a} />}
       </div>
+      {/* Outside the tab panel (standard §6): a tab change must not unmount a
+          half-filled dispatch form. */}
+      {a.id === 'backlog-runner' && (
+        <ManualDispatchDialog open={customDispatch} onClose={() => setCustomDispatch(false)} onOpenSession={onOpenSession} />
+      )}
     </>
   )
 }

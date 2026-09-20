@@ -3,7 +3,7 @@
 // it — what needs me, what is next, and what exists (finish-line spec §7).
 import type { RoadmapMap } from '@/api/roadmap'
 import { Tabs } from '@/ui/Tabs'
-import { INITIATIVE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
+import { INITIATIVE, PRODUCT, TAB_LABEL, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
@@ -50,7 +50,7 @@ export function PortfolioDetail({ map }: { map: RoadmapMap }) {
         panelId={panelId}
         items={[
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
-          { id: 'ranked', label: 'Ranked' },
+          { id: 'ranked', label: TAB_LABEL.ranked },
           { id: 'initiatives', label: `All ${INITIATIVE.plural.toLowerCase()}`, count: initiatives.length },
         ]}
       />

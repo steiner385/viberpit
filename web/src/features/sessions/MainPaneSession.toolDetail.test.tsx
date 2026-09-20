@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { MainPaneSession } from './MainPaneSession'
 import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 
@@ -21,7 +22,9 @@ function wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={queryClient}>
-      <SessionRuntimeProvider sessionId="s1">{children}</SessionRuntimeProvider>
+      <MemoryRouter initialEntries={['/sessions/s1']}>
+        <SessionRuntimeProvider sessionId="s1">{children}</SessionRuntimeProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   )
 }

@@ -1,7 +1,7 @@
 // One product's detail: what each tab answers, and that its Needs-you number is
 // the same number the portfolio shows for it.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { MAP } from '../__fixtures__/map'
 import { needsYouCount } from './needsYou'
@@ -16,6 +16,15 @@ const projectQuery = vi.hoisted(() => ({
   isError: false,
 }))
 const onboardingQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false }))
+// The Overview's Automation card's schema — hoisted (not the inline default
+// the other tests never touch) because one test below needs a real field to
+// assert on, since the card's own "Automation" heading collides with the tab
+// of the same name.
+const policySchemaQuery = vi.hoisted(() => ({ data: [] as unknown[], isLoading: false }))
+// The Needs-you tab's hygiene notice (`RoadmapHealthCard`) — hoisted so one
+// test can give it real data; every other test leaves it `undefined`, which
+// renders nothing and stays out of their assertions.
+const projectHealthQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
 
 // Every hook the tree under test reaches: `useProject` here, `useQueue` in
 // `RankedList`, the two incident hooks in `IncidentQueue` (mounted by
@@ -53,7 +62,7 @@ vi.mock('@/api/hooks', () => ({
   useCreateEdge: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
   // The Overview's Automation card.
-  usePolicySchema: () => ({ data: [], isLoading: false }),
+  usePolicySchema: () => policySchemaQuery,
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
@@ -67,9 +76,8 @@ vi.mock('@/api/hooks', () => ({
   // open pointer by default, so these are exercised by MapChangesCard's own tests.
   useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
-  // The Overview's hygiene notice — no data, so `RoadmapHealthCard` renders
-  // nothing and stays out of this file's assertions.
-  useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
+  // The Needs-you tab's hygiene notice.
+  useProjectHealth: () => projectHealthQuery,
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -119,6 +127,8 @@ const tile = (label: string) =>
 beforeEach(() => {
   Object.assign(projectQuery, { data: PROJECT, isLoading: false, isError: false })
   Object.assign(onboardingQuery, { data: ONBOARDING, isLoading: false })
+  Object.assign(policySchemaQuery, { data: [], isLoading: false })
+  Object.assign(projectHealthQuery, { data: undefined, isLoading: false, isError: false })
 })
 
 describe('ProductDetail', () => {
@@ -194,6 +204,18 @@ describe('ProductDetail', () => {
     expect(screen.getByRole('region', { name: 'Incidents' })).toBeInTheDocument()
   })
 
+  it('the roadmap hygiene notice is on Needs you, not the Overview', () => {
+    Object.assign(projectHealthQuery, {
+      data: { unparentedCapabilities: ['orphan-cap'], unlinkedInitiatives: [], staleProposed: [], staleInbox: 0 },
+      isLoading: false,
+      isError: false,
+    })
+    mount()
+    expect(screen.queryByText('Roadmap hygiene')).not.toBeInTheDocument()
+    mount('/roadmap/kindash?tab=needs-you')
+    expect(screen.getByText('Roadmap hygiene')).toBeInTheDocument()
+  })
+
   it('shows no incidents at all until the repo list has arrived', () => {
     // `repos === undefined` means "every repo" to IncidentQueue, so rendering
     // the queue before the project resolves put OTHER products' incidents on
@@ -232,6 +254,36 @@ describe('ProductDetail', () => {
     expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
   })
 
+  it('Overview: previews at most three in-flight initiatives and links to the rest', () => {
+    // Four in flight: the fixture's three plus one more leaf in an in-flight tier.
+    const extra = { ...product.initiatives[0]!, slug: 'fourth', title: 'Fourth thing', hasChildren: false }
+    render(
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter initialEntries={['/roadmap/kindash']}>
+          <ProductDetail product={{ ...product, initiatives: [...product.initiatives, extra] }} />
+        </MemoryRouter>
+      </ViewportProvider>,
+    )
+    const preview = screen.getByRole('region', { name: 'Initiatives in flight' })
+    expect(within(preview).getAllByRole('link')).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button', { name: 'See all 4 in flight' }))
+    expect(screen.getByRole('tab', { name: /In flight/, selected: true })).toBeInTheDocument()
+  })
+
+  it('Automation: the policy card lives on its own tab, not on the Overview', () => {
+    // The card's own "Automation" heading is not a stable target here: it is
+    // the same text the Automation TAB wears, so a real field's label is what
+    // this test can tell apart from the tab strip.
+    Object.assign(policySchemaQuery, {
+      data: [{ key: 'dispatch', label: 'Dispatch', type: 'enum', default: 'off', help: '', choices: ['off', 'on'] }],
+      isLoading: false,
+    })
+    mount()
+    expect(screen.queryByText('Dispatch')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Automation' }))
+    expect(screen.getByText('Dispatch')).toBeInTheDocument()
+  })
+
   it('Ranked: only this product', () => {
     mount('/roadmap/kindash?tab=ranked')
     expect(screen.getByText(/Top/)).toBeInTheDocument()
@@ -260,5 +312,45 @@ describe('ProductDetail', () => {
     })
     mount()
     expect(screen.getByText('Capability map proposed')).toBeInTheDocument()
+  })
+
+  it('Overview: the wizard owns the map-PR link while awaiting the PR, not the map-changes card', () => {
+    const PR_URL = 'https://github.com/steiner385/viberpit/pull/12'
+    // Both the project entity and the onboarding view report a non-live state
+    // (the same real-world moment reported through two different fetches),
+    // and the product has an open map-changes pointer to the SAME PR — the
+    // exact split-brain shape finding F3 describes.
+    Object.assign(projectQuery, { data: { ...PROJECT, onboardingState: 'await_map_pr' }, isLoading: false, isError: false })
+    Object.assign(onboardingQuery, {
+      data: {
+        ...ONBOARDING, state: 'await_map_pr', action: { type: 'await_map_pr' },
+        mapPr: { branch: 'ccswitch/map-changes/kindash', url: PR_URL },
+      },
+      isLoading: false,
+    })
+    const openProduct = {
+      ...product,
+      mapChanges: {
+        branch: 'ccswitch/map-changes/kindash', prNumber: 12, prUrl: PR_URL,
+        status: 'open' as const, openedAt: '2026-09-11T00:00:00Z', headSha: 'abc123',
+        behind: false, conflicting: false,
+      },
+    }
+    render(
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter initialEntries={['/roadmap/kindash']}>
+          <ProductDetail product={openProduct} />
+        </MemoryRouter>
+      </ViewportProvider>,
+    )
+    // The wizard rendered its `await_map_pr` action …
+    expect(screen.getByText(/Review and merge the capability-map PR/)).toBeInTheDocument()
+    // … the map-changes card's own "PR #12" link — which would be a second,
+    // differently-labelled link to the same PR — did not …
+    expect(screen.queryByRole('link', { name: 'PR #12' })).not.toBeInTheDocument()
+    // … and exactly one link on the page points at that PR: the notice is one
+    // block, not two (docs/PAGE-TABS.md §5).
+    const prLinks = screen.getAllByRole('link').filter((l) => l.getAttribute('href') === PR_URL)
+    expect(prLinks).toHaveLength(1)
   })
 })

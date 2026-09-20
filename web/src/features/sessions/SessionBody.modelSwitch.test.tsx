@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
@@ -68,6 +69,11 @@ function makeRuntime(statusState: string, overrides: Partial<SessionRuntime> = {
   } as unknown as SessionRuntime
 }
 
+/** `SessionBody` reads `?view=` via `useSearchParamState`, which needs a router. */
+function renderBody(ui: React.ReactElement) {
+  return render(<MemoryRouter initialEntries={['/sessions/s1']}>{ui}</MemoryRouter>)
+}
+
 function selectModel(value: string) {
   fireEvent.change(screen.getByLabelText('Select model'), { target: { value } })
 }
@@ -75,7 +81,7 @@ function selectModel(value: string) {
 describe('SessionBody — model switch confirmation on busy sessions', () => {
   it('busy session: selecting a different model opens the dialog and does NOT switch yet', () => {
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     expect(screen.getByRole('dialog', { name: 'Switch model?' })).toBeInTheDocument()
     // Copy uses the model LABEL, not the raw id
@@ -86,7 +92,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
 
   it('"Stop & switch now" switches immediately and closes the dialog', () => {
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     fireEvent.click(screen.getByRole('button', { name: 'Stop & switch now' }))
     expect(rt.onSetModel).toHaveBeenCalledWith('sonnet', 'now')
@@ -95,7 +101,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
 
   it('"Switch after this turn" defers the switch and closes the dialog', () => {
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     fireEvent.click(screen.getByRole('button', { name: 'Switch after this turn' }))
     expect(rt.onSetModel).toHaveBeenCalledWith('sonnet', 'after_turn')
@@ -104,7 +110,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
 
   it('cancel closes the dialog without switching anything', () => {
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(rt.onSetModel).not.toHaveBeenCalled()
@@ -115,7 +121,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
 
   it('non-busy session: selecting a model switches immediately, no dialog', () => {
     const rt = makeRuntime('done') // 'done' is your-turn tier, not busy
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     expect(rt.onSetModel).toHaveBeenCalledWith('sonnet', 'now')
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -123,7 +129,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
 
   it('selecting the current model is a no-op (no dialog, no command), even while busy', () => {
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('opus') // current model
     expect(rt.onSetModel).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -134,7 +140,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
     // still producing on opus. The picker must NOT snap back to the live id —
     // that snap-back is what made every session look pinned to the default.
     const rt = makeRuntime('working', { model: 'sonnet', liveModel: 'claude-opus-4-8', modelPending: true })
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.getByLabelText('Select model')).toHaveValue('sonnet')
     expect(screen.getByLabelText('Model in use')).toHaveTextContent('Opus 4.8')
     expect(screen.getByLabelText('Model switch pending')).toHaveTextContent(/after this turn/i)
@@ -157,7 +163,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
     }
     vi.mocked(hooks.useEngineOffers).mockReturnValue([offer])
     const rt = makeRuntime('working')
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     selectModel('sonnet')
     fireEvent.click(screen.getByRole('button', { name: 'Switch without stopping' }))
     expect(rt.onSetModel).toHaveBeenCalledWith('sonnet', 'after_turn')
