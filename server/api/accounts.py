@@ -46,6 +46,7 @@ from server.codex.auth_types import (
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.ipc.client import DaemonTimeout
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.reauth import ReauthBusy, ReauthNoKey
 from server.sessions.engine import AgentEngine
 from server.sessions.facade import call_with_deadline
@@ -55,6 +56,14 @@ if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
 
 log = logging.getLogger(__name__)
+
+# GET /api/accounts is re-requested by every open dashboard on a refetch interval, so an
+# account whose usage RPC keeps losing the deadline degrades to the stale ledger — and
+# says so — on every request. The account name is in the message, so `server.obs.errsink`
+# fingerprints one auto-error issue PER ACCOUNT: #2042, #2043, #2041 and #2044 are four
+# issues for one wedged daemon. Same throttle the probe loop uses, keyed account+reason;
+# the fallback itself is unchanged, only how often it announces itself.
+_USAGE_FALLBACK_LOG = LogThrottle()
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -191,11 +200,15 @@ async def _safe_usage(orch, name: str, timeout: float):
         if fresh is not None:
             return fresh, None
     except (asyncio.TimeoutError, DaemonTimeout):
-        log.warning("usage fetch for %s timed out after %.1fs — trying stale ledger",
-                    name, timeout)
+        # Keyed per account AND per reason: "the daemon is too slow" and "the daemon
+        # refused" have different fixes, so one must not sit inside the other's window.
+        log_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:timeout", logging.WARNING,
+                      "usage fetch for %s timed out after %.1fs — trying stale ledger",
+                      name, timeout)
     except Exception:  # noqa: BLE001 — one account must never fail the whole list
-        log.warning("usage fetch for %s failed — trying stale ledger",
-                    name, exc_info=True)
+        log_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:error", logging.WARNING,
+                      "usage fetch for %s failed — trying stale ledger",
+                      name, exc_info=True)
     return _stale_fallback(name)
 
 

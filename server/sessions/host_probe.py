@@ -17,9 +17,22 @@ from sqlalchemy import select as sa_select, update as sa_update
 from server.db import db_session
 from server.db.models import Host
 from server.deploy.state import DeployState, read_deploy_state
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.sessions.version_skew import IsAncestor, detect_skew, edge_is_ancestor
 
 log = logging.getLogger(__name__)
+
+# Both loops below re-enter their failure path on EVERY tick of probe_loop (30s), so a
+# condition that lasts a day writes ~2880 identical WARNING records. `server.obs.errsink`
+# captures WARNING+ and files one auto-error issue per message fingerprint, which is how
+# a single unreachable rocky and a single unreachable dobby became four issues with no
+# information past their first record: #1507/#1669 (rocky) and #1724/#1676 (dobby).
+#
+# One throttle per record family — sharing one would let the per-host flood evict the
+# deploy-state key. Window, not latch: "is rocky STILL down?" is the first question an
+# operator asks, and it has to stay answerable from the journal (see logdedupe's header).
+_PROBE_FAILURE_LOG = LogThrottle()
+_DEPLOY_STATE_LOG = LogThrottle()
 
 Fetch = Callable[[str], Awaitable[dict]]
 
@@ -89,13 +102,30 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
         # Record the failure; do NOT leave a previous healthy=True in place.
         values.update(healthy=False, last_error=f"{type(exc).__name__}: {exc}"[:500])
         # healthy=False regardless — dispatch must avoid the host either way. Only the
-        # log LEVEL depends on whether the outage is a deploy doing its job (#1614).
+        # log LEVEL depends on whether the outage is a deploy doing its job (#1614),
+        # and only the throttle KEY decides which repeats are news.
+        #
+        # Keyed host + exception class, which is the granularity the error sink already
+        # reads this record at: DaemonTimeout ("/info timed out" — the daemon is up but
+        # not answering) and DaemonUnavailable ("All connection attempts failed" —
+        # nothing is listening) filed SEPARATE issues per host because they are separate
+        # conditions with separate fixes, so neither may sit inside the other's window.
+        # Cardinality is hosts x daemon exception classes — bounded by construction.
+        #
+        # The restart-expected branch carries its own key prefix rather than sharing the
+        # host's: an outage that outlives the deploy is the one record worth escalating,
+        # and a shared key would let the INFO demotion gag that WARNING for a window.
+        cause = type(exc).__name__
         from server.sessions import host_upgrade  # deferred: runners imports this module
         if await host_upgrade.restart_expected(name):
-            log.info("fleet.probe_failed host=%s endpoint=%s: %s (restart in progress)",
-                     name, endpoint, exc)
+            log_throttled(
+                log, _PROBE_FAILURE_LOG, f"{name}:restart:{cause}", logging.INFO,
+                "fleet.probe_failed host=%s endpoint=%s: %s (restart in progress)",
+                name, endpoint, exc)
         else:
-            log.warning("fleet.probe_failed host=%s endpoint=%s: %s", name, endpoint, exc)
+            log_throttled(
+                log, _PROBE_FAILURE_LOG, f"{name}:{cause}", logging.WARNING,
+                "fleet.probe_failed host=%s endpoint=%s: %s", name, endpoint, exc)
 
     async with db_session() as db:
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
@@ -129,7 +159,11 @@ async def probe_all(*, fetch: Fetch | None = None,
     try:
         state = await read_deploy_state()
     except Exception:
-        log.warning("fleet.probe: deploy_state unreadable — skew gate off this tick", exc_info=True)
+        # Same shape, same tick: a deploy_state that stays unreadable repeats this on
+        # every probe_all. One key — the condition is global, not per host.
+        log_throttled(log, _DEPLOY_STATE_LOG, "deploy_state", logging.WARNING,
+                      "fleet.probe: deploy_state unreadable — skew gate off this tick",
+                      exc_info=True)
         state = None
     async with db_session() as db:
         rows = (await db.execute(
