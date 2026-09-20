@@ -194,11 +194,13 @@ def test_unresolved_link_warns_once_not_once_per_tick(caplog):
                 return prod.id
         prod_id = asyncio.run(_seed())
 
+        # example-infra is deliberately NOT seeded above, so this link never
+        # resolves — which is the condition that used to re-warn every tick.
         plan = FeatureIndexPlan(
             upserts=(FeatureUpsert(
                 slug="dictation", title="D", state="live", summary="",
                 repo_path="d/dictation.md", parent_slug=None,
-                links=(FeatureLinkRef("powered_by", "ccswitch", "account-reauthentication"),)),),
+                links=(FeatureLinkRef("powered_by", "example-infra", "account-reauthentication"),)),),
             orphan_slugs=(), revive_slugs=(), warnings=())
 
         with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
