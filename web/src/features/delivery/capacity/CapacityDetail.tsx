@@ -190,6 +190,11 @@ export function CapacityDetail() {
     setRankStatus((prev) => ({ ...prev, [slug]: s }))
   }
 
+  // While `useAutomations` is still loading, `runner`/`governor` are both
+  // `null` — the same shape as "not registered" — so the help text must not
+  // claim an automation is missing until the fetch has actually settled.
+  const automationsLoading = !automations.isSuccess
+
   const readout = capacityQuery.data
 
   // Fix round 1 / I5: replaces the previous `moving` state + effect
@@ -361,7 +366,7 @@ export function CapacityDetail() {
           </Select>
           {governor
             ? governorDescription && <p className="text-xs text-ink-muted">{governorDescription}</p>
-            : <p className="text-xs text-ink-muted">Capacity Governor is not registered</p>}
+            : <p className="text-xs text-ink-muted">{automationsLoading ? 'Loading automations…' : 'Capacity Governor is not registered'}</p>}
           <RowStatus {...governorModeStatus} />
         </div>
       </div>
@@ -414,19 +419,23 @@ export function CapacityDetail() {
           <Field label="Runner ceiling" htmlFor="runner-ceiling"
             help={runner
               ? `Most sessions the Backlog Runner may hold at once; a share of the global cap (${readout.global.cap}). Quota (push level) and the governor lower it, never raise it.`
-              : 'Backlog Runner is not registered'}>
+              : automationsLoading ? 'Loading automations…' : 'Backlog Runner is not registered'}>
             <Input id="runner-ceiling" type="text" inputMode="numeric" size="sm" disabled={!runner}
               value={pinForm.draft?.[RUNNER_KEYS.ceiling] ?? ''}
               onChange={(e) => pinForm.set(RUNNER_KEYS.ceiling, e.target.value)} />
           </Field>
           <Field label="Daily budget" htmlFor="runner-budget"
-            help={runner ? 'Circuit-breaker: pause spawning past this many sessions per day.' : 'Backlog Runner is not registered'}>
+            help={runner
+              ? 'Circuit-breaker: pause spawning past this many sessions per day.'
+              : automationsLoading ? 'Loading automations…' : 'Backlog Runner is not registered'}>
             <Input id="runner-budget" type="text" inputMode="numeric" size="sm" disabled={!runner}
               value={pinForm.draft?.[RUNNER_KEYS.budget] ?? ''}
               onChange={(e) => pinForm.set(RUNNER_KEYS.budget, e.target.value)} />
           </Field>
           <Field label="Sessions per account" htmlFor="runner-per-account"
-            help={governor ? 'Concurrent runner sessions one account can carry before its quota burns faster than it resets.' : 'Capacity Governor is not registered'}>
+            help={governor
+              ? 'Concurrent runner sessions one account can carry before its quota burns faster than it resets.'
+              : automationsLoading ? 'Loading automations…' : 'Capacity Governor is not registered'}>
             <Input id="runner-per-account" type="text" inputMode="numeric" size="sm" disabled={!governor}
               value={pinForm.draft?.[RUNNER_KEYS.perAccount] ?? ''}
               onChange={(e) => pinForm.set(RUNNER_KEYS.perAccount, e.target.value)} />

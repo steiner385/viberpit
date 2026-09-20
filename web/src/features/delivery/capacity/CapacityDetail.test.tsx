@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
 import { QK } from '@/api/hooks'
-import { mutationResult, queryResult } from '@/test/reactQuery'
+import { loadingQueryResult, mutationResult, queryResult } from '@/test/reactQuery'
 import { CAPACITY } from './__fixtures__/capacity'
 import { CapacityDetail } from './CapacityDetail'
 
@@ -63,15 +63,19 @@ function setup({
   projectData,
   readout = CAPACITY,
   automations = [GOVERNOR, RUNNER],
+  automationsLoading = false,
 }: {
   patchState?: ReturnType<typeof mutationResult>
   patchPolicyState?: ReturnType<typeof mutationResult>
   projectData?: { automationPolicyUpdatedAt: string | null }
   readout?: typeof CAPACITY
   automations?: (typeof GOVERNOR | typeof RUNNER)[]
+  automationsLoading?: boolean
 } = {}) {
   vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(readout) as never)
-  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult(automations) as never)
+  vi.mocked(hooks.useAutomations).mockReturnValue(
+    (automationsLoading ? loadingQueryResult() : queryResult(automations)) as never,
+  )
   // `usePatchAutomation()` is called THREE times per render (push-level
   // radio, governor-mode select, and the runner/governor half of the one
   // capacity form — three SEPARATE hook instances so the two status-bearing
@@ -83,9 +87,9 @@ function setup({
   // settling — so a `mockReturnValueOnce` chain keyed to call order silently
   // drifts onto the wrong control once that restart consumes the first few
   // slots. One shared state for all three is the fixture this file can make
-  // honestly; the independence itself is what the "two independent
-  // usePatchAutomation() instances" test below (checking a multiple-of-2
-  // raw count from the two status-bearing controls) stands for.
+  // honestly; the independence itself is what the "three independent
+  // usePatchAutomation() instances" test below (checking a multiple-of-3
+  // raw count) stands for.
   vi.mocked(hooks.usePatchAutomation).mockReturnValue(patchState as never)
   vi.mocked(hooks.useUpdateProductPolicy).mockReturnValue(patchPolicyState as never)
   vi.mocked(hooks.useProject).mockReturnValue(queryResult(projectData ?? { automationPolicyUpdatedAt: null }) as never)
@@ -171,17 +175,18 @@ describe('CapacityDetail', () => {
     await waitFor(() => expect(screen.getByText(/Failed:/)).toBeInTheDocument())
   })
 
-  it('two independent usePatchAutomation() instances back the push-level radio and the governor-mode select', () => {
-    // The component itself creates two hook instances (see its own comment);
-    // a shared mock can't tell them apart by call position (see `setup`'s
-    // comment), so this is the honest form of that claim in this harness.
+  it('three independent usePatchAutomation() instances back the push-level radio, the governor-mode select, and the runner/governor form', () => {
+    // The component itself creates three hook instances (see its own
+    // comment); a shared mock can't tell them apart by call position (see
+    // `setup`'s comment), so this is the honest form of that claim in this
+    // harness.
     setup()
-    // Exactly two calls per render pass (`useSettingsForm`'s render-time pin-
+    // A multiple of 3 per render pass (`useSettingsForm`'s render-time pin-
     // form seeding makes React restart this component's render once before
-    // settling, so the raw count here is a multiple of 2, not exactly 2).
+    // settling, so the raw count here is a multiple of 3, not exactly 3).
     const calls = vi.mocked(hooks.usePatchAutomation).mock.calls.length
-    expect(calls).toBeGreaterThanOrEqual(2)
-    expect(calls % 2).toBe(0)
+    expect(calls).toBeGreaterThanOrEqual(3)
+    expect(calls % 3).toBe(0)
   })
 
   it('push-level descriptions come from the wire, not a client constant', () => {
@@ -463,5 +468,16 @@ describe('CapacityDetail', () => {
     expect(screen.getByLabelText('Runner ceiling')).toBeDisabled()
     expect(screen.getByLabelText('Daily budget')).toBeDisabled()
     expect(screen.getByLabelText('Sessions per account')).not.toBeDisabled()
+    expect(screen.getAllByText('Backlog Runner is not registered').length).toBeGreaterThan(0)
+  })
+
+  it('M8: while automations are still loading, the help text says so rather than claiming nothing is registered', () => {
+    setup({ automationsLoading: true })
+    expect(screen.getByLabelText('Runner ceiling')).toBeDisabled()
+    expect(screen.getByLabelText('Daily budget')).toBeDisabled()
+    expect(screen.getByLabelText('Sessions per account')).toBeDisabled()
+    expect(screen.getAllByText('Loading automations…').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Backlog Runner is not registered')).toBeNull()
+    expect(screen.queryByText('Capacity Governor is not registered')).toBeNull()
   })
 })
