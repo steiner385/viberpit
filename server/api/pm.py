@@ -51,7 +51,8 @@ from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
-from server.pm.project_slugs import former_slugs_after_rename
+from server.pm.project_slugs import (
+    PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
@@ -497,7 +498,9 @@ async def update_project(
         return await _project_detail_dict(db, p)
 
     await db.flush()
-    await record_audit(db=db, type="pm.project.update", identity=identity,
+    # This record is also READ back: it is the only durable trace of a rename
+    # made before `former_slugs` existed (server/pm/project_slugs.py).
+    await record_audit(db=db, type=PROJECT_UPDATE_AUDIT_TYPE, identity=identity,
                        detail={"slug": p.slug, "changes": changes})
     return await _project_detail_dict(db, p)
 

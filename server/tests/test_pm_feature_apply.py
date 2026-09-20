@@ -388,3 +388,68 @@ def test_link_to_a_renamed_product_s_former_slug_still_resolves(caplog):
             "the edge is the point — a warning-only fix still loses the link")
         assert [r for r in caplog.records
                 if "feature_link_unresolved" in r.getMessage()] == []
+
+
+def test_a_doc_naming_its_OWN_product_by_a_former_slug_still_links(caplog):
+    """#1880, and in fact all seven of #1531–#1537: the broken edges were not
+    cross-product at all — they were a product's own docs naming the product
+    itself by the slug it had been renamed away from.
+
+    That shape exercises a different path than the test above. The target
+    feature is one this very apply just upserted, and the block DELETES every
+    outgoing edge of the project before rebuilding, so the source, the target
+    and the alias are all the same project mid-flush. Resolve the alias one step
+    later — after the delete but off stale state — and the product silently
+    stops being able to link to itself.
+    """
+    from sqlalchemy import select
+    from server.sessions import orchestrator as orch_mod
+    from server.db import db_session
+    from server.db.models import Feature, FeatureLink, Project
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    orch_mod._PM_SYNC_LINK_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-new", name="Example product",
+                               former_slugs=["example-old"])
+                db.add(prod)
+                await db.flush()
+                pid = str(prod.id)
+                await db.commit()
+                return pid
+        prod_id = asyncio.run(_seed())
+
+        # Both docs live in this product's own repo and were never updated for
+        # the rename, so one of them names the product by `example-old`.
+        plan = FeatureIndexPlan(
+            upserts=(
+                FeatureUpsert(
+                    slug="command-line-interface", title="CLI", state="live", summary="",
+                    repo_path="d/command-line-interface.md", parent_slug=None,
+                    links=(FeatureLinkRef(
+                        "powered_by", "example-old", "credential-store-encryption"),)),
+                FeatureUpsert(
+                    slug="credential-store-encryption", title="Creds", state="live",
+                    summary="", repo_path="d/credential-store-encryption.md",
+                    parent_slug=None, links=()),
+            ),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        async def _edges() -> list[tuple[str, str]]:
+            async with db_session() as db:
+                by_id = {f.id: str(f.slug) for f in (await db.execute(select(Feature).where(
+                    Feature.project_id == prod_id))).scalars().all()}
+                rows = (await db.execute(select(FeatureLink))).scalars().all()
+                return [(by_id[r.src_feature_id], by_id[r.dst_feature_id]) for r in rows]
+
+        assert asyncio.run(_edges()) == [
+            ("command-line-interface", "credential-store-encryption")]
+        assert [r for r in caplog.records
+                if "feature_link_unresolved" in r.getMessage()] == []
