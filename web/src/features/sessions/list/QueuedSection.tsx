@@ -46,14 +46,14 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
       </button>
 
       {!collapsed && (
-        <>
+        <div id="queued-section-panel">
           {/* C6: the queue is the global cap's overflow; say so and point at the
               stack. Collapses with the list — it's part of what the header hides. */}
           <p className="px-1 pb-1 text-xs text-ink-muted">
             Waiting for a free slot under the global cap.{' '}
             <Link to={deliveryPath('capacity')} className="text-accent hover:underline">See capacity</Link>
           </p>
-          <ul id="queued-section-panel" className="space-y-1 py-1">
+          <ul className="space-y-1 py-1">
             {sorted.map((session, idx) => {
               const isFirst = idx === 0
               const isLast = idx === sorted.length - 1
@@ -144,7 +144,7 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
               )
             })}
           </ul>
-        </>
+        </div>
       )}
     </div>
   )
