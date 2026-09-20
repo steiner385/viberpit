@@ -2,7 +2,8 @@
 import { describe, it, expect } from 'vitest'
 import type { MapChangesPointer } from '@/api/roadmap'
 import { MAP, product } from './__fixtures__/map'
-import { findProduct, findCapability, capabilityTrail, flattenCapabilities, openMapChanges } from './lookup'
+import type { RoadmapMap } from '@/api/roadmap'
+import { findProduct, findCapability, capabilityTrail, flattenCapabilities, openMapChanges, programTitleOf } from './lookup'
 
 describe('lookup', () => {
   it('finds products and nested capabilities', () => {
@@ -13,6 +14,14 @@ describe('lookup', () => {
     expect(findCapability(p, 'nope')).toBeNull()
     expect(capabilityTrail(p, 'task-views').map((c) => c.slug)).toEqual(['tasks', 'task-views'])
     expect(capabilityTrail(p, 'nope')).toEqual([])
+  })
+
+  // A malformed-but-truthy `/pm/map` payload (missing/non-array `products`)
+  // must degrade to "not found", not throw and take the page down with it.
+  it('degrades to empty results on a malformed map instead of throwing', () => {
+    const malformed = { generatedAt: 'x' } as unknown as RoadmapMap
+    expect(findProduct(malformed, 'kindash')).toBeNull()
+    expect(() => programTitleOf(malformed)('kindash')).not.toThrow()
   })
 
   // The one flattening both capability pickers use — "+ Initiative" and the
