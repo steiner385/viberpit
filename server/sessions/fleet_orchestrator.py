@@ -9,6 +9,7 @@ import logging
 
 from ccswitch.quota import QuotaSnapshot
 from server.ipc.client import DaemonUnavailable
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
@@ -20,6 +21,54 @@ from server.sessions.remote import RemoteOrchestrator
 from server.sessions.types import is_assistant, is_assistant_kind
 
 log = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# "A worker is unreachable, skip it" — ONE record family for every fan-out site.
+#
+# The site name used to be interpolated into the message text, and the error sink
+# fingerprints a record on its NORMALIZED MESSAGE (server/obs/error_signature.py).
+# So one condition — rocky powered off — was hashed five different ways and filed
+# five auto-error issues: #1614 (codex_account_status), #1670 (session_queue_
+# positions), #1671 (list_sessions), #1733 (live_session_load), #1734
+# (live_session_counts). Same host, same outage, same remedy, five tickets.
+#
+# The site and the cause are still worth reading, so they are kept in the message
+# and SINGLE-QUOTED: `normalize()` rewrites any quoted run to `<str>`, so they are
+# carried to the journal and to the issue's sample verbatim while collapsing to one
+# fingerprint. Quotes in the values themselves would defeat that, hence _field().
+_UNREACHABLE_MSG = "fleet host=%s unreachable; skipping it this pass (site='%s' cause='%s')"
+
+# Transport failures whose traceback is pure httpx/httpcore boilerplate: the RPC
+# client already reduced them to a typed exception whose message IS the diagnosis
+# ("All connection attempts failed"), so attaching exc_info adds 60 lines to every
+# issue body and nothing to the reader. It also perturbs the fingerprint — the sink
+# keys on the exception class and innermost app frame, both of which vary with how
+# httpx happened to fail. Any OTHER exception type here is a bug, not an outage, and
+# keeps its stack.
+#
+# ``OSError`` covers the raw socket failures a path that bypasses DaemonClient can
+# raise, and with them ``TimeoutError`` — which since 3.11 is both an OSError subclass
+# and what ``asyncio.TimeoutError`` aliases, so naming either separately is redundant.
+_EXPECTED_UNREACHABLE = (DaemonUnavailable, OSError)
+
+
+def _field(value: object) -> str:
+    """Render *value* for a single-quoted log field: no quotes, no newlines."""
+    return " ".join(str(value).replace("'", "").replace('"', "").split())
+
+
+def _cause_text(exc: BaseException) -> str:
+    """``Type: message`` for *exc*, falling back to its direct cause when bare.
+
+    ``DaemonUnavailable(str(httpx_exc))`` normally carries the reason already; a
+    handful of raise sites pass no message, and there the chained transport error
+    is the only thing that says what went wrong.
+    """
+    text = _field(exc)
+    if not text and exc.__cause__ is not None:
+        return f"{type(exc).__name__}: {type(exc.__cause__).__name__}: {_field(exc.__cause__)}"
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
 
 # Fan-out methods that take session_ids: list[str] and group calls by owning host,
 # then merge the results. Each host receives only the IDs it owns.
@@ -171,21 +220,67 @@ class FleetOrchestrator:
         self._router = router
         self._primary = primary
         self._host_cache: dict[str, str] = {}  # session_id -> host
+        # Per-instance, not module-level: one fleet per process, and a fresh fleet
+        # (a lifespan restart, a test) deserves a fresh window rather than the last
+        # one's. Keyed by host name, so cardinality is the registry's size.
+        self._unreachable_log = LogThrottle()
 
     def _primary_orch(self):
         return self._router.get(self._primary)
 
-    async def _log_unreachable(self, host: str, exc: BaseException, msg: str, *args) -> None:
+    async def _log_unreachable(
+        self, host: str, exc: BaseException, site: str
+    ) -> None:
         """Skipping an unreachable worker is right either way; the LEVEL depends on why.
 
-        A worker mid-deploy is unreachable on purpose for 30–90 s, several times a day.
-        Logging each failed poll in that window at WARNING fed Error Triage a "daemon
-        unreachable" issue about a host doing exactly what it was told (#1614).
+        Three policies, each answering a way this record used to become noise:
+
+        * **A deliberate restart is not an error.** A worker mid-deploy is unreachable
+          on purpose for 30–90 s, several times a day, and logging each failed poll in
+          that window at WARNING fed Error Triage an issue about a host doing exactly
+          what it was told (#1614). Those go out at INFO.
+        * **Repeats are paced.** An unplanned outage is invisible to ``reachable_names``
+          until the 30 s probe marks the host unhealthy, and every fan-out in that gap
+          re-reports it. The shared windowed throttle reports the first occurrence
+          promptly, demotes repeats inside the window to DEBUG (still in the journal,
+          out of the error sink) and re-reports afterwards, so the record keeps saying
+          "still down" without filing it again. The window is dropped on recovery
+          (``_note_reachable``) so a host that flaps reports each outage promptly.
+        * **One condition is one record.** Every site shares ``_UNREACHABLE_MSG`` so
+          the sink groups them, and a transport failure is summarized rather than
+          carrying its httpx traceback (see ``_EXPECTED_UNREACHABLE``).
+
+        What is deliberately NOT thinned here is ``host_probe``'s ``fleet.probe_failed``:
+        the probe is the fleet's reachability DETECTOR and owns the canonical record,
+        which is exactly why these call sites — consumers that merely notice what the
+        probe is already reporting — can afford to be quiet. They stay at WARNING rather
+        than INFO because they can fire in the gap before the next 30 s probe, or on a
+        flap the probe slept through, and that is genuinely news the detector has not
+        reported yet.
         """
+        cause = _cause_text(exc)
         if await host_upgrade.restart_expected(host):
-            log.info(msg + " (restart in progress)", *args)
-        else:
-            log.warning(msg, *args, exc_info=exc)
+            # Unthrottled: a deploy's INFO lines are the record OF the deploy, and
+            # sharing the warning's window would let a rollout's chatter demote the
+            # genuine failure that follows it to DEBUG.
+            log.info(_UNREACHABLE_MSG + " (restart in progress)",
+                     host, _field(site), cause)
+            return
+        expected = isinstance(exc, _EXPECTED_UNREACHABLE)
+        log_throttled(
+            log, self._unreachable_log, host, logging.WARNING,
+            _UNREACHABLE_MSG, host, _field(site), cause,
+            exc_info=None if expected else exc,
+        )
+
+    def _note_reachable(self, host: str) -> None:
+        """A host answered: drop its suppression window.
+
+        Without this, a host that fails, recovers and fails again inside the window
+        has its second outage demoted to DEBUG — the throttle would be pacing a
+        *condition that ended*, which is the one thing a window must not do.
+        """
+        self._unreachable_log.forget(host)
 
     async def _host_for(self, session_id: str) -> str | None:
         cached = self._host_cache.get(session_id)
@@ -368,10 +463,9 @@ class FleetOrchestrator:
                 if exc is not None:
                     if host == self._primary:
                         raise exc
-                    await self._log_unreachable(
-                        host, exc, "fleet.%s host=%s unreachable; skipping its share "
-                        "this pass", name, host)
+                    await self._log_unreachable(host, exc, name)
                     continue
+                self._note_reachable(host)
                 parts.append(res or {})
             return merge(parts)
         if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
@@ -425,10 +519,9 @@ class FleetOrchestrator:
             if exc is not None:
                 if name == self._primary:
                     raise exc
-                await self._log_unreachable(
-                    name, exc, "fleet.list_sessions host=%s unreachable; skipping its "
-                    "sessions this pass", name)
+                await self._log_unreachable(name, exc, "list_sessions")
                 continue
+            self._note_reachable(name)
             for rec in recs or []:
                 if not include_assistant and is_assistant(rec):
                     continue
@@ -519,9 +612,9 @@ class FleetOrchestrator:
             if exc is not None:
                 if host == self._primary:
                     raise exc
-                await self._log_unreachable(
-                    host, exc, "fleet.codex_account_status host=%s unreachable; skipping", host)
+                await self._log_unreachable(host, exc, "codex_account_status")
                 continue
+            self._note_reachable(host)
             parts.append(result or {})
         merged = _merge_codex_status(parts)
         raw_quota = merged.get("quota")
