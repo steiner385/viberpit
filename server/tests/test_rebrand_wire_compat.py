@@ -31,6 +31,7 @@ from server.db import db_session, init_db
 from server.db.models import AppSession
 from server.sessions.export import (
     LEGACY_NORMALIZED_EXPORT_FORMAT,
+    LEGACY_NORMALIZED_EXPORT_META_TYPE,
     NORMALIZED_EXPORT_FORMAT,
     NORMALIZED_EXPORT_META_TYPE,
     is_normalized_export_header,
@@ -69,7 +70,7 @@ def test_cookie_names_are_the_two_brand_spellings():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cookie_name", ["viberpit_session", "ccswitch_session"])
+@pytest.mark.parametrize("cookie_name", [_COOKIE_NAME, _LEGACY_COOKIE_NAME])
 async def test_a_request_carrying_only_one_spelling_resolves_its_session(cookie_name):
     """The exit criterion, both ways round: a browser holding ONLY the legacy
     cookie (it has not been back since the flip) and a browser holding only the
@@ -124,7 +125,7 @@ async def test_a_legacy_cookie_for_another_identity_is_still_refused():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cookie_name", ["viberpit_session", "ccswitch_session"])
+@pytest.mark.parametrize("cookie_name", [_COOKIE_NAME, _LEGACY_COOKIE_NAME])
 async def test_logout_revokes_a_session_held_under_either_cookie(cookie_name, isolated_db):
     """Logout is the accept side's sharpest edge: a route that looked only for the
     new name would answer 204 to a legacy-cookie browser while leaving the row
@@ -143,7 +144,7 @@ async def test_logout_revokes_a_session_held_under_either_cookie(cookie_name, is
         assert r.status_code == 204
         # Both spellings are cleared — a jar mid-migration may hold either or both.
         cleared = {c.split("=")[0].strip() for c in r.headers.get_list("set-cookie")}
-        assert {"viberpit_session", "ccswitch_session"} <= cleared
+        assert {_COOKIE_NAME, _LEGACY_COOKIE_NAME} <= cleared
 
         async with db_session() as db:
             row = (await db.execute(
@@ -209,7 +210,7 @@ def test_an_export_written_before_the_flip_is_still_recognised():
     before this PR — it can never be rewritten, so the reader keeps taking it."""
     assert LEGACY_NORMALIZED_EXPORT_FORMAT == "ccswitch.normalized-events/v1"
     assert is_normalized_export_header({
-        "type": "ccswitchExportMeta",
+        "type": LEGACY_NORMALIZED_EXPORT_META_TYPE,
         "format": LEGACY_NORMALIZED_EXPORT_FORMAT,
         "engine": "codex",
         "sessionId": "s1",

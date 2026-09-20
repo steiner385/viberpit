@@ -58,6 +58,12 @@ permanent = "The contributor rule in core.md / AGENTS.md has to say which spelli
 ceiling = 2
 
 [[allow]]
+id = "export-format-id"
+pattern = 'ccswitch\.normalized-events|ccswitchExportMeta'
+permanent = "Phase 2b (#1368) flipped the emitted id to `viberpit.normalized-events/v1`; the accept side keeps both forever, because an exported `.jsonl` already on someone's disk can never be rewritten — the same reason the marker parsers stay. All that is left is the test that pins what actually shipped, so the derived `brand.LEGACY_SLUG` constant cannot drift off the real historical value."
+ceiling = 1
+
+[[allow]]
 id = "not-renamed"
 pattern = '\bccswitch-auth\b|/var/lib/ccswitch-codex-auth|/opt/ccswitch-codex-auth|/state/ccswitch/codex|"ccswitch" / "codex"|CN=ccswitch|\bccswitch-ca\b|001-ccswitch-web|asyncpg://ccswitch:|@[^ `]*/ccswitch\b|PG_(ROLE|DB):-ccswitch|^\s*ccswitch:<password>@|>/ccswitch\b|`ccswitch`, and grants|\bhost\s+ccswitch\s+ccswitch\b|-U ccswitch\b|-d ccswitch\b|`ccswitch`( Postgres)? (role|database)|(role|db|database) `ccswitch`|ccswitch (role|database)\b|ccswitch-assistant(-user)?-v1'
 permanent = "Not the brand: the unix user and 0700 state dir holding OpenAI refresh tokens (rename at the next credential rotation), the mTLS CA CN (next rotation), the Postgres role/db name (D6), the spec directory `.specify/feature.json` points at, and the versioned HMAC salts of the assistant token, which sit beside the `ccas1:` wire prefix (design §1 table)."
@@ -74,12 +80,13 @@ ceiling = 8
 [[allow]]
 id = "http-auth-compat"
 # Phase 2b landed: the cookie and both attribution headers now EMIT the new
-# spelling. What is left is the accept side — the legacy header names in
-# `auth/middleware.py` and the docstring naming them — which retires with the
-# rest of #1368's compat window.
+# spelling. What is left is the accept side — the two legacy header names in
+# `auth/middleware.py`, plus the test that pins the cookie's historical spelling
+# so the derived `brand.LEGACY_SLUG` constant cannot drift off it. Retires with
+# the rest of #1368's compat window.
 pattern = '\bccswitch_session\b|X-CCSwitch-|x-ccswitch-'
 issue = 1368
-ceiling = 2
+ceiling = 3
 
 [[allow]]
 id = "browser-storage-keys"
