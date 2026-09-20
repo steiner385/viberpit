@@ -155,7 +155,8 @@ Safety rails:
   exceeding halts loudly on the status card. Caps are logged, never silent.
 - **Rate budget:** GraphQL point tracking with backoff, shared with `pm_sync` accounting.
 - **No blind retry:** a mutation rejected twice on its own merits parks in the journal. Document-level transient
-  errors do not count toward that threshold (§12).
+  errors do not count toward that threshold, and neither does a rejection that only reports the effect is
+  already in place — that is convergence, recorded applied (§12).
 
 **One-time migration** = a `migrate` mode of this same machinery: compile all open-issue prose
 deps to native; restructure existing epics (task lists → sub-issues + sibling blocked-by); create
@@ -325,6 +326,10 @@ not another copy of epic membership or queue readiness.
 - **Failure accounting and caps.** [gh_mutations.py](../../server/pm/gh_mutations.py)
   distinguishes alias-specific rejections from document-level failures. The latter receive
   `journal.TRANSIENT_PREFIX`, warn, and retry without accumulating toward a permanent park.
+  A third outcome, `BatchResult.converged`, is a success: GitHub rejected the alias because
+  what it asks for already holds — today only `addBlockedBy` on an edge the issue already has.
+  Those rows are recorded applied, so the key enters `journal.applied_keys` and `compile_edges`
+  stops re-planning an edge the mirror cannot see because its blocker is closed.
   The non-schema mutation cap is per product per tick; migration uses its separate cap and bounded schema
   bootstrap. Mode `off` clears previous status counts so stopped work is not shown as current.
 - **Dependency query scope and API auth.** Facts loading, queue loading, and the deps API

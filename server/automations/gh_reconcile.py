@@ -561,7 +561,10 @@ class GhReconcileLoop:
             ok_ids: list[str] = []
             for (alias, m), rid in zip(alias_map.items(), row_ids, strict=True):
                 err = results.errors.get(alias)
-                if err is None:
+                # A rejection that means "already true on GitHub" is convergence, not a
+                # failure: it must not feed the park ladder, and recording it applied is
+                # what lets `compile_edges` stop re-planning the edge next cycle (#1947).
+                if err is None or alias in results.converged:
                     ok_ids.append(rid)
                     continue
                 if await self._j_failure_count(m.key()) >= 1:
