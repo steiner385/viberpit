@@ -439,18 +439,12 @@ async def update_project(
                            "the slug or repointing the primary repo."})
 
     changes: dict = {}
-    if name is not None and name != p.name:
-        changes["name"] = {"from": p.name, "to": name}
-        p.name = name
-    if slug_changing:
-        existing = (await db.execute(
-            select(Project).where(Project.slug == new_slug, Project.id != p.id)
-        )).scalar_one_or_none()
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
-                "error": "slug_conflict", "message": f"Project '{new_slug}' already exists"})
-        changes["slug"] = {"from": p.slug, "to": new_slug}
-        p.slug = new_slug
+    # Repo ownership must be re-verified against `snapshot` — gathered before any
+    # write in this request — while `p`/`primary` are still unmodified: the
+    # re-check's SELECT autoflushes pending session writes first, so a slug/name
+    # assignment made here before the repo check would leak into that SELECT and
+    # make this project's own row look like it changed since the snapshot,
+    # tripping OwnershipConflict("changed") on every combined rename+repoint.
     if repo is not None and repo_changing:
         assert snapshot is not None  # gathered above whenever `repo is not None`
         try:
@@ -471,6 +465,19 @@ async def update_project(
             primary.backfill_done = False
             primary.watermark = None
             primary.last_synced_at = None
+
+    if name is not None and name != p.name:
+        changes["name"] = {"from": p.name, "to": name}
+        p.name = name
+    if slug_changing:
+        existing = (await db.execute(
+            select(Project).where(Project.slug == new_slug, Project.id != p.id)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "slug_conflict", "message": f"Project '{new_slug}' already exists"})
+        changes["slug"] = {"from": p.slug, "to": new_slug}
+        p.slug = new_slug
 
     if rank_set and body.priorityRank != p.priority_rank:
         changes["priorityRank"] = {"from": p.priority_rank, "to": body.priorityRank}
