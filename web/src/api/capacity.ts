@@ -137,3 +137,9 @@ export interface CapacityReadout {
 export function fetchCapacity(): Promise<CapacityReadout> {
   return api.get<CapacityReadout>('/capacity')
 }
+
+/** `GET /api/capacity/binding` — the governor's persisted binding constraint, a
+ *  one-row read cheap enough for the app-wide nav poll. */
+export function fetchCapacityBinding(): Promise<{ binding: CapacityReadout['binding'] }> {
+  return api.get<{ binding: CapacityReadout['binding'] }>('/capacity/binding')
+}

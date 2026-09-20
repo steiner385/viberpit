@@ -10,7 +10,7 @@ const useAutomations = vi.fn()
 const useAccounts = vi.fn()
 const useTriage = vi.fn()
 const useDecisions = vi.fn()
-const useCapacity = vi.fn()
+const useCapacityBinding = vi.fn()
 
 const useDeployState = vi.fn()
 
@@ -21,7 +21,7 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: () => useAccounts(),
   useTriage: () => useTriage(),
   useDecisions: () => useDecisions(),
-  useCapacity: () => useCapacity(),
+  useCapacityBinding: () => useCapacityBinding(),
 }))
 
 // Mocked at the DERIVED state, not at the two queries under it: the dot is a
@@ -83,7 +83,7 @@ describe('useNavBadges', () => {
     useAccounts.mockReturnValue({ data: [] })
     useTriage.mockReturnValue({ data: [] })
     useDecisions.mockReturnValue({ data: [] })
-    useCapacity.mockReturnValue({ data: undefined })
+    useCapacityBinding.mockReturnValue({ data: undefined })
     useDeployState.mockReturnValue({ hasFailure: false, count: 0 })
   })
 
@@ -255,13 +255,13 @@ describe('useNavBadges', () => {
 
   // spec 2026-09-20 C8: "nothing can run" must be visible from any section.
   it('delivery lights an attention dot when the capacity readout has a binding constraint', () => {
-    useCapacity.mockReturnValue({ data: { binding: { layer: 'product', code: 'product_capacity_full', text: 'x' } } })
+    useCapacityBinding.mockReturnValue({ data: { binding: { layer: 'product', code: 'product_capacity_full', text: 'x' } } })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.delivery).toBe(true)
   })
   it('a count from actionable automations still wins over the capacity dot', () => {
     useAutomations.mockReturnValue({ data: [automation({ actionableCount: 2 })] })
-    useCapacity.mockReturnValue({ data: { binding: { layer: 'product', code: 'product_capacity_full', text: 'x' } } })
+    useCapacityBinding.mockReturnValue({ data: { binding: { layer: 'product', code: 'product_capacity_full', text: 'x' } } })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.delivery).toBe(2)
   })
@@ -269,25 +269,25 @@ describe('useNavBadges', () => {
 
 // These three run OUTSIDE the describe block above, so the shared `vi.fn()`
 // mocks carry whatever the last describe test left them at (no beforeEach out
-// here) — pin useCapacity explicitly so the capacity-binding case above
+// here) — pin useCapacityBinding explicitly so the capacity-binding case above
 // doesn't leak an unrelated attention dot into these.
 it('unknown automation counts raise attention without inventing a number', () => {
   useAutomations.mockReturnValue({ data: [automation({ activeSessions: 8, actionableCount: null })] })
-  useCapacity.mockReturnValue({ data: undefined })
+  useCapacityBinding.mockReturnValue({ data: undefined })
   const { result } = renderHook(() => useNavBadges())
   expect(result.current.delivery).toBe(true)
 })
 
 it('disabled services without observations do not create perpetual navigation attention', () => {
   useAutomations.mockReturnValue({ data: [automation({ enabled: false, activeSessions: 0, actionableCount: null, status: { text: 'No observation yet', level: 'unknown', counts: null } })] })
-  useCapacity.mockReturnValue({ data: undefined })
+  useCapacityBinding.mockReturnValue({ data: undefined })
   const { result } = renderHook(() => useNavBadges())
   expect(result.current.delivery).toBeUndefined()
 })
 
 it('an actual automation error remains attention-worthy with zero actionable items', () => {
   useAutomations.mockReturnValue({ data: [automation({ actionableCount: 0, status: { text: 'Failed', level: 'error', counts: null } })] })
-  useCapacity.mockReturnValue({ data: undefined })
+  useCapacityBinding.mockReturnValue({ data: undefined })
   const { result } = renderHook(() => useNavBadges())
   expect(result.current.delivery).toBe(true)
 })

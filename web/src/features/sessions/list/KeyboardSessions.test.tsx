@@ -67,6 +67,7 @@ vi.mock('@/api/hooks', () => ({
   // shell calls the hooks unconditionally.
   useStageModels: () => ({ data: undefined, isLoading: false, isError: false }),
   useCapacity: () => ({ data: undefined, isLoading: false, isError: false }),
+  useCapacityBinding: () => ({ data: undefined }),
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),

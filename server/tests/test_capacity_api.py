@@ -54,3 +54,30 @@ async def test_capacity_readout_is_rpc_allowlisted_and_crosses_to_remote():
     remote._client = client
     assert await remote.capacity_readout() == expected
     client.call.assert_awaited_once_with("capacity_readout")
+
+
+def _plan(binding, computed_at):
+    return {"computedAt": computed_at.isoformat(), "binding": binding}
+
+
+@pytest.mark.parametrize("age_s, expected", [(30, {"layer": "host", "code": "hosts_full", "text": "x"}), (7200, None)])
+def test_capacity_binding_endpoint_reads_the_persisted_plan(monkeypatch, age_s, expected):
+    from datetime import datetime, timedelta, timezone
+
+    binding = {"layer": "host", "code": "hosts_full", "text": "x"}
+    plan = _plan(binding, datetime.now(timezone.utc) - timedelta(seconds=age_s))
+    monkeypatch.setattr("server.api.capacity.read_plan", AsyncMock(return_value=plan))
+    with _client() as c:
+        resp = c.get("/api/capacity/binding", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"binding": expected}
+
+
+@pytest.mark.parametrize("plan", [None, "raise"])
+def test_capacity_binding_endpoint_without_a_plan_is_null(monkeypatch, plan):
+    read = AsyncMock(side_effect=RuntimeError("db")) if plan == "raise" else AsyncMock(return_value=plan)
+    monkeypatch.setattr("server.api.capacity.read_plan", read)
+    with _client() as c:
+        resp = c.get("/api/capacity/binding", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"binding": None}
