@@ -308,3 +308,31 @@ def test_raising_a_host_cap_drains_the_session_queue():
             assert drain.await_count == 1
             client.put("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS, json={"enabled": True})
             assert drain.await_count == 2, "re-enabling a capped host restores its slots"
+
+
+def test_deleting_an_uncapped_host_can_raise_the_effective_cap():
+    """physical = None (rocky is uncapped) binds the DEFAULT floor of 5 even
+    though dobby alone caps out at 10; deleting rocky lifts the ceiling to 10
+    and must drain exactly like any other cap raise (F1)."""
+    from unittest.mock import AsyncMock, patch
+
+    from server.tests.test_settings import IDENTITY_HEADERS, _client
+
+    with _client() as client:
+        r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                        json={"name": "dobby", "endpoint": "https://dobby:9443", "maxSessions": 10})
+        assert r.status_code == 201, r.text
+        r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                        json={"name": "rocky", "endpoint": "https://rocky:9443"})
+        assert r.status_code == 201, r.text
+
+        gc = client.get("/api/settings", headers=IDENTITY_HEADERS).json()["effectiveDefaults"]["globalCap"]
+        assert gc["effective"] == 5, "rocky uncapped -> physical unbounded -> default floor binds"
+
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            r = client.delete("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS)
+            assert r.status_code == 204, r.text
+            assert drain.await_count == 1
+
+        gc = client.get("/api/settings", headers=IDENTITY_HEADERS).json()["effectiveDefaults"]["globalCap"]
+        assert gc["effective"] == 10

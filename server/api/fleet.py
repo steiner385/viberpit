@@ -208,6 +208,7 @@ async def create_host(body: HostCreate, request: Request,
 async def delete_host(name: str, request: Request,
                       _identity: str = Depends(current_identity)) -> None:
     async with db_session() as db:
+        before = await read_global_cap(db)
         # Check existence rather than trusting rowcount: it is not typed on
         # Result[Any], and a statement that matches a row can still report 0 on
         # some drivers — which would 404 a host that exists. Mirrors update_host.
@@ -215,10 +216,14 @@ async def delete_host(name: str, request: Request,
             sa_select(Host.name).where(Host.name == name))).scalar_one_or_none()
         if found is not None:
             await db.execute(sa_delete(Host).where(Host.name == name))
-    # Removing a host never raises the effective cap; no queue drain (global_cap.drain_if_raised).
+        after = await read_global_cap(db)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"code": "unknown_host", "message": name})
+    # Deleting an UNCAPPED host can raise the effective cap (physical was None
+    # because that host had no cap; removing it can leave a finite Σ, or hand
+    # control to a lower attention ceiling that was previously not binding).
+    drain_if_raised(getattr(request.app.state, "sessions", None), before, after)
 
 
 @router.get("/hosts")

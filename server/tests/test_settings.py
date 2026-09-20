@@ -379,22 +379,56 @@ def test_put_max_active_null_clears_the_attention_ceiling():
 
 
 def test_put_max_active_null_to_default_no_raise():
-    """PUT {maxActiveSessions: 3} from NULL should NOT trigger drain (equals default)."""
+    """PUT {maxActiveSessions: 3} from NULL should NOT trigger drain (equals default),
+    but a later raise past a physical ceiling of two capped hosts must (M7)."""
+    from unittest.mock import AsyncMock, patch
+
     with _client() as client:
         # First call: maxActiveSessions is NULL (default 5)
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["maxActiveSessions"] is None
 
-        # PUT to 3 (below default of 5): should NOT raise, no drain needed
-        put_resp = client.put(
-            "/api/settings",
-            json={"maxActiveSessions": 3},
-            headers=IDENTITY_HEADERS,
-        )
+        for name, cap in (("dobby", 4), ("rocky", 6)):
+            r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                            json={"name": name, "endpoint": f"https://{name}:9443", "maxSessions": cap})
+            assert r.status_code == 201, r.text
+
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            # PUT to 3 (below default of 5, and below the 10 physical ceiling):
+            # should NOT raise, no drain needed.
+            put_resp = client.put(
+                "/api/settings",
+                json={"maxActiveSessions": 3},
+                headers=IDENTITY_HEADERS,
+            )
+            assert put_resp.status_code == 200
+            assert put_resp.json()["maxActiveSessions"] == 3
+            drain.assert_not_awaited()
+
+            # Verify the value persisted
+            get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+            assert get_resp.json()["maxActiveSessions"] == 3
+
+            # PUT to 8 (raises the effective cap 3 -> 8): must drain exactly once.
+            put_resp = client.put(
+                "/api/settings",
+                json={"maxActiveSessions": 8},
+                headers=IDENTITY_HEADERS,
+            )
+            assert put_resp.status_code == 200
+            drain.assert_awaited_once()
+
+
+def test_put_max_active_below_one_after_a_valid_value_leaves_it_intact():
+    """A rejected PUT (0 is invalid) must not disturb the last valid value."""
+    with _client() as client:
+        put_resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 3})
         assert put_resp.status_code == 200
         assert put_resp.json()["maxActiveSessions"] == 3
 
-        # Verify the value persisted
+        resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 0})
+        assert resp.status_code == 422, resp.text
+
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["maxActiveSessions"] == 3
 

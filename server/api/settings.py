@@ -224,6 +224,13 @@ async def put_settings_row(
         before = await read_global_cap(db)
         row.max_active_sessions = body.maxActiveSessions
         await db.flush()
+        # Commit now, before the drain task is created: `get_db`'s commit only
+        # runs after this handler returns, but `drain_if_raised` schedules the
+        # drain as a background task immediately, which opens its OWN db session
+        # via `maybe_start_queued` — on an uncommitted row that fresh session
+        # would still read the OLD cap and admit nothing (M5). The later commit
+        # on this now-clean session is then a no-op.
+        await db.commit()
         # The EFFECTIVE cap rose (not merely the typed number): fill the new slots.
         drain_if_raised(getattr(request.app.state, "sessions", None), before, await read_global_cap(db))
     from server.sessions.model_policy import VALID_ACTIONS
