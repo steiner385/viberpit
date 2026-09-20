@@ -232,8 +232,21 @@ class ErrorTriageLoop:
                                      .values(status="muted", muted_at=now,
                                              muted_by="github:not_planned"))
                 else:
+                    # Closing the issue retires the pre-close backlog: those
+                    # occurrences are WHY it was closed, not evidence the fix
+                    # failed. Left in place they satisfy should_file() on the
+                    # next tick and file a "[regression]" for a condition that
+                    # never recurred (#1878 of #1534 — 520 occurrences, every
+                    # one before the close). Only what the sink adds after this
+                    # point can prove the fix did not take; deploy_monitor
+                    # spells the same gate `d.sha != closed_sha`. Decremented
+                    # rather than zeroed so a concurrent sink increment
+                    # survives, as in _file_candidates' Phase-1 claim.
+                    seen = int((await db.execute(select(ES.count_since_filed).where(
+                        ES.issue_number == number, ES.status == "filed"))).scalar() or 0)
                     await db.execute(update(ES).where(ES.issue_number == number, ES.status == "filed")
-                                     .values(status="resolved", issue_closed_at=now))
+                                     .values(status="resolved", issue_closed_at=now,
+                                             count_since_filed=ES.count_since_filed - seen))
 
     async def _retention(self, config: dict, now: datetime) -> None:
         from sqlalchemy import delete
@@ -250,8 +263,12 @@ class ErrorTriageLoop:
         from server.db.models import ErrorSignature as ES
         cutoff = now - timedelta(hours=int(config.get("warning_window_h", 24)))
         async with db_session() as db:
+            # Both states that _file_candidates can file from: a quiet burst
+            # ages out whether the fingerprint has never been filed or was
+            # filed and closed. Otherwise post-close stragglers accumulate
+            # indefinitely and eventually re-file a correctly closed issue.
             await db.execute(update(ES).where(
-                ES.status == "observed", ES.level == "WARNING",
+                ES.status.in_(("observed", "resolved")), ES.level == "WARNING",
                 ES.last_seen_at < cutoff, ES.count_since_filed > 0
             ).values(count_since_filed=0))
 

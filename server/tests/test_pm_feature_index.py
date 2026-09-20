@@ -141,3 +141,36 @@ def test_every_checked_in_feature_doc_is_canonical():
             problems[path.name] = (
                 f"state {meta.get('state')!r} is not the canonical {doc.state!r}")
     assert not problems
+
+
+def test_every_checked_in_feature_doc_targets_a_slug_this_repo_has():
+    """A dangling intra-repo target logs on every pm-sync tick, forever (#1878).
+
+    ``_pm_sync_apply_feature_plan`` skips an unresolvable link with a warning,
+    and ``_resolve_parents`` re-roots an unknown parent with one — both by
+    design, since ViberPit indexes repos whose docs it cannot gate and a bad
+    edge must never fail the sync. The cost is that the warning has no
+    terminating condition: it fires again next tick, and the tick after, until
+    someone edits the doc. #1878 is two days of exactly that. Runtime stays
+    forgiving; CI holds *our* docs to a target that exists.
+
+    Scope is what is checkable from a checkout. A ``parent`` is always
+    intra-repo. A link is only checkable while this repo's docs all name one
+    project — their own — which is the case today; the first genuine
+    cross-project link makes the target another repo's business and turns the
+    link half off deliberately. The half #1878 actually tripped on — a
+    ``project:`` naming the pre-rebrand slug, left behind by the rename —
+    belongs to the brand ratchet, which is what swept it.
+    """
+    docs = [(p.name, parse_feature_doc(p.read_text(), path=f"docs/product/features/{p.name}"))
+            for p in sorted(FEATURE_DOCS_DIR.glob("*.md"))]
+    slugs = {p.stem for p in FEATURE_DOCS_DIR.glob("*.md")}
+    intra_repo = len({link.project for _, doc in docs for link in doc.links}) == 1
+    dangling = []
+    for name, doc in docs:
+        if doc.parent and doc.parent not in slugs:
+            dangling.append(f"{name}: parent '{doc.parent}'")
+        if intra_repo:
+            dangling += [f"{name}: {link.kind} -> {link.project}/{link.feature}"
+                         for link in doc.links if link.feature not in slugs]
+    assert not dangling
