@@ -367,6 +367,11 @@ def test_select_batch_translates_policies_into_rank_ordered_repos(tmp_path, monk
     rank first (``priority_rank``), product age as the tiebreak; ``weight`` is
     deprecated (D6) and no longer translated.
 
+    Four legs, exercised together: ``beta`` (``rank=1``) and ``delta``
+    (``rank=2``) lead in rank order; ``alpha`` (unranked, seeded first) and
+    ``epsilon`` (unranked, seeded last, ``dispatch: auto``) follow in
+    ``created_at`` order; ``gamma`` (``dispatch: off``) stays absent.
+
     ``max_in_flight`` is NOT among them: it is a PRODUCT ceiling, enforced per
     product in the loop's ``_refill``. Aliased onto each of a product's repos it
     let a product owning N repos run N × its cap, and only under the one strategy
@@ -377,6 +382,10 @@ def test_select_batch_translates_policies_into_rank_ordered_repos(tmp_path, monk
                             policy={"dispatch": "auto", "max_in_flight": 2})
         await _seed_product("beta", "o/b", rank=1,
                             policy={"dispatch": "propose", "max_in_flight": 5})
+        await _seed_product("delta", "o/d", rank=2,
+                            policy={"dispatch": "auto"})
+        await _seed_product("epsilon", "o/e",
+                            policy={"dispatch": "auto"})
         await _seed_product("gamma", "o/g")                  # off → absent
         await _seed_item("o/a", 1, score=5.0)
         orch = _orch_with_ctx()
@@ -403,7 +412,7 @@ def test_select_batch_translates_policies_into_rank_ordered_repos(tmp_path, monk
         assert await orch._backlog_select_batch(_config()) is None
         assert "weights" not in seen                   # deprecated (spec 2026-09-20 D6)
         assert "caps" not in seen                      # a PRODUCT ceiling, not a repo one
-        assert seen["repo_order"] == ["o/b", "o/a"]     # rank 1 first; unranked after, by age
+        assert seen["repo_order"] == ["o/b", "o/d", "o/a", "o/e"]  # rank 1, rank 2, then unranked by age
         assert [c["ref"] for c in seen["pool"]] == ["o/a#1"]
 
     asyncio.run(run())
