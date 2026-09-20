@@ -46,15 +46,16 @@ function mutationStatus(mutation: MutationLike): RowStatusProps {
   return { status: mutation.status, error: mutation.error }
 }
 
-// Mirrors RESERVE_PCT in server/automations/capacity_plan.py (design §4) —
-// display only, never read back from here.
-const PUSH_LEVEL_RESERVE_PCT: Record<PushLevel, number> = { conserve: 40, steady: 20, max: 5 }
 const PUSH_LEVEL_LABEL: Record<PushLevel, string> = { conserve: 'Conserve', steady: 'Steady', max: 'Max' }
-const PUSH_LEVEL_OPTIONS: RadioOption<PushLevel>[] = (['conserve', 'steady', 'max'] as const).map((v) => ({
-  value: v,
-  label: PUSH_LEVEL_LABEL[v],
-  description: `${PUSH_LEVEL_RESERVE_PCT[v]}% weekly reserve`,
-}))
+
+/** The radio's options, with each level's reserve read off the readout (C22). */
+function pushLevelOptions(reservePctByLevel: Record<PushLevel, number>): RadioOption<PushLevel>[] {
+  return (['conserve', 'steady', 'max'] as const).map((v) => ({
+    value: v,
+    label: PUSH_LEVEL_LABEL[v],
+    description: `${reservePctByLevel[v]}% weekly reserve`,
+  }))
+}
 
 function CapacityProductRow({
   product, index, total, defect, rankStatus, onMove, pinValue, onPinChange,
@@ -292,7 +293,7 @@ export function CapacityDetail() {
             onChange={(next) => pushLevelPatch.mutate({
               id: CAPACITY_GOVERNOR_ID, body: { config: { push_level: next } },
             })}
-            options={PUSH_LEVEL_OPTIONS}
+            options={pushLevelOptions(readout.reservePctByLevel)}
           />
           <RowStatus {...pushLevelStatus} />
         </div>

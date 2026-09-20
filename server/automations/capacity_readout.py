@@ -225,6 +225,9 @@ async def build_readout(src: CapacitySources) -> dict:
     return {
         "computedAt": now.isoformat(), "pushLevel": push_level,
         "governorMode": mode, "killSwitch": src.kill_switch(),
+        # C22: the three reserves ride on the wire so the push-level radio's
+        # descriptions can never drift from the planner's RESERVE_PCT.
+        "reservePctByLevel": dict(RESERVE_PCT),
         "global": {"cap": global_cap, "active": global_active, "free": global_free,
                    "physical": limits.get("physical") if limits else None,
                    "attention": limits.get("attention") if limits else None,

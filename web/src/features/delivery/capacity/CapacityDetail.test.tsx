@@ -170,6 +170,13 @@ describe('CapacityDetail', () => {
     expect(calls % 2).toBe(0)
   })
 
+  it('push-level descriptions come from the wire, not a client constant', () => {
+    setup({ readout: { ...CAPACITY, reservePctByLevel: { conserve: 45, steady: 25, max: 7 } } })
+    expect(screen.getByText('45% weekly reserve')).toBeInTheDocument()
+    expect(screen.getByText('25% weekly reserve')).toBeInTheDocument()
+    expect(screen.getByText('7% weekly reserve')).toBeInTheDocument()
+  })
+
   it('the push-level radio patches the governor config', () => {
     setup()
     fireEvent.click(screen.getByRole('radio', { name: 'Max' }))
