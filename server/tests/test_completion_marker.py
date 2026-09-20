@@ -1,3 +1,5 @@
+import pytest
+
 from server.sessions.completion import NO_PR_MARKER, NO_PR_INSTRUCTION, resolution_from_text
 
 
@@ -80,3 +82,21 @@ def test_no_pr_instruction_excludes_unfinished_code_objectives():
     assert "already satisfied" in low
     assert "not a reason" in low
     assert "hand-back" in low
+
+
+@pytest.mark.parametrize("text", [
+    "Nothing to change; the #10164 Prisma model drop already landed.",
+    "We will drop the users table in a later migration; no PR needed.",
+    "Reverted the flaky test locally; already fixed on master.",
+])
+def test_drop_and_revert_about_other_things_stay_not_needed(text):
+    assert resolution_from_text(f"{text}\n{NO_PR_MARKER}") == "not-needed"
+
+
+@pytest.mark.parametrize("text", [
+    "Dropping this PR per the owner.",
+    "I'm going to drop it.",
+    "Reverting the change, so no PR.",
+])
+def test_drop_and_revert_of_the_work_read_cancelled(text):
+    assert resolution_from_text(f"{text}\n{NO_PR_MARKER}") == "cancelled"
