@@ -25,7 +25,7 @@ from server.deploy.client import DeployControllerUnavailable
 from server.github import ci_issues
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
-from server.pipeline.lane_health import lane_health_ctx
+from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
 from server.pipeline.group_history import (
     count_group_ejects,
     count_group_runs,
@@ -129,23 +129,29 @@ def deploy_status_fn_for(app) -> DeployStatusFn:
     return fetch
 
 
-async def _lane_health_ctx(deploy_status_fn: DeployStatusFn | None) -> dict[str, dict]:
-    """Per-repo ``laneHealth`` from the deploy controller's status, or ``{}``.
+async def _controller_status(deploy_status_fn: DeployStatusFn | None) -> dict | None:
+    """The deploy controller's raw ``/status`` payload, or ``None``.
 
     The controller is optional (runner hosts and tests have none) and its socket can
-    blip mid-deploy; either way the frame must still build, with the main lane
-    honestly blind rather than the whole Pipeline failing.
+    blip mid-deploy; either way the frame must still build. Shared by the main-lane
+    verdict and the synthesized ``deploy`` block (#1548) so both read the same
+    snapshot per frame instead of racing two independent fetches.
     """
     if deploy_status_fn is None:
-        return {}
+        return None
     try:
         status = await deploy_status_fn()
     except DeployControllerUnavailable:
-        return {}
+        return None
     except Exception:
         log.warning("deploy status unreadable — main lane stays blind", exc_info=True)
-        return {}
-    return lane_health_ctx(status if isinstance(status, dict) else None)
+        return None
+    return status if isinstance(status, dict) else None
+
+
+async def _lane_health_ctx(deploy_status_fn: DeployStatusFn | None) -> dict[str, dict]:
+    """Per-repo ``laneHealth`` from the deploy controller's status, or ``{}``."""
+    return lane_health_ctx(await _controller_status(deploy_status_fn))
 
 
 async def _build_state(orch, deploy_status_fn: DeployStatusFn | None = None) -> dict:
@@ -162,9 +168,10 @@ async def _build_state(orch, deploy_status_fn: DeployStatusFn | None = None) -> 
         repo: any(n.kind == "deploy" for n in m.nodes) for repo, m in models.items()
     }
     sim_ctx = await _sim_ctx(list(prs_by_repo))
-    deploy_ctx, timeline_ctx = await _deploy_ctx(orch, prs_by_repo)
+    controller_status = await _controller_status(deploy_status_fn)
+    deploy_ctx, timeline_ctx = await _deploy_ctx(orch, prs_by_repo, controller_status)
     workflow_impact_ctx = await _workflow_impact_ctx(prs_by_repo)
-    lane_health = await _lane_health_ctx(deploy_status_fn)
+    lane_health = lane_health_ctx(controller_status)
     return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -177,7 +184,7 @@ async def _build_state(orch, deploy_status_fn: DeployStatusFn | None = None) -> 
 
 
 async def _deploy_ctx(
-    orch, prs_by_repo: dict[str, list]
+    orch, prs_by_repo: dict[str, list], controller_status: dict | None = None
 ) -> tuple[dict[str, dict], dict[str, dict[int, dict]]]:
     """Per-repo deploy block + PrTimeline map, gathered once per frame (SPEC §3).
 
@@ -186,28 +193,35 @@ async def _deploy_ctx(
     from the same rows, the timeline dicts for the merged PRs present in this
     frame. Repos without a deploy config (or disabled) are absent from both
     maps — the frame keeps the stage-model hasDeploy derivation for them.
+
+    ``controller_status`` (the same ``/status`` payload behind ``laneHealth``)
+    fills in a ``deploy`` block for the deploy controller's own repo when no
+    config already claimed it (#1548) — ViberPit's self-deploy has no
+    ``RepoDeployConfig``, so without this its Deploy lane read "not wired"
+    while the banner above it was offering "Deploy now" for the same repo.
     """
     configs = await orch.deploy_config_list()
-    if not configs:
-        return {}, {}
-    env_cache = await orch.deploy_status()  # {repo: [{name, liveSha, reachable}, ...]}
     deploy_ctx: dict[str, dict] = {}
     timeline_ctx: dict[str, dict[int, dict]] = {}
-    # Merged PR numbers actually present in this frame, per repo.
-    merged_in_frame: dict[str, list[int]] = {}
-    for repo, plist in prs_by_repo.items():
-        nums = [p.pr.number for p in plist if (p.pr.merged or p.pr.state == "merged")]
-        if nums:
-            merged_in_frame[repo] = nums
-    for repo, cfg in configs.items():
-        if not cfg.get("enabled", True):
-            continue
-        rows = await tracked_merged(repo)               # one store pass per repo
-        envs = env_cache.get(repo, [])
-        deploy_ctx[repo] = compute_repo_deploy(rows, envs)
-        frame_nums = merged_in_frame.get(repo)
-        if frame_nums:
-            timeline_ctx[repo] = await timelines_for(repo, frame_nums)
+    if configs:
+        env_cache = await orch.deploy_status()  # {repo: [{name, liveSha, reachable}, ...]}
+        # Merged PR numbers actually present in this frame, per repo.
+        merged_in_frame: dict[str, list[int]] = {}
+        for repo, plist in prs_by_repo.items():
+            nums = [p.pr.number for p in plist if (p.pr.merged or p.pr.state == "merged")]
+            if nums:
+                merged_in_frame[repo] = nums
+        for repo, cfg in configs.items():
+            if not cfg.get("enabled", True):
+                continue
+            rows = await tracked_merged(repo)               # one store pass per repo
+            envs = env_cache.get(repo, [])
+            deploy_ctx[repo] = compute_repo_deploy(rows, envs)
+            frame_nums = merged_in_frame.get(repo)
+            if frame_nums:
+                timeline_ctx[repo] = await timelines_for(repo, frame_nums)
+    for repo, snapshot in controller_deploy_snapshot(controller_status).items():
+        deploy_ctx.setdefault(repo, snapshot)
     return deploy_ctx, timeline_ctx
 
 

@@ -5,7 +5,11 @@ mismatch: banner "CI pending", Pipeline "main · no signal")."""
 import asyncio
 
 from server.deploy.client import DeployControllerUnavailable
-from server.pipeline.lane_health import lane_health_ctx, main_lane_health
+from server.pipeline.lane_health import (
+    controller_deploy_snapshot,
+    lane_health_ctx,
+    main_lane_health,
+)
 
 
 def test_main_lane_health_maps_tip_verdicts_to_lane_status():
@@ -36,6 +40,37 @@ def test_lane_health_ctx_makes_no_claim_without_a_repo_or_status():
     # An older controller ships no `repo`: which repo the verdict is for is unknown.
     assert lane_health_ctx({"pending": {"ci": "green", "targetSha": "x"}}) == {}
     assert lane_health_ctx({"repo": "o/r"}) == {}
+
+
+def test_controller_deploy_snapshot_synthesizes_an_env_from_pending():
+    status = {"repo": "o/r", "pending": {
+        "behind": True, "liveSha": "abc123", "targetSha": "def456",
+        "ci": "pending", "tipCi": "pending",
+        "deployableSha": "abc123", "deployableCount": 3,
+        "commits": [{"sha": "x"}, {"sha": "y"}, {"sha": "z"}, {"sha": "w"}],
+    }}
+    assert controller_deploy_snapshot(status) == {"o/r": {
+        "envs": [{"name": "prod-edge", "liveSha": "abc123", "reachable": True}],
+        "awaitingQa": 0,
+        "awaitingProd": 3,
+    }}
+
+
+def test_controller_deploy_snapshot_falls_back_to_commit_count_when_nothing_deployable():
+    # tip is red/pending and no older commit is a green frontier: deployableCount
+    # is 0, so awaitingProd falls back to every pending commit rather than
+    # under-reporting the drift as zero.
+    status = {"repo": "o/r", "pending": {
+        "liveSha": "abc123", "deployableCount": 0,
+        "commits": [{"sha": "x"}, {"sha": "y"}],
+    }}
+    assert controller_deploy_snapshot(status)["o/r"]["awaitingProd"] == 2
+
+
+def test_controller_deploy_snapshot_makes_no_claim_without_a_repo_or_status():
+    assert controller_deploy_snapshot(None) == {}
+    assert controller_deploy_snapshot({"pending": {"liveSha": "x"}}) == {}
+    assert controller_deploy_snapshot({"repo": "o/r"}) == {}
 
 
 def test_build_state_lane_health_survives_an_unreachable_controller():

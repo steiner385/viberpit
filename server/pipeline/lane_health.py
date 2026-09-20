@@ -1,13 +1,16 @@
 """Per-repo Delivery-spine lane facts the server can vouch for
-(plotroom ``DashboardState.repos[].laneHealth``).
+(plotroom ``DashboardState.repos[].laneHealth`` / ``.deploy``).
 
-Only ``main`` is populated today, and only for the repo the deploy controller
-watches. Its tip verdict (``steps.ci_verdict`` on ``origin/master``, cached by the
-detect loop) is the ONE reading of "is master in CI": the deploy banner's
-"CI pending" and the Pipeline's main lane must come from that same reading, or
-they disagree exactly when an operator is deciding whether to deploy. On
-2026-09-11 the banner said "CI pending" for #1546 while the Pipeline said
-"main · no signal" — the lane had never been wired to anything.
+``lane_health_ctx`` populates ``main``, and only for the repo the deploy
+controller watches. Its tip verdict (``steps.ci_verdict`` on ``origin/master``,
+cached by the detect loop) is the ONE reading of "is master in CI": the deploy
+banner's "CI pending" and the Pipeline's main lane must come from that same
+reading, or they disagree exactly when an operator is deciding whether to
+deploy. On 2026-09-11 the banner said "CI pending" for #1546 while the
+Pipeline said "main · no signal" — the lane had never been wired to anything.
+
+``controller_deploy_snapshot`` fills the same repo's ``deploy`` lane from the
+same ``/status`` payload (#1548) — same shape of bug, same attribution.
 """
 from __future__ import annotations
 
@@ -55,3 +58,34 @@ def lane_health_ctx(status: dict | None) -> dict[str, dict]:
     if not repo or not isinstance(pending, dict):
         return {}
     return {str(repo): main_lane_health(pending)}
+
+
+def controller_deploy_snapshot(status: dict | None) -> dict[str, dict]:
+    """``{repo: deploy}`` synthesized for the deploy controller's own repo (#1548).
+
+    ``server/api/pipeline.py:_deploy_ctx`` only builds a ``deploy`` block for repos
+    with a ``RepoDeployConfig`` (environment health URLs the env watcher polls).
+    ViberPit's own rollout goes through this deploy controller instead — it has no
+    such config — so its Deploy lane read "not wired" while the banner above it was
+    offering "Deploy now" for the same repo. This mirrors ``lane_health_ctx``'s
+    attribution (``status.repo``) to turn the controller's own ``pending`` snapshot
+    into one advisory env entry: "prod-edge" is live at ``liveSha`` (the running
+    edge answered, so it counts as reachable), with ``awaitingProd`` the commit
+    count a deploy right now would ship — ``deployableCount`` when the tip (or an
+    older green frontier) is deployable, else every pending commit.
+    """
+    if not status:
+        return {}
+    repo = status.get("repo")
+    pending = status.get("pending")
+    if not repo or not isinstance(pending, dict):
+        return {}
+    commits = pending.get("commits")
+    awaiting_prod = pending.get("deployableCount") or (
+        len(commits) if isinstance(commits, list) else 0)
+    return {str(repo): {
+        "envs": [{"name": "prod-edge", "liveSha": pending.get("liveSha") or None,
+                  "reachable": True}],
+        "awaitingQa": 0,
+        "awaitingProd": awaiting_prod,
+    }}
