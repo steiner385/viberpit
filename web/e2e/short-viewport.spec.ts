@@ -28,10 +28,35 @@ const MOCK_SESSIONS = Array.from({ length: 13 }, (_, i) => ({
   updatedAt: '2026-06-19T10:00:00Z',
 }))
 
-async function interceptApi(page: Page) {
+// The audit's own load: 18 active rows plus 6 queued (issue #1399's acceptance
+// criteria names both counts explicitly, so the matrix below uses them rather
+// than the lighter 13-session fixture above — a short viewport with only a
+// handful of rows understates how much the scroll band actually has to hold).
+const MOCK_SESSIONS_FULL = [
+  ...Array.from({ length: 18 }, (_, i) => ({
+    id: `sess-${i}`,
+    name: `Session ${i}`,
+    accountName: 'alice',
+    repo: 'steiner385/viberpit',
+    status: 'working',
+    createdAt: '2026-06-19T10:00:00Z',
+    updatedAt: '2026-06-19T10:00:00Z',
+  })),
+  ...Array.from({ length: 6 }, (_, i) => ({
+    id: `queued-${i}`,
+    name: `Queued ${i}`,
+    accountName: 'alice',
+    repo: 'steiner385/viberpit',
+    status: 'queued',
+    createdAt: '2026-06-19T10:00:00Z',
+    updatedAt: '2026-06-19T10:00:00Z',
+  })),
+]
+
+async function interceptApi(page: Page, sessions: unknown[] = MOCK_SESSIONS) {
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/api/sessions') route.fulfill({ json: MOCK_SESSIONS })
+    if (path === '/api/sessions') route.fulfill({ json: sessions })
     else if (path === '/api/accounts') {
       route.fulfill({ json: [{
         name: 'alice',
@@ -139,3 +164,91 @@ test.describe('Sessions list at a normal phone height', () => {
     expect(await chromeOverflowPx(page)).toBeLessThanOrEqual(0)
   })
 })
+
+/**
+ * Issue #1399's full acceptance matrix: the audit measured an ~8px scroll
+ * band — every session unreachable behind the dock — at 320×568, 568×320 and
+ * 852×393, with the New Session button covered at 568×320. 18 active rows and
+ * 6 queued (the audit's own load, heavier than the 13-row fixture above) at
+ * every size the finding lists: both orientations of a small phone, a tablet
+ * in both orientations, the keyboard-open case already covered above, and two
+ * deliberately extreme landscape heights past any real device the audit
+ * measured, added because the finding's own acceptance list names them.
+ *
+ * Two different outcomes, not one blanket assertion:
+ *
+ * - 320×568 was a pure threshold miss (568px sits 8px above the pre-#1399
+ *   `short:` cutoff of 560, so the controls strip never shed) and 852×393 was
+ *   half fixed by the cutoff and half by `DispatchBar`'s advanced fields no
+ *   longer holding their grid row open at a short height (`DispatchBar.tsx`,
+ *   also #1399) — both now recover a genuinely usable band.
+ * - 568×320, 852×240 and 320×256 do not, because what is left after the top
+ *   bar/rail, the banner strip and the prompt bar (none of which shrink below
+ *   their own content — the prompt staying full-size is deliberate, see
+ *   `PageHost.tsx`'s `pageHidden` doc) is a handful of pixels no amount of
+ *   the LIST's own chrome-shedding can grow. That is the "deliberate alternate
+ *   layout below [96px]" the finding itself allows for: the list degrades to
+ *   near-nothing rather than to a bleed. What every one of the five must not
+ *   regress on is the ORIGINAL bug — chrome painting outside its own box and
+ *   surfacing under the dock — and that the prompt itself, the one thing a
+ *   short viewport is usually short FOR, stays fully on screen.
+ */
+for (const [width, height] of [[320, 568], [852, 393]] as const) {
+  test.describe(`Sessions list at ${width}x${height} — recovers a real band`, () => {
+    test.use({ viewport: { width, height } })
+
+    test('the band is usable, not a sliver', async ({ page }) => {
+      await interceptApi(page, MOCK_SESSIONS_FULL)
+      await page.goto('/sessions')
+      await expect(page.getByRole('link', { name: /^Active/ })).toBeVisible()
+
+      // The chrome fits its own box — the bug this whole file exists to catch.
+      expect(await chromeOverflowPx(page)).toBeLessThanOrEqual(0)
+
+      // Both heights are under the `short:` cutoff (580px, raised from 560 by
+      // this issue), so the filter strip sheds and the room goes to the band.
+      await expect(page.getByTestId('session-list-controls')).toBeHidden()
+
+      // The band is not a sliver: comfortably over the finding's own 96px
+      // floor, with real rows in it. 217px/136px measured; the margin below
+      // that catches a regression without pinning font-metric noise.
+      expect(await bandHeight(page)).toBeGreaterThan(96)
+      await expect(page.getByText('Session 0')).toBeVisible()
+
+      // Navigation and the prompt are the other two surfaces the finding
+      // names — both stay reachable, not just the list.
+      await expect(page.getByRole('navigation', { name: /sections/i })).toBeVisible()
+      await expect(page.getByPlaceholder(/New session/)).toBeVisible()
+    })
+  })
+}
+
+for (const [width, height] of [[568, 320], [852, 240], [320, 256]] as const) {
+  test.describe(`Sessions list at ${width}x${height} — the hard floor`, () => {
+    test.use({ viewport: { width, height } })
+
+    test('no bleed, and the prompt stays reachable', async ({ page }) => {
+      await interceptApi(page, MOCK_SESSIONS_FULL)
+      await page.goto('/sessions')
+
+      // The one thing that must never come back: chrome painting past its own
+      // box. `chromeOverflowPx` can be positive here (some of the column's own
+      // head no longer fits at all) — the clip is what makes that safe rather
+      // than a repeat of the original bleed, so both are asserted.
+      const overflow = await page.locator('[data-region="app.list"] > div > div').first()
+        .evaluate((el) => getComputedStyle(el).overflow)
+      expect(overflow).toBe('hidden')
+
+      // The prompt bar is the surface a short viewport is usually short FOR
+      // (the keyboard is up, or the window is a sliver) — it keeps its full
+      // natural height rather than shrinking (`PageHost.tsx`), so it must
+      // still be entirely on screen rather than pushed off past the bottom
+      // edge or clipped by an ancestor.
+      const textarea = page.getByPlaceholder(/New session/)
+      await expect(textarea).toBeVisible()
+      const box = await textarea.boundingBox()
+      expect(box).not.toBeNull()
+      expect(box!.y + box!.height).toBeLessThanOrEqual(height)
+    })
+  })
+}
