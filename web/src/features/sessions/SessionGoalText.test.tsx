@@ -20,4 +20,13 @@ describe('SessionGoalText', () => {
     render(<SessionGoalText goal={undefined} source={undefined} title="Fix login bug" />)
     expect(screen.queryByTestId('session-goal')).not.toBeInTheDocument()
   })
+
+  // Issue #1400: a long goal sits beside the (also truncating) title in
+  // SessionHeader; without a cap the two shrink roughly proportionally on a
+  // narrow phone, still starving the title. The cap gives the title first
+  // claim regardless of how long the goal text is.
+  it('caps its width below `narrow:` so a long goal cannot starve the title beside it', () => {
+    render(<SessionGoalText goal="a very long reckoned goal that would otherwise compete for space" source="explicit" title="Fix login bug" />)
+    expect(screen.getByTestId('session-goal').className).toMatch(/narrow:max-w-\[5rem\]/)
+  })
 })

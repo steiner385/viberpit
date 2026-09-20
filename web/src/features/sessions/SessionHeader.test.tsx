@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -295,6 +295,31 @@ describe('SessionHeader — session identity', () => {
     for (const label of ['Account', 'Model']) {
       expect(screen.getByLabelText(label), label).toHaveClass('truncate')
     }
+  })
+})
+
+// ── narrow-viewport chrome (issue #1400) ────────────────────────────────────
+//
+// On a real 393px-wide phone, Back's text, the chevrons, the status pill and
+// the actions menu left the title ~1 character wide. jsdom applies no
+// stylesheet (see the axe scope note above), so these assert the `narrow:`
+// Tailwind classes that shed or cap chrome below 430px are actually wired up,
+// rather than a real layout at that width — the browser does the rest.
+
+describe('SessionHeader — narrow-viewport chrome (issue #1400)', () => {
+  it('keeps "Back to session list" as the accessible name but hides the visible word below `narrow:`', () => {
+    renderHeader()
+    const back = screen.getByRole('button', { name: 'Back to session list' })
+    expect(within(back).getByText('Back').className).toMatch(/narrow:hidden/)
+    // The arrow glyph stays visible at every width — narrow trades the word
+    // for the icon, it does not empty the button.
+    expect(back).toHaveTextContent('←')
+  })
+
+  it('opts the status pill into shedding its label below `narrow:`', () => {
+    renderHeader()
+    const pill = screen.getByLabelText('Status: Ready')
+    expect(within(pill).getByText('Ready').className).toMatch(/narrow:hidden/)
   })
 })
 

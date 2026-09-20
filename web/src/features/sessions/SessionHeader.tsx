@@ -146,13 +146,19 @@ export function SessionHeader({
         'bg-surface-raised border-b border-edge',
       )}
     >
+      {/* Icon-only below `narrow:` (issue #1400): "Back" the word is one of
+          several fixed-width elements — this one, the chevrons, the status
+          pill and the actions menu — that on a real 393px phone left the
+          title with ~1 character. The accessible name stays "Back to session
+          list" either way; only the visible label sheds. */}
       <button
         type="button"
         onClick={onBack}
         aria-label="Back to session list"
         className={cn(NAV_BUTTON, 'gap-1.5 px-3')}
       >
-        ← Back
+        <span aria-hidden="true">←</span>
+        <span className="narrow:hidden">Back</span>
       </button>
 
       {hasNeighbors && (
@@ -213,7 +219,7 @@ export function SessionHeader({
         </span>
       )}
 
-      <StatusPill status={pillStatus} />
+      <StatusPill status={pillStatus} hideLabelNarrow />
 
       {hasNeighbors && (
         <button
