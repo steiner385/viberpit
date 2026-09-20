@@ -8438,10 +8438,11 @@ class SessionOrchestrator:
         Parents resolve by slug within the project after every upsert row
         exists, so a child listed before its parent still links. Links are
         REWRITTEN each apply — the docs are truth, so a link that left the
-        frontmatter leaves the table — and resolve by (Project.slug,
-        Feature.slug); an unresolvable target is skipped with a warning rather
-        than failing the apply. Plan warnings (unknown parent, cycle) are
-        logged the same way.
+        frontmatter leaves the table — and resolve by (project slug, Feature.slug),
+        where the project slug may also be one the target has been renamed away
+        from (``server/pm/project_slugs.py``); an unresolvable target is skipped
+        with a warning rather than failing the apply. Plan warnings (unknown
+        parent, cycle) are logged the same way.
 
         After upserting, if the project is in ``map_proposed``, ``registered``,
         or ``syncing`` and now has ≥1 non-orphaned Feature, advance it to
@@ -8450,6 +8451,7 @@ class SessionOrchestrator:
         ``live`` are left alone."""
         from sqlalchemy import delete, func, select
         from server.db.models import Feature, FeatureLink, Project
+        from server.pm.project_slugs import resolve_project_slugs
         for warning in plan.warnings:
             log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
         async with db_session() as db:
@@ -8500,9 +8502,13 @@ class SessionOrchestrator:
             wanted = list(dict.fromkeys(
                 (up.slug, link) for up in plan.upserts for link in up.links))
             if wanted:
-                project_slugs = {link.project for _, link in wanted}
-                projects = {p.slug: p.id for p in (await db.execute(
-                    select(Project).where(Project.slug.in_(project_slugs)))).scalars().all()}
+                # Through project_slugs, not a bare Project.slug lookup: a doc in
+                # another repo may still name a product by a slug it has since
+                # been renamed away from, and this block DELETES and rebuilds
+                # every outgoing edge, so an unresolved target is edge loss, not
+                # just a warning (#1881).
+                projects = await resolve_project_slugs(
+                    db, {link.project for _, link in wanted})
                 targets = {(f.project_id, f.slug): f.id for f in (await db.execute(
                     select(Feature).where(Feature.project_id.in_(list(projects.values()))))).scalars().all()}
                 for src_slug, link in wanted:

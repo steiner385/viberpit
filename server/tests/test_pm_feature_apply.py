@@ -321,3 +321,70 @@ def test_unresolved_link_edges_share_one_fingerprint(caplog):
     # The edge is still recoverable from the record — just not from its identity.
     assert "dictation" in sigs[0].sample_message
     assert "worktrees" in sigs[1].sample_message
+
+
+def test_link_to_a_renamed_product_s_former_slug_still_resolves(caplog):
+    """#1881: renaming a product used to delete every inbound cross-product edge.
+
+    `Project.slug` is the identity *inside* this system and every FK is on `id`,
+    so the rename endpoint reasoned that a rename touches nothing. But a feature
+    doc's `links:` block names its target product by SLUG, from whatever repo
+    hosts that doc, and this function DELETES and rebuilds every outgoing edge
+    from the docs on each apply. So the product rename behind #1365 dropped the
+    seven edges of #1531–#1537 and could not recreate them — 520 warnings, then seven
+    re-files (#1875–#1881) when each was closed — until a human edited seven
+    docs by hand. The edges themselves were gone the whole time.
+
+    A doc naming a slug the target has been renamed away from now resolves
+    through `former_slugs`, and stays silent: the alias IS the redirect, so
+    there is nothing to report and the doc can be corrected whenever its repo is
+    next touched.
+    """
+    from sqlalchemy import select
+    from server.sessions import orchestrator as orch_mod
+    from server.db import db_session
+    from server.db.models import Feature, FeatureLink, Project
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    orch_mod._PM_SYNC_LINK_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> tuple[str, str]:
+            async with db_session() as db:
+                # Renamed away from "example-old-infra" at some point in the past.
+                infra = Project(slug="example-infra", name="Example infra",
+                                former_slugs=["example-old-infra"])
+                prod = Project(slug="example-product", name="Example product")
+                db.add_all([infra, prod])
+                await db.flush()
+                mq = Feature(project_id=infra.id, slug="message-queue", title="MQ", state="live")
+                db.add(mq)
+                await db.flush()
+                ids = (str(prod.id), str(mq.id))
+                await db.commit()
+                return ids
+        prod_id, mq_id = asyncio.run(_seed())
+
+        # The doc in *this* product's repo was never updated for that rename.
+        plan = FeatureIndexPlan(
+            upserts=(FeatureUpsert(
+                slug="dictation", title="D", state="live", summary="",
+                repo_path="d/dictation.md", parent_slug=None,
+                links=(FeatureLinkRef("powered_by", "example-old-infra", "message-queue"),)),),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        async def _links():
+            async with db_session() as db:
+                src = (await db.execute(select(Feature).where(
+                    Feature.project_id == prod_id, Feature.slug == "dictation"))).scalar_one()
+                rows = (await db.execute(select(FeatureLink).where(
+                    FeatureLink.src_feature_id == src.id))).scalars().all()
+                return [(r.kind, r.dst_feature_id) for r in rows]
+        assert asyncio.run(_links()) == [("powered_by", mq_id)], (
+            "the edge is the point — a warning-only fix still loses the link")
+        assert [r for r in caplog.records
+                if "feature_link_unresolved" in r.getMessage()] == []

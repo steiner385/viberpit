@@ -197,6 +197,61 @@ def test_update_project_renames_and_repoints_in_a_single_patch():
         assert resp.status_code == 200
 
 
+def test_slug_rename_records_the_old_slug_as_an_alias():
+    """#1881: the slug is how feature docs in OTHER repos name this product, and
+    pm-sync rebuilds every outgoing edge from those docs — so a rename that only
+    moves `slug` silently drops each inbound cross-product edge. The endpoint
+    records the old slug so the stale doc reference keeps resolving.
+
+    The alias is bookkeeping for link resolution, not a second way to address the
+    product: the old slug still 404s on this API (pinned above), which is what
+    keeps map-changes branch names and repo targets derived from one live slug.
+    """
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Project
+
+    # Read through the app's OWN event loop (c.portal), like every other DB
+    # assertion here: a second loop over the same aiosqlite pool is a race.
+    def _former(c, slug: str) -> list[str] | None:
+        async def go():
+            async with db_session() as db:
+                return (await db.execute(
+                    select(Project).where(Project.slug == slug))).scalar_one().former_slugs
+        return c.portal.call(go)
+
+    with _client() as c:
+        resp = c.post("/api/pm/projects", json={
+            "name": "Alpha", "repos": [{"repo": "o/alpha", "isPrimary": True}]},
+            headers=IDENTITY_HEADERS)
+        assert resp.status_code == 201, resp.text
+        assert _former(c, "alpha") is None  # nothing recorded until a rename happens
+
+        resp = c.patch("/api/pm/projects/alpha", json={"slug": "bravo"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "bravo") == ["alpha"]
+
+        # A name-only patch is not a rename.
+        resp = c.patch("/api/pm/projects/bravo", json={"name": "Bravo!"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "bravo") == ["alpha"]
+
+        # Renaming again appends, oldest first.
+        resp = c.patch("/api/pm/projects/bravo", json={"slug": "charlie"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "charlie") == ["alpha", "bravo"]
+
+        # Renaming back drops the re-adopted slug — it is live again, not former.
+        resp = c.patch("/api/pm/projects/charlie", json={"slug": "alpha"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "alpha") == ["bravo", "charlie"]
+
+
 def test_update_project_rejects_bad_input_and_conflicts():
     with _client() as c:
         for name in ("Alpha", "Beta"):

@@ -51,6 +51,7 @@ from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
+from server.pm.project_slugs import former_slugs_after_rename
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
@@ -393,6 +394,12 @@ async def update_project(
     Renaming touches no foreign key (every FK is on `Project.id`, never slug),
     but a repo repoint resets that repo's sync state — it is now a different
     upstream, so history is re-mirrored from scratch rather than kept stale.
+
+    A slug change also records the old slug in `former_slugs`. Feature-doc
+    `links:` blocks are the one reference that names a product by slug instead
+    of id, they live in other repos, and pm-sync rebuilds every outgoing edge
+    from those docs — so without the alias a rename silently drops each inbound
+    cross-product edge (#1881). See server/pm/project_slugs.py.
     """
     name = body.name.strip() if body.name is not None else None
     if body.name is not None and not name:
@@ -470,6 +477,7 @@ async def update_project(
         changes["name"] = {"from": p.name, "to": name}
         p.name = name
     if slug_changing:
+        assert new_slug is not None  # implied by slug_changing, not narrowed through it
         existing = (await db.execute(
             select(Project).where(Project.slug == new_slug, Project.id != p.id)
         )).scalar_one_or_none()
@@ -477,6 +485,8 @@ async def update_project(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
                 "error": "slug_conflict", "message": f"Project '{new_slug}' already exists"})
         changes["slug"] = {"from": p.slug, "to": new_slug}
+        p.former_slugs = former_slugs_after_rename(
+            p.former_slugs, old_slug=p.slug, new_slug=new_slug) or None
         p.slug = new_slug
 
     if rank_set and body.priorityRank != p.priority_rank:
