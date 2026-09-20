@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CapacityReadout } from '@/api/capacity'
-import { buildCapacityStack, accountRowLine } from './capacityStack'
+import { buildCapacityStack, accountRowLine, capacityRowLink, type CapacityStackRow } from './capacityStack'
 
 function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
   return {
@@ -132,6 +132,21 @@ describe('buildCapacityStack — Global row (spec 2026-09-20 §5.2)', () => {
   })
   it('Products links to the table on the same page', () => {
     expect(buildCapacityStack(readout()).find((row) => row.key === 'products')!.href).toBe('#products')
+  })
+})
+
+describe('capacityRowLink (spec 2026-09-20 D10)', () => {
+  const row = (over: Partial<CapacityStackRow> = {}): CapacityStackRow => ({
+    key: 'global', label: 'Global cap', used: 1, cap: 2, free: 1, href: null, binding: false, ...over,
+  })
+  it('a route href becomes a route link', () => {
+    expect(capacityRowLink(row({ href: '/settings/capacity' }))).toEqual({ kind: 'route', to: '/settings/capacity' })
+  })
+  it('a "#…" href becomes an in-page anchor', () => {
+    expect(capacityRowLink(row({ key: 'products', href: '#products' }))).toEqual({ kind: 'anchor', targetId: 'products' })
+  })
+  it('a null href is no link', () => {
+    expect(capacityRowLink(row({ href: null }))).toBeNull()
   })
 })
 

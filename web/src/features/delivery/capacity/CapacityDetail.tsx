@@ -32,7 +32,7 @@ import { Select } from '@/ui/Select'
 import { Skeleton } from '@/ui/Skeleton'
 import { Switch } from '@/ui/Switch'
 import { accountRowLine, buildCapacityStack } from './capacityStack'
-import { deliveryPath } from '../deliveryNavState'
+import { CapacityRowLabel } from './CapacityRowLabel'
 import { governorNotice } from './governorNotice'
 import { RowStatus, type MutationLike, type RowStatusProps } from './RowStatus'
 import { swapRanks } from './swapRanks'
@@ -331,16 +331,7 @@ export function CapacityDetail() {
           const content = (
             <div>
               <div className="flex items-center justify-between gap-2 text-sm">
-                {row.href
-                  ? (
-                    <Link
-                      to={row.href.startsWith('#') ? `${deliveryPath('capacity')}${row.href}` : row.href}
-                      className="text-accent hover:underline"
-                    >
-                      {row.label}
-                    </Link>
-                  )
-                  : <span className="text-ink">{row.label}</span>}
+                <CapacityRowLabel row={row} className="text-accent hover:underline" />
                 <span className="tabular-nums text-ink-muted">{row.used} / {row.cap ?? '∞'} · {row.free ?? '∞'} free</span>
               </div>
               {row.secondary && <p className="text-xs text-ink-muted">{row.secondary}</p>}

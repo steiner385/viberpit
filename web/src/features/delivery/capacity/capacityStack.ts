@@ -33,7 +33,8 @@ const GLOBAL_BINDING_TEXT = { physical: 'physical binds', attention: 'attention 
 
 /** The Global row's second line (spec 2026-09-20 §5.2): both ceilings and which binds. */
 function globalSecondary(g: CapacityReadout['global']): string | undefined {
-  if (g.binding === null) return undefined
+  // == (not ===): guards `undefined` too, in case an older server omits the field.
+  if (g.binding == null) return undefined
   return `physical ${g.physical ?? '∞'} · attention ${g.attention ?? 'none'} · ${GLOBAL_BINDING_TEXT[g.binding]}`
 }
 
@@ -44,6 +45,21 @@ export function accountRowLine(row: CapacityAccountRow): string {
   const reason = (row.reason ?? 'unavailable').replace(/_/g, ' ')
   const reset = formatResetTime(row.nextResetAt)
   return reset ? `${row.name} — ${reason} · resets ${reset}` : `${row.name} — ${reason}`
+}
+
+export type CapacityRowLink =
+  | { kind: 'route'; to: string }
+  | { kind: 'anchor'; targetId: string }
+  | null
+
+/** How a stack row's label should link (D10). `'#…'` hrefs are same-page anchors:
+ *  both renderers only mount under `?scope=capacity`, and the router never
+ *  scrolls to a fragment on pushState, so they are rendered as plain anchors
+ *  that scroll the target into view themselves. */
+export function capacityRowLink(row: CapacityStackRow): CapacityRowLink {
+  if (row.href === null) return null
+  if (row.href.startsWith('#')) return { kind: 'anchor', targetId: row.href.slice(1) }
+  return { kind: 'route', to: row.href }
 }
 
 export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {

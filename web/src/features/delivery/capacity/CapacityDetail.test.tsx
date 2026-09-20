@@ -284,7 +284,28 @@ describe('CapacityDetail', () => {
     const details = within(accounts).getByRole('group')
     expect(within(details).getByText('primary — available')).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Products' })).toHaveAttribute('id', 'products')
-    expect(screen.getByRole('link', { name: 'Products' })).toHaveAttribute('href', '/delivery?scope=capacity#products')
+    expect(screen.getByRole('link', { name: 'Products' })).toHaveAttribute('href', '#products')
+  })
+
+  it('the Products link scrolls the in-page table into view rather than navigating (spec 2026-09-20 D10, F2)', () => {
+    setup()
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    fireEvent.click(screen.getByRole('link', { name: 'Products' }))
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+  })
+
+  it('T4: the Accounts row still expands when it is the binding row', () => {
+    setup({
+      readout: {
+        ...CAPACITY,
+        binding: { layer: 'account', code: 'no_account_headroom', text: 'no account has headroom under the 20% reserve' },
+      },
+    })
+    const accounts = screen.getByTestId('capacity-stack-accounts')
+    expect(within(accounts).getByText('no account has headroom under the 20% reserve')).toBeInTheDocument()
+    const details = within(within(accounts).getByRole('group'))
+    expect(details.getByText('primary — available')).toBeInTheDocument()
   })
 
   it('I6: the pin input has min=0 and step=1', () => {
