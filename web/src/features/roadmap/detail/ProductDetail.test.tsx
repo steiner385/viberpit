@@ -313,4 +313,44 @@ describe('ProductDetail', () => {
     mount()
     expect(screen.getByText('Capability map proposed')).toBeInTheDocument()
   })
+
+  it('Overview: the wizard owns the map-PR link while awaiting the PR, not the map-changes card', () => {
+    const PR_URL = 'https://github.com/steiner385/viberpit/pull/12'
+    // Both the project entity and the onboarding view report a non-live state
+    // (the same real-world moment reported through two different fetches),
+    // and the product has an open map-changes pointer to the SAME PR — the
+    // exact split-brain shape finding F3 describes.
+    Object.assign(projectQuery, { data: { ...PROJECT, onboardingState: 'await_map_pr' }, isLoading: false, isError: false })
+    Object.assign(onboardingQuery, {
+      data: {
+        ...ONBOARDING, state: 'await_map_pr', action: { type: 'await_map_pr' },
+        mapPr: { branch: 'ccswitch/map-changes/kindash', url: PR_URL },
+      },
+      isLoading: false,
+    })
+    const openProduct = {
+      ...product,
+      mapChanges: {
+        branch: 'ccswitch/map-changes/kindash', prNumber: 12, prUrl: PR_URL,
+        status: 'open' as const, openedAt: '2026-09-11T00:00:00Z', headSha: 'abc123',
+        behind: false, conflicting: false,
+      },
+    }
+    render(
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter initialEntries={['/roadmap/kindash']}>
+          <ProductDetail product={openProduct} />
+        </MemoryRouter>
+      </ViewportProvider>,
+    )
+    // The wizard rendered its `await_map_pr` action …
+    expect(screen.getByText(/Review and merge the capability-map PR/)).toBeInTheDocument()
+    // … the map-changes card's own "PR #12" link — which would be a second,
+    // differently-labelled link to the same PR — did not …
+    expect(screen.queryByRole('link', { name: 'PR #12' })).not.toBeInTheDocument()
+    // … and exactly one link on the page points at that PR: the notice is one
+    // block, not two (docs/PAGE-TABS.md §5).
+    const prLinks = screen.getAllByRole('link').filter((l) => l.getAttribute('href') === PR_URL)
+    expect(prLinks).toHaveLength(1)
+  })
 })

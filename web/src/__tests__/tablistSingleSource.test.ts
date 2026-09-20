@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
@@ -30,7 +31,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 // JSX attribute, object-literal prop, and `role: 'tablist' as const` shapes.
-const TABLIST = /role\s*[:=]\s*["'`]tablist["'`]/
+const TABLIST = /\brole\s*[:=]\s*["'`]tablist["'`]/
 
 export function tablistOffenders(files: string[] = sourceFiles(SRC_ROOT)): string[] {
   const hits: string[] = []
@@ -54,5 +55,19 @@ describe('one tablist primitive', () => {
   it('the scan sees a tablist when one exists', () => {
     // The primitive itself is the fixture: it must match, or the guard is blind.
     expect(readFileSync(ALLOWED, 'utf-8')).toMatch(TABLIST)
+
+    // A real second offender, not just a regex self-check: write a standalone
+    // fixture file and confirm `tablistOffenders` actually flags it, at the
+    // right line, when handed that path directly.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'tablist-guard-'))
+    const fixture = path.join(dir, 'offender.ts')
+    try {
+      writeFileSync(fixture, "const x = { role: 'tablist' }\n")
+      const hits = tablistOffenders([fixture])
+      expect(hits).toHaveLength(1)
+      expect(hits[0]).toMatch(/:1$/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -80,7 +80,7 @@ describe('DELIVERY vocabulary (finish-line D9)', () => {
     const { DELIVERY, AUTOMATION_TAB } = await import('./vocab')
     expect(DELIVERY.label).toBe('Delivery')
     expect([DELIVERY.automations, DELIVERY.ci]).toEqual(['Automations', 'CI health'])
-    expect(Object.values(AUTOMATION_TAB)).toEqual(['Overview', 'Queue', 'Schedule', 'Events', 'Sessions', 'Config'])
+    expect(Object.values(AUTOMATION_TAB)).toEqual(['Overview', 'Queue', 'Schedule', 'Config', 'Events', 'Sessions'])
     expect(DELIVERY.help.length).toBeGreaterThan(40)
   })
 

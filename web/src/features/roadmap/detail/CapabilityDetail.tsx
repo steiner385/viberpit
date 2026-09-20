@@ -11,7 +11,7 @@ import { Button } from '@/ui/Button'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { fileUrl } from '@/lib/githubUrl'
-import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
+import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TAB_LABEL, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
 import { findCapability, openMapChanges } from '../lookup'
@@ -119,7 +119,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
         onChange={(id) => setTab(id as (typeof TABS)[number])}
         panelId={panelId}
         items={[
-          { id: 'overview', label: 'Overview' },
+          { id: 'overview', label: TAB_LABEL.overview },
           { id: 'children', label: `Sub-${CAPABILITY.plural.toLowerCase()}`, count: capability.children.length },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'issues', label: ISSUE.plural, count: openIssues },

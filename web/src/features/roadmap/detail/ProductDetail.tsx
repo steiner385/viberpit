@@ -15,7 +15,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
 import { OnboardingWizard } from '@/projects/OnboardingWizard'
 import { DependencyPanel } from '@/projects/DependencyPanel'
-import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
+import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TAB_LABEL, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
 import { programTitleOf } from '../lookup'
@@ -96,12 +96,12 @@ export function ProductDetail({ product }: { product: ProductNode }) {
         onChange={(id) => setTab(id as (typeof TABS)[number])}
         panelId={panelId}
         items={[
-          { id: 'overview', label: 'Overview' },
+          { id: 'overview', label: TAB_LABEL.overview },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
-          { id: 'ranked', label: 'Ranked' },
-          { id: 'dependencies', label: 'Dependencies' },
-          { id: 'automation', label: 'Automation' },
+          { id: 'ranked', label: TAB_LABEL.ranked },
+          { id: 'dependencies', label: TAB_LABEL.dependencies },
+          { id: 'automation', label: TAB_LABEL.automation },
         ]}
       />
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
@@ -150,8 +150,14 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                 + {CAPABILITY.singular}
               </Button>
             </div>
-            {/* Renders nothing unless the product has an open map-changes PR (R8c-3). */}
-            <MapChangesCard product={product} />
+            {/* The wizard owns the map-PR link until the product is live (its
+                `await_map_pr` action links the same PR); showing the card too
+                would put two links to one PR in the same "what is the map
+                waiting on" notice (docs/PAGE-TABS.md §5). Once live, the
+                wizard has already unmounted itself, so the card is the only
+                one left to show a late-arriving pointer. Renders nothing
+                unless the product has an open map-changes PR (R8c-3). */}
+            {(!project || project.onboardingState === 'live') && <MapChangesCard product={product} />}
             {/* Renders nothing once the product is live. */}
             <OnboardingWizard slug={product.slug} />
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">

@@ -30,7 +30,7 @@ import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
 import { commitUrl, fileUrl, prUrl } from '@/lib/githubUrl'
 import { sessionPath } from '@/session/sessionNavState'
 import {
-  CAPABILITY, EPIC, INITIATIVE, ROADMAP,
+  CAPABILITY, EPIC, INITIATIVE, ROADMAP, TAB_LABEL,
   initiativeStatusLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, initiativePath, productPath, roadmapPath } from './roadmapNavState'
@@ -637,13 +637,13 @@ function InitiativePageContent() {
               onChange={(id) => setTab(id as Tab)}
               panelId={panelId}
               items={[
-                { id: 'track', label: 'Track' },
+                { id: 'track', label: TAB_LABEL.track },
                 // A program's Epic tab is REPLACED by Phases, never shown
                 // alongside it — see the `TABS` comment above.
                 initiative.hasChildren
-                  ? { id: 'phases', label: 'Phases', count: initiative.children.length }
+                  ? { id: 'phases', label: TAB_LABEL.phases, count: initiative.children.length }
                   : { id: 'epic', label: EPIC.singular, count: initiative.epic?.total },
-                { id: 'sessions', label: 'Sessions', count: initiative.buildSessions?.length },
+                { id: 'sessions', label: TAB_LABEL.sessions, count: initiative.buildSessions?.length },
                 { id: 'capabilities', label: CAPABILITY.plural, count: initiative.capabilities.length },
               ]}
             />

@@ -36,12 +36,9 @@ const PRODUCT_COLUMNS: Column<AutomationStatusProduct>[] = [
 
 /** Automations whose work can be inspected and dispatched by hand — the only
  *  ones that get a Queue tab (standard §4: hide a tab by object kind, never
- *  because it is empty right now). Consumed by this file's tests alongside
- *  the component, so splitting it out for one constant would be needless
- *  indirection.
+ *  because it is empty right now).
  */
-// eslint-disable-next-line react-refresh/only-export-components
-export const QUEUE_AUTOMATIONS: ReadonlySet<string> = new Set(['backlog-runner', 'pr-doctor'])
+const QUEUE_AUTOMATIONS: ReadonlySet<string> = new Set(['backlog-runner', 'pr-doctor'])
 
 export function AutomationDetail({ automation: a, automations = [], onOpenSession }: {
   automation: Automation
