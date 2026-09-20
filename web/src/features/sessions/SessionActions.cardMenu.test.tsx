@@ -53,6 +53,7 @@ vi.mock('@/api/hooks', () => ({
   // shell calls the hooks unconditionally.
   useStageModels: () => ({ data: undefined, isLoading: false, isError: false }),
   useCapacity: () => ({ data: undefined, isLoading: false, isError: false }),
+  useCapacityBinding: () => ({ data: undefined }),
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),

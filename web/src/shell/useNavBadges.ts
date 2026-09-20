@@ -1,6 +1,6 @@
 import { automationTier } from '@/features/delivery/automationTier'
 import type { NavBadgeKey, NavDef } from './navDefs'
-import { useAccounts, useSessions, useAllPrs, useAutomations, useCapacity, useDecisions, useTriage } from '@/api/hooks'
+import { useAccounts, useSessions, useAllPrs, useAutomations, useCapacityBinding, useDecisions, useTriage } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
@@ -50,12 +50,10 @@ export function useNavBadges(): NavBadges {
   const { data: decisions = [] } = useDecisions()
   const deploy = useDeployState()
   // C8: a binding capacity constraint is "nothing can run" — visible from any
-  // section. Read WITHOUT a poll (the plan's no-new-timers rule: /api/capacity
-  // runs the candidates read and the per-repo gh snapshot on every call): the
-  // dot refreshes on mount, on window focus, and whenever another observer
-  // (the Delivery page's 30 s poll) fetches — it has no timer of its own.
-  // Refresh policy is tracked as a follow-up issue.
-  const { data: capacity } = useCapacity()
+  // section. Reads the governor's persisted binding via the one-row
+  // `/api/capacity/binding`, not the full readout, so polling it app-wide at the
+  // governor's own 60 s tick costs no candidates read or per-repo gh snapshot.
+  const { data: capacity } = useCapacityBinding()
 
   const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
   const automationAttention = automationsError || automationsData.some((a) => automationTier(a) === 'needs-you')

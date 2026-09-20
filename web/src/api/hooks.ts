@@ -52,7 +52,7 @@ import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
 } from './roadmap'
-import { fetchCapacity, type CapacityReadout } from './capacity'
+import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './capacity'
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
@@ -1246,6 +1246,18 @@ export function useCapacity({ poll = false, enabled = true }: { poll?: boolean; 
     staleTime: 10_000,
     refetchInterval: poll ? 30_000 : false,
     enabled,
+  })
+}
+
+/** The nav dot's signal: the governor's persisted binding constraint (one-row
+ *  read), polled app-wide at the governor's own 60 s tick. Nested under
+ *  `QK.capacity` so every dial mutation's invalidation refreshes it too. */
+export function useCapacityBinding() {
+  return useQuery({
+    queryKey: [...QK.capacity, 'binding'] as const,
+    queryFn: fetchCapacityBinding,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   })
 }
 
