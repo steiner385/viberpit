@@ -67,6 +67,11 @@ describe('RoadmapListColumn', () => {
     expect(screen.getByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toHaveAttribute('aria-level', '3')
   })
 
+  it('shows the error banner instead of throwing on a malformed map payload', () => {
+    mount({ map: { generatedAt: 'x' } as unknown as RoadmapMap })
+    expect(screen.getByText('Could not load the roadmap.')).toBeInTheDocument()
+  })
+
   it('collapses a subtree from its toggle and remembers it', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Tasks' }))
