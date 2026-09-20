@@ -169,7 +169,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "resolve_transcript_path", "transcript_window", "engine_replay_window",
     "transcript_search_text", "has_transcript",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
-    "latest_summary", "pop_pending_initial_prompt",
+    "latest_summary", "pop_pending_initial_prompt", "repark_pending_initial_prompt",
     # Task 8.4: same "queued while detached, flushed on this session's own host's
     # attach" shape as the two siblings above. `post_notice` is NOT here — its
     # first arg is an identity, not a session_id, so it does not fit

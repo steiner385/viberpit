@@ -177,6 +177,7 @@ class InProcessOrchestratorAdapter:
     async def pending_questions(self, *a, **k): return await _maybe_await(self._orch.pending_questions(*a, **k))
     async def orphaned_interaction(self, *a, **k): return await _maybe_await(self._orch.orphaned_interaction(*a, **k))
     async def pop_pending_initial_prompt(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_prompt(*a, **k))
+    async def repark_pending_initial_prompt(self, *a, **k): return await _maybe_await(self._orch.repark_pending_initial_prompt(*a, **k))
     async def resolve_permission(self, *a, **k): return await _maybe_await(self._orch.resolve_permission(*a, **k))
     async def answer_question(self, *a, **k): return await _maybe_await(self._orch.answer_question(*a, **k))
     async def command_catalog(self, *a, **k): return await _maybe_await(self._orch.command_catalog(*a, **k))
