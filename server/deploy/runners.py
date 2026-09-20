@@ -37,7 +37,7 @@ Fetch = Callable[[str], Awaitable[dict]]
 Progress = Callable[[str, "HostProgress"], None]
 
 SSH_OPTS = ("-oBatchMode=yes", "-oConnectTimeout=10")
-VERIFY_TIMEOUT_S = 90.0
+VERIFY_TIMEOUT_S = 180.0
 VERIFY_INTERVAL_S = 3.0
 DEFAULT_CONCURRENCY = 2
 
