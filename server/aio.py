@@ -2,7 +2,8 @@
 
 ``bounded_wait`` is the single implementation of "await this, but never hang":
 give the awaitable a budget, then cancel it, then give the cancellation a grace
-window, then abandon it with a loud log. Shutdown paths must use this instead of
+window, then abandon it with a loud log that NAMES THE CULPRIT (its live await
+chain) and reports what it eventually did. Shutdown paths must use this instead of
 bare ``await`` — an unbounded await in teardown wedged CI's TestClient exits for
 11+ minutes until the job's wall-clock timeout killed pytest (issue #846).
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Iterable
 from typing import Any
 
@@ -34,9 +36,16 @@ async def bounded_wait(
     """Await *aw* for at most ``timeout`` seconds; never hang, never raise.
 
     On overrun the task is cancelled and given ``cancel_grace`` seconds to
-    unwind; if it ignores the cancel too, it is abandoned (CRITICAL log naming
-    *phase*) rather than awaited forever — a wedged teardown phase must cost
-    seconds, not the process. Exceptions from *aw* are logged, not raised.
+    unwind; if it does not unwind in time it is abandoned rather than awaited
+    forever — a wedged teardown phase must cost seconds, not the process.
+    Exceptions from *aw* are logged, not raised.
+
+    Abandonment is LOUD AND SPECIFIC: the CRITICAL carries *phase* **and the
+    task's live await chain** (``format_task_dump``), and ``_watch_abandoned``
+    reports what the task eventually did. Naming only the phase is what left
+    ``stall.interrupt:<sid>`` undiagnosable across 15 prod occurrences in 11 days
+    (issue #1539) — a bounded wait that cannot say what it bounded only converts
+    a hang into a mystery.
 
     Returns True if the awaitable completed (or failed) on its own, False if it
     had to be cancelled or abandoned.
@@ -53,11 +62,59 @@ async def bounded_wait(
     if done:
         _consume(task, phase)
         return False
+    # Abandoning. Name the culprit while it is still parked — this is the half of
+    # the #846 contract bounded_wait used to skip. Without the dump the CRITICAL
+    # says only which phase blew its budget, which is why 15 occurrences of
+    # 'stall.interrupt:<sid>' over 11 days identified nothing (issue #1539): every
+    # candidate absorber on that path honours an external cancel when probed
+    # alone, so the answer was only ever going to come from the live await chain.
     log.critical(
-        "bounded_wait: phase %r ignored cancellation %.1fs after a %.1fs budget "
-        "— abandoning it (issue #846)", phase, cancel_grace, timeout,
+        "bounded_wait: phase %r did not unwind within %.1fs of cancellation, after "
+        "a %.1fs budget — abandoning it (issue #846). Await chain:\n%s",
+        phase, cancel_grace, timeout, format_task_dump([task]),
     )
+    _watch_abandoned(task, phase)
     return False
+
+
+def _watch_abandoned(
+    task: asyncio.Future[Any], phase: str, *, level: int = logging.WARNING
+) -> None:
+    """Report an abandoned phase's eventual fate instead of dropping it.
+
+    Two things go wrong when nobody holds the reference. A phase that later raises
+    surfaces through asyncio's default handler as "Task exception was never
+    retrieved" — real noise, with no phase name to route it back to the abandonment
+    that caused it. And a phase that was merely SLOW (it unwound, or even completed,
+    a second after we gave up) is indistinguishable in the logs from one genuinely
+    stuck forever, so the abandonment log can never be confirmed or falsified.
+
+    The callback costs nothing while the task runs and turns the abandonment into a
+    measured event: which phase, how long after we gave up, and whether it unwound,
+    failed, or completed. A recurring CRITICAL whose companion line always says
+    "completed" is a budget that is too small, not a wedge.
+
+    *level* mirrors ``_consume``'s: ``bounded_wait`` abandons loudly, while
+    ``cancel_and_reap`` stays at DEBUG — it is a shutdown path whose previous
+    behaviour was to swallow silently, and raising its volume now would be a
+    behaviour change dressed as a diagnostic.
+    """
+    abandoned_at = time.monotonic()
+
+    def _report(t: asyncio.Future[Any]) -> None:
+        late = time.monotonic() - abandoned_at
+        if t.cancelled():
+            log.log(level, "abandoned phase %r unwound %.1fs later", phase, late)
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.log(level, "abandoned phase %r failed %.1fs later",
+                    phase, late, exc_info=exc)
+        else:
+            log.log(level, "abandoned phase %r completed %.1fs later — it was slow, "
+                    "not stuck", phase, late)
+
+    task.add_done_callback(_report)
 
 
 def _consume(
@@ -138,6 +195,10 @@ async def cancel_and_reap(
     if not done:
         log.debug("cancel_and_reap: phase %r still unwinding after %ss — abandoned",
                   phase, timeout)
+        # Same shape as bounded_wait's abandonment: nobody holds the reference any
+        # more, so a later failure would surface as an unattributed "Task exception
+        # was never retrieved". Kept at DEBUG — this path's contract is to be quiet.
+        _watch_abandoned(task, phase, level=logging.DEBUG)
         return False
     _consume(task, phase, level=logging.DEBUG)
     return True

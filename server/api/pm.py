@@ -849,7 +849,9 @@ async def queue(
             respect_dependencies=respect_dependencies, now=now,
             # D8: THE bounce threshold, from this product's own policy — the same
             # reading the runner's pool uses.
-            give_up_after_bounces=int(policy["give_up_after_bounces"]))
+            give_up_after_bounces=int(policy["give_up_after_bounces"]),
+            extra_skip_labels=frozenset(
+                lbl.strip().lower() for lbl in policy["skip_labels"]))
         entries.extend(entries_p)
         for reason, n in skipped_p.items():
             skipped[reason] = skipped.get(reason, 0) + n

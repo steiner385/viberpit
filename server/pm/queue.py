@@ -117,10 +117,10 @@ class QueueEntry:
     hold_kind: str | None = None
 
 
-def _is_bot(row: QueueRow) -> bool:
+def _is_bot(row: QueueRow, extra_skip_labels: frozenset[str] = frozenset()) -> bool:
     if row.author.endswith("[bot]"):
         return True
-    if {lbl.strip().lower() for lbl in row.labels} & SKIP_ISSUE_LABELS:
+    if {lbl.strip().lower() for lbl in row.labels} & (SKIP_ISSUE_LABELS | extra_skip_labels):
         return True
     return row.title.strip().lower() in SKIP_ISSUE_TITLES
 
@@ -153,6 +153,7 @@ def skip_reason(
     respect_dependencies: bool,
     now: datetime,
     give_up_after_bounces: int = 0,
+    extra_skip_labels: frozenset[str] = frozenset(),
 ) -> str | None:
     """Decision C-2: a row whose board Status is ``None`` (never stamped by the
     reconciler) or outside the spec vocabulary (e.g. GitHub's default "Todo" column)
@@ -192,7 +193,7 @@ def skip_reason(
         return "assigned"
     if row.open_children:
         return "epic_open"
-    if _is_bot(row):
+    if _is_bot(row, extra_skip_labels):
         return "bot"
     return None
 
@@ -228,6 +229,7 @@ def rank(
     respect_dependencies: bool = True,
     now: datetime,
     give_up_after_bounces: int = 0,
+    extra_skip_labels: frozenset[str] = frozenset(),
 ) -> tuple[list[QueueEntry], dict[str, int]]:
     kept: list[QueueRow] = []
     skipped: dict[str, int] = {}
@@ -238,6 +240,7 @@ def rank(
             respect_dependencies=respect_dependencies,
             now=now,
             give_up_after_bounces=give_up_after_bounces,
+            extra_skip_labels=extra_skip_labels,
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1

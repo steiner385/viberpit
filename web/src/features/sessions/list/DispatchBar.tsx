@@ -632,9 +632,20 @@ export function DispatchBar({
 
         {/* Agent — which engine runs the session. Rendered only when the server
             knows about more than one; an engine it cannot currently offer is
-            listed but disabled, with the reason, rather than silently missing. */}
+            listed but disabled, with the reason, rather than silently missing.
+
+            `short:hidden` here (and on Reasoning, Runner and the toggles below,
+            but deliberately NOT Account or Model) reuses index.css's `short:`
+            variant (issue #1399): at width ≥640px these cells sit in one grid
+            ROW sized to the tallest cell, and the toggles' wrapped checkboxes
+            were the tallest — stretching Account/Model along with them to
+            ~112px even though their own content needs ~64px. A short viewport
+            can't afford that, and these four are the ones the mobile
+            disclosure already calls "advanced" (`hasNonDefaultPick`'s own
+            grouping); Account and Model stay reachable because they steer
+            where the session actually runs. */}
         {showEngine && (
-          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex short:hidden')}>
             <label htmlFor="dispatch-bar-engine" className={selectLabelClass}>
               Agent
             </label>
@@ -711,7 +722,7 @@ export function DispatchBar({
         {/* Reasoning effort — only when the engine advertises the capability AND
             the selected model offers choices; seeded to the model's own default. */}
         {showReasoning && (
-          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex short:hidden')}>
             <label htmlFor="dispatch-bar-reasoning" className={selectLabelClass}>
               Reasoning
             </label>
@@ -731,7 +742,7 @@ export function DispatchBar({
 
         {/* Runner — '' = Auto (fleet auto-ranks); a name pins the session to that host. */}
         {showRunner && (
-          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex short:hidden')}>
             <label htmlFor="dispatch-bar-runner" className={selectLabelClass}>
               Runner
             </label>
@@ -758,7 +769,7 @@ export function DispatchBar({
           id="dispatch-bar-toggles"
           role="group"
           aria-labelledby="dispatch-bar-toggles-label"
-          className={cn('flex-col gap-1 min-w-0', showMore ? 'flex' : 'hidden sm:flex')}
+          className={cn('flex-col gap-1 min-w-0', showMore ? 'flex' : 'hidden sm:flex short:hidden')}
         >
           <span id="dispatch-bar-toggles-label" className={selectLabelClass}>For this session</span>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

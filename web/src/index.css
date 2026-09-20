@@ -11,11 +11,17 @@
    `short:hidden` is how a region sheds the chrome it can do without.
 
    Named once here rather than written as an arbitrary `[@media(max-height:…)]`
-   at each use, so the threshold is a decision with one home. 560px sits above a
+   at each use, so the threshold is a decision with one home. 580px sits above a
    keyboard-open phone (~420–500) and below a real laptop window (~600+). It is
    a CSS variant and not a `useViewport()` field on purpose: nothing branches on
-   it in JS, and `useViewport` stays the only JS reader of a layout query. */
-@custom-variant short (@media (max-height: 560px));
+   it in JS, and `useViewport` stays the only JS reader of a layout query.
+
+   Raised from 560 to 580 by issue #1399: a real 320×568 short-landscape phone
+   (568px of layout height) sat 8px above the old threshold, so the controls
+   strip never shed and the scroll band collapsed to ~18px — the same failure
+   `short:` exists to prevent, just missed by a margin narrower than common
+   device chrome. */
+@custom-variant short (@media (max-height: 580px));
 
 /* ───────────────────────────────────────────────────────────────────────────
    Design tokens — the ONLY place a color, layer, radius, target size or type

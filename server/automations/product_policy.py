@@ -102,6 +102,14 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Model for this product's sessions; 'auto' assesses each job."),
     ConfigField(key="respect_dependencies", label="Respect issue dependencies", type="bool",
                 default=True),
+    # Additive on top of the global bot-noise filter (``server.pm.queue.SKIP_ISSUE_LABELS``):
+    # a product's own workflow labels (e.g. "on-hold", "needs-design") that mean
+    # "not implementable right now" for THIS product specifically, without touching
+    # the dependencies/renovate filter every product still gets for free.
+    ConfigField(key="skip_labels", label="Labels to skip", type="string-list", default=[],
+                help="Issues carrying any of these labels are skipped by the queue for "
+                     "this product, in addition to the built-in bot-noise filter "
+                     "(dependencies, renovate)."),
     # Phase 2 (spec §4, §8): the PM Triage loop's own dispatch decision. Ordered
     # by ``server/pm/classification.py:CONFIDENCE_LEVELS`` — "medium" means "medium
     # or better", so the choices read as a descending strictness, not a set.

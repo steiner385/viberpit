@@ -127,6 +127,32 @@ def test_purge_oldest_archived_null_archived_at_falls_back_to_created_at(tmp_pat
     assert remaining == ["arch1"]
 
 
+def test_purge_detaches_dispatch_outcomes_instead_of_blocking_delete(tmp_path):
+    """A dispatched (automation-origin) session has a DispatchOutcome row FK-referencing
+    it. permanent_delete must null that reference rather than leaving it dangling — on
+    Postgres, deleting the session row with the FK still pointing at it throws
+    ForeignKeyViolationError, which wedges the cap purge forever since #921 purges
+    automation-origin sessions (the ones dispatch creates outcomes for) first."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([_archived(0, archived_at=_BASE, origin="automation")])
+            from server.db.models import DispatchOutcome
+            async with db_session() as db:
+                db.add(DispatchOutcome(session_id="arch0"))
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            deleted = await orch.purge_oldest_archived(1)
+            async with db_session() as db:
+                outcome = (await db.execute(sa_select(DispatchOutcome))).scalars().first()
+            return deleted, outcome.session_id if outcome else "MISSING"
+
+    deleted, outcome_session_id = asyncio.run(run())
+    assert deleted == ["arch0"]
+    assert outcome_session_id is None  # history row survives, reference detached
+
+
 def test_purge_prioritizes_automation_over_human(tmp_path):
     """Automation-origin sessions are purged first; human sessions survive as long as
     there are automation archives to consume (#921)."""
