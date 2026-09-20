@@ -290,6 +290,11 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   // Absent `enabled` (older payloads) means enabled — only an explicit false disables.
   const isDisabled = account.enabled === false
 
+  // The usage percent at which this account reaches its reserve — computed once
+  // per row rather than twice (the chip condition and the marker used to each
+  // call reserveCeiling(account) themselves).
+  const ceiling = reserveCeiling(account)
+
   // ── OpenAI re-auth is a DEVICE FLOW, not the browser OAuth ────────────────
   //
   // An OpenAI account has no local credential slot to re-encrypt: it
@@ -600,8 +605,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           )}
           <SessionsBadge counts={account.liveSessions} />
           <RankBadge rank={account.rank} reason={account.rankReason} />
-          {reserveCeiling(account) != null &&
-            (reserveWindow(account.usage)?.pct ?? -1) >= (reserveCeiling(account) as number) &&
+          {ceiling != null &&
+            (reserveWindow(account.usage)?.pct ?? -1) >= ceiling &&
             <OverReserveChip />}
           {account.allowExtraUsage === true && <ExtraUsageChip />}
           {/* Opted in, but the provider has extra usage off — the toggle cannot
@@ -622,7 +627,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               staleAsOf={account.usage?.staleAsOf}
               markerPct={
                 w.key === reserveWindow(account.usage)?.key
-                  ? reserveCeiling(account)
+                  ? ceiling
                   : null
               }
             />

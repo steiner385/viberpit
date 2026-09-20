@@ -318,11 +318,11 @@ describe('CapacityDetail', () => {
     setup({
       readout: {
         ...CAPACITY,
-        binding: { layer: 'account', code: 'no_account_headroom', text: 'no account has headroom under the 20% reserve' },
+        binding: { layer: 'account', code: 'no_account_headroom', text: 'no account has headroom under its reserve (push level 20%)' },
       },
     })
     const accounts = screen.getByTestId('capacity-stack-accounts')
-    expect(within(accounts).getByText('no account has headroom under the 20% reserve')).toBeInTheDocument()
+    expect(within(accounts).getByText('no account has headroom under its reserve (push level 20%)')).toBeInTheDocument()
     const details = within(within(accounts).getByRole('group'))
     expect(details.getByText('primary — available · 20% reserve')).toBeInTheDocument()
   })

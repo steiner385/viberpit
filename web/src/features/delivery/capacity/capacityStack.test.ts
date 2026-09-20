@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { CapacityReadout } from '@/api/capacity'
+import type { CapacityAccountRow, CapacityReadout } from '@/api/capacity'
 import { buildCapacityStack, accountRowLine, capacityRowLink, type CapacityStackRow } from './capacityStack'
 
 function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
@@ -201,5 +201,9 @@ describe('accountRowLine (spec 2026-09-20 C21)', () => {
   })
   it('the over_reserve reason renders generically, same as any other reason code', () => {
     expect(accountRowLine({ ...base, reservePct: 60, available: false, reason: 'over_reserve' })).toBe('acct — over reserve · 60% reserve')
+  })
+  it('a readout cached from an older server has no reservePct — the suffix is omitted entirely', () => {
+    const row = { ...base, reservePct: undefined as unknown as number } as CapacityAccountRow
+    expect(accountRowLine(row)).toBe('acct — available')
   })
 })

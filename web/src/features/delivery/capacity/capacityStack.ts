@@ -40,13 +40,14 @@ function globalSecondary(g: CapacityReadout['global']): string | undefined {
 /** One per-account line for the Accounts row's expansion (C21). Reasons are the
  *  server's snake_case codes from `account_headroom`; spelled out here once. */
 export function accountRowLine(row: CapacityAccountRow): string {
-  const reserve = `${row.reservePct}% reserve`
-  if (row.available) return `${row.name} — available · ${reserve}`
+  // == (not ===): guards `undefined` too — a readout cached from an older
+  // server has no `reservePct` at all, same as `globalSecondary`'s guard above.
+  const reserve = row.reservePct == null ? null : `${row.reservePct}% reserve`
+  if (row.available) return reserve ? `${row.name} — available · ${reserve}` : `${row.name} — available`
   const reason = (row.reason ?? 'unavailable').replace(/_/g, ' ')
   const reset = formatResetTime(row.nextResetAt)
-  return reset
-    ? `${row.name} — ${reason} · resets ${reset} · ${reserve}`
-    : `${row.name} — ${reason} · ${reserve}`
+  const suffix = [reset ? `resets ${reset}` : null, reserve].filter((c): c is string => c !== null).join(' · ')
+  return suffix ? `${row.name} — ${reason} · ${suffix}` : `${row.name} — ${reason}`
 }
 
 export type CapacityRowLink =
