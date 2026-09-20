@@ -129,7 +129,7 @@ Decisions marked **✔** were confirmed by the owner on 2026-09-20 (§11).
 | D8 | Vocabulary | One term per concept, used on every surface and in every `ConfigField` label: **Global cap** (effective), **Physical ceiling** (Σ host caps), **Attention ceiling** (`maxActiveSessions`), **Host cap** (`Host.max_sessions`, column header "Cap"), **Runner ceiling** (`max_concurrent`), **Pin** (`max_in_flight`), **Pipeline cap** (`max_pipeline_prs`), **Rank**, **Push level**, **Reserve**. "Max active sessions", "Max occupied slots", "Max sessions", "In-flight cap" and "Max in flight (pin)" are retired as labels. The two `global_cap*` constraint codes are collapsed: `global_capacity_full` → `runner_ceiling_full`, layer `runner`; `global_cap_full` keeps layer `global`. | Keep the wire names and only fix labels: the constraint-code confusion (C16) lives in the API and its tests, and every future reader trips on it. |
 | D9 | Outside-the-stack ceilings | **Shown, not restructured.** The Limits section gets a *Managed by env* group listing `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`, `VIBERPIT_CAPACITY_GOVERNOR_ENABLED` read-only (the `_MANAGED` allowlist gains the first three). `max_spawns_per_day` moves to the Capacity page per D7. | Model them as stack layers: the test-slot and child caps are per-host / per-session, not fleet ceilings; the readout would mislead. |
 | D10 | Freshness and links | Every mutation that touches a dial invalidates `QK.capacity`. Links go through `settingsSectionPath()` and `deliveryPath('capacity')`; the list column renders row links; Settings › Capacity sections carry a **Live readout** card (stack summary + binding text) linking to Delivery → Capacity; queued and "Waiting for capacity" sessions link there too; the Accounts row expands to the per-account rows already on the wire (which account is at ceiling, when it resets). | Fix only the invalidation: C3–C6 and C21 stay. |
-| D11 | Code consolidation | One reader for the effective global cap (`server/capacity/limits.py:effective_global_cap()` returning physical, attention, effective and which binds; used by the orchestrator, `api/sessions.py`, `api/settings.py`, and the readout), one clamp; `api/sessions.py:_max_active_sessions_setting` deleted. The double plan overlay (`_backlog_read_config` and `gather_implementation_snapshot`) collapses to one seam that returns the overlaid config. Principle VI. | Leave as is: three clamps and two overlays are the shape of the 2026-09-17 stall. |
+| D11 | Code consolidation | One reader for the effective global cap (`server/sessions/global_cap.py:read_global_cap()` returning physical, attention, effective and which binds; used by the orchestrator, `api/sessions.py`, `api/settings.py`, and the readout), one clamp; `api/sessions.py:_max_active_sessions_setting` deleted. The double plan overlay (`_backlog_read_config` and `gather_implementation_snapshot`) collapses to one seam that returns the overlaid config. Principle VI. | Leave as is: three clamps and two overlays are the shape of the 2026-09-17 stall. |
 
 ## 5. Information architecture
 
@@ -175,7 +175,7 @@ on Delivery → Capacity". Legends *Models* and *Gates* unchanged.
 
 | Relationship | Where it is shown | How it is computed |
 |---|---|---|
-| Global cap = min(physical, attention), floor 5 when both unbounded | Limits (three rows), Hosts (footer), stack Global row | D3; `effective_global_cap()` |
+| Global cap = min(physical, attention), floor 5 when both unbounded | Limits (three rows), Hosts (footer), stack Global row | D3; `global_cap.read_global_cap()` |
 | Physical ceiling = Σ enabled host caps, unbounded if any is uncapped | Limits, Hosts footer | D3 |
 | Runner ceiling ≤ global cap | Capacity page runner form (description; validation refuses a ceiling above the effective global cap with "the global cap is N") | client + `PATCH /automations/backlog-runner` 422 |
 | Runner effective ≤ quota (available accounts × sessions per account) | stack Runner row ("quota: N × M") | D12; unchanged `_fleet` |
@@ -188,7 +188,7 @@ on Delivery → Capacity". Legends *Models* and *Gates* unchanged.
 
 | Route | Change |
 |---|---|
-| `GET /api/settings` | `effectiveDefaults.maxActiveSessions` is replaced by `effectiveDefaults.globalCap: { physical: int \| null, attention: int \| null, effective: int, binding: "physical" \| "attention" \| "default", hosts: [{ name, cap }] }`. `managed` gains `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`. `PUT /api/settings` `maxActiveSessions` semantics: attention ceiling, `null` = none, a set value must be ≥ 1 (422 otherwise, replacing today's silent clamp; the default-5 floor lives in `effective_global_cap()`). |
+| `GET /api/settings` | `effectiveDefaults.maxActiveSessions` is replaced by `effectiveDefaults.globalCap: { physical: int \| null, attention: int \| null, effective: int, binding: "physical" \| "attention" \| "default", hosts: [{ name, cap }] }`. `managed` gains `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`. `PUT /api/settings` `maxActiveSessions` semantics: attention ceiling, `null` = none, a set value must be ≥ 1 (422 otherwise, replacing today's silent clamp; the default-5 floor lives in `global_cap.resolve_global_cap()`). |
 | `GET /api/capacity` | `global` gains `physical`, `attention`, `binding`; `products[]` gain `pipeline: int` and `pipelineCap: int \| null`; `accounts.rows[].reservePct` (effective per account); new constraint code `product_pipeline_full` (layer `product`); rename per D8 (old code accepted by the web for one release). |
 | `GET /api/pm/policy-schema` · `PATCH /api/pm/projects/{slug}/policy` | new field `max_pipeline_prs`; `weight` accepted but ignored once deprecated (D6). |
 | `GET /api/accounts` | `weeklyReservePct` unchanged; new `effectiveReservePct`. |
@@ -199,7 +199,7 @@ on Delivery → Capacity". Legends *Models* and *Gates* unchanged.
 
 | Change | Detail |
 |---|---|
-| `AppSettings.max_active_sessions` | Column unchanged (nullable int). Meaning changes to *attention ceiling*; docstring updated; `DEFAULT_MAX_ACTIVE_SESSIONS` becomes the last-resort floor inside `effective_global_cap()` only. No migration. |
+| `AppSettings.max_active_sessions` | Column unchanged (nullable int). Meaning changes to *attention ceiling*; docstring updated; `DEFAULT_MAX_ACTIVE_SESSIONS` becomes the last-resort floor inside `global_cap.resolve_global_cap()` only. No migration. |
 | `PRODUCT_POLICY_SCHEMA` | `ConfigField(key="max_pipeline_prs", label="Pipeline cap", type="int", default=None, min=0, nullable=True, surface="capacity", help=…)` (D13). JSON policy column; no migration. |
 | `capacity_plans.budget` | gains `pipeline: {slug: {open, cap}}` so the plan card can explain a pipeline-full allocation. JSON column; no migration. |
 
@@ -210,7 +210,7 @@ Six PRs, each green in a day, each citing the C-numbers and D-numbers it closes.
 
 | PR | Delivers | Deletes |
 |---|---|---|
-| **1 — Limits + the two ceilings** | `server/capacity/limits.py:effective_global_cap()` and the single clamp (D11 first half); D3 physical / attention / effective; `Limits` section; group rename (D2); General loses its *Capacity* group; `_MANAGED` additions (D9); invalidation (C20); typed links (C4). | `api/sessions.py:_max_active_sessions_setting`; the General *Capacity* group; the three clamps |
+| **1 — Limits + the two ceilings** | `server/sessions/global_cap.py:read_global_cap()` and the single clamp (D11 first half); D3 physical / attention / effective; `Limits` section; group rename (D2); General loses its *Capacity* group; `_MANAGED` additions (D9); invalidation (C20); typed links (C4). | `api/sessions.py:_max_active_sessions_setting`; the General *Capacity* group; the three clamps |
 | **2 — Readout depth + links** | List-column links; Accounts row expansion (C21); Global row's three numbers; intent-row `Banner` for C18; Live-readout card on the three Settings sections; queued / waiting-for-capacity links (C6); nav badge for a binding constraint (C8). | `PUSH_LEVEL_RESERVE_PCT` mirror |
 | **3 — Runner form** | `ConfigField.surface`; runner ceiling, daily budget, sessions-per-account on the Capacity page with one `SaveBar`; read-only link rows on the config tab; ceiling ≤ global cap validation; one plan overlay seam (D11 second half); constraint-code rename (D8). | the second overlay in `gather_implementation_snapshot` |
 | **4 — One owner for product dials** | Roadmap card *Dispatch* legend + read-only capacity line (D5); `weight` deprecated (D6) with its issue filed; labels per D8 across schemas. | the card's `capacity_mode` / `max_in_flight` / `weight` controls; `weighted` strategy's weight read |
@@ -224,7 +224,7 @@ PR 1 is independent of the governor follow-ups (#2032, #2040); PR 3 subsumes #20
 
 | Test | Asserts |
 |---|---|
-| `test_capacity_limits.py` (pure) | physical = Σ enabled host caps; any uncapped enabled host ⇒ physical unbounded; effective = min(physical, attention); both unbounded ⇒ 5 with `binding: "default"`; `binding` names the lower one; the orchestrator gate, `api/sessions`, `api/settings` and the readout all call it (a grep-style test that no other `max_active_sessions` read exists). |
+| `test_global_cap.py` (pure + one DB case) | physical = Σ enabled host caps; any uncapped enabled host ⇒ physical unbounded; effective = min(physical, attention); both unbounded ⇒ 5 with `binding: "default"`; `binding` names the lower one; the orchestrator gate, `api/sessions`, `api/settings` and the readout all call it (a grep-style test that no other `max_active_sessions` read exists). |
 | `test_capacity_readout.py` | `global.{physical,attention,binding}`; `products[].pipeline` counts handed-off rows and excludes `gave_up` and merged; per-account `reservePct` = override ?? push level; renamed constraint code and its layer. |
 | `test_product_admission.py` | pipeline ≥ cap ⇒ `product_pipeline_full` refused for a *new* claim; an `existing_slot` re-validation is never refused on it (D8 of the governor spec, "never kills a session"); blank cap ⇒ never refused; PR Doctor coverage makes no difference to the pipeline count (C23). |
 | `test_capacity_plan.py` | a pipeline-full product gets cap = its in-flight count and its remaining slots go to the next rank; `reasons` names it. |

@@ -40,7 +40,7 @@ describe('GeneralSection', () => {
     mutateAsync.mockClear()
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       repoRoot: null, archiveHome: null, maxArchivedSessions: 100, maxActiveSessions: null, autoArchiveEnabled: true,
-      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: '/var/ccswitch/archives', modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5 },
+      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: '/var/ccswitch/archives', modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] } },
     })))
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync }))
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(Array.from({ length: 3 }, (_, i) => ({ id: `s${i}` })) as never))
@@ -108,7 +108,7 @@ describe('GeneralSection', () => {
     // The common deployment: the server has no ARCHIVE_HOME, so there is no path
     // to name and the suffix form would read "Server default · server default".
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
-      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5 },
+      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] } },
     })))
     mount()
     expect(screen.getByLabelText('Archive storage path')).toHaveAttribute('placeholder', 'Server default')
@@ -116,14 +116,19 @@ describe('GeneralSection', () => {
 
   it('saves the same payload shape as before (blank → 0 / null)', async () => {
     mount()
-    await userEvent.type(screen.getByLabelText('Max active sessions'), '7')
     await userEvent.clear(screen.getByLabelText('Max archived sessions'))
     await userEvent.click(screen.getByRole('checkbox', { name: 'Auto-archive completed sessions' }))
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
-      repoRoot: null, archiveHome: '', maxArchivedSessions: 0, maxActiveSessions: 7, autoArchiveEnabled: false,
+      repoRoot: null, archiveHome: '', maxArchivedSessions: 0, autoArchiveEnabled: false,
       assistantEnabled: true, assistantModel: null, assistantOperatorTools: false,
     }))
+  })
+
+  it('has no capacity field — the global cap lives on Settings › Capacity › Limits (spec 2026-09-20 C1)', () => {
+    mount()
+    expect(screen.queryByLabelText('Max active sessions')).toBeNull()
+    expect(screen.queryByLabelText('Attention ceiling')).toBeNull()
   })
 
   it('renders the AI assistant group and PUTs {assistantEnabled: false} when the switch is toggled off', async () => {
@@ -183,11 +188,12 @@ describe('GeneralSection', () => {
     const { ApiRequestError } = await import('@/api/client')
     mutateAsync.mockRejectedValueOnce(new ApiRequestError(409, { detail: { code: 'archive_move_failed', moved: 2, failed: 1, total: 3 } }))
     mount()
-    await userEvent.type(screen.getByLabelText('Max active sessions'), '9')
+    await userEvent.clear(screen.getByLabelText('Max archived sessions'))
+    await userEvent.type(screen.getByLabelText('Max archived sessions'), '9')
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       '2 of 3 archived sessions were moved before the copy failed; the path was not changed.',
     )
-    expect(screen.getByLabelText('Max active sessions')).toHaveValue(9)
+    expect(screen.getByLabelText('Max archived sessions')).toHaveValue(9)
   })
 })

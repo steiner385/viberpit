@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 
 import { api } from '@/api/client'
-import { usePendingDeploy, useFleetHostPatch } from '@/api/hooks'
+import { QK, usePendingDeploy, useFleetHostPatch, useSettings } from '@/api/hooks'
+import { settingsSectionPath } from '@/shell/navDefs'
 // The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
 // shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
 // below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
@@ -97,6 +99,8 @@ export function FleetSection() {
   const [maxSessionsError, setMaxSessionsError] = useState<Record<string, string | null>>({})
 
   const patch = useFleetHostPatch()
+  const { data: settings } = useSettings()
+  const gc = settings?.effectiveDefaults.globalCap
 
   const add = useMutation({
     mutationFn: (body: { name: string; endpoint: string }) =>
@@ -105,6 +109,8 @@ export function FleetSection() {
       setDraft({ name: '', endpoint: '' })
       setAddError(null)
       void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      void queryClient.invalidateQueries({ queryKey: QK.capacity })
+      void queryClient.invalidateQueries({ queryKey: QK.settings })
     },
     onError: (err: unknown) => {
       const body = (err as { body?: { detail?: { message?: string } } })?.body
@@ -114,7 +120,11 @@ export function FleetSection() {
 
   const remove = useMutation({
     mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      void queryClient.invalidateQueries({ queryKey: QK.capacity })
+      void queryClient.invalidateQueries({ queryKey: QK.settings })
+    },
   })
 
   const upgrade = useMutation({
@@ -148,14 +158,6 @@ export function FleetSection() {
 
   return (
     <section className="space-y-3">
-      <header>
-        <h3 className="text-sm font-semibold">Fleet</h3>
-        <p className="text-xs text-ink-muted">
-          Hosts that can run sessions. Weight multiplies a host&apos;s score when
-          ranking; disabling a host removes it from dispatch without deleting it.
-        </p>
-      </header>
-
       {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
 
       {!isLoading && hosts.length === 0 && (
@@ -163,6 +165,7 @@ export function FleetSection() {
       )}
 
       {hosts.length > 0 && (
+        <>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -175,7 +178,7 @@ export function FleetSection() {
                 <th className="pr-2">Free mem</th>
                 <th className="pr-2">Version</th>
                 <th className="pr-2">Weight (dispatch share)</th>
-                <th className="pr-2">Max sessions</th>
+                <th className="pr-2">Cap</th>
                 <th className="pr-2">Enabled</th>
                 <th />
               </tr>
@@ -266,7 +269,7 @@ export function FleetSection() {
                       type="text"
                       inputMode="numeric"
                       defaultValue={h.maxSessions ?? ''}
-                      aria-label={`max sessions for ${h.name}`}
+                      aria-label={`cap for ${h.name}`}
                       aria-invalid={maxSessionsError[h.name] ? true : undefined}
                       className="w-16 rounded border border-edge-strong bg-transparent px-1"
                       onBlur={(e) => {
@@ -283,7 +286,7 @@ export function FleetSection() {
                           // instead of silently dropping the edit.
                           e.target.value = String(h.maxSessions ?? '')
                           setMaxSessionsError((prev) => ({
-                            ...prev, [h.name]: 'Max sessions must be a whole number ≥ 1',
+                            ...prev, [h.name]: 'Cap must be a whole number ≥ 1',
                           }))
                           return
                         }
@@ -324,6 +327,19 @@ export function FleetSection() {
             </tbody>
           </table>
         </div>
+        <p className="text-xs text-ink-muted">
+          Weight is a tiebreaker when several hosts have headroom; it is not a cap. Disabling a
+          host removes it from dispatch without deleting it.
+        </p>
+        {gc && (
+          <p className="text-xs text-ink-muted">
+            {gc.physical === null
+              ? 'Σ caps = unbounded (an enabled host has no cap) → '
+              : `Σ caps = ${gc.physical} → `}
+            <Link to={settingsSectionPath('capacity')} className="text-accent hover:underline">physical ceiling</Link>
+          </p>
+        )}
+        </>
       )}
 
       <form

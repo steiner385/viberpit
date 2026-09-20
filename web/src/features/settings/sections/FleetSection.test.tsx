@@ -12,20 +12,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 
 import { FleetSection } from './FleetSection'
 import { api } from '@/api/client'
 import * as fleet from '@/api/fleet'
+import * as hooks from '@/api/hooks'
 import type { FleetHost, HostEngineState } from '@/api/fleet'
-import { fleetHost } from '@/test/factories'
+import { fleetHost, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 // Spread `actual` (not a bare stub): `FleetSection` also calls the real
 // `useFleetHostPatch`, which this file needs working (it drives `api.put`,
-// mocked below) — only `usePendingDeploy` is overridden here.
+// mocked below) — only `usePendingDeploy` and `useSettings` are overridden here.
 vi.mock('@/api/hooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/hooks')>()
-  return { ...actual, usePendingDeploy: vi.fn(() => ({ data: undefined })) }
+  return {
+    ...actual,
+    usePendingDeploy: vi.fn(() => ({ data: undefined })),
+    useSettings: vi.fn(),
+  }
 })
 
 vi.mock('@/api/client', async (importOriginal) => {
@@ -53,8 +59,9 @@ function renderFleet(hosts: FleetHost[]) {
   vi.spyOn(fleet, 'useFleetHosts').mockReturnValue(
     queryResult({ hosts }) as ReturnType<typeof fleet.useFleetHosts>)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const router = createMemoryRouter([{ path: '/', element: <FleetSection /> }])
   return render(
-    <QueryClientProvider client={qc}><FleetSection /></QueryClientProvider>,
+    <QueryClientProvider client={qc}><RouterProvider router={router} /></QueryClientProvider>,
   )
 }
 
@@ -63,7 +70,10 @@ function row(name: string): HTMLElement {
   return screen.getByText(name).closest('tr') as HTMLElement
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
+})
 
 describe('FleetSection — the Codex column', () => {
   it('has a Codex column header', () => {
@@ -127,9 +137,9 @@ describe('FleetSection — the Codex column', () => {
 
 // Task 9 (spec D9): two "weight" dials exist in this app — this one is the
 // per-host DISPATCH-share multiplier, the product policy card's is a
-// per-product CONTESTED-SLOT share. The label disambiguates them; the max
-// sessions column is the new editable cap alongside it.
-describe('FleetSection — weight and max sessions', () => {
+// per-product CONTESTED-SLOT share. The label disambiguates them; the Cap
+// column is the editable per-host cap alongside it.
+describe('FleetSection — weight and cap', () => {
   it('labels the weight column and input as the dispatch-share weight', () => {
     renderFleet([fleetHost({ name: 'rocky', weight: 3 })])
     expect(screen.getByRole('columnheader', { name: 'Weight (dispatch share)' })).toBeInTheDocument()
@@ -152,15 +162,15 @@ describe('FleetSection — weight and max sessions', () => {
     expect(api.put).not.toHaveBeenCalled()
   })
 
-  it('has a max sessions column, blank for a host with no cap', () => {
+  it('has a Cap column, blank for a host with no cap', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
-    expect(screen.getByRole('columnheader', { name: 'Max sessions' })).toBeInTheDocument()
-    expect(screen.getByLabelText('max sessions for rocky')).toHaveValue('')
+    expect(screen.getByRole('columnheader', { name: 'Cap' })).toBeInTheDocument()
+    expect(screen.getByLabelText('cap for rocky')).toHaveValue('')
   })
 
-  it('patches max sessions on blur with a number', async () => {
+  it('patches cap on blur with a number', async () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '4' } })
     fireEvent.blur(input)
     await waitFor(() => {
@@ -168,9 +178,9 @@ describe('FleetSection — weight and max sessions', () => {
     })
   })
 
-  it('clearing the field patches max sessions back to null', async () => {
+  it('clearing the field patches cap back to null', async () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.blur(input)
     await waitFor(() => {
@@ -178,9 +188,9 @@ describe('FleetSection — weight and max sessions', () => {
     })
   })
 
-  it('does not patch max sessions on blur when it is unchanged', () => {
+  it('does not patch cap on blur when it is unchanged', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    fireEvent.blur(screen.getByLabelText('max sessions for rocky'))
+    fireEvent.blur(screen.getByLabelText('cap for rocky'))
     expect(api.put).not.toHaveBeenCalled()
   })
 
@@ -188,27 +198,27 @@ describe('FleetSection — weight and max sessions', () => {
   // the server — it used to swallow the failure entirely (a 400 nobody saw).
   it('"abc" sends nothing, reverts the field, and shows a row-level error', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: 'abc' } })
     fireEvent.blur(input)
     expect(api.put).not.toHaveBeenCalled()
     expect(input).toHaveValue('4')
-    expect(screen.getByRole('alert')).toHaveTextContent('Max sessions must be a whole number ≥ 1')
+    expect(screen.getByRole('alert')).toHaveTextContent('Cap must be a whole number ≥ 1')
   })
 
   it('"0" sends nothing, reverts the field, and shows a row-level error', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '0' } })
     fireEvent.blur(input)
     expect(api.put).not.toHaveBeenCalled()
     expect(input).toHaveValue('4')
-    expect(screen.getByRole('alert')).toHaveTextContent('Max sessions must be a whole number ≥ 1')
+    expect(screen.getByRole('alert')).toHaveTextContent('Cap must be a whole number ≥ 1')
   })
 
   it('a valid blur after an error clears the row-level error', async () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '0' } })
     fireEvent.blur(input)
     expect(screen.getByRole('alert')).toBeInTheDocument()
@@ -224,12 +234,37 @@ describe('FleetSection — weight and max sessions', () => {
   // `FleetSection.hostTable.test.tsx`, which can actually observe a refetch;
   // this file mocks `useFleetHosts` outright, so a cache invalidation here
   // would have nothing to act on).
-  it('a rejected max sessions patch toasts the API error', async () => {
+  it('a rejected cap patch toasts the API error', async () => {
     vi.mocked(api.put).mockRejectedValueOnce({ body: { detail: { message: 'host not found' } } })
     renderFleet([fleetHost({ name: 'rocky', maxSessions: 4 })])
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '7' } })
     fireEvent.blur(input)
     await waitFor(() => expect(toast.error).toHaveBeenCalled())
+  })
+
+  it('has one heading (the chassis h2), not a second "Fleet" h3 (spec 2026-09-20 C2)', () => {
+    renderFleet([fleetHost({ name: 'rocky' })])
+    expect(screen.queryByRole('heading', { level: 3, name: 'Fleet' })).toBeNull()
+  })
+
+  it('explains weight is a tiebreaker, not a cap, and disabling does not delete (M9)', () => {
+    renderFleet([fleetHost({ name: 'rocky' })])
+    expect(screen.getByText(
+      'Weight is a tiebreaker when several hosts have headroom; it is not a cap. '
+      + 'Disabling a host removes it from dispatch without deleting it.',
+    )).toBeInTheDocument()
+  })
+
+  it('footer states the physical ceiling and links to Limits', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
+      effectiveDefaults: {
+        repoRoot: '/r', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
+        globalCap: { physical: 10, attention: null, effective: 10, binding: 'physical', hosts: [{ name: 'dobby', cap: 4 }, { name: 'rocky', cap: 6 }] },
+      },
+    })))
+    renderFleet([fleetHost({ name: 'rocky' })])
+    expect(screen.getByText(/Σ caps = 10/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'physical ceiling' })).toHaveAttribute('href', '/settings/capacity')
   })
 })

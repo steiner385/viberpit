@@ -1,7 +1,6 @@
 """Settings API — the single app-settings row (permission defaults, etc.)."""
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,8 +11,9 @@ from ccswitch import brand
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
-from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
+from server.db.models import AppSettings
 from server.hostname import self_host_name
+from server.sessions.global_cap import GlobalCap, drain_if_raised, read_global_cap
 from server.sessions.types import VALID_SESSION_MODES
 from server.version import running_git_sha
 
@@ -51,12 +51,15 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("error_sink_enabled", "CCSWITCH_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
     ("capacity_governor_enabled", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "Capacity governor may apply its plan (act mode)"),
+    ("test_slot_cap", "CCSWITCH_TEST_SLOT_CAP", "Full test-suite runs one host may carry at once"),
+    ("child_session_cap", "CCSWITCH_CHILD_SESSION_CAP", "Live child sessions one parent session may hold"),
+    ("stt_max_concurrent", "CCSWITCH_STT_MAX_CONCURRENT", "Concurrent server-side dictation streams"),
     ("log_level", "CCSWITCH_LOG_LEVEL", "Server log level"),
     ("client_log_level", "CCSWITCH_CLIENT_LOG_LEVEL", "Browser log level"),
 )
 
 
-def _server_blocks() -> dict[str, object]:
+def _server_blocks(cap: GlobalCap) -> dict[str, object]:
     cfg = get_settings()
     # Route through the app's identity sources of truth rather than re-reading env
     # here: server.hostname.self_host_name is what the deploy controller and
@@ -70,7 +73,7 @@ def _server_blocks() -> dict[str, object]:
             "archiveHome": cfg.archive_home,
             "modelApprovalAction": cfg.model_approval_action,
             "modelApprovalDenylist": cfg.model_approval_denylist,
-            "maxActiveSessions": DEFAULT_MAX_ACTIVE_SESSIONS,
+            "globalCap": cap.to_wire(),
         },
         "managed": [
             {"key": env, "value": getattr(cfg, attr), "description": desc}
@@ -95,8 +98,8 @@ class SettingsBody(BaseModel):
     maxArchivedSessions: int | None = None
     # Archive home path. None → unchanged; "" → clear to default; path → set.
     archiveHome: str | None = None
-    # Max concurrently active sessions. Omitted (None) → unchanged; >=1 → that cap;
-    # <=0 → clamped to 1 (minimum). UI shows "5 (default)" as placeholder when null.
+    # Attention ceiling. Omitted → unchanged; explicit null → cleared (no attention
+    # ceiling, the physical ceiling is in charge); >=1 → that ceiling; <1 → 422.
     maxActiveSessions: int | None = None
     # App-wide auto-archive toggle. Omitted (None) → unchanged; true/false sets it.
     # Exposed to the UI as a plain bool (the storage-level NULL default surfaces as true).
@@ -140,16 +143,6 @@ async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | 
     return (moved, failures, len(archived_ids))
 
 
-def _cap_raised(old_cap: int | None, new_cap: int) -> bool:
-    """Check if cap_raised: compare against effective defaults.
-
-    NULL max_active_sessions means DEFAULT_MAX_ACTIVE_SESSIONS (5), so setting
-    a first explicit value only counts as a raise when it exceeds the default.
-    """
-    effective_old = old_cap if old_cap is not None else DEFAULT_MAX_ACTIVE_SESSIONS
-    return new_cap > effective_old
-
-
 async def _get_or_create(db) -> AppSettings:
     row = (await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
     if row is None:
@@ -159,7 +152,7 @@ async def _get_or_create(db) -> AppSettings:
     return row
 
 
-def _to_dict(s: AppSettings) -> dict:
+def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
     return {
         "defaultPermissionMode": s.default_permission_mode,
         "thinkingCollapsed": s.thinking_collapsed,
@@ -167,6 +160,8 @@ def _to_dict(s: AppSettings) -> dict:
         "defaultToolDetail": s.default_tool_detail or "auto",
         "maxArchivedSessions": s.max_archived_sessions,
         "archiveHome": s.archive_home,
+        # The ATTENTION ceiling (spec 2026-09-20 D3); the effective cap is
+        # effectiveDefaults.globalCap.effective.
         "maxActiveSessions": s.max_active_sessions,
         # NULL (unset) surfaces as enabled — the client sees a plain bool.
         "autoArchiveEnabled": s.auto_archive_enabled is not False,
@@ -175,13 +170,14 @@ def _to_dict(s: AppSettings) -> dict:
         "assistantEnabled": s.assistant_enabled,
         "assistantModel": s.assistant_model,
         "assistantOperatorTools": s.assistant_operator_tools,
-        **_server_blocks(),
+        **_server_blocks(cap),
     }
 
 
 @router.get("")
 async def get_settings_row(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
-    return _to_dict(await _get_or_create(db))
+    row = await _get_or_create(db)
+    return _to_dict(row, await read_global_cap(db))
 
 
 @router.put("")
@@ -222,21 +218,6 @@ async def put_settings_row(
                     "code": "archive_move_failed", "moved": moved, "failed": failed, "total": total,
                 })
         row.archive_home = new_home
-    if body.maxActiveSessions is not None:
-        old_cap = row.max_active_sessions
-        new_cap = max(1, body.maxActiveSessions)
-        row.max_active_sessions = new_cap
-        # When the cap increases (or was previously unlimited and is now set),
-        # fire a drain so newly-available slots are filled from the queue.
-        cap_raised = _cap_raised(old_cap, new_cap)
-        if cap_raised:
-            try:
-                orch = request.app.state.sessions
-                if hasattr(orch, "maybe_start_queued"):
-                    asyncio.create_task(orch.maybe_start_queued())
-            except AttributeError:
-                # Orchestrator not yet attached (e.g. during tests with minimal app).
-                log.debug("settings.put: orchestrator unavailable for queue drain")
     from server.sessions.model_policy import VALID_ACTIONS
     if "modelApprovalAction" in body.model_fields_set:
         if body.modelApprovalAction is not None and body.modelApprovalAction not in VALID_ACTIONS:
@@ -250,5 +231,24 @@ async def put_settings_row(
         row.assistant_model = body.assistantModel
     if "assistantOperatorTools" in body.model_fields_set:
         row.assistant_operator_tools = body.assistantOperatorTools
+    # LAST, after every other field above has had its chance to raise: this
+    # block commits (not merely flushes), which is this handler's one point of
+    # no return. `get_db`'s deferred commit made the whole PUT atomic before
+    # M5's fix — an explicit early commit here is required so the drain's
+    # background task (which opens its OWN db session) reads the new cap
+    # rather than the pre-commit one, but committing BEFORE a sibling field's
+    # validation (e.g. modelApprovalAction) would persist the cap and fire the
+    # drain moments before an unrelated 422 aborted the rest of the request.
+    # Keeping this block last means every other field's HTTPException has
+    # already fired by the time anything is committed.
+    if "maxActiveSessions" in body.model_fields_set:
+        if body.maxActiveSessions is not None and body.maxActiveSessions < 1:
+            raise HTTPException(status_code=422, detail="maxActiveSessions must be >= 1 or null")
+        before = await read_global_cap(db)
+        row.max_active_sessions = body.maxActiveSessions
+        await db.flush()
+        await db.commit()
+        # The EFFECTIVE cap rose (not merely the typed number): fill the new slots.
+        drain_if_raised(getattr(request.app.state, "sessions", None), before, await read_global_cap(db))
     await db.flush()
-    return _to_dict(row)
+    return _to_dict(row, await read_global_cap(db))

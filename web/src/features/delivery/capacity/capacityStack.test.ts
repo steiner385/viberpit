@@ -8,7 +8,7 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     pushLevel: 'steady',
     governorMode: 'monitor',
     killSwitch: true,
-    global: { cap: 20, active: 10, free: 10 },
+    global: { cap: 20, active: 10, free: 10, physical: null, attention: null, binding: null },
     hosts: [],
     accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [] },
     runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
@@ -103,5 +103,14 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
     expect(runner.cap).toBe(6)
     expect(runner.free).toBe(4)
     expect(runner.secondary).toBeUndefined()
+  })
+})
+
+describe('buildCapacityStack — row links (spec 2026-09-20 C4, D10)', () => {
+  it('links each supply row to its Settings › Capacity section through settingsSectionPath', () => {
+    const rows = Object.fromEntries(buildCapacityStack(readout()).map((row) => [row.key, row.href]))
+    expect(rows.global).toBe('/settings/capacity')
+    expect(rows.hosts).toBe('/settings/fleet')
+    expect(rows.accounts).toBe('/settings/accounts')
   })
 })

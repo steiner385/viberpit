@@ -7,7 +7,7 @@ upgrade config (ssh_host, repo_path).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete as sa_delete, select as sa_select, update as sa_update
 
@@ -17,6 +17,7 @@ from server.db import db_session
 from server.db.models import Host
 from server.deploy.steps import SSH_HOST_RE, SSH_REPO_RE
 from server.sessions import host_upgrade
+from server.sessions.global_cap import drain_if_raised, read_global_cap
 from server.sessions.host_engines import (
     EngineAvailability,
     engine_dispatchable,
@@ -174,9 +175,10 @@ def sanitize_patch(body: dict, fields_set: set[str] | None = None) -> dict:
 
 
 @router.post("/hosts", status_code=status.HTTP_201_CREATED)
-async def create_host(body: HostCreate,
+async def create_host(body: HostCreate, request: Request,
                       _identity: str = Depends(current_identity)) -> dict:
     async with db_session() as db:
+        before = await read_global_cap(db)
         existing = (await db.execute(
             sa_select(Host).where(Host.name == body.name))).scalars().first()
         if existing is not None:
@@ -197,12 +199,16 @@ async def create_host(body: HostCreate,
         # re-read is redundant, and .first() types as Host|None which
         # host_to_wire does not accept.
         wire = host_to_wire(host)
+        after = await read_global_cap(db)
+    drain_if_raised(getattr(request.app.state, "sessions", None), before, after)
     return wire
 
 
 @router.delete("/hosts/{name}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_host(name: str, _identity: str = Depends(current_identity)) -> None:
+async def delete_host(name: str, request: Request,
+                      _identity: str = Depends(current_identity)) -> None:
     async with db_session() as db:
+        before = await read_global_cap(db)
         # Check existence rather than trusting rowcount: it is not typed on
         # Result[Any], and a statement that matches a row can still report 0 on
         # some drivers — which would 404 a host that exists. Mirrors update_host.
@@ -210,9 +216,14 @@ async def delete_host(name: str, _identity: str = Depends(current_identity)) -> 
             sa_select(Host.name).where(Host.name == name))).scalar_one_or_none()
         if found is not None:
             await db.execute(sa_delete(Host).where(Host.name == name))
+        after = await read_global_cap(db)
     if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"code": "unknown_host", "message": name})
+    # Deleting an UNCAPPED host can raise the effective cap (physical was None
+    # because that host had no cap; removing it can leave a finite Σ, or hand
+    # control to a lower attention ceiling that was previously not binding).
+    drain_if_raised(getattr(request.app.state, "sessions", None), before, after)
 
 
 @router.get("/hosts")
@@ -223,7 +234,7 @@ async def list_hosts(_identity: str = Depends(current_identity)) -> dict:
 
 
 @router.put("/hosts/{name}")
-async def update_host(name: str, body: HostPatch,
+async def update_host(name: str, body: HostPatch, request: Request,
                       _identity: str = Depends(current_identity)) -> dict:
     values = sanitize_patch(body.model_dump(), body.model_fields_set)
     if not values:
@@ -231,14 +242,17 @@ async def update_host(name: str, body: HostPatch,
                             detail={"code": "no_writable_fields",
                                     "message": "nothing settable in this request"})
     async with db_session() as db:
+        before = await read_global_cap(db)
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
         row = (await db.execute(
             sa_select(Host).where(Host.name == name))).scalars().first()
+        after = await read_global_cap(db)
     # Re-read rather than trusting rowcount: an UPDATE that matches a row but
     # changes nothing reports 0 on some drivers, which would 404 a real host.
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"code": "unknown_host", "message": name})
+    drain_if_raised(getattr(request.app.state, "sessions", None), before, after)
     return host_to_wire(row)
 
 

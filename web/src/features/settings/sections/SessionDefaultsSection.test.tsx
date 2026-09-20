@@ -91,7 +91,7 @@ describe('SessionDefaultsSection', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       effectiveDefaults: {
         repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval',
-        modelApprovalDenylist: '', maxActiveSessions: 5,
+        modelApprovalDenylist: '', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
       },
     })))
     mount()

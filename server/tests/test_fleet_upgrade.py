@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,11 @@ from server.api.fleet import (
     update_host, upgrade_host, UpgradeBody,
 )
 from server.sessions import host_upgrade
+
+# The fleet write handlers take the request only to reach `app.state.sessions`
+# for the queue drain (global_cap.drain_if_raised); a state with no `sessions`
+# is a documented no-op, so a bare stub is enough for a direct call.
+_STUB_REQUEST = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
 
 class _FakeIdentity:
@@ -83,11 +89,11 @@ def test_upgrade_requires_auth():
 
 async def _mk_host(name="rocky", *, ssh=True, enabled=True, active=0):
     await create_host(HostCreate(name=name, endpoint="https://rocky:9443"),
-                      _identity=_FakeIdentity())
+                      request=_STUB_REQUEST, _identity=_FakeIdentity())
     if ssh:
         await update_host(name, HostPatch(sshHost="deploy@rocky",
                                           repoPath="/srv/ccswitch"),
-                          _identity=_FakeIdentity())
+                          request=_STUB_REQUEST, _identity=_FakeIdentity())
     from sqlalchemy import update as sa_update
     from server.db import db_session
     from server.db.models import Host

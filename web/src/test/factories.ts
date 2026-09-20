@@ -175,7 +175,8 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
     effectiveDefaults: {
       repoRoot: '/home/user/GitHub', archiveHome: null,
-      modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5,
+      modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
+      globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
     },
     managed: [],
     about: { gitSha: null, hostName: 'test-host' },

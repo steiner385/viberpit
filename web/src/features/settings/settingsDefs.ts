@@ -2,11 +2,12 @@ import type * as React from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
-  Rocket,
+  Rocket, Gauge,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
 import { GeneralSection } from './sections/GeneralSection'
+import { LimitsSection } from './sections/LimitsSection'
 import { AppearanceSection } from './sections/AppearanceSection'
 import { SessionDefaultsSection } from './sections/SessionDefaultsSection'
 import { AboutSection } from './sections/AboutSection'
@@ -24,14 +25,14 @@ import { SkillsSection } from './sections/SkillsSection'
 import { CommandsSection } from './sections/CommandsSection'
 import { McpSection } from './sections/McpSection'
 
-export type SettingsGroupId = 'workspace' | 'sessions' | 'accounts' | 'claude' | 'about'
+export type SettingsGroupId = 'workspace' | 'sessions' | 'capacity' | 'claude' | 'about'
 export interface SettingsGroupDef { id: SettingsGroupId; label: string }
 
 /** Nav order. Frequency-first (spec §5): weekly changes above yearly ones. */
 export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
   { id: 'workspace', label: 'Workspace' },
   { id: 'sessions', label: 'Sessions' },
-  { id: 'accounts', label: 'Accounts' },
+  { id: 'capacity', label: 'Capacity' },
   { id: 'claude', label: 'Claude config' },
   { id: 'about', label: 'About' },
 ]
@@ -66,7 +67,7 @@ interface SettingsDefShape {
  */
 const DEFS = [
   { id: 'general',       group: 'workspace', label: 'General',             icon: SlidersHorizontal, scope: 'server',  component: GeneralSection, ownsChassis: true,
-    description: 'Where repos are cloned and archives are stored, and how many sessions run and are kept.' },
+    description: 'Where repos are cloned and archives are stored, and how many archived sessions are kept.' },
   { id: 'appearance',    group: 'workspace', label: 'Appearance',          icon: Palette,           scope: 'browser', component: AppearanceSection, ownsChassis: true,
     description: 'Theme, navigation and layout for this browser only.', keywords: ['theme', 'dark', 'light'] },
   { id: 'notifications', group: 'workspace', label: 'Notifications',       icon: Bell,              scope: 'device',  component: NotificationsSection,
@@ -81,10 +82,14 @@ const DEFS = [
     description: 'Reusable prompt templates with {{variable}} placeholders.' },
   { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection,
     description: 'Named tool-permission sets a session can adopt.' },
-  { id: 'accounts',      group: 'accounts',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention',
+  // What the fleet can run (spec 2026-09-20 D1/D2): supply, not spend. Delivery →
+  // Capacity is the other half — how automation spends it — and the two link.
+  { id: 'capacity',      group: 'capacity',  label: 'Limits',              icon: Gauge,             scope: 'server',  component: LimitsSection, ownsChassis: true,
+    description: 'The global cap as its two ceilings — what the hosts can run and how much you want running — plus the env-managed limits outside the stack.', keywords: ['global cap', 'attention', 'physical', 'max active sessions'] },
+  { id: 'fleet',         group: 'capacity',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection,
+    description: 'Machines that can run sessions: each host’s cap, dispatch weight and health.' },
+  { id: 'accounts',      group: 'capacity',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention',
     description: 'Claude Max and Copilot accounts the rotation can pick from.' },
-  { id: 'fleet',         group: 'accounts',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection,
-    description: 'Machines that can run sessions, their weight and capacity.' },
   { id: 'plugins',       group: 'claude',    label: 'Plugins',             icon: Puzzle,            scope: 'server',  component: PluginsSection,
     description: 'Installed Claude Code plugins and what each one adds.' },
   { id: 'skills',        group: 'claude',    label: 'Skills',              icon: Sparkles,          scope: 'server',  component: SkillsSection,

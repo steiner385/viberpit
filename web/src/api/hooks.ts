@@ -319,13 +319,25 @@ export interface ManagedFlag {
   description: string
 }
 
+/** The effective global cap and its derivation (spec 2026-09-20 D3). */
+export interface GlobalCapDefaults {
+  /** Σ host caps over enabled hosts; null = unbounded (no hosts, or an enabled host has no cap). */
+  physical: number | null
+  /** AppSettings.maxActiveSessions as stored; null = no attention ceiling. */
+  attention: number | null
+  /** min(physical, attention), or the server default (5) when both are unbounded. Always ≥ 1. */
+  effective: number
+  binding: 'physical' | 'attention' | 'default'
+  hosts: { name: string; cap: number | null }[]
+}
+
 /** What the server falls back to when the matching AppSettings column is NULL. */
 export interface EffectiveDefaults {
   repoRoot: string
   archiveHome: string | null
   modelApprovalAction: string
   modelApprovalDenylist: string
-  maxActiveSessions: number
+  globalCap: GlobalCapDefaults
 }
 
 export interface AppSettings {
@@ -338,7 +350,7 @@ export interface AppSettings {
   maxArchivedSessions: number | null
   // Archive home path; null = use server default. On PUT, send "" to clear to default.
   archiveHome: string | null
-  // Maximum concurrent active sessions; sessions beyond this are queued. null = server default (5).
+  // The ATTENTION ceiling (spec 2026-09-20 D3); null = none. The effective cap is effectiveDefaults.globalCap.
   maxActiveSessions: number | null
   // App-wide toggle: when false, completed sessions are not auto-archived (they linger
   // like a per-session manual opt-out). The server's NULL default surfaces here as true.
@@ -369,11 +381,18 @@ export function useSettings() {
   })
 }
 
+// Every mutation that moves a capacity dial (settings, hosts, accounts) also
+// invalidates QK.capacity: the Delivery → Capacity stack and the Limits
+// section's readout card otherwise show the old ceiling for up to 30 s
+// (spec 2026-09-20 C20, D10).
 export function useUpdateSettings() {
   const qc = useQueryClient()
   return useMutation<AppSettings, ApiRequestError, Partial<AppSettings>>({
     mutationFn: (body) => api.put<AppSettings>('/settings', body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.settings }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.settings })
+      qc.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 }
 
@@ -658,7 +677,10 @@ export function useUpdateAccount() {
   return useMutation<Account, ApiRequestError, AccountUpdate>({
     mutationFn: ({ name, ...fields }) =>
       api.patch<Account>(`/accounts/${encodeURIComponent(name)}`, fields),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.accounts })
+      qc.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 }
 
@@ -668,7 +690,10 @@ export function useSetAccountEnabled() {
     mutationFn: ({ name, enabled }) =>
       api.patch<Account>(`/accounts/${encodeURIComponent(name)}/enabled`, { enabled }),
     // Refetch accounts so the dashboard + pickers reflect the new state at once.
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.accounts })
+      qc.invalidateQueries({ queryKey: QK.capacity })
+    },
   })
 }
 
@@ -1160,7 +1185,14 @@ export function useFleetHostPatch() {
   return useMutation<FleetHost, ApiRequestError, { name: string; body: Partial<FleetHost> }>({
     mutationFn: ({ name, body }) =>
       api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
+      void qc.invalidateQueries({ queryKey: QK.capacity })
+      // effectiveDefaults.globalCap rides on GET /api/settings too (the Hosts
+      // footer and the Limits rows both read it) — without this a host cap
+      // edit leaves "Σ caps = N → physical ceiling" showing the stale sum.
+      void qc.invalidateQueries({ queryKey: QK.settings })
+    },
     onError: (e) => {
       void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
       toast.error(extractMutationErrorMessage(e, 'Could not update the host'))

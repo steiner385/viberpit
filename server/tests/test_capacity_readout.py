@@ -437,3 +437,43 @@ def test_product_and_runner_rows_both_fall_back_when_plan_not_applied():
     assert r["runner"]["ceiling"] == 6
     assert r["runner"]["effective"] == 6   # the stored ceiling, not the plan's 3
     assert r["runner"]["derived"] is None
+
+
+def test_global_row_carries_the_two_ceilings_when_the_seam_is_wired():
+    """spec 2026-09-20 D3: the stack's Global row says which ceiling binds."""
+    async def limits():
+        return {"physical": 10, "attention": 6, "effective": 6, "binding": "attention",
+                "hosts": [{"name": "dobby", "cap": 4}, {"name": "rocky", "cap": 6}]}
+
+    src = _make_sources(global_cap=6)
+    src.global_limits = limits
+    r = asyncio.run(build_readout(src))
+    assert r["global"] == {"cap": 6, "active": 2, "free": 4,
+                           "physical": 10, "attention": 6, "binding": "attention"}
+
+
+def test_global_row_degrades_to_nulls_without_the_seam():
+    r = asyncio.run(build_readout(_make_sources(global_cap=6)))
+    assert r["global"]["physical"] is None and r["global"]["attention"] is None
+    assert r["global"]["binding"] is None
+
+
+def test_wired_global_limits_degrades_to_null_when_the_read_fails(monkeypatch):
+    """A DB blip in the Global row's derivation must not 500 the readout (same
+    contract as the plan seam's _safe_plan)."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from server.automations import capacity_wiring
+
+    async def boom(db):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(capacity_wiring, "read_global_cap", boom)
+    orch = SimpleNamespace(
+        _max_active_sessions=AsyncMock(return_value=6), _active_session_count=lambda: 2,
+        _backlog_read_config=AsyncMock(), _backlog_ctx=SimpleNamespace(list_target_states=AsyncMock()),
+        _backlog_count_candidates=AsyncMock(), _capacity_governor_read_config=AsyncMock(),
+    )
+    src = capacity_wiring.sources_for(orch)
+    assert asyncio.run(src.global_limits()) is None

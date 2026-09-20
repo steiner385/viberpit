@@ -5,7 +5,7 @@ export const CAPACITY: CapacityReadout = {
   pushLevel: 'steady',
   governorMode: 'monitor',
   killSwitch: true,
-  global: { cap: 20, active: 10, free: 10 },
+  global: { cap: 20, active: 10, free: 10, physical: null, attention: null, binding: null },
   hosts: [
     { name: 'dobby', enabled: true, healthy: true, active: 5, max: 10, free: 5 },
   ],

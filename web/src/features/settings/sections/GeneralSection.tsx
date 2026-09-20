@@ -24,7 +24,6 @@ interface GeneralDraft {
   archiveHome: string
   autoArchiveEnabled: boolean
   maxArchived: string
-  maxActive: string
   // Unlike modelApprovalAction/Denylist (SessionDefaultsSection), there is no server
   // "effective default" surfaced for these two, so the draft treats a null server
   // value as the CCSWITCH_ASSISTANT_ENABLED launch default (on) — a plain switch, not
@@ -43,7 +42,6 @@ function toDraft(s: AppSettings): GeneralDraft {
     archiveHome: s.archiveHome ?? '',
     autoArchiveEnabled: s.autoArchiveEnabled,
     maxArchived: s.maxArchivedSessions != null ? String(s.maxArchivedSessions) : '',
-    maxActive: s.maxActiveSessions != null ? String(s.maxActiveSessions) : '',
     assistantEnabled: s.assistantEnabled ?? true,
     assistantModel: s.assistantModel ?? '',
     assistantOperatorTools: s.assistantOperatorTools ?? false,
@@ -54,12 +52,10 @@ function toDraft(s: AppSettings): GeneralDraft {
  * The PUT body, unchanged from the old form (inventory §1a) — the server's
  * null/0/"" conventions are not symmetrical and each one is load-bearing:
  * `repoRoot` null clears it, `archiveHome` clears with "" (null would mean "no
- * change"), `maxArchivedSessions` clears with 0 (the backend maps <=0 to null)
- * and `maxActiveSessions` clears with null.
+ * change"), `maxArchivedSessions` clears with 0 (the backend maps <=0 to null).
  */
 function toPayload(d: GeneralDraft): Partial<AppSettings> {
   const archived = Number.parseInt(d.maxArchived, 10)
-  const active = Number.parseInt(d.maxActive, 10)
   return {
     repoRoot: d.repoRoot.trim() || null,
     // "" clears to default (null would mean "no change"), so this is a string
@@ -69,7 +65,6 @@ function toPayload(d: GeneralDraft): Partial<AppSettings> {
     // would save "/mnt/slow " after the dialog made the user type "/mnt/slow".
     archiveHome: d.archiveHome.trim(),
     maxArchivedSessions: Number.isFinite(archived) && archived > 0 ? archived : 0, // 0 = unlimited
-    maxActiveSessions: Number.isFinite(active) && active > 0 ? active : null,
     autoArchiveEnabled: d.autoArchiveEnabled,
     assistantEnabled: d.assistantEnabled,
     assistantModel: d.assistantModel.trim() || null,
@@ -120,15 +115,15 @@ function archiveCount(n: number): string {
 }
 
 /**
- * Settings › General (spec §8): the server-wide paths, the archive policy and
- * the session capacity, on the section chassis with the Form save model.
+ * Settings › General (spec §8): the server-wide paths and the archive policy,
+ * on the section chassis with the Form save model.
  *
  * ## What changed from `components/settings/GeneralSection.tsx`
  *
  * That form put nine unrelated controls in one flat column with a single Save
  * button — permission mode, model approval, transcript display and
- * notifications alongside these five — so every field the user could see was a
- * field a mistyped Save could change. Here it is five fields in three named
+ * notifications alongside these four — so every field the user could see was a
+ * field a mistyped Save could change. Here it is four fields in three named
  * groups, and the fields that moved live in the sections that own them
  * (Defaults, Notifications).
  *
@@ -273,25 +268,6 @@ export function GeneralSection() {
             placeholder="Unlimited"
             value={draft.maxArchived}
             onChange={(e) => set('maxArchived', e.target.value)}
-          />
-        </SettingRow>
-      </SettingsGroup>
-
-      <SettingsGroup legend="Capacity">
-        <SettingRow
-          label="Max active sessions"
-          htmlFor="general-max-active"
-          description="Sessions beyond this limit queue and start when a slot frees."
-        >
-          <Input
-            id="general-max-active"
-            type="number"
-            min={1}
-            step={1}
-            inputMode="numeric"
-            placeholder={`${eff.maxActiveSessions} · server default`}
-            value={draft.maxActive}
-            onChange={(e) => set('maxActive', e.target.value)}
           />
         </SettingRow>
       </SettingsGroup>

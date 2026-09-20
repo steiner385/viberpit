@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 
 import type { FleetHost, HostUpgrade } from '@/api/fleet'
-import { fleetHost } from '@/test/factories'
+import { fleetHost, appSettings } from '@/test/factories'
 
 import { FleetSection } from './FleetSection'
 
@@ -43,8 +44,11 @@ vi.mock('@/api/client', async (importOriginal) => {
   return {
     ...actual,
     api: {
-      get: vi.fn(async (path: string) =>
-        path.startsWith('/deploy') ? deployStatus : { hosts: listed }),
+      get: vi.fn(async (path: string) => {
+        if (path.startsWith('/deploy')) return deployStatus
+        if (path.startsWith('/settings')) return appSettings()
+        return { hosts: listed }
+      }),
       put: vi.fn(async () => hosts[0]),
       post: vi.fn(async () => ({ started: true })),
     },
@@ -55,7 +59,8 @@ import { api } from '@/api/client'
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  const router = createMemoryRouter([{ path: '/', element: ui }])
+  return render(<QueryClientProvider client={qc}><RouterProvider router={router} /></QueryClientProvider>)
 }
 
 beforeEach(() => {
@@ -210,7 +215,7 @@ describe('FleetSection', () => {
     const hostsCallsBefore = vi.mocked(api.get).mock.calls
       .filter(([p]) => typeof p === 'string' && !p.startsWith('/deploy')).length
 
-    const input = screen.getByLabelText('max sessions for rocky')
+    const input = screen.getByLabelText('cap for rocky')
     fireEvent.change(input, { target: { value: '9' } })
     fireEvent.blur(input)
 

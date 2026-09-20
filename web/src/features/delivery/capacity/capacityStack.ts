@@ -1,5 +1,5 @@
 /**
- * The five ceiling-stack rows (design 2026-09-19 §7.1: Global cap → Hosts →
+ * The five ceiling-stack rows (design 2026-09-19 §7.1: Global cap, Hosts →
  * Accounts → Runner ceiling → Products), built once here so the list column's
  * `CapacityScopeBody` and the detail pane's `CapacityDetail` render the same
  * numbers from the same fields rather than two hand-rolled reductions that
@@ -7,6 +7,7 @@
  */
 import type { CapacityBindingLayer, CapacityReadout } from '@/api/capacity'
 import { automationPath } from '../deliveryNavState'
+import { settingsSectionPath } from '@/shell/navDefs'
 
 export interface CapacityStackRow {
   key: 'global' | 'hosts' | 'accounts' | 'runner' | 'products'
@@ -51,18 +52,18 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
   return [
     {
       key: 'global', label: 'Global cap', used: r.global.active, cap: r.global.cap, free: r.global.free,
-      href: '/settings/general', binding: isBindingLayer(r.binding, 'global'),
+      href: settingsSectionPath('capacity'), binding: isBindingLayer(r.binding, 'global'),
     },
     {
       key: 'hosts', label: 'Hosts', used: hostsActive, cap: hostsCap, free: hostsFree,
-      href: '/settings/fleet', binding: isBindingLayer(r.binding, 'host'),
+      href: settingsSectionPath('fleet'), binding: isBindingLayer(r.binding, 'host'),
       secondary: excludedHosts > 0
         ? `${excludedHosts} host${excludedHosts === 1 ? '' : 's'} excluded: disabled or unhealthy`
         : undefined,
     },
     {
       key: 'accounts', label: 'Accounts', used: accountsUsed, cap: r.accounts.total, free: r.accounts.available,
-      href: '/settings/accounts', binding: isBindingLayer(r.binding, 'account'),
+      href: settingsSectionPath('accounts'), binding: isBindingLayer(r.binding, 'account'),
     },
     {
       key: 'runner', label: 'Runner ceiling', used: r.runner.inFlight, cap: r.runner.effective, free: runnerFree,

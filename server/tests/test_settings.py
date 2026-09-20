@@ -358,57 +358,128 @@ def test_put_max_active_round_trips():
         assert get_resp.json()["maxActiveSessions"] == 3
 
 
-def test_put_max_active_zero_clamps_to_one():
-    """PUT {maxActiveSessions: 0} stores 1 (clamped to minimum)."""
+def test_put_max_active_below_one_is_422():
+    """PUT {maxActiveSessions: 0} is refused, not silently clamped (spec 2026-09-20 §7)."""
     with _client() as client:
-        put_resp = client.put(
-            "/api/settings",
-            json={"maxActiveSessions": 0},
-            headers=IDENTITY_HEADERS,
-        )
-        assert put_resp.status_code == 200
-        assert put_resp.json()["maxActiveSessions"] == 1
+        resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 0})
+        assert resp.status_code == 422, resp.text
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["maxActiveSessions"] is None
 
 
-def test_cap_raised_helper():
-    """Unit test _cap_raised: compares against effective default cap."""
-    from server.api.settings import _cap_raised
-
-    # (None, 3) → False: setting to default should not raise
-    assert _cap_raised(None, 3) is False
-
-    # (None, 7) → True: setting above default should raise
-    assert _cap_raised(None, 7) is True
-
-    # (5, 6) → True: increasing cap raises
-    assert _cap_raised(5, 6) is True
-
-    # (5, 5) → False: same cap does not raise
-    assert _cap_raised(5, 5) is False
-
-    # (None, 5) → False: setting to default should not raise
-    assert _cap_raised(None, 5) is False
+def test_put_max_active_null_clears_the_attention_ceiling():
+    """An explicit null clears (the web sends null for a blank field); an OMITTED key leaves it alone."""
+    with _client() as client:
+        client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 3})
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["maxActiveSessions"] == 3
+        client.put("/api/settings", headers=IDENTITY_HEADERS, json={"thinkingCollapsed": False})
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["maxActiveSessions"] == 3
+        resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": None})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["maxActiveSessions"] is None
 
 
 def test_put_max_active_null_to_default_no_raise():
-    """PUT {maxActiveSessions: 3} from NULL should NOT trigger drain (equals default)."""
+    """PUT {maxActiveSessions: 3} from NULL should NOT trigger drain (equals default),
+    but a later raise past a physical ceiling of two capped hosts must (M7)."""
+    from unittest.mock import AsyncMock, patch
+
     with _client() as client:
         # First call: maxActiveSessions is NULL (default 5)
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["maxActiveSessions"] is None
 
-        # PUT to 3 (below default of 5): should NOT raise, no drain needed
-        put_resp = client.put(
-            "/api/settings",
-            json={"maxActiveSessions": 3},
-            headers=IDENTITY_HEADERS,
-        )
+        for name, cap in (("dobby", 4), ("rocky", 6)):
+            r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                            json={"name": name, "endpoint": f"https://{name}:9443", "maxSessions": cap})
+            assert r.status_code == 201, r.text
+
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            # PUT to 3 (below default of 5, and below the 10 physical ceiling):
+            # should NOT raise, no drain needed.
+            put_resp = client.put(
+                "/api/settings",
+                json={"maxActiveSessions": 3},
+                headers=IDENTITY_HEADERS,
+            )
+            assert put_resp.status_code == 200
+            assert put_resp.json()["maxActiveSessions"] == 3
+            drain.assert_not_awaited()
+
+            # Verify the value persisted
+            get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+            assert get_resp.json()["maxActiveSessions"] == 3
+
+            # PUT to 8 (raises the effective cap 3 -> 8): must drain exactly once.
+            put_resp = client.put(
+                "/api/settings",
+                json={"maxActiveSessions": 8},
+                headers=IDENTITY_HEADERS,
+            )
+            assert put_resp.status_code == 200
+            drain.assert_awaited_once()
+
+
+def test_put_max_active_below_one_after_a_valid_value_leaves_it_intact():
+    """A rejected PUT (0 is invalid) must not disturb the last valid value."""
+    with _client() as client:
+        put_resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 3})
         assert put_resp.status_code == 200
         assert put_resp.json()["maxActiveSessions"] == 3
 
-        # Verify the value persisted
+        resp = client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 0})
+        assert resp.status_code == 422, resp.text
+
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["maxActiveSessions"] == 3
+
+
+def test_put_with_an_invalid_sibling_field_persists_nothing_and_does_not_drain():
+    """The cap commit must come AFTER every validation: a 422 on another field
+    leaves the cap untouched and fires no drain."""
+    from unittest.mock import AsyncMock, patch
+
+    with _client() as client:
+        for name, cap in (("dobby", 4), ("rocky", 6)):
+            client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                        json={"name": name, "endpoint": f"https://{name}:9443", "maxSessions": cap})
+        client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 3})
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            resp = client.put("/api/settings", headers=IDENTITY_HEADERS,
+                              json={"maxActiveSessions": 8, "modelApprovalAction": "bogus"})
+            assert resp.status_code == 422, resp.text
+            drain.assert_not_awaited()
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["maxActiveSessions"] == 3
+
+
+# ---------------------------------------------------------------------------
+# effectiveDefaults.globalCap (spec 2026-09-20 D3)
+# ---------------------------------------------------------------------------
+
+
+def test_effective_global_cap_derives_from_enabled_host_caps():
+    with _client() as client:
+        gc = client.get("/api/settings", headers=IDENTITY_HEADERS).json()["effectiveDefaults"]["globalCap"]
+        assert gc == {"physical": None, "attention": None, "effective": 5, "binding": "default", "hosts": []}
+
+        for name, cap in (("dobby", 4), ("rocky", 6)):
+            r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                            json={"name": name, "endpoint": f"https://{name}:9443", "maxSessions": cap})
+            assert r.status_code == 201, r.text
+        gc = client.get("/api/settings", headers=IDENTITY_HEADERS).json()["effectiveDefaults"]["globalCap"]
+        assert gc["physical"] == 10 and gc["effective"] == 10 and gc["binding"] == "physical"
+        assert gc["hosts"] == [{"name": "dobby", "cap": 4}, {"name": "rocky", "cap": 6}]
+
+        client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 6})
+        gc = client.get("/api/settings", headers=IDENTITY_HEADERS).json()["effectiveDefaults"]["globalCap"]
+        assert (gc["attention"], gc["effective"], gc["binding"]) == (6, 6, "attention")
+
+
+def test_managed_lists_the_capacity_env_flags():
+    with _client() as client:
+        keys = {m["key"] for m in client.get("/api/settings", headers=IDENTITY_HEADERS).json()["managed"]}
+    for env in ("CCSWITCH_TEST_SLOT_CAP", "CCSWITCH_CHILD_SESSION_CAP",
+                "CCSWITCH_STT_MAX_CONCURRENT", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED"):
+        assert env in keys, env
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +549,7 @@ def test_get_settings_exposes_effective_defaults_and_accepted_modes():
         "archiveHome": None,
         "modelApprovalAction": "block",
         "modelApprovalDenylist": "fable,opus",
-        "maxActiveSessions": 5,
+        "globalCap": {"physical": None, "attention": None, "effective": 5, "binding": "default", "hosts": []},
     }
 
 
