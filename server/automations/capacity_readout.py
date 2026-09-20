@@ -73,6 +73,10 @@ class CapacitySources:
     plan: Callable[[], Awaitable[dict | None]]
     governor_config: Callable[[], Awaitable[tuple[str, dict]]]
     kill_switch: Callable[[], bool]
+    # Optional (spec 2026-09-20 D3): the derivation behind ``global_cap`` —
+    # ``GlobalCap.to_wire()`` — so the Global row can say which ceiling binds.
+    # None (older callers / pure tests) degrades the three fields to null.
+    global_limits: Callable[[], Awaitable[dict | None]] | None = None
 
 
 async def build_readout(src: CapacitySources) -> dict:
@@ -81,6 +85,7 @@ async def build_readout(src: CapacitySources) -> dict:
     reserve = RESERVE_PCT.get(push_level, 20)
     global_cap = await src.global_cap()
     global_active = src.global_active()
+    limits = (await src.global_limits()) if src.global_limits is not None else None
     hosts = [{"name": h["name"], "enabled": bool(h.get("enabled")), "healthy": h.get("healthy"),
               "active": int(h.get("activeSessions") or 0), "max": h.get("maxSessions"),
               "free": (None if h.get("maxSessions") is None
@@ -220,7 +225,10 @@ async def build_readout(src: CapacitySources) -> dict:
     return {
         "computedAt": now.isoformat(), "pushLevel": push_level,
         "governorMode": mode, "killSwitch": src.kill_switch(),
-        "global": {"cap": global_cap, "active": global_active, "free": global_free},
+        "global": {"cap": global_cap, "active": global_active, "free": global_free,
+                   "physical": limits.get("physical") if limits else None,
+                   "attention": limits.get("attention") if limits else None,
+                   "binding": limits.get("binding") if limits else None},
         "hosts": hosts,
         "accounts": {"available": accounts_available,
                      "total": len(account_rows), "reservePct": reserve,

@@ -437,3 +437,22 @@ def test_product_and_runner_rows_both_fall_back_when_plan_not_applied():
     assert r["runner"]["ceiling"] == 6
     assert r["runner"]["effective"] == 6   # the stored ceiling, not the plan's 3
     assert r["runner"]["derived"] is None
+
+
+def test_global_row_carries_the_two_ceilings_when_the_seam_is_wired():
+    """spec 2026-09-20 D3: the stack's Global row says which ceiling binds."""
+    async def limits():
+        return {"physical": 10, "attention": 6, "effective": 6, "binding": "attention",
+                "hosts": [{"name": "dobby", "cap": 4}, {"name": "rocky", "cap": 6}]}
+
+    src = _make_sources(global_cap=6)
+    src.global_limits = limits
+    r = asyncio.run(build_readout(src))
+    assert r["global"] == {"cap": 6, "active": 2, "free": 4,
+                           "physical": 10, "attention": 6, "binding": "attention"}
+
+
+def test_global_row_degrades_to_nulls_without_the_seam():
+    r = asyncio.run(build_readout(_make_sources(global_cap=6)))
+    assert r["global"]["physical"] is None and r["global"]["attention"] is None
+    assert r["global"]["binding"] is None

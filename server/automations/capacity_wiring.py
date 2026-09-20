@@ -15,6 +15,7 @@ from server.automations.product_admission import gather_implementation_snapshot
 from server.config import get_settings
 from server.db import db_session
 from server.db.models import Host, Project, ProjectRepo, Session as DbSession
+from server.sessions.global_cap import read_global_cap
 
 from .capacity_readout import CapacitySources
 
@@ -93,11 +94,20 @@ def sources_for(orch) -> CapacitySources:
                 select(DbSession.status).where(DbSession.id == sid))).first()
         return None if row is None else row[0]
 
+    async def global_limits() -> dict:
+        async with db_session() as db:
+            return (await read_global_cap(db)).to_wire()
+
     return CapacitySources(
+        # `global_cap` is the same effective value the admission gate compares
+        # against (orchestrator._max_active_sessions → global_cap.read_global_cap);
+        # `global_limits` is that value's derivation for the Global row.
         global_cap=orch._max_active_sessions,
+        global_limits=global_limits,
         # NOT active_session_count (the deploy-drain counter, which ignores
         # idle/done records) — this must be the same counter the global-cap
-        # admission gate itself compares against (orchestrator.py ~2902/3305/3531),
+        # admission gate itself compares against (the three
+        # `_active_session_count()` sites in orchestrator.py),
         # or the readout's "global.free" lies relative to what actually blocks a spawn.
         global_active=orch._active_session_count,
         hosts=hosts,
