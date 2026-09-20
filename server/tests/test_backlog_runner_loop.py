@@ -144,7 +144,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
-               pr_doctor_attempts_fn=None, session_gone=None,
+               pr_doctor_attempts_fn=None, session_gone=None, session_absent=None,
                held: "Collection[str] | Mapping[str, str] | None" = None,
                escalate_raises=False,
                investigation_state=None, session_resolution=None):
@@ -359,6 +359,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         queue_tail=queue_tail,
         wall_clock=wall_clock,   # None → the loop's real UTC clock
         session_gone=session_gone,
+        session_absent=session_absent,
         held_targets=lambda: _held(),
     )
     # These policy/outcome tests model an observed stopped actor. Native proof
@@ -791,6 +792,43 @@ def test_legacy_release_never_touches_a_token_holding_row(tmp_path):
         assert owned.get("ownership_token")
         assert await ctx.release_legacy_target_state("o/r#9", owned) is False
         assert await ctx.get_target_state("o/r#9") == owned
+
+    asyncio.run(run())
+
+
+def test_token_holding_claim_released_when_session_row_deleted(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orphan1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def absent(sid):
+            return sid == "deleted-sid"
+        loop, rec, ctx = build_loop(candidates=[], session_absent=absent)
+        for tgt, sid in (("o/r#8", "deleted-sid"), ("o/r#9", "live-sid")):
+            await _set_owned_state(ctx, tgt, {"repo": "o/r", "claimed": True, "attempts": 0,
+                                              "issues": [tgt], "session_id": sid})
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#8") == {}
+        assert (await ctx.get_target_state("o/r#9")).get("ownership_token")
+        assert len(await ctx.list_events(kind="orphaned_claim_released")) == 1
+
+    asyncio.run(run())
+
+
+def test_token_holding_claim_kept_when_absent_seam_unwired(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orphan2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[])
+        await _set_owned_state(ctx, "o/r#9", {"repo": "o/r", "claimed": True, "attempts": 0,
+                                              "issues": ["o/r#9"], "session_id": "s1"})
+        before = await ctx.get_target_state("o/r#9")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == before
 
     asyncio.run(run())
 

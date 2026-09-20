@@ -702,6 +702,7 @@ class BacklogRunnerLoop:
         queue_tail: QueueTail | None = None,
         wall_clock: Callable[[], datetime] | None = None,
         session_gone: SessionEnded | None = None,
+        session_absent: SessionEnded | None = None,
         held_targets: HeldTargets | None = None,
     ) -> None:
         self._ctx = ctx
@@ -741,6 +742,10 @@ class BacklogRunnerLoop:
         # The evidence bar for discharging a pre-ownership (token-less) claim; an
         # unwired seam leaves those rows untouched (``_release_legacy_claim``).
         self._session_gone = session_gone
+        # (session_id) -> True only when the session row no longer EXISTS (not merely
+        # terminal). The evidence bar for releasing a token-holding claim whose
+        # session was permanently deleted (``_release_orphaned_claim``).
+        self._session_absent = session_absent
         self._closeout_completed = closeout_completed
         self._handoff = handoff
         self._session_work_stopped = session_work_stopped
@@ -1791,6 +1796,40 @@ class BacklogRunnerLoop:
             detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
                     "issues": st.get("issues")})
 
+    async def _release_orphaned_claim(self, target: str, st: dict) -> bool:
+        """Release a token-holding claim whose session row was permanently deleted.
+
+        The sibling of ``_release_legacy_claim`` for rows that DO carry an
+        ownership token: ``_work_stopped`` reads ``execution_snapshot`` of a
+        deleted session as ``None`` -> not stopped, so the sweep left the row
+        alone while ``is_in_flight`` kept counting it against ``max_concurrent``
+        forever. A row that no longer exists cannot be running, so absence (not
+        mere terminality — a ``done`` row can be resumed) is the stopped proof.
+        The operation is released with the same ``WORK_STOPPED`` proof so
+        ``acquire`` does not refuse the next claim. Returns whether it released."""
+        sid = st.get("session_id")
+        if not sid or self._session_absent is None or st.get("gave_up"):
+            return False
+        try:
+            if not await self._session_absent(sid):
+                return False
+        except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+            log.warning("backlog_runner.session_absent_probe_failed sid=%s", sid,
+                        exc_info=True)
+            return False
+        from .ownership import ReleaseProof
+        if not await self._ctx.compare_target_state(
+                target, st, None, release_proof=ReleaseProof.WORK_STOPPED,
+                reason="session row deleted while the claim was open"):
+            return False
+        await self._ctx.emit(
+            "warn",
+            f"released claim {target}: its session {sid} was deleted — back in the pool",
+            kind="orphaned_claim_released", target=target,
+            detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
+                    "issues": st.get("issues")})
+        return True
+
     async def _handed_off_legacy_is_over(self, target: str, st: dict,
                                          sid: "str | None") -> bool:
         """Durable evidence that a token-less ``handed_off`` row (#1891) carries
@@ -1842,6 +1881,8 @@ class BacklogRunnerLoop:
             return
         if not st.get("ownership_token"):
             await self._release_legacy_claim(target, st)
+            return
+        if await self._release_orphaned_claim(target, st):
             return
         if st.get("closeout_started"):
             # Observe terminal effects after a lost response/restart. Never replay
