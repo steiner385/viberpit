@@ -117,6 +117,7 @@ from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, reso
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
 from server.obs.context import log_event, PROC_EPOCH
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
@@ -498,6 +499,15 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 # minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
 # turn EVERY transcript into an empty one — fall back to the default instead.
 _TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
+
+# Replay and pause both re-enter from polling loops — titling/summary sweeps for the
+# first, the stuck-session sweep for the second — so an unfixable session repeats its
+# one failure on every tick. Left unthrottled that is what filed #1852 (66 replay
+# failures for a single Codex thread the app-server would not load) and #1702 (2455
+# identical `recover.paused` records for a single session). One throttle per record
+# family: sharing one would let the chattier family evict the quieter one's keys.
+_REPLAY_FAILURE_LOG = LogThrottle()
+_PAUSE_LOG = LogThrottle()
 
 # stop() runs inside the app lifespan shutdown; every await in it is bounded so a
 # single cancel-ignoring task or wedged driver close can't hang teardown (#846).
@@ -17584,7 +17594,18 @@ class SessionOrchestrator:
         """No recovery possible (no healthy account / rotation cap). Flag the session
         for the user and publish a machine-readable paused event. The reason and the
         earliest known reset ride the same _persist_status write as the status so the
-        dashboard can say WHY (usage_stall.py) instead of a bare "Turn failed"."""
+        dashboard can say WHY (usage_stall.py) instead of a bare "Turn failed".
+
+        The WARNING is throttled per session+reason. Pausing is *idempotent by
+        design* — the stuck-session sweep re-enters recovery for a parked session
+        every tick, and a session whose accounts are all busy re-reaches this exact
+        line each time — so the record says nothing new on the 2,455th emission
+        (#1702). The state write and the `paused` event are NOT throttled: those
+        are what the dashboard reads, and a client that attached after the first
+        pause still needs to be told why the session is parked. Only the journal
+        line, whose reader is a human asking "what went wrong", is paced.
+        """
+        previous_reason = record.paused_reason
         record.paused_reason = reason
         record.paused_until = _naive_utc(earliest_reset)
         try:
@@ -17596,7 +17617,19 @@ class SessionOrchestrator:
             "reason": reason,
             "earliestReset": iso_utc(earliest_reset),
         })
-        log.warning("recover.paused session=%s reason=%s", record.id, reason)
+        if previous_reason != reason:
+            # A CHANGE of reason is always news, however recently the last one was
+            # logged: "all_accounts_busy" becoming "crash_cap" is the transition an
+            # operator is watching for, and throttling it would hide the one record
+            # that carried new information behind a window opened by the old one.
+            #
+            # Keyed on the reason ALONE, deliberately — `earliest_reset` is not in
+            # the record, and treating a shifted reset time as news would re-open
+            # the window on any tick that moved it, which is the whole defect.
+            _PAUSE_LOG.forget(f"{record.id}:{reason}")
+        log_throttled(
+            log, _PAUSE_LOG, f"{record.id}:{reason}", logging.WARNING,
+            "recover.paused session=%s reason=%s", record.id, reason)
 
     def _mark_needs_reauth(self, account: str) -> None:
         """Propagate a recompose-failed in-session 401 to the ledger so the dashboard
@@ -18293,8 +18326,11 @@ class SessionOrchestrator:
             # other failure here is genuinely worth retrying and keeps the retryable
             # reason.
             from server.automations.ownership import StaleOwnership
+            from server.codex.protocol import CodexProtocolError
+            from server.codex.redaction import scrub_exception
             terminal = isinstance(exc, StaleOwnership)
             lease_held = isinstance(exc, SessionLeaseHeld)
+            engine_down = isinstance(exc, CodexProtocolError)
             if lease_held:
                 # Sibling of the branch below, one incident later (#1778): another
                 # host holds this conversation, so every rebuild here is refused
@@ -18315,6 +18351,21 @@ class SessionOrchestrator:
                 log.warning(
                     "reassign.ownership_stale session=%s trigger=%s — parking without "
                     "retry: %s", record.id, reason, exc)
+            elif engine_down:
+                # Third sibling of the two branches above (#1859). The new driver
+                # could not reach its engine — the Codex app-server had already
+                # closed. That is infrastructure state, not a fault in this code:
+                # the pause reason stays the RETRYABLE one, so the stuck-session
+                # sweep rebuilds the runner and tries again, and the next attempt
+                # succeeds without anyone reading a stack trace. Logged with the
+                # scrubbed protocol category, which is the one thing the ERROR
+                # form never carried — `reassign.error` filed an auto-error issue
+                # whose traceback ended at `_run_owned_operation` and left the
+                # reader no better off than the one-liner here.
+                log.warning(
+                    "reassign.engine_unavailable session=%s trigger=%s cause=%s — "
+                    "will retry once the runner is back", record.id, reason,
+                    scrub_exception(exc))
             else:
                 log.exception("reassign.error session=%s", record.id)
             if lease_held:
@@ -19247,8 +19298,16 @@ class SessionOrchestrator:
             try:
                 await codex.ensure(account)
             except Exception as exc:
-                log_event(log, logging.WARNING, "codex.replay.runner_unavailable",
-                          session=session_id, error=scrub_exception(exc))
+                # Throttled on the same terms as the replay failures below it, and
+                # for the same reason: this is the OTHER way one sweep re-reading an
+                # unreachable thread reports itself, so pacing only the failure at
+                # the far end would move the noise here rather than remove it
+                # (#2053, live at 3 occurrences while this was written).
+                cause = scrub_exception(exc)
+                if _REPLAY_FAILURE_LOG.should_log(
+                        f"runner_unavailable:{session_id}:{cause}"):
+                    log_event(log, logging.WARNING, "codex.replay.runner_unavailable",
+                              session=session_id, error=cause)
                 return None
             client = codex.client_for(account)
         if client is None:
@@ -19257,6 +19316,39 @@ class SessionOrchestrator:
         return CodexThreadReplay(
             client, thread_id, model=model,
             item_times_path=item_times_path(self._codex_item_times_root(account), thread_id),
+        )
+
+    @staticmethod
+    def _log_replay_failure(surface: str, session_id: str, exc: BaseException) -> None:
+        """Report a replay that could not be read, once per cause per window.
+
+        The one place all three replay wrappers below classify a failure, so
+        `transcript_events`, `transcript_window` and `engine_replay_window` cannot
+        drift into disagreeing about what is worth a traceback.
+
+        A ``CodexProtocolError`` means the app-server declined or could not be
+        reached — a thread it has not loaded, a client already closed. Those are
+        *answers*, not faults: replay's contract is already "[]/None means no
+        readable history", every caller honours it, and the six stack frames
+        between here and the transport say nothing the scrubbed category does not.
+        Logging them with `exc_info` is what filed #1852 and #1860 — two issues,
+        one cause, neither carrying the cause. So a protocol failure reports its
+        category on one line; anything else is genuinely unexpected and keeps its
+        traceback.
+
+        Both are throttled, because the difference that matters for the error sink
+        is not which kind of failure it is but that a sweep re-reads the same dead
+        thread every tick for a week.
+        """
+        from server.codex.protocol import CodexProtocolError
+        from server.codex.redaction import scrub_exception
+
+        expected = isinstance(exc, CodexProtocolError)
+        cause = scrub_exception(exc) if expected else type(exc).__name__
+        log_throttled(
+            log, _REPLAY_FAILURE_LOG, f"{surface}:{session_id}:{cause}", logging.WARNING,
+            "session.%s id=%s replay failed (%s)", surface, session_id, cause,
+            exc_info=None if expected else exc,
         )
 
     async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:
@@ -19275,8 +19367,8 @@ class SessionOrchestrator:
             return []
         try:
             return await replay.events(max_turns=max_turns)
-        except Exception:
-            log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
+        except Exception as exc:
+            self._log_replay_failure("transcript_events", session_id, exc)
             return []
 
     async def transcript_window(self, session_id: str, *, before: int | None = None,
@@ -19317,8 +19409,8 @@ class SessionOrchestrator:
             log.warning("session.transcript_window id=%s exceeded %.0fs — returning empty",
                         session_id, ceiling)
             return None
-        except Exception:
-            log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
+        except Exception as exc:
+            self._log_replay_failure("transcript_window", session_id, exc)
             return None
 
     async def engine_replay_window(self, session_id: str, *,
@@ -19350,9 +19442,8 @@ class SessionOrchestrator:
                         "attaching with no history", session_id,
                         _TRANSCRIPT_WINDOW_CEILING_S)
             return None
-        except Exception:
-            log.warning("session.engine_replay_window id=%s replay failed",
-                        session_id, exc_info=True)
+        except Exception as exc:
+            self._log_replay_failure("engine_replay_window", session_id, exc)
             return None
 
     async def has_transcript(self, session_id: str) -> bool:
