@@ -117,7 +117,7 @@ PR linkage, never on labels alone.
   because the plan — not the pool — is what the runner pops, and both of its ordering paths
   otherwise undo it: the model is free to rank an incident last, and the degraded all-singletons
   path sorts by issue number, where the newest issue is always last. Urgency reorders only; it
-  never overrides a product's `dispatch: off`, its `max_in_flight`. The `priority` strategy (and its deprecated alias `weighted`, spec 2026-09-20 D6) serves each ON product's repos in rank order (`priority_rank`, then product age).
+  never overrides a product's `dispatch: off` or its `max_in_flight`. The `priority` strategy (and its deprecated alias `weighted`, spec 2026-09-20 D6) serves each ON product's repos in rank order (`priority_rank`, then product age).
   `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
   from the runner's durable target-state rows and kept in step with every claim taken that tick: a
   `proposed` (announce-only) claim holds its product's slot exactly like a spawned one, while a
@@ -156,8 +156,9 @@ PR linkage, never on labels alone.
   the loop's first tick, but only for an ENABLED row carrying a stored mode — a never-configured or
   disabled row has nothing to migrate) is what turns that old value, and the old `enabled_repos` /
   `repo_weights` / `repo_caps` / the rest, into each owning product's policy instead — a product's
-  primary repo's entry in `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`, or
-  its lowest-named repo's when none is flagged primary, and only the keys the legacy config
+  primary repo's entry in `repo_caps` becomes its `max_in_flight` (`repo_weights` is not carried
+  over — `weight` is deprecated, spec 2026-09-20 D6), or its lowest-named repo's when none is
+  flagged primary, and only the keys the legacy config
   actually set are written, the rest left at the schema default — so no product's behaviour
   changed at the flip. The seed is one-shot because it CONSUMES its own input: in the same
   transaction that writes the policies it strips every `retired_config_keys` key off the runner

@@ -364,8 +364,9 @@ runner loop's first tick, gated on the runner row being ENABLED and carrying a s
 never-configured or currently-disabled row has nothing to migrate) carries the old settings onto
 the products that owned them so the flip changed no behaviour: the prior global mode becomes each
 seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
-primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
-— or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
+primary repo's entry in the old `repo_caps` becomes its `max_in_flight` (`repo_weights` is not
+carried over — `weight` is deprecated, spec 2026-09-20 D6) — or, for a product with no repo flagged
+primary, its lowest-named repo's entry — and the remaining
 globals (`queue_min_status`, `default_model`, `respect_dependencies`) are copied onto every seeded
 product, but only the keys the legacy config actually set: a key it left unset is left at the schema
 default rather than pinned to a made-up value. `max_attempts` is NOT among them — it was retired in
