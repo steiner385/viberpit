@@ -64,7 +64,7 @@ const SETTINGS = {
     archiveHome: null,
     modelApprovalAction: 'require_approval',
     modelApprovalDenylist: 'fable',
-    maxActiveSessions: 5,
+    globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
   },
   managed: [],
   about: { gitSha: null, hostName: 'test-host' },
