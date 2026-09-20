@@ -11,7 +11,7 @@ function readout(overrides: Partial<CapacityReadout> = {}): CapacityReadout {
     reservePctByLevel: { conserve: 40, steady: 20, max: 5 },
     global: { cap: 20, active: 10, free: 10, physical: null, attention: null, binding: null },
     hosts: [],
-    accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [] },
+    accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
     runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
     products: [],
     binding: null,
@@ -89,6 +89,9 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
   it('uses the live plan-derived effective cap, not the stored ceiling, and notes the stored value', () => {
     const r = readout({
       runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 3 },
+      // Pinned above the ceiling so this test — about stored-vs-effective, not
+      // accounts — isn't coupled to the quota clause the accounts row also feeds.
+      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 10 },
     })
     const runner = buildCapacityStack(r).find((row) => row.key === 'runner')!
     expect(runner.cap).toBe(3)
@@ -99,11 +102,30 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
   it('falls back to the stored ceiling with no secondary note when not live', () => {
     const r = readout({
       runner: { ceiling: 6, effective: 6, inFlight: 2, derived: null },
+      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 10 },
     })
     const runner = buildCapacityStack(r).find((row) => row.key === 'runner')!
     expect(runner.cap).toBe(6)
     expect(runner.free).toBe(4)
     expect(runner.secondary).toBeUndefined()
+  })
+  it('links to the runner form on the same page', () => {
+    expect(buildCapacityStack(readout()).find((row) => row.key === 'runner')!.href).toBe('#runner')
+  })
+  it('says when account quota binds below the stored ceiling, alongside the stored-ceiling note', () => {
+    const r = readout({
+      runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 3 },
+      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
+    })
+    expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary)
+      .toBe('stored ceiling 6 · quota binds: 2 accounts × 2 = 4')
+  })
+  it('omits the quota clause when accounts can carry the ceiling', () => {
+    const r = readout({
+      runner: { ceiling: 4, effective: 4, inFlight: 2, derived: null },
+      accounts: { available: 3, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 6 },
+    })
+    expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary).toBeUndefined()
   })
 })
 

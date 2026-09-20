@@ -17,7 +17,12 @@ export const AUTOMATIONS: Automation[] = [
   {
     id: 'backlog-runner', name: 'Backlog runner', description: 'Dispatches eligible issues.', enabled: true, mode: 'on',
     modes: ['off', 'on'], status: { text: 'Idle', level: 'idle', counts: null },
-    enginePolicy: 'claude_only', operatorTriggered: false, configSchema: [], config: {}, schedule: null,
+    enginePolicy: 'claude_only', operatorTriggered: false,
+    configSchema: [
+      { key: 'max_concurrent', label: 'Runner ceiling', type: 'int', default: 1, help: 'Most sessions the Backlog Runner may hold at once.', choices: null, surface: 'capacity' },
+      { key: 'max_issues_per_pr', label: 'Max issues per PR', type: 'int', default: 1, help: '', choices: null },
+    ],
+    config: { max_concurrent: 5, max_issues_per_pr: 1 }, schedule: null,
     actionableCount: 2, lastActiveAt: null, activeSessions: 0, workClass: 'development',
   },
   {

@@ -15,6 +15,7 @@ export const CAPACITY: CapacityReadout = {
     rows: [
       { name: 'primary', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, windows: [] },
     ],
+    sessionsPerAccount: 2, accountCap: 4,
   },
   runner: { ceiling: 5, effective: 5, inFlight: 3, derived: null },
   products: [

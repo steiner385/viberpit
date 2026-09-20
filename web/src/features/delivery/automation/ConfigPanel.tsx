@@ -7,10 +7,12 @@
  * phase 1 `AutomationPolicyCard` to reuse.
  */
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { Automation } from '@/api/automations'
 import { usePatchAutomation } from '@/api/hooks'
 import { Field } from '@/ui/Field'
 import { ConfigInput } from './ConfigInput'
+import { deliveryPath } from '../deliveryNavState'
 
 export function ConfigPanel({ automation: a }: { automation: Automation }) {
   const patch = usePatchAutomation()
@@ -39,7 +41,19 @@ export function ConfigPanel({ automation: a }: { automation: Automation }) {
       <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Configuration</h4>
       <div className="space-y-3">
         {a.configSchema.map((field) => (
-          field.type === 'bool'
+          field.surface === 'capacity'
+            ? (
+              // Owned by Delivery → Capacity (spec 2026-09-20 D7): shown, never edited here.
+              <div key={field.key} className="flex flex-col gap-0.5">
+                <p className="text-sm font-medium text-ink">{field.label}</p>
+                <p className="text-sm text-ink">{String(localConfig[field.key] ?? '—')}</p>
+                <p className="text-xs text-ink-muted">
+                  {field.help}{field.help ? ' ' : ''}
+                  <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Set on Delivery → Capacity</Link>
+                </p>
+              </div>
+            )
+            : field.type === 'bool'
             ? (
               <div key={field.key}>
                 <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} enabledRepos={enabledRepos} />

@@ -7,7 +7,6 @@
  */
 import type { CapacityAccountRow, CapacityBindingLayer, CapacityReadout } from '@/api/capacity'
 import { formatResetTime } from '@/lib/formatReset'
-import { automationPath } from '../deliveryNavState'
 import { settingsSectionPath } from '@/shell/navDefs'
 
 export interface CapacityStackRow {
@@ -62,6 +61,12 @@ export function capacityRowLink(row: CapacityStackRow): CapacityRowLink {
   return { kind: 'route', to: row.href }
 }
 
+/** A row's secondary line from optional clauses; undefined when none apply. */
+function joinClauses(...clauses: (string | null)[]): string | undefined {
+  const present = clauses.filter((c): c is string => c !== null)
+  return present.length > 0 ? present.join(' · ') : undefined
+}
+
 export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
   // Mirrors `_fleet()` in server/automations/capacity_plan.py: a disabled or
   // not-confirmed-healthy host (`healthy` false or still `null`/unknown)
@@ -101,9 +106,14 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
     },
     {
       key: 'runner', label: 'Runner ceiling', used: r.runner.inFlight, cap: r.runner.effective, free: runnerFree,
-      href: `${automationPath('backlog-runner')}?tab=config`, binding: isBindingLayer(r.binding, 'runner'),
-      secondary: r.runner.effective !== r.runner.ceiling
-        ? `stored ceiling ${r.runner.ceiling}` : undefined,
+      // The runner ceiling is edited on this page (spec 2026-09-20 D7): anchor to the form.
+      href: '#runner', binding: isBindingLayer(r.binding, 'runner'),
+      secondary: joinClauses(
+        r.runner.effective !== r.runner.ceiling ? `stored ceiling ${r.runner.ceiling}` : null,
+        r.accounts.accountCap < r.runner.ceiling
+          ? `quota binds: ${r.accounts.available} account${r.accounts.available === 1 ? '' : 's'} × ${r.accounts.sessionsPerAccount} = ${r.accounts.accountCap}`
+          : null,
+      ),
     },
     {
       key: 'products', label: 'Products', used: productsUsed, cap: productsCap,
