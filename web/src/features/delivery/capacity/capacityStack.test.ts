@@ -180,19 +180,23 @@ describe('capacityRowLink (spec 2026-09-20 D10)', () => {
 })
 
 describe('accountRowLine (spec 2026-09-20 C21)', () => {
-  const base = { name: 'acct', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, windows: [] }
-  it('available', () => { expect(accountRowLine(base)).toBe('acct — available') })
+  const base = { name: 'acct', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, reservePct: 20, windows: [] }
+  it('available', () => { expect(accountRowLine(base)).toBe('acct — available · 20% reserve') })
   it('unavailable with a reason', () => {
-    expect(accountRowLine({ ...base, available: false, reason: 'at_ceiling' })).toBe('acct — at ceiling')
+    expect(accountRowLine({ ...base, available: false, reason: 'at_ceiling' })).toBe('acct — at ceiling · 20% reserve')
   })
   it('unavailable with a reason and a reset time', () => {
     const line = accountRowLine({ ...base, available: false, reason: 'at_ceiling', nextResetAt: new Date(Date.now() + 3_600_000).toISOString() })
     expect(line.startsWith('acct — at ceiling · resets ')).toBe(true)
+    expect(line.endsWith(' · 20% reserve')).toBe(true)
   })
   it('not metered', () => {
-    expect(accountRowLine({ ...base, engine: 'codex', metered: false, available: false, reason: 'not_metered' })).toBe('acct — not metered')
+    expect(accountRowLine({ ...base, engine: 'codex', metered: false, available: false, reason: 'not_metered' })).toBe('acct — not metered · 20% reserve')
   })
   it('disabled', () => {
-    expect(accountRowLine({ ...base, enabled: false, available: false, reason: 'disabled' })).toBe('acct — disabled')
+    expect(accountRowLine({ ...base, enabled: false, available: false, reason: 'disabled' })).toBe('acct — disabled · 20% reserve')
+  })
+  it("an override shows as that account's own reserve", () => {
+    expect(accountRowLine({ ...base, reservePct: 60, available: false, reason: 'at_ceiling' })).toBe('acct — at ceiling · 60% reserve')
   })
 })

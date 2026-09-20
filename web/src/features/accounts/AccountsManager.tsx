@@ -202,6 +202,12 @@ function CodexHealthLine({ account }: { account: Account }) {
   )
 }
 
+/** The usage percent at which an account reaches its reserve (spec 2026-09-20 D4):
+ *  a reserve is the share KEPT BACK, so the ceiling is its complement. */
+function reserveCeiling(account: Account): number | null {
+  return account.effectiveReservePct == null ? null : 100 - account.effectiveReservePct
+}
+
 function OverReserveChip() {
   return (
     <span
@@ -209,7 +215,7 @@ function OverReserveChip() {
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
         'bg-warning-wash text-warning',
       )}
-      title="Weekly usage is at/over this account's reserve — only picked as a last resort"
+      title="Weekly usage has reached this account's reserve ceiling: the capacity governor counts it unavailable, and an explicit override makes it a last-resort pick"
     >
       over reserve
     </span>
@@ -442,9 +448,9 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               value={reserveDraft}
               onChange={(e) => setReserveDraft(e.target.value)}
               onKeyDown={handleKeyDown}
-              aria-label={`Weekly reserve % for ${account.name}`}
-              placeholder="reserve %"
-              title="Stop auto-selecting this account once weekly usage reaches this % (blank = no reserve)"
+              aria-label={`Weekly reserve override for ${account.name}`}
+              placeholder={account.pushLevelReservePct != null ? `push level's ${account.pushLevelReservePct}%` : 'override %'}
+              title="Percent of the weekly allowance to keep back from automation. Blank uses the push level's reserve."
               className={cn(
                 'w-24 rounded border border-edge-strong',
                 'bg-surface text-ink',
@@ -594,8 +600,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           )}
           <SessionsBadge counts={account.liveSessions} />
           <RankBadge rank={account.rank} reason={account.rankReason} />
-          {account.weeklyReservePct != null &&
-            (reserveWindow(account.usage)?.pct ?? -1) >= account.weeklyReservePct &&
+          {reserveCeiling(account) != null &&
+            (reserveWindow(account.usage)?.pct ?? -1) >= (reserveCeiling(account) as number) &&
             <OverReserveChip />}
           {account.allowExtraUsage === true && <ExtraUsageChip />}
           {/* Opted in, but the provider has extra usage off — the toggle cannot
@@ -616,7 +622,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               staleAsOf={account.usage?.staleAsOf}
               markerPct={
                 w.key === reserveWindow(account.usage)?.key
-                  ? account.weeklyReservePct ?? null
+                  ? reserveCeiling(account)
                   : null
               }
             />

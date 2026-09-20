@@ -301,7 +301,7 @@ describe('CapacityDetail', () => {
     expect(screen.getByText('Governor kill switch is off')).toBeInTheDocument()
     const accounts = screen.getByTestId('capacity-stack-accounts')
     const details = within(accounts).getByRole('group')
-    expect(within(details).getByText('primary — available')).toBeInTheDocument()
+    expect(within(details).getByText('primary — available · 20% reserve')).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Products' })).toHaveAttribute('id', 'products')
     expect(screen.getByRole('link', { name: 'Products' })).toHaveAttribute('href', '#products')
   })
@@ -324,7 +324,7 @@ describe('CapacityDetail', () => {
     const accounts = screen.getByTestId('capacity-stack-accounts')
     expect(within(accounts).getByText('no account has headroom under the 20% reserve')).toBeInTheDocument()
     const details = within(within(accounts).getByRole('group'))
-    expect(details.getByText('primary — available')).toBeInTheDocument()
+    expect(details.getByText('primary — available · 20% reserve')).toBeInTheDocument()
   })
 
   it('I6: the pin input has min=0 and step=1', () => {

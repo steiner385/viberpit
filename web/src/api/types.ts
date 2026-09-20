@@ -119,6 +119,12 @@ export interface Account {
   usage: AccountUsage | null
   nickname?: string | null
   weeklyReservePct?: number | null
+  /** The reserve this account is judged by (spec 2026-09-20 D4): its override,
+   *  else the push level's. Percent of the weekly allowance KEPT BACK; the
+   *  ceiling is `100 − effectiveReservePct`. Null on single-account echoes. */
+  effectiveReservePct?: number | null
+  /** The push level's own reserve, for labelling a blank override. */
+  pushLevelReservePct?: number | null
   // Opt-in to spending paid extra-usage credits on this account once it is at
   // its ceiling. Absent means off — spending is never a silent default.
   allowExtraUsage?: boolean
