@@ -1,6 +1,8 @@
-// `/roadmap/:productSlug` — one product, answered the same way the portfolio is:
-// the tiles say how big it is, and the tabs answer what it is, what is moving,
-// what needs me, what is next, and what it waits on (finish-line spec §7).
+// `/roadmap/:productSlug` — one product, on the page-tabs standard
+// (`docs/PAGE-TABS.md`): Overview · In flight · Needs you · Ranked ·
+// Dependencies · Automation. The tiles say how big it is; the tabs answer
+// what it is, what is moving, what needs me, what is next, what it waits on,
+// and what it is configured to do.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
@@ -30,7 +32,11 @@ import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
 
-const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
+const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies', 'automation'] as const
+
+/** The Overview previews this many in-flight initiatives; the In-flight tab
+ *  lists them all (`docs/PAGE-TABS.md` §5). */
+const OVERVIEW_PREVIEW_ROWS = 3
 
 const panelId = (id: string) => `product-panel-${id}`
 
@@ -95,6 +101,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
           { id: 'ranked', label: 'Ranked' },
           { id: 'dependencies', label: 'Dependencies' },
+          { id: 'automation', label: 'Automation' },
         ]}
       />
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
@@ -130,7 +137,6 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                       {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
                     </p>
                   </section>
-                  <AutomationPolicyCard product={product} project={project} />
                   {/* Mounted only while open, like `NewCapabilityDialog` below — each
                       opening starts from the project's current values rather than
                       whatever a previous, abandoned edit left the fields holding. */}
@@ -152,7 +158,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">
               {inFlight.length === 0
                 ? <p className="text-sm text-ink-muted">Nothing in flight.</p>
-                : inFlight.map((i) => {
+                : inFlight.slice(0, OVERVIEW_PREVIEW_ROWS).map((i) => {
                   const programTitle = programTitleFor(i)
                   return (
                     <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
@@ -161,11 +167,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                           {i.title ?? i.slug}
                         </Link>
                         {programTitle && (
-                          <Badge
-                            tone="neutral"
-                            title={`Part of ${programTitle}`}
-                            aria-label={`Part of ${programTitle}`}
-                          >
+                          <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
                             {programTitle}
                           </Badge>
                         )}
@@ -174,6 +176,13 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                     </div>
                   )
                 })}
+              {inFlight.length > OVERVIEW_PREVIEW_ROWS && (
+                <div>
+                  <Button size="sm" variant="ghost" onClick={() => setTab('in-flight')}>
+                    See all {inFlight.length} in flight
+                  </Button>
+                </div>
+              )}
             </section>
           </>
         )}
@@ -194,6 +203,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             </section>
           </div>
         )}
+        {tab === 'automation' && (isLoading && !project
+          ? <Skeleton lines={3} />
+          : project && <AutomationPolicyCard product={product} project={project} />)}
       </div>
       {/* Mounted only while open (the RoadmapPage idiom), so each opening starts
           on a blank form rather than on whatever the last one was abandoned

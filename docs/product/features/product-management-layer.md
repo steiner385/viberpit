@@ -203,8 +203,8 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
 - `/roadmap` — the portfolio. The list column carries two scopes, **Map** (the product →
   capability tree, from `GET /api/pm/map`) and **Initiatives** (every initiative, grouped by
   stage); the detail pane is the portfolio's Needs you / Ranked / All initiatives tabs.
-- `/roadmap/:productSlug` — one product: overview, in flight, needs you, ranked, dependencies.
-  This is where the onboarding wizard and the dependency panel are mounted.
+- `/roadmap/:productSlug` — one product: overview, in flight, needs you, ranked, dependencies,
+  automation. This is where the onboarding wizard and the dependency panel are mounted.
 - `/roadmap/:productSlug/capabilities/:capSlug` — one capability, with its sub-capabilities,
   in-flight initiatives and issues.
 - `/initiatives/:initiativeSlug` — one initiative (track, epic, sessions, capabilities, and the
@@ -345,8 +345,8 @@ same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,
 i.e. `dispatch: off` and `triage_auto_accept: off`.
 
-It is edited from the product's Overview page (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`),
-an **Automation** card that renders every schema field through the same `ConfigInput` component the
+It is edited from the product's **Automation** tab (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`,
+mounted by `ProductDetail.tsx` at `?tab=automation`), a card that renders every schema field through the same `ConfigInput` component the
 Delivery → Automations Config tab uses (`web/src/features/delivery/automation/ConfigInput.tsx`,
 moved out of `ConfigPanel.tsx` and exported so the two surfaces share one renderer instead of two),
 disabled with an explanatory note until the product reaches `onboardingState == "live"`. A product
