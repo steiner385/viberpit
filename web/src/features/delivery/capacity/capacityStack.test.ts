@@ -105,3 +105,12 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
     expect(runner.secondary).toBeUndefined()
   })
 })
+
+describe('buildCapacityStack — row links (spec 2026-09-20 C4, D10)', () => {
+  it('links each supply row to its Settings › Capacity section through settingsSectionPath', () => {
+    const rows = Object.fromEntries(buildCapacityStack(readout()).map((row) => [row.key, row.href]))
+    expect(rows.global).toBe('/settings/capacity')
+    expect(rows.hosts).toBe('/settings/fleet')
+    expect(rows.accounts).toBe('/settings/accounts')
+  })
+})
