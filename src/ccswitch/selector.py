@@ -209,11 +209,13 @@ def rank_accounts(usages: dict[str, QuotaSnapshot | None], reserved: AbstractSet
     accounts with unreadable usage are appended as a last-resort tier, ranked
     strictly after every readable candidate, ordered by least load.
 
-    ``reserves`` maps account name -> reserve threshold (0-100 pct) on the
-    account's longest window. An account at/over its reserve (but under the hard
-    ceiling) is demoted to a final last-resort tier — ranked after every normal
-    and optimistic candidate, least-used first — so the reserve alone can never
-    make selection fail (soft fallback).
+    ``reserves`` maps account name -> the percent of the account's longest window
+    KEPT BACK (0-100; spec 2026-09-20 D4 — the same meaning as the capacity
+    governor's push-level reserve). An account whose usage has reached
+    ``100 - reserve`` (but is under the hard ceiling) is demoted to a final
+    last-resort tier — ranked after every normal and optimistic candidate,
+    least-used first — so the reserve alone can never make selection fail (soft
+    fallback).
 
     ``extra_usage_allowed`` names the accounts the user has opted into spending
     paid "extra usage" credits on. An at-ceiling account in that set whose
@@ -264,8 +266,11 @@ def rank_accounts(usages: dict[str, QuotaSnapshot | None], reserved: AbstractSet
             continue
         reserve = (reserves or {}).get(name)
         used_on_reserve_window = reserve_pct(u)
+        # A reserve is the share of the window KEPT BACK (spec 2026-09-20 D4, the
+        # same meaning as the capacity governor's push-level reserve), so the
+        # account is over it once usage reaches ``100 - reserve``.
         if (reserve is not None and used_on_reserve_window is not None
-                and used_on_reserve_window >= reserve):
+                and used_on_reserve_window >= 100.0 - reserve):
             reserve_blocked.append((used_on_reserve_window, name))
             continue
         acct_load = load.get(name, 0.0)

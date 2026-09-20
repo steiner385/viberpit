@@ -53,9 +53,12 @@ per-caller backoff logic.
   needs-reauth, #239) so the edge renders a clear message across the RPC boundary.
 - Soft reservations: `ledger.reserve`/`reservation_active` place a short hold on a just-picked
   account so running `ccswitch use` back-to-back for several terminals spreads them out (README).
-- Weekly reserve (#558): a per-account `weeklyReservePct` soft-blocks an account once its weekly
-  usage crosses the threshold; over-reserve accounts become optimistic fallbacks, burned
-  least-weekly-used first, only after every unreserved candidate is exhausted (`rank_accounts`).
+- Weekly reserve (#558, meaning fixed by spec 2026-09-20 D4): a per-account `weeklyReservePct` is
+  the share of the weekly allowance KEPT BACK (the capacity governor's push level supplies the
+  default: conserve 40 / steady 20 / max 5). Once weekly usage reaches `100 − reserve`, the
+  account is unavailable to the governor and, for an explicit override, becomes a soft fallback
+  here — burned least-weekly-used first, only after every unreserved candidate is exhausted
+  (`rank_accounts`). The push level's default is never applied to a human's own pick.
 - Auto-rotation on limit: `runner.py` (`ccrun`) detects a limit in the result, adds the account to
   `tried`, prints "rotating to another account", and re-picks; with `--wait` it sleeps until the
   earliest reset. `launcher.py` backs `ccmax` (interactive, auto-switch + `--resume`). The web

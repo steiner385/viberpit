@@ -406,7 +406,8 @@ def test_reserve_demotes_over_reserve_account_to_last():
     ranked_no_reserve, _ = rank_accounts(usages, set(), _cfg(), NOW)
     assert [r.name for r in ranked_no_reserve] == ["hot", "cool"]
     # …so the flip below is attributable to the reserve alone.
-    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"hot": 90.0})
+    # keep 10% back → ceiling 90; hot at 91% is over it
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"hot": 10.0})
     assert [r.name for r in ranked] == ["cool", "hot"]
     assert ranked[1].reason == "over weekly reserve — fallback"
     assert ranked[1].optimistic is False
@@ -414,7 +415,7 @@ def test_reserve_demotes_over_reserve_account_to_last():
 
 
 def test_reserve_boundary_is_inclusive():
-    # "at" (20/h) outranks "under" (2.02/h) without reserves; with weekly_pct == reserve
+    # "at" (20/h) outranks "under" (2.02/h) without reserves; at weekly_pct == 100 - reserve
     # it must be blocked (>= semantics), flipping the order.
     usages = {
         "at": anthropic_snapshot(10.0, SOON, 90.0, SOON, False),      # exactly at reserve → blocked
@@ -423,8 +424,21 @@ def test_reserve_boundary_is_inclusive():
     ranked_no_reserve, _ = rank_accounts(usages, set(), _cfg(), NOW)
     assert [r.name for r in ranked_no_reserve] == ["at", "under"]
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW,
-                              reserves={"at": 90.0, "under": 90.0})
+                              reserves={"at": 10.0, "under": 10.0})
     assert [r.name for r in ranked] == ["under", "at"]
+    assert ranked[1].reason == "over weekly reserve — fallback"
+
+
+def test_reserve_is_percent_kept_back_not_a_usage_threshold():
+    """Spec 2026-09-20 D4: a reserve of 60 means 'keep 60% back', so an account at
+    41% used is over it (ceiling 40) — the same meaning the capacity governor's
+    push level uses. Under the old threshold reading 41 < 60 would have passed."""
+    usages = {
+        "kept": anthropic_snapshot(10.0, SOON, 41.0, SOON, False),
+        "free": anthropic_snapshot(10.0, LATER, 45.0, LATER, False),
+    }
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"kept": 60.0})
+    assert [r.name for r in ranked] == ["free", "kept"]
     assert ranked[1].reason == "over weekly reserve — fallback"
 
 
@@ -434,7 +448,7 @@ def test_reserve_soft_fallback_picks_least_weekly_used():
         "better": anthropic_snapshot(10.0, SOON, 92.0, SOON, False),
     }
     picked = select_picked(usages, set(), _cfg(), NOW,
-                           reserves={"worse": 90.0, "better": 90.0})
+                           reserves={"worse": 10.0, "better": 10.0})
     assert picked == Picked(name="better", optimistic=False)
 
 
@@ -445,7 +459,7 @@ def test_reserve_hard_ceiling_still_excludes_outright():
         "ok": anthropic_snapshot(10.0, SOON, 5.0, SOON, False),
     }
     ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
-                                     reserves={"maxed": 90.0})
+                                     reserves={"maxed": 10.0})
     assert [r.name for r in ranked] == ["ok"]
     assert earliest == reset
 
@@ -453,7 +467,7 @@ def test_reserve_hard_ceiling_still_excludes_outright():
 def test_optimistic_tier_outranks_reserve_blocked():
     usages = {"r": anthropic_snapshot(10.0, SOON, 95.0, SOON, False), "o": None}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW,
-                              optimistic_fallback=True, reserves={"r": 90.0})
+                              optimistic_fallback=True, reserves={"r": 10.0})
     assert [r.name for r in ranked] == ["o", "r"]
 
 
@@ -464,7 +478,8 @@ def test_no_reserves_behavior_unchanged():
     }
     base, _ = rank_accounts(usages, set(), _cfg(), NOW)
     empty, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={})
-    under, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"a": 99.0})
+    # keep 1% back → ceiling 99; "a" at 20% stays under it
+    under, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"a": 1.0})
     assert [r.name for r in base] == [r.name for r in empty] == [r.name for r in under]
 
 

@@ -376,7 +376,9 @@ def set_nickname(led: dict, name: str, nickname: str | None) -> None:
 
 
 def set_weekly_reserve(led: dict, name: str, pct: float | None) -> None:
-    """Set or clear the per-account weekly usage reserve threshold (0–100 pct)."""
+    """Set or clear the per-account weekly reserve: the percent of the weekly
+    allowance kept back (1–100; spec 2026-09-20 D4). ``None`` clears the override
+    so the push level's reserve applies."""
     acct = _acct(led, name)
     if pct is None:
         acct.pop("weeklyReservePct", None)
@@ -393,7 +395,8 @@ def get_weekly_reserve(led: dict, name: str) -> float | None:
 
 
 def weekly_reserves(led: dict) -> dict[str, float]:
-    """All configured reserves, keyed by account name (unset accounts omitted)."""
+    """All configured reserve OVERRIDES, keyed by account name (accounts on the
+    push level's default are omitted)."""
     out: dict[str, float] = {}
     for name in led["accounts"]:
         pct = get_weekly_reserve(led, name)
