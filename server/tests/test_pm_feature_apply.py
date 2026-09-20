@@ -210,3 +210,47 @@ def test_unresolved_link_warns_once_not_once_per_tick(caplog):
         warnings = [r for r in caplog.records
                     if r.levelno >= logging.WARNING and "feature_link_unresolved" in r.getMessage()]
         assert len(warnings) == 1, f"{len(warnings)} records for one unresolved link"
+
+
+def test_two_unresolved_links_from_one_doc_each_warn_independently(caplog):
+    """#1531/#1875 (account-reauthentication) and #1532/#1876 (config-dir-isolation)
+    are two distinct broken links out of the SAME doc (credential-store-encryption),
+    re-filed as separate auto-error issues by fingerprint. The throttle key must
+    include the link's own target, not just its source, or fixing/silencing one
+    would silently swallow the other. Each identity gets its own one-report window."""
+    from server.sessions import orchestrator as orch_mod
+    from server.db.models import Project
+    from server.db import db_session
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    orch_mod._PM_SYNC_LINK_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-product", name="Example product")
+                db.add(prod)
+                await db.commit()
+                return prod.id
+        prod_id = asyncio.run(_seed())
+
+        # example-infra is deliberately NOT seeded, so both links never resolve.
+        plan = FeatureIndexPlan(
+            upserts=(FeatureUpsert(
+                slug="credential-store-encryption", title="C", state="live", summary="",
+                repo_path="d/credential-store-encryption.md", parent_slug=None,
+                links=(FeatureLinkRef("powered_by", "example-infra", "config-dir-isolation"),
+                       FeatureLinkRef("integrates_with", "example-infra", "account-reauthentication"))),),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            for _ in range(5):
+                asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        warnings = [r for r in caplog.records
+                    if r.levelno >= logging.WARNING and "feature_link_unresolved" in r.getMessage()]
+        assert len(warnings) == 2, f"expected one report per distinct link, got {len(warnings)}"
+        messages = {r.getMessage() for r in warnings}
+        assert any("config-dir-isolation" in m for m in messages)
+        assert any("account-reauthentication" in m for m in messages)
