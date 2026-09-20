@@ -110,6 +110,7 @@ export function FleetSection() {
       setAddError(null)
       void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
       void queryClient.invalidateQueries({ queryKey: QK.capacity })
+      void queryClient.invalidateQueries({ queryKey: QK.settings })
     },
     onError: (err: unknown) => {
       const body = (err as { body?: { detail?: { message?: string } } })?.body
@@ -122,6 +123,7 @@ export function FleetSection() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
       void queryClient.invalidateQueries({ queryKey: QK.capacity })
+      void queryClient.invalidateQueries({ queryKey: QK.settings })
     },
   })
 
@@ -325,6 +327,10 @@ export function FleetSection() {
             </tbody>
           </table>
         </div>
+        <p className="text-xs text-ink-muted">
+          Weight is a tiebreaker when several hosts have headroom; it is not a cap. Disabling a
+          host removes it from dispatch without deleting it.
+        </p>
         {gc && (
           <p className="text-xs text-ink-muted">
             {gc.physical === null

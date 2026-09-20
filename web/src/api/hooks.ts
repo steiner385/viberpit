@@ -1188,6 +1188,10 @@ export function useFleetHostPatch() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
       void qc.invalidateQueries({ queryKey: QK.capacity })
+      // effectiveDefaults.globalCap rides on GET /api/settings too (the Hosts
+      // footer and the Limits rows both read it) — without this a host cap
+      // edit leaves "Σ caps = N → physical ceiling" showing the stale sum.
+      void qc.invalidateQueries({ queryKey: QK.settings })
     },
     onError: (e) => {
       void qc.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })

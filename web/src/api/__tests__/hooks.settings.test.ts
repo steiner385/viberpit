@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
-import { QK, useSettings, useUpdateSettings } from '../hooks'
+import { QK, useSettings, useUpdateSettings, useFleetHostPatch } from '../hooks'
+import { FLEET_HOSTS_KEY } from '@/api/fleet'
 import { api } from '../client'
 import { appSettings } from '@/test/factories'
 
@@ -126,5 +127,26 @@ describe('useUpdateSettings', () => {
     await act(async () => { await result.current.mutateAsync({ maxActiveSessions: 3 }) })
     expect(spy).toHaveBeenCalledWith({ queryKey: QK.settings })
     expect(spy).toHaveBeenCalledWith({ queryKey: QK.capacity })
+  })
+})
+
+describe('useFleetHostPatch', () => {
+  it('invalidates the fleet, capacity AND settings query keys on success (F2)', async () => {
+    // A host cap edit changes effectiveDefaults.globalCap, which rides on GET
+    // /api/settings (the Hosts footer and the Limits rows both read it) — so
+    // this mutation must invalidate QK.settings too, or the "Σ caps = N"
+    // readout goes stale after editing a host cap.
+    vi.mocked(api.put).mockResolvedValueOnce({ name: 'rocky', maxSessions: 8 })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useFleetHostPatch(), { wrapper: makeWrapper(qc) })
+
+    await act(async () => {
+      await result.current.mutateAsync({ name: 'rocky', body: { maxSessions: 8 } })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: FLEET_HOSTS_KEY })
+    expect(spy).toHaveBeenCalledWith({ queryKey: QK.capacity })
+    expect(spy).toHaveBeenCalledWith({ queryKey: QK.settings })
   })
 })
