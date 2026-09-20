@@ -83,6 +83,11 @@ async def build_readout(src: CapacitySources) -> dict:
     mode, gov = await src.governor_config()
     push_level = gov.get("push_level", "steady")
     reserve = RESERVE_PCT.get(push_level, 20)
+    # The account quota appears twice on the wire on purpose: here it is LIVE
+    # (this call's account rows × the governor's current sessions_per_account),
+    # while `plan.budget.accountCap` / `.sessionsPerAccount` (capacity_plan._fleet)
+    # is what the governor saw on its LAST tick and may be stale or absent. The
+    # UI reads the readout's `accounts` block; the plan's copy explains the plan.
     sessions_per_account = int(gov.get("sessions_per_account") or 2)
     global_cap = await src.global_cap()
     global_active = src.global_active()
