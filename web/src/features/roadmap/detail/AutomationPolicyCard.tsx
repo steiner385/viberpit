@@ -59,10 +59,9 @@ function groupFields(fields: ConfigField[]): FieldGroups {
 
 /** The one sentence that replaces the rank / cap mode / pin controls (spec
  *  2026-09-20 §5.3), read from the capacity READOUT so it shows the effective
- *  cap the governor actually set, not the stored pin. Two sentences and a
- *  middle dot, never an em dash (house rule). */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with a later PR, not a component
-export function capacityLine(row: CapacityProduct | undefined): string {
+ *  cap the governor actually set, not the stored pin. One sentence with middle
+ *  dots, the link rendered beside it; never an em dash (house rule). */
+function capacityLine(row: CapacityProduct | undefined): string {
   if (!row) return 'Capacity: rank, cap mode and pin are set on Delivery → Capacity.'
   const rank = row.rank === null ? 'unranked' : `rank ${row.rank}`
   const cap = row.capacityMode === 'pinned' ? `pinned (pin ${row.pin})` : `auto (effective cap ${row.effectiveCap})`
@@ -192,10 +191,6 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
         <fieldset className="flex flex-col gap-3">
           <legend className="text-sm font-medium">Dispatch</legend>
           {groups.dispatch.map(renderField)}
-          <p className="text-xs text-ink-muted">
-            {capacityLine(capacityRow)}{' '}
-            <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Adjust on Delivery → Capacity</Link>
-          </p>
         </fieldset>
         <fieldset className="flex flex-col gap-3">
           <legend className="text-sm font-medium">Models</legend>
@@ -206,6 +201,12 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
           {groups.gates.map(renderField)}
         </fieldset>
       </fieldset>
+      {/* Informational, not a control: it stays enabled and visible even while
+          the fieldset above it is disabled (spec 2026-09-20 D5). */}
+      <p className="text-xs text-ink-muted">
+        {capacityLine(capacityRow)}{' '}
+        <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Adjust on Delivery → Capacity</Link>
+      </p>
       {/* Every gate the tolerance governs, with what the selected level does to it
           (spec 2026-09-14 §11, built by 2026-09-17 D5). The verdict column is the
           answer to "if I pick balanced, what stops asking me?". */}

@@ -82,9 +82,8 @@ beforeEach(() => {
   Object.assign(h.capacity, { data: CAPACITY, isPending: false, isError: false })
 })
 
-// Every render needs Router context now: the Capacity fieldset always links
-// to the real capacity page (task 9), not only the repository-coverage
-// sub-section that used to be the only `<Link>` in this component.
+// Every render needs Router context: the read-only capacity line links to the
+// capacity page (spec 2026-09-20 D5).
 function renderCard(ui: Parameters<typeof render>[0]) {
   return render(<MemoryRouter>{ui}</MemoryRouter>)
 }
@@ -159,6 +158,7 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByLabelText('Dispatch')).toBeDisabled()
     expect(screen.getByLabelText('Minimum board status')).toBeDisabled()
     expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
+    expect(screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })).toBeInTheDocument()
   })
 
   it('lists every gate with its verdict under the configured tolerance', () => {
@@ -223,6 +223,8 @@ describe('AutomationPolicyCard', () => {
     expect(screen.queryByLabelText('Cap mode')).toBeNull()
     expect(screen.queryByLabelText('Weight')).toBeNull()
     expect(screen.queryByText('Weight')).toBeNull()
+    expect(screen.queryByText('Pin')).toBeNull()
+    expect(screen.queryByText('Cap mode')).toBeNull()
     // …and the line reads the READOUT (effective cap 4), not the stored pin (3).
     expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
   })
@@ -239,12 +241,12 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })
 
-  it('the Dispatch group carries the read-only capacity line linking to the capacity page', () => {
+  it('the read-only capacity line links to the capacity page and is never disabled', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
     const link = screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })
     expect(link).toHaveAttribute('href', '/delivery?scope=capacity')
-    expect(legendFor(link)).toBe('Dispatch')
+    expect(link.closest('fieldset')).toBeNull()
     expect(screen.queryByRole('link', { name: "See the fleet's capacity" })).toBeNull()
   })
 
