@@ -57,12 +57,14 @@ Mechanics were consistent everywhere the primitive is used: ids in a `const` tup
 Tabs: **Overview · In flight · Needs you · Ranked · Dependencies · Automation** (six).
 
 - **Overview** keeps the identity block (description, repositories, mirrored count, Edit,
-  `+ Capability`) and three self-hiding notices (needs-you notice, roadmap hygiene, map-changes
-  card / onboarding wizard — the wizard and the card are one "what the map is waiting on"
-  notice: the wizard renders until live, the card only with an open PR, so at most one shows at a
-  time and together they are one block). The in-flight section becomes a **preview**: the first
-  three in-flight initiatives with their tracks and a "See all N in flight" link that calls
-  `setTab('in-flight')`; when nothing is in flight the preview says so in one line.
+  `+ Capability`) and exactly three summary blocks (the §5 budget): the needs-you notice; the
+  map-changes card / onboarding wizard (one "what the map is waiting on" notice: the wizard
+  renders until live, the card only with an open PR, so at most one shows at a time); and the
+  in-flight section as a **preview** — the first three in-flight initiatives with their tracks
+  and a "See all N in flight" link that calls `setTab('in-flight')`, or one line saying nothing
+  is in flight. The roadmap-hygiene card (`RoadmapHealthCard`) is a "what needs a person" notice,
+  so it moves to the top of the **Needs you** tab rather than being a second needs-you-class
+  block on the Overview.
 - **Automation** (new) hosts `AutomationPolicyCard` unchanged. The capacity settings spec §5.3
   refers to "Roadmap → product → Automation card"; the tab keeps that name so the spec still
   resolves, and that spec's PR 4 edits the card in place.
