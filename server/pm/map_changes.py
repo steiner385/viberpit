@@ -297,7 +297,7 @@ class MapChangesService:
             if not text:
                 continue
             try:
-                docs.append(parse_feature_doc(text))
+                docs.append(parse_feature_doc(text, path=path))
             except FeatureDocError:
                 log.info("map_changes: skipping unparseable doc %s on %s", path, branch)
         return docs

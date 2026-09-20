@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.pm.feature_index import (
     FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
@@ -33,6 +34,18 @@ from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
+
+# NOTE on the two feature-doc log throttles (``_bad_doc_log`` /
+# ``_skipped_docs_log``, built per loop in ``__init__``): a doc that cannot be
+# parsed cannot be parsed on the NEXT pass either, so these warnings were one
+# record per doc per tick for as long as the doc stood — 254 records in a day
+# for one file (#1635), one auto-error issue per distinct path (#1874, #1903)
+# and one more for the aggregate (#1902). Worse, closing such an issue while the
+# doc is still broken re-files it as a "regression" of itself: #1874 carries
+# #1569's fingerprint AND its first-seen timestamp. The keys are the failure's
+# identity, never the tick, so a doc that is fixed or newly broken reports
+# immediately and a standing one keeps the six-hourly "still broken" heartbeat
+# ``LogThrottle`` is designed around.
 
 NowUtc = Callable[[], datetime]
 
@@ -202,6 +215,12 @@ class PmSyncLoop:
         # discovery failures so a missing-credential owner doesn't warn every tick.
         self._projects_next_run: datetime | None = None
         self._last_gh_projects: int = 0
+        # Feature-doc parse failures repeat every tick for as long as the doc
+        # stands; see the module note above ``_bad_doc_log``'s rationale. One
+        # throttle per record family, on the loop rather than the module, so a
+        # fresh loop (and every test) starts with a clean window.
+        self._bad_doc_log = LogThrottle()
+        self._skipped_docs_log = LogThrottle()
         self._repo_observation_degraded = False
         self._projects_observation_degraded = False
         self._owner_next_retry: dict[str, datetime] = {}
@@ -607,10 +626,11 @@ class PmSyncLoop:
         skipped: list[str] = []
         for path, text in main.docs:
             try:
-                doc = parse_feature_doc(text)
+                doc = parse_feature_doc(text, path=path)
             except FeatureDocError as e:
-                log.warning("pm_sync.bad_feature_doc repo=%s path=%s",
-                            view.repo, path, exc_info=True)
+                log_throttled(log, self._bad_doc_log, f"{view.repo}\0{path}\0{e}",
+                              logging.WARNING, "pm_sync.bad_feature_doc repo=%s path=%s",
+                              view.repo, path, exc_info=True)
                 skipped.append(f"{path}: {e}")
                 continue  # one bad doc never poisons the index (spec §4)
             docs_by_slug[doc.slug] = (path, doc)
@@ -641,7 +661,7 @@ class PmSyncLoop:
                     branch = await self._read_feature_docs(view.repo, pointer.branch)
                     for path, text in branch.docs:
                         try:
-                            doc = parse_feature_doc(text)
+                            doc = parse_feature_doc(text, path=path)
                         except FeatureDocError as e:
                             skipped.append(f"{path}: {e}")
                             continue
@@ -668,16 +688,25 @@ class PmSyncLoop:
             # re-proposing it because an unindexed capability cannot latch. The
             # read-failure path above already emits; parse failures did not, so
             # a repo could sit at zero indexed features indefinitely with the
-            # only trace in the process log. Emit once per pass, not per doc.
-            log.warning("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
-                        view.repo, len(skipped), total_read)
-            await self._ctx.emit(
-                "warn",
-                f"{len(skipped)} of {total_read} feature docs in {view.repo} "
-                f"could not be parsed and are NOT on the map: "
-                + "; ".join(skipped[:5])
-                + ("; …" if len(skipped) > 5 else ""),
-                kind="feature_doc_skipped", target=view.repo)
+            # only trace in the process log. Emit once per pass, not per doc —
+            # and, since the same docs stay broken tick after tick, once per
+            # throttle window rather than once per pass (#1902). The log record
+            # and the feed event share one decision so the two surfaces cannot
+            # disagree about whether this pass reported.
+            key = f"{view.repo}\0" + "\0".join(sorted(skipped))
+            if self._skipped_docs_log.should_log(key):
+                log.warning("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
+                            view.repo, len(skipped), total_read)
+                await self._ctx.emit(
+                    "warn",
+                    f"{len(skipped)} of {total_read} feature docs in {view.repo} "
+                    f"could not be parsed and are NOT on the map: "
+                    + "; ".join(skipped[:5])
+                    + ("; …" if len(skipped) > 5 else ""),
+                    kind="feature_doc_skipped", target=view.repo)
+            else:
+                log.debug("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
+                          view.repo, len(skipped), total_read)
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(
             rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)

@@ -1,7 +1,9 @@
 """Feature-doc frontmatter parser tests (spec §3 'feature doc convention')."""
 import pytest
 
+from server.db.models import FEATURE_LIFECYCLE_STATES
 from server.pm.featuredoc import (
+    FEATURE_STATE_ALIASES,
     FeatureDocError,
     FeatureLinkRef,
     parse_feature_doc,
@@ -252,3 +254,102 @@ def test_alias_doc_round_trips_into_canonical_form():
 def test_bad_state_via_status_alias_still_raises():
     with pytest.raises(FeatureDocError):
         parse_feature_doc(ALIAS.replace("status: proposed", "status: bogus"))
+
+
+# --- Lifecycle synonyms (#1903, #1902) --------------------------------------- #
+# The reader infers what a doc leaves UNSTATED and honours what it states; it
+# never overrides a stated value. A lifecycle word that unambiguously names one
+# canonical state is honoured through the alias table; an unstated state falls
+# back to the least-committal `proposed`; a word that names nothing still raises.
+
+def test_the_alias_table_is_well_formed():
+    """Every alias must resolve to a real lifecycle state, and none may shadow
+    a canonical one — a typo here would silently re-point a whole vocabulary."""
+    assert set(FEATURE_STATE_ALIASES.values()) <= set(FEATURE_LIFECYCLE_STATES)
+    assert not set(FEATURE_STATE_ALIASES) & set(FEATURE_LIFECYCLE_STATES)
+
+
+@pytest.mark.parametrize("word,canonical", [
+    ("in-progress", "delivering"),   # the ghostdriver-mcp doc behind #1903
+    ("in_progress", "delivering"),
+    ("In Progress", "delivering"),
+    ("wip", "delivering"),
+    ("planned", "proposed"),
+    ("exploring", "discovery"),
+    ("shipped", "live"),
+    ("deprecated", "sunset"),
+    ("LIVE", "live"),                # canonical modulo case
+])
+def test_lifecycle_synonyms_map_to_canonical_states(word, canonical):
+    text = f"---\nslug: a\ntitle: A\nstate: {word}\n---\n# A\nbody\n"
+    assert parse_feature_doc(text).state == canonical
+
+
+def test_unstated_state_falls_back_to_proposed():
+    """Absent is not wrong: a doc that never names a lifecycle state is the
+    least-committal one, not a parse failure."""
+    assert parse_feature_doc("---\nslug: a\ntitle: A\n---\n# A\nbody\n").state == "proposed"
+    assert parse_feature_doc("---\nslug: a\ntitle: A\nstate: ''\n---\n# A\n").state == "proposed"
+
+
+@pytest.mark.parametrize("word", [
+    "purple",   # names nothing at all
+    "active",   # names two states equally well, and therefore none
+])
+def test_unrecognised_state_still_raises(word):
+    """A word that names no ONE lifecycle state is a stated value we cannot
+    honour, so guessing `proposed` would silently contradict the author."""
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc(f"---\nslug: a\ntitle: A\nstate: {word}\n---\n# A\n")
+
+
+def test_synonym_round_trips_into_canonical_form():
+    doc = parse_feature_doc("---\nslug: a\ntitle: A\nstate: in-progress\n---\n# A\nbody\n")
+    assert "state: delivering" in serialize_feature_doc(doc)
+    assert parse_feature_doc(serialize_feature_doc(doc)) == doc
+
+
+# --- No frontmatter at all (#1874, #1635) ------------------------------------ #
+# `docs/product/features/<slug>.md` IS the slug convention, so a path makes a
+# fenceless doc unambiguous rather than merely guessable.
+
+NO_FENCE = """# Deploy Monitor
+
+Watches every managed repo's GitHub Deployment records.
+"""
+
+
+def test_fenceless_doc_takes_its_slug_from_the_path():
+    doc = parse_feature_doc(NO_FENCE, path="docs/product/features/deploy-monitor.md")
+    assert (doc.slug, doc.title, doc.state) == ("deploy-monitor", "Deploy Monitor", "proposed")
+    assert doc.body.startswith("# Deploy Monitor")
+
+
+def test_fenceless_doc_without_a_path_still_raises():
+    with pytest.raises(FeatureDocError, match="frontmatter"):
+        parse_feature_doc(NO_FENCE)
+
+
+def test_fenceless_doc_without_an_h1_still_raises():
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc("no heading here\n", path="docs/product/features/a.md")
+
+
+def test_path_only_fills_in_a_slug_the_frontmatter_omits():
+    text = "---\ntitle: A\nstate: live\n---\n# A\nbody\n"
+    assert parse_feature_doc(text, path="docs/product/features/a.md").slug == "a"
+    # …and never overrides one it states.
+    stated = "---\nslug: real\ntitle: A\nstate: live\n---\n# A\n"
+    assert parse_feature_doc(stated, path="docs/product/features/other.md").slug == "real"
+
+
+def test_path_derived_slug_must_look_like_a_slug():
+    """A stray file in the directory must not become a capability: only a
+    branch-safe ``SLUG_RE`` stem is accepted as a slug."""
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc(NO_FENCE, path="docs/product/features/README.md")
+
+
+def test_unterminated_fence_still_raises():
+    with pytest.raises(FeatureDocError, match="unterminated"):
+        parse_feature_doc("---\nslug: a\ntitle: A\n", path="docs/product/features/a.md")

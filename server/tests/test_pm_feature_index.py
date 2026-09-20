@@ -1,6 +1,8 @@
 """Pure feature-index planner tests (spec §4: upsert + sunset-orphan)."""
 import pathlib
 
+import yaml
+
 from server.pm.feature_index import FeatureRowView, plan_feature_index
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
@@ -111,14 +113,31 @@ def test_labels_are_carried_onto_the_upsert():
     assert plan.upserts[0].labels == ("flaky",)
 
 
-def test_every_checked_in_feature_doc_parses():
-    """Guards against #1634: two docs missing frontmatter sat silently
-    unindexed (pm_sync.feature_docs_skipped) since #1598, since parse
-    failures only ever surface as a runtime warning, never CI."""
-    failures = {}
+def test_every_checked_in_feature_doc_is_canonical():
+    """Guards #1634 and keeps its teeth after #1874/#1903 widened the reader.
+
+    The reader now rescues a doc with no frontmatter (slug from the path) or a
+    lifecycle synonym (``in-progress`` → ``delivering``), because ViberPit
+    indexes repos whose docs it cannot gate. "It parses" therefore no longer
+    proves OUR docs follow the convention — so CI holds this repo's docs to
+    exactly what ``serialize_feature_doc`` writes: a real fence, canonical
+    ``slug``/``state`` keys, canonical values, and slug == filename.
+    """
+    problems = {}
     for path in sorted(FEATURE_DOCS_DIR.glob("*.md")):
+        text = path.read_text()
         try:
-            parse_feature_doc(path.read_text())
+            doc = parse_feature_doc(text, path=f"docs/product/features/{path.name}")
         except FeatureDocError as e:
-            failures[path.name] = str(e)
-    assert not failures
+            problems[path.name] = str(e)
+            continue
+        if not text.startswith("---"):
+            problems[path.name] = "no YAML frontmatter fence"
+            continue
+        meta = yaml.safe_load(text.split("---", 2)[1]) or {}
+        if meta.get("slug") != path.stem:
+            problems[path.name] = f"frontmatter slug {meta.get('slug')!r} != filename"
+        elif meta.get("state") != doc.state:
+            problems[path.name] = (
+                f"state {meta.get('state')!r} is not the canonical {doc.state!r}")
+    assert not problems

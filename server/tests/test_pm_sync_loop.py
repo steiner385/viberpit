@@ -435,6 +435,89 @@ async def test_branch_read_error_is_best_effort_default_plan_still_applied():
 
 
 @pytest.mark.asyncio
+async def test_a_standing_bad_doc_is_reported_once_not_every_tick():
+    """#1902/#1635: a doc that cannot be parsed cannot be parsed next tick
+    either, so the unthrottled warning was one record per tick — 254 in a day
+    for one file, and an auto-error issue per path. The condition must report
+    on its first sighting and then hold until the throttle window elapses."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)] * 3
+    docs = [("docs/product/features/a.md", _fdoc("a", "A")),
+            ("docs/product/features/bad.md", "---\nslug: bad\n")]  # unterminated
+
+    loop, _saved, _upserted, _applied = _loop(ctx, [view], pages, feature_docs=docs)
+    for _ in range(3):
+        await loop.tick()
+
+    skips = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+    assert len(skips) == 1, skips
+
+
+@pytest.mark.asyncio
+async def test_a_changed_skip_set_reports_immediately():
+    """The throttle keys on the failure's identity, not on the tick, so a doc
+    that is newly broken (or newly fixed) must not be held down by the window
+    the previous condition opened — otherwise the heartbeat hides real news."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)] * 2
+    docs = [("docs/product/features/bad.md", "---\nslug: bad\n")]
+
+    loop, _saved, _upserted, _applied = _loop(ctx, [view], pages, feature_docs=docs)
+    await loop.tick()
+    docs.append(("docs/product/features/worse.md", "---\nslug: worse\n"))
+    await loop.tick()
+
+    skips = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+    assert len(skips) == 2
+    assert "worse.md" in skips[1]
+
+
+@pytest.mark.asyncio
+async def test_a_lifecycle_synonym_is_indexed_not_skipped():
+    """#1903: ghostdriver-mcp's doc says ``state: in-progress``. It named one
+    canonical state unambiguously, so it belongs on the map — a skip left the
+    capability invisible and re-warned forever."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    docs = [("docs/product/features/gtk.md",
+             "---\nslug: gtk\ntitle: GTK\nstate: in-progress\n---\n# GTK\nbody\n")]
+
+    loop, _saved, _upserted, applied = _loop(ctx, [view], pages, feature_docs=docs)
+    await loop.tick()
+
+    _, plan = applied[0]
+    assert [(u.slug, u.state) for u in plan.upserts] == [("gtk", "delivering")]
+    assert not [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+
+
+@pytest.mark.asyncio
+async def test_a_doc_with_no_frontmatter_is_indexed_from_its_path():
+    """#1874/#1635: docs predating the frontmatter convention were dropped on
+    every pass. ``docs/product/features/<slug>.md`` IS the slug convention, so
+    the path names the capability and the H1 titles it."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    docs = [("docs/product/features/deploy-monitor.md",
+             "# Deploy Monitor\n\nWatches deployment records.\n")]
+
+    loop, _saved, _upserted, applied = _loop(ctx, [view], pages, feature_docs=docs)
+    await loop.tick()
+
+    _, plan = applied[0]
+    assert [(u.slug, u.title, u.state) for u in plan.upserts] == [
+        ("deploy-monitor", "Deploy Monitor", "proposed")]
+    assert not [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+
+
+@pytest.mark.asyncio
 async def test_the_skipped_doc_denominator_counts_deduplicated_slugs():
     """A doc on BOTH the default branch and the map-changes branch is ONE
     capability: "N of M could not be parsed" must count de-duplicated slugs plus
@@ -446,7 +529,7 @@ async def test_the_skipped_doc_denominator_counts_deduplicated_slugs():
     main = FeatureDocsRead("sha-main", [
         ("docs/product/features/a.md", _fdoc("a", "A")),
         ("docs/product/features/b.md", _fdoc("b", "B")),
-        ("docs/product/features/bad.md", "no frontmatter at all\n"),
+        ("docs/product/features/bad.md", "---\nslug: bad\n"),  # unterminated fence
     ])
     branch = FeatureDocsRead("sha-branch", [
         ("docs/product/features/b.md", _fdoc("b", "B Proposed"))])
@@ -480,7 +563,7 @@ async def test_an_unparseable_doc_on_the_branch_is_skipped_and_reported():
     branch = FeatureDocsRead("sha-branch", [
         ("docs/product/features/a.md", _fdoc("a", "A")),          # inherited
         ("docs/product/features/c.md", _fdoc("c", "C")),          # new, good
-        ("docs/product/features/broken.md", "no frontmatter at all\n"),
+        ("docs/product/features/broken.md", "---\nslug: broken\n"),  # unterminated fence
     ])
 
     async def read_docs(repo, ref=None):

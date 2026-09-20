@@ -8,7 +8,6 @@ old doc canonicalises it — the PR body says so (R8b-12). No I/O here: the
 service layer fetches the current text and commits the result."""
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
@@ -16,14 +15,13 @@ from server.db.models import FEATURE_LINK_KINDS
 
 from .classification import feature_doc_path
 from .featuredoc import (
+    SLUG_RE,
     FeatureDoc,
     FeatureDocError,
     FeatureLinkRef,
     parse_feature_doc,
     serialize_feature_doc,
 )
-
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAP_OPS: tuple[str, ...] = ("create", "rename", "reparent", "summary", "links")
 
 
@@ -141,7 +139,7 @@ def apply_op(op: MapOp, current: str | None) -> tuple[str, str]:
     if current is None:
         raise MapOpError("not_found", f"no doc for '{op.slug}' on the branch")
     try:
-        doc = parse_feature_doc(current)
+        doc = parse_feature_doc(current, path=path)
     except FeatureDocError as e:
         raise MapOpError("bad_doc", f"the existing doc cannot be parsed: {e}") from e
     # dataclasses.replace() carries every field the branch does not name
