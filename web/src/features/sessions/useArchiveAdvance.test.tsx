@@ -94,8 +94,8 @@ describe('useArchiveAdvance — onDone', () => {
     // Both sessions are idle → the 'your-turn' group. Collapsed, the open
     // session is absent from the VISIBLE ordering, so the advance must fall
     // back to the full ordering rather than bail to /sessions.
-    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
-    localStorage.setItem('ccswitch.groupCollapse', JSON.stringify(['your-turn']))
+    localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    localStorage.setItem('viberpit.groupCollapse', JSON.stringify(['your-turn']))
     const user = userEvent.setup()
     renderAt('/sessions/sess-1', { live: TWO_LIVE })
 

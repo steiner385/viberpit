@@ -44,7 +44,7 @@ interface SessionListControlsProps<G extends string, S extends string> {
 }
 
 // DEC-7: the `repo` option READS "Project" and its VALUE is still `repo`.
-// `LIVE_SPEC.groupByValues` is persisted under `ccswitch.sessionOrder`, so
+// `LIVE_SPEC.groupByValues` is persisted under `viberpit.sessionOrder`, so
 // introducing a `project` value here would strand every saved preference on a
 // value the parser rejects. This is a relabel and only a relabel — do not
 // "finish" it by renaming the value.

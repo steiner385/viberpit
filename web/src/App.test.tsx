@@ -280,8 +280,8 @@ describe('App session advance', () => {
     // Both mock sessions are idle → the 'your-turn' ("Your turn") status group. With
     // that group collapsed, the open session is absent from the VISIBLE ordering
     // — the advance must fall back to the full ordering, not bail to /sessions.
-    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
-    localStorage.setItem('ccswitch.groupCollapse', JSON.stringify(['your-turn']))
+    localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    localStorage.setItem('viberpit.groupCollapse', JSON.stringify(['your-turn']))
     const user = userEvent.setup()
     const app = renderApp({ path: '/sessions/sess-1' })
     await user.click(await screen.findByRole('button', { name: /archive session/i }))

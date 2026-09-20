@@ -287,7 +287,7 @@ describe('ArchivedSessionList — collapse recoverability', () => {
     // Regression: with every group collapsed the headers must remain so the user
     // can expand again. Previously the whole grouped list was gated on the
     // collapse-aware visible count, so it vanished — unrecoverable without
-    // clearing localStorage (ccswitch.groupCollapse.archived).
+    // clearing localStorage (viberpit.groupCollapse.archived).
     const after = headers()
     expect(after).toHaveLength(2)
     expect(after.every((h) => h.getAttribute('aria-expanded') === 'false')).toBe(true)

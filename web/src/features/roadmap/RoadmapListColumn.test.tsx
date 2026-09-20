@@ -72,7 +72,7 @@ describe('RoadmapListColumn', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Tasks' }))
     expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeNull()
     // Folds go through `lib/groupCollapse`, so the key is that module's.
-    expect(JSON.parse(localStorage.getItem('ccswitch.groupCollapse.roadmap') ?? '[]'))
+    expect(JSON.parse(localStorage.getItem('viberpit.groupCollapse.roadmap') ?? '[]'))
       .toContain(capabilityKey('kindash', 'tasks'))
   })
 

@@ -321,13 +321,13 @@ describe('DispatchBar', () => {
   })
 
   it('seeds the repo select from getLastRepo()', () => {
-    window.localStorage.setItem('ccswitch.lastRepo', 'acme/web')
+    window.localStorage.setItem('viberpit.lastRepo', 'acme/web')
     render(<DispatchBar {...makeProps()} />)
     expect(screen.getByRole('combobox', { name: /repository/i })).toHaveValue('acme/web')
   })
 
   it('disables the select while repos load but keeps a persisted repo selected', () => {
-    window.localStorage.setItem('ccswitch.lastRepo', 'acme/web')
+    window.localStorage.setItem('viberpit.lastRepo', 'acme/web')
     render(<DispatchBar {...makeProps({ repos: [], reposLoading: true })} />)
     const select = screen.getByRole('combobox', { name: /repository/i })
     expect(select).toBeDisabled()

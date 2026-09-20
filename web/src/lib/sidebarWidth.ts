@@ -10,7 +10,7 @@
  * `SessionCard.layout.test.tsx` asserts the consequence. Changing it silently
  * changes the card layout.
  */
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 export const SIDEBAR_MIN = 280
 export const SIDEBAR_MAX = 560
@@ -48,6 +48,11 @@ function parseWidth(raw: string): number {
  */
 export function loadSidebarWidth(): number {
   try {
+    // Two hops, in order: the brand namespace flip (#1368) moves BOTH keys out of
+    // `ccswitch.` first, so the DEC-11 rename below then runs entirely inside the
+    // current namespace and keeps its clamp-on-the-way-forward semantics.
+    migrateStorageNamespace(localStorage, SIDEBAR_STORAGE_KEY)
+    migrateStorageNamespace(localStorage, LEGACY_STORAGE_KEY)
     const current = localStorage.getItem(SIDEBAR_STORAGE_KEY)
     if (current !== null) return parseWidth(current)
 

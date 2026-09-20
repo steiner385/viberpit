@@ -5,7 +5,7 @@ import { Button } from '@/ui/Button'
 import { useDeployState } from '@/lib/deployState'
 import { useDeployController } from '@/lib/deployController'
 import { DeployFailureNotice } from './DeployFailureNotice'
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 // The failure notice is dismissed by CONTENT, not as a boolean: `gaveUp` is the daemon's
 // live set and only changes when a human retries/archives, so a bare "hidden" flag would
@@ -22,7 +22,8 @@ function failureSignature(error: string | null, failed: string[], gaveUp: string
 
 function readDismissedSignature(): string | null {
   try {
-    return window.localStorage.getItem(DISMISSED_KEY)
+    return window.localStorage.getItem(
+      migrateStorageNamespace(window.localStorage, DISMISSED_KEY))
   } catch {
     return null
   }

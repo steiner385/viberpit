@@ -4,7 +4,7 @@
 // hardcoded "primary". The focused repo's name is the guardrail that any
 // authoring action targets the intended pipeline, so it stays pinned and visible.
 import { useCallback, useEffect, useState } from 'react'
-import { storageKey, migrateStorageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 const STORE_KEY = storageKey('pipeline.focused')
 /** Pre-namespace key. Migrated forward on the first read of the store (row 7b);
@@ -16,6 +16,7 @@ const URL_PARAM = 'pipeline'
 /** Migrates the legacy key forward (once, idempotent) and reads the current value. */
 function readStore(): string | null {
   try {
+    migrateStorageNamespace(localStorage, STORE_KEY)
     migrateStorageKey(localStorage, LEGACY_STORE_KEY, STORE_KEY)
     return localStorage.getItem(STORE_KEY)
   } catch { return null }

@@ -3,7 +3,7 @@ import { useSessions } from '@/api/hooks'
 import { useUpdatePending } from '@/hooks/useUpdatePending'
 import { getSessionSocket } from '@/ws/client'
 import { isSafeToReload, BUILD_SHA } from '@/lib/version'
-import { storageKey, migrateStorageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 // Per-tab marker: the bundle sha we last auto-reloaded FROM. If we reload and come back on the
 // SAME bundle still flagged outdated — a deploy left the edge reporting a sha this bundle can
@@ -16,6 +16,7 @@ const LEGACY_RELOADED_FROM_KEY = 'ccswitch:auto-reloaded-from-sha'
 
 function alreadyAutoReloadedFromThisBundle(): boolean {
   try {
+    migrateStorageNamespace(sessionStorage, RELOADED_FROM_KEY)
     migrateStorageKey(sessionStorage, LEGACY_RELOADED_FROM_KEY, RELOADED_FROM_KEY)
     return sessionStorage.getItem(RELOADED_FROM_KEY) === BUILD_SHA
   } catch {

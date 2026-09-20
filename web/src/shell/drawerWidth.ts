@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 /**
  * Persisted width for the shell's drawer column (`app.drawer`), sub-spec B §4.2.
@@ -34,7 +34,8 @@ export function clampDrawerWidth(px: number): number {
 /** Read the persisted width, clamped; falls back to the default on miss/corrupt. */
 export function loadDrawerWidth(): number {
   try {
-    const raw = window.localStorage.getItem(DRAWER_STORAGE_KEY)
+    const raw = window.localStorage.getItem(
+      migrateStorageNamespace(window.localStorage, DRAWER_STORAGE_KEY))
     if (raw === null) return DRAWER_DEFAULT
     return clampDrawerWidth(Number(raw))
   } catch {

@@ -74,9 +74,11 @@ for and leaves an error (no fix) on anything it doesn't, for you to hand-map.
   minus one allowlist — `features/pipeline/charts/**`, which draws with literal colours (the rule
   block in `eslint.config.js` is `files: ['src/**/*.{ts,tsx}']` + that `ignores`, so `e2e/`,
   `eslint-rules/` and the root configs sit outside it).
-- **Storage keys** go through `lib/storageKey.ts`'s `storageKey(name)` (→ `` `ccswitch.${name}` ``),
+- **Storage keys** go through `lib/storageKey.ts`'s `storageKey(name)` (→ `` `viberpit.${name}` ``),
   never a raw string literal to `localStorage`/`sessionStorage`. Renaming a key uses
-  `migrateStorageKey()` to carry the old value forward once.
+  `migrateStorageKey()` to carry the old value forward once; a reader also calls
+  `migrateStorageNamespace()` so a key still under the pre-rebrand namespace comes forward
+  on first read (#1368).
 - **One media-query reader.** `shell/useViewport.tsx` is the only module that subscribes to a layout
   `matchMedia` (width tier, orientation, coarse pointer, reduced motion); everything else reads
   `useViewport()`. (`shell/theme.tsx`'s `prefers-color-scheme` subscription and the two

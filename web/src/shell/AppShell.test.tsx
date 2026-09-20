@@ -726,14 +726,14 @@ describe('AppShell — accessibility', () => {
    * it is not. So a single outer `role="list"` wrapper covered the ungrouped
    * mode and orphaned the very same rows once grouping was on. Grouping is
    * persisted per real usage (`saveOrderPref` under `ARCHIVED_SPEC.namespace`
-   * — `ccswitch.sessionOrder.archived`), so it is set here the way a user's
+   * — `viberpit.sessionOrder.archived`), so it is set here the way a user's
    * choice would be, rather than reached into the component.
    */
   it.each(['account', 'repo'] as const)(
     'has no axe violations in the archived scope grouped by %s',
     async (groupBy) => {
       window.localStorage.setItem(
-        'ccswitch.sessionOrder.archived',
+        'viberpit.sessionOrder.archived',
         JSON.stringify({ groupBy, sortBy: 'archived' }),
       )
       renderShell({ path: '/sessions/archived', mode: 'desktop' })

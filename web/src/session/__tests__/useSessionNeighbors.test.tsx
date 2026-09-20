@@ -72,8 +72,8 @@ describe('useSessionNeighbors', () => {
     // Group by status: 'a' (idle → your-turn tier) sits in a collapsed group, so
     // it is absent from the VISIBLE ordering — the chevrons must still navigate,
     // walking the full ordering instead of disappearing.
-    window.localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
-    window.localStorage.setItem('ccswitch.groupCollapse', JSON.stringify(['your-turn']))
+    window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    window.localStorage.setItem('viberpit.groupCollapse', JSON.stringify(['your-turn']))
     const { result } = renderHook(() => useSessionNeighbors('a'), {
       wrapper: wrapperWith([mk('a'), mk('b', { status: 'in_progress' })]),
     })

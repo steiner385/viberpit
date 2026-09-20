@@ -26,7 +26,7 @@ import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
 import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './StatusStrip';
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';
-import { storageKey, migrateStorageKey } from '@/lib/storageKey';
+import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey';
 
 // ---- localStorage helpers (private-mode safe) — copied verbatim from $PLOT/App.tsx:33-55 ----
 
@@ -36,6 +36,7 @@ const LEGACY_LS_KEY = 'prdash.collapsed';
 
 function readCollapsedSet(): Set<string> {
   try {
+    migrateStorageNamespace(localStorage, LS_KEY);
     migrateStorageKey(localStorage, LEGACY_LS_KEY, LS_KEY);
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return new Set();

@@ -340,11 +340,11 @@ describe('the all-limited banner', () => {
 describe('the shell passes the sessions-loading flag to the list state', () => {
   const STORED = { filters: { status: null, project: 'acme/api', environment: null } }
   const readFilters = (): unknown =>
-    (JSON.parse(localStorage.getItem('ccswitch.sessionOrder') ?? '{}') as { filters?: unknown })
+    (JSON.parse(localStorage.getItem('viberpit.sessionOrder') ?? '{}') as { filters?: unknown })
       .filters
 
   it('a stored project filter is NOT sanitized away while the sessions query is loading', async () => {
-    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify(STORED))
+    localStorage.setItem('viberpit.sessionOrder', JSON.stringify(STORED))
     vi.mocked(hooks.useSessions).mockReturnValue(loadingQueryResult<Session[]>())
     renderApp({ path: '/sessions', mode: 'desktop' })
     await act(async () => { await Promise.resolve() })
@@ -356,7 +356,7 @@ describe('the shell passes the sessions-loading flag to the list state', () => {
     // The discriminator: same empty list, same empty domain — only the flag
     // differs. Drop the flag on the way to the hook and the case above lands
     // here instead, which is exactly the regression.
-    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify(STORED))
+    localStorage.setItem('viberpit.sessionOrder', JSON.stringify(STORED))
     setSessions([])
     renderApp({ path: '/sessions', mode: 'desktop' })
 

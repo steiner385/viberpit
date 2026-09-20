@@ -3,14 +3,15 @@
  * the set of COLLAPSED group keys (empty/absent ⇒ all expanded). Namespace 'live'
  * maps to the original key so existing collapse state survives.
  */
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 const keyFor = (ns: string): string =>
   ns === 'live' ? storageKey('groupCollapse') : storageKey(`groupCollapse.${ns}`)
 
 export function loadGroupCollapseNs(ns: string): Set<string> {
   try {
-    const raw = window.localStorage.getItem(keyFor(ns))
+    const raw = window.localStorage.getItem(
+      migrateStorageNamespace(window.localStorage, keyFor(ns)))
     if (!raw) return new Set()
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return new Set()

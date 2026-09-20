@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { storageKey, migrateStorageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 export interface DraftAttachment { id: string; mime: string; name: string }
 export interface SessionDraft { text: string; attachments: DraftAttachment[] }
@@ -12,6 +12,7 @@ const legacyKeyFor = (sessionId: string) => `ccswitch:draft:${sessionId}`
 function read(sessionId?: string): SessionDraft {
   if (!sessionId) return { ...EMPTY }
   try {
+    migrateStorageNamespace(localStorage, keyFor(sessionId))
     migrateStorageKey(localStorage, legacyKeyFor(sessionId), keyFor(sessionId))
     const raw = localStorage.getItem(keyFor(sessionId))
     if (!raw) return { ...EMPTY }

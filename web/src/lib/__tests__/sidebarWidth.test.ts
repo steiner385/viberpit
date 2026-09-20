@@ -55,7 +55,7 @@ describe('loadSidebarWidth / saveSidebarWidth', () => {
   })
 })
 
-// ── DEC-11: the key moved to `ccswitch.listWidth` ────────────────────────────
+// ── DEC-11: the key moved to `viberpit.listWidth` ────────────────────────────
 //
 // The band is deliberately NOT renamed along with the key: SessionCard derives
 // its container-query breakpoints from SIDEBAR_MAX = 560 and
@@ -64,7 +64,11 @@ describe('loadSidebarWidth / saveSidebarWidth', () => {
 /** The pre-AppShell key. Spelled out here on purpose — it is a historical
  *  literal, and importing it from the module would make these tests agree with
  *  whatever the module currently says rather than with what actually shipped. */
-const LEGACY_KEY = 'ccswitch.sidebarWidth'
+const LEGACY_KEY = 'viberpit.sidebarWidth'
+/** …and what actually shipped BEFORE the brand rename (#1368), which is what a
+ *  long-lived browser really has on disk: the DEC-11 rename and the namespace
+ *  flip are two hops, and a width that predates both has to survive both. */
+const PRE_REBRAND_LEGACY_KEY = 'ccswitch.sidebarWidth'
 
 describe('listWidth migration (DEC-11)', () => {
   beforeEach(() => {
@@ -72,11 +76,26 @@ describe('listWidth migration (DEC-11)', () => {
     localStorage.clear()
   })
 
-  it('stores under ccswitch.listWidth', () => {
-    expect(SIDEBAR_STORAGE_KEY).toBe('ccswitch.listWidth')
+  it('stores under viberpit.listWidth', () => {
+    expect(SIDEBAR_STORAGE_KEY).toBe('viberpit.listWidth')
     saveSidebarWidth(400)
-    expect(localStorage.getItem('ccswitch.listWidth')).toBe('400')
+    expect(localStorage.getItem('viberpit.listWidth')).toBe('400')
     expect(localStorage.getItem(LEGACY_KEY)).toBeNull()
+  })
+
+  it('migrates a pre-rebrand value across BOTH hops in one read', () => {
+    localStorage.setItem(PRE_REBRAND_LEGACY_KEY, '432')
+    expect(loadSidebarWidth()).toBe(432)
+    expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe('432')
+    expect(localStorage.getItem(PRE_REBRAND_LEGACY_KEY)).toBeNull()
+    expect(localStorage.getItem(LEGACY_KEY)).toBeNull()
+  })
+
+  it('migrates a pre-rebrand value stored under the CURRENT name too', () => {
+    localStorage.setItem('ccswitch.listWidth', '384')
+    expect(loadSidebarWidth()).toBe(384)
+    expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe('384')
+    expect(localStorage.getItem('ccswitch.listWidth')).toBeNull()
   })
 
   it('migrates a legacy value forward and removes the old key', () => {

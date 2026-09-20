@@ -408,7 +408,7 @@ describe('DrawerHost', () => {
     expect(screen.getByRole('separator', { name: /resize drawer/i })).toBeInTheDocument()
   })
 
-  it('renders at the persisted width and writes nudges back to ccswitch.drawerWidth', async () => {
+  it('renders at the persisted width and writes nudges back to viberpit.drawerWidth', async () => {
     stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
     localStorage.setItem(DRAWER_STORAGE_KEY, '520')
     const user = userEvent.setup()

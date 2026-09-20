@@ -1,11 +1,14 @@
 import { useSyncExternalStore } from 'react'
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 export const RAIL_EXPANDED_KEY = storageKey('railExpanded')
 const listeners = new Set<() => void>()
 
 export function readRailExpanded(): boolean {
-  try { return localStorage.getItem(RAIL_EXPANDED_KEY) === 'true' } catch { return false }
+  try {
+    return localStorage.getItem(
+      migrateStorageNamespace(localStorage, RAIL_EXPANDED_KEY)) === 'true'
+  } catch { return false }
 }
 
 export function writeRailExpanded(v: boolean): void {

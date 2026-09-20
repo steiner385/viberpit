@@ -2,7 +2,7 @@
  * Status / Project / Environment filtering for the session list.
  *
  * Pure shape + predicate. No React, no storage: persistence lives in
- * `lib/sessionOrder.ts` (the module that already owns `ccswitch.sessionOrder`),
+ * `lib/sessionOrder.ts` (the module that already owns `viberpit.sessionOrder`),
  * which stores these under the SAME namespaced key rather than inventing a
  * third mechanism for one list's state (DEC-8).
  *

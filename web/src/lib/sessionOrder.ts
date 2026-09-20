@@ -5,7 +5,7 @@
  * 'live' maps to the original key so existing user prefs survive.
  *
  * Filters live in the SAME stored object as groupBy/sortBy (DEC-8) rather than
- * under a `ccswitch.listFilters` key of their own: one list's state, one key,
+ * under a `viberpit.listFilters` key of their own: one list's state, one key,
  * one module — a third mechanism would fragment it across three. Both writers
  * merge into the stored object, so saving an ordering never drops the filters
  * and saving filters never drops the ordering.
@@ -15,7 +15,7 @@ import {
   coerceFilters, sanitizeFilters,
   type FilterOptions, type ListFilters,
 } from '@/session/listFilters'
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 const keyFor = (ns: string): string =>
   ns === 'live' ? storageKey('sessionOrder') : storageKey(`sessionOrder.${ns}`)
@@ -24,7 +24,8 @@ const keyFor = (ns: string): string =>
  *  way out, so a hand-edited or stale entry can never widen the app's state. */
 function readStored(ns: string): Record<string, unknown> {
   try {
-    const raw = window.localStorage.getItem(keyFor(ns))
+    const raw = window.localStorage.getItem(
+      migrateStorageNamespace(window.localStorage, keyFor(ns)))
     if (!raw) return {}
     const parsed = JSON.parse(raw) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}

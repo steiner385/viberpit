@@ -29,7 +29,8 @@ from fastapi.testclient import TestClient
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.sessions.engine import AgentDriverRegistry, AgentEngine, AgentCapabilities
-from server.sessions.export import NORMALIZED_EXPORT_FORMAT, normalized_ndjson
+from server.sessions.export import (NORMALIZED_EXPORT_FORMAT, NORMALIZED_EXPORT_META_TYPE,
+                                    normalized_ndjson)
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.search import events_text
 
@@ -140,7 +141,7 @@ def test_normalized_ndjson_declares_what_it_is_on_line_one():
         session_id="s1", engine="codex", model="gpt-5-codex")
     lines = [json.loads(x) for x in out.strip().split("\n")]
     header = lines[0]
-    assert header["type"] == "ccswitchExportMeta"
+    assert header["type"] == NORMALIZED_EXPORT_META_TYPE
     assert header["format"] == NORMALIZED_EXPORT_FORMAT
     assert header["engine"] == "codex"
     assert header["sessionId"] == "s1"
@@ -357,7 +358,7 @@ class TestCodexExportEndpoints:
         assert ".events.jsonl" in r.headers["content-disposition"]
 
         lines = [json.loads(x) for x in r.text.strip().split("\n")]
-        assert lines[0]["type"] == "ccswitchExportMeta"
+        assert lines[0]["type"] == NORMALIZED_EXPORT_META_TYPE
         assert lines[0]["format"] == NORMALIZED_EXPORT_FORMAT
         assert lines[0]["engine"] == "codex"
         assert lines[0]["sessionId"] == "codex-1"
@@ -409,7 +410,7 @@ class TestClaudeExportUnchanged:
             r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
         assert r.status_code == 200
         assert r.text == raw                          # byte-for-byte, no header record
-        assert "ccswitchExportMeta" not in r.text
+        assert NORMALIZED_EXPORT_META_TYPE not in r.text
         assert r.headers["content-disposition"].endswith('claude-1.jsonl"')
 
     def test_export_jsonl_now_serves_an_archived_claude_session(self, tmp_path, _db_env):
@@ -451,7 +452,7 @@ class TestClaudeExportUnchanged:
             r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
         assert r.status_code == 200, r.text
         header = json.loads(r.text.strip().split("\n")[0])
-        assert header["type"] == "ccswitchExportMeta"
+        assert header["type"] == NORMALIZED_EXPORT_META_TYPE
         assert ".events.jsonl" in r.headers["content-disposition"]
 
     def test_normalized_export_survives_an_unserialisable_record_field(
@@ -470,7 +471,7 @@ class TestClaudeExportUnchanged:
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
         assert r.status_code == 200, r.text
-        assert json.loads(r.text.strip().split("\n")[0])["type"] == "ccswitchExportMeta"
+        assert json.loads(r.text.strip().split("\n")[0])["type"] == NORMALIZED_EXPORT_META_TYPE
 
 
 class TestCodexSearchEndpoint:

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CANVAS } from './canvas'
+import { migrateStorageNamespace } from '@/lib/storageKey'
 import { THEME_STORAGE_KEY } from './themeKey'
 
 /**
@@ -45,7 +46,8 @@ export function readStoredTheme(search: string = typeof location !== 'undefined'
   const fromUrl = new URLSearchParams(search).get('theme')
   if (isChoice(fromUrl) && fromUrl !== 'system') return fromUrl
   try {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY)
+    const stored = localStorage.getItem(
+      migrateStorageNamespace(localStorage, THEME_STORAGE_KEY))
     if (isChoice(stored)) return stored
   } catch { /* storage unavailable */ }
   return 'system'
