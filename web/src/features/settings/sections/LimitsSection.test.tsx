@@ -4,7 +4,7 @@
  * readout card, not the transport.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
@@ -77,6 +77,7 @@ describe('LimitsSection', () => {
   it('shows the three global-cap rows and the physical value as the attention placeholder', async () => {
     const { container } = mount()
     expect(screen.getByRole('heading', { level: 2, name: 'Limits' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Global cap' })).toBeInTheDocument()
     expect(screen.getByText('10 — dobby 4 · rocky 6')).toBeInTheDocument()
     expect(screen.getByLabelText('Attention ceiling')).toHaveAttribute('placeholder', 'None · physical ceiling 10 applies')
     expect(screen.getByText('10 — the physical ceiling binds')).toBeInTheDocument()
@@ -116,8 +117,9 @@ describe('LimitsSection', () => {
     mount()
     const names = screen.getAllByRole('rowheader').map((th) => th.textContent)
     expect(names).toEqual(['CCSWITCH_TEST_SLOT_CAP', 'VIBERPIT_CAPACITY_GOVERNOR_ENABLED'])
-    expect(screen.getByText('Global cap')).toBeInTheDocument()
-    expect(screen.getByText('5 / 10 · 5 free')).toBeInTheDocument()
+    const readout = screen.getByRole('group', { name: 'Live readout' })
+    expect(within(readout).getByText('Global cap')).toBeInTheDocument()
+    expect(within(readout).getByText('5 / 10 · 5 free')).toBeInTheDocument()
     expect(screen.getByText(/ghostdriver: The product capacity limit/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })

@@ -109,7 +109,7 @@ export function LimitsSection() {
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
 
       <SettingsGroup
-        legend="Ceilings"
+        legend="Global cap"
         description="Sessions beyond the effective cap queue and start when a slot frees. The cap is the lower of the two ceilings."
       >
         <SettingRow
