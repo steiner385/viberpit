@@ -993,7 +993,22 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
                 if not handled:
                     log.info("ws.attach: sending deferred initial prompt for %s", session_id)
-                    await orchestrator.send_prompt(session_id, pending_prompt)
+                    # The caller (_ensure_live / _handle_attach) confirmed a live
+                    # driver before reaching here, but the awaits since (catalog
+                    # emission, command dispatch above) leave a window for a
+                    # concurrent teardown to release it — send_prompt's own
+                    # "no live driver … prompt dropped" warning (#1737). Unlike
+                    # the typed-prompt path (ws.prompt), there is no browser copy
+                    # of this text to re-queue, so re-park it instead of losing
+                    # the slash command / unarchive seed for good.
+                    status = await orchestrator.send_prompt(session_id, pending_prompt)
+                    if status in ("no_driver", "recovering"):
+                        log.warning(
+                            "ws.attach: deferred initial prompt not delivered "
+                            "(status=%s), re-parking for the next attach session=%s",
+                            status, session_id)
+                        await orchestrator.repark_pending_initial_prompt(
+                            session_id, pending_prompt)
             except Exception:
                 log.warning("ws.attach: deferred initial prompt send failed for %s",
                             session_id, exc_info=True)

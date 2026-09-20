@@ -15886,6 +15886,15 @@ class SessionOrchestrator:
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
+    def repark_pending_initial_prompt(self, session_id: str, prompt: str) -> None:
+        """Put a deferred initial prompt back after ``pop_pending_initial_prompt``
+        popped it but delivery failed (send_prompt answered "no_driver" or
+        "recovering" — issue #1737: a concurrent teardown can release the driver
+        in the window between the bridge confirming a live stream and the send
+        that follows it). The next attach's pop retries it instead of losing the
+        slash command or unarchive seed for good."""
+        self._pending_initial_prompt[session_id] = prompt
+
     def pop_pending_notices(self, session_id: str) -> list[dict]:
         """Return and clear the queued proactive watch notices for session_id
         (Task 8.4). Called by the WS bridge on attach, alongside

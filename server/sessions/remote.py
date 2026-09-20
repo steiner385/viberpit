@@ -833,6 +833,10 @@ class RemoteOrchestrator:
     async def pop_pending_initial_prompt(self, session_id):
         return await self._client.call("pop_pending_initial_prompt", session_id=session_id)
 
+    async def repark_pending_initial_prompt(self, session_id, prompt):
+        return await self._client.call("repark_pending_initial_prompt",
+                                        session_id=session_id, prompt=prompt)
+
     async def post_notice(self, identity: str, notice: dict) -> bool:
         """Deliver a proactive watch notice into identity's assistant drawer, via
         the daemon (Task 8.4). See SessionOrchestrator.post_notice."""
