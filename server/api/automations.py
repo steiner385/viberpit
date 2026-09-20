@@ -35,6 +35,7 @@ from server.pm.holds import (
     release_via_api,
 )
 from server.pm.refs import split_ref
+from server.sessions.global_cap import read_global_cap
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +231,11 @@ async def patch_automation(automation_id: str, body: PatchBody,
             raise HTTPException(status_code=422, detail=f"invalid mode {body.mode!r}")
         row.mode = body.mode
     if body.config is not None:
+        # A partial body is a MERGE over the stored row (spec 2026-09-20 §7): the
+        # Capacity page's push-level radio and runner form each send only the keys
+        # they own, and validate_config fills any absent key with its default —
+        # so validating the bare body would silently reset every sibling key.
+        merged = {**(row.config or {}), **body.config}
         try:
             # Validated against the ENGINE-AWARE schema: an origin with no Codex
             # acceptance evidence offers no `engine` field, so `{"engine": ...}`
@@ -237,11 +243,18 @@ async def patch_automation(automation_id: str, body: PatchBody,
             # not a special case downstream (Phase 7, Task 7.1). Keys the origin
             # RETIRED are dropped instead of 422'd, so a client echoing back the
             # config it was served before a field was removed still saves.
-            row.config = validate_config(registry.schema_for(automation_id), body.config,
-                                         retired=retired_config_keys_of(automation))
+            config = validate_config(registry.schema_for(automation_id), merged,
+                                     retired=retired_config_keys_of(automation))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        row.config = await _canonicalize_enabled_repos(row.config)
+        if automation_id == "backlog-runner" and "max_concurrent" in body.config:
+            # spec 2026-09-20 §6: the runner ceiling is a share of the global cap.
+            cap = (await read_global_cap(db)).effective
+            if int(config["max_concurrent"]) > cap:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"max_concurrent {config['max_concurrent']} exceeds the effective global cap ({cap})")
+        row.config = await _canonicalize_enabled_repos(config)
     if body.schedule is not None:
         try:
             parse_schedule(body.schedule)  # validate; reject a bad cron/window

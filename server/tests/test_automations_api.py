@@ -461,3 +461,29 @@ def test_config_schema_publishes_the_editing_surface():
         assert runner["max_issues_per_pr"]["surface"] == "config"
         governor = {f["key"]: f for f in rows["capacity-governor"]["configSchema"]}
         assert {governor["push_level"]["surface"], governor["sessions_per_account"]["surface"]} == {"capacity"}
+
+
+def test_patch_partial_config_keeps_the_other_stored_keys():
+    """A partial config PATCH is a merge, not a reset: the push-level radio sends
+    {push_level} alone and must not put sessions_per_account back to its default."""
+    with _client() as c:
+        r = c.patch("/api/automations/capacity-governor", headers=H,
+                    json={"config": {"push_level": "steady", "sessions_per_account": 3}})
+        assert r.status_code == 200, r.text
+        r = c.patch("/api/automations/capacity-governor", headers=H, json={"config": {"push_level": "max"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["config"] == {"push_level": "max", "sessions_per_account": 3}
+
+
+def test_patch_runner_ceiling_above_the_global_cap_is_422():
+    """spec 2026-09-20 §6: runner ceiling <= effective global cap. A fresh DB has no
+    hosts and no attention ceiling, so the effective cap is the default 5."""
+    with _client() as c:
+        ok = c.patch("/api/automations/backlog-runner", headers=H, json={"config": {"max_concurrent": 5}})
+        assert ok.status_code == 200, ok.text
+        r = c.patch("/api/automations/backlog-runner", headers=H, json={"config": {"max_concurrent": 6}})
+        assert r.status_code == 422, r.text
+        assert "exceeds the effective global cap (5)" in r.json()["detail"]
+        # Nothing was written by the refused request.
+        rows = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
+        assert rows["backlog-runner"]["config"]["max_concurrent"] == 5
