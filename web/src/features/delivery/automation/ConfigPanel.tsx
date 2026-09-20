@@ -43,10 +43,13 @@ export function ConfigPanel({ automation: a }: { automation: Automation }) {
         {a.configSchema.map((field) => (
           field.surface === 'capacity'
             ? (
-              // Owned by Delivery → Capacity (spec 2026-09-20 D7): shown, never edited here.
+              // Owned by Delivery → Capacity (spec 2026-09-20 D7): shown, never
+              // edited here. Reads the live `a.config` prop, not `localConfig`
+              // (the mount-time edit buffer) — this value is owned by another
+              // page, so it can change under this card without a re-mount.
               <div key={field.key} className="flex flex-col gap-0.5">
                 <p className="text-sm font-medium text-ink">{field.label}</p>
-                <p className="text-sm text-ink">{String(localConfig[field.key] ?? '—')}</p>
+                <p className="text-sm text-ink">{String(a.config[field.key] ?? field.default ?? '—')}</p>
                 <p className="text-xs text-ink-muted">
                   {field.help}{field.help ? ' ' : ''}
                   <Link to={deliveryPath('capacity')} className="text-accent hover:underline">Set on Delivery → Capacity</Link>
