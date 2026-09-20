@@ -90,10 +90,13 @@ HAND_BACK_INSTRUCTION = (
 )
 
 _CANCEL_RE = re.compile(
-    r"\b(cancel(?:led|ling)?|abandon(?:ed|ing)?|drop(?:ped|ping)?|"
-    r"revert(?:ed|ing)?|won'?t\s+open|not\s+opening|no\s+longer)\b",
+    r"\b(?:cancel(?:led|ling)?|abandon(?:ed|ing)?|won'?t\s+open|not\s+opening|no\s+longer)\b|"
+    r"\b(?:drop(?:ped|ping)?|revert(?:ed|ing)?)\s+(?:it\b|(?:the\s+|this\s+|that\s+|my\s+)?"
+    r"(?:PR|pull\s+request|change|branch|work|task|issue|effort)\b)",
     re.IGNORECASE,
 )
+# "drop"/"revert" are ordinary verbs about other things ("the Prisma model drop", #1011), so
+# they only count as cancellation when their object is the PR/work itself.
 
 #: The DECLARED form of ``AWAITING_DECISION`` on the marker path (spec 2026-09-18 §6,
 #: review R1 F2): the exact hyphenated token and nothing else.
