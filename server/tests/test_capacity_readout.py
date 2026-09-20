@@ -15,10 +15,12 @@ from server.automations.capacity_readout import CapacitySources, build_readout, 
 
 _ACCOUNT_ROWS = [
     {"name": "acct1", "engine": "claude_code", "provider": "anthropic", "enabled": True,
-     "metered": True, "available": True, "reason": None, "nextResetAt": None, "windows": []},
+     "metered": True, "available": True, "reason": None, "nextResetAt": None, "reservePct": 20,
+     "windows": []},
     {"name": "acct2", "engine": "claude_code", "provider": "anthropic", "enabled": True,
      "metered": True, "available": False, "reason": "at_ceiling",
-     "nextResetAt": "2026-09-20T00:00:00+00:00", "windows": []},
+     "nextResetAt": "2026-09-20T00:00:00+00:00", "reservePct": 20,
+     "windows": []},
 ]
 
 _PRODUCTS = [{"slug": "viberpit", "name": "ViberPit", "priorityRank": 1,
@@ -43,7 +45,7 @@ def _sources(*, session_status_value: str) -> CapacitySources:
         return [{"name": "dobby", "enabled": True, "healthy": True,
                   "activeSessions": 2, "maxSessions": 6}]
 
-    async def accounts(reserve):
+    async def accounts(push_level):
         return _ACCOUNT_ROWS
 
     async def runner_config():
@@ -179,7 +181,7 @@ def _make_sources(*, global_cap=6, global_active=2, hosts=None, accounts=None,
     async def _hosts():
         return hosts
 
-    async def _accounts(reserve):
+    async def _accounts(push_level):
         return accounts
 
     async def _runner_config():
@@ -501,3 +503,26 @@ def test_runner_layer_codes_are_named_for_the_runner_ceiling():
     assert LAYER_OF_CODE["runner_ceiling_full"] == "runner"
     assert LAYER_OF_CODE["runner_ceiling_held"] == "runner"
     assert "global_capacity_full" not in LAYER_OF_CODE
+
+
+def test_readout_hands_the_push_level_to_the_account_seam_and_keeps_each_rows_reserve():
+    """Spec 2026-09-20 D4/§7: the seam is called with the PUSH LEVEL (it derives each
+    account's effective reserve itself), and the per-row reservePct rides through
+    untouched; the block-level reservePct stays the push level's default."""
+    seen = {}
+    rows = [dict(_ACCOUNT_ROWS[0], reservePct=60), dict(_ACCOUNT_ROWS[1])]
+
+    async def accounts(push_level):
+        seen["level"] = push_level
+        return rows
+
+    async def run():
+        src = _make_sources(accounts=rows,
+                            governor_config=("monitor", {"push_level": "max", "sessions_per_account": 2}))
+        src.accounts = accounts   # replace the helper's list-wrapping seam with the spying one
+        return await build_readout(src)
+
+    r = asyncio.run(run())
+    assert seen["level"] == "max"
+    assert r["accounts"]["reservePct"] == 5
+    assert [row["reservePct"] for row in r["accounts"]["rows"]] == [60, 20]

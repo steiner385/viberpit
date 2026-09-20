@@ -36,6 +36,7 @@ from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noq
                             QuotaWindow, unknown_snapshot)
 from ccswitch.selector import at_ceiling, rank_accounts
 from server.audit import record_audit
+from server.automations.capacity_plan import RESERVE_PCT
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
 from server.codex.auth_types import (
@@ -222,24 +223,39 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
     return dict(zip(names, results))
 
 
-async def account_headroom(orch, *, reserve_pct: float,
+def effective_reserve_pct(acct: dict, push_level: str) -> float:
+    """THE reserve an account is judged by (spec 2026-09-20 D4): its own
+    ``weeklyReservePct`` override when set, else the push level's ``RESERVE_PCT``.
+    A reserve is the percent of the weekly allowance kept back; the account's
+    ceiling is ``100 - reserve``. One rule for the governor's headroom, the
+    accounts list's ``effectiveReservePct`` and the readout's per-row value."""
+    override = acct.get("weeklyReservePct")
+    if override is not None:
+        return float(override)
+    return float(RESERVE_PCT.get(push_level, RESERVE_PCT["steady"]))
+
+
+async def account_headroom(orch, *, push_level: str,
                            timeout: float = USAGE_FETCH_TIMEOUT) -> list[dict]:
     """Per-account availability for the capacity governor (spec 2026-09-19 §5).
 
     Lives here, not in a new module: this file already imports the selector, and the
     brand ratchet has no slack for another import of the legacy package. ``available``
-    uses ``at_ceiling`` with ``ceiling = 100 - reserve_pct`` so the governor and the
-    account selector agree on what "usable" means; an unmetered engine (Codex,
-    Copilot — D4) counts zero and says so.
+    uses ``at_ceiling`` with ``ceiling = 100 - reserve`` where the reserve is each
+    account's EFFECTIVE one (``effective_reserve_pct``: its override, else the push
+    level's — spec 2026-09-20 D4), so the governor and the account selector agree on
+    what "usable" means; an unmetered engine (Codex, Copilot — D4 of the governor
+    spec) counts zero and says so. Every row carries the ``reservePct`` it was judged by.
     """
     infos = await asyncio.to_thread(list_accounts)
     usages = await _gather_usages(orch, [a["name"] for a in infos], timeout)
-    ceiling = 100.0 - float(reserve_pct)
     rows: list[dict] = []
     for acct in infos:
         name = acct["name"]
         usage, _stale = usages.get(name, (None, None))
         enabled = bool(acct.get("enabled", True))
+        reserve = effective_reserve_pct(acct, push_level)
+        ceiling = 100.0 - reserve
         metered = usage is not None and usage.provider == "anthropic" and usage.availability == AVAILABLE
         reason = None
         next_reset = None
@@ -255,6 +271,7 @@ async def account_headroom(orch, *, reserve_pct: float,
             "name": name, "engine": acct.get("engine") or ("codex" if acct.get("provider") == "openai" else "claude_code"),
             "provider": acct.get("provider"), "enabled": enabled, "metered": metered,
             "available": reason is None, "reason": reason, "nextResetAt": next_reset,
+            "reservePct": reserve,
             "windows": [{"key": w.key, "pct": w.used_pct, "resetsAt": iso_utc(w.resets_at)}
                         for w in (usage.windows if usage is not None else ())],
         })

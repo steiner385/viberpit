@@ -8,6 +8,15 @@ RESERVE_PCT: dict[str, int] = {"conserve": 40, "steady": 20, "max": 5}
 UNBOUNDED = 10**6
 
 
+def push_level_of(gov: dict) -> str:
+    """The governor row's push level, normalised: anything that is not a member
+    of ``PUSH_LEVELS`` (an absent row, a stale enum value) reads as ``steady`` —
+    the ONE normaliser the readout and the accounts list share (spec 2026-09-20
+    D4), so both derive the same default reserve."""
+    level = gov.get("push_level")
+    return level if level in PUSH_LEVELS else "steady"
+
+
 @dataclass(frozen=True)
 class AccountHeadroom:
     name: str; engine: str; metered: bool; available: bool
