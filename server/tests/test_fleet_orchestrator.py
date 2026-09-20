@@ -1,5 +1,6 @@
 import pytest
 from unittest import mock
+from server.sessions import host_upgrade as host_upgrade_mod
 from server.sessions.engine import AgentEngine
 from server.sessions.fleet_orchestrator import FleetOrchestrator
 from server.sessions.facade import _DEADLINE_ATTR
@@ -974,6 +975,159 @@ async def test_unreachable_worker_still_warns_when_no_restart_is_expected(caplog
         await fo.live_session_load()
     rocky_lines = [r for r in caplog.records if "host=rocky" in r.getMessage()]
     assert rocky_lines and all(r.levelno == logging.WARNING for r in rocky_lines)
+
+
+# --- one unreachable host is ONE record family --------------------------------
+#
+# Five open auto-error issues, one cause: rocky was powered off. #1614
+# (codex_account_status), #1670 (session_queue_positions), #1671 (list_sessions),
+# #1733 (live_session_load), #1734 (live_session_counts). The fan-out site name sat
+# in the message TEXT, and the sink fingerprints a record on its normalized message
+# (server/obs/error_signature.py), so each site hashed differently and filed its own
+# ticket — each carrying 60 lines of httpx transport boilerplate, and each re-filed
+# on every pass of the ~30 s gap before the probe marks the host unhealthy.
+
+class _DownOrch(_FakeOrch):
+    """A worker that refuses every no-id fan-out site while ``up`` is False."""
+
+    def __init__(self, name, exc):
+        super().__init__(name)
+        self.exc, self.up = exc, False
+
+    def _answer(self, value):
+        if not self.up:
+            raise self.exc
+        return value
+
+    async def list_sessions(self, **kw): return self._answer([])
+    async def live_session_load(self): return self._answer({})
+    async def live_session_counts(self): return self._answer({})
+    async def session_queue_positions(self): return self._answer({})
+    async def codex_account_status(self, account, *, persist=True, force=False):
+        return self._answer({})
+
+
+def _unplanned_outage():
+    """No deploy in flight, so an unreachable host is a genuine surprise."""
+    async def not_expected(name, **_):
+        return False
+    return mock.patch.object(host_upgrade_mod, "restart_expected", not_expected)
+
+
+class _UpOrch(_AggOrch):
+    """A primary that answers every no-id fan-out site with a well-formed result."""
+
+    async def list_sessions(self, **kw):
+        return [_LRec("s-d1", host=self.name)]
+
+
+def _fleet_with_down_worker(exc):
+    down = _DownOrch("rocky", exc)
+    fo = FleetOrchestrator(
+        _FakeRouter({"dobby": _UpOrch("dobby", load={"acctA": 1.0}), "rocky": down}),
+        primary="dobby")
+    return fo, down
+
+
+def _rocky_records(caplog):
+    return [r for r in caplog.records if "host=rocky" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_every_fanout_site_shares_one_unreachable_fingerprint(caplog):
+    """The fix for the five-issues shape, asserted through the REAL sink signature.
+
+    Not "the messages look similar" — the thing that decides how many issues get
+    filed is ``signature_of``, so that is what this calls.
+    """
+    import logging
+    from server.ipc.client import DaemonUnavailable
+    from server.obs.error_signature import signature_of
+
+    exc = DaemonUnavailable("All connection attempts failed")
+    sites = [
+        lambda fo: fo.live_session_load(),
+        lambda fo: fo.live_session_counts(),
+        lambda fo: fo.session_queue_positions(),
+        lambda fo: fo.list_sessions(),
+        lambda fo: fo.codex_account_status("chatgpt-pro"),
+    ]
+    with _unplanned_outage(), \
+         caplog.at_level(logging.DEBUG, logger="server.sessions.fleet_orchestrator"):
+        for site in sites:
+            # A fresh fleet per site: each must report at full level, and the
+            # throttle is per-instance so this also pins that it is not global.
+            await site(_fleet_with_down_worker(exc)[0])
+
+    recs = _rocky_records(caplog)
+    assert len(recs) == len(sites), [r.getMessage() for r in recs]
+    assert all(r.levelno == logging.WARNING for r in recs)
+    fingerprints = {signature_of(r, source="edge", host="dobby").fingerprint
+                    for r in recs}
+    assert len(fingerprints) == 1, [r.getMessage() for r in recs]
+    # The site is still readable — collapsed in the fingerprint, kept in the record.
+    assert {"live_session_load", "list_sessions", "codex_account_status"} <= {
+        m.split("site='")[1].split("'")[0] for m in (r.getMessage() for r in recs)}
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_is_summarized_instead_of_carrying_its_traceback(caplog):
+    """httpx's stack says how it failed to connect; the typed exception says that it
+    did, which is the whole diagnosis. Only an UNEXPECTED type keeps its stack."""
+    import logging
+    from server.ipc.client import DaemonUnavailable
+
+    with _unplanned_outage(), \
+         caplog.at_level(logging.DEBUG, logger="server.sessions.fleet_orchestrator"):
+        await _fleet_with_down_worker(
+            DaemonUnavailable("All connection attempts failed"))[0].live_session_load()
+    rec = _rocky_records(caplog)[-1]
+    assert rec.exc_info is None
+    assert "cause='DaemonUnavailable: All connection attempts failed'" in rec.getMessage()
+
+    caplog.clear()
+    with _unplanned_outage(), \
+         caplog.at_level(logging.DEBUG, logger="server.sessions.fleet_orchestrator"):
+        await _fleet_with_down_worker(ValueError("merge blew up"))[0].live_session_load()
+    rec = _rocky_records(caplog)[-1]
+    assert rec.exc_info is not None, "an unexpected exception is a bug — keep the stack"
+
+
+@pytest.mark.asyncio
+async def test_repeat_passes_are_demoted_below_the_error_sink(caplog):
+    """The sink captures WARNING+ only, so a demoted repeat stays in the journal at
+    DEBUG and out of the issue — the heartbeat returns when the window expires."""
+    import logging
+    from server.ipc.client import DaemonUnavailable
+
+    fo, _down = _fleet_with_down_worker(DaemonUnavailable("connect refused"))
+    with _unplanned_outage(), \
+         caplog.at_level(logging.DEBUG, logger="server.sessions.fleet_orchestrator"):
+        for _ in range(3):
+            await fo.live_session_load()
+
+    assert [r.levelno for r in _rocky_records(caplog)] == [
+        logging.WARNING, logging.DEBUG, logging.DEBUG]
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_host_reports_its_next_outage_promptly(caplog):
+    """A window must pace a CONTINUING condition, never a new one: rocky coming back
+    ends the outage, so the next one is news again even inside the same window."""
+    import logging
+    from server.ipc.client import DaemonUnavailable
+
+    fo, down = _fleet_with_down_worker(DaemonUnavailable("connect refused"))
+    with _unplanned_outage(), \
+         caplog.at_level(logging.DEBUG, logger="server.sessions.fleet_orchestrator"):
+        await fo.live_session_load()
+        down.up = True
+        await fo.live_session_load()
+        down.up = False
+        await fo.live_session_load()
+
+    assert [r.levelno for r in _rocky_records(caplog)] == [
+        logging.WARNING, logging.WARNING]
 
 
 @pytest.mark.asyncio
