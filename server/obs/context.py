@@ -46,6 +46,26 @@ def bind_request(request_id: str | None) -> Iterator[None]:
         request_id_var.reset(token)
 
 
+def emit_event(
+    logger: logging.Logger,
+    level: int,
+    event: str,
+    fields: dict[str, Any],
+    *,
+    exc_info: bool | BaseException | None = None,
+) -> None:
+    """The structured-record shape, with `fields` as an explicit mapping.
+
+    `log_event` is the ergonomic front door and covers almost every caller; use
+    this one when the fields already exist as a dict, or when a traceback has to
+    ride along. It stays a separate function rather than a keyword-only argument
+    on `log_event` because several callers pass `log_event(..., **some_dict)`,
+    and any named keyword-only parameter turns every one of those unpacks into a
+    type error — mypy cannot prove the dict has no key of that name.
+    """
+    logger.log(level, event, extra={"event": event, "fields": fields}, exc_info=exc_info)
+
+
 def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> None:
     """Emit a structured breadcrumb.
 
@@ -53,4 +73,4 @@ def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> 
     plain-text/journald readers see it too; **fields become structured JSON keys
     via JSONFormatter.
     """
-    logger.log(level, event, extra={"event": event, "fields": fields})
+    emit_event(logger, level, event, fields)

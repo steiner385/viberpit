@@ -214,10 +214,16 @@ def test_unresolved_link_warns_once_not_once_per_tick(caplog):
 
 def test_two_unresolved_links_from_one_doc_each_warn_independently(caplog):
     """#1531/#1875 (account-reauthentication) and #1532/#1876 (config-dir-isolation)
-    are two distinct broken links out of the SAME doc (credential-store-encryption),
-    re-filed as separate auto-error issues by fingerprint. The throttle key must
-    include the link's own target, not just its source, or fixing/silencing one
-    would silently swallow the other. Each identity gets its own one-report window."""
+    are two distinct broken links out of the SAME doc (credential-store-encryption).
+    The throttle key must include the link's own target, not just its source, or
+    fixing/silencing one would silently swallow the other. Each identity gets its
+    own one-report window.
+
+    The record is structured (#1877), so the link a report is *about* lives in
+    ``record.fields`` rather than in the message text. That is the point of the
+    structured form: the edge stays fully recoverable from the record while no
+    longer forking the error sink's fingerprint, which is what filed these as
+    separate issues in the first place."""
     from server.sessions import orchestrator as orch_mod
     from server.db.models import Project
     from server.db import db_session
@@ -251,6 +257,67 @@ def test_two_unresolved_links_from_one_doc_each_warn_independently(caplog):
         warnings = [r for r in caplog.records
                     if r.levelno >= logging.WARNING and "feature_link_unresolved" in r.getMessage()]
         assert len(warnings) == 2, f"expected one report per distinct link, got {len(warnings)}"
-        messages = {r.getMessage() for r in warnings}
-        assert any("config-dir-isolation" in m for m in messages)
-        assert any("account-reauthentication" in m for m in messages)
+        targets = {r.fields["dst_feature"] for r in warnings}
+        assert targets == {"config-dir-isolation", "account-reauthentication"}
+
+
+def test_unresolved_link_edges_share_one_fingerprint(caplog):
+    """Two different unresolved edges are one condition, not two (#1877).
+
+    #2095 stopped this call site repeating every tick, but the records still
+    carried their slugs in the message text — and the error sink fingerprints a
+    plain record on its *normalized* message, where normalization masks uuids,
+    ints and quoted strings but never a slug. So one call site filed #1531 (and
+    its re-file #1875) for ``src=credential-store-encryption`` and #1533 (and
+    #1877) for ``src=config-dir-isolation``: same bug, same line, two issue
+    lineages, each re-opening itself as a "regression" when closed.
+
+    Structured, the family shares one fingerprint. The throttle key stays
+    per-edge, so a newly broken edge still reports at WARNING immediately —
+    which is what the test above pins.
+    """
+    from server.sessions import orchestrator as orch_mod
+    from server.db.models import Project
+    from server.db import db_session
+    from server.obs.error_signature import signature_of
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    orch_mod._PM_SYNC_LINK_LOG.clear()
+
+    def _plan(src: str, dst_feature: str) -> "FeatureIndexPlan":
+        # example-infra is never seeded, so every link below stays unresolved.
+        return FeatureIndexPlan(
+            upserts=(FeatureUpsert(
+                slug=src, title="T", state="live", summary="",
+                repo_path=f"d/{src}.md", parent_slug=None,
+                links=(FeatureLinkRef("powered_by", "example-infra", dst_feature),)),),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-product", name="Example product")
+                db.add(prod)
+                await db.commit()
+                return prod.id
+        prod_id = asyncio.run(_seed())
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            asyncio.run(orch._pm_sync_apply_feature_plan(
+                prod_id, _plan("dictation", "account-reauthentication")))
+            asyncio.run(orch._pm_sync_apply_feature_plan(
+                prod_id, _plan("worktrees", "credential-store")))
+
+    records = [r for r in caplog.records
+               if r.levelno >= logging.WARNING and "feature_link_unresolved" in r.getMessage()]
+    assert len(records) == 2, (
+        f"{len(records)} records for two distinct unresolved edges — a new edge is news")
+
+    sigs = [signature_of(r, source="daemon", host="h") for r in records]
+    assert all(s is not None for s in sigs)
+    assert len({s.fingerprint for s in sigs}) == 1, (
+        "distinct edges must share one fingerprint, or the sink files an issue per edge")
+    # The edge is still recoverable from the record — just not from its identity.
+    assert "dictation" in sigs[0].sample_message
+    assert "worktrees" in sigs[1].sample_message

@@ -33,7 +33,9 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Final
+from typing import Any, Final
+
+from server.obs.context import emit_event
 
 #: Repeats inside this many seconds are demoted, capping any one key at four
 #: records a day.
@@ -139,3 +141,47 @@ def log_throttled(
         log.log(level, msg, *args, exc_info=exc_info)
         return
     log.debug(msg, *args, exc_info=exc_info)
+
+
+def log_event_throttled(
+    log: logging.Logger,
+    throttle: LogThrottle,
+    key: str,
+    level: int,
+    event: str,
+    *,
+    exc_info: bool | BaseException | None = None,
+    **fields: Any,
+) -> None:
+    """Emit structured *event* at *level*, or at DEBUG if *key* reported recently.
+
+    Prefer this over :func:`log_throttled` for any record that interpolates a
+    *name* — a slug, a repo, a path. Throttling and structuring fix two halves
+    of one problem and neither alone is enough:
+
+    * Throttling paces how *often* a standing condition reports.
+    * Structuring decides how many *distinct conditions* the error sink thinks
+      it saw. :func:`server.obs.error_signature.signature_of` fingerprints a
+      plain record on its normalized message, and normalization only masks the
+      shapes it recognizes — uuids, quoted strings, hex runs, ints. A slug has
+      none of those, so ``"... src=%s -> %s/%s"`` mints a fresh fingerprint, and
+      therefore a separately filed issue, for every edge it reports. #1531/#1875
+      (``src=credential-store-encryption``) and #1533/#1877
+      (``src=config-dir-isolation``) are one call site split into two issue
+      lineages by nothing but a slug; #1874/#1635/#1902/#1903 are the same story
+      for the sibling pm-sync records. Keyed on ``event``, the family collapses
+      to one fingerprint and the volatile parts ride in ``fields``, which feed
+      the issue's title but not its identity.
+
+    *key* still selects the throttle window and should stay as specific as the
+    condition: while one broken edge is mid-window, a *newly* broken edge is
+    news and must report promptly. Identity wants to be coarse and pacing wants
+    to be fine, which is why they are separate arguments rather than one.
+    """
+    emit_event(
+        log,
+        level if throttle.should_log(key) else logging.DEBUG,
+        event,
+        fields,
+        exc_info=exc_info,
+    )

@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
 
 
 class _Clock:
@@ -136,3 +136,68 @@ def test_log_throttled_carries_exc_info_through_on_the_reported_occurrence(caplo
         log_throttled(log, t, "k", logging.WARNING, "boom", exc_info=exc)
 
     assert caplog.records[0].exc_info is not None
+
+
+def test_log_event_throttled_demotes_repeats_but_keeps_the_structured_shape(caplog):
+    """Same windowing as log_throttled, carried on a structured record."""
+    log = logging.getLogger("test.logdedupe.evt")
+    t = LogThrottle(window_s=100.0, clock=_Clock())
+
+    with caplog.at_level(logging.DEBUG, logger="test.logdedupe.evt"):
+        log_event_throttled(log, t, "k", logging.WARNING, "pm.broke", repo="a", path="b")
+        log_event_throttled(log, t, "k", logging.WARNING, "pm.broke", repo="a", path="b")
+
+    assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.DEBUG]
+    for rec in caplog.records:
+        assert rec.getMessage() == "pm.broke"
+        assert rec.event == "pm.broke"
+        assert rec.fields == {"repo": "a", "path": "b"}
+
+
+def test_log_event_throttled_keeps_exc_info_out_of_fields():
+    """`exc_info` is keyword-only and named on both helpers. Were it left to
+    **fields it would silently become a JSON field of that name and the
+    traceback would be dropped — a caller that thinks it is reporting an
+    exception would ship a record with no exception in it."""
+    log = logging.getLogger("test.logdedupe.evtexc")
+    t = LogThrottle(window_s=100.0, clock=_Clock())
+    seen: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = seen.append  # type: ignore[method-assign]
+    log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+    try:
+        log_event_throttled(log, t, "k", logging.WARNING, "pm.broke",
+                            exc_info=RuntimeError("cause"), repo="a")
+    finally:
+        log.removeHandler(handler)
+
+    assert seen[0].exc_info is not None
+    assert seen[0].fields == {"repo": "a"}
+
+
+def test_distinct_names_share_a_fingerprint_but_not_a_throttle_window(caplog):
+    """The property the structured form exists for (#1877).
+
+    A slug survives `normalize()` untouched, so an interpolated message mints a
+    fresh error-sink fingerprint — and therefore a separately filed issue — for
+    every name it reports. Structured, the family is one fingerprint. The
+    throttle key stays per-name, because a *newly* broken thing is news even
+    while another is mid-window; identity is coarse, pacing is fine.
+    """
+    from server.obs.error_signature import signature_of
+
+    log = logging.getLogger("test.logdedupe.fp")
+    t = LogThrottle(window_s=100.0, clock=_Clock())
+
+    with caplog.at_level(logging.WARNING, logger="test.logdedupe.fp"):
+        log_event_throttled(log, t, "repo-a", logging.WARNING, "pm.broke", repo="repo-a")
+        log_event_throttled(log, t, "repo-b", logging.WARNING, "pm.broke", repo="repo-b")
+
+    assert len(caplog.records) == 2, "a different name must not be held down by another's window"
+    sigs = [signature_of(r, source="daemon", host="h") for r in caplog.records]
+    assert all(s is not None for s in sigs)
+    assert len({s.fingerprint for s in sigs}) == 1, (
+        "distinct names must share one fingerprint or the sink files an issue per name")
+    # Still recoverable from the record — just not from its identity.
+    assert "repo-a" in sigs[0].sample_message and "repo-b" in sigs[1].sample_message
