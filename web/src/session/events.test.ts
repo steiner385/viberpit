@@ -11,6 +11,13 @@ describe('SESSION_EVENT_TYPES', () => {
   it('includes contextUsage so the exact ctx% readout reaches the reducer', () => {
     expect(SESSION_EVENT_TYPES.has('contextUsage')).toBe(true)
   })
+
+  it.each(['notice', 'subAgentStarted', 'subAgentProgress', 'subAgentEnded'])(
+    'includes %s so a top-level frame is not dropped',
+    (type) => {
+      expect(SESSION_EVENT_TYPES.has(type)).toBe(true)
+    },
+  )
 })
 
 describe('parentToolUseId field', () => {
