@@ -83,6 +83,21 @@ describe('AutomationDetail', () => {
     expect(screen.getByRole('link', { name: 'Set on Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
     expect(screen.getByRole('spinbutton', { name: 'Max issues per PR' })).toBeInTheDocument()
   })
+  it('Config tab: a deprecated field is hidden entirely (spec 2026-09-20 D6)', () => {
+    const runner = {
+      ...AUTOMATIONS[1],
+      configSchema: [
+        ...AUTOMATIONS[1].configSchema,
+        { key: 'old_knob', label: 'Old knob', type: 'int' as const, default: 1, help: '', choices: null, deprecated: true },
+      ],
+      config: { ...AUTOMATIONS[1].config, old_knob: 3 },
+    }
+    mount(runner, '/delivery/automations/backlog-runner?tab=config')
+    expect(screen.queryByText('Old knob')).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Old knob' })).toBeNull()
+    // The surrounding fields still render.
+    expect(screen.getByRole('spinbutton', { name: 'Max issues per PR' })).toBeInTheDocument()
+  })
   it('an operator-triggered automation has no Schedule tab and no switch', () => {
     mount(AUTOMATIONS[2], '/delivery/automations/pm-classify')
     expect(screen.queryByRole('tab', { name: 'Schedule' })).not.toBeInTheDocument()

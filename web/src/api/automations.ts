@@ -39,6 +39,9 @@ export interface ConfigField {
   /** Which page edits the field (spec 2026-09-20 D7). `'capacity'`: Delivery → Capacity
    *  owns it and the Config tab renders it read-only. Optional so older fixtures compile. */
   surface?: 'config' | 'capacity'
+  /** On its way out (spec 2026-09-20 D6): still stored and validated, read by
+   *  nothing, hidden by every editor. Optional so older fixtures still compile. */
+  deprecated?: boolean
 }
 
 export interface Automation {
