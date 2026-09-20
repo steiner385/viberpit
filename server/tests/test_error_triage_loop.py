@@ -209,6 +209,56 @@ def test_closed_completed_resolves_then_regression_links_old(tmp_path):
     _run(body, tmp_path)
 
 
+def test_close_while_still_firing_files_no_preclose_regression(tmp_path):
+    """#1878: the pre-close backlog is not evidence that the fix failed.
+
+    #1534 was closed while ``pm_sync.feature_link_unresolved`` was still
+    firing, so the row went ``resolved`` still carrying all 520 occurrences
+    logged *before* the close. ``should_file`` saw that backlog, ``decide`` saw
+    a closed issue, and the tick filed #1878 — a "[regression]" whose every
+    occurrence predates #1534's close, for a condition already fixed. The
+    sibling caller of the same rule (``deploy_monitor``) has always required a
+    *new* sha before re-filing; this is that gate for error triage.
+
+    The seed is the one above with a non-zero counter at close — which is the
+    normal case, since a burst loud enough to file is usually still going when
+    someone closes the issue.
+    """
+    async def body():
+        await _seed(level="WARNING", status="filed", issue_number=41,
+                    filed_at=NOW - timedelta(days=2), count=520, count_since_filed=520)
+        gh = FakeGh()
+        gh.states = {41: (True, "completed")}
+        loop = _loop(AutomationContext("error-triage"), gh)
+        await loop.tick()
+        row = await _row("fp1")
+        assert row.status == "resolved" and row.count_since_filed == 0
+        assert gh.creates == [] and gh.comments == []
+        await loop.tick()  # and it stays quiet while nothing new arrives
+        assert gh.creates == []
+        assert (await _row("fp1")).status == "resolved"
+    _run(body, tmp_path)
+
+
+def test_stale_warning_burst_is_reset_for_resolved_rows_too(tmp_path):
+    """The burst window has to survive the close, or #1878 comes back slowly.
+
+    ``min_count_warning`` means "3 in ``warning_window_h``", enforced for
+    ``observed`` rows by zeroing a burst that has gone quiet. A ``resolved``
+    row can file too (as a regression), so post-close occurrences that never
+    form a burst must age out the same way — otherwise three stragglers spread
+    over three weeks re-file an issue that was correctly closed.
+    """
+    async def body():
+        await _seed(fingerprint="res", level="WARNING", status="resolved", issue_number=41,
+                    count_since_filed=2, last_seen_at=NOW - timedelta(hours=30))
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert (await _row("res")).count_since_filed == 0
+        assert gh.creates == []
+    _run(body, tmp_path)
+
+
 def test_closed_not_planned_mutes_forever(tmp_path):
     async def body():
         await _seed(status="filed", issue_number=42, filed_at=NOW - timedelta(days=2),
