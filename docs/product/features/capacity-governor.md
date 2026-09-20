@@ -62,6 +62,13 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings
   the governor never raises, only ever caps below.
+- **Runner form and settings surface (PR 3)** — Since spec PR 3 (2026-09-20) the runner ceiling (`max_concurrent`), the daily budget
+  (`max_spawns_per_day`) and `sessions_per_account` are edited on Delivery → Capacity in the same
+  form as the product pins; the automations' Config tabs show them read-only (`ConfigField.surface =
+  "capacity"`). A runner ceiling above the effective global cap is refused (422). The runner-layer
+  admission code is `runner_ceiling_full` (was `global_capacity_full`); the readout's `accounts`
+  block carries `sessionsPerAccount` and `accountCap` so the Runner row can say when quota binds.
+  `PATCH /api/automations/{id}` merges a partial `config` over the stored row.
 - **Monitor vs act** — `monitor` computes and stores the plan (`capacity_plans` row, `applied=False`)
   purely for display; `act` sets `applied=True` and the plan is merged into the runner's caps at its
   existing read seams (`SessionOrchestrator._backlog_read_config` for `max_concurrent`,
