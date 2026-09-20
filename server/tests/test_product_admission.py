@@ -21,7 +21,7 @@ def test_unknown_counts_are_not_zero_and_manual_does_not_bypass_them():
     decision, _ = snapshot.decide("org/repo", trigger="manual")
     assert decision.state == "unknown"
     assert {c.code for c in decision.constraints} >= {
-        "global_capacity_unknown", "product_capacity_unknown", "daily_budget_unknown"}
+        "runner_ceiling_unknown", "product_capacity_unknown", "daily_budget_unknown"}
 
 
 def test_admitted_token_is_not_charged_twice_but_other_token_is():

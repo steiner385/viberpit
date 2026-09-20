@@ -1362,7 +1362,7 @@ class BacklogRunnerLoop:
                 kind, status = "skipped_product_cap", "capacity"
                 self._waiting_reason = "capacity"
                 summary += f"; in-flight cap ({policy['max_in_flight']})"
-            elif "global_capacity_full" in codes:
+            elif "runner_ceiling_full" in codes:
                 status = "capacity"
             elif "daily_budget_full" in codes:
                 status = "budget"

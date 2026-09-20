@@ -235,7 +235,7 @@ def test_admission_end_to_end_respects_plan_fleet_ceiling(tmp_path, monkeypatch)
         decision, _ = snapshot.decide(
             "o/r", requested_product="auto-product", trigger="automatic", effect="dispatch")
         assert not decision.permitted
-        assert "global_capacity_full" in {c.code for c in decision.constraints}
+        assert "runner_ceiling_full" in {c.code for c in decision.constraints}
 
     asyncio.run(run())
 
@@ -296,7 +296,7 @@ def test_admission_end_to_end_the_floored_planner_never_starves_an_in_flight_cla
             "o/r", requested_product="auto-product", trigger="automatic", effect="dispatch",
             existing_slot=True, existing_token="tok")
         assert decision.permitted, decision.constraints
-        assert all(c.code != "global_capacity_full" for c in decision.constraints)
+        assert all(c.code != "runner_ceiling_full" for c in decision.constraints)
 
     asyncio.run(run())
 
@@ -346,7 +346,7 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         await write_plan(_plan({"other-product": 3}))
         decision = await _decide_occupied("o/a", "product-a")
         assert decision.permitted, decision.constraints
-        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+        assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
 
         # (b) plan is stale (11 minutes old) — falls back to the stored
@@ -358,7 +358,7 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         await _backdate_plan(11)
         decision = await _decide_occupied("o/b", "product-b")
         assert decision.permitted, decision.constraints
-        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+        assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
 
         # (c) kill switch off — same fallback as (b), live plan ignored.
@@ -367,7 +367,7 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         monkeypatch.setenv("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "false")
         decision = await _decide_occupied("o/c", "product-c")
         assert decision.permitted, decision.constraints
-        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+        assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
         monkeypatch.delenv("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", raising=False)
 
@@ -377,7 +377,7 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         await write_plan(_plan({"product-d": 5}, fleet=0))
         decision = await _decide_occupied("o/d", "product-d")
         assert decision.permitted, decision.constraints
-        assert all(c.code not in {"product_capacity_full", "global_capacity_full"}
+        assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
 
     asyncio.run(run())

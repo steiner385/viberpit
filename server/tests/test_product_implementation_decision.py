@@ -101,7 +101,7 @@ def test_ruling_20_an_occupied_claim_is_never_refused_on_capacity():
     unaffected: a 0 cap still refuses it."""
     occupied_paused = decision(global_cap=0, existing_slot=True)
     assert occupied_paused.permitted
-    assert any(c.code == "global_capacity_held" for c in occupied_paused.constraints)
+    assert any(c.code == "runner_ceiling_held" for c in occupied_paused.constraints)
 
     occupied_product_paused = decision(
         policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=True)
@@ -115,7 +115,7 @@ def test_ruling_20_an_occupied_claim_is_never_refused_on_capacity():
 
     new_claim_paused = decision(global_cap=0, existing_slot=False)
     assert new_claim_paused.state == "refused"
-    assert any(c.code == "global_capacity_full" for c in new_claim_paused.constraints)
+    assert any(c.code == "runner_ceiling_full" for c in new_claim_paused.constraints)
 
     new_claim_product_paused = decision(
         policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=False)

@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # The fixed vocabulary decide_implementation refuses with, plus the three
 # spec-gap fallback codes below (deliberately OUTSIDE that vocabulary — nothing
 # in the product loop ever produces them).
-LAYER_OF_CODE = {"product_capacity_full": "product", "global_capacity_full": "runner",
+LAYER_OF_CODE = {"product_capacity_full": "product", "runner_ceiling_full": "runner",
                  "daily_budget_full": "runner", "dispatch_off": "product",
                  "approval_required": "product", "runner_off": "runner",
                  "no_account_headroom": "account", "hosts_full": "host",
@@ -39,7 +39,7 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "global_capacity_full": "ru
                  # future reader of one of these codes (e.g. a diagnostic view
                  # that doesn't filter by state) maps it to the same layer as
                  # its `_full` sibling rather than the "product" default.
-                 "global_capacity_held": "runner", "product_capacity_held": "product"}
+                 "runner_ceiling_held": "runner", "product_capacity_held": "product"}
 
 
 def _layer_for(code: str) -> str:
@@ -83,6 +83,7 @@ async def build_readout(src: CapacitySources) -> dict:
     mode, gov = await src.governor_config()
     push_level = gov.get("push_level", "steady")
     reserve = RESERVE_PCT.get(push_level, 20)
+    sessions_per_account = int(gov.get("sessions_per_account") or 2)
     global_cap = await src.global_cap()
     global_active = src.global_active()
     limits = (await src.global_limits()) if src.global_limits is not None else None
@@ -235,6 +236,8 @@ async def build_readout(src: CapacitySources) -> dict:
         "hosts": hosts,
         "accounts": {"available": accounts_available,
                      "total": len(account_rows), "reservePct": reserve,
+                     "sessionsPerAccount": sessions_per_account,
+                     "accountCap": accounts_available * sessions_per_account,
                      "nextResetAt": resets[0] if resets else None, "rows": account_rows},
         "runner": {"ceiling": ceiling, "effective": effective, "inFlight": in_flight_total,
                    "derived": derived},

@@ -446,7 +446,10 @@ def decide_implementation(
         else:
             add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")
 
-    capacity("global_capacity", global_count, global_cap, occupied=existing_slot)
+    # "runner_ceiling": decide()'s global_cap is the Backlog Runner's max_concurrent
+    # (spec 2026-09-20 D8/C16), not AppSettings' global cap — that one is
+    # global_cap_full in the readout.
+    capacity("runner_ceiling", global_count, global_cap, occupied=existing_slot)
     capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot)
     capacity("daily_budget", daily_count, daily_cap)
     constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
