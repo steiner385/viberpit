@@ -127,7 +127,10 @@ def test_get_accounts_includes_reserve_field():
 
 
 def test_get_accounts_ranks_over_reserve_account_as_fallback():
-    """Display ranking must match real selection: over-reserve → last + fallback reason."""
+    """Display ranking must match real selection: over-reserve → last + fallback reason.
+
+    Reserve 20 = keep 20% back (ceiling 80): hot at 95% is over it, cool at 20% is not.
+    """
     def usage_fn(name):
         return make_usage(session=10.0, weekly=95.0 if name == "hot" else 20.0)
 
@@ -137,7 +140,7 @@ def test_get_accounts_ranks_over_reserve_account_as_fallback():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=usage_fn)
         with client:
-            client.patch("/api/accounts/hot", json={"weeklyReservePct": 90},
+            client.patch("/api/accounts/hot", json={"weeklyReservePct": 20},
                          headers=IDENTITY_HEADERS)
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
     assert response.status_code == 200
@@ -145,3 +148,25 @@ def test_get_accounts_ranks_over_reserve_account_as_fallback():
     assert by_name["cool"]["rank"] == 1
     assert by_name["hot"]["rank"] == 2
     assert by_name["hot"]["rankReason"] == "over weekly reserve — fallback"
+
+
+def test_get_accounts_carries_the_effective_and_default_reserve():
+    """Spec 2026-09-20 D4/§7: effectiveReservePct = the account's override, else the
+    push level's RESERVE_PCT (steady 20 on a fresh governor row); pushLevelReservePct
+    is that default, so the Accounts page can label a blank override."""
+    with temp_env():
+        _seed_slot("plain")
+        _seed_slot("kept")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client()
+        with client:
+            client.patch("/api/accounts/kept", json={"weeklyReservePct": 60},
+                         headers=IDENTITY_HEADERS)
+            response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["plain"]["weeklyReservePct"] is None
+    assert by_name["plain"]["effectiveReservePct"] == 20.0
+    assert by_name["plain"]["pushLevelReservePct"] == 20.0
+    assert by_name["kept"]["effectiveReservePct"] == 60.0
+    assert by_name["kept"]["pushLevelReservePct"] == 20.0

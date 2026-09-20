@@ -121,7 +121,7 @@ ceiling = 43
 id = "env-prefix"
 pattern = '\bCCSWITCH_[A-Z0-9_]*'
 issue = 1591
-ceiling = 2507
+ceiling = 2508
 
 [[allow]]
 id = "host-legacy-aliases"

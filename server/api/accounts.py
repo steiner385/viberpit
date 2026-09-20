@@ -36,7 +36,7 @@ from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noq
                             QuotaWindow, anthropic_snapshot, unknown_snapshot)
 from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
-from server.automations.capacity_plan import RESERVE_PCT
+from server.automations.capacity_plan import RESERVE_PCT, push_level_of
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
 from server.codex.auth_types import (
@@ -223,6 +223,24 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
     return dict(zip(names, results))
 
 
+async def _push_level(orch) -> str:
+    """The governor's current push level, read best-effort (spec 2026-09-20 D4).
+
+    An orchestrator without the governor seam (tests, a worker-role daemon) or a
+    DB blip degrades to ``steady`` — a config read must never fail the accounts
+    list.
+    """
+    read = getattr(orch, "_capacity_governor_read_config", None)
+    if read is None:
+        return "steady"
+    try:
+        _mode, gov = await read()
+    except Exception:  # noqa: BLE001 — a config read must never fail the accounts list
+        log.warning("accounts.push_level_read_failed", exc_info=True)
+        return "steady"
+    return push_level_of(gov)
+
+
 def effective_reserve_pct(acct: dict, push_level: str) -> float:
     """THE reserve an account is judged by (spec 2026-09-20 D4): its own
     ``weeklyReservePct`` override when set, else the push level's ``RESERVE_PCT``.
@@ -357,6 +375,8 @@ def _account_response(
     rank: int | None = None,
     rank_reason: str | None = None,
     weekly_reserve_pct: float | None = None,
+    effective_reserve_pct_value: float | None = None,
+    push_level_reserve_pct: float | None = None,
     account_defaults: dict | None = None,  # NEW
     enabled: bool = True,
     allow_extra_usage: bool = False,
@@ -404,26 +424,46 @@ def _account_response(
         "rank": rank,
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
+        # Spec 2026-09-20 D4: the reserve this account is JUDGED by (override, else
+        # the push level's) and the push level's own value, so the Accounts page
+        # can label a blank override "push level's N%". Null on routes that echo a
+        # single account without reading the governor (PATCH, refresh).
+        "effectiveReservePct": effective_reserve_pct_value,
+        "pushLevelReservePct": push_level_reserve_pct,
         "allowExtraUsage": allow_extra_usage,
         "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "modelApprovalAction": None, "envOverrides": None},
         "enabled": enabled,
     }
 
 
-def _account_response_from_info(acct: dict, usage=None, **kw) -> dict[str, Any]:
+def _account_response_from_info(
+    acct: dict, usage=None, *, push_level: str | None = None, **kw
+) -> dict[str, Any]:
     """Build the wire response from one ``list_accounts()`` entry.
 
-    Single source of truth for the ledger-backed fields (reserve, defaults,
-    enabled, extra-usage opt-in): every route that echoes an account back goes
-    through here, so adding a field is one edit rather than four call sites that
-    silently drift apart.
+    Single source of truth for the ledger-backed fields (reserve, effective
+    reserve, defaults, enabled, extra-usage opt-in): every route that echoes an
+    account back goes through here, so adding a field is one edit rather than
+    four call sites that silently drift apart.
+
+    ``push_level`` is the governor's current push level (spec 2026-09-20 D4):
+    when given, ``effectiveReservePct``/``pushLevelReservePct`` are computed from
+    it; when omitted (PATCH, refresh — routes that echo one account without
+    reading the governor) both are ``null``.
     """
+    effective_reserve_pct_value = None
+    push_level_reserve_pct = None
+    if push_level is not None:
+        effective_reserve_pct_value = effective_reserve_pct(acct, push_level)
+        push_level_reserve_pct = float(RESERVE_PCT[push_level])
     return _account_response(
         acct["name"],
         acct.get("status", "unknown"),
         usage,
         acct.get("nickname"),
         weekly_reserve_pct=acct.get("weeklyReservePct"),
+        effective_reserve_pct_value=effective_reserve_pct_value,
+        push_level_reserve_pct=push_level_reserve_pct,
         account_defaults=acct.get("accountDefaults"),
         enabled=acct.get("enabled", True),
         allow_extra_usage=bool(acct.get("allowExtraUsage")),
@@ -662,6 +702,11 @@ async def get_accounts(
     counts = await orch.live_session_counts()
     load = await orch.live_session_load()
 
+    # The governor's push level supplies the default reserve (spec 2026-09-20 D4).
+    # Read best-effort: an orchestrator without the governor seam (tests, a
+    # worker-role daemon) or a DB blip degrades to steady, never a 500.
+    push_level = await _push_level(orch)
+
     # Build per-account weekly reserve map for display ranking.
     reserves = {a["name"]: a["weeklyReservePct"] for a in accounts_info
                 if a.get("weeklyReservePct") is not None}
@@ -691,6 +736,7 @@ async def get_accounts(
         result.append(_account_response_from_info(
             acct,
             usage,
+            push_level=push_level,
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,
