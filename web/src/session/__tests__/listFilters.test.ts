@@ -142,19 +142,19 @@ describe('coerceFilters', () => {
 describe('persistence — the same namespaced ordering pref, not a new key', () => {
   beforeEach(() => window.localStorage.clear())
 
-  it('stores filters inside ccswitch.sessionOrder and adds no second key', () => {
+  it('stores filters inside viberpit.sessionOrder and adds no second key', () => {
     saveListFilters('live', filters({ status: 'busy' }))
-    const raw = window.localStorage.getItem('ccswitch.sessionOrder')
+    const raw = window.localStorage.getItem('viberpit.sessionOrder')
     expect(raw).not.toBeNull()
     expect(JSON.parse(raw as string)).toEqual({ filters: filters({ status: 'busy' }) })
-    expect(window.localStorage.getItem('ccswitch.listFilters')).toBeNull()
-    expect(Object.keys(window.localStorage)).toEqual(['ccswitch.sessionOrder'])
+    expect(window.localStorage.getItem('viberpit.listFilters')).toBeNull()
+    expect(Object.keys(window.localStorage)).toEqual(['viberpit.sessionOrder'])
   })
 
   it('namespaces non-live lists exactly like the ordering half does', () => {
     saveListFilters('archived', filters({ project: 'o/a' }))
-    expect(window.localStorage.getItem('ccswitch.sessionOrder')).toBeNull()
-    expect(window.localStorage.getItem('ccswitch.sessionOrder.archived')).not.toBeNull()
+    expect(window.localStorage.getItem('viberpit.sessionOrder')).toBeNull()
+    expect(window.localStorage.getItem('viberpit.sessionOrder.archived')).not.toBeNull()
   })
 
   it('saving filters preserves the ordering half, and vice versa', () => {
@@ -171,7 +171,7 @@ describe('persistence — the same namespaced ordering pref, not a new key', () 
 
   it('returns NO_FILTERS when nothing is stored or the entry is corrupt', () => {
     expect(loadListFilters('live', OPTIONS)).toEqual(NO_FILTERS)
-    window.localStorage.setItem('ccswitch.sessionOrder', '{not json')
+    window.localStorage.setItem('viberpit.sessionOrder', '{not json')
     expect(loadListFilters('live', OPTIONS)).toEqual(NO_FILTERS)
   })
 
@@ -181,7 +181,7 @@ describe('persistence — the same namespaced ordering pref, not a new key', () 
   // every page load. The caller holds this raw value until its queries resolve.
   it('without options it coerces but does NOT validate against a domain', () => {
     window.localStorage.setItem(
-      'ccswitch.sessionOrder',
+      'viberpit.sessionOrder',
       JSON.stringify({ filters: { status: 'busy', project: '  o/a  ', environment: 42 } }),
     )
     // Same store, empty domains: with options every value is dropped…
@@ -201,7 +201,7 @@ describe('a stored value that no longer exists falls back — it must not empty 
   // cannot render it — if it survived, the user would face an empty list with
   // no way out of it.
   const store = (f: Partial<ListFilters>): void => {
-    window.localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ filters: filters(f) }))
+    window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ filters: filters(f) }))
   }
 
   it('a retired fleet host falls back, and the whole list comes back', () => {

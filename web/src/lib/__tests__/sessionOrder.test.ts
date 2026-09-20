@@ -14,12 +14,12 @@ describe('sessionOrder persistence', () => {
   })
 
   it('falls back to defaults on corrupt JSON', () => {
-    window.localStorage.setItem('ccswitch.sessionOrder', '{not json')
+    window.localStorage.setItem('viberpit.sessionOrder', '{not json')
     expect(loadSessionOrder()).toEqual({ groupBy: 'none', sortBy: 'status' })
   })
 
   it('rejects unknown enum values', () => {
-    window.localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'x', sortBy: 'y' }))
+    window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'x', sortBy: 'y' }))
     expect(loadSessionOrder()).toEqual({ groupBy: 'none', sortBy: 'status' })
   })
 })

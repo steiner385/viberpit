@@ -86,7 +86,7 @@ const pendingA = mk('pendingA', { status: 'pending_approval', repo: 'o/a', host:
 const LIVE = [idleA, idleB, busyA, askA, scratch]
 const ALL = [...LIVE, queuedA, pendingA]
 
-const ORDER_KEY = 'ccswitch.sessionOrder'
+const ORDER_KEY = 'viberpit.sessionOrder'
 const ids = (list: readonly Session[]): string[] => list.map((s) => s.id)
 const sorted = (list: readonly Session[]): string[] => ids(list).slice().sort()
 const filters = (over: Partial<ListFilters> = {}): ListFilters => ({ ...NO_FILTERS, ...over })

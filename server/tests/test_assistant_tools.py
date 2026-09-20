@@ -12,6 +12,7 @@ from mcp.types import ListToolsRequest
 from server.assistant.client import (AssistantApi, AssistantApiError,  # noqa: F401
                                      TOOL_CALL_CAPACITY)
 from server.assistant.server import build_server
+from server.auth.middleware import request_attribution
 from server.assistant.tools import (OPERATOR_TOOLS, ToolClass, TOOL_SPECS, annotation_for,
                                     batch_items, build_tools, wrap_untrusted)
 
@@ -31,8 +32,9 @@ async def test_list_sessions_trims_and_frames():
 
     def handler(req: httpx.Request):
         seen["auth"] = req.headers["authorization"]
-        seen["via"] = req.headers["x-ccswitch-via"]
-        seen["asst"] = req.headers["x-ccswitch-assistant-session"]
+        # Read through the dual-accept helper, not a literal: this test asserts the
+        # attribution ARRIVES, and the middleware owns which spellings count (#1368).
+        seen["via"], seen["asst"] = request_attribution(req.headers)
         assert req.url.path == "/api/sessions"
         return httpx.Response(200, json=[{
             "id": "abc", "name": "Refactor auth", "status": "waiting_input", "repo": "o/r",

@@ -39,7 +39,7 @@ function mount(extra?: ReactNode) {
 }
 
 describe('AppearanceSection', () => {
-  it('theme radio writes ccswitch.theme and reports Saved; system removes the key', async () => {
+  it('theme radio writes viberpit.theme and reports Saved; system removes the key', async () => {
     const { container } = mount()
     expect(screen.getByRole('heading', { level: 2, name: 'Appearance' })).toBeInTheDocument()
     expect(screen.getByText('This browser')).toBeInTheDocument()

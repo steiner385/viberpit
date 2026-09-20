@@ -58,7 +58,7 @@ def _assistant() -> tuple[Any, Any]:
 def build_api(*, url: str, token: str, transport: Any | None = None) -> Any:
     """An `AssistantApi` bound to a remote edge instead of loopback.
 
-    `session_id` labels the caller in the `X-CCSwitch-Assistant-Session` header and
+    `session_id` labels the caller in the `X-ViberPit-Assistant-Session` header and
     keys the per-client tool-call rate limiter, so one is minted per process rather
     than shared: two `ccswitch mcp` clients get a bucket each.
     """

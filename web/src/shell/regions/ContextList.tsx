@@ -50,7 +50,7 @@ export interface ContextListProps {
  * ## Width
  *
  * Resizable at `desktop`/`wide` through the existing `SidebarResizer` +
- * `useSidebarWidth` (persisted under `ccswitch.listWidth`, DEC-11). Below that
+ * `useSidebarWidth` (persisted under `viberpit.listWidth`, DEC-11). Below that
  * the column fills whatever the shell gives it: a fixed px width on a phone is
  * either an overflow or a wasted band, and there is no room for a drag handle.
  * The resizer is also the divider, so no border is drawn where it is absent. It

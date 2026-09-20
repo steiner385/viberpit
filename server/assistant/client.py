@@ -8,6 +8,7 @@ import httpx
 
 from ccswitch import brand
 from server.api.ratelimit import TokenBucketRateLimiter
+from server.auth.middleware import ASSISTANT_SESSION_HEADER, VIA_HEADER
 from server.sessions.types import SYSTEM_IDENTITY
 
 # Tool-call ceiling for ONE assistant session (spec §4.10): a burst of 30 calls,
@@ -32,9 +33,12 @@ class AssistantApi:
                  timeout_s: float = 20.0) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url, transport=transport, timeout=timeout_s,
+            # Header NAMES come from `auth.middleware`, which is also the accept side
+            # (`request_attribution`): emitter and acceptor share one spelling so the
+            # rebrand cannot leave them pointing at different headers (#1368).
             headers={"Authorization": f"Bearer {token}",
-                     "X-CCSwitch-Via": "assistant",
-                     "X-CCSwitch-Assistant-Session": session_id})
+                     VIA_HEADER: "assistant",
+                     ASSISTANT_SESSION_HEADER: session_id})
         self.session_id = session_id
         # The identity the token is bound to (server/assistant/token.py mints it over
         # {identity, session_id}). Carried here so the `assistant.tool_call` audit is

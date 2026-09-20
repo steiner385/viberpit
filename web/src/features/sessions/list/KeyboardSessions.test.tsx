@@ -439,7 +439,7 @@ describe('Task 6 — dispatch create-and-open', () => {
       data: [{ nameWithOwner: 'acme/web', name: 'web', owner: 'acme', isPrivate: false, url: '', defaultBranch: 'main', pushedAt: null, cloned: true }],
       isLoading: false, isError: false,
     } as ReturnType<typeof hooks.useGithubRepos>)
-    window.localStorage.setItem('ccswitch.lastRepo', 'acme/web')
+    window.localStorage.setItem('viberpit.lastRepo', 'acme/web')
     const app = renderShell()
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)

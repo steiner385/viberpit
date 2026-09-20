@@ -15,21 +15,21 @@ describe('groupCollapse', () => {
 
   it('serializes to a JSON string array', () => {
     saveGroupCollapse(new Set(['busy']))
-    expect(window.localStorage.getItem('ccswitch.groupCollapse')).toBe('["busy"]')
+    expect(window.localStorage.getItem('viberpit.groupCollapse')).toBe('["busy"]')
   })
 
   it('falls back to an empty set on malformed JSON', () => {
-    window.localStorage.setItem('ccswitch.groupCollapse', '{not json')
+    window.localStorage.setItem('viberpit.groupCollapse', '{not json')
     expect(loadGroupCollapse()).toEqual(new Set())
   })
 
   it('falls back to an empty set when the payload is not an array', () => {
-    window.localStorage.setItem('ccswitch.groupCollapse', '{"a":1}')
+    window.localStorage.setItem('viberpit.groupCollapse', '{"a":1}')
     expect(loadGroupCollapse()).toEqual(new Set())
   })
 
   it('ignores non-string array entries', () => {
-    window.localStorage.setItem('ccswitch.groupCollapse', '["busy",1,null]')
+    window.localStorage.setItem('viberpit.groupCollapse', '["busy",1,null]')
     expect(loadGroupCollapse()).toEqual(new Set(['busy']))
   })
 })

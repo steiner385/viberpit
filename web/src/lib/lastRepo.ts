@@ -4,13 +4,13 @@
  * value before. All access is wrapped so a blocked / unavailable localStorage
  * (private mode, quota, SSR) degrades to "no remembered repo" instead of crashing.
  */
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 const KEY = storageKey('lastRepo')
 
 export function getLastRepo(): string | null {
   try {
-    return window.localStorage.getItem(KEY)
+    return window.localStorage.getItem(migrateStorageNamespace(window.localStorage, KEY))
   } catch {
     return null
   }

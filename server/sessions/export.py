@@ -18,7 +18,38 @@ from typing import Any
 # Version tag on the header record of a normalized NDJSON export. Bump it if the
 # event wire shape changes in a way a downstream parser must notice; a consumer
 # that pins v1 then fails loudly instead of silently misreading the new events.
-NORMALIZED_EXPORT_FORMAT = "ccswitch.normalized-events/v1"
+#
+# The brand half of the id flipped with the rebrand (#1368) while the version did
+# NOT: v1 events are the same events, so a file written under either spelling is
+# the same format and must keep reading. Both spellings are therefore accepted
+# forever on the read side — an export already sitting on someone's disk cannot be
+# rewritten — and `is_normalized_export_header` is the one place that is spelled.
+NORMALIZED_EXPORT_FORMAT = f"{brand.SLUG}.normalized-events/v1"
+LEGACY_NORMALIZED_EXPORT_FORMAT = f"{brand.LEGACY_SLUG}.normalized-events/v1"
+NORMALIZED_EXPORT_FORMATS = (NORMALIZED_EXPORT_FORMAT, LEGACY_NORMALIZED_EXPORT_FORMAT)
+
+#: `type` of the header record itself — the marker a reader looks for on line 1.
+NORMALIZED_EXPORT_META_TYPE = f"{brand.SLUG}ExportMeta"
+LEGACY_NORMALIZED_EXPORT_META_TYPE = f"{brand.LEGACY_SLUG}ExportMeta"
+NORMALIZED_EXPORT_META_TYPES = (NORMALIZED_EXPORT_META_TYPE,
+                                LEGACY_NORMALIZED_EXPORT_META_TYPE)
+
+
+def is_normalized_export_header(record: Any) -> bool:
+    """Whether *record* is the line-1 header of a normalized export, either brand.
+
+    The accept side of the export id: every reader of an exported ``.jsonl`` — in
+    this repo or downstream — goes through this rather than comparing against one
+    literal, because the literal it happened to copy is the one that stops matching.
+    Deliberately tolerant of a header that carries the marker ``type`` but an
+    unknown ``format``: that is a *version* mismatch (``/v2``), which the caller
+    must report as "newer export than this reader", not as "not an export".
+    """
+    if not isinstance(record, dict):
+        return False
+    if record.get("type") in NORMALIZED_EXPORT_META_TYPES:
+        return True
+    return record.get("format") in NORMALIZED_EXPORT_FORMATS
 
 
 def _fence(text: str, lang: str = "") -> str:
@@ -83,7 +114,7 @@ def normalized_ndjson(events: list[dict[str, Any]], *, session_id: str,
     field degrades one value; raising loses the whole download.
     """
     header: dict[str, Any] = {
-        "type": "ccswitchExportMeta",
+        "type": NORMALIZED_EXPORT_META_TYPE,
         "format": NORMALIZED_EXPORT_FORMAT,
         "engine": engine,
         "sessionId": session_id,

@@ -53,7 +53,7 @@ is still read correctly. Concretely:
 | Display name, GitHub-posted text | `ViberPit` | none needed (done — #1358, #1362) |
 | Env prefix | `VIBERPIT_*` | mirrored `CCSWITCH_*` at every entrypoint (done — #1382) |
 | Markers, MCP server name / tool prefix | `<!-- viberpit:… -->`, `mcp__viberpit__` | **permanent** dual-accept — transcripts are re-parsed on replay (done — #1390) |
-| Cookie, headers, localStorage, export format id | `viberpit_session`, `X-ViberPit-*`, migrate-on-read keys, `viberpit.normalized-events/v1` | read both for one release (#1368) |
+| Cookie, headers, localStorage, export format id | `viberpit_session`, `X-ViberPit-*`, migrate-on-read keys, `viberpit.normalized-events/v1` | read both for one release (done — #1368) |
 | Branch prefix, PM `dedupe_key` | `viberpit/<base>-<id>`, `viberpit:*` | branch match `^(ccswitch\|viberpit)/` is **permanent**; dedupe keys get one `UPDATE`, no alias (#1369) |
 | systemd units, host paths | `viberpit-*.service`, `/run/viberpit`, `/var/lib/viberpit` | runtime resolver lands first (#1370), then the rename with `Alias=ccswitch-*` for one release (#1371) |
 | Per-repo namespace | `<repo>/.viberpit/` | new clones only; a repo with only `.ccswitch/` keeps it forever, nothing is moved (#1373) |
@@ -201,12 +201,17 @@ scaffolding removal #1592.
   `LEGACY_MCP_TOOL_PREFIX`), `server/hostpaths.py` (`RUN_DIR`/`STATE_DIR`/`LOG_DIR` via
   `prefer_existing`).
 - **Surfaces still on the legacy spelling (the remaining phases' targets):**
-  `server/auth/middleware.py` (`_COOKIE_NAME = "ccswitch_session"`),
-  `server/sessions/export.py` (`NORMALIZED_EXPORT_FORMAT = "ccswitch.normalized-events/v1"`),
   `src/ccswitch/worktrees.py` (`ccswitch/<branch>-<short>` child branches and the
   `<repo_root>/.ccswitch/worktrees/…` layout), `server/sessions/orchestrator.py` (the
   `".ccswitch" not in cwd_path.parts` delete guard), `server/aio.py` and
   `server/ipc/drain_on_signal.py` (literal `ccswitch-daemon.service`), the 18 unit files under
-  `deploy/`, `web/src/pipeline/notifyPref.ts` (the existing migrate-on-read helper Phase 2b must
-  reuse), `web/src/lib/repoFromCwd.ts`, `.claude/agents/ccswitch-{implementer,reviewer}.md` and
+  `deploy/`, `web/src/lib/repoFromCwd.ts`, `.claude/agents/ccswitch-{implementer,reviewer}.md` and
   `.agents/roles/ccswitch-{implementer,reviewer}`.
+- **Phase 2b's compat readers (what a Phase 7 cleanup deletes):**
+  `server/auth/middleware.py` (`_LEGACY_COOKIE_NAME`, `LEGACY_VIA_HEADER`,
+  `LEGACY_ASSISTANT_SESSION_HEADER`, and `request_attribution`'s second spelling),
+  `web/src/lib/storageKey.ts` (`LEGACY_STORAGE_NAMESPACE` and `migrateStorageNamespace`, plus its
+  call at every read site). `server/sessions/export.py`'s
+  `LEGACY_NORMALIZED_EXPORT_FORMAT` is NOT on that list — an exported `.jsonl` already on
+  someone's disk can never be rewritten, so `is_normalized_export_header` takes both forever, for
+  the same reason the marker parsers do.

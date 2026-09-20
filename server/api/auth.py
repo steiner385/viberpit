@@ -15,7 +15,8 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import update
 
-from server.auth.middleware import current_identity, _COOKIE_NAME, _unsign_session_id
+from server.auth.middleware import (current_identity, _unsign_session_id,
+                                    clear_session_cookies, read_session_cookie)
 from server.db import get_db
 from server.db.models import AppSession
 
@@ -52,7 +53,7 @@ async def logout(
     Marks the server-side AppSession row as revoked and clears the cookie.
     """
     # Resolve the AppSession id from the signed cookie
-    signed = request.cookies.get(_COOKIE_NAME)
+    signed = read_session_cookie(request)
     if signed:
         session_id = _unsign_session_id(signed)
         if session_id:
@@ -69,5 +70,5 @@ async def logout(
 
     # Return 204 with cookie cleared
     response = JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
-    response.delete_cookie(_COOKIE_NAME)
+    clear_session_cookies(response)
     return response

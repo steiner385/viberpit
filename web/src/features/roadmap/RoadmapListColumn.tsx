@@ -59,7 +59,7 @@ export interface RoadmapListColumnProps {
  * lists' group folds are — which keys the user has closed — so they go through
  * `lib/groupCollapse` (guarded read AND guarded write; a private
  * `localStorage.setItem` throws the whole render down in Safari private mode)
- * rather than a second hand-rolled reader. Key: `ccswitch.groupCollapse.roadmap`.
+ * rather than a second hand-rolled reader. Key: `viberpit.groupCollapse.roadmap`.
  * The Initiatives scope's group folds are a DIFFERENT list, hence a different
  * namespace (`roadmap-initiatives`, below).
  */

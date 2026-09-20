@@ -28,11 +28,11 @@ describe('useSessionOrdering', () => {
     const { result } = renderHook(() => useSessionOrdering([mk('a', { repo: 'o/r' })]))
     act(() => result.current.setGroupBy('repo'))
     expect(result.current.groups[0].label).toBe('o/r')
-    expect(window.localStorage.getItem('ccswitch.sessionOrder')).toContain('repo')
+    expect(window.localStorage.getItem('viberpit.sessionOrder')).toContain('repo')
   })
 
   it('restores persisted selection on mount', () => {
-    window.localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'name' }))
+    window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'name' }))
     const { result } = renderHook(() => useSessionOrdering([mk('a')]))
     expect(result.current.groupBy).toBe('status')
     expect(result.current.sortBy).toBe('name')

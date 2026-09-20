@@ -1,4 +1,4 @@
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 import { isSettingsSectionId, type SettingsSectionId } from './settingsDefs'
 
 /** DEC-9: bare /settings on desktop reopens the last section (C1 "restore the most recently viewed pane"). */
@@ -6,7 +6,7 @@ export const LAST_SECTION_KEY = storageKey('settings.last')
 
 export function readLastSection(): SettingsSectionId | null {
   try {
-    const v = localStorage.getItem(LAST_SECTION_KEY)
+    const v = localStorage.getItem(migrateStorageNamespace(localStorage, LAST_SECTION_KEY))
     return isSettingsSectionId(v) ? v : null
   } catch { return null }
 }

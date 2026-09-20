@@ -508,9 +508,9 @@ describe('SessionListColumn — the Background scope', () => {
   it('persists its group-by apart from Active', async () => {
     renderColumn({ sessions: [MINE, QUIET], scope: 'background' })
     await userEvent.selectOptions(screen.getByLabelText('Group by'), 'repo')
-    expect(JSON.parse(localStorage.getItem('ccswitch.sessionOrder.background') ?? '{}').groupBy).toBe('repo')
+    expect(JSON.parse(localStorage.getItem('viberpit.sessionOrder.background') ?? '{}').groupBy).toBe('repo')
     // Active's own key (bare, as it always was) is untouched by the change.
-    expect(JSON.parse(localStorage.getItem('ccswitch.sessionOrder') ?? '{}').groupBy).toBe('none')
+    expect(JSON.parse(localStorage.getItem('viberpit.sessionOrder') ?? '{}').groupBy).toBe('none')
   })
 
   it('opens a background row through onOpen like any other', async () => {

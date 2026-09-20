@@ -73,22 +73,24 @@ ceiling = 8
 
 [[allow]]
 id = "http-auth-compat"
+# Phase 2b landed: the cookie and both attribution headers now EMIT the new
+# spelling. What is left is the accept side — the legacy header names in
+# `auth/middleware.py` and the docstring naming them — which retires with the
+# rest of #1368's compat window.
 pattern = '\bccswitch_session\b|X-CCSwitch-|x-ccswitch-'
 issue = 1368
-ceiling = 6
+ceiling = 2
 
 [[allow]]
 id = "browser-storage-keys"
+# Phase 2b landed: every key is written as `viberpit.<name>` and readers migrate
+# the old one forward (`lib/storageKey.ts:migrateStorageNamespace`). What is left
+# is the compat half — the legacy namespace, the pre-namespace colon keys, and the
+# tests that pin the migration — which retires when the read side does.
 paths = ["web/*", "web/**/*"]
-pattern = "['\"`]ccswitch\\.[A-Za-z][A-Za-z.]*|ccswitch\\.\\$\\{|ccswitch:(draft|auto-reloaded)|STORAGE_NAMESPACE = 'ccswitch'|toBe\\('ccswitch'\\)|should be \"ccswitch\"|ccswitchExportMeta|ccswitch\\.normalized-events"
+pattern = "['\"`]ccswitch\\.|ccswitch\\.\\$\\{|ccswitch:(draft|auto-reloaded)|STORAGE_NAMESPACE = 'ccswitch'|toBe\\('ccswitch'\\)"
 issue = 1368
-ceiling = 59
-
-[[allow]]
-id = "export-format-id"
-pattern = 'ccswitch\.normalized-events|ccswitchExportMeta'
-issue = 1368
-ceiling = 7
+ceiling = 25
 
 [[allow]]
 id = "persisted-keys"

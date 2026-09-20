@@ -14,7 +14,7 @@
  * this module only remembers).
  */
 import { isAgentEngine, type AgentEngine } from '@/api/types'
-import { storageKey } from '@/lib/storageKey'
+import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 export const ENGINE_PREFERENCE_KEY = storageKey('engine')
 
@@ -22,7 +22,8 @@ export const ENGINE_PREFERENCE_KEY = storageKey('engine')
  *  (or stored something this build no longer recognises). */
 export function getPreferredEngine(): AgentEngine | null {
   try {
-    const raw = window.localStorage.getItem(ENGINE_PREFERENCE_KEY)
+    const raw = window.localStorage.getItem(
+      migrateStorageNamespace(window.localStorage, ENGINE_PREFERENCE_KEY))
     return isAgentEngine(raw) ? raw : null
   } catch {
     return null
