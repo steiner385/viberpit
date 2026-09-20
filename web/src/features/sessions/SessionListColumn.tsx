@@ -141,8 +141,11 @@ export function SessionListColumn({
       {scope === 'archived' && <ArchivedScopeBody onReviewSession={onReviewSession} />}
 
       {/* Daemon health: collapses to nothing when there is no daemon to watch.
-          Both scopes — it describes the daemon, not the list. */}
-      <div className="shrink-0 px-2 empty:hidden">
+          Both scopes — it describes the daemon, not the list. `short:hidden`
+          (issue #1399) sheds it at a short viewport for the same reason the
+          controls strip does (`ScopeBody.tsx`) — it is optional chrome, and
+          the room goes to the scroll band instead. */}
+      <div className="shrink-0 px-2 empty:hidden short:hidden">
         <DaemonHealthIndicator />
       </div>
 
