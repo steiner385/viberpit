@@ -89,7 +89,6 @@ async def select_batch(
     query: Callable[[dict], Awaitable[list[dict]]],
     repo_load: "dict[str, int] | None" = None,
     paused_repos: "set[str] | None" = None,
-    weights: "dict[str, float] | None" = None,
     caps: "dict[str, int] | None" = None,
     repo_order: "list[str] | None" = None,
     load_plan: Callable[[], Awaitable[list[dict]]] = load_plan,
@@ -122,15 +121,15 @@ async def select_batch(
         Repos to skip this selection (stale git credentials, issue #670) — their
         clone can only fetch a stale ref, so branching a worktree off it would
         implement against ancient code. Other repos are still serviced.
-    weights / caps / repo_order:
+    caps / repo_order:
         The per-repo strategy inputs — explicit parameters, never config reads
         (the config keys that used to carry them are retired). The orchestrator
-        derives ``weights``/``repo_order`` from the PRODUCT policies
-        (``_backlog_select_batch``: each ON product's weight, applied to its repos,
-        ordered by product age). It passes no ``caps``: a product's
-        ``max_in_flight`` is enforced per PRODUCT in the loop's ``_refill``, where
-        it is exact and strategy-independent, rather than aliased onto each of its
-        repos. ``caps`` remains part of this pure selection contract for the
+        derives ``repo_order`` from the PRODUCT policies in rank order
+        (``_backlog_repo_order``: ``priority_rank`` first, product age as the
+        tiebreak). It passes no ``caps``: a product's ``max_in_flight`` is
+        enforced per PRODUCT in the loop's ``_refill``, where it is exact and
+        strategy-independent, rather than aliased onto each of its repos.
+        ``caps`` remains part of this pure selection contract for the
         ``concurrency-cap`` strategy.
     load_plan / mark_consumed:
         Injectable plan-store seams (default: the ``backlog_groups`` table).
@@ -150,7 +149,7 @@ async def select_batch(
     batch, group_id = plan_to_batch(
         plan, candidates, repo_load, paused_repos,
         strategy=config.get("selection_strategy") or "balanced",
-        repo_order=repo_order or [], weights=weights or {}, caps=caps or {})
+        repo_order=repo_order or [], caps=caps or {})
     if batch is not None and group_id is not None:
         try:
             await mark_consumed(group_id)
@@ -263,12 +262,10 @@ class BacklogRunner:
                     choices=list(SELECTION_STRATEGIES),
                     help="How a freed slot chooses among the repos of the products "
                          "with work. 'balanced': fewest in-flight runs first (equal "
-                         "rotation). 'priority': serve products in the order they "
-                         "were onboarded, oldest first. 'weighted': bias by the "
-                         "product's policy weight (a freed slot favors "
-                         "higher-weighted products; weight 0 pauses one). "
-                         "'concurrency-cap': never exceed a product's max in "
-                         "flight."),
+                         "rotation). 'priority': serve products in rank order (Rank on "
+                         "Delivery → Capacity; unranked products last, oldest first). "
+                         "'weighted': deprecated, same as priority. 'concurrency-cap': "
+                         "never exceed a product's pin."),
         ConfigField(key="max_concurrent", label="Runner ceiling", type="int", default=1,
                     help="Most sessions the Backlog Runner may hold at once, across every product, "
                          "including proposals awaiting approval. A share of the global cap; quota "

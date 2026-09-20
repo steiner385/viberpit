@@ -61,6 +61,7 @@ vi.mock('@/api/hooks', () => ({
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   // The product Overview's Automation card.
   usePolicySchema: () => ({ data: [], isLoading: false }),
+  useCapacity: () => ({ data: undefined, isPending: false, isError: false }),
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),

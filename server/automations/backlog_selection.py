@@ -67,11 +67,10 @@ def order_live_groups(
     strategy: str = "balanced",
     repo_load: "dict[str, int] | None" = None,
     repo_order: "list[str] | None" = None,
-    weights: "dict[str, float] | None" = None,
     caps: "dict[str, int] | None" = None,
 ) -> list:
-    """Reorder (and, for ``concurrency-cap``/``weighted``, filter) the live plan
-    groups *items* by the configured per-repo selection strategy. The caller then
+    """Reorder (and, for ``concurrency-cap``, filter) the live plan groups
+    *items* by the configured per-repo selection strategy. The caller then
     pops ``result[0]``; an empty result means "idle this slot" (every candidate
     repo was filtered out).
 
@@ -88,9 +87,9 @@ def order_live_groups(
     * ``priority`` — repos are served in ``repo_order`` order; a repo not listed
       ranks last. ``repo_load`` breaks ties *within* a rank. A deep top-rank
       backlog can legitimately starve lower repos — that is the point of the mode.
-    * ``weighted`` — effective load = ``load / weight`` (``weights`` default 1), so
-      a higher weight wins more freed slots. A weight of 0 (or less) SUPPRESSES the
-      repo entirely — a "pause this repo" knob — dropping it from selection.
+    * ``weighted`` — DEPRECATED (spec 2026-09-20 D6, removal #2103): the product
+      weight it divided load by is read by nothing; it orders exactly like
+      ``priority``. Kept as a value so a stored config keeps working.
     * ``concurrency-cap`` — a repo whose active load is already ``>=`` its cap
       (``caps``; a repo absent from the map is uncapped) is dropped for this slot;
       the survivors are ordered ``balanced``. An empty result means every repo with
@@ -98,17 +97,11 @@ def order_live_groups(
     """
     load = repo_load or {}
 
-    if strategy == "priority":
+    if strategy in ("priority", "weighted"):
         order = repo_order or []
         rank = {r: i for i, r in enumerate(order)}
         return sorted(items, key=lambda it: (rank.get(repo_of(it), len(order)),
                                              load.get(repo_of(it), 0)))
-
-    if strategy == "weighted":
-        w = weights or {}
-        kept = [it for it in items if w.get(repo_of(it), 1) > 0]
-        return sorted(kept, key=lambda it: load.get(repo_of(it), 0)
-                      / w.get(repo_of(it), 1))
 
     if strategy == "concurrency-cap":
         c = caps or {}

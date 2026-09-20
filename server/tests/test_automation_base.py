@@ -100,6 +100,16 @@ def test_repo_number_map_rejects_bool_value():
         validate_config(_schema(), {"repo_weights": {"o/a": True}})
 
 
+def test_config_field_publishes_deprecated_default_false():
+    """``deprecated`` (spec 2026-09-20 D6) is a sibling of ``surface``: published on
+    every field so the web can hide a deprecated dial without a per-key list."""
+    from server.automations.base import ConfigField
+    f = ConfigField(key="k", label="K", type="int", default=1)
+    assert f.to_dict()["deprecated"] is False
+    assert ConfigField(key="k", label="K", type="int", default=1,
+                       deprecated=True).to_dict()["deprecated"] is True
+
+
 def test_status_to_dict():
     from server.automations.base import AutomationStatus
     s = AutomationStatus(text="watching 3 PRs", level="active", counts={"failing": 3})
