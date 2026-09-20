@@ -36,7 +36,7 @@ const GOVERNOR = {
   mode: 'monitor', modes: ['off', 'monitor', 'act'],
   status: { text: 'Monitoring', level: 'idle' as const, counts: null },
   enginePolicy: 'claude_only' as const, operatorTriggered: false,
-  configSchema: [], config: {}, schedule: null, lastActiveAt: null, activeSessions: 0,
+  configSchema: [], config: { push_level: 'steady', sessions_per_account: 2 }, schedule: null, lastActiveAt: null, activeSessions: 0,
   oversight: {
     responsibility: { id: 'execution', label: 'Execute and finish work' },
     scope: 'Fleet capacity', modeDescriptions: { monitor: 'Computes and publishes a plan without applying it.' },
@@ -44,12 +44,21 @@ const GOVERNOR = {
   },
 }
 
+const RUNNER = {
+  id: 'backlog-runner', name: 'Backlog runner', description: '', enabled: true,
+  mode: 'on', modes: ['off', 'on'],
+  status: { text: 'Idle', level: 'idle' as const, counts: null },
+  enginePolicy: 'claude_only' as const, operatorTriggered: false,
+  configSchema: [], config: { max_concurrent: 5, max_spawns_per_day: 10 }, schedule: null, lastActiveAt: null, activeSessions: 0,
+}
+
 const patchMutate = vi.fn()
+const patchMutateAsync = vi.fn().mockResolvedValue({})
 const reorderMutateAsync = vi.fn().mockResolvedValue({})
 const patchPolicyMutate = vi.fn()
 
 function setup({
-  patchState = mutationResult({ mutate: patchMutate }),
+  patchState = mutationResult({ mutate: patchMutate, mutateAsync: patchMutateAsync }),
   patchPolicyState = mutationResult({ mutate: patchPolicyMutate }),
   projectData,
   readout = CAPACITY,
@@ -60,7 +69,7 @@ function setup({
   readout?: typeof CAPACITY
 } = {}) {
   vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(readout) as never)
-  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult([GOVERNOR]) as never)
+  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult([GOVERNOR, RUNNER]) as never)
   // `usePatchAutomation()` is called twice per render (once for the
   // push-level radio, once for the governor-mode select — two SEPARATE hook
   // instances so each shows its own Saving/Saved/Failed status in the real
@@ -96,6 +105,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   updateProductPolicy.mockResolvedValue({})
   reorderMutateAsync.mockResolvedValue({})
+  patchMutateAsync.mockResolvedValue({})
 })
 
 describe('CapacityDetail', () => {
@@ -395,5 +405,52 @@ describe('CapacityDetail', () => {
     setup()
     expect(screen.getByLabelText('ViberPit pin')).toBeDisabled()
     expect(screen.getByLabelText('KinDash pin')).toBeEnabled()
+  })
+
+  it('the runner form seeds from the automation configs and sits in the one form (spec 2026-09-20 §5.2 item 3)', () => {
+    setup()
+    expect(screen.getByLabelText('Runner ceiling')).toHaveValue('5')
+    expect(screen.getByLabelText('Daily budget')).toHaveValue('10')
+    expect(screen.getByLabelText('Sessions per account')).toHaveValue('2')
+    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
+    expect(document.getElementById('runner')).not.toBeNull()
+  })
+
+  it('lowering the ceiling saves runner-first without a confirmation', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '4' } })
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalled())
+    expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'backlog-runner', body: { config: { max_concurrent: 4 } } })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const runnerCall = patchMutateAsync.mock.invocationCallOrder[0]
+    const pinCall = updateProductPolicy.mock.invocationCallOrder[0]
+    expect(runnerCall).toBeLessThan(pinCall)
+  })
+
+  it('raising the ceiling asks for confirmation, then saves', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/8/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Raise the ceiling' }))
+    await waitFor(() => expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'backlog-runner', body: { config: { max_concurrent: 8 } } }))
+  })
+
+  it('a ceiling above the global cap is refused before anything is sent', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '21' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Runner ceiling must not exceed the global cap (20)')).toBeInTheDocument()
+    expect(patchMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('sessions per account patches the governor', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Sessions per account'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'capacity-governor', body: { config: { sessions_per_account: 3 } } }))
   })
 })

@@ -25,6 +25,8 @@ import { useNow } from '@/hooks/useNow'
 import { sessionPath } from '@/session/sessionNavState'
 import { Badge } from '@/ui/Badge'
 import { Banner } from '@/ui/Banner'
+import { ConfirmDialog } from '@/ui/ConfirmDialog'
+import { Field } from '@/ui/Field'
 import { IconButton } from '@/ui/IconButton'
 import { Input } from '@/ui/Input'
 import { RadioGroup, type RadioOption } from '@/ui/RadioGroup'
@@ -34,10 +36,12 @@ import { Switch } from '@/ui/Switch'
 import { accountRowLine, buildCapacityStack } from './capacityStack'
 import { CapacityRowLabel } from './CapacityRowLabel'
 import { governorNotice } from './governorNotice'
+import { PIN_KEY, RUNNER_KEYS, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
 import { RowStatus, type MutationLike, type RowStatusProps } from './RowStatus'
 import { swapRanks } from './swapRanks'
 
 const CAPACITY_GOVERNOR_ID = 'capacity-governor'
+const BACKLOG_RUNNER_ID = 'backlog-runner'
 
 /** `{ status, error }` straight off a mutation object — every call site below
  *  is a plain TanStack Query mutation result, so this is never anything but
@@ -173,6 +177,12 @@ export function CapacityDetail() {
   const pushLevelStatus = mutationStatus(pushLevelPatch)
   const governorModeStatus = mutationStatus(governorModePatch)
   const governor = automations.data?.find((a) => a.id === CAPACITY_GOVERNOR_ID) ?? null
+  const runner = automations.data?.find((a) => a.id === BACKLOG_RUNNER_ID) ?? null
+  const runnerPatch = usePatchAutomation()
+  // The raise confirmation (spec 2026-09-20 §5.2 item 3): a promise the dialog
+  // resolves, so Save is genuinely suspended until the user answers — the same
+  // shape Settings › General uses for its archive-path move.
+  const [confirmRaise, setConfirmRaise] = useState<{ resolve: (ok: boolean) => void; to: number } | null>(null)
 
   const reorder = useReorderProject()
   const [rankStatus, setRankStatus] = useState<Record<string, RowStatusProps>>({})
@@ -210,20 +220,51 @@ export function CapacityDetail() {
     }
   }
 
-  // Ruling 12: the pin column is ONE form — a `Record<slug, string>` draft
-  // seeded from the readout, saved as one sequential PATCH per dirty row
-  // (stopping at the first failure), with the existing `SaveBar` doing the
-  // dirty/saving/saved chrome instead of a Save button per row.
-  const pinInitial = useMemo(
-    () => (readout ? Object.fromEntries(readout.products.map((p) => [p.slug, String(p.pin)])) : undefined),
-    [readout],
+  // Ruling 12 (extended, spec 2026-09-20 §5.2 item 3): the WHOLE page is ONE
+  // form — product pins plus the runner's and governor's Capacity-owned
+  // fields, namespaced by `runnerForm.ts` so a slug can never collide with a
+  // runner key. Runner/governor patches save first, then one sequential PATCH
+  // per dirty pin row (stopping at the first failure); the existing `SaveBar`
+  // does the dirty/saving/saved chrome for all of it.
+  const draftInitial = useMemo(
+    () => (readout ? seedCapacityDraft(readout, runner?.config ?? null, governor?.config ?? null) : undefined),
+    [readout, runner, governor],
   )
+  const currentRunner = readout ? {
+    ceiling: readout.runner.ceiling,
+    budget: runner && typeof runner.config.max_spawns_per_day === 'number' ? runner.config.max_spawns_per_day : null,
+    perAccount: governor && typeof governor.config.sessions_per_account === 'number' ? governor.config.sessions_per_account : null,
+    globalCap: readout.global.cap,
+  } : null
   const pinForm = useSettingsForm<Record<string, string>>({
-    initial: pinInitial,
+    initial: draftInitial,
+    // `useSettingsForm.doSave` awaits `beforeSave` OUTSIDE its own try/catch,
+    // so a throw here would escape instead of becoming `form.error`. Parsing
+    // instead happens as `save`'s first statement (below), where it DOES land
+    // in the form's own try/catch; this gate only ever opens the confirmation
+    // dialog, swallowing a validation error so `save` can surface it.
+    beforeSave: (draft) => {
+      if (!currentRunner) return true
+      let parsed
+      try {
+        parsed = parseRunnerDraft(draft, currentRunner)
+      } catch {
+        return true
+      }
+      if (!parsed.ceilingRaised || parsed.runner?.max_concurrent === undefined) return true
+      return new Promise<boolean>((resolve) => setConfirmRaise({ resolve, to: parsed.runner!.max_concurrent }))
+    },
     save: async (draft) => {
       if (!readout) return
+      // Runner and governor first (spec 2026-09-20 §5.2 item 3): a product 409
+      // below must not strand a ceiling change the user already confirmed.
+      if (currentRunner) {
+        const parsed = parseRunnerDraft(draft, currentRunner)
+        if (parsed.runner && runner) await runnerPatch.mutateAsync({ id: runner.id, body: { config: parsed.runner } })
+        if (parsed.governor && governor) await runnerPatch.mutateAsync({ id: governor.id, body: { config: parsed.governor } })
+      }
       for (const product of readout.products) {
-        const raw = draft[product.slug]
+        const raw = draft[PIN_KEY(product.slug)]
         if (raw === undefined) continue
         const name = product.name ?? product.slug
         // Fix round 2 / item 2: a cleared field is not "0" — `Number('')` is
@@ -362,6 +403,27 @@ export function CapacityDetail() {
       </ul>
 
       <div className="overflow-x-auto">
+        <fieldset id="runner" className="mb-4 grid gap-3 sm:grid-cols-3">
+          <legend className="mb-2 text-sm font-medium text-ink">Runner</legend>
+          <Field label="Runner ceiling" htmlFor="runner-ceiling"
+            help={`Most sessions the Backlog Runner may hold at once; a share of the global cap (${readout.global.cap}). Quota (push level) and the governor lower it, never raise it.`}>
+            <Input id="runner-ceiling" type="text" inputMode="numeric" size="sm"
+              value={pinForm.draft?.[RUNNER_KEYS.ceiling] ?? ''}
+              onChange={(e) => pinForm.set(RUNNER_KEYS.ceiling, e.target.value)} />
+          </Field>
+          <Field label="Daily budget" htmlFor="runner-budget"
+            help={runner ? 'Circuit-breaker: pause spawning past this many sessions per day.' : 'Backlog Runner is not registered'}>
+            <Input id="runner-budget" type="text" inputMode="numeric" size="sm" disabled={!runner}
+              value={pinForm.draft?.[RUNNER_KEYS.budget] ?? ''}
+              onChange={(e) => pinForm.set(RUNNER_KEYS.budget, e.target.value)} />
+          </Field>
+          <Field label="Sessions per account" htmlFor="runner-per-account"
+            help={governor ? 'Concurrent runner sessions one account can carry before its quota burns faster than it resets.' : 'Capacity Governor is not registered'}>
+            <Input id="runner-per-account" type="text" inputMode="numeric" size="sm" disabled={!governor}
+              value={pinForm.draft?.[RUNNER_KEYS.perAccount] ?? ''}
+              onChange={(e) => pinForm.set(RUNNER_KEYS.perAccount, e.target.value)} />
+          </Field>
+        </fieldset>
         <table id="products" className="w-full text-left" aria-label="Products">
           <thead>
             <tr className="text-xs font-medium text-ink-muted">
@@ -386,8 +448,8 @@ export function CapacityDetail() {
                 defect={readout.defects.find((d) => d.product === product.slug) ?? null}
                 rankStatus={rankStatus[product.slug] ?? { status: 'idle' }}
                 onMove={handleMove}
-                pinValue={pinForm.draft?.[product.slug] ?? String(product.pin)}
-                onPinChange={(value) => pinForm.set(product.slug, value)}
+                pinValue={pinForm.draft?.[PIN_KEY(product.slug)] ?? String(product.pin)}
+                onPinChange={(value) => pinForm.set(PIN_KEY(product.slug), value)}
               />
             ))}
           </tbody>
@@ -413,6 +475,16 @@ export function CapacityDetail() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmRaise !== null}
+        onClose={() => { confirmRaise?.resolve(false); setConfirmRaise(null) }}
+        onConfirm={() => { confirmRaise?.resolve(true); setConfirmRaise(null) }}
+        title="Raise the runner ceiling?"
+        description={`Raising the ceiling to ${confirmRaise?.to ?? ''} lets the Backlog Runner hold more sessions at once and spends account quota faster. Lowering it never interrupts a running session.`}
+        confirmLabel="Raise the ceiling"
+        tone="warning"
+      />
     </div>
   )
 }
