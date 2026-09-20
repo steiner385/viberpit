@@ -260,6 +260,12 @@ export function CapacityDetail() {
       // below must not strand a ceiling change the user already confirmed.
       if (currentRunner) {
         const parsed = parseRunnerDraft(draft, currentRunner)
+        // Fix round 1 (reviewer): a ceiling/per-account edit with no automation
+        // registered to receive it must fail loudly — silently skipping the
+        // PATCH while the pin loop below still runs made the SaveBar report
+        // success for a change the server never saw.
+        if (parsed.runner && !runner) throw new Error('Backlog Runner is not registered')
+        if (parsed.governor && !governor) throw new Error('Capacity Governor is not registered')
         if (parsed.runner && runner) await runnerPatch.mutateAsync({ id: runner.id, body: { config: parsed.runner } })
         if (parsed.governor && governor) await runnerPatch.mutateAsync({ id: governor.id, body: { config: parsed.governor } })
       }
@@ -406,8 +412,10 @@ export function CapacityDetail() {
         <fieldset id="runner" className="mb-4 grid gap-3 sm:grid-cols-3">
           <legend className="mb-2 text-sm font-medium text-ink">Runner</legend>
           <Field label="Runner ceiling" htmlFor="runner-ceiling"
-            help={`Most sessions the Backlog Runner may hold at once; a share of the global cap (${readout.global.cap}). Quota (push level) and the governor lower it, never raise it.`}>
-            <Input id="runner-ceiling" type="text" inputMode="numeric" size="sm"
+            help={runner
+              ? `Most sessions the Backlog Runner may hold at once; a share of the global cap (${readout.global.cap}). Quota (push level) and the governor lower it, never raise it.`
+              : 'Backlog Runner is not registered'}>
+            <Input id="runner-ceiling" type="text" inputMode="numeric" size="sm" disabled={!runner}
               value={pinForm.draft?.[RUNNER_KEYS.ceiling] ?? ''}
               onChange={(e) => pinForm.set(RUNNER_KEYS.ceiling, e.target.value)} />
           </Field>

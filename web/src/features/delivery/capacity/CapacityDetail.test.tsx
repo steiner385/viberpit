@@ -62,26 +62,30 @@ function setup({
   patchPolicyState = mutationResult({ mutate: patchPolicyMutate }),
   projectData,
   readout = CAPACITY,
+  automations = [GOVERNOR, RUNNER],
 }: {
   patchState?: ReturnType<typeof mutationResult>
   patchPolicyState?: ReturnType<typeof mutationResult>
   projectData?: { automationPolicyUpdatedAt: string | null }
   readout?: typeof CAPACITY
+  automations?: (typeof GOVERNOR | typeof RUNNER)[]
 } = {}) {
   vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(readout) as never)
-  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult([GOVERNOR, RUNNER]) as never)
-  // `usePatchAutomation()` is called twice per render (once for the
-  // push-level radio, once for the governor-mode select — two SEPARATE hook
-  // instances so each shows its own Saving/Saved/Failed status in the real
-  // component). A `vi.fn()` mock has no notion of "hook call position" the
-  // way React's real hook slots do, and `useSettingsForm`'s render-time state
-  // adjustment (seeding the pin form) makes React restart this component's
-  // render at least once before settling — so a `mockReturnValueOnce` chain
-  // keyed to "1st call = push level, 2nd = governor" silently drifts onto the
-  // wrong control once that restart consumes the first two slots. One shared
-  // state for both is the fixture this file can make honestly; the
-  // independence itself is what `usePatchAutomation` being called twice
-  // (asserted below) stands for.
+  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult(automations) as never)
+  // `usePatchAutomation()` is called THREE times per render (push-level
+  // radio, governor-mode select, and the runner/governor half of the one
+  // capacity form — three SEPARATE hook instances so the two status-bearing
+  // controls each show their own Saving/Saved/Failed rather than borrowing
+  // whichever the operator touched last). A `vi.fn()` mock has no notion of
+  // "hook call position" the way React's real hook slots do, and
+  // `useSettingsForm`'s render-time state adjustment (seeding the form draft)
+  // makes React restart this component's render at least once before
+  // settling — so a `mockReturnValueOnce` chain keyed to call order silently
+  // drifts onto the wrong control once that restart consumes the first few
+  // slots. One shared state for all three is the fixture this file can make
+  // honestly; the independence itself is what the "two independent
+  // usePatchAutomation() instances" test below (checking a multiple-of-2
+  // raw count from the two status-bearing controls) stands for.
   vi.mocked(hooks.usePatchAutomation).mockReturnValue(patchState as never)
   vi.mocked(hooks.useUpdateProductPolicy).mockReturnValue(patchPolicyState as never)
   vi.mocked(hooks.useProject).mockReturnValue(queryResult(projectData ?? { automationPolicyUpdatedAt: null }) as never)
@@ -452,5 +456,12 @@ describe('CapacityDetail', () => {
     fireEvent.change(screen.getByLabelText('Sessions per account'), { target: { value: '3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'capacity-governor', body: { config: { sessions_per_account: 3 } } }))
+  })
+
+  it('with no Backlog Runner registered the ceiling and budget fields are disabled and nothing is sent', async () => {
+    setup({ automations: [GOVERNOR] })
+    expect(screen.getByLabelText('Runner ceiling')).toBeDisabled()
+    expect(screen.getByLabelText('Daily budget')).toBeDisabled()
+    expect(screen.getByLabelText('Sessions per account')).not.toBeDisabled()
   })
 })
