@@ -227,3 +227,49 @@ def test_deploy_ctx_skips_disabled_and_unconfigured(_clean_deploy_tables):
         assert deploy_ctx == {} and timeline_ctx == {}
 
     asyncio.run(run())
+
+
+def test_deploy_ctx_synthesizes_the_controllers_own_repo(_clean_deploy_tables):
+    """#1548: the self-deploy controller's repo has no RepoDeployConfig, so its
+    Deploy lane read "not wired" even while the banner offered "Deploy now" for
+    the same repo. The controller's own /status pending block fills the gap."""
+    from server.api.pipeline import _deploy_ctx
+
+    async def run():
+        orch = _FakeOrch({})
+        controller_status = {"repo": "o/self-deployed", "pending": {
+            "liveSha": "cafef00d", "deployableCount": 2,
+            "commits": [{"sha": "a"}, {"sha": "b"}],
+        }}
+        deploy_ctx, timeline_ctx = await _deploy_ctx(
+            orch, {}, controller_status=controller_status)
+        assert deploy_ctx == {"o/self-deployed": {
+            "envs": [{"name": "prod-edge", "liveSha": "cafef00d", "reachable": True}],
+            "awaitingQa": 0,
+            "awaitingProd": 2,
+        }}
+        assert timeline_ctx == {}
+
+    asyncio.run(run())
+
+
+def test_deploy_ctx_prefers_a_real_config_over_the_controller_synthesis(_clean_deploy_tables):
+    """A repo with its own RepoDeployConfig keeps the env-watcher-derived block —
+    the controller's synthesis only fills a repo no config already claimed."""
+    from server.api.pipeline import _deploy_ctx
+
+    async def run():
+        async with db_session() as db:
+            db.add(RepoDeployConfig(
+                repo="o/r", environments='[{"name":"qa","healthUrl":"http://x/health"}]',
+                enabled=True,
+            ))
+        env_cache = {"o/r": [{"name": "qa", "liveSha": "real", "reachable": True}]}
+        orch = _FakeOrch(env_cache)
+        controller_status = {"repo": "o/r", "pending": {
+            "liveSha": "synthetic", "deployableCount": 9, "commits": [],
+        }}
+        deploy_ctx, _ = await _deploy_ctx(orch, {}, controller_status=controller_status)
+        assert deploy_ctx["o/r"]["envs"] == env_cache["o/r"]
+
+    asyncio.run(run())
