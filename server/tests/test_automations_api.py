@@ -446,3 +446,18 @@ def test_an_unreachable_github_still_persists_the_operators_repo_list():
                     json={"config": {"enabled_repos": list(repos)}})
         assert r.status_code == 200
         assert r.json()["config"]["enabled_repos"] == repos
+
+
+def test_config_schema_publishes_the_editing_surface():
+    """spec 2026-09-20 D7: a field owned by Delivery → Capacity says so on the wire,
+    so the generic Config tab can render it read-only instead of as a second editor."""
+    with _client() as c:
+        rows = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
+        runner = {f["key"]: f for f in rows["backlog-runner"]["configSchema"]}
+        assert runner["max_concurrent"]["surface"] == "capacity"
+        assert runner["max_concurrent"]["label"] == "Runner ceiling"
+        assert runner["max_spawns_per_day"]["surface"] == "capacity"
+        assert runner["max_spawns_per_day"]["label"] == "Daily budget"
+        assert runner["max_issues_per_pr"]["surface"] == "config"
+        governor = {f["key"]: f for f in rows["capacity-governor"]["configSchema"]}
+        assert {governor["push_level"]["surface"], governor["sessions_per_account"]["surface"]} == {"capacity"}

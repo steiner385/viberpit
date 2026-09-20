@@ -218,6 +218,7 @@ def test_the_automation_surface_is_claude_only_with_off_monitor_act():
     assert a.modes == ("off", "monitor", "act")
     assert a.engine_policy is EnginePolicy.CLAUDE_ONLY
     assert {f.key for f in a.config_schema} == {"push_level", "sessions_per_account"}
+    assert {f.surface for f in a.config_schema} == {"capacity"}
 
 
 def test_status_is_idle_with_no_observation():

@@ -26,11 +26,15 @@ class ConfigField:
     #: write path 422s the same way) and published in ``to_dict`` (so the browser
     #: renders the same floor on the number input instead of hard-coding one).
     min: int | None = None
+    # Which page edits this field (spec 2026-09-20 D7). "config": the automation's
+    # generic Config tab. "capacity": Delivery → Capacity owns it, and the Config
+    # tab renders it read-only with a link — one editor per dial.
+    surface: str = "config"
 
     def to_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "type": self.type,
                 "default": self.default, "help": self.help, "choices": self.choices,
-                "min": self.min}
+                "min": self.min, "surface": self.surface}
 
 
 ConfigSchema = list[ConfigField]

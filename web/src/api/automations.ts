@@ -36,6 +36,9 @@ export interface ConfigField {
    *  it here, so the number input renders the same floor instead of hard-coding
    *  one. Optional so older fixtures still compile. */
   min?: number | null
+  /** Which page edits the field (spec 2026-09-20 D7). `'capacity'`: Delivery → Capacity
+   *  owns it and the Config tab renders it read-only. Optional so older fixtures compile. */
+  surface?: 'config' | 'capacity'
 }
 
 export interface Automation {
