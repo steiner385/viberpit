@@ -175,3 +175,55 @@ def test_get_accounts_carries_the_effective_and_default_reserve():
     assert by_name["plain"]["pushLevelReservePct"] == 20.0
     assert by_name["kept"]["effectiveReservePct"] == 60.0
     assert by_name["kept"]["pushLevelReservePct"] == 20.0
+
+
+async def _read_config_max(self):
+    return ("monitor", {"push_level": "max", "sessions_per_account": 2})
+
+
+async def _read_config_boom(self):
+    raise RuntimeError("boom")
+
+
+def test_get_accounts_reserve_default_follows_the_governor_push_level(monkeypatch):
+    """The other test in this file (`..._carries_the_effective_and_default_reserve`)
+    passes even if the governor seam is never read at all: a fresh governor row's
+    push level is "steady", which is also `_push_level()`'s degrade fallback. Force
+    the seam to answer "max" (reserve 5) so a regression back to a hardcoded
+    "steady" default would actually fail this test."""
+    from server.sessions.orchestrator import SessionOrchestrator
+    monkeypatch.setattr(SessionOrchestrator, "_capacity_governor_read_config", _read_config_max)
+    with temp_env():
+        _seed_slot("blank")
+        _seed_slot("overridden")
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
+            client = _make_client()
+        with client:
+            client.patch("/api/accounts/overridden", json={"weeklyReservePct": 60},
+                         headers=IDENTITY_HEADERS)
+            response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["blank"]["effectiveReservePct"] == 5.0
+    assert by_name["blank"]["pushLevelReservePct"] == 5.0
+    assert by_name["overridden"]["effectiveReservePct"] == 60.0
+    assert by_name["overridden"]["pushLevelReservePct"] == 5.0
+
+
+def test_get_accounts_reserve_default_degrades_to_steady_when_the_governor_read_fails(monkeypatch, caplog):
+    """A config-read exception must degrade the reserve default to steady (20%),
+    never fail the whole accounts list, and must log `accounts.push_level_read_failed`
+    so a wedged governor read is visible without breaking GET /api/accounts."""
+    from server.sessions.orchestrator import SessionOrchestrator
+    monkeypatch.setattr(SessionOrchestrator, "_capacity_governor_read_config", _read_config_boom)
+    with temp_env():
+        _seed_slot("plain")
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
+            client = _make_client()
+        with client:
+            with caplog.at_level("WARNING"):
+                response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["plain"]["pushLevelReservePct"] == 20.0
+    assert "accounts.push_level_read_failed" in caplog.text

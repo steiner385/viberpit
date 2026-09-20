@@ -36,7 +36,7 @@ from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noq
                             QuotaWindow, anthropic_snapshot, unknown_snapshot)
 from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
-from server.automations.capacity_plan import RESERVE_PCT, push_level_of
+from server.automations.capacity_plan import RESERVE_PCT, normalise_push_level, push_level_of
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
 from server.codex.auth_types import (
@@ -250,7 +250,8 @@ def effective_reserve_pct(acct: dict, push_level: str) -> float:
     override = acct.get("weeklyReservePct")
     if override is not None:
         return float(override)
-    return float(RESERVE_PCT.get(push_level, RESERVE_PCT["steady"]))
+    level = normalise_push_level(push_level)
+    return float(RESERVE_PCT[level])
 
 
 async def account_headroom(orch, *, push_level: str,
@@ -454,8 +455,9 @@ def _account_response_from_info(
     effective_reserve_pct_value = None
     push_level_reserve_pct = None
     if push_level is not None:
-        effective_reserve_pct_value = effective_reserve_pct(acct, push_level)
-        push_level_reserve_pct = float(RESERVE_PCT[push_level])
+        level = normalise_push_level(push_level)
+        effective_reserve_pct_value = effective_reserve_pct(acct, level)
+        push_level_reserve_pct = float(RESERVE_PCT[level])
     return _account_response(
         acct["name"],
         acct.get("status", "unknown"),
@@ -707,7 +709,13 @@ async def get_accounts(
     # worker-role daemon) or a DB blip degrades to steady, never a 500.
     push_level = await _push_level(orch)
 
-    # Build per-account weekly reserve map for display ranking.
+    # This map carries only EXPLICIT OVERRIDES — exactly what `pick_account` hands
+    # `rank_accounts` (D12: the push level's default never steers a human's own
+    # pick), so the displayed "#N next" mirrors real selection. The governor's
+    # per-account availability lives in `account_headroom`, which DOES apply the
+    # push level's default via `effective_reserve_pct`. Spec 2026-09-20 §8 row 5's
+    # "delete the display-only reserve ranking path" is satisfied by the override
+    # reaching the plan, not by removing this map.
     reserves = {a["name"]: a["weeklyReservePct"] for a in accounts_info
                 if a.get("weeklyReservePct") is not None}
     extra_allowed = frozenset(a["name"] for a in accounts_info

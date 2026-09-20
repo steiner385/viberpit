@@ -156,7 +156,7 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     floored = budget["rawFleet"] < inputs.runner_in_flight
     if fleet == 0 and limiting == "account":
         resets = sorted(a.next_reset_at for a in inputs.accounts if a.next_reset_at)
-        reasons.append("no account has headroom under the %d%% reserve%s" % (
+        reasons.append("no account has headroom under its reserve (push level %d%%)%s" % (
             reserve, f"; earliest reset {resets[0]}" if resets else ""))
     else:
         reason = (f"fleet {fleet}: limited by {limiting} "

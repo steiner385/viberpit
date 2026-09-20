@@ -262,7 +262,7 @@ def test_binding_falls_back_to_no_account_headroom():
 
     r = asyncio.run(run())
     assert r["binding"] == {"layer": "account", "code": "no_account_headroom",
-                            "text": "no account has headroom under the 20% reserve"}
+                            "text": "no account has headroom under its reserve (push level 20%)"}
 
 
 def test_binding_falls_back_to_hosts_full():

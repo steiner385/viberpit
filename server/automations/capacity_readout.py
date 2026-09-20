@@ -203,7 +203,7 @@ async def build_readout(src: CapacitySources) -> dict:
         if accounts_available == 0:
             reset_note = f"; earliest reset {resets[0]}" if resets else ""
             binding = {"layer": "account", "code": "no_account_headroom",
-                       "text": f"no account has headroom under the {reserve}% reserve{reset_note}"}
+                       "text": f"no account has headroom under its reserve (push level {reserve}%){reset_note}"}
         elif not any(h["enabled"] and h["healthy"] is True and (h["free"] is None or h["free"] > 0)
                      for h in hosts):
             binding = {"layer": "host", "code": "hosts_full",
