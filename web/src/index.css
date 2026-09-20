@@ -23,6 +23,21 @@
    device chrome. */
 @custom-variant short (@media (max-height: 580px));
 
+/* `narrow:` — the viewport is too narrow (a phone in portrait) to afford the
+   session header's full-width chrome alongside its title.
+
+   Back, the prev/next chevrons, the status pill and the actions menu all sit
+   in `SessionHeader`'s one row; at a real 393px-wide phone with a long title
+   and a distinct goal (issue #1400) their combined width left the title with
+   ~1 character. `narrow:hidden`/`narrow:` swaps that chrome for icon-only or
+   capped-width variants so the title gets the room back — the same "shed
+   optional chrome via a variant" convention as `short:` above, but for width.
+
+   430px covers the widest common phones in portrait (iPhone 14 Pro Max @430)
+   while staying well under a small tablet, so it never fires for a real
+   tablet or desktop window. */
+@custom-variant narrow (@media (max-width: 430px));
+
 /* ───────────────────────────────────────────────────────────────────────────
    Design tokens — the ONLY place a color, layer, radius, target size or type
    size is defined (spec: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md).

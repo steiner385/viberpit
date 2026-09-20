@@ -27,7 +27,13 @@ export function SessionGoalText({ goal, source, title }: Props) {
   return (
     <span
       data-testid="session-goal"
-      className="min-w-0 flex-shrink truncate text-xs text-ink-muted"
+      // Capped (not just `flex-shrink`) on a narrow phone: a long goal beside a
+      // long title would otherwise shrink roughly proportionally to the
+      // title's own share, still starving it (issue #1400). The cap gives the
+      // title first claim on the row; the full goal stays one tap away via
+      // the native `title` tooltip below (desktop) — narrow's own regression
+      // test asserts this span never exceeds the cap.
+      className="min-w-0 flex-shrink truncate narrow:max-w-[5rem] text-xs text-ink-muted"
       title={`Session goal (${label}): ${text}`}
     >
       {text}

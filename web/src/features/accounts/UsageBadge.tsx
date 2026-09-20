@@ -175,13 +175,15 @@ interface StatusPillProps {
   usageStalled?: boolean
   /** Session.pausedUntil — earliest known reset, for the pill's time suffix. */
   pausedUntil?: string | null
+  /** Forwarded to the primitive — see `ui/StatusPill`'s doc comment. */
+  hideLabelNarrow?: boolean
 }
 
-export function StatusPill({ status, className, interruptedByRestart, usageStalled, pausedUntil }: StatusPillProps) {
+export function StatusPill({ status, className, interruptedByRestart, usageStalled, pausedUntil, hideLabelNarrow }: StatusPillProps) {
   // Account statuses have their own vocabulary; session statuses use the shared map.
   const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
   if (account) {
-    return <Pill label={account.label} Icon={account.Icon} tone={account.tone} className={className} />
+    return <Pill label={account.label} Icon={account.Icon} tone={account.tone} className={className} hideLabelNarrow={hideLabelNarrow} />
   }
   const p = statusPresentation(status, { interruptedByRestart, usageStalled, pausedUntil })
   return (
@@ -191,6 +193,7 @@ export function StatusPill({ status, className, interruptedByRestart, usageStall
       tone={TIER_TONE[p.tier]}
       pulse={p.tier === 'needs-you' || p.tier === 'error'}
       className={className}
+      hideLabelNarrow={hideLabelNarrow}
     />
   )
 }

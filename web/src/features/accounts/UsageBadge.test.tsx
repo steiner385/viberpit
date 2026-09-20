@@ -111,4 +111,18 @@ describe('StatusPill — session status tiers', () => {
     expect(screen.getByText('Your turn')).toBeInTheDocument()
     expect(container.querySelector('.text-success')).toBeFalsy()
   })
+
+  // Issue #1400: SessionHeader opts a pill into this so its label sheds on a
+  // narrow phone without losing the accessible name — see ui/StatusPill.tsx.
+  it('keeps the visible label by default (a flex-wrap row like AccountsManager sheds width by wrapping instead)', () => {
+    render(<StatusPill status="done" />)
+    expect(screen.getByText('Your turn').className).not.toMatch(/narrow:hidden/)
+  })
+
+  it('hides the label below `narrow:` when opted in, keeping the accessible name and a hover title', () => {
+    render(<StatusPill status="done" hideLabelNarrow />)
+    const pill = screen.getByLabelText('Status: Your turn')
+    expect(pill).toHaveAttribute('title', 'Your turn')
+    expect(screen.getByText('Your turn').className).toMatch(/narrow:hidden/)
+  })
 })
