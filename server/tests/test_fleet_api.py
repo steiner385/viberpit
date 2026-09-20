@@ -2,6 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+
+
+def _fake_request():
+    """A stand-in for FastAPI's injected ``Request`` when a handler is called
+    directly (not through a TestClient). ``request.app.state.sessions`` reads
+    as absent, so ``drain_if_raised`` no-ops — these tests exercise the
+    handler's own behavior, not the queue drain (covered separately by
+    ``test_raising_a_host_cap_drains_the_session_queue``)."""
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
 
 def test_host_to_wire_shape():
@@ -117,7 +127,7 @@ def test_create_and_list_host(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ch.db'}")
         await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443"),
-                          _identity=_FakeIdentity())
+                          _fake_request(), _identity=_FakeIdentity())
         result = await list_hosts(_identity=_FakeIdentity())
         return result["hosts"]
 
@@ -140,8 +150,8 @@ def test_create_host_409_on_duplicate(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'dup.db'}")
         body = HostCreate(name="rocky", endpoint="https://rocky:9443")
-        await create_host(body, _identity=_FakeIdentity())
-        return await create_host(body, _identity=_FakeIdentity())
+        await create_host(body, _fake_request(), _identity=_FakeIdentity())
+        return await create_host(body, _fake_request(), _identity=_FakeIdentity())
 
     try:
         asyncio.run(run())
@@ -161,8 +171,8 @@ def test_delete_host(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'del.db'}")
         await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443"),
-                          _identity=_FakeIdentity())
-        await delete_host("rocky", _identity=_FakeIdentity())
+                          _fake_request(), _identity=_FakeIdentity())
+        await delete_host("rocky", _fake_request(), _identity=_FakeIdentity())
         result = await list_hosts(_identity=_FakeIdentity())
         return result["hosts"]
 
@@ -183,8 +193,9 @@ def test_put_max_sessions_null_clears_an_existing_cap(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'clear.db'}")
         await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443",
-                                     maxSessions=4), _identity=_FakeIdentity())
-        return await update_host("rocky", HostPatch(maxSessions=None), _identity=_FakeIdentity())
+                                     maxSessions=4), _fake_request(), _identity=_FakeIdentity())
+        return await update_host("rocky", HostPatch(maxSessions=None), _fake_request(),
+                                 _identity=_FakeIdentity())
 
     wire = asyncio.run(run())
     assert wire["maxSessions"] is None
@@ -201,7 +212,7 @@ def test_put_empty_body_still_400s():
         pass
 
     try:
-        asyncio.run(update_host("rocky", HostPatch(), _identity=_FakeIdentity()))
+        asyncio.run(update_host("rocky", HostPatch(), _fake_request(), _identity=_FakeIdentity()))
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 400
@@ -219,7 +230,7 @@ def test_delete_host_404_unknown(tmp_path):
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'del2.db'}")
-        return await delete_host("ghost", _identity=_FakeIdentity())
+        return await delete_host("ghost", _fake_request(), _identity=_FakeIdentity())
 
     try:
         asyncio.run(run())
@@ -272,3 +283,28 @@ def test_engine_state_is_not_operator_writable():
     from server.api.fleet import sanitize_patch
 
     assert sanitize_patch({"engines": {"codex": {"available": True}}}) == {}
+
+
+# --------------------------------------------------------------- queue drain
+
+
+def test_raising_a_host_cap_drains_the_session_queue():
+    """Physical ceiling = Σ host caps, so a host cap edit is a global-cap edit and must
+    fill freed slots exactly as a settings PUT does (spec 2026-09-20 D3)."""
+    from unittest.mock import AsyncMock, patch
+
+    from server.tests.test_settings import IDENTITY_HEADERS, _client
+
+    with _client() as client:
+        r = client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                        json={"name": "rocky", "endpoint": "https://rocky:9443", "maxSessions": 4})
+        assert r.status_code == 201, r.text
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            client.put("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS, json={"maxSessions": 8})
+            assert drain.await_count == 1
+            client.put("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS, json={"maxSessions": 6})
+            assert drain.await_count == 1, "lowering a cap frees nothing"
+            client.put("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS, json={"enabled": False})
+            assert drain.await_count == 1
+            client.put("/api/fleet/hosts/rocky", headers=IDENTITY_HEADERS, json={"enabled": True})
+            assert drain.await_count == 2, "re-enabling a capped host restores its slots"
