@@ -433,6 +433,24 @@ def test_put_max_active_below_one_after_a_valid_value_leaves_it_intact():
         assert get_resp.json()["maxActiveSessions"] == 3
 
 
+def test_put_with_an_invalid_sibling_field_persists_nothing_and_does_not_drain():
+    """The cap commit must come AFTER every validation: a 422 on another field
+    leaves the cap untouched and fires no drain."""
+    from unittest.mock import AsyncMock, patch
+
+    with _client() as client:
+        for name, cap in (("dobby", 4), ("rocky", 6)):
+            client.post("/api/fleet/hosts", headers=IDENTITY_HEADERS,
+                        json={"name": name, "endpoint": f"https://{name}:9443", "maxSessions": cap})
+        client.put("/api/settings", headers=IDENTITY_HEADERS, json={"maxActiveSessions": 3})
+        with patch.object(client.app.state.sessions, "maybe_start_queued", new_callable=AsyncMock) as drain:
+            resp = client.put("/api/settings", headers=IDENTITY_HEADERS,
+                              json={"maxActiveSessions": 8, "modelApprovalAction": "bogus"})
+            assert resp.status_code == 422, resp.text
+            drain.assert_not_awaited()
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["maxActiveSessions"] == 3
+
+
 # ---------------------------------------------------------------------------
 # effectiveDefaults.globalCap (spec 2026-09-20 D3)
 # ---------------------------------------------------------------------------

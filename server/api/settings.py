@@ -218,21 +218,6 @@ async def put_settings_row(
                     "code": "archive_move_failed", "moved": moved, "failed": failed, "total": total,
                 })
         row.archive_home = new_home
-    if "maxActiveSessions" in body.model_fields_set:
-        if body.maxActiveSessions is not None and body.maxActiveSessions < 1:
-            raise HTTPException(status_code=422, detail="maxActiveSessions must be >= 1 or null")
-        before = await read_global_cap(db)
-        row.max_active_sessions = body.maxActiveSessions
-        await db.flush()
-        # Commit now, before the drain task is created: `get_db`'s commit only
-        # runs after this handler returns, but `drain_if_raised` schedules the
-        # drain as a background task immediately, which opens its OWN db session
-        # via `maybe_start_queued` — on an uncommitted row that fresh session
-        # would still read the OLD cap and admit nothing (M5). The later commit
-        # on this now-clean session is then a no-op.
-        await db.commit()
-        # The EFFECTIVE cap rose (not merely the typed number): fill the new slots.
-        drain_if_raised(getattr(request.app.state, "sessions", None), before, await read_global_cap(db))
     from server.sessions.model_policy import VALID_ACTIONS
     if "modelApprovalAction" in body.model_fields_set:
         if body.modelApprovalAction is not None and body.modelApprovalAction not in VALID_ACTIONS:
@@ -246,5 +231,24 @@ async def put_settings_row(
         row.assistant_model = body.assistantModel
     if "assistantOperatorTools" in body.model_fields_set:
         row.assistant_operator_tools = body.assistantOperatorTools
+    # LAST, after every other field above has had its chance to raise: this
+    # block commits (not merely flushes), which is this handler's one point of
+    # no return. `get_db`'s deferred commit made the whole PUT atomic before
+    # M5's fix — an explicit early commit here is required so the drain's
+    # background task (which opens its OWN db session) reads the new cap
+    # rather than the pre-commit one, but committing BEFORE a sibling field's
+    # validation (e.g. modelApprovalAction) would persist the cap and fire the
+    # drain moments before an unrelated 422 aborted the rest of the request.
+    # Keeping this block last means every other field's HTTPException has
+    # already fired by the time anything is committed.
+    if "maxActiveSessions" in body.model_fields_set:
+        if body.maxActiveSessions is not None and body.maxActiveSessions < 1:
+            raise HTTPException(status_code=422, detail="maxActiveSessions must be >= 1 or null")
+        before = await read_global_cap(db)
+        row.max_active_sessions = body.maxActiveSessions
+        await db.flush()
+        await db.commit()
+        # The EFFECTIVE cap rose (not merely the typed number): fill the new slots.
+        drain_if_raised(getattr(request.app.state, "sessions", None), before, await read_global_cap(db))
     await db.flush()
     return _to_dict(row, await read_global_cap(db))
