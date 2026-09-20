@@ -109,7 +109,7 @@ ceiling = 6
 id = "branch-prefix"
 pattern = '\bccswitch/'
 issue = 1369
-ceiling = 217
+ceiling = 213
 
 [[allow]]
 id = "repo-namespace"

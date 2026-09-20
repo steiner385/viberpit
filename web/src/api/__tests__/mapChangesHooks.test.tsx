@@ -40,7 +40,7 @@ function makeClient() {
 }
 
 const pointer: MapChangesPointer = {
-  branch: 'ccswitch/map-changes/kindash',
+  branch: 'pm/map-changes-kindash',
   prNumber: 42,
   prUrl: 'https://github.com/steiner385/kindash/pull/42',
   status: 'open',
