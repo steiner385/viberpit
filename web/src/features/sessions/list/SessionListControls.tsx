@@ -173,7 +173,9 @@ export function SessionListControls<G extends string = GroupBy, S extends string
               type="button"
               onClick={() => filters.onChange(NO_FILTERS)}
               className={cn(
-                'text-xs rounded-md px-2 py-1 font-medium',
+                'text-xs rounded-md px-2 py-1 font-medium inline-flex items-center',
+                // Same touch/hover split as `listControlClass` — see there for why.
+                'min-h-11 [@media(hover:hover)]:min-h-0',
                 'text-accent hover:underline',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}

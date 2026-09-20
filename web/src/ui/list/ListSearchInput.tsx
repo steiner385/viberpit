@@ -36,7 +36,14 @@ export function ListSearchInput({
           type="button"
           aria-label="Clear search"
           onClick={() => onChange('')}
-          className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-ink-muted hover:text-ink"
+          className={cn(
+            'absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center',
+            // Same touch/hover split as `listControlClass` — a 14px glyph stays
+            // visually unchanged; the invisible hit area grows to 44px square
+            // on a coarse pointer and shrinks back off for a desktop mouse.
+            'min-h-11 min-w-11 [@media(hover:hover)]:min-h-0 [@media(hover:hover)]:min-w-0 [@media(hover:hover)]:p-0.5',
+            'text-ink-muted hover:text-ink',
+          )}
         >
           <X size={14} aria-hidden="true" />
         </button>
