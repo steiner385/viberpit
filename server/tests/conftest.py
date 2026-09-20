@@ -237,6 +237,30 @@ def _no_ambient_session_daemon(request, monkeypatch):
     )
 
 
+# A test that starts a real SessionOrchestrator and drives an automation loop
+# (backlog runner e2e, pr-doctor, ...) would otherwise have
+# SessionOrchestrator._automation_create_session try a REAL loopback HTTP call to
+# 127.0.0.1:<port> (server/sessions/internal_dispatch.py) on every automation
+# spawn. On a dev box actually running ViberPit that is a live production edge —
+# the exact ambient-daemon risk _no_ambient_session_daemon above guards against,
+# just one layer up (HTTP rather than the UDS/RPC socket). Default the feature off
+# for every test; the handful that exercise it explicitly set the env var
+# themselves within the test body (get_settings() is uncached, so that always
+# wins for its duration — see the DB-URL note on `isolated_db` for the same trick).
+_INTERNAL_DISPATCH_TEST_MODULES = (
+    "test_internal_dispatch", "test_internal_sessions_api",
+    "test_automation_create_session_routing", "test_internal_token",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_automation_host_routing(request, monkeypatch):
+    modname = request.node.module.__name__.rsplit(".", 1)[-1]
+    if modname in _INTERNAL_DISPATCH_TEST_MODULES:
+        return
+    monkeypatch.setenv("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "false")
+
+
 @pytest.fixture(autouse=True)
 def _reset_helper_call_breakers():
     # The background-helper backoff/circuit-breaker (server.sessions.helper_call)

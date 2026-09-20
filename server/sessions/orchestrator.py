@@ -1008,7 +1008,7 @@ class SessionOrchestrator:
         # in-memory set. See _on_pr_change.
         from server.automations.context import AutomationContext
         self._pr_doctor_ctx = AutomationContext(
-            "pr-doctor", create_session=self.create_session)
+            "pr-doctor", create_session=self._automation_create_session)
         # Keep background tasks alive; durable target ownership excludes overlaps.
         self._consolidation_tasks: set[asyncio.Task] = set()
         # Async manual pr-doctor triggers (issue #668): the slow clone→assess→
@@ -1038,7 +1038,7 @@ class SessionOrchestrator:
         # in-flight/account/PR-status/config/session-ended probes.
         from server.automations.backlog_runner import BacklogRunnerLoop
         self._backlog_ctx = AutomationContext(
-            "backlog-runner", create_session=self.create_session)
+            "backlog-runner", create_session=self._automation_create_session)
         self._backlog_loop = BacklogRunnerLoop(
             self._backlog_ctx,
             select_batch=self._backlog_select_batch,
@@ -1093,7 +1093,7 @@ class SessionOrchestrator:
         # no-op sweep.
         from server.automations.sdlc_intake import SdlcIntakeLoop
         self._sdlc_intake_ctx = AutomationContext(
-            "sdlc-intake", create_session=self.create_session)
+            "sdlc-intake", create_session=self._automation_create_session)
         self._sdlc_intake_loop = SdlcIntakeLoop(
             self._sdlc_intake_ctx,
             read_config=self._sdlc_intake_read_config,
@@ -1174,9 +1174,9 @@ class SessionOrchestrator:
         # No polling loop in phase 2 — the /propose-map and /classify API routes
         # invoke these seams directly (phase 3 adds the pm-triage cadence).
         self._pm_onboard_ctx = AutomationContext(
-            "pm-onboard", create_session=self.create_session)
+            "pm-onboard", create_session=self._automation_create_session)
         self._pm_classify_ctx = AutomationContext(
-            "pm-classify", create_session=self.create_session)
+            "pm-classify", create_session=self._automation_create_session)
         # PM Triage control loop (design §6): the continuous curation loop —
         # auto-link mechanical PRs, classify the new (REUSING the phase-2
         # ``pm_classify_run`` session path), cluster map drift into a map-diff PR
@@ -1214,7 +1214,7 @@ class SessionOrchestrator:
         # + the shared backlog helpers (healthy-account, ensure_clone, PR-poller).
         from server.automations.sdlc_synthesizer import SdlcSynthesizerLoop
         self._sdlc_synth_ctx = AutomationContext(
-            "sdlc-synthesizer", create_session=self.create_session)
+            "sdlc-synthesizer", create_session=self._automation_create_session)
         self._sdlc_synthesizer_loop = SdlcSynthesizerLoop(
             self._sdlc_synth_ctx,
             list_initiatives=self._sdlc_list_initiatives,
@@ -1259,7 +1259,7 @@ class SessionOrchestrator:
         from server.automations.control_band_monitor import ControlBandMonitorLoop
         from server.sdlc import triage_store as _triage_store
         self._control_band_ctx = AutomationContext(
-            "control-band-monitor", create_session=self.create_session)
+            "control-band-monitor", create_session=self._automation_create_session)
         self._control_band_loop = ControlBandMonitorLoop(
             self._control_band_ctx,
             read_config=self._control_band_read_config,
@@ -2967,6 +2967,40 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("automation.launch_uncertainty_record_failed")
             raise
+
+    async def _automation_create_session(self, **kwargs) -> SessionRecord:
+        """The create path every fleet-global automation loop binds instead of
+        ``self.create_session`` directly (spec: automation dispatch balance,
+        2026-09-20; see the ~8 ``AutomationContext(..., create_session=...)`` sites
+        in ``start()``).
+
+        Calling ``self.create_session`` straight from here — what this daemon did
+        before — spawns unconditionally on THIS host: the automation loop lives
+        inside whichever daemon has the primary role (``daemon_role() ==
+        "primary"``, gated at ``start()`` ~line 2172), and that call never consulted the edge's
+        capacity-ranked ``FleetOrchestrator``/``rank_hosts`` (server/sessions/
+        fleet.py) at all — it is the one create path in the app that didn't. This
+        method instead asks the primary's own co-located edge to place the session
+        (server/sessions/internal_dispatch.py), so an automation-originated session
+        is ranked across hosts exactly like a human/API dispatch.
+
+        Falls back to the direct local spawn — today's behaviour — when the
+        feature is off or the edge is unreachable (a TRANSPORT failure only; a
+        genuine refusal from the edge, e.g. ``AllAccountsBusy``, is not a fallback
+        trigger — it is the same answer a local call would give, reconstructed to
+        the same exception type so `except AllAccountsBusy` call sites in the
+        automations keep working unchanged).
+        """
+        from server.config import get_settings
+        if not get_settings().automation_host_routing_enabled:
+            return await self.create_session(**kwargs)
+        from server.sessions.internal_dispatch import EdgeUnreachable, create_via_edge
+        try:
+            return await create_via_edge(port=get_settings().port, **kwargs)
+        except EdgeUnreachable as exc:
+            log.warning("automation_create_session: edge unreachable (%s) — "
+                        "spawning locally on %s instead", exc, self_host_name() or "this host")
+            return await self.create_session(**kwargs)
 
     def _consumes_capacity_slot(self, record) -> bool:
         """Does *record* occupy a runtime slot? The ONE definition (constitution VI).
@@ -10983,7 +11017,7 @@ class SessionOrchestrator:
         from server.automations.engine_policy import EnginePolicyViolation
         ref = fire_at.isoformat(timespec="minutes") if fire_at else "now"
         name = spec.get("name") or f"scheduled {automation_id}"
-        ctx = AutomationContext(automation_id, create_session=self.create_session)
+        ctx = AutomationContext(automation_id, create_session=self._automation_create_session)
         kwargs: dict = {"name": name, "initial_prompt": spec.get("prompt")}
         for key in ("repo", "branch", "account", "model"):
             if spec.get(key):

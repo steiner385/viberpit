@@ -285,6 +285,40 @@ async def _dispatch_user_token(request: Request, call_next, token: str):
     return await call_next(request)
 
 
+async def _dispatch_internal_token(request: Request, call_next, token: str):
+    """Handle a `Bearer ccsys1:…` request end to end.
+
+    Loopback-only (the token is minted for the daemon on THIS host, same posture as
+    `ccas1`) and restricted to the ONE route it exists for — the primary daemon's own
+    automation loops asking their co-located edge to place a new session on the
+    best-ranked host (server/sessions/internal_dispatch.py), rather than spawning
+    unconditionally on whichever host happens to run the automation loop itself.
+    A wrong route or a non-loopback peer gets 403/401 rather than falling through to
+    Tailscale identity verification, which this caller has none of.
+    """
+    from server.auth.identity import host_is_loopback  # noqa: PLC0415
+    from server.auth.internal_token import (  # noqa: PLC0415
+        ALLOWED_METHOD, ALLOWED_PATH, verify_token,
+    )
+    from server.sessions.types import SYSTEM_IDENTITY  # noqa: PLC0415
+
+    client = request.client
+    if client is None or not host_is_loopback(client.host):
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "internal token is loopback-only"}})
+    if not verify_token(token):
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "invalid or expired internal token"}})
+    if not (request.method == ALLOWED_METHOD and request.url.path == ALLOWED_PATH):
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
+            "code": "INTERNAL_ROUTE_FORBIDDEN",
+            "message": "this token may not call this route"}})
+    request.state.identity = SYSTEM_IDENTITY
+    request.state.via = "internal"
+    request.state.app_session_id = None
+    return await call_next(request)
+
+
 class IdentityMiddleware(BaseHTTPMiddleware):
     """ASGI middleware that enforces identity on every request.
 
@@ -327,6 +361,11 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer " + USER_PREFIX):
             return await _dispatch_user_token(
+                request, call_next, auth_header[len("Bearer "):])
+
+        from server.auth.internal_token import PREFIX as INTERNAL_PREFIX  # noqa: PLC0415
+        if auth_header.startswith("Bearer " + INTERNAL_PREFIX):
+            return await _dispatch_internal_token(
                 request, call_next, auth_header[len("Bearer "):])
 
         identity = verify_identity(request)
