@@ -313,8 +313,7 @@ or `Backlog` to reach untriaged items — how far down the board the runner reac
 runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
 still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
-no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
-its share when a freed slot is contested under the `weighted` selection strategy), `ladder_top`
+no claim while keeping the rest of its policy — never "unlimited"), `weight` (deprecated since spec 2026-09-20 D6, removal #2103 — read by nothing; rank on Delivery → Capacity is the priority mechanism), `ladder_top`
 (enum over the model tiers, default `fable` — the strongest model the runner climbs to on a
 repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
 Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see

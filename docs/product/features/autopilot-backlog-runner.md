@@ -117,8 +117,7 @@ PR linkage, never on labels alone.
   because the plan — not the pool — is what the runner pops, and both of its ordering paths
   otherwise undo it: the model is free to rank an incident last, and the degraded all-singletons
   path sorts by issue number, where the newest issue is always last. Urgency reorders only; it
-  never overrides a product's `dispatch: off`, its `max_in_flight`, or a repo paused by weight. `weight` comes from each ON product's policy, applied to every repo
-  it owns and handed to the selection strategies below as a per-repo weight/order (never a cap).
+  never overrides a product's `dispatch: off`, its `max_in_flight`. The `priority` strategy (and its deprecated alias `weighted`, spec 2026-09-20 D6) serves each ON product's repos in rank order (`priority_rank`, then product age).
   `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
   from the runner's durable target-state rows and kept in step with every claim taken that tick: a
   `proposed` (announce-only) claim holds its product's slot exactly like a spawned one, while a
