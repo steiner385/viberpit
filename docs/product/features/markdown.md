@@ -1,3 +1,14 @@
+---
+slug: markdown
+parent: session-workspaces
+title: Markdown in transcripts
+state: live
+links:
+  code:
+    - web/src/features/sessions/transcript/Markdown.tsx
+    - web/src/features/sessions/transcript/MermaidDiagram.tsx
+---
+
 # Markdown in transcripts
 
 Assistant replies render Markdown both while streaming and after completion.

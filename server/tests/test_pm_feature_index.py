@@ -1,6 +1,10 @@
 """Pure feature-index planner tests (spec §4: upsert + sunset-orphan)."""
+import pathlib
+
 from server.pm.feature_index import FeatureRowView, plan_feature_index
-from server.pm.featuredoc import FeatureDoc, FeatureLinkRef, parse_feature_doc
+from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
+
+FEATURE_DOCS_DIR = pathlib.Path(__file__).parents[2] / "docs" / "product" / "features"
 
 
 def _doc(slug: str, body: str = "## Problem\n\nSummary line here.") -> FeatureDoc:
@@ -105,3 +109,16 @@ def test_labels_are_carried_onto_the_upsert():
         "---\nslug: flaky-test-triage\ntitle: Flaky\nstate: live\nlabels: [flaky]\n---\nbody\n")
     plan = plan_feature_index([], [("docs/product/features/flaky-test-triage.md", doc)])
     assert plan.upserts[0].labels == ("flaky",)
+
+
+def test_every_checked_in_feature_doc_parses():
+    """Guards against #1634: two docs missing frontmatter sat silently
+    unindexed (pm_sync.feature_docs_skipped) since #1598, since parse
+    failures only ever surface as a runtime warning, never CI."""
+    failures = {}
+    for path in sorted(FEATURE_DOCS_DIR.glob("*.md")):
+        try:
+            parse_feature_doc(path.read_text())
+        except FeatureDocError as e:
+            failures[path.name] = str(e)
+    assert not failures
