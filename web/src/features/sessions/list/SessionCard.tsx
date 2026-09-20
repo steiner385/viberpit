@@ -481,8 +481,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       }
     >
       {/* Line 2 — context narrative: repo · host · status phrase — summary,
-          with last-active pinned right. All passive; a click here falls
-          through to the article's open-session handler. */}
+          with last-active pinned right. Passive except the conditional "See
+          capacity" link; everywhere else a click falls through to the
+          article's open-session handler. */}
       <div data-testid="card-context" className="mt-0.5 flex items-center gap-1.5 min-w-0 text-xs">
         <span
           className={cn(
@@ -528,8 +529,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           {presentation.label}
         </span>
         {/* C6: a session parked for lack of usage headroom is a capacity fact —
-            link the stack rather than leave the pill as a dead end. */}
-        {session.usageStalled && (
+            link the stack rather than leave the pill as a dead end. Gated on
+            the PRESENTATION tier, not the raw field: usageStalled only maps to
+            a "Waiting for capacity" pill (tier 'waiting') when liveness is
+            fresh and no restart/prompt-flight override applies — every other
+            override (e.g. a stale-liveness "Unreachable") yields a different
+            tier, and the link must not float free of the pill it explains. */}
+        {session.usageStalled && presentation.tier === 'waiting' && (
           <Link
             to={deliveryPath('capacity')}
             className="flex-shrink-0 text-accent hover:underline"

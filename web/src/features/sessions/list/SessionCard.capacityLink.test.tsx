@@ -24,11 +24,15 @@ function renderCard(session: Session) {
 
 describe('SessionCard capacity link (spec 2026-09-20 C6)', () => {
   it('a usage-stalled session links to Delivery → Capacity', () => {
-    renderCard(makeSession({ usageStalled: true }))
+    renderCard(makeSession({ status: 'needs_attention', usageStalled: true }))
     expect(screen.getByRole('link', { name: 'See capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })
   it('a working session shows no capacity link', () => {
     renderCard(makeSession({ usageStalled: false }))
+    expect(screen.queryByRole('link', { name: 'See capacity' })).toBeNull()
+  })
+  it('a usage-stalled session on a stale-liveness host shows no capacity link (Unreachable overrides Waiting for capacity)', () => {
+    renderCard(makeSession({ status: 'needs_attention', usageStalled: true, liveness: 'stale' }))
     expect(screen.queryByRole('link', { name: 'See capacity' })).toBeNull()
   })
 })
