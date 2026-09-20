@@ -62,32 +62,22 @@ def test_priority_breaks_ties_within_rank_by_load():
 
 
 # --------------------------------------------------------------------------- #
-# weighted — effective load = load / weight; weight 0 suppresses                #
+# weighted — deprecated (spec 2026-09-20 D6, #2103): orders exactly like priority #
 # --------------------------------------------------------------------------- #
 
-def test_weighted_higher_weight_wins():
-    # a: 6/3 = 2.0 ; b: 3/1 = 3.0 → a (higher weight) sorts first.
-    out = order_live_groups(["b", "a"], repo_of=ident, strategy="weighted",
-                            repo_load={"a": 6, "b": 3}, weights={"a": 3, "b": 1})
-    assert out == ["a", "b"]
+def test_weighted_orders_by_repo_order_like_priority():
+    """A stored ``selection_strategy: weighted`` keeps working, as rank order:
+    the product weight it used to divide load by is deprecated and read by nothing."""
+    weighted = order_live_groups(["c", "a", "b"], repo_of=ident, strategy="weighted",
+                                 repo_order=["a", "b", "c"], repo_load={"a": 9, "b": 0})
+    priority = order_live_groups(["c", "a", "b"], repo_of=ident, strategy="priority",
+                                 repo_order=["a", "b", "c"], repo_load={"a": 9, "b": 0})
+    assert weighted == priority == ["a", "b", "c"]
 
 
-def test_weighted_default_weight_is_one():
-    out = order_live_groups(["a", "b"], repo_of=ident, strategy="weighted",
-                            repo_load={"a": 2, "b": 1}, weights={})
-    assert out == ["b", "a"]  # no weights → identical to balanced
-
-
-def test_weighted_zero_weight_suppresses_repo():
-    out = order_live_groups(["a", "b"], repo_of=ident, strategy="weighted",
-                            repo_load={"a": 0, "b": 5}, weights={"a": 0})
-    assert out == ["b"]  # a is suppressed even though it has the lower load
-
-
-def test_weighted_all_suppressed_is_empty():
-    out = order_live_groups(["a", "b"], repo_of=ident, strategy="weighted",
-                            repo_load={}, weights={"a": 0, "b": 0})
-    assert out == []
+def test_order_live_groups_has_no_weights_parameter():
+    import inspect
+    assert "weights" not in inspect.signature(order_live_groups).parameters
 
 
 # --------------------------------------------------------------------------- #

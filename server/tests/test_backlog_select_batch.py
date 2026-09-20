@@ -26,8 +26,8 @@ CANDIDATES = [
 
 def make_config(**overrides) -> dict:
     """The runner-wide config ``select_batch`` reads — which is only
-    ``selection_strategy``. The per-repo strategy inputs (weights / caps / order)
-    are KWARGS, never config keys: the orchestrator derives them from the product
+    ``selection_strategy``. The per-repo strategy inputs (caps / order) are
+    KWARGS, never config keys: the orchestrator derives them from the product
     policies, and the config keys that used to carry them are retired."""
     cfg = {
         "max_concurrent": 1,
@@ -240,17 +240,18 @@ async def test_strategy_priority_serves_by_enabled_repo_order():
 
 
 @pytest.mark.asyncio
-async def test_strategy_weighted_favors_higher_weight():
-    """'weighted' compares load/weight: o/a 6/3=2.0 beats o/b 3/1=3.0."""
+async def test_strategy_weighted_is_rank_order():
+    """'weighted' is deprecated (spec 2026-09-20 D6): it serves repos in
+    ``repo_order`` exactly like 'priority' — o/b first here although the plan
+    puts o/a's group first and o/a carries less load."""
     result = await select_batch(
         make_config(selection_strategy="weighted"),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
-        repo_order=["o/a", "o/b"], weights={"o/a": 3, "o/b": 1},
-        repo_load={"o/a": 6, "o/b": 3},
+        repo_order=["o/b", "o/a"], repo_load={"o/a": 0, "o/b": 3},
     )
-    assert result is not None and result.primary == "o/a#1"
+    assert result is not None and result.primary == "o/b#2"
 
 
 @pytest.mark.asyncio
