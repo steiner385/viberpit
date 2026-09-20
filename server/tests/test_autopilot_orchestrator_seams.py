@@ -140,6 +140,7 @@ def test_helper_config_dir_uses_own_dir_for_anthropic_account(monkeypatch):
     orch = _bare_orch()
     monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: "anthropic")
     monkeypatch.setattr("server.sessions.orchestrator.compose", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr("server.sessions.helper_call.is_account_helper_ready", lambda name: True)
     fallback_called = []
     monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir",
                         lambda: fallback_called.append(True) or "/fallback")
@@ -155,6 +156,7 @@ def test_helper_config_dir_never_composes_non_anthropic_account(monkeypatch):
     falls back to a genuinely Anthropic account's dir instead."""
     orch = _bare_orch()
     monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: "openai")
+    monkeypatch.setattr("server.sessions.helper_call.is_account_helper_ready", lambda name: True)
     composed_with = []
 
     def _fake_compose(name):
@@ -177,6 +179,28 @@ def test_helper_config_dir_falls_back_on_unclassifiable_account(monkeypatch):
     monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: None)
     monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir", lambda: None)
     assert orch._autopilot_helper_config_dir("unknown-acct") is None
+
+
+def test_helper_config_dir_falls_back_when_own_anthropic_account_needs_reauth(monkeypatch):
+    """A governed session's own Anthropic account must not be composed directly
+    when it is itself de-authed/disabled — that spawns a CLI call certain to
+    answer "Not logged in", logged as the opaque "Claude Code returned an error
+    result: success" (#1817). It falls back to a genuinely usable account instead."""
+    orch = _bare_orch()
+    monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: "anthropic")
+    monkeypatch.setattr("server.sessions.helper_call.is_account_helper_ready", lambda name: False)
+    composed_with = []
+
+    def _fake_compose(name):
+        composed_with.append(name)
+        return f"/cfg/{name}"
+
+    monkeypatch.setattr("server.sessions.orchestrator.compose", _fake_compose)
+    monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir",
+                        lambda: "/fallback/other-acct")
+    out = orch._autopilot_helper_config_dir("deauthed-acct")
+    assert out == "/fallback/other-acct"
+    assert composed_with == []
 
 
 @pytest.mark.asyncio

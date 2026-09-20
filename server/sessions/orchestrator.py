@@ -11518,14 +11518,19 @@ class SessionOrchestrator:
         would, for a Codex or Copilot governed session, write that account's own
         credentials into a file shaped for Claude OAuth — silently handing OpenAI
         credentials to a Claude SDK call. Only an Anthropic account's own dir is used
-        directly; every other account falls back to :func:`pick_helper_config_dir`, the
-        same engine-safe helper identity ``model_pick`` already uses for its Haiku
-        complexity assessor.
+        directly, and only when that account is itself enabled and not needs-reauth
+        (:func:`is_account_helper_ready`) — composing a de-authed account's config dir
+        unconditionally spawned a CLI call certain to answer "Not logged in", logged
+        as the opaque "Claude Code returned an error result: success" (#1817). Every
+        other account, including a live one's own disabled/de-authed self, falls back
+        to :func:`pick_helper_config_dir`, the same engine-safe helper identity
+        ``model_pick`` already uses for its Haiku complexity assessor.
         """
         from ccswitch import accounts as _accts
-        from server.sessions.helper_call import pick_helper_config_dir
+        from server.sessions.helper_call import is_account_helper_ready, pick_helper_config_dir
         try:
-            if _accts.provider_or_none(account) == "anthropic":
+            if (_accts.provider_or_none(account) == "anthropic"
+                    and is_account_helper_ready(account)):
                 return str(compose(account))
         except Exception:  # pragma: no cover — fall through to the safe fallback
             pass
