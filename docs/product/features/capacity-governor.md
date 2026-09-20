@@ -53,6 +53,11 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   unranked products sort after ranked ones). The planner splits available fleet slots in rank order:
   pinned products take their pin first, then each remaining `auto` product gets slots round-robin by
   rank, never below its current in-flight count and never above its eligible work.
+- **Global layer** — `AppSettings.max_active_sessions` is the fleet-wide active-session ceiling.
+  Since 2026-09-20 (PR 1 of the capacity-settings spec) that column is the **attention ceiling**;
+  the effective global cap is `min(Σ enabled host caps, attention ceiling)` with a floor of 5 when
+  both are unbounded, read only through `server/sessions/global_cap.py`. It is shown on
+  Settings › Capacity › Limits and on the readout's Global row (`physical`, `attention`, `binding`).
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings
