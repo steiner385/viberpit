@@ -28,7 +28,7 @@ async def test_native_completed_observer_before_launch_ack_counts_once(doctor, o
         await respond.wait()
         if lost:
             raise RuntimeError('lost launch response')
-        return 'spawned', sid
+        return 'spawned', sid, None
 
     doctor._pr_doctor_session_fix_owned = spawn
     doctor._automation_session_work_stopped.return_value = True
@@ -108,7 +108,7 @@ async def test_new_claim_accounts_delayed_predecessor_before_transfer(doctor, au
             tx.operation.execution_generation = tx.operation.stopped_generation = 1
         entered.set()
         await respond.wait()
-        return 'spawned', sid
+        return 'spawned', sid, None
 
     doctor._pr_doctor_session_fix_owned = spawn
     doctor._automation_session_work_stopped.return_value = True

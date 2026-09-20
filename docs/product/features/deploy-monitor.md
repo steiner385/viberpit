@@ -1,3 +1,13 @@
+---
+slug: deploy-monitor
+parent: fleet-and-delivery-operations
+title: Deploy Monitor
+state: live
+links:
+  code:
+    - server/automations/deploy_monitor.py
+---
+
 # Deploy Monitor
 
 Automation id `deploy-monitor` (Delivery › Automations). Watches every managed repo's GitHub

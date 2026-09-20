@@ -27,7 +27,7 @@ async def test_session_fix_returns_ceiling_when_all_accounts_busy(isolated_db):
     # No live driver → fresh-spawn path; the clone succeeds, the spawn refuses.
     with patch("server.sessions.orchestrator.gitrepos.ensure_clone", return_value="/tmp/x"), \
          patch.object(orch._pr_doctor_ctx, "spawn_session", _boom):
-        status, sid = await orch._pr_doctor_session_fix(
+        status, sid, _reason = await orch._pr_doctor_session_fix(
             "cairnea/KinDash", "fix-lint", info, "failing_ci", None)
     assert status == "ceiling"
     assert sid is None

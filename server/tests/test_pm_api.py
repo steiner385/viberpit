@@ -168,6 +168,35 @@ def test_update_project_renames_name_slug_and_repoints_repo():
         assert resp.status_code == 200, resp.text
 
 
+def test_update_project_renames_and_repoints_in_a_single_patch():
+    """A combined name+slug+repo PATCH (the LakotaGrades -> FridgeSheet rename,
+    as one request, not three) must not trip an ownership-conflict false
+    positive: the repo re-check must not see this same request's own
+    not-yet-committed slug write and mistake it for a concurrent change."""
+    with _client() as c:
+        resp = c.post("/api/pm/projects", json={
+            "name": "LakotaGrades",
+            "repos": [{"repo": "steiner385/lakota-grades-mcp", "isPrimary": True}],
+        }, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 201, resp.text
+
+        resp = c.patch("/api/pm/projects/lakotagrades", json={
+            "name": "FridgeSheet", "slug": "fridgesheet", "repo": "steiner385/fridgesheet",
+        }, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["name"] == "FridgeSheet"
+        assert body["slug"] == "fridgesheet"
+        assert body["repos"][0]["repo"] == "steiner385/fridgesheet"
+        assert body["repos"][0]["isPrimary"] is True
+        assert body["repos"][0]["backfillDone"] is False
+
+        resp = c.get("/api/pm/projects/lakotagrades", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 404
+        resp = c.get("/api/pm/projects/fridgesheet", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200
+
+
 def test_update_project_rejects_bad_input_and_conflicts():
     with _client() as c:
         for name in ("Alpha", "Beta"):
