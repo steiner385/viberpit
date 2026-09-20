@@ -183,7 +183,8 @@ def test_pinned_floor_is_deducted_before_the_round_robin():
 
 
 def test_push_level_of_normalises_the_governor_config():
-    from server.automations.capacity_plan import push_level_of
+    from server.automations.capacity_plan import plan_from_dict, push_level_of
     assert push_level_of({"push_level": "max"}) == "max"
     assert push_level_of({"push_level": "bogus"}) == "steady"
     assert push_level_of({}) == "steady"
+    assert plan_from_dict({"pushLevel": "bogus"}).push_level == "steady"

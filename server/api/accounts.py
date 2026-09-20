@@ -32,9 +32,9 @@ from ccswitch import account_registry, copilot, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
-from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow re-exported for server.tests.test_account_headroom
-                            QuotaWindow, unknown_snapshot)
-from ccswitch.selector import at_ceiling, rank_accounts
+from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow/anthropic_snapshot re-exported for server.tests.test_account_headroom
+                            QuotaWindow, anthropic_snapshot, unknown_snapshot)
+from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
 from server.automations.capacity_plan import RESERVE_PCT
 from server.codex.auth_client import edge_authority_client
@@ -240,22 +240,33 @@ async def account_headroom(orch, *, push_level: str,
     """Per-account availability for the capacity governor (spec 2026-09-19 §5).
 
     Lives here, not in a new module: this file already imports the selector, and the
-    brand ratchet has no slack for another import of the legacy package. ``available``
-    uses ``at_ceiling`` with ``ceiling = 100 - reserve`` where the reserve is each
-    account's EFFECTIVE one (``effective_reserve_pct``: its override, else the push
-    level's — spec 2026-09-20 D4), so the governor and the account selector agree on
-    what "usable" means; an unmetered engine (Codex, Copilot — D4 of the governor
-    spec) counts zero and says so. Every row carries the ``reservePct`` it was judged by.
+    brand ratchet has no slack for another import of the legacy package. Mirrors
+    ``selector.rank_accounts``' two exclusion legs so the governor and the account
+    selector agree on what "usable" means:
+
+    - HARD ceiling (``at_ceiling``, this module's ``load_config().hard_ceiling``):
+      ANY window at/over it means the account is truly out of quota — a session on
+      it 429s on its next turn — so every window counts, reserve or not.
+    - RESERVE (``effective_reserve_pct``: the account's ``weeklyReservePct``
+      override, else the push level's — spec 2026-09-20 D4): binds ONLY the
+      reserve window (the longest one the provider reports — weekly for
+      Anthropic), exactly as the selector's soft "over reserve" demotion does. An
+      account deep into its session window but fresh on weekly is not over
+      reserve; the reserve exists to protect the long-horizon allowance, not to
+      duplicate the hard ceiling.
+
+    An unmetered engine (Codex, Copilot — D4 of the governor spec) counts zero and
+    says so. Every row carries the ``reservePct`` it was judged by.
     """
     infos = await asyncio.to_thread(list_accounts)
     usages = await _gather_usages(orch, [a["name"] for a in infos], timeout)
+    hard = load_config().hard_ceiling * 100.0
     rows: list[dict] = []
     for acct in infos:
         name = acct["name"]
         usage, _stale = usages.get(name, (None, None))
         enabled = bool(acct.get("enabled", True))
         reserve = effective_reserve_pct(acct, push_level)
-        ceiling = 100.0 - reserve
         metered = usage is not None and usage.provider == "anthropic" and usage.availability == AVAILABLE
         reason = None
         next_reset = None
@@ -263,10 +274,17 @@ async def account_headroom(orch, *, push_level: str,
             reason = "not_metered"
         elif not enabled:
             reason = "disabled"
-        elif at_ceiling(usage, ceiling):
+        elif at_ceiling(usage, hard):
             reason = "at_ceiling"
-            resets = [w.resets_at for w in usage.windows_at_or_over(ceiling) if w.resets_at]
+            resets = [w.resets_at for w in usage.windows_at_or_over(hard) if w.resets_at]
             next_reset = iso_utc(min(resets)) if resets else None
+        else:
+            used = reserve_pct(usage)
+            if used is not None and used >= 100.0 - reserve:
+                reason = "over_reserve"
+                reserve_window = usage.reserve_window()
+                if reserve_window is not None and reserve_window.resets_at is not None:
+                    next_reset = iso_utc(reserve_window.resets_at)
         rows.append({
             "name": name, "engine": acct.get("engine") or ("codex" if acct.get("provider") == "openai" else "claude_code"),
             "provider": acct.get("provider"), "enabled": enabled, "metered": metered,

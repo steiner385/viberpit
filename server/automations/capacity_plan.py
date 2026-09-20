@@ -8,13 +8,21 @@ RESERVE_PCT: dict[str, int] = {"conserve": 40, "steady": 20, "max": 5}
 UNBOUNDED = 10**6
 
 
+def normalise_push_level(level: str | None) -> str:
+    """A push level normalised to a member of ``PUSH_LEVELS``: anything else
+    (``None``, an absent row, a stale enum value) reads as ``steady`` — the ONE
+    normaliser every caller (the governor config reader via ``push_level_of``,
+    ``plan_from_dict``, ``plan_capacity``) shares, so they all derive the same
+    default reserve (spec 2026-09-20 D4)."""
+    return level if level in PUSH_LEVELS else "steady"
+
+
 def push_level_of(gov: dict) -> str:
     """The governor row's push level, normalised: anything that is not a member
     of ``PUSH_LEVELS`` (an absent row, a stale enum value) reads as ``steady`` —
     the ONE normaliser the readout and the accounts list share (spec 2026-09-20
     D4), so both derive the same default reserve."""
-    level = gov.get("push_level")
-    return level if level in PUSH_LEVELS else "steady"
+    return normalise_push_level(gov.get("push_level"))
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,7 @@ def product_order(products) -> list[ProductCapacity]:
 def plan_from_dict(d: dict | None) -> CapacityPlan | None:
     if not d:
         return None
-    return CapacityPlan(push_level=d.get("pushLevel") or "steady",
+    return CapacityPlan(push_level=normalise_push_level(d.get("pushLevel")),
                         fleet_concurrency=int(d.get("fleetConcurrency") or 0),
                         per_product={k: int(v) for k, v in (d.get("perProduct") or {}).items()},
                         pending={k: int(v) for k, v in (d.get("pending") or {}).items()},
@@ -138,8 +146,7 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
 
 def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_account: int = 2,
                   previous: CapacityPlan | None = None) -> CapacityPlan:
-    if push_level not in PUSH_LEVELS:
-        push_level = "steady"
+    push_level = normalise_push_level(push_level)
     reserve = RESERVE_PCT[push_level]
     fleet, limiting, budget = _fleet(inputs, sessions_per_account)
     budget["reservePct"] = reserve
