@@ -248,6 +248,14 @@ describe('FleetSection — weight and cap', () => {
     expect(screen.queryByRole('heading', { level: 3, name: 'Fleet' })).toBeNull()
   })
 
+  it('explains weight is a tiebreaker, not a cap, and disabling does not delete (M9)', () => {
+    renderFleet([fleetHost({ name: 'rocky' })])
+    expect(screen.getByText(
+      'Weight is a tiebreaker when several hosts have headroom; it is not a cap. '
+      + 'Disabling a host removes it from dispatch without deleting it.',
+    )).toBeInTheDocument()
+  })
+
   it('footer states the physical ceiling and links to Limits', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       effectiveDefaults: {

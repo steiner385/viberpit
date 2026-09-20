@@ -30,7 +30,7 @@ describe('settingsDefs', () => {
     expect(DEFAULT_SETTINGS_SECTION).toBe('general')
   })
 
-  it('ownsChassis marks exactly the five sections that mount their own chassis', () => {
+  it('ownsChassis marks exactly the six sections that mount their own chassis', () => {
     // The flag is what `SettingsPage` branches on, so it is also the list of
     // sections NOT wrapped in `HostedSection`. PRs 5b–5e each add an id here in
     // the same change that migrates the section. `deploy` was born with it.
