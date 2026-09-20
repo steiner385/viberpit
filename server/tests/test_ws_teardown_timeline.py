@@ -13,8 +13,9 @@ without reproducing a flake nobody can reproduce on demand.
 """
 
 import logging
+import re
 
-from server.bridge.ws import _TEARDOWN_BUDGET_S, _emit_teardown_timeline
+from server.bridge.ws import _TEARDOWN_BUDGET_S, _TeardownMarks, _emit_teardown_timeline
 
 _LOGGER = "server.bridge.ws"
 
@@ -79,3 +80,37 @@ def test_no_marks_emits_nothing(caplog):
     caplog.set_level(logging.DEBUG, logger=_LOGGER)
     _emit_teardown_timeline([])
     assert not caplog.records
+
+
+def test_marks_are_visible_even_when_unsubscribe_events_is_never_reached(caplog):
+    """Pins the property the original #1383 instrumentation lacked (#1547).
+
+    `_emit_teardown_timeline` is called from the same `finally` as
+    `unsubscribe_events`, so a teardown that stalls before reaching that call never
+    produces a summary either — the diagnostic and the failure it exists to explain
+    are gated on the same event. `_TeardownMarks.mark()` must not depend on the
+    summary ever running: each phase has to log itself the moment it happens, so a
+    stall's last-recorded phase is still visible with the terminal call never made.
+
+    Each line carries its own elapsed time too — "which phase stalled" is a question
+    about the deltas, and a bare list of names cannot answer it.
+    """
+    caplog.set_level(logging.DEBUG, logger=_LOGGER)
+    td = _TeardownMarks()
+    td.mark("enter")
+    td.mark("drain_work_chains")
+    td.mark("reap_work")
+    # `unsubscribe_events` / `_emit_teardown_timeline` deliberately never called —
+    # this IS the stalled-before-the-summary case.
+
+    messages = [r.getMessage() for r in caplog.records]
+    # Elapsed values are real wall clock, so match the SHAPE and read the phase back
+    # out of it — asserting on the numbers would just be asserting on the clock.
+    matches = [re.fullmatch(r"ws\.teardown\.mark (\S+) \+\d+\.\d\ds", m) for m in messages]
+    assert all(matches), f"every mark must log its phase AND its elapsed time: {messages}"
+    assert [m.group(1) for m in matches] == [  # type: ignore[union-attr]
+        "enter", "drain_work_chains", "reap_work"]
+    assert not any(m.startswith("ws.teardown ") for m in messages), (
+        "the terminal summary must NOT be required for the phase marks to be "
+        "observable — that was exactly the tautology"
+    )
