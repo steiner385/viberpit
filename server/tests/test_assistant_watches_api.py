@@ -215,6 +215,18 @@ def test_watch_route_allowed_for_the_assistant_token():
     with _client() as c:
         tok = mint_token("testuser@example.com", "asst-sess-1")
         loopback = TestClient(c.app, client=("127.0.0.1", 5000))
+        # Serve the loopback requests on the app's OWN loop, never a throwaway one.
+        # A TestClient only reuses a loop when it is entered as a context manager
+        # (`__enter__` sets `.portal`); this one is not, so each request would spin up
+        # its own blocking portal. Both loops share the module-level `server.db._engine`
+        # and its 5-slot AsyncAdaptedQueuePool, whose `asyncio.Queue` binds to whichever
+        # loop first *awaits* a checkout — `get_nowait()` never checks loop affinity,
+        # which is why an idle pool tolerates the foreign loop. Once the orchestrator's
+        # control loops saturate the pool, the foreign checkout has to await and dies
+        # with "Queue ... is bound to a different event loop" (#1386) — so it passes
+        # locally and fails under a loaded CI shard.
+        assert c.portal is not None
+        loopback.portal = c.portal
         r = loopback.post("/api/assistant/watches",
                           json={"kind": "pr", "target": "o/n", "condition": "breaks"},
                           headers={"Authorization": f"Bearer {tok}"})
