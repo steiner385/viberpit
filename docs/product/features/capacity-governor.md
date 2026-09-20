@@ -65,6 +65,15 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   admission code is `runner_ceiling_full` (was `global_capacity_full`); the readout's `accounts`
   block carries `sessionsPerAccount` and `accountCap` so the Runner row can say when quota binds.
   `PATCH /api/automations/{id}` merges a partial `config` over the stored row.
+- **One owner for product dials (PR 4)** — Since spec PR 4 (2026-09-20) a product's rank, cap mode
+  (`capacity_mode`) and pin (`max_in_flight`) are edited on Delivery → Capacity only: both policy
+  fields carry `surface = "capacity"` with the D8 labels **Cap mode** / **Pin**, and the Roadmap
+  card's *Capacity* legend became *Dispatch* (dispatch, reach, eligibility) with one read-only
+  line built from the readout ("Capacity: rank 2 · auto (effective cap 4) · 1 in flight.") linking
+  there. The product `weight` is deprecated (`ConfigField.deprecated`, removal #2103): nothing
+  reads it, both cards hide it, a stored row still validates. The `weighted` selection strategy
+  orders like `priority`, and `priority` now serves products in **rank order** (`priority_rank`,
+  then product age) — the same key `capacity_plan.product_order` uses.
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings

@@ -40,7 +40,8 @@ export function ConfigPanel({ automation: a }: { automation: Automation }) {
     <section>
       <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Configuration</h4>
       <div className="space-y-3">
-        {a.configSchema.map((field) => (
+        {/* A deprecated dial is hidden, not read-only (spec 2026-09-20 D6): there is nothing to set anywhere. */}
+        {a.configSchema.filter((field) => !field.deprecated).map((field) => (
           field.surface === 'capacity'
             ? (
               // Owned by Delivery → Capacity (spec 2026-09-20 D7): shown, never

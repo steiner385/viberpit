@@ -398,7 +398,6 @@ def plan_to_batch(
     *,
     strategy: str = "balanced",
     repo_order: "list[str] | None" = None,
-    weights: "dict[str, float] | None" = None,
     caps: "dict[str, int] | None" = None,
 ) -> "tuple[Batch | None, int | None]":
     """Pure: pop the highest-priority still-live group off *plan* as a Batch.
@@ -409,7 +408,7 @@ def plan_to_batch(
     configured per-repo selection ``strategy`` (see
     :func:`~server.automations.backlog_selection.order_live_groups`) — ``balanced``
     (the default) reproduces the old ascending-active-run fairness; ``priority`` /
-    ``weighted`` / ``concurrency-cap`` let the user bias or cap specific repos.
+    ``concurrency-cap`` let the user rank or cap specific repos (``weighted`` is a deprecated alias of ``priority``, spec 2026-09-20 D6).
     Ordering is always stable, so plan priority stands within a repo.
 
     ``paused_repos`` (repos with stale git credentials, issue #670) are skipped
@@ -419,9 +418,8 @@ def plan_to_batch(
 
     Returns ``(batch, group_id)`` or ``(None, None)`` when no plan group has a
     live ref, or when the strategy filtered every candidate repo out (a
-    ``concurrency-cap`` where all repos with work are at their cap, or a
-    ``weighted`` where the only live repos are weight-0) — the runner then WAITS
-    rather than choosing.
+    ``concurrency-cap`` where all repos with work are at their cap) — the
+    runner then WAITS rather than choosing.
     """
     by_ref = {c["ref"]: c for c in candidates}
     paused = paused_repos or set()
@@ -434,7 +432,7 @@ def plan_to_batch(
         return None, None
     live = order_live_groups(
         live, repo_of=lambda t: by_ref[t[1][0]]["repo"], strategy=strategy,
-        repo_load=repo_load, repo_order=repo_order, weights=weights, caps=caps)
+        repo_load=repo_load, repo_order=repo_order, caps=caps)
     if not live:
         return None, None
     group, refs = live[0]

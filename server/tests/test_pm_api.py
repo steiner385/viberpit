@@ -197,6 +197,61 @@ def test_update_project_renames_and_repoints_in_a_single_patch():
         assert resp.status_code == 200
 
 
+def test_slug_rename_records_the_old_slug_as_an_alias():
+    """#1881: the slug is how feature docs in OTHER repos name this product, and
+    pm-sync rebuilds every outgoing edge from those docs — so a rename that only
+    moves `slug` silently drops each inbound cross-product edge. The endpoint
+    records the old slug so the stale doc reference keeps resolving.
+
+    The alias is bookkeeping for link resolution, not a second way to address the
+    product: the old slug still 404s on this API (pinned above), which is what
+    keeps map-changes branch names and repo targets derived from one live slug.
+    """
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Project
+
+    # Read through the app's OWN event loop (c.portal), like every other DB
+    # assertion here: a second loop over the same aiosqlite pool is a race.
+    def _former(c, slug: str) -> list[str] | None:
+        async def go():
+            async with db_session() as db:
+                return (await db.execute(
+                    select(Project).where(Project.slug == slug))).scalar_one().former_slugs
+        return c.portal.call(go)
+
+    with _client() as c:
+        resp = c.post("/api/pm/projects", json={
+            "name": "Alpha", "repos": [{"repo": "o/alpha", "isPrimary": True}]},
+            headers=IDENTITY_HEADERS)
+        assert resp.status_code == 201, resp.text
+        assert _former(c, "alpha") is None  # nothing recorded until a rename happens
+
+        resp = c.patch("/api/pm/projects/alpha", json={"slug": "bravo"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "bravo") == ["alpha"]
+
+        # A name-only patch is not a rename.
+        resp = c.patch("/api/pm/projects/bravo", json={"name": "Bravo!"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "bravo") == ["alpha"]
+
+        # Renaming again appends, oldest first.
+        resp = c.patch("/api/pm/projects/bravo", json={"slug": "charlie"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "charlie") == ["alpha", "bravo"]
+
+        # Renaming back drops the re-adopted slug — it is live again, not former.
+        resp = c.patch("/api/pm/projects/charlie", json={"slug": "alpha"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert _former(c, "alpha") == ["bravo", "charlie"]
+
+
 def test_update_project_rejects_bad_input_and_conflicts():
     with _client() as c:
         for name in ("Alpha", "Beta"):
@@ -281,6 +336,16 @@ def test_policy_schema_and_project_policy_round_trip():
         # the server enforces, instead of hard-coding one (or none).
         assert fields["max_in_flight"]["min"] == 0      # 0 = paused, not unlimited
         assert fields["weight"]["min"] == 0
+        # Spec 2026-09-20 D5/D6/D8: Delivery → Capacity owns the pin and the cap
+        # mode (the Roadmap card shows them read-only); ``weight`` is deprecated
+        # (#2103) — still in the schema so a stored row validates, read by nothing.
+        assert fields["max_in_flight"]["surface"] == "capacity"
+        assert fields["max_in_flight"]["label"] == "Pin"
+        assert fields["capacity_mode"]["surface"] == "capacity"
+        assert fields["capacity_mode"]["label"] == "Cap mode"
+        assert fields["weight"]["deprecated"] is True
+        assert fields["dispatch"]["surface"] == "config"
+        assert fields["dispatch"]["deprecated"] is False
         # ``max_attempts`` is retired (plan 4a task 2): the ladder climbs on a
         # bounce instead of counting attempts against a flat cap.
         assert fields["ladder_top"]["choices"][-1] == "fable"
@@ -303,6 +368,14 @@ def test_policy_schema_and_project_policy_round_trip():
         assert pol["dispatch"] == "auto" and pol["max_in_flight"] == 2
         assert "queue_min_status" not in pol  # defaults are display/effective only
         assert c.get("/api/pm/projects/kindash", headers=IDENTITY_HEADERS).json()["automationPolicy"] == pol
+
+        # A stale client (or a stored row) still carrying ``weight`` is accepted,
+        # not 422'd: deprecated ≠ retired until #2103.
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"weight": 4}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        pol2 = r.json()["automationPolicy"]
+        assert pol2["weight"] == 4
 
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"dispatch": "turbo"}},
                     headers=IDENTITY_HEADERS)
@@ -345,10 +418,10 @@ def test_policy_schema_and_project_policy_round_trip():
                 return (await db.execute(select(AuditEvent).where(
                     AuditEvent.type == "pm.project.policy"))).scalars().all()
         found = c.portal.call(_audits)
-        # Three accepted writes: the auto/2 policy, the paused (0) one and the
-        # clear. The four rejected ones (bad enum, unknown key, below-minimum int,
-        # unknown slug) write nothing.
-        assert [a.detail["policy"] for a in found] == [pol, paused, None]
+        # Four accepted writes: the auto/2 policy, the deprecated-weight patch,
+        # the paused (0) one and the clear. The four rejected ones (bad enum,
+        # unknown key, below-minimum int, unknown slug) write nothing.
+        assert [a.detail["policy"] for a in found] == [pol, pol2, paused, None]
         assert {a.detail["slug"] for a in found} == {"kindash"}
         assert {a.identity for a in found} == {IDENTITY_HEADERS["Tailscale-User-Login"]}
 

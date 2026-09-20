@@ -1110,7 +1110,7 @@ class SessionOrchestrator:
         # the automation card can show WHERE the runner's next pick comes from…
         self._backlog_last_queue: list[dict] = []
         # …and the product policies / repos that same read saw, so selection's
-        # per-repo weights and caps are derived from exactly the scope the pool was.
+        # per-repo order and caps are derived from exactly the scope the pool was.
         self._backlog_last_policies: dict[str, dict] = {}
         self._backlog_last_repos: dict[str, list[str]] = {}
         # SDLC Intake control loop: turns pending triggers into proposed intent.md
@@ -6106,13 +6106,17 @@ class SessionOrchestrator:
             # between the two reads.
             claimed = runner_claims(s)
             rows = load_queue_rows(s, now=now, claimed_refs=claimed)
-            # Which products are on, and each one's repos, in
-            # ``Project.created_at`` order — so the ``priority`` strategy serves
-            # products oldest-first (the deterministic stand-in for the retired
-            # hand-ordered ``enabled_repos`` list).
-            born = dict(s.execute(sa_select(Project.id, Project.created_at)).all())
+            # Which products are on, and each one's repos, in RANK order
+            # (spec 2026-09-20 D6: ``priority_rank`` first, unranked last,
+            # ``Project.created_at`` then slug as the tiebreak — the same key
+            # ``capacity_plan.product_order`` sorts by) so the ``priority``
+            # strategy and the governor agree on who is first.
+            meta = {pid: (rank, born) for pid, rank, born in s.execute(
+                sa_select(Project.id, Project.priority_rank, Project.created_at)).all()}
             views = sorted(list_product_views(s),
-                           key=lambda v: (born.get(v.project_id) or _EPOCH,
+                           key=lambda v: (meta.get(v.project_id, (None, None))[0] is None,
+                                          meta.get(v.project_id, (None, None))[0] or 0,
+                                          meta.get(v.project_id, (None, None))[1] or _EPOCH,
                                           v.slug or v.project_id))
             repos_by_slug = {(v.slug or v.project_id): list(v.repos) for v in views}
             return rows, policies_by_slug(s), repos_by_slug
@@ -6126,8 +6130,8 @@ class SessionOrchestrator:
             # Best-effort here and NOT on the loader seam: this read has no
             # skip-refill escape, so it degrades to the last verdicts instead.
             policies = await self._backlog_clamp_ladder_tops(db, policies, best_effort=True)
-        # Cached for the other seams in this same tick (selection's weights/caps/
-        # order, the spawn's model) so they cannot read a different answer.
+        # Cached for the other seams in this same tick (selection's repo order,
+        # the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
         self._backlog_last_repos = repos_by_slug
         by_product: dict[str, list] = {}
@@ -6227,8 +6231,7 @@ class SessionOrchestrator:
 
         This is also the ONE place a product policy becomes a per-repo knob: the
         pure selection code (``plan_to_batch`` / ``order_live_groups``) stays
-        repo-keyed, so each ON product's ``weight`` / ``max_in_flight`` is applied
-        to every repo it owns, in product age order."""
+        repo-keyed, so each ON product's repos are served in rank order."""
         from server.automations.backlog_runner import select_batch
 
         async def _pool(cfg: dict) -> list[dict]:
@@ -6255,40 +6258,34 @@ class SessionOrchestrator:
         # it fills are populated before the knobs below are derived from them;
         # ``select_batch`` then gets the pool it would have queried, once.
         pool = await _pool(config)
-        weights, repo_order = self._backlog_repo_knobs()
+        repo_order = self._backlog_repo_order()
 
         async def _read_pool(_cfg: dict) -> list[dict]:
             return pool
 
         return await select_batch(config, query=_read_pool,
                                   repo_load=repo_load, paused_repos=paused,
-                                  weights=weights, repo_order=repo_order)
+                                  repo_order=repo_order)
 
-    def _backlog_repo_knobs(self) -> "tuple[dict[str, float], list[str]]":
-        """``(weights, repo_order)`` for the ON products, keyed by repo.
+    def _backlog_repo_order(self) -> list[str]:
+        """The ON products' repos in rank order, for the ``priority`` strategy
+        (and its deprecated alias ``weighted``, spec 2026-09-20 D6).
 
-        Derived from the policy/repo snapshot ``_backlog_query_queue`` just took,
-        so selection can never bias toward a product the pool no longer contains.
-        A product with no repos contributes nothing; a repo shared by two products
-        takes the last one in age order (the same last-writer rule the repo-keyed
-        strategies always had — ownership uniqueness is a registration-time
-        problem, see ``owning_projects_by_repo``).
-
-        ``max_in_flight`` is deliberately NOT translated here — it is a per-product
-        ceiling enforced in ``BacklogRunnerLoop._refill``."""
-        weights: dict[str, float] = {}
-        repo_order: list[str] = []
+        Derived from the policy/repo snapshot ``_backlog_query_queue`` just took
+        (already rank-ordered there), so selection can never bias toward a
+        product the pool no longer contains. A product with no repos contributes
+        nothing; a repo shared by two products keeps its first (higher-ranked)
+        position. ``max_in_flight`` is deliberately NOT translated here — it is a
+        per-product ceiling enforced in ``BacklogRunnerLoop._refill``."""
         from server.automations.product_policy import is_on
+        repo_order: list[str] = []
         for slug, repos in self._backlog_last_repos.items():
-            policy = self._backlog_last_policies.get(slug)
-            if not is_on(policy):
+            if not is_on(self._backlog_last_policies.get(slug)):
                 continue
-            assert policy is not None
             for repo in repos:
-                weights[repo] = policy["weight"]
                 if repo not in repo_order:
                     repo_order.append(repo)
-        return weights, repo_order
+        return repo_order
 
     async def _backlog_load_policies(self) -> dict[str, dict]:
         """The loop's ``read_policies`` seam: slug → validated product policy.
@@ -6898,8 +6895,9 @@ class SessionOrchestrator:
 
         The mapping is settings-preserving: the old global mode becomes each
         product's ``dispatch`` (``auto`` stayed ``auto``, anything else proposes),
-        the product's PRIMARY repo's entry in ``repo_caps``/``repo_weights`` becomes
-        its ``max_in_flight``/``weight``, and the remaining globals
+        the product's PRIMARY repo's entry in ``repo_caps`` becomes its
+        ``max_in_flight`` (``repo_weights`` is NOT carried over — ``weight`` is
+        deprecated, spec 2026-09-20 D6), and the remaining globals
         (``queue_min_status``, ``default_model``, ``respect_dependencies``) are
         copied to every seeded product. ``max_attempts`` is NOT carried over — it
         was retired in favour of ``ladder_top`` + the model ladder (spec
@@ -6961,7 +6959,6 @@ class SessionOrchestrator:
 
         repos = [r for r in (raw.get("enabled_repos") or []) if r]
         caps = raw.get("repo_caps") or {}
-        weights = raw.get("repo_weights") or {}
         seeded: list[str] = []
         async with db_session() as db:
             # The DURABLE marker, written in the same transaction as the policies:
@@ -6999,10 +6996,11 @@ class SessionOrchestrator:
             owned = (await db.execute(sa_select(
                 ProjectRepo.project_id, ProjectRepo.repo, ProjectRepo.is_primary,
             ).where(ProjectRepo.project_id.in_(project_ids)))).all()
-            # The per-repo caps/weights were keyed by repo; a product's PRIMARY repo
-            # is the one that carried its settings. Falls back to the product's
-            # lowest-named repo so a product that never flagged a primary still
-            # inherits something rather than silently resetting to 1.
+            # The per-repo caps were keyed by repo (repo_weights is not carried
+            # over: weight is deprecated, spec 2026-09-20 D6). A product's PRIMARY
+            # repo is the one that carried its settings. Falls back to the
+            # product's lowest-named repo so a product that never flagged a
+            # primary still inherits something rather than silently resetting to 1.
             primary: dict[str, str] = {}
             any_repo: dict[str, str] = {}
             for project_id, repo, is_primary in sorted(owned,
@@ -7031,8 +7029,6 @@ class SessionOrchestrator:
                         "queue_min_status", raw.get("queue_min_status"))
                 if (cap := _int("max_in_flight", caps.get(repo))) is not None:
                     legacy["max_in_flight"] = cap
-                if (weight := _int("weight", weights.get(repo))) is not None:
-                    legacy["weight"] = weight
                 if "default_model" in raw:
                     legacy["default_model"] = _enum(
                         "default_model", raw.get("default_model"))
@@ -7191,9 +7187,9 @@ class SessionOrchestrator:
         product *default_model*, and stops at the product's ``ladder_top`` — all
         of which is ``next_rung``'s rule, composed here with the hold that says
         the runner asked for a climb. The product's policy comes off the tick
-        snapshot (``_backlog_last_policies``, the same one selection's weights
-        read), so the spawn cannot answer from a policy the dispatch decision was
-        never taken on.
+        snapshot (``_backlog_last_policies``, the same one selection's repo
+        order read), so the spawn cannot answer from a policy the dispatch
+        decision was never taken on.
 
         ``next_rung`` is called with the SAME inputs the sweep used when it wrote
         the hold (``backlog_runner.py``'s ``floor=None``, review F4), so the two
@@ -8438,10 +8434,11 @@ class SessionOrchestrator:
         Parents resolve by slug within the project after every upsert row
         exists, so a child listed before its parent still links. Links are
         REWRITTEN each apply — the docs are truth, so a link that left the
-        frontmatter leaves the table — and resolve by (Project.slug,
-        Feature.slug); an unresolvable target is skipped with a warning rather
-        than failing the apply. Plan warnings (unknown parent, cycle) are
-        logged the same way.
+        frontmatter leaves the table — and resolve by (project slug, Feature.slug),
+        where the project slug may also be one the target has been renamed away
+        from (``server/pm/project_slugs.py``); an unresolvable target is skipped
+        with a warning rather than failing the apply. Plan warnings (unknown
+        parent, cycle) are logged the same way.
 
         After upserting, if the project is in ``map_proposed``, ``registered``,
         or ``syncing`` and now has ≥1 non-orphaned Feature, advance it to
@@ -8450,6 +8447,7 @@ class SessionOrchestrator:
         ``live`` are left alone."""
         from sqlalchemy import delete, func, select
         from server.db.models import Feature, FeatureLink, Project
+        from server.pm.project_slugs import resolve_project_slugs
         for warning in plan.warnings:
             log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
         async with db_session() as db:
@@ -8500,9 +8498,13 @@ class SessionOrchestrator:
             wanted = list(dict.fromkeys(
                 (up.slug, link) for up in plan.upserts for link in up.links))
             if wanted:
-                project_slugs = {link.project for _, link in wanted}
-                projects = {p.slug: p.id for p in (await db.execute(
-                    select(Project).where(Project.slug.in_(project_slugs)))).scalars().all()}
+                # Through project_slugs, not a bare Project.slug lookup: a doc in
+                # another repo may still name a product by a slug it has since
+                # been renamed away from, and this block DELETES and rebuilds
+                # every outgoing edge, so an unresolved target is edge loss, not
+                # just a warning (#1881).
+                projects = await resolve_project_slugs(
+                    db, {link.project for _, link in wanted})
                 targets = {(f.project_id, f.slug): f.id for f in (await db.execute(
                     select(Feature).where(Feature.project_id.in_(list(projects.values()))))).scalars().all()}
                 for src_slug, link in wanted:

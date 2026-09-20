@@ -313,8 +313,7 @@ or `Backlog` to reach untriaged items — how far down the board the runner reac
 runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
 still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
-no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
-its share when a freed slot is contested under the `weighted` selection strategy), `ladder_top`
+no claim while keeping the rest of its policy — never "unlimited"), `weight` (deprecated since spec 2026-09-20 D6, removal #2103 — read by nothing; rank on Delivery → Capacity is the priority mechanism), `ladder_top`
 (enum over the model tiers, default `fable` — the strongest model the runner climbs to on a
 repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
 Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see
@@ -365,8 +364,9 @@ runner loop's first tick, gated on the runner row being ENABLED and carrying a s
 never-configured or currently-disabled row has nothing to migrate) carries the old settings onto
 the products that owned them so the flip changed no behaviour: the prior global mode becomes each
 seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
-primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
-— or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
+primary repo's entry in the old `repo_caps` becomes its `max_in_flight` (`repo_weights` is not
+carried over — `weight` is deprecated, spec 2026-09-20 D6) — or, for a product with no repo flagged
+primary, its lowest-named repo's entry — and the remaining
 globals (`queue_min_status`, `default_model`, `respect_dependencies`) are copied onto every seeded
 product, but only the keys the legacy config actually set: a key it left unset is left at the schema
 default rather than pinned to a made-up value. `max_attempts` is NOT among them — it was retired in

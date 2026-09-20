@@ -42,9 +42,9 @@ async def _init(tmp_path, name="policy_seams.db"):
 
 
 async def _seed_product(slug: str, repo: str, *, policy: dict | None = None,
-                        board: bool = True) -> None:
+                        board: bool = True, rank: int | None = None) -> None:
     async with db_session() as db:
-        project = Project(slug=slug, name=slug, automation_policy=policy)
+        project = Project(slug=slug, name=slug, automation_policy=policy, priority_rank=rank)
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
@@ -359,12 +359,18 @@ def test_the_global_and_per_product_in_flight_ledgers_count_the_same_rows(tmp_pa
 
 
 # --------------------------------------------------------------------------- #
-# 4. Selection: policies → the repo-keyed weights / caps / order                #
+# 4. Selection: policies → the rank-ordered repos                               #
 # --------------------------------------------------------------------------- #
 
-def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkeypatch):
-    """``select_batch``/``plan_to_batch`` stay repo-keyed and unchanged; this seam
-    is the ONE place a product policy becomes a per-repo weight/order.
+def test_select_batch_translates_policies_into_rank_ordered_repos(tmp_path, monkeypatch):
+    """this seam is the ONE place a product policy becomes a per-repo order —
+    rank first (``priority_rank``), product age as the tiebreak; ``weight`` is
+    deprecated (D6) and no longer translated.
+
+    Four legs, exercised together: ``beta`` (``rank=1``) and ``delta``
+    (``rank=2``) lead in rank order; ``alpha`` (unranked, seeded first) and
+    ``epsilon`` (unranked, seeded last, ``dispatch: auto``) follow in
+    ``created_at`` order; ``gamma`` (``dispatch: off``) stays absent.
 
     ``max_in_flight`` is NOT among them: it is a PRODUCT ceiling, enforced per
     product in the loop's ``_refill``. Aliased onto each of a product's repos it
@@ -373,10 +379,13 @@ def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkey
     async def run():
         await _init(tmp_path, "translate.db")
         await _seed_product("alpha", "o/a",
-                            policy={"dispatch": "auto", "weight": 3, "max_in_flight": 2})
-        await _seed_product("beta", "o/b",
-                            policy={"dispatch": "propose", "weight": 1,
-                                    "max_in_flight": 5})
+                            policy={"dispatch": "auto", "max_in_flight": 2})
+        await _seed_product("beta", "o/b", rank=1,
+                            policy={"dispatch": "propose", "max_in_flight": 5})
+        await _seed_product("delta", "o/d", rank=2,
+                            policy={"dispatch": "auto"})
+        await _seed_product("epsilon", "o/e",
+                            policy={"dispatch": "auto"})
         await _seed_product("gamma", "o/g")                  # off → absent
         await _seed_item("o/a", 1, score=5.0)
         orch = _orch_with_ctx()
@@ -401,9 +410,9 @@ def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkey
                             _fake_select_batch)
 
         assert await orch._backlog_select_batch(_config()) is None
-        assert seen["weights"] == {"o/a": 3, "o/b": 1}
+        assert "weights" not in seen                   # deprecated (spec 2026-09-20 D6)
         assert "caps" not in seen                      # a PRODUCT ceiling, not a repo one
-        assert seen["repo_order"] == ["o/a", "o/b"]     # Project.created_at order
+        assert seen["repo_order"] == ["o/b", "o/d", "o/a", "o/e"]  # rank 1, rank 2, then unranked by age
         assert [c["ref"] for c in seen["pool"]] == ["o/a#1"]
 
     asyncio.run(run())
@@ -429,6 +438,7 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
         await _seed_product("gamma", "o/g")          # not in enabled_repos
         orch = _orch_with_ctx()
 
+        # repo_weights is NOT carried over: weight is deprecated (spec 2026-09-20 D6).
         raw = {"enabled_repos": ["o/a", "o/b"], "repo_caps": {"o/a": 4},
                "repo_weights": {"o/a": 3}, "queue_min_status": "Backlog",
                "default_model": "opus", "respect_dependencies": False}
@@ -439,13 +449,13 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
         # Only legacy choices persist; new schema defaults are not invented intent.
         # ``max_attempts`` is retired (plan 4a task 2) and is no longer carried over.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
-                         "max_in_flight": 4, "weight": 3,
+                         "max_in_flight": 4,
                          "default_model": "opus", "respect_dependencies": False}
         assert stamp is not None
         beta, _ = policies["beta"]
         from server.automations.product_policy import effective_policy
         assert "max_in_flight" not in beta and "weight" not in beta
-        assert effective_policy(beta)["max_in_flight"] == 1 and effective_policy(beta)["weight"] == 1
+        assert effective_policy(beta)["max_in_flight"] == 1
         assert policies["gamma"] == (None, None)
 
         # Audited per product with the runner's identity, and announced ONCE.
@@ -747,10 +757,9 @@ def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_pa
         assert await orch._backlog_seed_policies_once() == 1
         from server.automations.product_policy import effective_policy
         raw_policy = (await _policies())["alpha"][0]
-        assert raw_policy == {"dispatch": "auto", "weight": 4}
+        assert raw_policy == {"dispatch": "auto"}
         policy = effective_policy(raw_policy)
         assert policy["dispatch"] == "auto"
-        assert policy["weight"] == 4                    # the in-range value survives
         assert policy["max_in_flight"] == 1             # schema default, not -1
 
     asyncio.run(run())
