@@ -47,8 +47,9 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
 
 **Notes** —
 - **Push level** is the one fleet-wide knob: `conserve` / `steady` / `max` map to a 40% / 20% / 5%
-  weekly-usage reserve on Claude accounts (the share KEPT BACK; a per-account override replaces it, spec 2026-09-20 D4). A higher reserve makes fewer accounts count as available,
-  so the derived fleet concurrency shrinks; `max` spends quota closer to the ceiling.
+  weekly-usage reserve on Claude accounts (the share KEPT BACK; a per-account override replaces it,
+  spec 2026-09-20 D4). A higher reserve makes fewer accounts count as available, so the derived
+  fleet concurrency shrinks; `max` spends quota closer to the ceiling.
 - **Priority rank** is the one per-product knob (`Project.priority_rank`, nullable, 1 = highest,
   unranked products sort after ranked ones). The planner splits available fleet slots in rank order:
   pinned products take their pin first, then each remaining `auto` product gets slots round-robin by

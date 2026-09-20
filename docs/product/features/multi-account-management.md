@@ -58,9 +58,9 @@ accounts (usage is billed per account, so a view inherits one account by design 
 - Account names are validated (`account_names.py`) so a stray/empty name can't collapse a
   per-account path onto the shared store root — the fix for the "phantom empty-named account"
   incident (#873).
-- Per-account state (nickname, enabled flag, weekly reserve override (percent kept back; blank = the capacity governor's push level), allow-extra-usage, account defaults)
-  lives in the flock-guarded JSON ledger; `remove_account` drops both the store slot and the
-  ledger entry (#627).
+- Per-account state (nickname, enabled flag, weekly reserve override (percent kept back; blank = the
+  capacity governor's push level), allow-extra-usage, account defaults) lives in the flock-guarded
+  JSON ledger; `remove_account` drops both the store slot and the ledger entry (#627).
 
 **Evidence** — `add_account`/`list_accounts`/`remove_account`/`set_nickname` in
 `src/ccswitch/accounts.py`; validation in `src/ccswitch/account_names.py`; credential split and

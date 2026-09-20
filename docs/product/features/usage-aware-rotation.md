@@ -58,7 +58,9 @@ per-caller backoff logic.
   default: conserve 40 / steady 20 / max 5). Once weekly usage reaches `100 − reserve`, the
   account is unavailable to the governor and, for an explicit override, becomes a soft fallback
   here — burned least-weekly-used first, only after every unreserved candidate is exhausted
-  (`rank_accounts`). The push level's default is never applied to a human's own pick.
+  (`rank_accounts`). The push level's default is never applied to a human's own pick. The smallest
+  override, 1, keeps 1% back (ceiling 99) — the way to let automation use an account almost fully;
+  under the old threshold reading that was 100, so the two readings invert at the extremes.
 - Auto-rotation on limit: `runner.py` (`ccrun`) detects a limit in the result, adds the account to
   `tried`, prints "rotating to another account", and re-picks; with `--wait` it sleeps until the
   earliest reset. `launcher.py` backs `ccmax` (interactive, auto-switch + `--resume`). The web
