@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+import server.bridge.ws as ws_mod
 from server.ipc.client import DaemonUnavailable
 from server.tests.test_ws_prompt_after_release import (
     _Harness, _IDENTITY_HEADERS, _drain_until, _release_finished, _wait_until,
@@ -56,7 +57,7 @@ def _teardown_timeline(caplog) -> str:
         for r in caplog.records
         if r.getMessage().startswith("ws.teardown.mark ")
     ]
-    return " ".join(phases) if phases else "NONE RECORDED"
+    return "; ".join(phases) if phases else "NONE RECORDED"
 
 
 def _with_history(orch) -> None:
@@ -448,9 +449,11 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path, ca
                     "teardown must unsubscribe the lifecycle queue even with an "
                     "auto re-attach in flight.\n"
                     f"teardown timeline: {_teardown_timeline(caplog)}\n"
-                    "A timeline names the phase that stalled (largest delta). NONE "
-                    "means the teardown `finally` was never entered — look at the "
-                    "receive loop, not at the phases.")
+                    "The largest delta names the phase that stalled. A timeline that "
+                    "simply STOPS — small deltas throughout, then nothing — is a "
+                    "teardown that was cancelled at its next await rather than one "
+                    "that hung. NONE means the `finally` was never entered at all; "
+                    "look at the receive loop, not at the phases.")
                 # Order, not wall clock: the unsubscribe must have happened while the
                 # re-attach was STILL wedged. A teardown that waits on it can only
                 # unsubscribe after the wedge lets go.
@@ -459,4 +462,67 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path, ca
                     "reaping it")
 
             client.portal.call(_release_spawn, orch, sid, released)
+            client.portal.call(orch.close_session, sid)
+
+
+def test_teardown_unsubscribes_when_cancellation_lands_mid_reap(tmp_path, caplog):
+    """The unsubscribe must survive a cancellation landing on ANY teardown await.
+
+    The deterministic half of the test above, which could only ever catch this by
+    luck. Closing the socket cancels the anyio scope around the WS app task, so the
+    teardown `finally` runs with a cancellation already pending and takes it at its
+    first await. Whether that await is the work drain, a reap, or the batcher is a
+    sub-millisecond race that this pins by making the FIRST reap yield: every reap
+    goes through `cancel_and_reap`, so slowing it guarantees the cancellation lands
+    inside the reap window rather than after teardown has already finished.
+
+    That window used to bypass the unsubscribe entirely — it sat lexically before
+    the `try` whose `finally` performs it, so "unconditional" only ever covered
+    failures raised *inside* that `try` (#1547). The orchestrator then publishes
+    into the orphaned lifecycle queue for the life of the process (#1164).
+    """
+    caplog.set_level(logging.DEBUG, logger="server.bridge.ws")
+    real_reap = ws_mod.cancel_and_reap
+
+    async def _yielding_reap(task, *, phase, timeout=None):
+        # A real await, ahead of the reap's own — this is the suspension the pending
+        # cancellation is delivered on. asyncio.sleep(0) is deliberately NOT enough:
+        # it reschedules without ever parking, so a cancel still in flight from the
+        # portal's thread can miss it.
+        await asyncio.sleep(0.05)
+        return await real_reap(task, phase=phase, timeout=timeout)
+
+    with _Harness(tmp_path) as h:
+        orch = h.orch
+        unsubscribed: list[float] = []
+        real_unsubscribe = orch.unsubscribe_events
+
+        def _counting_unsubscribe(q):
+            unsubscribed.append(time.monotonic())
+            return real_unsubscribe(q)
+
+        with TestClient(h.app, raise_server_exceptions=False) as client:
+            session = client.portal.call(orch.create_session, "teardown-cancel-mid-reap")
+            sid = session.id
+            _with_history(orch)
+            orch.record(sid).auto_archive_opt_out_reason = "manual-unarchive"
+            client.portal.call(orch._persist_status, sid, "complete")
+            assert _wait_until(lambda: _release_finished(orch))
+
+            with patch.object(ws_mod, "cancel_and_reap", _yielding_reap), \
+                    patch.object(orch, "unsubscribe_events", _counting_unsubscribe):
+                with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                    ws.send_text(json.dumps({"type": "attach", "sessionId": sid}))
+                    _drain_until(ws, until_type="replayComplete")
+                # ...and the socket closes, cancelling the task mid-teardown.
+
+                # Seconds, not minutes: teardown here has nothing to wait for, so a
+                # generous bound still fails fast when the unsubscribe is skipped.
+                assert _wait_until(lambda: bool(unsubscribed), timeout=30.0), (
+                    "teardown must unsubscribe the lifecycle queue even when the "
+                    "cancellation lands on a reap await.\n"
+                    f"teardown timeline: {_teardown_timeline(caplog)}\n"
+                    "A phase list ending before `unsubscribe_events` means the "
+                    "cancellation escaped past the `finally` that performs it.")
+
             client.portal.call(orch.close_session, sid)

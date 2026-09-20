@@ -13,6 +13,7 @@ without reproducing a flake nobody can reproduce on demand.
 """
 
 import logging
+import re
 
 from server.bridge.ws import _TEARDOWN_BUDGET_S, _TeardownMarks, _emit_teardown_timeline
 
@@ -90,6 +91,9 @@ def test_marks_are_visible_even_when_unsubscribe_events_is_never_reached(caplog)
     are gated on the same event. `_TeardownMarks.mark()` must not depend on the
     summary ever running: each phase has to log itself the moment it happens, so a
     stall's last-recorded phase is still visible with the terminal call never made.
+
+    Each line carries its own elapsed time too — "which phase stalled" is a question
+    about the deltas, and a bare list of names cannot answer it.
     """
     caplog.set_level(logging.DEBUG, logger=_LOGGER)
     td = _TeardownMarks()
@@ -100,11 +104,12 @@ def test_marks_are_visible_even_when_unsubscribe_events_is_never_reached(caplog)
     # this IS the stalled-before-the-summary case.
 
     messages = [r.getMessage() for r in caplog.records]
-    assert messages == [
-        "ws.teardown.mark enter",
-        "ws.teardown.mark drain_work_chains",
-        "ws.teardown.mark reap_work",
-    ]
+    # Elapsed values are real wall clock, so match the SHAPE and read the phase back
+    # out of it — asserting on the numbers would just be asserting on the clock.
+    matches = [re.fullmatch(r"ws\.teardown\.mark (\S+) \+\d+\.\d\ds", m) for m in messages]
+    assert all(matches), f"every mark must log its phase AND its elapsed time: {messages}"
+    assert [m.group(1) for m in matches] == [  # type: ignore[union-attr]
+        "enter", "drain_work_chains", "reap_work"]
     assert not any(m.startswith("ws.teardown ") for m in messages), (
         "the terminal summary must NOT be required for the phase marks to be "
         "observable — that was exactly the tautology"

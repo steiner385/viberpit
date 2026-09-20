@@ -162,6 +162,11 @@ class _TeardownMarks:
     fires either, and "NONE RECORDED" carries no information at all (#1547). Each
     `mark()` now logs its own phase immediately, so the last `ws.teardown.mark` seen
     names where teardown stopped even when it never reaches the terminal summary.
+
+    Each mark carries its own elapsed time, not just its name: "which phase stalled"
+    is a question about the DELTAS, and a bare list of phase names cannot answer it —
+    a teardown that reached `reap_work` in 2 ms and one that took 104 s to get there
+    are the same list and completely different bugs.
     """
 
     def __init__(self) -> None:
@@ -169,8 +174,9 @@ class _TeardownMarks:
         self.marks: list[tuple[str, float]] = []
 
     def mark(self, phase: str) -> None:
-        self.marks.append((phase, time.monotonic() - self._t0))
-        log.debug("ws.teardown.mark %s", phase)
+        elapsed = time.monotonic() - self._t0
+        self.marks.append((phase, elapsed))
+        log.debug("ws.teardown.mark %s +%.2fs", phase, elapsed)
 
 
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
@@ -1946,46 +1952,59 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # more than twice the ceiling every bound here adds up to. The forensics
             # could never separate the only two ways that happens: a phase overran its
             # own bound, or this `finally` was never entered at all. Each mark logs
-            # itself immediately (see `_TeardownMarks`), so a stalled phase is visible
-            # even on the exact failure where `unsubscribe_events` — and therefore
-            # `_emit_teardown_timeline` below — is never reached.
+            # itself immediately (see `_TeardownMarks`) rather than relying on the
+            # terminal summary, which a phase that genuinely HANGS still never reaches.
+            #
+            # It paid for itself on the first occurrence: the timeline read `enter
+            # drain_work_chains`, which is neither of those two — teardown was being
+            # cancelled at its next await, and the unsubscribe below was nested where a
+            # cancellation that early could skip it. See the comment on that `try`.
             _td = _TeardownMarks()
             _td.mark("enter")
-            # Let queued/in-flight per-session work finish first (a disconnect
-            # mid-resume must still deliver the prompt), THEN cancel whatever is
-            # left. The drain runs in its own try so a cancellation arriving during
-            # it (a SIGTERM drain) still reaches the cancel-and-reap below instead
-            # of leaking the chains as orphan tasks.
+            # `unsubscribe_events` is the one step that MUST happen, so it gets the
+            # outermost `finally` here and every awaiting phase sits inside this try.
+            # It used to be nested one level deeper, guarding only the reaps below the
+            # auto re-attach fence — which made "unconditional" true for failures
+            # raised *inside* that inner try and false for the drain and the work reap
+            # above it (#1547). Closing a socket cancels the anyio scope around this
+            # task, so teardown routinely runs with a cancellation already pending and
+            # takes it at its FIRST await; landing in that window exited the whole
+            # `finally` without ever unsubscribing, and the orchestrator went on
+            # publishing into the orphaned queue for the life of the process (#1164).
             try:
+                # Let queued/in-flight per-session work finish first (a disconnect
+                # mid-resume must still deliver the prompt), THEN cancel whatever is
+                # left. The drain runs in its own try so a cancellation arriving during
+                # it (a SIGTERM drain) still reaches the cancel-and-reap below instead
+                # of leaking the chains as orphan tasks.
                 try:
-                    await _drain_work_chains()
+                    try:
+                        await _drain_work_chains()
+                    finally:
+                        _td.mark("drain_work_chains")
                 finally:
-                    _td.mark("drain_work_chains")
-            finally:
-                for sid, work_task in list(work_tasks.items()):
-                    await cancel_and_reap(work_task, phase=f"ws.work:{sid}", timeout=0.5)
-                work_tasks.clear()
-                work_queues.clear()
-                _td.mark("reap_work")
+                    for sid, work_task in list(work_tasks.items()):
+                        await cancel_and_reap(work_task, phase=f"ws.work:{sid}", timeout=0.5)
+                    work_tasks.clear()
+                    work_queues.clear()
+                    _td.mark("reap_work")
 
-                # Fence the auto re-attach path with plain assignments, BEFORE any
-                # await. event_task is still running here and can still spawn one,
-                # and a re-attach that registered a forwarding task after the loop
-                # below took its live_tasks snapshot would leak a driver subscriber
-                # buffering forever on a closed socket. `closing` + an empty
-                # `attached` stop that at three checks (the spawn site,
-                # _auto_reattach's post-lock re-check, _start_live_stream).
-                #
-                # Deliberately NOT by taking a lock: a teardown must unwind promptly
-                # and must never sit on an unbounded await (#1164). A _handle_attach
-                # wedged on a cold MCP fleet holds its session's lock for up to
-                # _RESUME_TIMEOUT (90 s); a cancellation arriving while we waited for
-                # it would skip the reaps and unsubscribe_events below, orphaning the
-                # forwarding tasks and leaving a lifecycle queue the orchestrator
-                # publishes into forever.
-                closing = True
-                attached.clear()
-                try:
+                    # Fence the auto re-attach path with plain assignments, BEFORE any
+                    # await. event_task is still running here and can still spawn one,
+                    # and a re-attach that registered a forwarding task after the loop
+                    # below took its live_tasks snapshot would leak a driver subscriber
+                    # buffering forever on a closed socket. `closing` + an empty
+                    # `attached` stop that at three checks (the spawn site,
+                    # _auto_reattach's post-lock re-check, _start_live_stream).
+                    #
+                    # Deliberately NOT by taking a lock: a teardown must unwind
+                    # promptly and must never sit on an unbounded await (#1164). A
+                    # _handle_attach wedged on a cold MCP fleet holds its session's
+                    # lock for up to _RESUME_TIMEOUT (90 s); a cancellation arriving
+                    # while we waited for it would skip the reaps below, orphaning the
+                    # forwarding tasks.
+                    closing = True
+                    attached.clear()
                     # Reap the forwarder first — it is the only spawner of auto
                     # re-attach tasks, so the set below cannot grow while we drain it.
                     await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
@@ -2001,15 +2020,18 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     _td.mark("detach_live")
                     await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
                     _td.mark("reap_batcher")
+            finally:
+                # An unsubscribed-from queue is one the orchestrator keeps publishing
+                # into for the life of the process, so this must survive a
+                # cancellation or failure in ANY phase above. Safe to reach from a
+                # cancelled task: every implementation is a plain set discard that
+                # never suspends, so the pending cancellation cannot be redelivered
+                # partway through it.
+                try:
+                    await orchestrator.unsubscribe_events(event_q)
                 finally:
-                    # Unconditional: an unsubscribed-from queue is one the orchestrator
-                    # keeps publishing into for the life of the process, so it must
-                    # survive a cancellation or failure anywhere above.
-                    try:
-                        await orchestrator.unsubscribe_events(event_q)
-                    finally:
-                        _td.mark("unsubscribe_events")
-                        _emit_teardown_timeline(_td.marks)
-                log.debug("ws.disconnect identity=%s", identity)
+                    _td.mark("unsubscribe_events")
+                    _emit_teardown_timeline(_td.marks)
+            log.debug("ws.disconnect identity=%s", identity)
 
     return router
