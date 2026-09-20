@@ -1584,6 +1584,14 @@ class Project(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     # Writer-side invariant: always set (nullable for reconcile, like Initiative.slug).
     slug: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    # Slugs this product used to have, oldest first (server/pm/project_slugs.py).
+    # Every FK is on `id`, so a rename is FK-safe — but a feature doc's `links:`
+    # block names its target product by SLUG, from another repo, and
+    # _pm_sync_apply_feature_plan rebuilds every outgoing edge from the docs on
+    # each apply. Without these aliases a rename silently dropped each inbound
+    # cross-product edge until a human edited the referring doc (#1881).
+    # Nullable so reconcile ALTER-ADDs it on both dialects.
+    former_slugs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="active")
