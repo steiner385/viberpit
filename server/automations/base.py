@@ -30,11 +30,17 @@ class ConfigField:
     # generic Config tab. "capacity": Delivery → Capacity owns it, and the Config
     # tab renders it read-only with a link — one editor per dial.
     surface: str = "config"
+    # Spec 2026-09-20 D6: a dial on its way out. Still validated (a stored row
+    # carrying it must not read as corrupt) and still stored, but read by
+    # nothing and hidden by every editor; the removal issue retires it one
+    # release later. ``deprecated`` ≠ retired: a retired key is DROPPED by
+    # ``validate_config`` (``retired_config_keys``), a deprecated one is kept.
+    deprecated: bool = False
 
     def to_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "type": self.type,
                 "default": self.default, "help": self.help, "choices": self.choices,
-                "min": self.min, "surface": self.surface}
+                "min": self.min, "surface": self.surface, "deprecated": self.deprecated}
 
 
 ConfigSchema = list[ConfigField]

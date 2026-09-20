@@ -1,7 +1,7 @@
 """Product automation policy (spec 2026-09-12-product-automation-policy-design §4): the ONE
 schema (`PRODUCT_POLICY_SCHEMA`) and the ONE validated reading (`effective_policy`) for every
 product's automation knobs — whether the Backlog Runner dispatches for it, how far down its
-board it reaches, its in-flight cap and weight, its attempt cap, its session model.
+board it reaches, its pin and cap mode, its attempt cap, its session model.
 
 `triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
 `give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8). `risk_tolerance`,
@@ -60,17 +60,23 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # otherwise have to fake by flipping dispatch off. A NEGATIVE cap is what is
     # rejected; ``_refill`` treats every cap literally, so a stored ``-1`` would
     # read as an unreachable ceiling, i.e. unlimited.
-    ConfigField(key="max_in_flight", label="Max in flight (pin)", type="int", default=1, min=0,
-                help="This product's concurrent runner sessions. Read as a hard cap while In-flight cap is pinned; "
-                     "the fallback while auto and no plan exists. 0 pauses issue dispatch without losing the rest of its policy."),
-    ConfigField(key="capacity_mode", label="In-flight cap", type="enum", default="auto",
-                choices=["auto", "pinned"],
-                help="auto: the capacity governor sets this product's in-flight cap from the "
-                     "fleet's real headroom and your priority order. pinned: the value above "
-                     "is a hard cap the governor respects."),
+    ConfigField(key="max_in_flight", label="Pin", type="int", default=1, min=0,
+                surface="capacity",
+                help="This product's concurrent runner sessions: a hard cap while Cap mode is "
+                     "pinned, the fallback while auto and no plan exists. 0 pauses issue "
+                     "dispatch without losing the rest of its policy."),
+    ConfigField(key="capacity_mode", label="Cap mode", type="enum", default="auto",
+                choices=["auto", "pinned"], surface="capacity",
+                help="auto: the capacity governor sets this product's cap from the fleet's "
+                     "real headroom and its rank. pinned: the pin is a hard cap the governor "
+                     "respects."),
+    # Deprecated (spec 2026-09-20 D6, removal #2103): rank is the one priority
+    # mechanism; the ``weighted`` selection strategy now orders by rank. Kept in
+    # the schema for one release so a stored row still validates.
     ConfigField(key="weight", label="Weight (contested slot share)", type="int", default=1, min=0,
-                help="This product's share when a freed slot is contested (the "
-                     "'weighted' strategy)."),
+                deprecated=True,
+                help="Deprecated: nothing reads it. Rank on Delivery → Capacity decides "
+                     "priority. Removed after one release (#2103)."),
     # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt
     # cap: a bounce climbs one tier (``server/pm/outcomes.py:next_rung``) rather
     # than counting toward a fixed number, and a bounce AT this tier is the one
