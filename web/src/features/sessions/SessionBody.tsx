@@ -8,6 +8,8 @@
 
 import { useState, useEffect, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
+import { Tabs } from '@/ui/Tabs'
+import { useSearchParamState } from '@/lib/useSearchParamState'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
@@ -33,6 +35,12 @@ import { ModelSwitchDialog } from '@/features/sessions/panels/ModelSwitchDialog'
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
 
+/** The session's two views (`docs/PAGE-TABS.md` §2: a Workspace view toggle,
+ *  stored in `?view=` rather than `?tab=` because it is not the page's
+ *  partition by question). */
+const SESSION_VIEWS = ['conversation', 'browser'] as const
+type SessionView = (typeof SESSION_VIEWS)[number]
+
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
   const { data: models = [] } = useModels()
@@ -48,8 +56,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
   // a metrics object that does NOT have {enabled: false}.
   const [browserEnabled, setBrowserEnabled] = useState(false)
-  // Active tab: 'conversation' (default) or 'browser'
-  const [activeTab, setActiveTab] = useState<'conversation' | 'browser'>('conversation')
+  // Active view: 'conversation' (default) or 'browser', persisted in `?view=`.
+  const [view, setView] = useSearchParamState<SessionView>('view', SESSION_VIEWS, 'conversation')
 
   // Model id awaiting confirmation: switching model on a BUSY session either stops
   // the in-flight turn and restarts it on the new model, or waits for the turn to
@@ -112,47 +120,16 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         />
       </div>
 
-      {/* Conversation|Browser tab strip — only rendered when x11 is available */}
+      {/* Conversation | Browser — only rendered when the X display is available. */}
       {browserEnabled && (
-        <div
-          role="tablist"
-          aria-label="Session view"
-          className={cn(
-            'flex-shrink-0 flex border-b border-edge',
-            'bg-canvas text-sm',
-          )}
-        >
-          <button
-            id="tab-conversation"
-            role="tab"
-            aria-selected={activeTab === 'conversation'}
-            aria-controls="tab-panel-conversation"
-            onClick={() => setActiveTab('conversation')}
-            className={cn(
-              'px-4 py-2 font-medium',
-              activeTab === 'conversation'
-                ? 'border-b-2 border-accent text-ink'
-                : 'text-ink-muted hover:text-ink',
-            )}
-          >
-            Conversation
-          </button>
-          <button
-            id="tab-browser"
-            role="tab"
-            aria-selected={activeTab === 'browser'}
-            aria-controls="tab-panel-browser"
-            onClick={() => setActiveTab('browser')}
-            className={cn(
-              'px-4 py-2 font-medium',
-              activeTab === 'browser'
-                ? 'border-b-2 border-accent text-ink'
-                : 'text-ink-muted hover:text-ink',
-            )}
-          >
-            Browser
-          </button>
-        </div>
+        <Tabs
+          label="Session view"
+          items={[{ id: 'conversation', label: 'Conversation' }, { id: 'browser', label: 'Browser' }]}
+          value={view}
+          onChange={(id) => setView(id as SessionView)}
+          panelId={(id) => `tab-panel-${id}`}
+          className="shrink-0 border-b border-edge bg-canvas px-2"
+        />
       )}
 
       {/* Conversation panel content — defined once, rendered in either a plain div
@@ -292,7 +269,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         )
 
         /* Browser tab panel */
-        if (browserEnabled && activeTab === 'browser') {
+        if (browserEnabled && view === 'browser') {
           return (
             <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
               <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}

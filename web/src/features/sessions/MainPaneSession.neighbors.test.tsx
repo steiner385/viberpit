@@ -17,6 +17,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { MainPaneSession } from './MainPaneSession'
 import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 import { QK } from '@/api/hooks'
@@ -53,7 +54,9 @@ function renderPane(sessionId: string, sessions: Session[], onOpenSession = vi.f
   qc.setQueryData(QK.sessions, sessions)
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>
-      <SessionRuntimeProvider sessionId={sessionId}>{children}</SessionRuntimeProvider>
+      <MemoryRouter initialEntries={[`/sessions/${sessionId}`]}>
+        <SessionRuntimeProvider sessionId={sessionId}>{children}</SessionRuntimeProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   )
   render(

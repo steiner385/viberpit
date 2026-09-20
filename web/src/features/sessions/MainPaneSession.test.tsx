@@ -29,6 +29,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { MainPaneSession } from './MainPaneSession'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import {
@@ -109,7 +110,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/sessions/s1']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
 /** The dock's composer, reading the same runtime the pane does. */

@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
@@ -54,13 +55,18 @@ function makeRuntime(
   } as unknown as SessionRuntime
 }
 
+/** `SessionBody` reads `?view=` via `useSearchParamState`, which needs a router. */
+function renderBody(ui: React.ReactElement) {
+  return render(<MemoryRouter initialEntries={['/sessions/s1']}>{ui}</MemoryRouter>)
+}
+
 describe('SessionBody — condensing indicator', () => {
   it('renders CondensingProgress (progressbar) instead of WorkingIndicator when condensing', () => {
     const rt = makeRuntime({
       status: { state: 'condensing', count: 0 },
       condense: { active: true, expectedMs: 9000 },
     })
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     // progressbar role is unique to CondensingProgress — StatusBar doesn't render one
     expect(screen.getByRole('progressbar')).toBeInTheDocument()
     // The font-medium label is unique to CondensingProgress (StatusBar uses working-shimmer class)
@@ -77,7 +83,7 @@ describe('SessionBody — condensing indicator', () => {
       status: { state: 'in_progress', count: 1 },
       condense: null,
     })
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     // Two working-spinners: one in StatusBar, one in the bottom WorkingIndicator
     expect(screen.getAllByTestId('working-spinner')).toHaveLength(2)
     expect(screen.queryByRole('progressbar')).toBeNull()

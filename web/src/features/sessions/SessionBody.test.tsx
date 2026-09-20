@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
@@ -71,6 +72,11 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
   } as unknown as SessionRuntime
 }
 
+/** `SessionBody` reads `?view=` via `useSearchParamState`, which needs a router. */
+function renderBody(ui: React.ReactElement) {
+  return render(<MemoryRouter initialEntries={['/sessions/s1']}>{ui}</MemoryRouter>)
+}
+
 function makeEmptyRuntime(): SessionRuntime {
   return {
     sessionId: 's1',
@@ -109,12 +115,12 @@ describe('SessionBody', () => {
   })
 
   it('renders the pinned answer panel for a LIVE open question (desktop + mobile)', () => {
-    render(<SessionBody rt={makeRuntime([question('a', true)])} />)
+    renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.getByTestId('pending-question-panel')).toBeInTheDocument()
   })
 
   it('does not render the panel when the only question is historical (replayed)', () => {
-    render(<SessionBody rt={makeRuntime([question('a', false)])} />)
+    renderBody(<SessionBody rt={makeRuntime([question('a', false)])} />)
     expect(screen.queryByTestId('pending-question-panel')).toBeNull()
   })
 
@@ -122,7 +128,7 @@ describe('SessionBody', () => {
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [{ id: 's1', status: 'queued', queuePosition: 3 }],
     } as ReturnType<typeof hooks.useSessions>)
-    render(<SessionBody rt={makeEmptyRuntime()} />)
+    renderBody(<SessionBody rt={makeEmptyRuntime()} />)
     expect(screen.getByText(/Queued — position 3/i)).toBeInTheDocument()
   })
 
@@ -130,7 +136,7 @@ describe('SessionBody', () => {
     const rt = makeRuntime([])
     rt.state.status = { state: 'done', count: 0 }
     rt.state.latestSuggestions = ['Run the tests']
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.getByTestId('your-turn-panel')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run the tests' }))
     expect(rt.onPrompt).toHaveBeenCalledWith('Run the tests', [])
@@ -146,14 +152,14 @@ describe('SessionBody', () => {
     const rt = makeRuntime([])
     rt.state.status = { state: 'done', count: 0 }
     rt.state.latestSuggestions = []
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.getByRole('button', { name: 'Proceed with Phase B' })).toBeInTheDocument()
   })
 
   it('does not pin the Your-turn panel while a turn is running', () => {
     const rt = makeRuntime([])
     rt.state.status = { state: 'in_progress', count: 1 }
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.queryByTestId('your-turn-panel')).toBeNull()
   })
 })
@@ -210,31 +216,31 @@ describe('SessionBody — capability-gated surfaces', () => {
 
   it('hides the question panel for an engine without the questions capability', () => {
     setSession({ engine: 'codex' })
-    render(<SessionBody rt={makeRuntime([question('a', true)])} />)
+    renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.queryByTestId('pending-question-panel')).toBeNull()
   })
 
   it('keeps the question panel for an engine that has the capability', () => {
     setSession({ engine: 'claude_code' })
-    render(<SessionBody rt={makeRuntime([question('a', true)])} />)
+    renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.getByTestId('pending-question-panel')).toBeInTheDocument()
   })
 
   it('hides the parked model-approval panel for an engine without self model switching', () => {
     setSession({ engine: 'codex', pendingModel: 'gpt-5.1-codex' })
-    render(<SessionBody rt={makeRuntime([])} />)
+    renderBody(<SessionBody rt={makeRuntime([])} />)
     expect(screen.queryByTestId('pending-model-approval-panel')).toBeNull()
   })
 
   it('keeps the parked model-approval panel for Claude', () => {
     setSession({ engine: 'claude_code', pendingModel: 'fable' })
-    render(<SessionBody rt={makeRuntime([])} />)
+    renderBody(<SessionBody rt={makeRuntime([])} />)
     expect(screen.getByTestId('pending-model-approval-panel')).toBeInTheDocument()
   })
 
   it('renders the session identity (agent, runner, reasoning effort) in the meta strip', () => {
     setSession({ engine: 'codex', host: 'rocky', reasoningEffort: 'high' })
-    render(<SessionBody rt={makeRuntime([])} />)
+    renderBody(<SessionBody rt={makeRuntime([])} />)
     expect(screen.getByLabelText('Agent')).toHaveTextContent('Codex')
     expect(screen.getByLabelText('Runner host')).toHaveTextContent('rocky')
     expect(screen.getByLabelText('Reasoning effort')).toHaveTextContent('high')
@@ -256,7 +262,7 @@ describe('SessionBody — capability-gated surfaces', () => {
       input: { command: 'pytest -q', cwd: '/srv/repo' }, plan: false,
     }])
     rt.mode = 'auto'
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.getByTestId('pending-permission-panel')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Allow Bash: pytest -q$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Deny Bash: pytest -q$/ })).toBeInTheDocument()
@@ -293,7 +299,7 @@ describe('SessionBody — capability-gated surfaces', () => {
 
     const rt = makeRuntime([])
     rt.state.turns = state.turns
-    render(<SessionBody rt={rt} />)
+    renderBody(<SessionBody rt={rt} />)
     expect(screen.queryByTestId('pending-permission-panel')).toBeNull()
   })
 
@@ -301,7 +307,7 @@ describe('SessionBody — capability-gated surfaces', () => {
     // An unanswered config must never REMOVE a control that works today.
     vi.mocked(hooks.useEngineOffers).mockReturnValue([])
     setSession({ engine: 'claude_code', pendingModel: 'fable' })
-    render(<SessionBody rt={makeRuntime([question('a', true)])} />)
+    renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.getByTestId('pending-question-panel')).toBeInTheDocument()
     expect(screen.getByTestId('pending-model-approval-panel')).toBeInTheDocument()
   })
