@@ -13,7 +13,7 @@ import * as hooks from '@/api/hooks'
 import type { GlobalCapDefaults } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
 import { queryResult, idleQueryResult, mutationResult } from '@/test/reactQuery'
-import { LimitsSection, effectiveLine, physicalLine } from './LimitsSection'
+import { LimitsSection, effectiveLine, physicalLine, attentionError } from './LimitsSection'
 
 expect.extend(toHaveNoViolations)
 
@@ -51,6 +51,24 @@ describe('physicalLine / effectiveLine', () => {
       .toBe('10 — the attention ceiling binds (equal to the physical ceiling)')
     expect(effectiveLine({ physical: null, attention: null, effective: 5, binding: 'default', hosts: [] }))
       .toBe('5 — default; set a host cap on Hosts or an attention ceiling')
+  })
+  it('names every uncapped host when more than one has no cap (M11)', () => {
+    expect(physicalLine({ ...TWO_HOSTS, physical: null, hosts: [{ name: 'a', cap: null }, { name: 'b', cap: null }] }))
+      .toBe('unbounded — a, b have no cap')
+  })
+})
+
+describe('attentionError', () => {
+  it('is null for blank (clears the ceiling) and any whole number >= 1', () => {
+    expect(attentionError('')).toBeNull()
+    expect(attentionError('  ')).toBeNull()
+    expect(attentionError('6')).toBeNull()
+    expect(attentionError('1')).toBeNull()
+  })
+  it('rejects zero, negative and non-numeric drafts', () => {
+    expect(attentionError('0')).toBe('Attention ceiling must be a whole number ≥ 1, or blank')
+    expect(attentionError('-3')).toBe('Attention ceiling must be a whole number ≥ 1, or blank')
+    expect(attentionError('abc')).toBe('Attention ceiling must be a whole number ≥ 1, or blank')
   })
 })
 
@@ -93,6 +111,19 @@ describe('LimitsSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(mutateAsync).toHaveBeenLastCalledWith({ maxActiveSessions: null })
   })
+
+  it.each(['0', '-3', 'abc'])(
+    'refuses to save %s: no mutateAsync call, and a role=alert error is shown (F3)',
+    async (bad) => {
+      mount()
+      await userEvent.type(screen.getByLabelText('Attention ceiling'), bad)
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).not.toHaveBeenCalled()
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Attention ceiling must be a whole number ≥ 1, or blank',
+      )
+    },
+  )
 
   it('links "unbounded" to Hosts', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({

@@ -34,12 +34,29 @@ function toDraft(s: AppSettings): LimitsDraft {
 
 /**
  * Blank clears the attention ceiling (the server treats an explicit null as
- * "none"). A value that is not a whole number ≥ 1 is also sent as null rather
- * than becoming 1 — the old form's clamp turned a half-deleted "10" into 1.
+ * "none"); anything else must be a whole number >= 1 — see `attentionError`.
+ * This must NEVER silently coerce a bad value to null: "0" or "-3" reads as
+ * "the user wants a lower cap" and silently handing them the (often much
+ * higher) physical ceiling instead is worse than refusing the save.
  */
 function toPayload(d: LimitsDraft): Partial<AppSettings> {
-  const n = Number.parseInt(d.attention, 10)
-  return { maxActiveSessions: Number.isFinite(n) && n >= 1 ? n : null }
+  if (d.attention.trim() === '') return { maxActiveSessions: null }
+  return { maxActiveSessions: Number.parseInt(d.attention, 10) }
+}
+
+/**
+ * Pure validation for the attention-ceiling draft (F3). Blank is valid (clears
+ * the ceiling); anything else must be a whole number >= 1 — mirrors the Hosts
+ * "cap for {name}" field's own validation in FleetSection.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function attentionError(draft: string): string | null {
+  if (draft.trim() === '') return null
+  const n = Number(draft.trim())
+  if (!Number.isInteger(n) || n < 1) {
+    return 'Attention ceiling must be a whole number ≥ 1, or blank'
+  }
+  return null
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -78,7 +95,15 @@ export function LimitsSection() {
   const update = useUpdateSettings()
   const { data: capacity } = useCapacity()
   const initial = React.useMemo(() => (settings ? toDraft(settings) : undefined), [settings])
-  const form = useSettingsForm<LimitsDraft>({ initial, save: (d) => update.mutateAsync(toPayload(d)) })
+  const form = useSettingsForm<LimitsDraft>({
+    initial,
+    save: (d) => update.mutateAsync(toPayload(d)),
+    // An invalid attention ceiling must never reach the server — beforeSave
+    // aborts before `save` runs. It does not surface as `form.error` (that
+    // banner is reserved for a save that was ATTEMPTED and rejected), so the
+    // row-level error below is driven straight off the live draft instead.
+    beforeSave: (d) => attentionError(d.attention) === null,
+  })
 
   if (!settings) {
     return (
@@ -97,6 +122,7 @@ export function LimitsSection() {
   const { draft, set } = form
   const gc = settings.effectiveDefaults.globalCap
   const stack = capacity ? buildCapacityStack(capacity) : null
+  const attnError = attentionError(draft.attention)
 
   return (
     <SettingsSection
@@ -132,13 +158,16 @@ export function LimitsSection() {
           label="Attention ceiling"
           htmlFor="limits-attention"
           description="Never run more than this many sessions at once, whatever the hardware could take. Blank leaves the physical ceiling in charge."
+          error={attnError}
         >
           <Input
             id="limits-attention"
-            type="number"
-            min={1}
-            step={1}
+            // `type="text"`, not `number`: a number input SANITIZES non-numeric
+            // keystrokes at the DOM level, so "abc" would never reach `set` —
+            // the same reasoning as the Hosts "cap for {name}" field.
+            type="text"
             inputMode="numeric"
+            aria-invalid={attnError ? true : undefined}
             placeholder={gc.physical === null ? 'None' : `None · physical ceiling ${gc.physical} applies`}
             value={draft.attention}
             onChange={(e) => set('attention', e.target.value)}
