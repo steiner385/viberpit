@@ -12072,7 +12072,7 @@ class SessionOrchestrator:
         if isinstance(action, engine.Mechanical):
             return await self._pr_doctor_mechanical(repo, info, action.kind, expected_state=st)
         if isinstance(action, engine.SessionFix):
-            status, _ = await self._pr_doctor_session_fix(
+            status, _, _ = await self._pr_doctor_session_fix(
                 repo, branch, info, action.kind, rec, expected_state=st)
             return status in ("sent", "spawned")
         if isinstance(action, engine.Propose):
@@ -12100,13 +12100,13 @@ class SessionOrchestrator:
                                                   expected_state=expected_state)
         except (OwnershipConflict, StaleOwnership, TargetIdentityError) as exc:
             await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
-            return "transient", None
+            return "transient", None, str(exc)
         admitted = engine.record_attempt(engine.apply_rearm(expected, info),
                                          engine.SessionFix(kind), info.head_sha)
         admitted["attempted"] = True
         await self._pr_doctor_prepare_attempt(target, expected, admitted, "native")
         try:
-            status, sid = await self._pr_doctor_session_fix_owned(
+            status, sid, reason = await self._pr_doctor_session_fix_owned(
                 repo, branch, info, kind, rec, on_phase, ownership_token=expected["ownership_token"])
         except BaseException:
             await self._pr_doctor_finish(target, expected, expected, uncertain=True)
@@ -12118,29 +12118,36 @@ class SessionOrchestrator:
             state.update(attempted=True, session_id=sid)
         await self._pr_doctor_finish(target, expected, state,
                                      uncertain=status not in ("sent", "spawned", "refused"))
-        return status, sid
+        return status, sid, reason
 
     async def _pr_doctor_session_fix_owned(
         self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec,
         on_phase: "Callable[[str], None] | None" = None,
         *, ownership_token: str,
-    ) -> tuple[str, str | None]:
-        """Spawn a fenced successor after policy assessment. A live predecessor requires explicit stopped-work handoff; clone work belongs to create_session."""
+    ) -> tuple[str, str | None, str | None]:
+        """Spawn a fenced successor after policy assessment. A live predecessor requires explicit stopped-work handoff; clone work belongs to create_session.
+
+        Returns ``(status, session_id, reason)`` — ``reason`` is the specific,
+        human-readable cause behind a non-terminal status (``transient`` collapses
+        three distinct root causes — a live predecessor, an ownership conflict, and
+        no usable account — into one UI message; callers surface ``reason`` instead
+        of the generic one so the manual "try again" button says *why*)."""
         phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
 
         if rec is not None and rec.id in self._drivers:
             # A fresh recovery cannot borrow a predecessor's live actor. Native
             # handoff first proves stopped execution, then launches a successor.
+            reason = f"still attached to live session {rec.id} — stop its managed work first"
             await self._pr_doctor_ctx.emit(
                 "warn", f"{target} is still attached to session {rec.id}; stop its managed work before recovery",
                 kind="ownership_wait", target=target, session_id=rec.id)
-            return "transient", None
+            return "transient", None, reason
 
         # Resolve policy before any model or native work. create_session owns cloning.
         plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
         if plan is None:                       # out of policy — the ctx recorded why
-            return "refused", None
+            return "refused", None, None
         eng, _launch_config = plan
         if kind == "merge_conflict":
             prompt = build_conflict_fix_prompt(repo, info, engine=eng)
@@ -12183,29 +12190,30 @@ class SessionOrchestrator:
                 await self._pr_doctor_ctx.emit(
                     "warn", f"spawn deferred for {target}: all accounts at/above usage ceiling",
                     kind="spawn_failed", target=target)
-                return "ceiling", None
+                return "ceiling", None, None
             # no_usable_accounts: reserved or needs-reauth — retry soon, not a ceiling.
+            reason = "no account is currently usable — reserved by another session or needs re-authentication"
             await self._pr_doctor_ctx.emit(
                 "warn", f"spawn deferred for {target}: no usable account available",
                 kind="spawn_failed", target=target)
-            return "transient", None
+            return "transient", None, reason
         except Exception as exc:
             # Spawn failed → error + notify, attempt NOT consumed.
             await self._pr_doctor_ctx.emit(
                 "error", f"spawn failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
-            return "spawn_failed", None
+            return "spawn_failed", None, str(exc)
         if rec2 is None:
             # spawn_session already emitted why (engine_launch_refused /
             # engine_policy_refused) — e.g. a Codex engine resolved under a
             # sandboxed permission mode that cannot push. Attempt NOT consumed.
-            return "refused", None
+            return "refused", None, None
         # Real successful spawn.
         sid = getattr(rec2, "id", None)
         await self._pr_doctor_ctx.emit(
             "info", f"auto-fix spawned for {target}",
             kind="attempted", target=target, session_id=sid)
-        return "spawned", sid
+        return "spawned", sid, None
 
     async def _pr_doctor_trigger_async(
         self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
@@ -12234,7 +12242,7 @@ class SessionOrchestrator:
         from server.automations.action_providers import _PR_STATUS_MAP
         from server.automations.pr_doctor_jobs import finalize
         try:
-            status, sid = await self._pr_doctor_session_fix(
+            status, sid, reason = await self._pr_doctor_session_fix(
                 repo, branch, info, kind, rec,
                 on_phase=lambda p: self._pr_doctor_jobs.advance(job, p))
         except Exception:  # noqa: BLE001 — a bug in the tail must still settle the job.
@@ -12243,6 +12251,12 @@ class SessionOrchestrator:
                      message="Action failed — see the automation feed")
             return
         level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        # A generic status (e.g. "transient") collapses several distinct root
+        # causes into one label; `reason`, when the executor supplied one, is
+        # the specific cause — surface that instead of the generic message so
+        # the manual-trigger button says *why* it's refusing, not just *that*.
+        if reason:
+            message = f"{message} — {reason}"
         finalize(job, status, level=level, message=message, session_id=sid)
 
     def pr_doctor_job(self, job_id: str) -> dict | None:
@@ -14022,7 +14036,7 @@ class SessionOrchestrator:
             return "no_pr"
         if info.state not in ("open", "draft"):
             return "not_actionable"
-        status, _ = await self._pr_doctor_session_fix(
+        status, _, _ = await self._pr_doctor_session_fix(
             rec.repo, br, info, "failing_ci", rec)
         return status
 

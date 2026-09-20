@@ -260,7 +260,7 @@ async def test_a_refused_fresh_spawn_reports_refused_not_a_phantom_spawn(
     monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone",
                         lambda *a, **kw: "/fake/clone/o__r", raising=True)
 
-    status, sid = await orch._pr_doctor_session_fix("o/r", "feat/x", pr, "failing_ci", None)
+    status, sid, _reason = await orch._pr_doctor_session_fix("o/r", "feat/x", pr, "failing_ci", None)
 
     assert status == "refused"
     assert sid is None
@@ -315,7 +315,7 @@ async def test_a_codex_engine_fresh_spawn_skips_the_claude_only_model_assessor(
     # The explicit restrictive mode refuses the Codex spawn below —
     # that is fine, this test only cares that resolve_model was never reached on
     # the way there (it runs, if at all, BEFORE the clone/spawn_session tail).
-    status, _sid = await orch._pr_doctor_session_fix("o/r", "feat/x", pr, "failing_ci", None)
+    status, _sid, _reason = await orch._pr_doctor_session_fix("o/r", "feat/x", pr, "failing_ci", None)
 
     assert status == "refused"
     assert calls == []

@@ -51,7 +51,7 @@ async def test_alias_manual_and_auto_share_one_session_effect(doctor):
         await finish.wait()
         async with owned(ownership_token) as tx:
             tx.bind_session(sid)
-        return "spawned", sid
+        return "spawned", sid, None
 
     doctor._pr_doctor_session_fix_owned = effect
     first = asyncio.create_task(doctor._pr_doctor_session_fix("o/r", "b", info(), "failing_ci", None))
