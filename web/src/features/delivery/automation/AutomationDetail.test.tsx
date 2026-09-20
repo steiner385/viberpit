@@ -75,6 +75,14 @@ describe('AutomationDetail', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Auto-fix' }))
     expect(patch).toHaveBeenCalledWith({ id: 'pr-doctor', body: { config: expect.objectContaining({ auto_fix: false }) } })
   })
+  it('Config tab: a Capacity-owned field is read-only and links there (spec 2026-09-20 D7)', () => {
+    mount(AUTOMATIONS[1], '/delivery/automations/backlog-runner?tab=config')
+    expect(screen.queryByRole('spinbutton', { name: 'Runner ceiling' })).toBeNull()
+    expect(screen.getByText('Runner ceiling')).toBeInTheDocument()
+    expect(screen.getByText('5')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Set on Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
+    expect(screen.getByRole('spinbutton', { name: 'Max issues per PR' })).toBeInTheDocument()
+  })
   it('an operator-triggered automation has no Schedule tab and no switch', () => {
     mount(AUTOMATIONS[2], '/delivery/automations/pm-classify')
     expect(screen.queryByRole('tab', { name: 'Schedule' })).not.toBeInTheDocument()

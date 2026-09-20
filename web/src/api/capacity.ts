@@ -39,6 +39,10 @@ export interface CapacityAccounts {
   reservePct: number
   nextResetAt: string | null
   rows: CapacityAccountRow[]
+  /** Governor config `sessions_per_account` (spec 2026-09-20 §5.2 Runner row). */
+  sessionsPerAccount: number
+  /** `available × sessionsPerAccount`: the most runner sessions the accounts can carry. */
+  accountCap: number
 }
 
 export interface CapacityRunner {

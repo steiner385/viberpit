@@ -486,3 +486,18 @@ def test_wired_global_limits_degrades_to_null_when_the_read_fails(monkeypatch):
     )
     src = capacity_wiring.sources_for(orch)
     assert asyncio.run(src.global_limits()) is None
+
+
+def test_readout_carries_the_account_quota_for_the_runner_row():
+    """spec 2026-09-20 §5.2 (Runner row: 'quota: N accounts × M'): available × sessions_per_account."""
+    r = asyncio.run(build_readout(_make_sources(
+        governor_config=("act", {"push_level": "steady", "sessions_per_account": 3}))))
+    assert r["accounts"]["sessionsPerAccount"] == 3
+    assert r["accounts"]["accountCap"] == r["accounts"]["available"] * 3
+
+
+def test_runner_layer_codes_are_named_for_the_runner_ceiling():
+    from server.automations.capacity_readout import LAYER_OF_CODE
+    assert LAYER_OF_CODE["runner_ceiling_full"] == "runner"
+    assert LAYER_OF_CODE["runner_ceiling_held"] == "runner"
+    assert "global_capacity_full" not in LAYER_OF_CODE

@@ -5713,16 +5713,13 @@ class SessionOrchestrator:
         from its own prior output. Feeding the overlaid value back in would
         ratchet ``fleetConcurrency`` down every tick (each plan's ceiling could
         only ever be <= the last) with no way back up when an account resets or
-        the operator raises the stored cap."""
-        from server.automations.backlog_runner import BacklogRunner, fold_global_mode
-        from server.automations.capacity_apply import apply_fleet_plan
-        from server.automations.capacity_store import live_plan
-        from server.automations.config_store import read_automation_config
-        mode, config = await read_automation_config(
-            BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
-            log_key="backlog_runner")
-        if apply_plan:
-            config = apply_fleet_plan(config, await live_plan())
+        the operator raises the stored cap.
+
+        The read itself lives in server/automations/runner_config.py — the same
+        function admission's snapshot uses."""
+        from server.automations import runner_config
+        from server.automations.backlog_runner import fold_global_mode
+        mode, config = await runner_config.read_runner_config(apply_plan=apply_plan)
         return fold_global_mode(mode), config
 
     async def _backlog_read_raw_config(self) -> "tuple[bool, str | None, dict]":

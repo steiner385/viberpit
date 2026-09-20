@@ -269,11 +269,14 @@ class BacklogRunner:
                          "higher-weighted products; weight 0 pauses one). "
                          "'concurrency-cap': never exceed a product's max in "
                          "flight."),
-        ConfigField(key="max_concurrent", label="Max occupied slots", type="int", default=1,
-                    help="Work claims allowed at once across every product, "
-                         "including proposals awaiting approval."),
-        ConfigField(key="max_spawns_per_day", label="Max spawns per day", type="int", default=10,
-                    help="Circuit-breaker: pause spawning past this many per day."),
+        ConfigField(key="max_concurrent", label="Runner ceiling", type="int", default=1,
+                    help="Most sessions the Backlog Runner may hold at once, across every product, "
+                         "including proposals awaiting approval. A share of the global cap; quota "
+                         "(push level) and the governor lower it, never raise it.",
+                    surface="capacity"),
+        ConfigField(key="max_spawns_per_day", label="Daily budget", type="int", default=10,
+                    help="Circuit-breaker: pause spawning past this many sessions per day.",
+                    surface="capacity"),
         ConfigField(key="max_issues_per_pr", label="Max issues per PR", type="int", default=1,
                     help="Bundle up to this many related issues into one PR. The "
                          "background grouping optimizer treats this as a hard cap, "
@@ -1359,7 +1362,7 @@ class BacklogRunnerLoop:
                 kind, status = "skipped_product_cap", "capacity"
                 self._waiting_reason = "capacity"
                 summary += f"; in-flight cap ({policy['max_in_flight']})"
-            elif "global_capacity_full" in codes:
+            elif "runner_ceiling_full" in codes:
                 status = "capacity"
             elif "daily_budget_full" in codes:
                 status = "budget"

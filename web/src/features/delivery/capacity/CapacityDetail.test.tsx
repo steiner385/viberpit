@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
 import { QK } from '@/api/hooks'
-import { mutationResult, queryResult } from '@/test/reactQuery'
+import { loadingQueryResult, mutationResult, queryResult } from '@/test/reactQuery'
 import { CAPACITY } from './__fixtures__/capacity'
 import { CapacityDetail } from './CapacityDetail'
 
@@ -36,7 +36,7 @@ const GOVERNOR = {
   mode: 'monitor', modes: ['off', 'monitor', 'act'],
   status: { text: 'Monitoring', level: 'idle' as const, counts: null },
   enginePolicy: 'claude_only' as const, operatorTriggered: false,
-  configSchema: [], config: {}, schedule: null, lastActiveAt: null, activeSessions: 0,
+  configSchema: [], config: { push_level: 'steady', sessions_per_account: 2 }, schedule: null, lastActiveAt: null, activeSessions: 0,
   oversight: {
     responsibility: { id: 'execution', label: 'Execute and finish work' },
     scope: 'Fleet capacity', modeDescriptions: { monitor: 'Computes and publishes a plan without applying it.' },
@@ -44,35 +44,52 @@ const GOVERNOR = {
   },
 }
 
+const RUNNER = {
+  id: 'backlog-runner', name: 'Backlog runner', description: '', enabled: true,
+  mode: 'on', modes: ['off', 'on'],
+  status: { text: 'Idle', level: 'idle' as const, counts: null },
+  enginePolicy: 'claude_only' as const, operatorTriggered: false,
+  configSchema: [], config: { max_concurrent: 5, max_spawns_per_day: 10 }, schedule: null, lastActiveAt: null, activeSessions: 0,
+}
+
 const patchMutate = vi.fn()
+const patchMutateAsync = vi.fn().mockResolvedValue({})
 const reorderMutateAsync = vi.fn().mockResolvedValue({})
 const patchPolicyMutate = vi.fn()
 
 function setup({
-  patchState = mutationResult({ mutate: patchMutate }),
+  patchState = mutationResult({ mutate: patchMutate, mutateAsync: patchMutateAsync }),
   patchPolicyState = mutationResult({ mutate: patchPolicyMutate }),
   projectData,
   readout = CAPACITY,
+  automations = [GOVERNOR, RUNNER],
+  automationsLoading = false,
 }: {
   patchState?: ReturnType<typeof mutationResult>
   patchPolicyState?: ReturnType<typeof mutationResult>
   projectData?: { automationPolicyUpdatedAt: string | null }
   readout?: typeof CAPACITY
+  automations?: (typeof GOVERNOR | typeof RUNNER)[]
+  automationsLoading?: boolean
 } = {}) {
   vi.mocked(hooks.useCapacity).mockReturnValue(queryResult(readout) as never)
-  vi.mocked(hooks.useAutomations).mockReturnValue(queryResult([GOVERNOR]) as never)
-  // `usePatchAutomation()` is called twice per render (once for the
-  // push-level radio, once for the governor-mode select — two SEPARATE hook
-  // instances so each shows its own Saving/Saved/Failed status in the real
-  // component). A `vi.fn()` mock has no notion of "hook call position" the
-  // way React's real hook slots do, and `useSettingsForm`'s render-time state
-  // adjustment (seeding the pin form) makes React restart this component's
-  // render at least once before settling — so a `mockReturnValueOnce` chain
-  // keyed to "1st call = push level, 2nd = governor" silently drifts onto the
-  // wrong control once that restart consumes the first two slots. One shared
-  // state for both is the fixture this file can make honestly; the
-  // independence itself is what `usePatchAutomation` being called twice
-  // (asserted below) stands for.
+  vi.mocked(hooks.useAutomations).mockReturnValue(
+    (automationsLoading ? loadingQueryResult() : queryResult(automations)) as never,
+  )
+  // `usePatchAutomation()` is called THREE times per render (push-level
+  // radio, governor-mode select, and the runner/governor half of the one
+  // capacity form — three SEPARATE hook instances so the two status-bearing
+  // controls each show their own Saving/Saved/Failed rather than borrowing
+  // whichever the operator touched last). A `vi.fn()` mock has no notion of
+  // "hook call position" the way React's real hook slots do, and
+  // `useSettingsForm`'s render-time state adjustment (seeding the form draft)
+  // makes React restart this component's render at least once before
+  // settling — so a `mockReturnValueOnce` chain keyed to call order silently
+  // drifts onto the wrong control once that restart consumes the first few
+  // slots. One shared state for all three is the fixture this file can make
+  // honestly; the independence itself is what the "three independent
+  // usePatchAutomation() instances" test below (checking a multiple-of-3
+  // raw count) stands for.
   vi.mocked(hooks.usePatchAutomation).mockReturnValue(patchState as never)
   vi.mocked(hooks.useUpdateProductPolicy).mockReturnValue(patchPolicyState as never)
   vi.mocked(hooks.useProject).mockReturnValue(queryResult(projectData ?? { automationPolicyUpdatedAt: null }) as never)
@@ -96,6 +113,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   updateProductPolicy.mockResolvedValue({})
   reorderMutateAsync.mockResolvedValue({})
+  patchMutateAsync.mockResolvedValue({})
 })
 
 describe('CapacityDetail', () => {
@@ -157,17 +175,18 @@ describe('CapacityDetail', () => {
     await waitFor(() => expect(screen.getByText(/Failed:/)).toBeInTheDocument())
   })
 
-  it('two independent usePatchAutomation() instances back the push-level radio and the governor-mode select', () => {
-    // The component itself creates two hook instances (see its own comment);
-    // a shared mock can't tell them apart by call position (see `setup`'s
-    // comment), so this is the honest form of that claim in this harness.
+  it('three independent usePatchAutomation() instances back the push-level radio, the governor-mode select, and the runner/governor form', () => {
+    // The component itself creates three hook instances (see its own
+    // comment); a shared mock can't tell them apart by call position (see
+    // `setup`'s comment), so this is the honest form of that claim in this
+    // harness.
     setup()
-    // Exactly two calls per render pass (`useSettingsForm`'s render-time pin-
+    // A multiple of 3 per render pass (`useSettingsForm`'s render-time pin-
     // form seeding makes React restart this component's render once before
-    // settling, so the raw count here is a multiple of 2, not exactly 2).
+    // settling, so the raw count here is a multiple of 3, not exactly 3).
     const calls = vi.mocked(hooks.usePatchAutomation).mock.calls.length
-    expect(calls).toBeGreaterThanOrEqual(2)
-    expect(calls % 2).toBe(0)
+    expect(calls).toBeGreaterThanOrEqual(3)
+    expect(calls % 3).toBe(0)
   })
 
   it('push-level descriptions come from the wire, not a client constant', () => {
@@ -395,5 +414,70 @@ describe('CapacityDetail', () => {
     setup()
     expect(screen.getByLabelText('ViberPit pin')).toBeDisabled()
     expect(screen.getByLabelText('KinDash pin')).toBeEnabled()
+  })
+
+  it('the runner form seeds from the automation configs and sits in the one form (spec 2026-09-20 §5.2 item 3)', () => {
+    setup()
+    expect(screen.getByLabelText('Runner ceiling')).toHaveValue('5')
+    expect(screen.getByLabelText('Daily budget')).toHaveValue('10')
+    expect(screen.getByLabelText('Sessions per account')).toHaveValue('2')
+    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
+    expect(document.getElementById('runner')).not.toBeNull()
+  })
+
+  it('lowering the ceiling saves runner-first without a confirmation', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '4' } })
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalled())
+    expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'backlog-runner', body: { config: { max_concurrent: 4 } } })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const runnerCall = patchMutateAsync.mock.invocationCallOrder[0]
+    const pinCall = updateProductPolicy.mock.invocationCallOrder[0]
+    expect(runnerCall).toBeLessThan(pinCall)
+  })
+
+  it('raising the ceiling asks for confirmation, then saves', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/8/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Raise the ceiling' }))
+    await waitFor(() => expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'backlog-runner', body: { config: { max_concurrent: 8 } } }))
+  })
+
+  it('a ceiling above the global cap is refused before anything is sent', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Runner ceiling'), { target: { value: '21' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Runner ceiling must not exceed the global cap (20)')).toBeInTheDocument()
+    expect(patchMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('sessions per account patches the governor', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('Sessions per account'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(patchMutateAsync).toHaveBeenCalledWith({ id: 'capacity-governor', body: { config: { sessions_per_account: 3 } } }))
+  })
+
+  it('with no Backlog Runner registered the ceiling and budget fields are disabled and nothing is sent', async () => {
+    setup({ automations: [GOVERNOR] })
+    expect(screen.getByLabelText('Runner ceiling')).toBeDisabled()
+    expect(screen.getByLabelText('Daily budget')).toBeDisabled()
+    expect(screen.getByLabelText('Sessions per account')).not.toBeDisabled()
+    expect(screen.getAllByText('Backlog Runner is not registered').length).toBeGreaterThan(0)
+  })
+
+  it('M8: while automations are still loading, the help text says so rather than claiming nothing is registered', () => {
+    setup({ automationsLoading: true })
+    expect(screen.getByLabelText('Runner ceiling')).toBeDisabled()
+    expect(screen.getByLabelText('Daily budget')).toBeDisabled()
+    expect(screen.getByLabelText('Sessions per account')).toBeDisabled()
+    expect(screen.getAllByText('Loading automations…').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Backlog Runner is not registered')).toBeNull()
+    expect(screen.queryByText('Capacity Governor is not registered')).toBeNull()
   })
 })

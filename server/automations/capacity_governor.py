@@ -28,10 +28,12 @@ class CapacityGovernor:
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY  # spawns nothing; fail closed
     config_schema = [
         ConfigField("push_level", "Push level", "enum", "steady", choices=list(PUSH_LEVELS),
-                    help="How much weekly quota to keep in reserve: conserve 40%, steady 20%, max 5%."),
+                    help="How much weekly quota to keep in reserve: conserve 40%, steady 20%, max 5%.",
+                    surface="capacity"),
         ConfigField("sessions_per_account", "Sessions per account", "int", 2, min=1,
                     help="Concurrent runner sessions one account can carry before its quota "
-                         "burns faster than it resets."),
+                         "burns faster than it resets.",
+                    surface="capacity"),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:

@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 
-from server.automations.capacity_apply import apply_fleet_plan, apply_product_plan
+from server.automations.capacity_apply import apply_product_plan
 from server.automations.capacity_store import live_plan
 from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
@@ -160,19 +160,18 @@ async def gather_implementation_snapshot(
     verified_repos: Mapping[str, str | None] | None = None,
 ) -> ImplementationSnapshot:
     from .backlog_runner import BacklogRunner, fold_global_mode
-    from .config_store import read_automation_config
 
     # ONE plan read for the whole snapshot (fix round 1, F3): both the
     # per-product overlay (coverage.policies, below) and the fleet ceiling
     # overlay (`config["max_concurrent"]`, decide()'s `global_cap`) must agree
-    # on the same plan, not two reads that could straddle a concurrent write.
+    # on the same plan, not two reads that could straddle a concurrent write —
+    # so this plan is handed to `runner_config.read_runner_config` instead of
+    # letting it read `live_plan()` again.
     plan = await live_plan()
     coverage = await gather_product_coverage(
         repos, requested_product=requested_product, verified_repos=verified_repos, plan=plan)
-    mode, config = await read_automation_config(
-        BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
-        log_key="backlog_runner")
-    config = apply_fleet_plan(config, plan)
+    from . import runner_config
+    mode, config = await runner_config.read_runner_config(plan=plan)
     try:
         states = await (context or AutomationContext(BacklogRunner.id)).list_target_states()
     except Exception:

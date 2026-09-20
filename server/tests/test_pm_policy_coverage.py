@@ -117,7 +117,7 @@ async def test_coverage_empty_unknown_project_and_auth(coverage_env, monkeypatch
 
 @pytest.mark.asyncio
 async def test_effective_preview_batches_identity_and_matches_dispatch(coverage_env, monkeypatch):
-    from server.automations import config_store
+    from server.automations import runner_config
     from server.automations.context import AutomationContext
     from server.automations.product_policy import decide_implementation
 
@@ -135,7 +135,7 @@ async def test_effective_preview_batches_identity_and_matches_dispatch(coverage_
 
     fetch = AsyncMock(side_effect=resolve)
     monkeypatch.setattr(target_identity, "resolve_repositories", fetch)
-    monkeypatch.setattr(config_store, "read_automation_config", AsyncMock(return_value=(
+    monkeypatch.setattr(runner_config, "read_automation_config", AsyncMock(return_value=(
         "on", {"max_concurrent": 5, "max_spawns_per_day": 5})))
     monkeypatch.setattr(AutomationContext, "list_target_states", AsyncMock(return_value={}))
     monkeypatch.setattr(product_admission, "read_dispatch_accounting", AsyncMock(return_value={}))

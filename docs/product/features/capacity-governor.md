@@ -58,6 +58,13 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   the effective global cap is `min(Σ enabled host caps, attention ceiling)` with a floor of 5 when
   both are unbounded, read only through `server/sessions/global_cap.py`. It is shown on
   Settings › Capacity › Limits and on the readout's Global row (`physical`, `attention`, `binding`).
+- **Runner form and settings surface (PR 3)** — Since spec PR 3 (2026-09-20) the runner ceiling (`max_concurrent`), the daily budget
+  (`max_spawns_per_day`) and `sessions_per_account` are edited on Delivery → Capacity in the same
+  form as the product pins; the automations' Config tabs show them read-only (`ConfigField.surface =
+  "capacity"`). A runner ceiling above the effective global cap is refused (422). The runner-layer
+  admission code is `runner_ceiling_full` (was `global_capacity_full`); the readout's `accounts`
+  block carries `sessionsPerAccount` and `accountCap` so the Runner row can say when quota binds.
+  `PATCH /api/automations/{id}` merges a partial `config` over the stored row.
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings
