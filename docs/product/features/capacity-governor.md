@@ -47,7 +47,7 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
 
 **Notes** —
 - **Push level** is the one fleet-wide knob: `conserve` / `steady` / `max` map to a 40% / 20% / 5%
-  weekly-usage reserve on Claude accounts. A higher reserve makes fewer accounts count as available,
+  weekly-usage reserve on Claude accounts (the share KEPT BACK; a per-account override replaces it, spec 2026-09-20 D4). A higher reserve makes fewer accounts count as available,
   so the derived fleet concurrency shrinks; `max` spends quota closer to the ceiling.
 - **Priority rank** is the one per-product knob (`Project.priority_rank`, nullable, 1 = highest,
   unranked products sort after ranked ones). The planner splits available fleet slots in rank order:
@@ -74,6 +74,17 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   reads it, both cards hide it, a stored row still validates. The `weighted` selection strategy
   orders like `priority`, and `priority` now serves products in **rank order** (`priority_rank`,
   then product age) — the same key `capacity_plan.product_order` uses.
+- **One reserve (PR 5)** — Since spec PR 5 (2026-09-20, D4) a per-account `weeklyReservePct` is an
+  OVERRIDE of the push level's reserve with the same meaning (percent of the weekly allowance kept
+  back; ceiling `100 − reserve`), and the plan honours it: `account_headroom(push_level=…)` judges
+  each account by `effective_reserve_pct` (override, else `RESERVE_PCT[push level]`) and every
+  readout row carries the `reservePct` it was judged by. A row's `reason` is `at_ceiling` when any
+  window has reached the hard ceiling (the selector's exclusion rule) and `over_reserve` when its
+  reserve window has reached the effective reserve's ceiling, so the governor and the selector agree
+  on both. `GET /api/accounts` publishes `effectiveReservePct` and `pushLevelReservePct`; Settings
+  › Capacity › Accounts labels the field **Weekly reserve override** (placeholder "push level's N%"),
+  and its over-reserve chip and usage marker sit at the effective ceiling. The CLI selector demotes
+  only explicit overrides (a human's own pick is never steered by the push level, D12).
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings

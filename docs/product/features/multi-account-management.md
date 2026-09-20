@@ -58,7 +58,7 @@ accounts (usage is billed per account, so a view inherits one account by design 
 - Account names are validated (`account_names.py`) so a stray/empty name can't collapse a
   per-account path onto the shared store root — the fix for the "phantom empty-named account"
   incident (#873).
-- Per-account state (nickname, enabled flag, weekly reserve, allow-extra-usage, account defaults)
+- Per-account state (nickname, enabled flag, weekly reserve override (percent kept back; blank = the capacity governor's push level), allow-extra-usage, account defaults)
   lives in the flock-guarded JSON ledger; `remove_account` drops both the store slot and the
   ledger entry (#627).
 
@@ -69,4 +69,4 @@ surface (list/refresh/delete/patch, no tokens) in `server/api/accounts.py`. PRs:
 setup-token capture), #345 (daemon-readable encrypted-file store), #685 (enable/disable without
 deleting), #873 (phantom empty-named account fix), #627 (remove_account drops ledger entry), #565
 (consolidated Accounts settings tab), #878 (per-account extra-usage opt-in), #558 (per-account
-weekly reserve).
+weekly reserve override).
