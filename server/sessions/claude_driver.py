@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
 import base64
-import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -11,9 +10,9 @@ import os
 import time
 import uuid
 from typing import Callable
-from claude_agent_sdk import (PermissionResultAllow, PermissionResultDeny, ResultMessage,
-                              TaskStartedMessage, TaskUpdatedMessage, TaskNotificationMessage,
-                              TERMINAL_TASK_STATUSES)
+from claude_agent_sdk import (AssistantMessage, PermissionResultAllow, PermissionResultDeny,
+                              ResultMessage, TaskStartedMessage, TaskUpdatedMessage,
+                              TaskNotificationMessage, TERMINAL_TASK_STATUSES)
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import brand
 from ccswitch import copilot as _copilot_mod
@@ -35,7 +34,7 @@ from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
 from .status import SEEDABLE_STATUSES, StatusSignals, derive_status
-from .transcript_repair import repair_resumed_transcript
+from .transcript_repair import find_transcript, repair_resumed_transcript
 from .types import ASSISTANT_KIND, is_assistant_kind
 
 _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -75,6 +74,43 @@ _CLOSE_GRACE_SEC = 5.0
 # still keeping a wedged exit from hanging teardown (#846).
 _CLOSE_AEXIT_TIMEOUT_S = 15.0
 
+# How long aclose() waits for the CLI to PERSIST the turn's last assistant message
+# before terminating it (#1012). The CLI writes its transcript lazily, and __aexit__
+# goes straight to terminate-then-kill — so a completion teardown (which fires in the
+# same tick as the turn's ResultMessage) could kill the subprocess with its final
+# reply still in the buffer, exactly as #1009 lost a real answer. Costs nothing in
+# the ordinary case: the entry is normally already on disk, so the first scan
+# returns and the wait is one stat. Only a genuinely unflushed reply pays, which is
+# the case worth paying for.
+_TRANSCRIPT_FLUSH_GRACE_S = 5.0
+_TRANSCRIPT_FLUSH_POLL_S = 0.1
+# Bytes of transcript tail scanned for the uuid. The entry we are waiting for is the
+# last (or near-last) line by construction; an entry bigger than this window simply
+# times out into the pre-#1012 behaviour rather than reading a multi-MB file 50x.
+_TRANSCRIPT_TAIL_BYTES = 1 << 20
+
+
+def _scan_transcript_tail(path: str, needle: str, *, last_size: int) -> tuple[bool, int]:
+    """``(is *needle* in the file's tail, the file's current size)``.
+
+    Skips the read entirely when the file has not grown since ``last_size`` — a poll
+    loop over a transcript that nothing is appending to must not re-read a megabyte
+    every tick. Never raises: an unreadable/absent transcript is simply "not yet".
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False, last_size
+    if size == last_size:
+        return False, size
+    try:
+        with open(path, "rb") as fh:
+            if size > _TRANSCRIPT_TAIL_BYTES:
+                fh.seek(size - _TRANSCRIPT_TAIL_BYTES)
+            return needle.encode() in fh.read(), size
+    except OSError:
+        return False, size
+
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
 
@@ -100,6 +136,40 @@ async def _aiter_one(message: dict):
 _EOF = object()
 
 
+# Detached reapers for a cursor whose in-flight ``__anext__`` outlived its own
+# cancellation. Holding the task (and through it the generator) is the point — see
+# ``_close_cursor_when_idle``.
+_ORPHAN_CURSOR_CLOSERS: set[asyncio.Task] = set()
+
+
+def _close_cursor_when_idle(gen, pending: asyncio.Future, phase: str) -> None:
+    """Close an abandoned cursor OURSELVES, once its frame is free again.
+
+    ``bounded_wait`` gave up on the in-flight ``__anext__``, so the generator is
+    still running: ``aclose()`` now would raise ``aclose(): asynchronous generator
+    is already running`` (#1870). Dropping the reference instead is worse — the
+    generator then falls to asyncio's asyncgen finalizer hook, which closes it in a
+    task NOBODY holds, and a close that raises (the SDK's transport re-raises a
+    non-zero CLI exit from its own ``finally``, #1869) surfaces as an unattributed
+    "Task exception was never retrieved". So: hold it, wait for the frame, close it,
+    and retrieve the outcome here.
+
+    The wait is deliberately unbounded — this task's whole job is to outlive the
+    teardown that gave up, and it costs one parked coroutine. Loop shutdown cancels
+    it like any other task (nothing here swallows a cancellation, #1164).
+    """
+    async def _reap() -> None:
+        try:
+            await asyncio.wait({pending})
+            await gen.aclose()
+        except Exception:  # noqa: BLE001 - a retired cursor's close cannot affect anything live
+            log.debug("cursor close failed after abandonment phase=%s", phase, exc_info=True)
+
+    task = asyncio.ensure_future(_reap())
+    _ORPHAN_CURSOR_CLOSERS.add(task)
+    task.add_done_callback(_ORPHAN_CURSOR_CLOSERS.discard)
+
+
 class _MessageSource:
     """The ONE cursor over ``client.receive_messages()``, shared by a prompt's drain and
     the idle listener, and safe to hand over between them by cancellation.
@@ -120,6 +190,10 @@ class _MessageSource:
 
     async def next(self):
         """The next SDK message, or ``_EOF`` once the stream has ended."""
+        if self._gen is None:
+            # A retired cursor IS at EOF: aclose() drops the generator so nothing
+            # can revive it, and both consumers already branch on _EOF.
+            return _EOF
         if self._pending is None:
             self._pending = asyncio.ensure_future(self._gen.__anext__())
         pending = self._pending
@@ -141,13 +215,31 @@ class _MessageSource:
     async def aclose(self, grace: float, *, phase: str) -> None:
         """Retire the cursor. Bounded like every other teardown wait: a cancel-immune
         ``__anext__`` (a stream that swallows the cancel, #846) is abandoned after
-        ``grace`` rather than wedging the close."""
+        ``grace`` rather than wedging the close.
+
+        The close itself is OWNED, never dropped and never blanket-suppressed.
+        ``suppress(BaseException)`` around an await in a teardown path swallows the
+        CALLER'S cancellation as readily as the generator's failure (#1164), and a
+        generator left unclosed is finalized by asyncio's GC hook in an unowned task
+        whose failure nobody retrieves (#1869, #1870). ``bounded_wait`` does both
+        jobs: it absorbs only the child's cancellation and it retrieves the outcome.
+        """
         pending, self._pending = self._pending, None
+        gen, self._gen = self._gen, None
+        if gen is None:
+            return
         if pending is not None and not pending.done():
             pending.cancel()
             await bounded_wait(pending, timeout=grace, phase=phase, cancel_grace=grace)
-        with contextlib.suppress(BaseException):
-            await self._gen.aclose()
+            # `pending.done()`, not bounded_wait's return: it answers False for a
+            # clean-but-slow cancellation too, and that generator IS free to close.
+            # Only an ABANDONED __anext__ still owns the frame.
+            if not pending.done():
+                _close_cursor_when_idle(gen, pending, phase)
+                return
+        closing = asyncio.ensure_future(gen.aclose())
+        await bounded_wait(closing, timeout=grace, phase=f"{phase}:cursor-close",
+                           cancel_grace=grace)
 
 
 class ClaudeAgentDriver:
@@ -326,6 +418,14 @@ class ClaudeAgentDriver:
         self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
+        # The CLI's own uuid for the last TOP-LEVEL assistant message it streamed —
+        # the same uuid it writes into the transcript entry for that message, which
+        # is what makes "has the CLI persisted its reply yet?" an observable question
+        # at teardown (#1012). Sub-agent messages are excluded: a Task's reply is not
+        # the turn's answer, and its sidechain entry is not what a resume reads back.
+        # Cleared once observed on disk, so a teardown never waits for a turn whose
+        # flush it already witnessed.
+        self._last_assistant_uuid: str | None = None
         self._last_suggestions: list[str] = []
         # Signature (sha1 of the last generated context) guarding _run_suggestions
         # against regenerating byte-identical suggestions across turn boundaries.
@@ -1194,6 +1294,13 @@ class ClaudeAgentDriver:
                     self._automation_background_tools.discard(tool_id)
         if isinstance(msg, ResultMessage):
             self._automation_terminal_observed = True
+        if isinstance(msg, AssistantMessage) and msg.parent_tool_use_id is None:
+            # Recorded from the CONSOLIDATED message, not from a stream delta: the
+            # partial-message events carry their own uuids, and only this one matches
+            # the transcript entry the flush wait looks for (#1012).
+            src = getattr(msg, "uuid", None)
+            if isinstance(src, str) and src:
+                self._last_assistant_uuid = src
         for e in self._tr.feed(msg):
             if isinstance(e, ev.ToolCall) and (
                 e.name in _AGENT_TOOLS or _is_background_launch(e.name, e.input)
@@ -1876,6 +1983,54 @@ class ClaudeAgentDriver:
         return (self._automation_close_ok and not self._automation_tasks
                 and not self._automation_background_tools)
 
+    async def _await_transcript_flush(self) -> None:
+        """Wait (bounded) for the CLI to persist the turn's last assistant message.
+
+        ``__aexit__`` terminates the subprocess and then kills it, and the completion
+        teardown schedules that in the SAME tick as the turn's ResultMessage — while
+        the CLI is typically still writing the reply it just streamed us. The SDK's
+        own ``subprocess_cli`` warns about closing mid-flush for exactly this reason,
+        and ``ensure_driver`` already waits on ``_releasing`` for it on the REBUILD
+        side; this is the missing half on the teardown side (#1012, #1009).
+
+        The condition is observable, so this waits on the fact rather than sleeping a
+        guessed interval: the CLI names each assistant message with a uuid and writes
+        the transcript entry under that same uuid. Bounded like every other teardown
+        wait (#846) — an overrun logs the uuid it gave up on and tears down anyway.
+        """
+        want = self._last_assistant_uuid
+        session = self._engine_session_id
+        # Nothing streamed, no CLI session to look up, or the stream already ended
+        # (the subprocess is gone — there is nobody left to flush anything).
+        if not want or not session or not self.config_dir or self._stream_ended:
+            return
+        grace = getattr(self, "_flush_grace", _TRANSCRIPT_FLUSH_GRACE_S)
+        if grace <= 0:
+            return
+        path = await asyncio.to_thread(find_transcript, self.config_dir, session)
+        if not path:
+            # Unobservable (no transcript for this engine session): never block a
+            # teardown on a question that cannot be answered.
+            log.debug("flush wait skipped session=%s: no transcript for %s",
+                      self.session_id, session)
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace
+        size = -1
+        while True:
+            found, size = await asyncio.to_thread(
+                _scan_transcript_tail, path, want, last_size=size)
+            if found:
+                self._last_assistant_uuid = None
+                return
+            if loop.time() >= deadline:
+                log.warning(
+                    "flush wait: CLI did not persist assistant message %s for "
+                    "session=%s within %.1fs — terminating anyway; that reply may be "
+                    "missing from the transcript (#1012)", want, self.session_id, grace)
+                return
+            await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
+
     async def aclose(self):
         # No more listening: an idle driver's listener is parked on the cursor and
         # must not be counted as a live turn to flush (the grace below is for those).
@@ -1915,6 +2070,9 @@ class ClaudeAgentDriver:
                                    cancel_grace=grace)
         if self._source is not None:
             await self._source.aclose(grace, phase=f"driver.source:{self.session_id}")
+        # LAST thing before terminate: the CLI is still running here, so it still has
+        # a chance to finish writing the reply it just streamed (#1012).
+        await self._await_transcript_flush()
         if self._client:
             closing = asyncio.ensure_future(self._client.__aexit__(None, None, None))
             completed = await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,

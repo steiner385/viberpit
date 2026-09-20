@@ -109,6 +109,14 @@ async def daemon_lifespan(app, orchestrator):
     """Daemon startup/shutdown: init the shared DB, start the orchestrator (poller +
     rotation + global pump), and stop it cleanly. Rehydrate is lazy — no driver spawned
     at startup, so a daemon start does not respawn every session at once."""
+    # The daemon owns every live `claude` process, so it is where the SDK's stream
+    # generators are abandoned and GC-finalized. Installed first, and from INSIDE
+    # the running loop (run_forever replaces anything set before it), so the
+    # unattributed "Task exception was never retrieved" those closes produce is
+    # named instead of filed as a fresh mystery (#1869, #1870).
+    from server.obs.asyncgen_finalize import install_asyncgen_finalize_reporter
+    install_asyncgen_finalize_reporter()
+
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 

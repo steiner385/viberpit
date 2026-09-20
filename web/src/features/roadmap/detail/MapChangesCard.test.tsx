@@ -19,7 +19,7 @@ vi.mock('@/api/hooks', () => ({
 
 function pointer(over: Partial<MapChangesPointer> = {}): MapChangesPointer {
   return {
-    branch: 'ccswitch/map-changes/kindash',
+    branch: 'pm/map-changes-kindash',
     prNumber: 12,
     prUrl: 'https://github.com/steiner385/viberpit/pull/12',
     status: 'open',

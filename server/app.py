@@ -167,6 +167,12 @@ async def _lifespan(app: FastAPI):
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()
 
+    # In single-process mode the edge owns the drivers too, so it sees the same
+    # unowned async-generator finalizations the daemon does (#1869, #1870). Must run
+    # inside the running loop — run_forever installs its own asyncgen hooks at start.
+    from server.obs.asyncgen_finalize import install_asyncgen_finalize_reporter
+    install_asyncgen_finalize_reporter()
+
     # Repo/branch chooser + clone auth via the pr-dashy App (issues #887, #912). The
     # edge process runs gitrepos.list_accessible_repos / list_remote_branches for the
     # New Session chooser, so it MUST register these seams too — serve.py registers them

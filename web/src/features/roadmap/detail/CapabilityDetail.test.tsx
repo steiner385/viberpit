@@ -81,7 +81,7 @@ const tasks = cap({
 })
 
 const OPEN_PR = {
-  branch: 'ccswitch/map-changes', prNumber: 31, prUrl: 'https://github.com/o/r/pull/31',
+  branch: 'pm/map-changes-kindash', prNumber: 31, prUrl: 'https://github.com/o/r/pull/31',
   status: 'open', openedAt: null, headSha: null, behind: false, conflicting: false,
 }
 
