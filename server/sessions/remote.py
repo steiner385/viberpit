@@ -7,12 +7,11 @@ the vertical-slice methods only.
 import asyncio
 import logging
 import time
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ccswitch.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
-from server.ipc.client import DaemonError, DaemonUnavailable
+from server.ipc.client import DaemonError, DaemonUnavailable, reconstruct_create_session_error
 from server.sessions.facade import rpc_deadline
 from server.sessions.engine import (
     AgentEngine,
@@ -20,7 +19,6 @@ from server.sessions.engine import (
     parse_agent_engine,
 )
 from server.sessions.orchestrator import ModelBlockedError
-from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -573,38 +571,25 @@ class RemoteOrchestrator:
         Isolated so the SAME reconstruction runs whether *kwargs* is the
         original request or the stripped rolling-upgrade retry — a DaemonError
         surfacing from the retry (e.g. a genuine AllAccountsBusy from the old
-        daemon) must not skip this and propagate raw.
+        daemon) must not skip this and propagate raw. The reconstruction itself
+        (``reconstruct_create_session_error``) is faithful to the in-process error
+        contract across the RPC boundary — the edge's create handler renders a
+        clear "all accounts at limit, resets <date>" message only if it catches
+        AllAccountsBusy by type, not a generic DaemonError → opaque 500.
         """
-        # Faithfully reconstruct the in-process error contract across the RPC
-        # boundary: the edge's create handler renders a clear "all accounts at
-        # limit, resets <date>" message only if it catches AllAccountsBusy by
-        # type. Without this re-raise it sees a generic DaemonError → opaque 500 →
-        # "Something went wrong." (mirrors run_command's KeyError re-raise.)
-        #
-        # gitrepos.CloneError / GhError get the same treatment: the daemon now
-        # owns repo→clone resolution (ensure_clone), so a clone failure raised
-        # there must still reach the edge's existing
-        # ``except (gitrepos.CloneError, gitrepos.GhError)`` → HTTP 502
-        # clone_failed handling, not degrade to a generic 500. Unlike
-        # AllAccountsBusy these carry no structured ``error_data`` payload —
-        # the message alone is the whole contract — so reconstruction only
-        # needs the type name.
         try:
             # The spawn budget, not the 30s default: this RPC blocks on worktree
             # create + claude start (see SPAWN_RPC_TIMEOUT for the duplicate it made).
             return await self._client.call("create_session", timeout=SPAWN_RPC_TIMEOUT,
                                            **kwargs)
         except DaemonError as exc:
-            if exc.err_type == "AllAccountsBusy":
-                data = exc.data or {}
-                reset = data.get("earliest_reset")
-                earliest = datetime.fromisoformat(reset) if reset else None
-                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
-            if exc.err_type in ("CloneError", "GhError"):
-                from ccswitch import gitrepos
-                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
-                raise exc_cls(exc.message) from exc
-            raise
+            # Shared with the primary daemon's own loopback call into its co-located
+            # edge (server/sessions/internal_dispatch.py) — one place decides which
+            # err_types get reconstructed into their real exception type.
+            reconstructed = reconstruct_create_session_error(exc)
+            if reconstructed is exc:
+                raise
+            raise reconstructed from exc
 
     async def create_session(self, **kwargs) -> SessionRecord:
         if "engine" in kwargs:
