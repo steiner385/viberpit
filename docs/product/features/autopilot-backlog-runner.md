@@ -501,9 +501,8 @@ PR linkage, never on labels alone.
   mirror or GitHub is currently wrong about.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
-  per-repo fairness (#771) — `priority` now serves the ON products' repos oldest-first by
-  `Project.created_at`, the deterministic stand-in for the retired hand-ordered `enabled_repos`
-  list. **Conflicting work shares one durable ownership store** (`ownership.py`, #1611).
+  per-repo fairness (#771) — `priority` (and its deprecated alias `weighted`, spec 2026-09-20 D6) now serves the ON products' repos in rank order (`priority_rank`, unranked last, then `Project.created_at`).
+  **Conflicting work shares one durable ownership store** (`ownership.py`, #1611).
   Canonical GitHub node IDs identify every issue in a batch and every PR plus its verified
   linked issues. Automatic and manual dispatch, PR repair, consolidation, and map branch
   updates acquire their complete target set together. Repository aliases and overlapping
