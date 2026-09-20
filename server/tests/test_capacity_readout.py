@@ -456,3 +456,24 @@ def test_global_row_degrades_to_nulls_without_the_seam():
     r = asyncio.run(build_readout(_make_sources(global_cap=6)))
     assert r["global"]["physical"] is None and r["global"]["attention"] is None
     assert r["global"]["binding"] is None
+
+
+def test_wired_global_limits_degrades_to_null_when_the_read_fails(monkeypatch):
+    """A DB blip in the Global row's derivation must not 500 the readout (same
+    contract as the plan seam's _safe_plan)."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from server.automations import capacity_wiring
+
+    async def boom(db):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(capacity_wiring, "read_global_cap", boom)
+    orch = SimpleNamespace(
+        _max_active_sessions=AsyncMock(return_value=6), _active_session_count=lambda: 2,
+        _backlog_read_config=AsyncMock(), _backlog_ctx=SimpleNamespace(list_target_states=AsyncMock()),
+        _backlog_count_candidates=AsyncMock(), _capacity_governor_read_config=AsyncMock(),
+    )
+    src = capacity_wiring.sources_for(orch)
+    assert asyncio.run(src.global_limits()) is None

@@ -94,9 +94,16 @@ def sources_for(orch) -> CapacitySources:
                 select(DbSession.status).where(DbSession.id == sid))).first()
         return None if row is None else row[0]
 
-    async def global_limits() -> dict:
-        async with db_session() as db:
-            return (await read_global_cap(db)).to_wire()
+    async def global_limits() -> dict | None:
+        """The Global row's derivation (spec 2026-09-20 D3). Same contract as
+        ``_safe_plan``: a DB blip degrades the three fields to null instead of
+        500ing ``GET /api/capacity`` or breaking the governor's tick."""
+        try:
+            async with db_session() as db:
+                return (await read_global_cap(db)).to_wire()
+        except Exception:
+            log.warning("capacity_wiring.global_limits_read_failed", exc_info=True)
+            return None
 
     return CapacitySources(
         # `global_cap` is the same effective value the admission gate compares
