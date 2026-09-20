@@ -27,8 +27,9 @@ Every route page and every detail pane was inventoried (sections, existing tabs,
 | Delivery → automation (`AutomationDetail.tsx`) | yes, 5 | Status holds 7 blocks incl. a table and the runner's dispatch controls; first tab is labelled "Status" while every other page says "Overview" | **reorganise** |
 | Session body (`SessionBody.tsx`) | hand-rolled | The only `role="tablist"` outside `ui/Tabs`; state in `useState`, not the URL | **align** (primitive + `?view=`) |
 | Delivery → Capacity (`CapacityDetail.tsx`) | no | 4 concerns on one scroll — but pinned single-scroll by the capacity settings spec §5.2 (owner decision, same day) | **exception on record** |
-| Settings › Notifications | n/a (Split) | 4 concerns separated by `border-t`, two CRUD lists; Split pages never get a strip | **follow-up issue** (settings-group idiom / sibling sections) |
-| Roadmap portfolio, capability; initiative page | yes | on the standard already (3–5 tabs, URL state, tiles → tabs) | fine |
+| Settings › Notifications | n/a (Split) | 4 concerns separated by `border-t`, two CRUD lists; Split pages never get a strip | **follow-up issue** (settings-group idiom / sibling sections) (#2077) |
+| Roadmap portfolio, initiative page | yes | on the standard already (3–5 tabs, URL state, tiles → tabs) | fine |
+| Roadmap → capability (`CapabilityDetail.tsx`) | yes, 5 | Overview mounts `CapabilityLinksEditor`, a chip editor (§5 keeps editors off the Overview) | **follow-up #2078** |
 | Delivery → CI repo | no | four homogeneous report tables under one window | fine (one question: "how healthy is CI?") |
 | Settings sections (General, Sessions, Appearance, …) | n/a | 1–4 `SettingsGroup`s each | fine |
 | Inbox proposal detail | no | one decision task | fine (exception on record) |
@@ -59,7 +60,9 @@ Tabs: **Overview · In flight · Needs you · Ranked · Dependencies · Automati
 - **Overview** keeps the identity block (description, repositories, mirrored count, Edit,
   `+ Capability`) and exactly three summary blocks (the §5 budget): the needs-you notice; the
   map-changes card / onboarding wizard (one "what the map is waiting on" notice: the wizard
-  renders until live, the card only with an open PR, so at most one shows at a time); and the
+  renders until live and the card is gated to render only when the project is not known to be
+  non-live — `!project || project.onboardingState === 'live'` — so the wizard owns the PR link
+  while onboarding is in progress and the card only picks it up once the product is live); and the
   in-flight section as a **preview** — the first three in-flight initiatives with their tracks
   and a "See all N in flight" link that calls `setTab('in-flight')`, or one line saying nothing
   is in flight. The roadmap-hygiene card (`RoadmapHealthCard`) is a "what needs a person" notice,
@@ -78,6 +81,8 @@ PR Doctor; five for the others).
 - **Overview** (was Status; id `overview`, label from `AUTOMATION_TAB`): description, oversight
   (responsibility, scope, relationships), the runner's workload notes, and the actionable-items
   list (`AutomationActions`) — the last is the page's "needs you" notice and self-hides when empty.
+  The oversight block (responsibility, scope, relationships — links to related automations) is
+  part of the identity block, not a summary block.
 - **Queue** (new, offered only to automations that have dispatchable work: `backlog-runner`,
   `pr-doctor`): for the runner, the per-product table, the "Custom dispatch…" button and
   `BacklogGroupsPanel` (+ its dialog); for PR Doctor, `ConsolidatePanel`. Which automations have a

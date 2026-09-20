@@ -18,7 +18,7 @@ first tab that was a dumping ground of eight blocks. This document is that missi
 
 | Surface | Rule |
 |---|---|
-| Standard page; detail pane in a list/detail chassis (product, capability, initiative, automation, CI repo, archived session) | **This standard.** |
+| Standard page; detail pane in a list/detail chassis (product, capability, initiative, automation, CI repo) | **This standard.** |
 | Split page (Settings) | No tab strip (page contract §2.2). The rail is the partition; a section is organised in `SettingsGroup`s. A section with more than four groups or with two CRUD lists splits into **sibling sections**, governed by the settings redesign spec. |
 | Workspace page (Sessions, Pipeline) | The board is one surface. A `Tabs` strip there is a **selector** (Pipeline's repo strip) or a **view toggle** (the session's Conversation / Browser), not a partition by question. §7 mechanics still apply. |
 | Reader page (archived review, sub-agent view) | One document; no tabs. |
@@ -63,8 +63,9 @@ the same PR.
   Config; only the Backlog Runner and PR Doctor have a Queue. Never hide a tab because it is empty
   *right now* — render the tab with a count of zero and an `EmptyState`, so the user learns the
   question exists.
-- **Order.** Overview first, then the tabs a person acts on (Needs you, Queue), then the state
-  tabs (In flight, lists), then configuration, then history (Events, Sessions).
+- **Order.** Overview first. Where the page has stat tiles, the tabs follow the tile order so a
+  tile and its tab sit in the same sequence. Configuration tabs come before history tabs (Events,
+  Sessions).
 
 ## 5. The Overview budget
 
@@ -87,8 +88,8 @@ is simple.
 
 ## 6. Above the tabs
 
-Only two things sit between the page header and the strip, because they must stay visible on
-every tab:
+Only two things sit between the page header and the strip (or, in a list/detail chassis, at the
+top of the detail pane), because they must stay visible on every tab:
 
 - **Stat tiles** (`StatTiles`): counts; every tile that counts something a tab lists calls
   `setTab` for that tab on click, and the tile reads the **same number** as the tab's badge (the
@@ -129,7 +130,8 @@ An exception is a decision with a reason and a re-review trigger, not an oversig
 | Surface | Why it is not on this standard | Re-review when |
 |---|---|---|
 | Delivery → Capacity (`CapacityDetail.tsx`) | The capacity settings spec (2026-09-20, §5.2) pins it as one scroll: it is a comparison surface where a person sets a dial while looking at the stack that dial changes. | after that spec's PR 6 lands, if the page still reads as a lump |
-| Settings › Notifications | Split variant; the fix is the `SettingsGroup` idiom and sibling sections, owned by the settings redesign, not tabs. | the settings redesign PR that migrates it |
+| Settings › Notifications | Split variant; the fix is the `SettingsGroup` idiom and sibling sections, owned by the settings redesign, not tabs. | the settings redesign PR that migrates it (#2077) |
+| Capability detail Overview | mounts the links chip editor; §5 says editors get a tab | #2078 |
 | Pipeline repo strip | A selector, not a partition (§2). | never |
 | Inbox proposal detail | One decision task; splitting hides the evidence from the Accept button. | if a third body kind appears |
 | Pipeline legend | A glossary (§2). | never |
