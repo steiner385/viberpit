@@ -221,6 +221,31 @@ class DaemonError(Exception):
         self.data = data
 
 
+def reconstruct_create_session_error(exc: DaemonError) -> Exception:
+    """The one place a ``create_session`` error envelope is turned back into the
+    real exception type a caller might be catching (``AllAccountsBusy``,
+    ``gitrepos.CloneError``/``GhError``) — shared by every transport that carries a
+    create_session call over this envelope shape (the mTLS RPC client in
+    :class:`server.sessions.remote.RemoteOrchestrator`, and the primary daemon's own
+    loopback call into its co-located edge, :mod:`server.sessions.internal_dispatch`).
+    An unrecognized ``err_type`` is returned as-is: the caller still has *a* typed
+    exception (``DaemonError``) to raise, just not one it can pattern-match on.
+    """
+    if exc.err_type == "AllAccountsBusy":
+        from datetime import datetime
+
+        from server.sessions.selection import AllAccountsBusy
+        data = exc.data or {}
+        reset = data.get("earliest_reset")
+        earliest = datetime.fromisoformat(reset) if reset else None
+        return AllAccountsBusy(earliest, data.get("kind", "at_ceiling"))
+    if exc.err_type in ("CloneError", "GhError"):
+        from ccswitch import gitrepos
+        exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
+        return exc_cls(exc.message)
+    return exc
+
+
 def daemon_ws_connect(endpoint: Endpoint, path: str, ssl_ctx=None):
     """Return a websockets connect context manager for a daemon WS path.
 

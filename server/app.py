@@ -27,6 +27,7 @@ from server.version import running_git_sha
 
 # API routers (T036–T038)
 from server.api.sessions import router as sessions_router
+from server.api.internal_sessions import router as internal_sessions_router
 from server.api.attachments import router as attachments_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
@@ -879,6 +880,7 @@ def create_app(
 
     # REST API routers (T036–T038)
     app.include_router(sessions_router)
+    app.include_router(internal_sessions_router)
     app.include_router(attachments_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)

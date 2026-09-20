@@ -261,6 +261,15 @@ try:
         # 2's runner refuses to read a plan the switch has disowned.
         capacity_governor_enabled: bool = Field(
             default=True, alias="VIBERPIT_CAPACITY_GOVERNOR_ENABLED")
+        # Automation dispatch balance (2026-09-20): the primary daemon's own
+        # automation loops (Backlog Runner, PR Doctor, ...) call their co-located
+        # edge's internal API instead of spawning unconditionally on the primary's
+        # own host, so an automation-originated session gets the same capacity
+        # ranking (server/sessions/fleet.py:rank_hosts) a human/API dispatch gets.
+        # Off = the pre-existing direct local create (server/sessions/
+        # internal_dispatch.py falls back to it on any transport failure anyway).
+        automation_host_routing_enabled: bool = Field(
+            default=True, alias="VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED")
         # Per-session in-process MCP surface for coding sessions (session tools spec §3).
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
@@ -572,6 +581,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         capacity_governor_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        automation_host_routing_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_tools_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")

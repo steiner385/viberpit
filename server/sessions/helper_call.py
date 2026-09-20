@@ -71,26 +71,45 @@ def helper_cwd() -> str:
     return str(path)
 
 
+def is_account_helper_ready(name: str) -> bool:
+    """True if *name* is enabled and not needs-reauth in the ledger.
+
+    The single source of truth for "would this account's own credentials answer
+    a helper call, or just fail" — used both to filter candidates in
+    :func:`_pick_enabled_account` and by a caller that already knows WHICH
+    account it wants (its governed session's own account) and must verify it
+    before composing that account's config dir directly. Composing
+    unconditionally let a disabled/de-authed account spawn a CLI call certain to
+    answer "Not logged in", which the SDK surfaces as the opaque "Claude Code
+    returned an error result: success" (#1817). Fails CLOSED (False) on any
+    ledger error — an unverifiable account is never assumed ready; callers fall
+    back to :func:`pick_helper_config_dir`, which degrades safely on its own.
+    """
+    try:
+        from ccswitch import ledger as _ledger
+        with _ledger.locked_ledger() as led:
+            return (_ledger.is_account_enabled(led, name)
+                    and _ledger.get_status(led, name) != "needs-reauth")
+    except Exception:
+        return False
+
+
 def _pick_enabled_account(provider: str) -> str | None:
     """Return the name of the first live, enabled account for *provider*.
 
     Shared selection rule behind every helper-provider picker below: enabled,
-    not needs-reauth. Fail-open: returns None (including on any ledger lookup
-    failure) so callers degrade safely rather than raising out of a
-    best-effort helper call.
+    not needs-reauth (see :func:`is_account_helper_ready`). Fail-open: returns
+    None (including on any ledger lookup failure) so callers degrade safely
+    rather than raising out of a best-effort helper call.
     """
     try:
         from ccswitch import accounts as _accts
-        from ccswitch import ledger as _ledger
-        with _ledger.locked_ledger() as led:
-            for name, acct_provider in _accts.all_accounts():
-                if acct_provider != provider:
-                    continue
-                if not _ledger.is_account_enabled(led, name):
-                    continue
-                if _ledger.get_status(led, name) == "needs-reauth":
-                    continue
-                return name
+        for name, acct_provider in _accts.all_accounts():
+            if acct_provider != provider:
+                continue
+            if not is_account_helper_ready(name):
+                continue
+            return name
     except Exception:
         pass
     return None
