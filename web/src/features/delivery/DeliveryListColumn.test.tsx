@@ -87,4 +87,12 @@ describe('DeliveryListColumn', () => {
     mount({ automations: [], automationsLoading: true })
     expect(screen.getAllByTestId('skeleton').length).toBeGreaterThan(0)
   })
+  it('Capacity scope: every row with an owner page links to it (spec 2026-09-20 C3)', () => {
+    mount({ scope: 'capacity', capacity: CAPACITY })
+    const list = screen.getByRole('list', { name: 'Capacity' })
+    expect(within(list).getByRole('link', { name: 'Global cap' })).toHaveAttribute('href', '/settings/capacity')
+    expect(within(list).getByRole('link', { name: 'Hosts' })).toHaveAttribute('href', '/settings/fleet')
+    expect(within(list).getByRole('link', { name: 'Accounts' })).toHaveAttribute('href', '/settings/accounts')
+    expect(within(list).getByRole('link', { name: 'Products' })).toHaveAttribute('href', '/delivery?scope=capacity#products')
+  })
 })
