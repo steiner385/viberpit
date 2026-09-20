@@ -487,3 +487,53 @@ def test_patch_runner_ceiling_above_the_global_cap_is_422():
         # Nothing was written by the refused request.
         rows = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
         assert rows["backlog-runner"]["config"]["max_concurrent"] == 5
+
+
+def test_patch_with_mode_and_an_over_cap_ceiling_leaves_the_mode_unchanged():
+    """M10: a PATCH body can carry both `mode` and `config` in one request. When
+    the config half is refused (over-cap ceiling) the whole PATCH must 422 —
+    nothing partially applies, so the mode stays whatever it already was."""
+    with _client() as c:
+        ok = c.patch("/api/automations/backlog-runner", headers=H,
+                     json={"mode": "on", "config": {"max_concurrent": 5}})
+        assert ok.status_code == 200, ok.text
+
+        r = c.patch("/api/automations/backlog-runner", headers=H,
+                    json={"mode": "off", "config": {"max_concurrent": 6}})
+        assert r.status_code == 422, r.text
+
+        rows = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
+        assert rows["backlog-runner"]["mode"] == "on"
+        assert rows["backlog-runner"]["config"]["max_concurrent"] == 5
+
+
+def test_patch_merge_ignores_an_unknown_key_stranded_on_the_stored_row():
+    """Fix wave M4: an old row can carry a key its (narrowed) schema no longer
+    knows — e.g. a field a later migration dropped without adding it to
+    `retired_config_keys`. Merging that stale key back in for validation would
+    422 every partial PATCH forever, since nothing ever clears it. The merge
+    must drop unknown stored keys before validating.
+
+    Startup's `ensure_rows()` already inserted this row (enabled=False, no
+    config) before the request path runs, so the seed UPDATES the existing row
+    rather than inserting a second one with the same primary key."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Automation as AutomationRow
+
+    async def _seed():
+        async with db_session() as db:
+            row = (await db.execute(select(AutomationRow).where(
+                AutomationRow.id == "capacity-governor"))).scalar_one()
+            row.enabled = True
+            row.config = {"push_level": "steady", "zombie": 1}
+
+    with _client() as c:
+        assert c.portal is not None
+        c.portal.call(_seed)
+
+        r = c.patch("/api/automations/capacity-governor", headers=H,
+                    json={"config": {"push_level": "max"}})
+        assert r.status_code == 200, r.text
+        assert "zombie" not in r.json()["config"]
