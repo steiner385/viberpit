@@ -40,11 +40,14 @@ resolves" behavior for a binary that may well be current.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shlex
 import shutil
 import subprocess
+
+from server.obs.logdedupe import LogThrottle, log_throttled
 
 log = logging.getLogger(__name__)
 
@@ -52,17 +55,20 @@ _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 # One-shot dedupe so the loud logs above don't spam the daemon's frequent
 # automation ticks (each of which builds a ``ClaudeAgentOptions``).
-_warned: set[str] = set()
+#
+# An infinite window, rather than a second private latch: this is the same
+# "suppress a record a polling loop repeats" problem `server/obs/logdedupe.py`
+# owns, and the answer here is just its degenerate case. What the binary at a
+# given path is cannot change within one process, so there is nothing to
+# re-report and no reason to pace it — but the eviction bound and the
+# demote-to-DEBUG behaviour are shared rather than re-typed.
+_warned = LogThrottle(window_s=math.inf)
 
 Version = tuple[int, int, int]
 
 
 def _warn_once(key: str, level: int, msg: str, *args: object) -> None:
-    if key in _warned:
-        log.debug(msg, *args)
-        return
-    _warned.add(key)
-    log.log(level, msg, *args)
+    log_throttled(log, _warned, key, level, msg, *args)
 
 
 def _parse_version(text: str) -> Version | None:

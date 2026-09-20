@@ -326,7 +326,12 @@ async def test_request_failure_becomes_a_scrubbed_catalog_error() -> None:
     assert "sk-abcdefghijklmnop" not in str(excinfo.value)
     # Since #1172 an upstream failure reduces to a fixed category rather than a
     # redacted message: nothing peer-controlled survives into the catalog error.
-    assert str(excinfo.value) == "runtime_error"
+    # Since #1861 that category names the failure instead of collapsing every
+    # app-server fault onto `runtime_error`, and a peer REJECTION additionally
+    # carries its JSON-RPC code — an int `from_wire` validated, never text. The
+    # message is still gone, which is what this test exists to hold.
+    assert str(excinfo.value) == "peer_error:-32603"
+    assert "upstream" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

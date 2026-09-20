@@ -1864,10 +1864,18 @@ class CodexAgentDriver:
             await self.emit_error(_RESYNC_CODE, _RESYNC_MESSAGE)
             await self._signal_recoverable("process_crash")
             return
+        # Two steps, reported separately. They fail for unrelated reasons and call
+        # for unrelated responses: a `thread_read` failure means the thread is gone
+        # or the app-server is unreachable, while a `profile_transition` failure
+        # means the thread loaded fine and the policy could not be applied to it.
+        # The single combined `except` reported both as one opaque `runtime_error`
+        # (#1861), which named neither the step nor the fault.
+        stage = "thread_read"
         try:
             await self._client().read_thread(
                 schema.ThreadReadParams(thread_id=thread_id, include_turns=False)
             )
+            stage = "profile_transition"
             response = await self._transition_profile(self._profile, restore_on_guard=False)
         except Exception as exc:  # noqa: BLE001 -- one typed surface
             log_event(
@@ -1875,6 +1883,7 @@ class CodexAgentDriver:
                 logging.ERROR,
                 "codex.driver.resync_failed",
                 session=self.session_id,
+                stage=stage,
                 error=scrub_exception(exc),
             )
             await self.emit_error(

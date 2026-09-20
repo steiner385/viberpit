@@ -105,8 +105,57 @@ def contains_secret_shaped_value(text: str) -> bool:
     return scrub_secret_shapes(text) != text
 
 
+def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
+    """Category per app-server failure class.
+
+    Every one of these subclasses ``RuntimeError``, so without this table they
+    all collapsed onto the generic ``runtime_error`` and no log could say which
+    one happened — that is what made `codex.driver.resync_failed
+    error=runtime_error` unactionable (#1861), and with it every downstream
+    report of the same incident (#1852, #1859, #1860). The categories are fixed
+    literals authored here; nothing peer-controlled reaches them.
+
+    Built on demand rather than at import: ``server.codex.protocol`` imports this
+    module, so a module-level import of it would be circular.
+    """
+    from server.codex import protocol as _p
+
+    return (
+        (_p.CodexRequestTimeout, "timeout"),
+        (_p.CodexTransportClosed, "transport_closed"),
+        (_p.CodexFramingError, "framing_error"),
+        (_p.CodexNotInitializedError, "not_initialized"),
+        (_p.CodexRequestOverloaded, "overloaded"),
+        (_p.CodexExternalAuthDisabled, "external_auth_disabled"),
+    )
+
+
 def scrub_exception(exc: BaseException) -> str:
-    """Reduce an exception to a fixed diagnostic category, never its message."""
+    """Reduce an exception to a fixed diagnostic category, never its message.
+
+    App-server failures get one category *each* rather than a shared
+    ``runtime_error``: which transport fault occurred is the whole diagnostic
+    value of the record, and unlike a message it is not peer-controlled — the
+    category comes from the exception class this process raised.
+
+    A peer-reported failure additionally carries its JSON-RPC ``code``, the one
+    peer-supplied value this module has always been willing to relay (see the
+    module docstring: "fixed categories, reason codes, supported method names,
+    and numeric protocol codes"). `from_wire` only accepts a real ``int``, so no
+    string can ride out through it. The message stays discarded — on codex-cli
+    0.153.2 a single code covers several distinct conditions, and the only way to
+    tell them apart would be to pattern-match native text, which this module
+    exists to refuse.
+    """
+    from server.codex.protocol import CodexProtocolError, CodexRequestFailed
+
+    if isinstance(exc, CodexRequestFailed):
+        return f"peer_error:{exc.code}"
+    if isinstance(exc, CodexProtocolError):
+        for cls, category in _protocol_categories():
+            if isinstance(exc, cls):
+                return category
+        return "protocol_error"
     if isinstance(exc, TimeoutError):
         return "timeout"
     if isinstance(exc, OSError):
