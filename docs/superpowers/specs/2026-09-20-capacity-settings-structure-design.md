@@ -1,7 +1,7 @@
 # Capacity settings — one structure for throughput, hosts, and limits
 
-**Status:** proposed, awaiting review (autonomous session; every decision in §4 records the
-alternatives considered so the reviewer can overturn it) · **Date:** 2026-09-20 · **Parents:**
+**Status:** proposed; D1, D2, D3, D12 and D13 confirmed by the owner in the 2026-09-20 walkthrough
+(§11), D6 and D7 still open (§10) · **Date:** 2026-09-20 · **Parents:**
 `2026-09-19-capacity-governor-design.md` (the five-layer ceiling stack and the Delivery → Capacity
 readout), `2026-09-04-settings-redesign-design.md` (Settings IA: five groups, `settingsDefs`,
 chassis and save contract), `2026-09-12-product-automation-policy-design.md` (per-product policy),
@@ -21,7 +21,7 @@ five pages under three nav sections, and the readout links to them one way only:
 | Accounts (`enabled`, `weeklyReservePct`) | Settings › Accounts | Accounts |
 | Runner ceiling (`max_concurrent`) | Delivery → Automations → Backlog Runner → Config | Delivery |
 | Products (`priority_rank`, `capacity_mode`, `max_in_flight`) | Delivery → Capacity **and** Roadmap → product → Automation card | Delivery, Roadmap |
-| Push level, governor mode, `sessions_per_account` | Delivery → Capacity (first two); Backlog Runner-style config page (third) | Delivery |
+| Push level, governor mode, `sessions_per_account` | Delivery → Capacity (first two); the governor's generic config page (third) | Delivery |
 
 Three things make this confusing rather than merely spread out:
 
@@ -35,10 +35,11 @@ Three things make this confusing rather than merely spread out:
    retention and the AI assistant; the per-host caps it should relate to are two groups away. Nothing
    says how `maxActiveSessions = 10` relates to `dobby 4 + rocky 6 = 10`; they are independent
    numbers that happen to match.
-3. **Some knobs have no owner page, and some have two.** Product pin / cap mode / rank are editable
-   on Delivery → Capacity and on the Roadmap product card with different save models and different
-   optimistic-concurrency handling. The runner ceiling is shown on Capacity but editable only on the
-   runner's config tab. The per-account reserve is editable but never read by the plan.
+3. **One number stands in for four constraints.** Throughput is limited by runners (hosts), by
+   Claude account quota, by how many PRs a repo's CI and merge queue can absorb at once, and by how
+   much parallel work the owner wants to supervise. The global cap is a single hand-typed integer
+   that silently conflates all four, and the one that bites most on KinDash — CI and merge
+   throughput — has no cap at all, only an ordering hint (§3.3, C23).
 
 ## 2. Goals and non-goals
 
@@ -49,18 +50,19 @@ Three things make this confusing rather than merely spread out:
    why is nothing running?" (allocation you steer weekly, plus the live readout).
 2. Every capacity number has exactly one page where it is edited, and every page that shows it
    links there.
-3. The relationships between layers are stated on the page, not left for the person to infer:
-   the global cap derives from host caps unless overridden; the runner ceiling is a share of the
-   global cap; the per-account reserve overrides the push level's reserve.
+3. Each of the four constraints has its own dial at its own layer, and the page says so: the
+   global cap is the lower of a *physical* ceiling (derived from hosts) and an *attention* ceiling
+   (typed); quota caps the *runner* ceiling; CI and merge throughput caps each product's *pipeline*.
 4. One vocabulary. One meaning per word across Settings, Delivery, Roadmap, and the API.
 
 **Non-goals**
 
-- No change to the governor's planner (`plan_capacity`), admission (`decide_implementation`), or the
-  queue semantics of the global cap. This is a structure-and-relationships change.
+- No change to the governor's planner (`plan_capacity`) beyond feeding it the pipeline cap (D13),
+  and none to the queue semantics of the global cap.
 - No sixth top-level nav entry. The five-entry nav is a recorded finish-line decision.
 - No settings search (still the governor spec's phase 3).
 - Codex / Copilot quota in the availability budget (still gated on #1444).
+- No CI-minutes accounting. The pipeline cap counts PRs, not runner minutes.
 
 ## 3. Audit findings
 
@@ -99,6 +101,7 @@ Severity: **H** misleads or blocks · **M** costs time or trust · **L** polish.
 | C17 | M | Three `max_active_sessions` clamps and a duplicated reader; two `active session` counters with a documented outage when the wrong one was published. | `orchestrator.py:3022`; `api/sessions.py:484-499`; `api/settings.py:227`; `daemon.py:463-487` |
 | C18 | M | Three ways for the plan to silently stop governing: `mode`, `VIBERPIT_CAPACITY_GOVERNOR_ENABLED`, and `PLAN_MAX_AGE_S` staleness. The readout returns `killSwitch` and `governorMode`; the UI reads neither (the select reads `useAutomations()` instead). | `capacity_governor.py:93`; `capacity_apply.py:26`; `CapacityDetail.tsx:172,304-311` |
 | C19 | M | Ceilings outside the five-layer stack: `max_spawns_per_day` (daily budget), `CCSWITCH_TEST_SLOT_CAP` (not even in `_MANAGED`), `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`. None appear on either capacity page. | `backlog_runner.py:275`; `config.py:278-291`; `settings.py:42-56` |
+| C23 | H | **The product pin does not bound PRs in CI.** A runner slot frees when the PR *merges* — unless PR Doctor covers the repo, in which case it frees as soon as the PR is open with auto-merge armed. A product at "max in flight 4" can therefore have four sessions working plus any number of PRs stacked in CI, each rebase cycle re-exposing them to flaky checks. `_backlog_repo_load` already counts handed-off work until merge, but only to *order* repos fairly; nothing refuses a claim on it. | `backlog_selection.py:51-60`; `orchestrator.py:6335-6360`; `backlog_runner.py:2037-2038` |
 
 ### 3.4 Data freshness
 
@@ -110,19 +113,23 @@ Severity: **H** misleads or blocks · **M** costs time or trust · **L** polish.
 
 ## 4. Decisions (with alternatives)
 
+Decisions marked **✔** were confirmed by the owner on 2026-09-20 (§11).
+
 | # | Question | Decision | Alternatives considered |
 |---|---|---|---|
-| D1 | Where do capacity dials live? | **Two pages by question, not one page by topic.** *Settings › Capacity* holds **supply**: what the fleet can run (limits, hosts, accounts). *Delivery → Capacity* holds **allocation and readout**: how automation spends it (push level, governor, runner ceiling, product rank / pin / mode) and the live stack. Each page carries a read-only summary of the other and links to it. | **(a) Everything on Delivery → Capacity**, retiring Settings › Hosts and the General field: host lifecycle (add, endpoint, upgrade, remove) and account auth flows are provisioning, not delivery steering; Delivery's list/detail chassis would host entity CRUD it was not built for, and Settings' scope badges / confirmation tiers would be lost. **(b) A top-level Capacity nav entry** holding all three: breaks the five-entry nav decision. **(c) Leave placement, add cross-links only**: this is what the governor spec's D9 already did; the screenshots show it is not enough. |
-| D2 | Settings group | **Rename the `accounts` group to "Capacity"** with three sections in this order: **Limits** ★ (`capacity`, new), **Hosts** (`fleet`), **Accounts** (`accounts`). Section ids unchanged so every existing link resolves. Group description: "What the fleet can run: limits, machines, and the accounts that carry sessions." | **"Fleet"** as the group name: "fleet" already means hosts specifically (`/settings/fleet`, `FleetSection`, `fleet_orchestrator`) and accounts are not fleet. **Keep "Accounts" and add Limits under Workspace**: leaves C1 in place. |
-| D3 | The global cap's relationship to hosts | **Blank means derived.** `maxActiveSessions = null` ⇒ effective cap = `Σ max_sessions` over enabled hosts when every enabled host has a cap, else `DEFAULT_MAX_ACTIVE_SESSIONS` (5). A set value is an override and is badged "override" when it differs from the derived value. The Limits section shows the derivation inline: "Fleet can run 10 (dobby 4 · rocky 6). Max active sessions: [blank = 10]." The readout's Global row gains `derived: bool`. | **Remove the global cap** and rely on host caps: loses the queue (host caps refuse dispatch; the global cap queues) and the single-host case where `max_sessions` is null. **Keep it independent**: leaves C14. **Derive from hosts always**: the owner's stated intent (governor D3) is that the global cap is a hard human ceiling the machine never raises; an override must remain possible. |
+| D1 ✔ | Where do capacity dials live? | **Two pages by question, not one page by topic.** *Settings › Capacity* holds **supply**: what the fleet can run (limits, hosts, accounts). *Delivery → Capacity* holds **allocation and readout**: how automation spends it (push level, governor, runner ceiling, product rank / pin / mode / pipeline cap) and the live stack. Each page carries a read-only summary of the other and links to it. The placement rule for any future knob: does it change what exists, or how it is spent? | **(a) Everything on Delivery → Capacity**, retiring Settings › Hosts and the General field: host lifecycle (add, endpoint, upgrade, remove) and account auth flows are provisioning, not delivery steering; Delivery's list/detail chassis would host entity CRUD it was not built for, and Settings' scope badges / confirmation tiers would be lost. **(b) A top-level Capacity nav entry** holding all three: breaks the five-entry nav decision. **(c) Leave placement, add cross-links only**: this is what the governor spec's D9 already did; the screenshots show it is not enough. |
+| D2 ✔ | Settings group | **Rename the `accounts` group to "Capacity"** (id `capacity`) with three sections in this order: **Limits** ★ (`capacity`, new), **Hosts** (`fleet`), **Accounts** (`accounts`). Section ids unchanged so every existing link resolves. Group description: "What the fleet can run: limits, machines, and the accounts that carry sessions." Settings › Capacity and Delivery → Capacity share the word on purpose: same stack, two questions; each page's description line and the two-way links disambiguate. | **"Fleet"** as the group name: "fleet" already means hosts specifically (`/settings/fleet`, `FleetSection`, `fleet_orchestrator`) and accounts are not fleet; a person looking for the global cap would not try "Fleet" before "Capacity". **Keep "Accounts" and add Limits under Workspace**: leaves C1 in place. |
+| D3 ✔ | What is the global cap? | **The lower of two ceilings, one derived and one typed.** *Physical ceiling* = Σ `max_sessions` over enabled hosts; if any enabled host is uncapped the physical ceiling is unbounded. *Attention ceiling* = `AppSettings.max_active_sessions`, repurposed: nullable, blank = none, meaning "never more than N sessions at once, whatever the hardware could take". Effective global cap = `min(physical, attention)`; when both are unbounded, `DEFAULT_MAX_ACTIVE_SESSIONS` (5) applies as the last-resort floor and the Limits section says so ("no host cap set — using the default of 5; set a cap on Hosts"). The Limits section shows all three lines and names which one binds; the readout's Global row gains `physical`, `attention`, `binding`. Nothing changes on the live fleet: the row's 10 becomes an attention ceiling equal to the physical one. | **Blank derives from hosts, set value overrides** (the first draft): still one number carrying two meanings; an "override" that is *higher* than the physical ceiling is meaningless and one that is lower is really an attention budget — say so. **Fold quota in** (global cap falls as accounts drain): rejected, see D12. **Remove the global cap** and rely on host caps: host caps refuse dispatch, the global cap *queues*; the single-host, no-cap case needs the floor. |
+| D12 ✔ | Where does account quota bind? | **At the runner layer only, never the global cap.** The global cap gates every session, including ones the owner starts by hand. The weekly reserve exists precisely to keep quota back for the owner's own use, so a global cap that fell as accounts drained would queue the owner's own sessions to protect quota for the owner. The governor already applies quota where it belongs: `fleet_concurrency = min(runner_ceiling, account_cap, host_free + in_flight, global_free + in_flight)`. Unchanged; recorded so nobody "fixes" it. | Apply quota globally: see above. |
+| D13 ✔ | CI and merge throughput | **A per-product pipeline cap.** New `PRODUCT_POLICY_SCHEMA` field `max_pipeline_prs` (label **Pipeline cap**, int ≥ 0, nullable, blank = unlimited; help: "Most automation PRs this product may have open and unmerged at once, counting PRs handed off to PR Doctor. A full pipeline refuses new claims so a fast-claiming product cannot stack CI."). Counted from `_backlog_repo_load` summed over the product's repos (it already counts handed-off work until merge and excludes `gave_up`). Enforced in `decide_implementation` as constraint `product_pipeline_full` (layer `product`), refusing new claims only; an in-flight session is never touched. The governor treats a pipeline-full product as `eligible = 0` in `_split`, so its slots go to the next product by rank rather than sitting idle. The readout's `products[]` gain `pipeline` and `pipelineCap`; the Capacity table gains a **Pipeline** column (`n / cap`, `∞` when blank). This is a new mechanism, not a relabel: its own PR (§8, PR 6). | **Reuse the pin as the CI cap** (today's proxy): C23 shows it does not bound CI once PR Doctor covers the repo. **Global pipeline cap**: CI capacity is per repo (KinDash's checks are not ViberPit's). **Count CI minutes**: needs GitHub Actions billing reads and a model of check duration; a PR count is the number the owner already reasons in. **Make it a runner-config per-repo map** (like the existing `RepoNumberMap`): C13 shows per-repo maps on the runner tab are the third caps surface nobody finds; the product policy is where the other product dials live. |
 | D4 | One reserve | **Per-account `weeklyReservePct` becomes an override of the push level's reserve**, and the plan honours it: `account_headroom` takes `reserve_pct` per account = `account.weeklyReservePct ?? RESERVE_PCT[push_level]`. Accounts page label: "Weekly reserve override (blank = push level's N%)", with N live from `GET /api/capacity`. | **Delete the per-account reserve**: an account shared with a human's own daily use legitimately needs a higher floor than the fleet default. **Delete the push level's reserve and use per-account only**: the push level is one of the owner's two intent knobs (governor D2). |
-| D5 | Product dials: one owner | **Delivery → Capacity owns rank, cap mode and pin.** The Roadmap card's *Capacity* fieldset keeps `dispatch` (a product-level on/off/propose decision) and `queue_min_status` / `respect_dependencies` (eligibility, not capacity), renames the legend to **Dispatch**, and replaces `capacity_mode` / `max_in_flight` / `weight` with a read-only line "Rank 2 · auto (cap 4) — set on Delivery → Capacity". | **Roadmap card owns them, Capacity is read-only**: the Capacity table is where the person compares products; editing one row while looking at the others is the use case. **Both stay editable with one shared component**: still two doors to one room (2026-09-04 D3's rejected shape). |
-| D6 | Product `weight` | **Deprecate.** `priority_rank` is the governor's ordering; `weight` feeds only the `weighted` selection strategy. Mark the `ConfigField` `deprecated`, hide it from both cards, keep the key readable for one release, and file the removal issue. `selection_strategy` `weighted` falls back to rank order. | **Keep both and explain the difference**: the difference (rank = who gets the next fleet slot; weight = share of a *contested freed* slot under one strategy) is real but too fine for a product owner's involvement budget of "priority and macro direction". |
-| D7 | Runner ceiling | **Editable on Delivery → Capacity**, in the same `SaveBar` form as the pins, labelled "Runner ceiling" with the description "Most sessions the Backlog Runner may hold at once; a share of the global cap. The governor lowers it, never raises it." The runner's config tab shows the field read-only with a link ("Set on Capacity"). Mechanism: `ConfigField` gains `surface: "capacity" \| "config"` (default `config`); `ConfigPanel` renders `capacity`-surfaced fields as read-only links. `max_spawns_per_day` and `sessions_per_account` take the same surface so all governor-adjacent numbers are on one page. | **Move `max_concurrent` into `AppSettings`**: it is the runner's, and the plan overlay (`_backlog_read_config`) reads it there. **Leave it on the config tab with a link** (today): C10. |
-| D8 | Vocabulary | One term per concept, used on every surface and in every `ConfigField` label: **Global cap** (`maxActiveSessions`), **Host cap** (`Host.max_sessions`, column header "Cap"), **Runner ceiling** (`max_concurrent`), **Pin** (`max_in_flight`), **Rank**, **Push level**, **Reserve**. "Max occupied slots", "Max sessions", "In-flight cap" and "Max in flight (pin)" are retired as labels. The two `global_cap*` constraint codes are collapsed: `global_capacity_full` → `runner_ceiling_full`, layer `runner`; `global_cap_full` keeps layer `global`. | Keep the wire names and only fix labels: the constraint-code confusion (C16) lives in the API and its tests, and every future reader trips on it. |
+| D5 | Product dials: one owner | **Delivery → Capacity owns rank, cap mode, pin and pipeline cap.** The Roadmap card's *Capacity* fieldset keeps `dispatch` (a product-level on/off/propose decision) and `queue_min_status` / `respect_dependencies` (eligibility, not capacity), renames the legend to **Dispatch**, and replaces `capacity_mode` / `max_in_flight` / `weight` with a read-only line "Rank 2 · auto (cap 4) · pipeline 3/6 — set on Delivery → Capacity". | **Roadmap card owns them, Capacity is read-only**: the Capacity table is where the person compares products; editing one row while looking at the others is the use case. **Both stay editable with one shared component**: still two doors to one room (2026-09-04 D3's rejected shape). |
+| D6 | Product `weight` | **Deprecate.** `priority_rank` is the governor's ordering; `weight` feeds only the `weighted` selection strategy. Mark the `ConfigField` `deprecated`, hide it from both cards, keep the key readable for one release, and file the removal issue. `selection_strategy` `weighted` falls back to rank order. **Open (§10 Q1).** | **Keep both and explain the difference**: the difference (rank = who gets the next fleet slot; weight = share of a *contested freed* slot under one strategy) is real but too fine for a product owner's involvement budget of "priority and macro direction". |
+| D7 | Runner ceiling | **Editable on Delivery → Capacity**, in the same `SaveBar` form as the pins, labelled "Runner ceiling" with the description "Most sessions the Backlog Runner may hold at once; a share of the global cap. Quota (push level) and the governor lower it, never raise it." The runner's config tab shows the field read-only with a link ("Set on Capacity"). Mechanism: `ConfigField` gains `surface: "capacity" \| "config"` (default `config`); `ConfigPanel` renders `capacity`-surfaced fields as read-only links. `max_spawns_per_day` and `sessions_per_account` take the same surface so all governor-adjacent numbers are on one page. **Open (§10 Q2).** | **Move `max_concurrent` into `AppSettings`**: it is the runner's, and the plan overlay (`_backlog_read_config`) reads it there. **Leave it on the config tab with a link** (today): C10. |
+| D8 | Vocabulary | One term per concept, used on every surface and in every `ConfigField` label: **Global cap** (effective), **Physical ceiling** (Σ host caps), **Attention ceiling** (`maxActiveSessions`), **Host cap** (`Host.max_sessions`, column header "Cap"), **Runner ceiling** (`max_concurrent`), **Pin** (`max_in_flight`), **Pipeline cap** (`max_pipeline_prs`), **Rank**, **Push level**, **Reserve**. "Max active sessions", "Max occupied slots", "Max sessions", "In-flight cap" and "Max in flight (pin)" are retired as labels. The two `global_cap*` constraint codes are collapsed: `global_capacity_full` → `runner_ceiling_full`, layer `runner`; `global_cap_full` keeps layer `global`. | Keep the wire names and only fix labels: the constraint-code confusion (C16) lives in the API and its tests, and every future reader trips on it. |
 | D9 | Outside-the-stack ceilings | **Shown, not restructured.** The Limits section gets a *Managed by env* group listing `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`, `VIBERPIT_CAPACITY_GOVERNOR_ENABLED` read-only (the `_MANAGED` allowlist gains the first three). `max_spawns_per_day` moves to the Capacity page per D7. | Model them as stack layers: the test-slot and child caps are per-host / per-session, not fleet ceilings; the readout would mislead. |
 | D10 | Freshness and links | Every mutation that touches a dial invalidates `QK.capacity`. Links go through `settingsSectionPath()` and `deliveryPath('capacity')`; the list column renders row links; Settings › Capacity sections carry a **Live readout** card (stack summary + binding text) linking to Delivery → Capacity; queued and "Waiting for capacity" sessions link there too; the Accounts row expands to the per-account rows already on the wire (which account is at ceiling, when it resets). | Fix only the invalidation: C3–C6 and C21 stay. |
-| D11 | Code consolidation | One reader for the effective global cap (`server/capacity/limits.py:effective_global_cap()` used by the orchestrator, `api/sessions.py`, `api/settings.py`, and the readout), one clamp; `api/sessions.py:_max_active_sessions_setting` deleted. The double plan overlay (`_backlog_read_config` and `gather_implementation_snapshot`) collapses to one seam that returns the overlaid config. Principle VI. | Leave as is: three clamps and two overlays are the shape of the 2026-09-17 stall. |
+| D11 | Code consolidation | One reader for the effective global cap (`server/capacity/limits.py:effective_global_cap()` returning physical, attention, effective and which binds; used by the orchestrator, `api/sessions.py`, `api/settings.py`, and the readout), one clamp; `api/sessions.py:_max_active_sessions_setting` deleted. The double plan overlay (`_backlog_read_config` and `gather_implementation_snapshot`) collapses to one seam that returns the overlaid config. Principle VI. | Leave as is: three clamps and two overlays are the shape of the 2026-09-17 stall. |
 
 ## 5. Information architecture
 
@@ -133,8 +140,8 @@ only `SETTINGS_GROUPS`, the three defs' `group` field and `settingsDefs.test.ts`
 
 | Section (id) | Scope | Contents |
 |---|---|---|
-| **Limits** ★ (`capacity`) | Server | *Fleet ceiling* group: derived line "Fleet can run N (host · cap, …)"; **Global cap** number input (blank = derived, placeholder shows the derived value, "override" badge when set and different). *Live readout* card: the five stack rows read-only with used / cap, binding text, link "Open Delivery → Capacity". *Managed by env* group (D9). `SaveBar` form. |
-| **Hosts** (`fleet`) | Server | As today, with: the inner `h3 "Fleet"` removed (C2); column "Max sessions" → **Cap**; "Weight (dispatch share)" keeps its label and gains the description "Tiebreaker when several hosts have headroom; not a cap."; a footer line "Σ caps = 10 → global cap" linking to Limits. Weight and cap move into the per-host form with `SaveBar` (2026-09-04 §8, still pending). |
+| **Limits** ★ (`capacity`) | Server | *Global cap* group, three rows: **Physical ceiling** (read-only: "10 — dobby 4 · rocky 6", or "unbounded — rocky has no cap" linking to Hosts); **Attention ceiling** (number input, blank = none, description "Never run more than this many sessions at once, whatever the hardware could take. Blank leaves the physical ceiling in charge."); **Effective global cap** (read-only: the value and which ceiling binds, or "default 5 — no ceiling set" when neither exists). *Live readout* card: the five stack rows read-only with used / cap, binding text, link "Open Delivery → Capacity". *Managed by env* group (D9). `SaveBar` form. |
+| **Hosts** (`fleet`) | Server | As today, with: the inner `h3 "Fleet"` removed (C2); column "Max sessions" → **Cap**; "Weight (dispatch share)" keeps its label and gains the description "Tiebreaker when several hosts have headroom; not a cap."; a footer line "Σ caps = 10 → physical ceiling" linking to Limits. Weight and cap move into the per-host form with `SaveBar` (2026-09-04 §8, still pending). |
 | **Accounts** (`accounts`) | Server | As today, with: "Weekly reserve %" → **Weekly reserve override** (blank = push level's N%, N live); the "over reserve" chip uses the same effective reserve the plan uses (D4); a row-level "not metered" badge for Codex/Copilot so the Accounts stack row's `total` is explicable. |
 
 ### 5.2 Delivery → Capacity (allocation and readout)
@@ -144,54 +151,71 @@ One page, unchanged chassis. Top to bottom:
 1. **Intent** row: Push level (`RadioGroup`, immediate) · Governor mode (`Select`, immediate; reads
    `readout.governorMode`, and shows a `Banner` when `killSwitch` is off or the plan is stale so the
    three silent stops in C18 become one visible state).
-2. **The stack**: five rows, each linking to its owner page; Global shows "derived from hosts" or
-   "override"; Accounts expands to per-account rows (`reason`, `nextResetAt`); Runner shows stored
-   vs effective; Products links to the table below (`href: '#products'`).
+2. **The stack**: five rows, each linking to its owner page. Global shows "physical 10 · attention
+   10" and which binds; Accounts expands to per-account rows (`reason`, `nextResetAt`); Runner shows
+   stored vs effective and, when quota binds, "quota: N accounts × M"; Products links to the table
+   below (`href: '#products'`).
 3. **Runner form** (`SaveBar`, shared with the pins): Runner ceiling · Daily budget
    (`max_spawns_per_day`) · Sessions per account. One form, one save, one confirmation when a
    ceiling is *raised* (lowering never kills a session; raising spends quota).
 4. **Products table**: Rank ▲▼ · Product · Dispatch (read-only, links to the Roadmap card) · Cap
-   mode · Pin · Effective cap · In flight · Eligible · Waiting on. Unchanged except the link.
-5. **Plan card**: unchanged.
+   mode · Pin · **Pipeline** (`n / cap`, input in the same form; `∞` when blank) · Effective cap ·
+   In flight · Eligible · Waiting on. A pipeline-full product's *Waiting on* reads "pipeline full:
+   6 PRs open (cap 6)" and links to the Pipeline page filtered to that repo.
+5. **Plan card**: unchanged, except `reasons` names pipeline-full products ("KinDash: pipeline
+   full, slots given to ViberPit").
 
 ### 5.3 Roadmap → product → Automation card
 
 Legend **Dispatch** (was *Capacity*): `dispatch`, `queue_min_status`, `respect_dependencies`, then
-a read-only line "Capacity: rank 2 · auto (effective cap 4) · 1 in flight — adjust on Delivery →
-Capacity". Legends *Models* and *Gates* unchanged.
+a read-only line "Capacity: rank 2 · auto (effective cap 4) · 1 in flight · pipeline 3/6 — adjust
+on Delivery → Capacity". Legends *Models* and *Gates* unchanged.
 
 ## 6. Relationships, stated
 
 | Relationship | Where it is shown | How it is computed |
 |---|---|---|
-| Global cap ← Σ host caps | Limits (derivation line), Hosts (footer), stack Global row (`derived`) | D3; `effective_global_cap()` |
-| Runner ceiling ≤ global cap | Capacity page runner form (description; validation refuses a ceiling above the global cap with "the global cap is N") | client + `PATCH /automations/backlog-runner` 422 |
+| Global cap = min(physical, attention), floor 5 when both unbounded | Limits (three rows), Hosts (footer), stack Global row | D3; `effective_global_cap()` |
+| Physical ceiling = Σ enabled host caps, unbounded if any is uncapped | Limits, Hosts footer | D3 |
+| Runner ceiling ≤ global cap | Capacity page runner form (description; validation refuses a ceiling above the effective global cap with "the global cap is N") | client + `PATCH /automations/backlog-runner` 422 |
+| Runner effective ≤ quota (available accounts × sessions per account) | stack Runner row ("quota: N × M") | D12; unchanged `_fleet` |
 | Effective reserve = account override ?? push level | Accounts (label), stack Accounts row expanded (`reservePct` per row) | D4; `account_headroom` |
 | Effective product cap = pin if pinned else plan ?? pin | Products table (already), Roadmap card read-only line | unchanged |
+| New claims refused while product pipeline ≥ pipeline cap; governor gives the slots away | Products table *Pipeline* + *Waiting on*, plan card reasons | D13; `decide_implementation`, `_split` |
 | Plan live = mode act ∧ kill switch ∧ fresh | Capacity page intent row (`Banner`), About (`_MANAGED`) | unchanged, surfaced |
 
 ## 7. API changes (additive)
 
 | Route | Change |
 |---|---|
-| `GET /api/settings` | `effectiveDefaults.maxActiveSessions` becomes the *derived* value (Σ host caps or 5); new `effectiveDefaults.maxActiveSessionsSource: "hosts" \| "default"`. `managed` gains `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`. |
-| `GET /api/capacity` | `global.derived: bool`; `accounts.rows[].reservePct` (effective per account); constraint code rename per D8 (old code accepted by the web for one release). |
+| `GET /api/settings` | `effectiveDefaults.maxActiveSessions` is replaced by `effectiveDefaults.globalCap: { physical: int \| null, attention: int \| null, effective: int, binding: "physical" \| "attention" \| "default", hosts: [{ name, cap }] }`. `managed` gains `CCSWITCH_TEST_SLOT_CAP`, `CCSWITCH_CHILD_SESSION_CAP`, `CCSWITCH_STT_MAX_CONCURRENT`. `PUT /api/settings` `maxActiveSessions` semantics: attention ceiling, `null` = none, a set value must be ≥ 1 (422 otherwise, replacing today's silent clamp; the default-5 floor lives in `effective_global_cap()`). |
+| `GET /api/capacity` | `global` gains `physical`, `attention`, `binding`; `products[]` gain `pipeline: int` and `pipelineCap: int \| null`; `accounts.rows[].reservePct` (effective per account); new constraint code `product_pipeline_full` (layer `product`); rename per D8 (old code accepted by the web for one release). |
+| `GET /api/pm/policy-schema` · `PATCH /api/pm/projects/{slug}/policy` | new field `max_pipeline_prs`; `weight` accepted but ignored once deprecated (D6). |
 | `GET /api/accounts` | `weeklyReservePct` unchanged; new `effectiveReservePct`. |
 | `GET /api/automations` | `configSchema[].surface` and `configSchema[].deprecated`. |
 | `PATCH /api/automations/backlog-runner` | 422 when `max_concurrent` exceeds the effective global cap. |
-| `PATCH /api/pm/projects/{slug}/policy` | `weight` accepted but ignored once deprecated (D6). |
+
+### 7.1 Data model
+
+| Change | Detail |
+|---|---|
+| `AppSettings.max_active_sessions` | Column unchanged (nullable int). Meaning changes to *attention ceiling*; docstring updated; `DEFAULT_MAX_ACTIVE_SESSIONS` becomes the last-resort floor inside `effective_global_cap()` only. No migration. |
+| `PRODUCT_POLICY_SCHEMA` | `ConfigField(key="max_pipeline_prs", label="Pipeline cap", type="int", default=None, min=0, nullable=True, surface="capacity", help=…)` (D13). JSON policy column; no migration. |
+| `capacity_plans.budget` | gains `pipeline: {slug: {open, cap}}` so the plan card can explain a pipeline-full allocation. JSON column; no migration. |
 
 ## 8. Sequence
 
-Five PRs, each green in a day, each citing the C-numbers it closes.
+Six PRs, each green in a day, each citing the C-numbers and D-numbers it closes. PR 1 first; PRs
+2–6 are independent of each other once PR 1 has landed.
 
 | PR | Delivers | Deletes |
 |---|---|---|
-| **1 — Limits + derivation** | `effective_global_cap()` and the single clamp (D11 first half); D3 derivation; `Limits` section; group rename; General loses its *Capacity* group; `_MANAGED` additions; invalidation (C20); typed links (C4). | `api/sessions.py:_max_active_sessions_setting`; the General *Capacity* group |
-| **2 — Readout depth + links** | List-column links; Accounts row expansion (C21); Global `derived`; intent-row `Banner` for C18; Live-readout card on the three Settings sections; queued / waiting-for-capacity links (C6); nav badge for a binding constraint (C8). | `PUSH_LEVEL_RESERVE_PCT` mirror |
-| **3 — Runner form** | `ConfigField.surface`; runner ceiling, daily budget, sessions-per-account on the Capacity page with one `SaveBar`; read-only link rows on the config tab; ceiling ≤ global cap validation; one plan overlay seam (D11 second half); constraint-code rename (D8). | the second overlay in `gather_implementation_snapshot` |
-| **4 — One owner for product dials** | Roadmap card *Dispatch* legend + read-only capacity line (D5); `weight` deprecated (D6) with its issue filed; labels per D8 across schemas. | the card's `capacity_mode` / `max_in_flight` / `weight` controls; `weighted` strategy's weight read |
+| **1 — Limits + the two ceilings** | `server/capacity/limits.py:effective_global_cap()` and the single clamp (D11 first half); D3 physical / attention / effective; `Limits` section; group rename (D2); General loses its *Capacity* group; `_MANAGED` additions (D9); invalidation (C20); typed links (C4). | `api/sessions.py:_max_active_sessions_setting`; the General *Capacity* group; the three clamps |
+| **2 — Readout depth + links** | List-column links; Accounts row expansion (C21); Global row's three numbers; intent-row `Banner` for C18; Live-readout card on the three Settings sections; queued / waiting-for-capacity links (C6); nav badge for a binding constraint (C8). | `PUSH_LEVEL_RESERVE_PCT` mirror |
+| **3 — Runner form** | `ConfigField.surface`; runner ceiling, daily budget, sessions-per-account on the Capacity page with one `SaveBar`; read-only link rows on the config tab; ceiling ≤ global cap validation; one plan overlay seam (D11 second half); constraint-code rename (D8). Blocked on §10 Q2. | the second overlay in `gather_implementation_snapshot` |
+| **4 — One owner for product dials** | Roadmap card *Dispatch* legend + read-only capacity line (D5); `weight` deprecated (D6) with its issue filed; labels per D8 across schemas. Blocked on §10 Q1. | the card's `capacity_mode` / `max_in_flight` / `weight` controls; `weighted` strategy's weight read |
 | **5 — One reserve** | D4: per-account override honoured by the plan; Accounts label + effective chip; `effectiveReservePct`. | the display-only reserve ranking path |
+| **6 — Pipeline cap** | D13: `max_pipeline_prs` field; per-product pipeline count from `_backlog_repo_load`; `product_pipeline_full` constraint in `decide_implementation`; `_split` treats pipeline-full as `eligible = 0`; `pipeline` / `pipelineCap` on the readout; *Pipeline* column and input on the Capacity table; plan-card reason; feature doc. | — |
 
 PR 1 is independent of the governor follow-ups (#2032, #2040); PR 3 subsumes #2032's
 `RESERVE_PCT`-mirror item and #2040's `limiting`/`floor` display fix.
@@ -200,26 +224,38 @@ PR 1 is independent of the governor follow-ups (#2032, #2040); PR 3 subsumes #20
 
 | Test | Asserts |
 |---|---|
-| `test_capacity_limits.py` (pure) | derived cap = Σ enabled host caps; any uncapped enabled host ⇒ default; override wins; clamp ≥ 1 once; the orchestrator gate, `api/sessions`, `api/settings` and the readout all call it (a grep-style test that no other `max_active_sessions` read exists). |
-| `test_capacity_readout.py` | `global.derived`; per-account `reservePct` = override ?? push level; renamed constraint code and its layer. |
+| `test_capacity_limits.py` (pure) | physical = Σ enabled host caps; any uncapped enabled host ⇒ physical unbounded; effective = min(physical, attention); both unbounded ⇒ 5 with `binding: "default"`; `binding` names the lower one; the orchestrator gate, `api/sessions`, `api/settings` and the readout all call it (a grep-style test that no other `max_active_sessions` read exists). |
+| `test_capacity_readout.py` | `global.{physical,attention,binding}`; `products[].pipeline` counts handed-off rows and excludes `gave_up` and merged; per-account `reservePct` = override ?? push level; renamed constraint code and its layer. |
+| `test_product_admission.py` | pipeline ≥ cap ⇒ `product_pipeline_full` refused for a *new* claim; an `existing_slot` re-validation is never refused on it (D8 of the governor spec, "never kills a session"); blank cap ⇒ never refused; PR Doctor coverage makes no difference to the pipeline count (C23). |
+| `test_capacity_plan.py` | a pipeline-full product gets cap = its in-flight count and its remaining slots go to the next rank; `reasons` names it. |
 | `test_account_headroom.py` | an account with a 60% override is unavailable at 41% used while the push level is `steady`. |
 | `test_backlog_runner_config.py` | `max_concurrent` > effective global cap ⇒ 422 with the cap in the detail. |
-| `settingsDefs.test.ts` | the `capacity` section registered; group order Limits · Hosts · Accounts. |
-| `CapacityDetail.test.tsx` | runner form has the only `SaveBar` together with the pins; raising the ceiling confirms; intent banner renders for kill-switch-off and stale plan. |
+| `settingsDefs.test.ts` | the `capacity` section registered under group `capacity`; order Limits · Hosts · Accounts. |
+| `LimitsSection.test.tsx` | three rows render from `effectiveDefaults.globalCap`; blank attention shows the physical value as placeholder; "unbounded" links to Hosts. |
+| `CapacityDetail.test.tsx` | runner form has the only `SaveBar` together with the pins and pipeline caps; raising the ceiling confirms; intent banner renders for kill-switch-off and stale plan; *Pipeline* column shows `∞` when blank and the waiting-on text when full. |
 | `AutomationPolicyCard.test.tsx` | no `capacity_mode` / `max_in_flight` / `weight` controls; read-only line links to Delivery → Capacity. |
 | brand ratchet, mypy, full web suite | as always. |
 
 ## 10. Open questions for the reviewer
 
-1. **D2 group name.** "Capacity" makes Settings › Capacity and Delivery → Capacity share a word on
-   purpose (same stack, two questions). If that reads as a split rather than a pair, "Fleet" is the
-   fallback and Accounts would stay in its own group.
-2. **D3 derivation default.** Today blank = 5. After D3, blank on the live fleet = 10 (4 + 6). The
-   live row is set to 10 explicitly so nothing changes on deploy, but a single-host install with a
-   host cap of 8 and a blank global cap would go from 5 to 8. Acceptable, or should blank keep
-   meaning 5 and the derivation be a `Reset to fleet total` action instead?
-3. **D6 weight deprecation.** Is anyone relying on `selection_strategy: weighted`? If yes, keep
+1. **D6 weight deprecation.** Is anyone relying on `selection_strategy: weighted`? If yes, keep
    `weight` under an *Advanced* legend on the Roadmap card and only drop it from Capacity.
-4. **D7 surface flag.** Rendering `surface: capacity` fields read-only on the generic config tab is
+2. **D7 surface flag.** Rendering `surface: capacity` fields read-only on the generic config tab is
    the smallest change; the alternative is to remove them from the runner's `configSchema` entirely
    and have the Capacity page PATCH raw keys, which loses schema validation on that path.
+
+## 11. Decisions of record (2026-09-20)
+
+Walked through one at a time with the owner:
+
+1. **D1** — "go with the first option": two pages split by question, supply in Settings, spend on
+   Delivery.
+2. **D2** — "Go with Capacity": the Settings group is named Capacity, deliberately pairing with the
+   Delivery tab.
+3. **D3 / D12 / D13** — the first draft's "blank derives from hosts" was reframed after the owner
+   named the real factors: "we're limited by runners, claude account capacity, and in some cases
+   (like kindash) want to be thoughtful about how many PRs we're pushing through CI at a time".
+   Confirmed as: global cap = physical ceiling (hosts) and an attention ceiling (typed) only;
+   quota binds at the runner layer, never globally, because the reserve exists to protect the
+   owner's own sessions; CI and merge throughput becomes a per-product pipeline cap counted from
+   repo load, which the existing pin does not bound once PR Doctor covers the repo (C23).
