@@ -164,7 +164,7 @@ describe('DeliveryPage', () => {
     expect(screen.getByText(/1 with pipeline history/)).toBeInTheDocument()
   })
 
-  it('an open automation names itself, carries its controls in the header, and shows Status', () => {
+  it('an open automation names itself, carries its controls in the header, and shows Overview', () => {
     mount('/delivery/automations/pr-doctor')
     expect(h1()).toHaveTextContent('PR doctor')
     // The header controls (R9): the mode select and the enable switch, beside
@@ -176,7 +176,7 @@ describe('DeliveryPage', () => {
     expect(screen.getByText(/Configured mode: auto — Repairs eligible PRs/)).toBeInTheDocument()
     expect(screen.getByText('Execute and finish work')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Backlog runner' })).toHaveAttribute('href', '/delivery/automations/backlog-runner')
-    expect(screen.getByRole('tab', { name: 'Status', selected: true })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
   })
 
   it('distinguishes failed refresh from its last successful observation', () => {
@@ -257,7 +257,7 @@ describe('DeliveryPage', () => {
   // reopens itself on return — the same reuse that lets `ConfigPanel` and
   // `ScheduleEditor`'s local state leak across automations.
   it('switching to a different automation and back does not leak backlog runner’s dispatch-dialog flag onto the return trip', () => {
-    mountWithNav('/delivery/automations/backlog-runner')
+    mountWithNav('/delivery/automations/backlog-runner?tab=queue')
     fireEvent.click(screen.getByRole('button', { name: 'Custom dispatch…' }))
     expect(screen.getByTestId('dispatch-dialog')).toHaveAttribute('data-open', 'true')
 

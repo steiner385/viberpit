@@ -1,5 +1,5 @@
 /**
- * The Status tab's "Actionable items" list and its per-item action buttons.
+ * The Overview tab's "Actionable items" list and its per-item action buttons.
  * Moved verbatim (behaviour) from the deleted `automations/AutomationsTab.tsx`'s
  * `AutomationActions`/`ActionButton` — only the classes changed, to `ui/`
  * primitives on tokens.
@@ -129,28 +129,28 @@ export function ActionButton(
 export function AutomationActions({ automationId, enabled }: { automationId: string; enabled: boolean }) {
   const actionable = useAutomationActionable(automationId, enabled)
   const list = actionable.data ?? []
+  // The Overview's "needs you" notice (`docs/PAGE-TABS.md` §5): renders
+  // nothing when there is nothing actionable, rather than a heading over an
+  // empty state.
+  if (list.length === 0) return null
   return (
     <section>
       <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Actionable items</h4>
-      {list.length === 0
-        ? <p className="text-sm text-ink-muted">No actionable items.</p>
-        : (
-          <div className="max-h-48 overflow-y-auto rounded-md border border-edge p-2">
-            <ul className="space-y-1.5 text-sm">
-              {list.map((item) => (
-                <li key={item.id} className="flex items-center gap-2">
-                  <span className="flex-1 truncate">
-                    <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
-                    {item.title}
-                  </span>
-                  {item.actions.map((action) => (
-                    <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
-                  ))}
-                </li>
+      <div className="max-h-48 overflow-y-auto rounded-md border border-edge p-2">
+        <ul className="space-y-1.5 text-sm">
+          {list.map((item) => (
+            <li key={item.id} className="flex items-center gap-2">
+              <span className="flex-1 truncate">
+                <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
+                {item.title}
+              </span>
+              {item.actions.map((action) => (
+                <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
               ))}
-            </ul>
-          </div>
-        )}
+            </li>
+          ))}
+        </ul>
+      </div>
     </section>
   )
 }

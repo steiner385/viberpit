@@ -166,9 +166,11 @@ export const DELIVERY = {
   capacityError: 'Could not load capacity.',
 } as const
 
-/** The automation detail's tabs, in order (finish-line spec §4.4). */
+/** The automation detail's tabs, in order (`docs/PAGE-TABS.md` §3: one tab,
+ *  one question). `queue` is offered only to automations that have
+ *  dispatchable work (`QUEUE_AUTOMATIONS` in `AutomationDetail.tsx`). */
 export const AUTOMATION_TAB = {
-  status: 'Status', schedule: 'Schedule', events: 'Events', sessions: 'Sessions', config: 'Config',
+  overview: 'Overview', queue: 'Queue', schedule: 'Schedule', events: 'Events', sessions: 'Sessions', config: 'Config',
 } as const
 export type AutomationTab = keyof typeof AUTOMATION_TAB
 export const AUTOMATION_TABS = Object.keys(AUTOMATION_TAB) as readonly AutomationTab[]

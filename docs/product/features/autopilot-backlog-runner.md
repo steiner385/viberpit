@@ -483,7 +483,7 @@ PR linkage, never on labels alone.
   `text`, never a sibling top-level key — `GET /api/automations` serializes it once, inside each
   row's `status`): `[]` when the runner has products but none has dispatch on, `None` for an
   automation with no concept of products (PR Doctor) or while the read has failed. The runner's
-  detail pane renders it as a table on the Status tab whenever it is a non-empty array
+  detail pane renders it as a table on the Queue tab (`docs/PAGE-TABS.md`) whenever it is a non-empty array
   (`AutomationDetail.tsx`, via the shared `CheckTable` primitive): Product (linked to
   `/roadmap/:slug`), Dispatch, In flight (`inFlight/cap`), Eligible, Bounced.
 
