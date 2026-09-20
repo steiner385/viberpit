@@ -140,8 +140,16 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   return (
     <section aria-labelledby="automation-heading" className="flex flex-col gap-2">
       <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
+      {/* This has to outrank the quiet muted-text treatment below: a fine-print
+          line at the top of a long card reads as boilerplate, so people scroll
+          past it, hit a wall of disabled fields lower down, and report it as
+          broken (#2094). A banner is the loud version of the same `!live` gate. */}
       {!live && (
-        <p className="text-sm text-ink-muted">Automation settings can be edited once the product is live.</p>
+        <Banner
+          tone="info"
+          title="Automation settings can be edited once the product is live."
+          className="sticky top-0 z-raised"
+        />
       )}
       {/* A rejected save must say so: without it the control springs back to its
           old value on the next refetch with no explanation of why. */}
