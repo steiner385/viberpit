@@ -1013,7 +1013,7 @@ async def test_pr_fix_spawn_passes_pinned_model(isolated_db, monkeypatch):
                return_value="/tmp/x"), \
          patch.object(orch, "_pr_doctor_config", config), \
          patch.object(orch._pr_doctor_ctx, "spawn_session", _capture_spawn(captured)):
-        status, sid = await orch._pr_doctor_session_fix(
+        status, sid, _reason = await orch._pr_doctor_session_fix(
             "o/r", "fix-lint", _INFO, "failing_ci", None)
     assert (status, sid) == ("spawned", "new-sess")
     assert captured["model"] == "opus"
@@ -1035,7 +1035,7 @@ async def test_pr_fix_spawn_auto_fails_open_without_model_access(isolated_db, mo
     with patch("server.sessions.orchestrator.gitrepos.ensure_clone",
                return_value="/tmp/x"), \
          patch.object(orch._pr_doctor_ctx, "spawn_session", _capture_spawn(captured)):
-        status, _ = await orch._pr_doctor_session_fix(
+        status, _, _reason = await orch._pr_doctor_session_fix(
             "o/r", "fix-lint", _INFO, "failing_ci", None)
     assert status == "spawned"
     assert captured["model"] is None
