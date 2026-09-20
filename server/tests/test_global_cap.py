@@ -126,6 +126,25 @@ def test_read_global_cap_reads_enabled_hosts_and_the_settings_row():
     asyncio.run(run())
 
 
+@pytest.mark.usefixtures("isolated_db")
+def test_orchestrator_gate_reads_the_effective_cap():
+    """`_max_active_sessions` stays an async int (dozens of tests AsyncMock it),
+    but the int is now the derived effective cap, not the raw column."""
+    from server.db import db_session
+    from server.db.models import Host
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    async def run():
+        async with db_session() as db:
+            db.add(Host(name="dobby", endpoint="https://dobby:9443", enabled=True, max_sessions=4))
+            db.add(Host(name="rocky", endpoint="https://rocky:9443", enabled=True, max_sessions=6))
+            await db.flush()
+        orch = SessionOrchestrator.__new__(SessionOrchestrator)
+        assert await orch._max_active_sessions() == 10
+
+    asyncio.run(run())
+
+
 def test_no_other_reader_of_max_active_sessions():
     """D11: exactly one reader. `server/api/settings.py` may WRITE and ECHO the
     column; nobody but global_cap.py may apply the default or read it as a cap."""

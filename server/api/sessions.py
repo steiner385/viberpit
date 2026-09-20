@@ -481,24 +481,6 @@ async def _autopilot_defer_seconds() -> int | None:
         return None
 
 
-async def _max_active_sessions_setting() -> int:
-    """Effective global active-session cap (``AppSettings.max_active_sessions``,
-    falling back to ``DEFAULT_MAX_ACTIVE_SESSIONS`` when unset).
-
-    Mirrors ``SessionOrchestrator._max_active_sessions`` — that method is
-    orchestrator-private and not exposed on either adapter (in-process or
-    remote), so this reads the row directly instead, the same pattern already
-    used by :func:`_autopilot_defer_seconds` in this module. One query for the
-    whole list response, not per session.
-    """
-    from sqlalchemy import select
-    from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
-    async with db_session() as db:
-        row = (await db.execute(select(AppSettings))).scalar_one_or_none()
-    val = getattr(row, "max_active_sessions", None) if row else None
-    return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
-
-
 async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
     """Why the queue can't drain right now, or ``None`` when nothing is wrong.
 
@@ -511,7 +493,7 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
     Capacity-occupancy is read straight off ``CAPACITY_EXEMPT_STATUSES`` (Task
     2's source of truth) applied to the same ``records`` the list endpoint
     already fetched — not re-derived, not a second query. Only the numeric cap
-    itself requires a DB read (see :func:`_max_active_sessions_setting`).
+    itself requires a DB read (``global_cap.read_global_cap``).
 
     Scope is deliberately narrow: this only names the capacity-full cause.
     An empty queue, or a queue with room to start, reports nothing — there is
@@ -522,7 +504,9 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
     if queued_count == 0:
         return None
     cap_occupying = sum(1 for r in records if r.status not in CAPACITY_EXEMPT_STATUSES)
-    cap = await _max_active_sessions_setting()
+    from server.sessions.global_cap import read_global_cap
+    async with db_session() as db:
+        cap = (await read_global_cap(db)).effective
     if cap_occupying < cap:
         return None
     return {

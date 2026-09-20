@@ -3130,12 +3130,11 @@ class SessionOrchestrator:
                    if self._consumes_capacity_slot(r) and self._owns_record(r, enabled))
 
     async def _max_active_sessions(self) -> int:
-        from sqlalchemy import select as sa_select
-        from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS, AppSettings
+        """The effective global cap (spec 2026-09-20 D3): min(Σ enabled host
+        caps, attention ceiling). One reader — server/sessions/global_cap.py."""
+        from server.sessions.global_cap import read_global_cap
         async with db_session() as db:
-            s = (await db.execute(sa_select(AppSettings))).scalar_one_or_none()
-        val = getattr(s, "max_active_sessions", None) if s else None
-        return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
+            return (await read_global_cap(db)).effective
 
     def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
         """The one call to ``resolve_display_mode`` for this daemon — used by the
