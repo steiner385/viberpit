@@ -1581,7 +1581,7 @@ git commit -F /tmp/pr1-t12.txt
 **Files:**
 - Modify: `docs/product/features/capacity-governor.md` (the global layer paragraph)
 
-(The spec already names `server/sessions/global_cap.py:read_global_cap()` — it was amended on the spec branch before this plan was executed, so this branch never edits the spec file.)
+(The spec already names `server/sessions/global_cap.py:read_global_cap()` — that amendment is the `docs(spec): name the global-cap module` commit at the base of this branch, so no task here edits the spec file.)
 
 - [ ] **Step 1: Feature doc**
 
