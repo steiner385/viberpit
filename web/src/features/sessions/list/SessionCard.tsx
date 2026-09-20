@@ -13,6 +13,7 @@ import { sessionTriage } from '@/session/triageTier'
 import { useSessionPromptFlight } from '@/lib/promptFlight'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
 import { engineBadge, isGatedTier, tierLabel } from '@/session/modelName'
+import { deliveryPath } from '@/features/delivery/deliveryNavState'
 import { UsageBadge } from '@/features/accounts/UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
@@ -526,6 +527,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         >
           {presentation.label}
         </span>
+        {/* C6: a session parked for lack of usage headroom is a capacity fact —
+            link the stack rather than leave the pill as a dead end. */}
+        {session.usageStalled && (
+          <Link
+            to={deliveryPath('capacity')}
+            className="flex-shrink-0 text-accent hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            See capacity
+          </Link>
+        )}
         {/* Why a finished session has no PR. Gated on the 'complete' tier (Complete /
             Ended), not on the field alone: a resumed session keeps its old row value,
             and "not-needed" beside "Working…" would be a stale claim. Without this a

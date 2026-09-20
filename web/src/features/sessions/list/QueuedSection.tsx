@@ -4,9 +4,11 @@
 // queue, sorted by position. Move/cancel controls are in a dedicated actions group
 // (NEVER nested inside the row's open button — a11y rule).
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ArrowUp, ArrowDown, ChevronsUp, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useQueueMove, useQueueCancel } from '@/api/hooks'
+import { deliveryPath } from '@/features/delivery/deliveryNavState'
 import type { Session } from '@/api/types'
 
 interface QueuedSectionProps {
@@ -42,6 +44,12 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
       >
         <span>Queued ({sorted.length})</span>
       </button>
+
+      {/* C6: the queue is the global cap's overflow; say so and point at the stack. */}
+      <p className="px-1 pb-1 text-xs text-ink-muted">
+        Waiting for a free slot under the global cap.{' '}
+        <Link to={deliveryPath('capacity')} className="text-accent hover:underline">See capacity</Link>
+      </p>
 
       {!collapsed && (
         <ul id="queued-section-panel" className="space-y-1 py-1">
