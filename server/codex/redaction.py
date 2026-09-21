@@ -115,6 +115,12 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
     report of the same incident (#1852, #1859, #1860). The categories are fixed
     literals authored here; nothing peer-controlled reaches them.
 
+    It is the *only* table, not a table of ``CodexProtocolError`` subclasses:
+    ``CodexRequestUnrouted`` is deliberately outside that hierarchy (nothing
+    about the connection has gone wrong) and still needs a name of its own, for
+    exactly the #1861 reason — ``codex.protocol.approval_failed
+    error=runtime_error`` was the whole content of #1485.
+
     Built on demand rather than at import: ``server.codex.protocol`` imports this
     module, so a module-level import of it would be circular.
     """
@@ -127,6 +133,7 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
         (_p.CodexNotInitializedError, "not_initialized"),
         (_p.CodexRequestOverloaded, "overloaded"),
         (_p.CodexExternalAuthDisabled, "external_auth_disabled"),
+        (_p.CodexRequestUnrouted, "unrouted"),
     )
 
 
@@ -151,10 +158,10 @@ def scrub_exception(exc: BaseException) -> str:
 
     if isinstance(exc, CodexRequestFailed):
         return f"peer_error:{exc.code}"
+    for cls, category in _protocol_categories():
+        if isinstance(exc, cls):
+            return category
     if isinstance(exc, CodexProtocolError):
-        for cls, category in _protocol_categories():
-            if isinstance(exc, cls):
-                return category
         return "protocol_error"
     if isinstance(exc, TimeoutError):
         return "timeout"

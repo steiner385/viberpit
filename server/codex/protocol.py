@@ -151,6 +151,28 @@ class CodexRequestFailed(CodexProtocolError):
         return cls(code, method=method)
 
 
+class CodexRequestUnrouted(RuntimeError):
+    """No live thread owns an inbound server request, so it cannot be answered.
+
+    Raised by an installed handler, never by this module, and it is the one
+    handler failure that is a routing OUTCOME rather than a fault:
+    `CodexRunnerManager.unregister_thread` drops a thread's sinks *before* its
+    turn fence precisely so a request landing during teardown finds no owner and
+    takes the fail-closed path below.
+
+    Deliberately NOT a `CodexProtocolError`: nothing about this connection has
+    gone wrong, and `server/sessions/orchestrator.py` reads that base class as
+    "the engine is down". It carries its own category through
+    `redaction.scrub_exception` for the same reason the #1861 taxonomy exists —
+    otherwise it is just another `RuntimeError` and reads `runtime_error`.
+
+    The layer that raises it knows the account and the method and reports it
+    there. Re-reporting it here at ERROR filed a second, contentless issue for
+    an incident already described: 20 unrouted approvals on 2026-09-09 produced
+    both #1486 and #1485, and #1991 is the same pair for `item/tool/call`.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -1200,6 +1222,18 @@ class CodexAppServerClient:
             schema.parse_approval_response(method, wire)
         except asyncio.CancelledError:
             raise
+        except CodexRequestUnrouted:
+            # Not a fault and not ours to report: see CodexRequestUnrouted. The
+            # breadcrumb stays (below the sink's WARNING+ threshold) so this
+            # dispatcher's own trail still shows the request it declined, next
+            # to the `approval_answered` line every served one leaves.
+            log_event(
+                logger, logging.INFO, "codex.protocol.approval_unrouted", method=method
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "approval handling failed"
+            )
+            return
         except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
             log_event(
                 logger,
@@ -1264,6 +1298,12 @@ class CodexAppServerClient:
             schema.parse_tool_request_user_input_response(wire)
         except asyncio.CancelledError:
             raise
+        except CodexRequestUnrouted:
+            log_event(logger, logging.INFO, "codex.protocol.user_input_unrouted")
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "user-input handling failed"
+            )
+            return
         except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
             log_event(
                 logger,
@@ -1327,6 +1367,12 @@ class CodexAppServerClient:
             schema.parse_dynamic_tool_call_response(wire)
         except asyncio.CancelledError:
             raise
+        except CodexRequestUnrouted:
+            log_event(logger, logging.INFO, "codex.protocol.dynamic_tool_unrouted")
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "dynamic tool call failed"
+            )
+            return
         except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
             log_event(
                 logger,

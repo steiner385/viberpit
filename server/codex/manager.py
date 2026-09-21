@@ -70,7 +70,11 @@ from server.codex.external_auth import (
     assert_no_runner_credentials,
 )
 from server.codex.process import CodexProcess, CodexProcessHandle
-from server.codex.protocol import CodexAppServerClient, RefreshHandler
+from server.codex.protocol import (
+    CodexAppServerClient,
+    CodexRequestUnrouted,
+    RefreshHandler,
+)
 from server.obs.context import log_event
 from server.obs.metrics import (
     codex_approval_ms,
@@ -791,8 +795,12 @@ class CodexRunnerManager:
             codex_threads_active.labels(account).dec()
         self._event_sinks.get(account, {}).pop(thread_id, None)
         # Dropped BEFORE the turn fence, so a request arriving during teardown
-        # finds no handler and takes the protocol's fail-closed `-32601` path
-        # rather than reaching a driver that is already closing.
+        # finds no sink and takes the protocol's fail-closed path rather than
+        # reaching a driver that is already closing. That path is `-32603`, not
+        # the `-32601` a connection with no handler at all gets: the protocol
+        # handler here IS installed, and raises `CodexRequestUnrouted` — which
+        # is why this outcome is expected, and is reported once by the `_on_*`
+        # router below rather than a second time by the dispatcher (#1485).
         self._approval_sinks.get(account, {}).pop(thread_id, None)
         self._user_input_sinks.get(account, {}).pop(thread_id, None)
         self._dynamic_tool_sinks.get(account, {}).pop(thread_id, None)
@@ -892,6 +900,12 @@ class CodexRunnerManager:
         turns into a JSON-RPC error rather than a decision. That is the whole
         point: an approval nobody owns must never be answered, and *not
         answering* is the only outcome that cannot become an allow.
+
+        The raise is :class:`CodexRequestUnrouted` rather than a generic manager
+        error so the dispatcher can tell this apart from a handler that actually
+        broke. This line is the only report the incident gets; the dispatcher's
+        duplicate ERROR filed #1485 alongside this record's own #1486 (see
+        `server/tests/test_codex_failure_diagnosability.py`).
         """
         thread_id = self._thread_of(params)
         sink = (
@@ -908,7 +922,7 @@ class CodexRunnerManager:
                 account=account,
                 method=method,
             )
-            raise CodexRunnerMissingError(
+            raise CodexRequestUnrouted(
                 f"no live {brand.NAME} session owns this codex approval request"
             )
         # Approval latency is wall-clock time waiting on a HUMAN, which is exactly
@@ -939,7 +953,7 @@ class CodexRunnerManager:
                 "codex.manager.unrouted_user_input",
                 account=account,
             )
-            raise CodexRunnerMissingError(
+            raise CodexRequestUnrouted(
                 f"no live {brand.NAME} session owns this codex user-input request"
             )
         started = time.monotonic()
@@ -972,7 +986,7 @@ class CodexRunnerManager:
                 "codex.manager.unrouted_dynamic_tool",
                 account=account,
             )
-            raise CodexRunnerMissingError(
+            raise CodexRequestUnrouted(
                 f"no live {brand.NAME} session owns this codex tool call"
             )
         started = time.monotonic()
