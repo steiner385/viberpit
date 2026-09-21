@@ -386,6 +386,136 @@ _install_real_store_write_guard()
 
 
 # --------------------------------------------------------------------------- #
+# Real-worktree destruction guard — backstop for the repo_root fence (#1014).  #
+#                                                                              #
+# The repo-root env fence above points the janitor at a temp dir, so the       #
+# startup sweep normally walks an empty throwaway root. That is a PRECONDITION, #
+# not a guarantee: it is defeated by `patch.dict(os.environ, ..., clear=True)`, #
+# by an explicit `SessionOrchestrator(repo_root=...)`, and by the constructor's #
+# own `except Exception: repo_root = ~/GitHub` fallback when get_settings()    #
+# raises (server/sessions/orchestrator.py). When it IS defeated the sweep walks #
+# the developer's live managed-worktree tree under ~/GitHub with an empty       #
+# session registry — every real worktree reads as unowned — and stash-evicts    #
+# other sessions' work. That is exactly what #1014 observed in a local `pytest  #
+# server/tests/` run:                                                          #
+#                                                                              #
+#     worktree-janitor: stash failed, discarding path=.../KinDash/2ccac630      #
+#                                                                              #
+# Guard the two destructive seams rather than the env var: `remove_worktree`   #
+# (the only worktree-destroying primitive) and `sweep_orphaned_worktrees` (the  #
+# only thing that discovers paths to hand it). Anything outside the system temp #
+# dir is refused.                                                              #
+#                                                                              #
+# Refusing is not enough on its own: `_worktree_janitor_loop` wraps its sweep  #
+# in `except Exception: log.exception(...)`, so a guard that only raised would  #
+# stop the damage but leave the test green and silent — the original incident's #
+# exact shape. Each refusal is therefore also RECORDED, and the autouse         #
+# `_no_real_worktree_access` fixture below fails the test on any recording. A   #
+# sweep fired from a background task may land after its test finishes, so the   #
+# failure can surface on the following test; the recorded path names the root.  #
+# --------------------------------------------------------------------------- #
+_TMP_ROOT = Path(tempfile.gettempdir()).resolve()
+
+# Paths a test tried to sweep or destroy outside the temp dir. Appended to from
+# janitor threads (`asyncio.to_thread`); list.append is atomic, no lock needed.
+_REAL_WORKTREE_VIOLATIONS: list[str] = []
+
+
+def _is_disposable_path(path) -> bool:
+    """True iff *path* lives under the system temp dir — a test's own scratch."""
+    try:
+        return Path(path).expanduser().resolve().is_relative_to(_TMP_ROOT)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _record_real_worktree_access(what: str, path) -> RuntimeError:
+    """Record a refusal and build the error the guarded callable raises."""
+    detail = f"{what}({path})"
+    _REAL_WORKTREE_VIOLATIONS.append(detail)
+    return RuntimeError(
+        f"Test attempted {detail} outside the system temp dir {_TMP_ROOT}.\n"
+        "This reaches the developer's live managed-worktree tree under "
+        "~/GitHub, where the sweep's empty test session registry makes every "
+        "REAL session's worktree look unowned and eligible for stash-eviction "
+        "(#1014).\n"
+        "Point the root at tmp_path (SessionOrchestrator(repo_root=str(tmp_path)) "
+        "or the repo-root env var), or patch the callable out."
+    )
+
+
+def _install_real_worktree_guard():
+    from ccswitch import worktree_transfer, worktrees, worktrees_janitor
+
+    _orig_remove = worktrees.remove_worktree
+    if getattr(_orig_remove, "_is_real_worktree_guard", False):
+        return  # already guarded (conftest re-imported)
+
+    @functools.wraps(_orig_remove)
+    def _guarded_remove_worktree(worktree_path, *args, **kwargs):
+        if not _is_disposable_path(worktree_path):
+            raise _record_real_worktree_access("remove_worktree", worktree_path)
+        return _orig_remove(worktree_path, *args, **kwargs)
+
+    _guarded_remove_worktree._is_real_worktree_guard = True
+
+    _orig_sweep = worktrees_janitor.sweep_orphaned_worktrees
+
+    @functools.wraps(_orig_sweep)
+    def _guarded_sweep(repo_root, *args, **kwargs):
+        if not _is_disposable_path(repo_root):
+            raise _record_real_worktree_access("sweep_orphaned_worktrees", repo_root)
+        return _orig_sweep(repo_root, *args, **kwargs)
+
+    _guarded_sweep._is_real_worktree_guard = True
+    worktrees_janitor.sweep_orphaned_worktrees = _guarded_sweep
+
+    # Rebind every reference to remove_worktree: the defining module plus the two
+    # that captured it at import time via `from ... import remove_worktree`
+    # (a later-imported module picks up the guarded attribute itself).
+    worktrees.remove_worktree = _guarded_remove_worktree
+    for _m in (worktrees_janitor, worktree_transfer):
+        if getattr(_m, "remove_worktree", None) is _orig_remove:
+            _m.remove_worktree = _guarded_remove_worktree
+
+
+_install_real_worktree_guard()
+
+
+def _drain_real_worktree_violations() -> list[str]:
+    """Pop and return everything the guard refused since the last drain."""
+    drained = list(_REAL_WORKTREE_VIOLATIONS)
+    _REAL_WORKTREE_VIOLATIONS.clear()
+    return drained
+
+
+def _fail_on_real_worktree_violations() -> None:
+    """Turn any recorded refusal into a test failure. Always drains."""
+    leaked = _drain_real_worktree_violations()
+    if leaked:
+        pytest.fail(
+            "Test reached the real worktree tree — refused, but the attempt is a "
+            "bug: " + ", ".join(leaked) + "\nSee the #1014 note in "
+            "server/tests/conftest.py. If a background janitor loop from an "
+            "EARLIER test fired here, fix that test's repo_root.",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_worktree_access():
+    """Fail any test whose run reached the real worktree tree (#1014).
+
+    Without this the guard's RuntimeError is swallowed by
+    ``_worktree_janitor_loop``'s ``except Exception`` and the test stays green,
+    which is how the original leak went unnoticed for a whole test run.
+    """
+    _drain_real_worktree_violations()
+    yield
+    _fail_on_real_worktree_violations()
+
+
+# --------------------------------------------------------------------------- #
 # Durable in-memory test DBs — structural fix for the recurring test_ws.py     #
 # "no such table: sessions" flake (red CI on PRs #188/#192/#197/#200).         #
 #                                                                              #
