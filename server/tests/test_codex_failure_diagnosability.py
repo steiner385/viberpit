@@ -18,6 +18,9 @@ separate issue for each stage:
 * ``recover.paused reason=all_accounts_busy`` ×2455 (#1702) — the stuck-session
   sweep re-parks an already-parked session every tick, and pausing is idempotent
   by design, so the 2,455th record said exactly what the first did.
+* ``codex.manager.runner_crashed exit_code=<n>`` ×42 (#1857) — one event name for
+  three unrelated endings, and the number that told them apart was normalized
+  away. See that section below for the full shape.
 
 The common shape — the #1767 / #1778 pattern a third and fourth time — is an
 *expected, handled outcome* reported as a fault, in a loop. The fixes are
@@ -39,8 +42,11 @@ from pathlib import Path
 import pytest
 
 import server.sessions.orchestrator as orch_mod
+from server.codex import manager as mgr_mod
 from server.codex import protocol as codex_protocol
 from server.codex import redaction
+from server.obs.context import log_event
+from server.obs.error_signature import signature_of
 from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
@@ -440,3 +446,94 @@ async def test_a_non_protocol_start_failure_still_logs_an_error(
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1
     assert "reassign.error" in errors[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# #1857 — three endings under one name, told apart by a number nobody kept
+# ---------------------------------------------------------------------------
+#
+# ``codex.manager.runner_crashed`` named every way a runner can end, and the
+# ``exit_code`` that distinguished them lived in a *field*. The sink fingerprints
+# a structured record on (source, level, logger, event, exception, frame) and
+# never on its fields, and the title it renders normalizes every number to
+# ``<n>`` — so a segfault, the #1444 client latch and the app-server exiting 0 by
+# itself were one issue, and 42 occurrences of the harmless one meant a real
+# crash would have arrived as "1 more occurrence". The #1767 / #1778 shape once
+# more: an expected, handled outcome reported as a fault, in a loop.
+#
+# The condition therefore has to live in the event NAME, and what it cost — a
+# lost turn — in the level.
+
+_MGR_LOGGER = logging.getLogger("server.codex.manager")
+
+
+def _ending(exit_code: int, *, interrupted: int = 0):
+    return mgr_mod.classify_runner_ending(
+        exit_code=exit_code, interrupted_turns=interrupted
+    )
+
+
+def _sink_fingerprint(caplog, report) -> str:
+    """The fingerprint the error sink mints for a record classified this way."""
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+        log_event(_MGR_LOGGER, report.level, report.event,
+                  account="chatgpt-tonystein85_gmail.com", generation=1)
+    signature = signature_of(caplog.records[-1], source="daemon", host="dobby")
+    assert signature is not None, "the sink dropped a record it must count"
+    return signature.fingerprint
+
+
+def test_an_app_server_that_exits_zero_by_itself_is_not_a_crash():
+    """The 42 occurrences in #1857: ``exit_code=0``, ``interrupted_turns=0``. The
+    process left of its own accord with nothing in flight, and the supervisor
+    replaced it before anyone could notice."""
+    report = _ending(0)
+    assert report.ending is mgr_mod.RunnerEnding.EXITED_CLEAN
+    assert report.event == "codex.manager.runner_exited"
+    assert report.level == logging.WARNING
+
+
+def test_a_clean_exit_that_took_a_turn_with_it_is_an_error():
+    """The level follows the cost, not the exit status: the same ending that is
+    noise while idle is lost work when a turn was running (the 2026-09-19 16:19
+    burst on dobby, where ``interrupted_turns`` was 1)."""
+    report = _ending(0, interrupted=1)
+    assert report.ending is mgr_mod.RunnerEnding.EXITED_CLEAN
+    assert report.level == logging.ERROR
+
+
+@pytest.mark.parametrize("code", [1, 2, 101, 137, -9, -1])
+def test_an_abnormal_death_is_still_a_crash_even_with_nothing_in_flight(code):
+    """Guard against widening this into 'a runner ending is never an error'. A
+    non-zero status or a signal is a fault whether or not it cost a turn."""
+    report = _ending(code)
+    assert report.ending is mgr_mod.RunnerEnding.CRASHED
+    assert report.event == "codex.manager.runner_crashed"
+    assert report.level == logging.ERROR
+
+
+def test_a_latched_client_keeps_a_name_of_its_own():
+    """#1444: the connection died while the process lived. Diagnosed nothing like
+    a crash, and must not arrive in the same issue as one."""
+    report = _ending(mgr_mod.CLIENT_CLOSED_EXIT_CODE)
+    assert report.ending is mgr_mod.RunnerEnding.CLIENT_CLOSED
+    assert report.event == "codex.manager.runner_client_closed"
+    assert report.level == logging.ERROR
+
+
+def test_each_ending_files_as_its_own_issue(caplog):
+    """The defect in #1857 was collision, so assert its absence at the sink — the
+    only place that decides what is one issue — rather than trusting the names."""
+    reports = [_ending(0), _ending(0, interrupted=1), _ending(1),
+               _ending(mgr_mod.CLIENT_CLOSED_EXIT_CODE)]
+    fingerprints = [_sink_fingerprint(caplog, r) for r in reports]
+    assert len(set(fingerprints)) == len(fingerprints), (
+        f"endings still share an issue: {list(zip([r.event for r in reports], fingerprints))}"
+    )
+
+
+def test_one_ending_is_still_one_issue_however_it_is_numbered(caplog):
+    """The other half of the split: a crash storm must not mint an issue per exit
+    status. Two deaths of the same kind are two occurrences of one condition."""
+    assert _sink_fingerprint(caplog, _ending(1)) == _sink_fingerprint(caplog, _ending(137))
