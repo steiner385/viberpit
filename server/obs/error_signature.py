@@ -25,12 +25,23 @@ OWN_LOGGER = "server.obs.errsink"
 _APP_PATH_MARKERS = ("/server/", "/ccswitch/")
 
 # Order matters: uuid before hex (a uuid contains hex runs), quoted strings before
-# ints, id-like path segments before bare hex/ints so "/535694fe" → "/<id>".
+# numbers, id-like path segments before bare hex/numbers so "/535694fe" → "/<id>",
+# and 0x-addresses before the number masker so one does not render "<n>x7f9c".
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 _QUOTED = re.compile(r"\"[^\"]*\"|'[^']*'")
 _ID_SEGMENT = re.compile(r"/[0-9a-z_.-]*\d[0-9a-z_.-]*(?=/|\s|$)", re.I)
+_HEX_ADDR = re.compile(r"\b0x[0-9a-f]+\b", re.I)
 _HEX = re.compile(r"\b[0-9a-f]{8,}\b", re.I)
-_INT = re.compile(r"\b\d+\b")
+# A measured value: digits, any fractional groups, whatever unit follows.
+#
+# This was `\b\d+\b`, which masks a number only when a word boundary closes it —
+# so "0.78s" kept its fraction ("<n>.78s") and "61s" was not masked at all, the
+# trailing "s" being a word character. Every distinct measurement therefore minted
+# its own fingerprint, and one loop_lag stall was filed as eight auto-errors
+# (#1848, #1850, #1705, #1770, #1771, #1774, #1789, #1797). The lookbehind keeps
+# the old rule that digits *inside* a word belong to the word ("sqlite3", "p95");
+# the greedy digit run supplies the trailing edge that `\b` could not.
+_NUM = re.compile(r"(?<![\w.])\d+(?:\.\d+)*")
 _WS = re.compile(r"\s+")
 
 _CLIENT_EXC = re.compile(r"^\s*([A-Za-z_]\w*(?:Error|Exception))\b")
@@ -39,13 +50,14 @@ _ASSET_HASH = re.compile(r"[-.][0-9A-Za-z_]{6,}(?=\.m?js$)")
 
 
 def normalize(text: str) -> str:
-    """Lowercase and replace ids, hex runs, ints and quoted strings with placeholders."""
+    """Lowercase and replace ids, hex runs, numbers and quoted strings with placeholders."""
     t = text.lower()
     t = _UUID.sub("<id>", t)
     t = _QUOTED.sub("<str>", t)
     t = _ID_SEGMENT.sub("/<id>", t)
+    t = _HEX_ADDR.sub("<hex>", t)
     t = _HEX.sub("<hex>", t)
-    t = _INT.sub("<n>", t)
+    t = _NUM.sub("<n>", t)
     t = _WS.sub(" ", t).strip()
     return t[:_NORM_MAX]
 
