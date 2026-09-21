@@ -18,6 +18,11 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
+# One spelling of the DB-URL override for the whole file (brand ratchet
+# env-prefix, #1591): every test below patches the same in-memory DB via this
+# constant instead of repeating the literal.
+_MEMORY_DB_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
+
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
@@ -54,7 +59,7 @@ def _make_client(usage_fn=None):
 def test_patch_sets_reserve_and_returns_it():
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             response = client.patch(
@@ -69,7 +74,7 @@ def test_patch_sets_reserve_and_returns_it():
 def test_patch_null_clears_reserve():
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             client.patch("/api/accounts/bob", json={"weeklyReservePct": 85},
@@ -83,7 +88,7 @@ def test_patch_null_clears_reserve():
 def test_patch_out_of_range_reserve_is_422():
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             low = client.patch("/api/accounts/carol", json={"weeklyReservePct": 0.5},
@@ -97,7 +102,7 @@ def test_patch_out_of_range_reserve_is_422():
 def test_nickname_patch_preserves_reserve_and_vice_versa():
     with temp_env():
         _seed_slot("dave")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client()
         with client:
             client.patch("/api/accounts/dave", json={"weeklyReservePct": 75},
@@ -115,7 +120,7 @@ def test_nickname_patch_preserves_reserve_and_vice_versa():
 def test_get_accounts_includes_reserve_field():
     with temp_env():
         _seed_slot("eve")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client(usage_fn=lambda name: make_usage(session=10.0))
         with client:
             client.patch("/api/accounts/eve", json={"weeklyReservePct": 90},
@@ -127,17 +132,20 @@ def test_get_accounts_includes_reserve_field():
 
 
 def test_get_accounts_ranks_over_reserve_account_as_fallback():
-    """Display ranking must match real selection: over-reserve → last + fallback reason."""
+    """Display ranking must match real selection: over-reserve → last + fallback reason.
+
+    Reserve 20 = keep 20% back (ceiling 80): hot at 95% is over it, cool at 20% is not.
+    """
     def usage_fn(name):
         return make_usage(session=10.0, weekly=95.0 if name == "hot" else 20.0)
 
     with temp_env():
         _seed_slot("hot")
         _seed_slot("cool")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
             client = _make_client(usage_fn=usage_fn)
         with client:
-            client.patch("/api/accounts/hot", json={"weeklyReservePct": 90},
+            client.patch("/api/accounts/hot", json={"weeklyReservePct": 20},
                          headers=IDENTITY_HEADERS)
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
     assert response.status_code == 200
@@ -145,3 +153,75 @@ def test_get_accounts_ranks_over_reserve_account_as_fallback():
     assert by_name["cool"]["rank"] == 1
     assert by_name["hot"]["rank"] == 2
     assert by_name["hot"]["rankReason"] == "over weekly reserve — fallback"
+
+
+def test_get_accounts_carries_the_effective_and_default_reserve():
+    """Spec 2026-09-20 D4/§7: effectiveReservePct = the account's override, else the
+    push level's RESERVE_PCT (steady 20 on a fresh governor row); pushLevelReservePct
+    is that default, so the Accounts page can label a blank override."""
+    with temp_env():
+        _seed_slot("plain")
+        _seed_slot("kept")
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
+            client = _make_client()
+        with client:
+            client.patch("/api/accounts/kept", json={"weeklyReservePct": 60},
+                         headers=IDENTITY_HEADERS)
+            response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["plain"]["weeklyReservePct"] is None
+    assert by_name["plain"]["effectiveReservePct"] == 20.0
+    assert by_name["plain"]["pushLevelReservePct"] == 20.0
+    assert by_name["kept"]["effectiveReservePct"] == 60.0
+    assert by_name["kept"]["pushLevelReservePct"] == 20.0
+
+
+def test_get_accounts_reserve_default_follows_the_governor_push_level():
+    """The other test in this file (`..._carries_the_effective_and_default_reserve`)
+    passes even if the governor row is never read at all: a fresh governor row's
+    push level is "steady", which is also `_push_level()`'s degrade fallback. Seed a
+    REAL governor row via the automations API so a regression back to a hardcoded
+    "steady" default would actually fail this test."""
+    with temp_env():
+        _seed_slot("blank")
+        _seed_slot("overridden")
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
+            client = _make_client()
+        with client:
+            gov = client.patch("/api/automations/capacity-governor",
+                               json={"config": {"push_level": "max"}},
+                               headers=IDENTITY_HEADERS)
+            assert gov.status_code == 200
+            client.patch("/api/accounts/overridden", json={"weeklyReservePct": 60},
+                         headers=IDENTITY_HEADERS)
+            response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["blank"]["effectiveReservePct"] == 5.0
+    assert by_name["blank"]["pushLevelReservePct"] == 5.0
+    assert by_name["overridden"]["effectiveReservePct"] == 60.0
+    assert by_name["overridden"]["pushLevelReservePct"] == 5.0
+
+
+async def _boom(*a, **k):
+    raise RuntimeError("boom")
+
+
+def test_get_accounts_reserve_default_degrades_to_steady_when_the_governor_read_fails(monkeypatch, caplog):
+    """A config-read exception must degrade the reserve default to steady (20%),
+    never fail the whole accounts list, and must log `accounts.push_level_read_failed`
+    so a wedged governor read is visible without breaking GET /api/accounts."""
+    import server.api.accounts as accounts_api
+    monkeypatch.setattr(accounts_api, "read_automation_config", _boom)
+    with temp_env():
+        _seed_slot("plain")
+        with patch.dict(os.environ, _MEMORY_DB_ENV):
+            client = _make_client()
+        with client:
+            with caplog.at_level("WARNING"):
+                response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()}
+    assert by_name["plain"]["pushLevelReservePct"] == 20.0
+    assert "accounts.push_level_read_failed" in caplog.text

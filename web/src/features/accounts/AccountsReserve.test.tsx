@@ -86,6 +86,8 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     rank: null,
     rankReason: null,
     weeklyReservePct: null,
+    effectiveReservePct: 20,
+    pushLevelReservePct: 20,
     ...overrides,
   }
 }
@@ -138,8 +140,9 @@ describe('AccountRow — weekly reserve', () => {
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
-    const input = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    const input = screen.getByLabelText('Weekly reserve override for work')
     expect((input as HTMLInputElement).value).toBe('90')
+    expect(input).toHaveAttribute('placeholder', "push level's 20%")
   })
 
   it('saving sends nickname and reserve together', async () => {
@@ -148,7 +151,7 @@ describe('AccountRow — weekly reserve', () => {
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve override for work/i })
     await user.clear(reserveInput)
     await user.type(reserveInput, '85')
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
@@ -164,7 +167,7 @@ describe('AccountRow — weekly reserve', () => {
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    await user.clear(screen.getByRole('spinbutton', { name: /weekly reserve % for work/i }))
+    await user.clear(screen.getByRole('spinbutton', { name: /weekly reserve override for work/i }))
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
@@ -178,7 +181,7 @@ describe('AccountRow — weekly reserve', () => {
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve override for work/i })
     await user.clear(reserveInput)
     await user.type(reserveInput, '0')
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
@@ -191,7 +194,7 @@ describe('AccountRow — weekly reserve', () => {
   it('shows the over-reserve chip when weekly usage is at/over the reserve', async () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({
-        name: 'work', weeklyReservePct: 90,
+        name: 'work', weeklyReservePct: 10, effectiveReservePct: 10,
         usage: anthropicUsage(10, 95),
       })],
       isLoading: false,
@@ -202,13 +205,13 @@ describe('AccountRow — weekly reserve', () => {
     expect(screen.getByText('over reserve')).toBeInTheDocument()
   })
 
-  it('no chip when below reserve or reserve unset', async () => {
+  it('no chip below the effective ceiling; the push level default applies when no override is set', async () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [
-        makeAccount({ name: 'below', weeklyReservePct: 90,
+        makeAccount({ name: 'below', weeklyReservePct: 10, effectiveReservePct: 10,
           usage: anthropicUsage(10, 50) }),
-        makeAccount({ name: 'unset', weeklyReservePct: null,
-          usage: anthropicUsage(10, 99) }),
+        makeAccount({ name: 'unset', weeklyReservePct: null, effectiveReservePct: 20,
+          usage: anthropicUsage(10, 79) }),
       ],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
@@ -218,13 +221,31 @@ describe('AccountRow — weekly reserve', () => {
     expect(screen.queryByText('over reserve')).not.toBeInTheDocument()
   })
 
+  it('the push level default alone can put an account over reserve', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
+      makeAccount({ name: 'unset', weeklyReservePct: null, effectiveReservePct: 20, usage: anthropicUsage(10, 81) }),
+    ]))
+    render(<AccountsManager />, { wrapper })
+    expect(screen.getByText('over reserve')).toBeInTheDocument()
+  })
+
   it('weekly usage bar renders a marker at the reserve position', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 10, effectiveReservePct: 10 })]))
 
     render(<AccountsManager />, { wrapper })
 
     const marker = screen.getByTestId('reserve-marker')
     expect(marker).toBeInTheDocument()
     expect(marker.style.left).toBe('90%')
+  })
+
+  it('the marker follows the push level default when no override is set', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: null, effectiveReservePct: 20 })]))
+
+    render(<AccountsManager />, { wrapper })
+
+    const marker = screen.getByTestId('reserve-marker')
+    expect(marker).toBeInTheDocument()
+    expect(marker.style.left).toBe('80%')
   })
 })

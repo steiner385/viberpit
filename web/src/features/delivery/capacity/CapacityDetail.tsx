@@ -390,7 +390,7 @@ export function CapacityDetail() {
               {row.key === 'accounts' && readout.accounts.rows.length > 0 && (
                 <details className="mt-1 text-xs text-ink-muted">
                   <summary className="cursor-pointer select-none">
-                    {readout.accounts.available} of {readout.accounts.total} available under the {readout.accounts.reservePct}% reserve
+                    {readout.accounts.available} of {readout.accounts.total} available under their reserves (push level {readout.accounts.reservePct}%)
                   </summary>
                   <ul className="mt-1 list-disc space-y-0.5 pl-5">
                     {readout.accounts.rows.map((a) => <li key={a.name}>{accountRowLine(a)}</li>)}

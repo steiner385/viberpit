@@ -13,7 +13,7 @@ export const CAPACITY: CapacityReadout = {
   accounts: {
     available: 2, total: 3, reservePct: 20, nextResetAt: null,
     rows: [
-      { name: 'primary', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, windows: [] },
+      { name: 'primary', engine: 'claude_code', provider: 'anthropic', enabled: true, metered: true, available: true, reason: null, nextResetAt: null, reservePct: 20, windows: [] },
     ],
     sessionsPerAccount: 2, accountCap: 4,
   },

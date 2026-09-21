@@ -180,3 +180,11 @@ def test_pinned_floor_is_deducted_before_the_round_robin():
              _prod("kindash", 2, eligible=10)]
     caps = _split(4, prods)
     assert caps["viberpit"] == 3 and caps["kindash"] == 1 and sum(caps.values()) == 4
+
+
+def test_push_level_of_normalises_the_governor_config():
+    from server.automations.capacity_plan import plan_from_dict, push_level_of
+    assert push_level_of({"push_level": "max"}) == "max"
+    assert push_level_of({"push_level": "bogus"}) == "steady"
+    assert push_level_of({}) == "steady"
+    assert plan_from_dict({"pushLevel": "bogus"}).push_level == "steady"

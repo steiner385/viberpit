@@ -238,7 +238,7 @@ async def test_capacity_counts_published_for_the_status_card():
 async def test_status_text_mirrors_the_published_binding_text_and_counts_are_int_only():
     readout = _readout()
     readout["binding"] = {"layer": "account", "code": "no_account_headroom",
-                          "text": "no account has headroom under the 20% reserve"}
+                          "text": "no account has headroom under its reserve (push level 20%)"}
     loop, ctx, _calls, _store = _build_loop(readout=readout)
     await loop.tick()
 

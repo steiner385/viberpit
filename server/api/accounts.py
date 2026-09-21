@@ -32,10 +32,13 @@ from ccswitch import account_registry, copilot, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
-from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow re-exported for server.tests.test_account_headroom
-                            QuotaWindow, unknown_snapshot)
-from ccswitch.selector import at_ceiling, rank_accounts
+from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow/anthropic_snapshot re-exported for server.tests.test_account_headroom
+                            QuotaWindow, anthropic_snapshot, unknown_snapshot)
+from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
+from server.automations.capacity_governor import CapacityGovernor
+from server.automations.capacity_plan import RESERVE_PCT, normalise_push_level, push_level_of
+from server.automations.config_store import read_automation_config
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
 from server.codex.auth_types import (
@@ -222,24 +225,72 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
     return dict(zip(names, results))
 
 
-async def account_headroom(orch, *, reserve_pct: float,
+async def _push_level() -> str:
+    """The governor's current push level, read best-effort (spec 2026-09-20 D4).
+
+    Reads the shared-DB governor row directly — the same read
+    ``SessionOrchestrator._capacity_governor_read_config`` does — rather than through
+    an orchestrator seam: the API must answer identically in in-process AND remote
+    mode, and in remote mode ``app.state.sessions`` is a ``FleetOrchestrator`` whose
+    primary is a ``RemoteOrchestrator`` with no such seam (no RPC for it, no
+    ``__getattr__`` fallback), so a ``getattr(orch, …)`` here silently returned
+    ``None``/``steady`` on every daemon host. A DB blip still degrades to
+    ``steady`` — a config read must never fail the accounts list.
+    """
+    try:
+        _mode, gov = await read_automation_config(
+            CapacityGovernor, modes=("monitor", "act"), log_key="capacity_governor")
+    except Exception:  # noqa: BLE001 — a config read must never fail the accounts list
+        log.warning("accounts.push_level_read_failed", exc_info=True)
+        return "steady"
+    return push_level_of(gov)
+
+
+def effective_reserve_pct(acct: dict, push_level: str) -> float:
+    """THE reserve an account is judged by (spec 2026-09-20 D4): its own
+    ``weeklyReservePct`` override when set, else the push level's ``RESERVE_PCT``.
+    A reserve is the percent of the weekly allowance kept back; the account's
+    ceiling is ``100 - reserve``. One rule for the governor's headroom, the
+    accounts list's ``effectiveReservePct`` and the readout's per-row value."""
+    override = acct.get("weeklyReservePct")
+    if override is not None:
+        return float(override)
+    level = normalise_push_level(push_level)
+    return float(RESERVE_PCT[level])
+
+
+async def account_headroom(orch, *, push_level: str,
                            timeout: float = USAGE_FETCH_TIMEOUT) -> list[dict]:
     """Per-account availability for the capacity governor (spec 2026-09-19 §5).
 
     Lives here, not in a new module: this file already imports the selector, and the
-    brand ratchet has no slack for another import of the legacy package. ``available``
-    uses ``at_ceiling`` with ``ceiling = 100 - reserve_pct`` so the governor and the
-    account selector agree on what "usable" means; an unmetered engine (Codex,
-    Copilot — D4) counts zero and says so.
+    brand ratchet has no slack for another import of the legacy package. Mirrors
+    ``selector.rank_accounts``' two exclusion legs so the governor and the account
+    selector agree on what "usable" means:
+
+    - HARD ceiling (``at_ceiling``, this module's ``load_config().hard_ceiling``):
+      ANY window at/over it means the account is truly out of quota — a session on
+      it 429s on its next turn — so every window counts, reserve or not.
+    - RESERVE (``effective_reserve_pct``: the account's ``weeklyReservePct``
+      override, else the push level's — spec 2026-09-20 D4): binds ONLY the
+      reserve window (the longest one the provider reports — weekly for
+      Anthropic), exactly as the selector's soft "over reserve" demotion does. An
+      account deep into its session window but fresh on weekly is not over
+      reserve; the reserve exists to protect the long-horizon allowance, not to
+      duplicate the hard ceiling.
+
+    An unmetered engine (Codex, Copilot — D4 of the governor spec) counts zero and
+    says so. Every row carries the ``reservePct`` it was judged by.
     """
     infos = await asyncio.to_thread(list_accounts)
     usages = await _gather_usages(orch, [a["name"] for a in infos], timeout)
-    ceiling = 100.0 - float(reserve_pct)
+    hard = load_config().hard_ceiling * 100.0
     rows: list[dict] = []
     for acct in infos:
         name = acct["name"]
         usage, _stale = usages.get(name, (None, None))
         enabled = bool(acct.get("enabled", True))
+        reserve = effective_reserve_pct(acct, push_level)
         metered = usage is not None and usage.provider == "anthropic" and usage.availability == AVAILABLE
         reason = None
         next_reset = None
@@ -247,14 +298,22 @@ async def account_headroom(orch, *, reserve_pct: float,
             reason = "not_metered"
         elif not enabled:
             reason = "disabled"
-        elif at_ceiling(usage, ceiling):
+        elif at_ceiling(usage, hard):
             reason = "at_ceiling"
-            resets = [w.resets_at for w in usage.windows_at_or_over(ceiling) if w.resets_at]
+            resets = [w.resets_at for w in usage.windows_at_or_over(hard) if w.resets_at]
             next_reset = iso_utc(min(resets)) if resets else None
+        else:
+            used = reserve_pct(usage)
+            if used is not None and used >= 100.0 - reserve:
+                reason = "over_reserve"
+                reserve_window = usage.reserve_window()
+                if reserve_window is not None and reserve_window.resets_at is not None:
+                    next_reset = iso_utc(reserve_window.resets_at)
         rows.append({
             "name": name, "engine": acct.get("engine") or ("codex" if acct.get("provider") == "openai" else "claude_code"),
             "provider": acct.get("provider"), "enabled": enabled, "metered": metered,
             "available": reason is None, "reason": reason, "nextResetAt": next_reset,
+            "reservePct": reserve,
             "windows": [{"key": w.key, "pct": w.used_pct, "resetsAt": iso_utc(w.resets_at)}
                         for w in (usage.windows if usage is not None else ())],
         })
@@ -322,6 +381,8 @@ def _account_response(
     rank: int | None = None,
     rank_reason: str | None = None,
     weekly_reserve_pct: float | None = None,
+    effective_reserve_pct_value: float | None = None,
+    push_level_reserve_pct: float | None = None,
     account_defaults: dict | None = None,  # NEW
     enabled: bool = True,
     allow_extra_usage: bool = False,
@@ -369,26 +430,47 @@ def _account_response(
         "rank": rank,
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
+        # Spec 2026-09-20 D4: the reserve this account is JUDGED by (override, else
+        # the push level's) and the push level's own value, so the Accounts page
+        # can label a blank override "push level's N%". Null on routes that echo a
+        # single account without reading the governor (PATCH, refresh).
+        "effectiveReservePct": effective_reserve_pct_value,
+        "pushLevelReservePct": push_level_reserve_pct,
         "allowExtraUsage": allow_extra_usage,
         "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "modelApprovalAction": None, "envOverrides": None},
         "enabled": enabled,
     }
 
 
-def _account_response_from_info(acct: dict, usage=None, **kw) -> dict[str, Any]:
+def _account_response_from_info(
+    acct: dict, usage=None, *, push_level: str | None = None, **kw
+) -> dict[str, Any]:
     """Build the wire response from one ``list_accounts()`` entry.
 
-    Single source of truth for the ledger-backed fields (reserve, defaults,
-    enabled, extra-usage opt-in): every route that echoes an account back goes
-    through here, so adding a field is one edit rather than four call sites that
-    silently drift apart.
+    Single source of truth for the ledger-backed fields (reserve, effective
+    reserve, defaults, enabled, extra-usage opt-in): every route that echoes an
+    account back goes through here, so adding a field is one edit rather than
+    four call sites that silently drift apart.
+
+    ``push_level`` is the governor's current push level (spec 2026-09-20 D4):
+    when given, ``effectiveReservePct``/``pushLevelReservePct`` are computed from
+    it; when omitted (PATCH, refresh — routes that echo one account without
+    reading the governor) both are ``null``.
     """
+    effective_reserve_pct_value = None
+    push_level_reserve_pct = None
+    if push_level is not None:
+        level = normalise_push_level(push_level)
+        effective_reserve_pct_value = effective_reserve_pct(acct, level)
+        push_level_reserve_pct = float(RESERVE_PCT[level])
     return _account_response(
         acct["name"],
         acct.get("status", "unknown"),
         usage,
         acct.get("nickname"),
         weekly_reserve_pct=acct.get("weeklyReservePct"),
+        effective_reserve_pct_value=effective_reserve_pct_value,
+        push_level_reserve_pct=push_level_reserve_pct,
         account_defaults=acct.get("accountDefaults"),
         enabled=acct.get("enabled", True),
         allow_extra_usage=bool(acct.get("allowExtraUsage")),
@@ -627,7 +709,19 @@ async def get_accounts(
     counts = await orch.live_session_counts()
     load = await orch.live_session_load()
 
-    # Build per-account weekly reserve map for display ranking.
+    # The governor's push level supplies the default reserve (spec 2026-09-20 D4),
+    # read best-effort straight from the shared-DB row (see `_push_level`'s
+    # docstring for why it never goes through `orch`): a DB blip degrades to
+    # steady, never a 500.
+    push_level = await _push_level()
+
+    # This map carries only EXPLICIT OVERRIDES — exactly what `pick_account` hands
+    # `rank_accounts` (D12: the push level's default never steers a human's own
+    # pick), so the displayed "#N next" mirrors real selection. The governor's
+    # per-account availability lives in `account_headroom`, which DOES apply the
+    # push level's default via `effective_reserve_pct`. Spec 2026-09-20 §8 row 5's
+    # "delete the display-only reserve ranking path" is satisfied by the override
+    # reaching the plan, not by removing this map.
     reserves = {a["name"]: a["weeklyReservePct"] for a in accounts_info
                 if a.get("weeklyReservePct") is not None}
     extra_allowed = frozenset(a["name"] for a in accounts_info
@@ -656,6 +750,7 @@ async def get_accounts(
         result.append(_account_response_from_info(
             acct,
             usage,
+            push_level=push_level,
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,

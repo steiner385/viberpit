@@ -148,10 +148,11 @@ def test_pick_account_detailed_respects_weekly_reserve(monkeypatch):
          patch("ccswitch.ledger.weekly_reserves", return_value={}), \
          patch("ccswitch.ledger.reserve"):
         assert accounts.pick_account_detailed(Config()).name == "hot"
+    # keep 10% back: hot at 95% is over the 90 ceiling
     with patch.object(accounts, "usage_for", **common), \
          patch("ccswitch.ledger.get_status", return_value="ok"), \
          patch("ccswitch.ledger.reservation_active", return_value=False), \
-         patch("ccswitch.ledger.weekly_reserves", return_value={"hot": 90.0}), \
+         patch("ccswitch.ledger.weekly_reserves", return_value={"hot": 10.0}), \
          patch("ccswitch.ledger.reserve"):
         assert accounts.pick_account_detailed(Config()).name == "cool"
 

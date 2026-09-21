@@ -118,7 +118,7 @@ def sources_for(orch) -> CapacitySources:
         # or the readout's "global.free" lies relative to what actually blocks a spawn.
         global_active=orch._active_session_count,
         hosts=hosts,
-        accounts=lambda reserve: account_headroom(orch, reserve_pct=reserve),
+        accounts=lambda level: account_headroom(orch, push_level=level),
         # apply_plan=False: the governor derives its next plan from the
         # OPERATOR's stored ceiling, never from a prior tick's own overlaid
         # output — feeding that back in would ratchet fleetConcurrency down

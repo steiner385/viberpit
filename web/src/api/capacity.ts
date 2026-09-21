@@ -30,6 +30,8 @@ export interface CapacityAccountRow {
   available: boolean
   reason: string | null
   nextResetAt: string | null
+  /** The effective reserve this row was judged by (override ?? push level). */
+  reservePct: number
   windows: CapacityAccountWindow[]
 }
 

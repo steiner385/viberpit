@@ -13,7 +13,7 @@ from server.db.models import INACTIVE_SESSION_STATUSES
 from .backlog_runner import in_flight_by_product, is_in_flight
 from .capacity_apply import apply_product_plan, plan_is_live
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
-                            RESERVE_PCT, product_order)
+                            RESERVE_PCT, product_order, push_level_of)
 from .product_policy import effective_policy, is_on
 
 #: Session statuses under which a token-bearing claim can never be released by
@@ -63,7 +63,8 @@ class CapacitySources:
     global_cap: Callable[[], Awaitable[int]]
     global_active: Callable[[], int]
     hosts: Callable[[], Awaitable[list[dict]]]
-    accounts: Callable[[float], Awaitable[list[dict]]]
+    # called with the push level; each row carries its own effective reservePct (D4)
+    accounts: Callable[[str], Awaitable[list[dict]]]
     runner_config: Callable[[], Awaitable[tuple[str, dict]]]
     target_states: Callable[[], Awaitable[dict[str, dict]]]
     candidates: Callable[[], Awaitable[tuple[int, int, int, dict | None]]]
@@ -81,8 +82,8 @@ class CapacitySources:
 
 async def build_readout(src: CapacitySources) -> dict:
     mode, gov = await src.governor_config()
-    push_level = gov.get("push_level", "steady")
-    reserve = RESERVE_PCT.get(push_level, 20)
+    push_level = push_level_of(gov)
+    reserve = RESERVE_PCT[push_level]
     # The account quota appears twice on the wire on purpose: here it is LIVE
     # (this call's account rows × the governor's current sessions_per_account),
     # while `plan.budget.accountCap` / `.sessionsPerAccount` (capacity_plan._fleet)
@@ -97,7 +98,7 @@ async def build_readout(src: CapacitySources) -> dict:
               "free": (None if h.get("maxSessions") is None
                        else max(0, int(h["maxSessions"]) - int(h.get("activeSessions") or 0)))}
              for h in await src.hosts()]
-    account_rows = await src.accounts(reserve)
+    account_rows = await src.accounts(push_level)
     resets = sorted(r["nextResetAt"] for r in account_rows if r.get("nextResetAt"))
     _runner_mode, runner_cfg = await src.runner_config()
     states = await src.target_states()
@@ -202,7 +203,7 @@ async def build_readout(src: CapacitySources) -> dict:
         if accounts_available == 0:
             reset_note = f"; earliest reset {resets[0]}" if resets else ""
             binding = {"layer": "account", "code": "no_account_headroom",
-                       "text": f"no account has headroom under the {reserve}% reserve{reset_note}"}
+                       "text": f"no account has headroom under its reserve (push level {reserve}%){reset_note}"}
         elif not any(h["enabled"] and h["healthy"] is True and (h["free"] is None or h["free"] > 0)
                      for h in hosts):
             binding = {"layer": "host", "code": "hosts_full",
