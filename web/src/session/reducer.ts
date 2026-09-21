@@ -405,6 +405,18 @@ function appendCardToThread(thread: SubThread, block: Block): SubThread {
   return { ...thread, turns: replaceTurn(thread.turns, at, (t) => ({ ...t, blocks: [...t.blocks, block] })) }
 }
 
+/**
+ * The subAgents map after mirroring `block` into `pid`'s sub-thread, unchanged when
+ * `pid` is null (the block came from the main thread, not a sub-agent). Shared by
+ * permissionRequest and question — both mirror a freshly-appended card into its
+ * spawning Task's own thread the same way.
+ */
+function mirrorCard(state: TranscriptState, pid: string | null | undefined, block: Block): Record<string, SubThread> {
+  return pid
+    ? { ...state.subAgents, [pid]: appendCardToThread(threadOf(state, pid), block) }
+    : state.subAgents
+}
+
 /** Map every sub-thread's turns through `fn`; returns the same object when nothing changed. */
 function mapSubThreadTurns(subAgents: Record<string, SubThread>, fn: (turns: Turn[]) => Turn[]): Record<string, SubThread> {
   let changed = false
@@ -934,10 +946,7 @@ export function transcriptReducer(
       // the main-turn copy above is what the top-level composer resolves against; the
       // mirrored copy is what the sub-thread view renders inline. Both share `permId`,
       // so removePermissionBlock clears both on resolution.
-      const pid = ev.parentToolUseId
-      const subAgents = pid
-        ? { ...state.subAgents, [pid]: appendCardToThread(threadOf(state, pid), newBlock) }
-        : state.subAgents
+      const subAgents = mirrorCard(state, ev.parentToolUseId, newBlock)
       return { ...state, turns: nextTurns, subAgents }
     }
 
@@ -995,10 +1004,7 @@ export function transcriptReducer(
         blocks: [...t.blocks, newBlock],
       }))
       // Mirror into the sub-thread — see the identical note on permissionRequest.
-      const pid = ev.parentToolUseId
-      const subAgents = pid
-        ? { ...state.subAgents, [pid]: appendCardToThread(threadOf(state, pid), newBlock) }
-        : state.subAgents
+      const subAgents = mirrorCard(state, ev.parentToolUseId, newBlock)
       return { ...state, turns: nextTurns, subAgents }
     }
 

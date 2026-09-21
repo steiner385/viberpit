@@ -23,12 +23,14 @@ class QuestionRegistry:
         options: list[dict],
         multi_select: bool,
         identity: str,
+        parent_tool_use_id: str | None = None,
     ) -> tuple[str, asyncio.Future]:
         """Register a pending question; return (question_id, future).
 
-        The full question payload (turn_id, header, question, options, multi_select) is stored
-        so that pending() can rebuild ev.Question events on reattach without data loss.
-        The future resolves to the tuple (selected, mode) or None (dismissed).
+        The full question payload (turn_id, header, question, options, multi_select,
+        parent_tool_use_id) is stored so that pending() can rebuild ev.Question events on
+        reattach without data loss. The future resolves to the tuple (selected, mode) or
+        None (dismissed).
         """
         qid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -41,14 +43,16 @@ class QuestionRegistry:
             "question": question,
             "options": options,
             "multi_select": multi_select,
+            "parent_tool_use_id": parent_tool_use_id,
         }
         return qid, fut
 
     def pending(self, session_id: str) -> list[dict]:
         """Return, in registration order, one dict per still-pending question for session_id.
 
-        Each dict has keys: question_id, turn_id, header, question, options, multi_select.
-        Already-resolved or denied questions are excluded (they have been removed from _pending).
+        Each dict has keys: question_id, turn_id, header, question, options, multi_select,
+        parent_tool_use_id. Already-resolved or denied questions are excluded (they have
+        been removed from _pending).
         """
         return [
             {
@@ -58,6 +62,7 @@ class QuestionRegistry:
                 "question": r["question"],
                 "options": r["options"],
                 "multi_select": r["multi_select"],
+                "parent_tool_use_id": r.get("parent_tool_use_id"),
             }
             for qid, r in self._pending.items()
             if r["session_id"] == session_id

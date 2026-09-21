@@ -182,6 +182,27 @@ def test_pending_returns_payload_for_session():
     assert p1["multi_select"] is True
 
 
+def test_pending_carries_parent_tool_use_id_for_subagent_question():
+    """#1560: a sub-agent's AskUserQuestion card must survive into pending() with
+    its parentToolUseId, so a full-disk-replay reattach re-emit still mirrors it
+    into the sub-agent's own thread instead of dropping to null."""
+    reg = QuestionRegistry()
+    async def run():
+        reg.request("s1", "t1", "H", "Q?", [], False, "me", parent_tool_use_id="task-abc")
+        return reg.pending("s1")
+    pendings = asyncio.run(run())
+    assert pendings[0]["parent_tool_use_id"] == "task-abc"
+
+
+def test_pending_parent_tool_use_id_defaults_to_none_for_main_thread():
+    reg = QuestionRegistry()
+    async def run():
+        reg.request("s1", "t1", "H", "Q?", [], False, "me")
+        return reg.pending("s1")
+    pendings = asyncio.run(run())
+    assert pendings[0]["parent_tool_use_id"] is None
+
+
 def test_pending_excludes_resolved_questions():
     """Once a question is resolved, it must not appear in pending()."""
     reg = QuestionRegistry()

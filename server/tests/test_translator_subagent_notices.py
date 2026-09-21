@@ -31,6 +31,27 @@ def test_task_started_emits_sub_agent_started():
     assert isinstance(w["ts"], float)
 
 
+def test_task_started_spawn_depth_zero_is_not_conflated_with_absent():
+    """#1562: `int(d.get("spawn_depth") or 1)` treated an explicit 0 the same as a
+    missing field — both collapsed to 1. A real spawn_depth of 0 must survive as 0;
+    only an actually-absent field falls back to the depth=1 default."""
+    _, out = _run([f.task_started(TASK, TID, depth=0)])
+    assert out[0].depth == 0
+
+
+def test_task_started_missing_spawn_depth_defaults_to_one():
+    from claude_agent_sdk import TaskStartedMessage
+    data = {"type": "system", "subtype": "task_started", "task_id": TASK,
+            "description": "sleep probe", "subagent_type": "general-purpose",
+            "is_backgrounded": False, "task_type": "local_agent",
+            "uuid": "ts1", "session_id": "sess-1", "tool_use_id": TID}
+    msg = TaskStartedMessage(subtype="task_started", data=data, task_id=TASK,
+                             description="sleep probe", uuid="ts1", session_id="sess-1",
+                             tool_use_id=TID, task_type="local_agent")
+    _, out = _run([msg])
+    assert out[0].depth == 1
+
+
 def test_task_started_without_tool_use_id_is_ignored():
     """A Bash/Monitor task has no spawning Task call — nothing to attach it to."""
     _, out = _run([f.task_started(TASK, None, task_type="local_bash")])

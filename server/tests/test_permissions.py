@@ -166,6 +166,28 @@ def test_pending_lists_open_requests_for_session():
     p = asyncio.run(run())
     assert len(p) == 1 and p[0]["tool"] == "Edit" and "permId" in p[0]
 
+def test_pending_carries_parent_tool_use_id_for_subagent_card():
+    """#1560: a sub-agent's card must survive into pending() with its
+    parentToolUseId, so a full-disk-replay reattach re-emit still mirrors it
+    into the sub-agent's own thread instead of dropping to null."""
+    reg = PermissionRegistry()
+    async def run():
+        await reg.request("s1", "t1", "Edit", {"file_path": "/a"}, mode="interactive",
+                          denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="o",
+                          parent_tool_use_id="task-abc")
+        return reg.pending("s1")
+    p = asyncio.run(run())
+    assert len(p) == 1 and p[0]["parent_tool_use_id"] == "task-abc"
+
+def test_pending_parent_tool_use_id_defaults_to_none_for_main_thread():
+    reg = PermissionRegistry()
+    async def run():
+        await reg.request("s1", "t1", "Edit", {"file_path": "/a"}, mode="interactive",
+                          denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="o")
+        return reg.pending("s1")
+    p = asyncio.run(run())
+    assert p[0]["parent_tool_use_id"] is None
+
 def test_bash_always_grant_does_not_cover_other_commands():
     reg = PermissionRegistry()
     async def run():

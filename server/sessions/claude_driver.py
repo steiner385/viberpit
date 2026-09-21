@@ -703,7 +703,7 @@ class ClaudeAgentDriver:
 
             qid, fut = self._qreg.request(
                 self.session_id, turn_id, header, question_text, options, multi_select,
-                self.identity,
+                self.identity, parent_tool_use_id=parent_tool_use_id,
             )
             self._emit(ev.Question(
                 question_id=qid,
@@ -862,7 +862,7 @@ class ClaudeAgentDriver:
         # verified 2026-09-11); map it to the spawning Task call so the card can render
         # inside that sub-agent's thread. Best-effort: unmapped → unattributed, as before.
         agent_id = getattr(ctx, "agent_id", None) if ctx is not None else None
-        pid = self.subagent_tool_use_id(agent_id) if agent_id else None
+        pid = self.subagent_tool_use_id(agent_id) if agent_id is not None else None
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
@@ -888,7 +888,7 @@ class ClaudeAgentDriver:
         perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity,
-            items=items)
+            items=items, parent_tool_use_id=pid)
         if perm_id is not None:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
