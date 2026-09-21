@@ -144,6 +144,9 @@ export function AutomationActions({ automationId, enabled }: { automationId: str
                 <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
                 {item.title}
               </span>
+              {item.actions.length === 0 && item.status && (
+                <span className="text-xs text-ink-muted">{item.status}</span>
+              )}
               {item.actions.map((action) => (
                 <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
               ))}

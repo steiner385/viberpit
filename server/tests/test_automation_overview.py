@@ -5,8 +5,13 @@ from unittest.mock import AsyncMock
 import asyncio
 import pytest
 
-from server.automations.base import ActionableItem
+from server.automations.base import ActionableItem, ActionSpec
 from server.sessions.orchestrator import SessionOrchestrator
+
+# A status-only row (no `actions`) isn't "actionable" — it can't be clicked
+# (#16348: PR Doctor uses this for a PR a live predecessor still holds). Tests
+# below count clickable items, so give each stand-in item a real action.
+_ACTION = [ActionSpec("k", "l")]
 
 
 def test_missing_observation_is_unknown_but_observed_zero_is_idle():
@@ -32,7 +37,7 @@ def test_previously_unwired_contexts_render_observations():
 @pytest.mark.asyncio
 async def test_counts_use_manual_provider_items_and_isolate_failure():
     orch = object.__new__(SessionOrchestrator)
-    good = SimpleNamespace(actionable=AsyncMock(return_value=[ActionableItem("a", "one")]))
+    good = SimpleNamespace(actionable=AsyncMock(return_value=[ActionableItem("a", "one", actions=_ACTION)]))
     bad = SimpleNamespace(actionable=AsyncMock(side_effect=RuntimeError("private detail")))
     orch._action_providers = {"pr-doctor": good, "backlog-runner": bad}
     first, second = await asyncio.gather(orch.automation_overview(), orch.automation_overview())
@@ -42,6 +47,19 @@ async def test_counts_use_manual_provider_items_and_isolate_failure():
     assert second["actionableCounts"] == first["actionableCounts"]
     good.actionable.assert_awaited_once()
     bad.actionable.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_status_only_item_does_not_count_as_actionable():
+    # #16348: an item with `status` text and no `actions` (a live predecessor
+    # makes the click a guaranteed refusal) must not inflate "N actionable".
+    orch = object.__new__(SessionOrchestrator)
+    provider = SimpleNamespace(actionable=AsyncMock(return_value=[
+        ActionableItem("a", "one", actions=_ACTION),
+        ActionableItem("b", "two", status="Being worked by session s-1"),
+    ]))
+    orch._action_providers = {"pr-doctor": provider}
+    assert (await orch.automation_overview())["actionableCounts"]["pr-doctor"] == 1
 
 
 @pytest.mark.asyncio
@@ -153,7 +171,7 @@ async def test_trigger_invalidates_count_snapshot():
     from server.automations.base import TriggerResult
     orch = object.__new__(SessionOrchestrator)
     provider = SimpleNamespace(
-        actionable=AsyncMock(side_effect=[[ActionableItem("a", "one")], []]),
+        actionable=AsyncMock(side_effect=[[ActionableItem("a", "one", actions=_ACTION)], []]),
         valid_kinds={"fix"}, trigger=AsyncMock(return_value=TriggerResult("done", "ok", "Done")))
     orch._action_providers = {"pr-doctor": provider}
     assert (await orch.automation_overview())["actionableCounts"]["pr-doctor"] == 1

@@ -99,10 +99,16 @@ class ActionableItem:
     subtitle: str | None = None
     url: str | None = None
     actions: list[ActionSpec] = field(default_factory=list)
+    # Plain status text shown in place of a button when the item is actionable
+    # in principle but a live predecessor makes the action a no-op right now
+    # (e.g. PR Doctor's own claim check would refuse it) — see
+    # ``PrDoctorActionProvider.actionable``. ``None`` for the normal case.
+    status: str | None = None
 
     def to_dict(self) -> dict:
         return {"id": self.id, "title": self.title, "subtitle": self.subtitle,
-                "url": self.url, "actions": [a.to_dict() for a in self.actions]}
+                "url": self.url, "actions": [a.to_dict() for a in self.actions],
+                "status": self.status}
 
 
 @dataclass

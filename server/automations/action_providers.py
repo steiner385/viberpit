@@ -57,8 +57,17 @@ class PrDoctorActionProvider:
             key = (repo, info.number)
             if key in by_number:
                 continue
+            item_id = f"{repo}#{info.number}"
+            # A live predecessor makes the click a guaranteed refusal, so show why
+            # as plain text instead of offering an inert button.
+            busy, sid = await self._orch._pr_doctor_busy_predecessor(repo, branch, item_id)
+            if busy:
+                by_number[key] = ActionableItem(
+                    id=item_id, title=info.title, url=info.url,
+                    status=f"Being worked by session {sid}" if sid else "Being worked by a prior session")
+                continue
             by_number[key] = ActionableItem(
-                id=f"{repo}#{info.number}", title=info.title, url=info.url,
+                id=item_id, title=info.title, url=info.url,
                 actions=[ActionSpec(
                     kind=kind, label=_PR_KIND_LABEL[kind],
                     style="risky" if kind in _PR_RISKY else "default")])
