@@ -58,6 +58,13 @@ with `systemctl cat viberpit-daemon.service`. The daemon does not strictly need 
 locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on
 `PATH`, and logs a WARNING if none exist. `CCSWITCH_CLAUDE_BIN` still overrides everything.
 
+`VIBERPIT_GH_CONFIG_DIR` belongs here too on any host whose `gh` token lives in a desktop keyring —
+**and in the daemon's own env file if it loads a different one** (on dobby it does, so the var must be
+set in both). Unset, the services have no file-backed gh credential, so a keyring that autologin never
+unlocks leaves **every** gh-backed automation unauthenticated from boot until a human unlocks it at the
+console — `github.host_gh_unauthenticated` in the journal. See
+[gh credential without a keyring](../docs/runbooks/gh-credential-without-a-keyring.md) (#2052).
+
 ## Install
 
 ```bash
