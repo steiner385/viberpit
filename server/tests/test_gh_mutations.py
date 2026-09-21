@@ -121,6 +121,53 @@ def test_parse_batch_flags_a_document_level_error_as_transient():
     assert quiet.failed_transiently() is False and quiet.errors["m0"] == "no data returned"
 
 
+#: Verbatim from production (gh_write_journal, 2026-09-20): GitHub's uniqueness
+#: validation when the blocked-by edge the reconciler is adding already exists.
+ALREADY_EXISTS = ("An error occurred while adding the blocking issue to the issue. "
+                  "Validation failed: Target issue has already been taken")
+#: Same prefix, a genuine conflict — must stay a failure.
+CYCLE = ("An error occurred while adding the blocking issue to the issue. Validation "
+         "failed: this dependency would create a cycle where the target is already "
+         "blocked by the source")
+
+
+def test_parse_batch_reads_an_existing_blocked_by_edge_as_converged():
+    """``addBlockedBy`` rejected because the edge is already there is the desired
+    state, not a defect: the reconciler must record it applied so the key lands in
+    ``applied_keys`` and ``compile_edges`` stops re-planning it (#1947)."""
+    alias_map = {"m0": Mutation("add_blocked_by", "I_5", None, None, "I_3", "compile:order:a->b"),
+                 "m1": Mutation("add_blocked_by", "I_9", None, None, "I_8", "compile:order:c->d")}
+    results = parse_batch(
+        {"data": {"m0": None, "m1": None},
+         "errors": [{"path": ["m0"], "message": ALREADY_EXISTS},
+                    {"path": ["m1"], "message": CYCLE}]}, alias_map)
+    assert results.converged == {"m0"}
+    assert results.failed_transiently() is False
+    # The cycle rejection is a real conflict a human has to resolve — still a failure.
+    assert results.errors["m1"] == CYCLE
+
+
+def test_converged_is_scoped_to_the_edge_mutation_that_earns_it():
+    """The idempotency read is per mutation kind, not a global message denylist: the
+    same words from any other mutation are an ordinary failure."""
+    alias_map = {"m0": Mutation("add_item", "PVT_1", None, None, "I_9", "membership:o/r#9"),
+                 "m1": Mutation("remove_blocked_by", "I_5", None, None, "I_3", "dep_remove")}
+    results = parse_batch(
+        {"data": {"m0": None, "m1": None},
+         "errors": [{"path": ["m0"], "message": ALREADY_EXISTS},
+                    {"path": ["m1"], "message": ALREADY_EXISTS}]}, alias_map)
+    assert results.converged == frozenset()
+    assert results.errors == {"m0": ALREADY_EXISTS, "m1": ALREADY_EXISTS}
+
+
+def test_a_document_level_failure_is_never_read_as_converged():
+    """A pathless error says nothing about any alias (#1508), so it must not be
+    mistaken for "the edge was already there" even when its text would match."""
+    alias_map = {"m0": Mutation("add_blocked_by", "I_5", None, None, "I_3", "compile:order:a->b")}
+    results = parse_batch({"data": None, "errors": [{"message": ALREADY_EXISTS}]}, alias_map)
+    assert results.failed_transiently() is True and results.converged == frozenset()
+
+
 def test_field_builders():
     assert 'dataType: SINGLE_SELECT' in build_create_field("PVT_1", "Stage", "SINGLE_SELECT", ["intake", "done"])
     assert '{name: "intake", color: GRAY, description: ""}' in build_create_field("PVT_1", "Stage", "SINGLE_SELECT", ["intake"])

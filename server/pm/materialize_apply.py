@@ -279,7 +279,13 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
             break
         for (alias, mutation), rid in zip(alias_map.items(), row_ids, strict=True):
             error = result.errors.get(alias) or ""
-            if not error:
+            # ``converged`` is the other half of the reconciler's rule this loop
+            # mirrors: a rejection that only reports the edge is already there means
+            # the chain holds, so it is applied, not a failure (#1947). A resume
+            # re-sends any edge whose row is still pending/failed, which is exactly
+            # when GitHub answers that way — and failing here sets the initiative
+            # ``blocked`` and burns one of MATERIALIZE_MAX_ATTEMPTS.
+            if not error or alias in result.converged:
                 await db.run_sync(lambda s: journal.mark_applied(s, [rid], now))
                 continue
             # Park on the SECOND failure on its own merits, exactly as the

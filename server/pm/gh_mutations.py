@@ -137,6 +137,27 @@ def build_batch(mutations: Sequence[Mutation], *, project_node_id: str,
     return f"mutation {{ {body} }}", alias_map
 
 
+#: GitHub's uniqueness validation when ``addBlockedBy`` is told to create a
+#: blocked-by edge that is already on the issue — the full message is "An error
+#: occurred while adding the blocking issue to the issue. Validation failed: Target
+#: issue has already been taken" (verbatim from ``gh_write_journal``, 2026-09-20).
+#: Matched as a substring, lowercased, because only the validation clause is stable.
+_EDGE_ALREADY_EXISTS = "has already been taken"
+
+#: Mutation kinds whose "you already did this" rejection means the desired state
+#: holds. Deliberately just ``add_blocked_by``: it is the only rejection whose text
+#: has been seen live, and inventing the wording for the others would turn a real
+#: failure into a silent success. ``remove_blocked_by`` is NOT here — GitHub's reply
+#: when the edge is already gone has never been observed.
+_IDEMPOTENT_REJECTIONS: Mapping[str, str] = {"add_blocked_by": _EDGE_ALREADY_EXISTS}
+
+
+def _is_converged(m: Mutation, message: str) -> bool:
+    """Is *message* GitHub telling us this mutation's effect is already in place?"""
+    needle = _IDEMPOTENT_REJECTIONS.get(m.kind)
+    return needle is not None and needle in message.lower()
+
+
 @dataclass(frozen=True)
 class BatchResult:
     """Per-alias outcome of one batch, plus whether the *document* failed as a whole.
@@ -145,9 +166,15 @@ class BatchResult:
     per-mutation rejection with a ``path`` naming the alias, but a 502, an abuse
     limit or a parse error arrives with no path and fails all 20 aliases at once.
     Only the first is evidence against a mutation, so only the first may count
-    toward the reconciler's park-on-second-failure rule."""
+    toward the reconciler's park-on-second-failure rule.
+
+    ``converged`` is the third outcome, and it is a *success*: the alias was rejected
+    because what it asks for is already true on GitHub. The reconciler records those
+    rows applied, which both keeps the park ladder for real defects and lands the key
+    in ``journal.applied_keys`` so ``compile_edges`` stops re-planning the edge (#1947)."""
     errors: dict[str, str | None]
     document_error: str | None = None
+    converged: frozenset[str] = frozenset()
 
     def failed_transiently(self) -> bool:
         return self.document_error is not None
@@ -170,7 +197,12 @@ def parse_batch(payload: dict, alias_map: Mapping[str, Mutation]) -> BatchResult
     for alias in alias_map:
         if by_alias[alias] is None and data.get(alias) is None:
             by_alias[alias] = "no data returned"
-    return BatchResult(by_alias, document_error)
+    # Read off the settled verdicts, so an alias is converged only if the message it
+    # ENDED with says so. A pathless failure judged no alias at all (#1508), so nothing
+    # it says — including wording that would otherwise match — may pass as convergence.
+    converged = frozenset() if document_error is not None else frozenset(
+        a for a, msg in by_alias.items() if msg is not None and _is_converged(alias_map[a], msg))
+    return BatchResult(by_alias, document_error, converged)
 
 
 def payload_from_gh(proc: object, *, partial_ok: bool) -> dict:

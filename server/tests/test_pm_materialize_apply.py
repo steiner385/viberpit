@@ -106,6 +106,7 @@ class FakeGh:
                  fail_edges: tuple[str, ...] = (),
                  fail_pairs: tuple[tuple[str, str], ...] = (),
                  fail_document: str = "",
+                 edge_error: str = "already blocked",
                  repo_id: str | None = "R_repo"):
         #: A document-level GraphQL error (502, abuse limit): no `path`, so it
         #: judges no single alias — parse_batch copies it onto all of them.
@@ -116,6 +117,9 @@ class FakeGh:
         #: shifts between runs once applied edges are suppressed.
         self.fail_edges = fail_edges
         self.fail_pairs = set(fail_pairs)
+        #: What GitHub answers for a rejected edge. The default is an unremarkable
+        #: refusal; a test that wants the idempotency rejection passes the real one.
+        self.edge_error = edge_error
         self.repo_id = repo_id
         self.docs: list[str] = []
         self.owners: list[str] = []
@@ -147,7 +151,7 @@ class FakeGh:
                 r'blockingIssueId: "([^"]+)"\}', doc)
             bad = {a for a, issue, blocker in entries
                    if a in self.fail_edges or (issue, blocker) in self.fail_pairs}
-            errors = [{"path": [a], "message": "already blocked"} for a in bad]
+            errors = [{"path": [a], "message": self.edge_error} for a in bad]
             return {"data": {a: (None if a in bad else {"clientMutationId": None})
                              for a, _i, _b in entries},
                     "errors": errors}
@@ -507,6 +511,43 @@ async def test_an_unresolved_create_row_stops_the_resume(db_env):
     async with db_session() as db:
         ini = (await db.execute(select(Initiative))).scalar_one()
         assert ini.status == "blocked"
+
+
+#: Verbatim from production (gh_write_journal, 2026-09-20) — GitHub's uniqueness
+#: validation when the blocked-by edge already exists.
+EDGE_EXISTS = ("An error occurred while adding the blocking issue to the issue. "
+               "Validation failed: Target issue has already been taken")
+
+
+@pytest.mark.asyncio
+async def test_an_edge_github_already_has_does_not_block_the_initiative(db_env):
+    """The reconciler's rule this path mirrors reads an already-there edge as
+    convergence (#1947); so must this one. A resume re-sends an edge whose journal
+    row never got marked applied, GitHub answers "already been taken", and treating
+    that as a failure sets the initiative ``blocked`` — a dead end needing
+    ``/unblock``, and one of the three attempts the synthesizer ever gets — for an
+    epic whose chain is in fact complete on GitHub."""
+    from server.pm.journal import state_of
+    ini_id, prop_id = await _seed(db_env)
+    out = await _apply(prop_id, FakeGh(fail_edges=("m1",), edge_error=EDGE_EXISTS))
+
+    assert out["ok"] is True and out["edges"] == 2
+    assert out.get("parkedEdges", 0) == 0
+    edges = [r for r in await _journal() if r.field == "add_blocked_by"]
+    assert sorted(state_of(r) for r in edges) == ["applied", "applied"]
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert ini.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_edge_refusal_still_blocks(db_env):
+    """The mutation-kind scoping earns its keep here: a refusal that is NOT the
+    idempotency rejection must keep the existing fail-then-park behaviour."""
+    out = await _apply((await _seed(db_env))[1],
+                       FakeGh(fail_edges=("m1",), edge_error="nope"))
+    assert out["ok"] is False and out["step"] == "edges"
 
 
 @pytest.mark.asyncio

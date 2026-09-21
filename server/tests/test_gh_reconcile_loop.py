@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from server.automations.gh_reconcile import GhReconcile, GhReconcileLoop
 from server.pm.desired_state import STATUS_OPTIONS, ItemFacts
 from server.pm.mirror_store import ProductSyncView
-from server.pm.reconcile_diff import MirrorItem, Mutation
+from server.pm.reconcile_diff import DepView, MirrorItem, Mutation
 from server.pm.reconcile_inputs import ProductFacts
 
 T = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
@@ -245,6 +245,54 @@ def test_per_alias_failure_marks_failed_and_second_failure_parks():
     asyncio.run(loop.tick())
     assert calls["park"] == [("r0", "failed twice: nope")]
     assert any(kind == "gh_reconcile_parked" for _, _, kind in ctx.events)
+
+
+#: Verbatim from production (gh_write_journal, 2026-09-20).
+EDGE_EXISTS = ("An error occurred while adding the blocking issue to the issue. "
+               "Validation failed: Target issue has already been taken")
+
+
+def _edge_facts():
+    """The default fixture plus one ordering edge onto a CLOSED issue.
+
+    That is the live shape behind #1947: the mirror carries open issues, so a closed
+    blocker's real ``blockedBy`` edge never reaches ``compile_edges``' ``native`` set
+    and the edge is re-planned even though GitHub already has it."""
+    return _facts(deps=[DepView(f"{REPO}#5", f"{REPO}#4", "order", True)],
+                  node_ids={f"{REPO}#5": "I_5", f"{REPO}#4": "I_4"})
+
+
+def _edge_mutate(doc):
+    if doc.startswith("query { rateLimit"):
+        return RATE_OK
+    return {"data": {"m0": {"ok": True}, "m1": {"ok": True}, "m2": None},
+            "errors": [{"path": ["m2"], "message": EDGE_EXISTS}]}
+
+
+def test_a_blocked_by_edge_github_already_has_is_applied_not_failed():
+    """GitHub rejecting ``addBlockedBy`` because the edge exists means the desired
+    state holds. Recording it applied is what puts the key in ``applied_keys``, which
+    is the only thing that stops ``compile_edges`` re-planning it every cycle — the
+    live churn behind #1947 (15 edges failed and parked in three days)."""
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=_edge_facts(), mutate=_edge_mutate)
+    asyncio.run(loop.tick())
+    assert [m.kind for m in calls["record"][0][0]][-1] == "add_blocked_by"
+    assert calls["applied"] == ["r0", "r1", "r2"]
+    assert calls["failed"] == [] and calls["park"] == []
+    assert ctx.gh_reconcile_counts["applied"] == 3 and ctx.gh_reconcile_counts["failed"] == 0
+
+
+def test_an_existing_edge_never_parks_even_with_the_ladder_armed():
+    """The park ladder counts failures; convergence is not one. Without this the
+    second cycle parks the edge and pushes an error-level card at a human for a
+    board that is already in the state we want."""
+    key = Mutation("add_blocked_by", "I_5", None, None, "I_4", "compile:order:x").key()
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=_edge_facts(), mutate=_edge_mutate,
+                                     failure_counts={key: 1})
+    asyncio.run(loop.tick())
+    assert calls["park"] == [] and calls["applied"] == ["r0", "r1", "r2"]
+    assert not [1 for _, _, kind in ctx.events if kind == "gh_reconcile_parked"]
+    assert ctx.gh_reconcile_counts["parked"] == 0
 
 
 def test_unknown_option_parks_the_batch_and_later_batches_still_apply():
