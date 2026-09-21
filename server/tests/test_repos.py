@@ -263,17 +263,23 @@ def test_credential_alerts_empty_when_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_get_config_returns_repo_root():
-    """GET /api/config returns the configured repoRoot."""
+def test_get_config_returns_repo_root(tmp_path):
+    """GET /api/config returns the configured repoRoot.
+
+    The root must be a real temp dir, not an arbitrary literal: entering the
+    client starts the app lifespan, whose orchestrator fires the worktree
+    janitor at whatever the configured repo root says (#1014).
+    """
+    repo_root = str(tmp_path / "GitHub")
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": "/home/test/GitHub", "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": repo_root, "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
                 resp = client.get("/api/config", headers=IDENTITY_HEADERS)
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["repoRoot"] == "/home/test/GitHub"
+    assert data["repoRoot"] == repo_root
 
 
 # ---------------------------------------------------------------------------

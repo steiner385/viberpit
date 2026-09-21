@@ -533,11 +533,15 @@ def test_put_unknown_tool_detail_is_422():
 # ---------------------------------------------------------------------------
 
 
-def test_get_settings_exposes_effective_defaults_and_accepted_modes():
+def test_get_settings_exposes_effective_defaults_and_accepted_modes(tmp_path):
+    # The root must be a real temp dir, not an arbitrary literal: entering the
+    # client starts the app lifespan, whose orchestrator fires the worktree
+    # janitor at whatever the configured repo root says (#1014).
+    repo_root = str(tmp_path / "repos")
     with temp_env(), patch.dict(os.environ, {
         "CCSWITCH_MODEL_APPROVAL_ACTION": "block",
         "CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable,opus",
-        "CCSWITCH_REPO_ROOT": "/srv/repos",
+        "CCSWITCH_REPO_ROOT": repo_root,
     }):
         with _client() as client:
             data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
@@ -545,7 +549,7 @@ def test_get_settings_exposes_effective_defaults_and_accepted_modes():
     assert len(data["acceptedPermissionModes"]) == 6
     eff = data["effectiveDefaults"]
     assert eff == {
-        "repoRoot": "/srv/repos",
+        "repoRoot": repo_root,
         "archiveHome": None,
         "modelApprovalAction": "block",
         "modelApprovalDenylist": "fable,opus",
