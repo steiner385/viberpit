@@ -20,6 +20,15 @@ class _FakePrOrch:
     def _pr_population_pr(self, repo, branch):
         return None
 
+    def _pr_doctor_info_for(self, repo, branch):
+        from server.automations import pr_doctor_engine as engine
+        info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
+        if info is not None and not engine.target_terminal(info):
+            pop = self._pr_population_pr(repo, branch)
+            if pop is not None and engine.target_terminal(pop):
+                info = pop
+        return info
+
     def _pr_doctor_owning_rec(self, repo, branch):
         return None
 

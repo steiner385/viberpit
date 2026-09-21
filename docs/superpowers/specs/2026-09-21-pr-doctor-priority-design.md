@@ -15,11 +15,11 @@ work for the same product.
 1. **Hard gate, not proportional reservation.** While a product has a pending stuck
    PR, Backlog Runner takes zero *new* claims for that product. No partial
    throttling.
-2. **Pending = any classified-stuck PR**, the moment `pr_doctor_engine.classify()`
-   returns non-`None` for it — not only once a fix session is actually running.
-   Exception: a PR PR Doctor has already given up on (`state["gave_up"]`, the
-   `max_attempts`/`mechanical_attempts` ceiling) does **not** count. Otherwise one
-   unfixable PR would permanently starve a product's backlog with no recovery path.
+2. **Pending = a PR PR Doctor will actually act on** — `pr_doctor_engine.plan_recovery(
+   failure_mode, mode, config, state)` yields `Mechanical` or `SessionFix` — so
+   notify-only, propose-only, disabled and given-up cases never gate. Otherwise one
+   unfixable or un-actionable PR, or PR Doctor being switched off entirely, would
+   permanently starve a product's backlog with no recovery path.
 3. **Per-product, not global.** Only the product(s) owning the stuck PR's repo are
    gated; other products keep dispatching normally.
 4. **Never touches in-flight sessions.** Matches the existing D8 invariant already
@@ -57,20 +57,24 @@ constraint as that product's `waitingOn`/binding text.
 
 ```python
 async def _pr_doctor_pending_products(self) -> frozenset[str]:
-    """Product slugs with at least one PR Doctor considers stuck and has not
-    given up on. Best-effort: any failure yields frozenset() rather than
-    blocking admission — a stale PR Doctor read must never wedge Backlog
-    Runner dispatch."""
+    """Product slugs with at least one PR PR Doctor will actually act on
+    (plan_recovery yields Mechanical or SessionFix). Best-effort: any failure
+    yields frozenset() rather than blocking admission — a stale PR Doctor
+    read must never wedge Backlog Runner dispatch."""
 ```
 
 Iterates `await self._pr_doctor_scope_pairs()` (the same (repo, branch) universe the
-sweep already walks). For each pair: resolve `info` the same way `_pr_doctor_sweep`
-does (`self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)`), skip
-`None`/terminal; read the durable per-target state
-(`self._pr_doctor_ctx.get_target_state(f"{repo}#{info.number}")`); a repo is
-"pending" when `pr_doctor_engine.classify(info) is not None and not
-state.get("gave_up")`. Collect the set of pending repos, then batch-resolve to
-product slugs with one call to `owning_projects_by_repo` (`server/pm/
+sweep already walks). For each pair: resolve `info` via the shared
+`_pr_doctor_info_for(repo, branch)` helper (same resolve-plus-stale-cache-reconcile
+logic as `_pr_doctor_sweep` and `PrDoctorActionProvider.actionable`), skip
+`None`/terminal; read the durable per-target state from one batched
+`self._pr_doctor_ctx.list_target_states()` call taken before the loop; classify with
+`pr_doctor_engine.classify(info)` and, if non-`None`, call `pr_doctor_engine.
+plan_recovery(failure_mode, mode, config, state)` (mode/config read once, via the
+same `_pr_autofix_mode()`/`_pr_doctor_config()` sources the sweep uses) — a repo is
+"pending" only when that call returns `Mechanical` or `SessionFix`. Collect the set
+of pending repos, then batch-resolve to product slugs with one call to
+`owning_projects_by_repo` (`server/pm/
 repo_project.py`) — ambiguous/unresolved repos are silently dropped (same posture
 `owning_projects_by_repo` already documents: "absence is not proof of no owner"; a
 repo automations can't confidently attribute to one product should not block that

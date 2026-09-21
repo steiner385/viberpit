@@ -48,15 +48,9 @@ class PrDoctorActionProvider:
     async def actionable(self) -> list[ActionableItem]:
         by_number: dict[tuple[str, int], ActionableItem] = {}
         for repo, branch in await self._orch._pr_doctor_scope_pairs():
-            info = self._orch.pr_for(repo, branch) or self._orch._pr_population_pr(repo, branch)
-            if info is None:
+            info = self._orch._pr_doctor_info_for(repo, branch)
+            if info is None or info.state in ("merged", "closed"):
                 continue
-            # Reconcile: per-branch cache can be stale after a merge; if population
-            # says the PR is terminal while per-branch still shows it open, skip it.
-            if info.state not in ("merged", "closed"):
-                pop = self._orch._pr_population_pr(repo, branch)
-                if pop is not None and pop.state in ("merged", "closed"):
-                    continue
             kind = engine.classify(info)
             if kind not in _PR_KIND_LABEL:
                 continue
