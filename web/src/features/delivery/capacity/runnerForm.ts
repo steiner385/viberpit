@@ -5,6 +5,7 @@ import type { CapacityReadout } from '@/api/capacity'
  *  Capacity-owned fields, so ONE SaveBar saves all of it. Namespacing keeps a
  *  product slug from ever colliding with a runner key. */
 export const PIN_KEY = (slug: string) => `pin:${slug}`
+export const PIPELINE_KEY = (slug: string) => `pipeline:${slug}`
 export const RUNNER_KEYS = {
   ceiling: 'runner:max_concurrent',
   budget: 'runner:max_spawns_per_day',
@@ -23,7 +24,10 @@ export function seedCapacityDraft(
   governorConfig: Record<string, unknown> | null,
 ): CapacityDraft {
   const draft: CapacityDraft = {}
-  for (const p of readout.products) draft[PIN_KEY(p.slug)] = String(p.pin)
+  for (const p of readout.products) {
+    draft[PIN_KEY(p.slug)] = String(p.pin)
+    draft[PIPELINE_KEY(p.slug)] = p.pipelineCap == null ? '' : String(p.pipelineCap)
+  }
   // The readout's `ceiling` IS the stored max_concurrent, so it is the fallback
   // when the automations list has not loaded; budget and per-account have no
   // readout twin and stay blank (the fields render disabled) until it has.
@@ -45,6 +49,15 @@ function whole(raw: string, label: string, min: number): number {
   if (raw.trim() === '' || !Number.isInteger(n) || n < min) {
     throw new Error(`${label} must be a whole number ≥ ${min}`)
   }
+  return n
+}
+
+/** Blank = unlimited (null); otherwise a whole number ≥ 0. Throws the row-named
+ *  message the form's banner shows. */
+export function parsePipelineCap(raw: string, name: string): number | null {
+  if (raw.trim() === '') return null
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name}: pipeline cap must be a whole number ≥ 0`)
   return n
 }
 

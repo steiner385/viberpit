@@ -42,6 +42,8 @@ export interface ConfigField {
   /** On its way out (spec 2026-09-20 D6): still stored and validated, read by
    *  nothing, hidden by every editor. Optional so older fixtures still compile. */
   deprecated?: boolean
+  /** null is a legal stored value (blank = unlimited). Optional so older fixtures still compile. */
+  nullable?: boolean
 }
 
 export interface Automation {

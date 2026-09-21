@@ -62,10 +62,11 @@ function groupFields(fields: ConfigField[]): FieldGroups {
  *  cap the governor actually set, not the stored pin. One sentence with middle
  *  dots, the link rendered beside it; never an em dash (house rule). */
 function capacityLine(row: CapacityProduct | undefined): string {
-  if (!row) return 'Capacity: rank, cap mode and pin are set on Delivery → Capacity.'
+  if (!row) return 'Capacity: rank, cap mode, pin and pipeline cap are set on Delivery → Capacity.'
   const rank = row.rank === null ? 'unranked' : `rank ${row.rank}`
   const cap = row.capacityMode === 'pinned' ? `pinned (pin ${row.pin})` : `auto (effective cap ${row.effectiveCap})`
-  return `Capacity: ${rank} · ${cap} · ${row.inFlight} in flight.`
+  const pipeline = `pipeline ${row.pipeline}/${row.pipelineCap ?? '∞'}`
+  return `Capacity: ${rank} · ${cap} · ${row.inFlight} in flight · ${pipeline}.`
 }
 
 function ImplementationEligibility({ label, decision }: { label: string; decision: ProductImplementationDecision }) {
