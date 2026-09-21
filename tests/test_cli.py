@@ -282,3 +282,55 @@ class TestCliReauth(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         store.assert_not_called()
+
+
+class TestLintCommands(unittest.TestCase):
+    """`lint feature-docs` (issue #2166)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.docs = self.root / "docs" / "product" / "features"
+        self.docs.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, argv):
+        import io
+        from contextlib import redirect_stdout
+
+        from ccswitch import cli
+
+        buf = io.StringIO()
+        with temp_env(), redirect_stdout(buf):
+            rc = cli.main(argv)
+        return rc, buf.getvalue()
+
+    def test_valid_docs_pass(self):
+        (self.docs / "a.md").write_text(
+            "---\nslug: a\ntitle: A\nstate: live\n---\n# A\nbody\n")
+        rc, out = self._run(["lint", "feature-docs", str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertIn("1 feature doc(s) conform", out)
+
+    def test_unparseable_doc_fails_with_an_annotation_line(self):
+        (self.docs / "bad.md").write_text("---\nslug: bad\n")
+        rc, out = self._run(["lint", "feature-docs", str(self.root)])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error file=docs/product/features/bad.md::", out)
+
+    def test_no_path_defaults_to_cwd(self):
+        (self.docs / "a.md").write_text(
+            "---\nslug: a\ntitle: A\nstate: live\n---\n# A\nbody\n")
+        old_cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            rc, out = self._run(["lint", "feature-docs"])
+        finally:
+            os.chdir(old_cwd)
+        self.assertEqual(rc, 0)
+        self.assertIn("1 feature doc(s) conform", out)

@@ -30,6 +30,21 @@ def test_health_of_a_flat_map_flags_nothing_as_unparented():
     assert h.unparented_capabilities == ()
 
 
+def test_health_surfaces_unindexed_docs_sorted():
+    h = roadmap_health(
+        capabilities=[], initiatives=[], proposals=[], now=NOW,
+        unindexed_docs=[("docs/product/features/z.md", "bad"),
+                        ("docs/product/features/a.md", "unterminated fence")])
+    assert h.unindexed_docs == (
+        ("docs/product/features/a.md", "unterminated fence"),
+        ("docs/product/features/z.md", "bad"))
+
+
+def test_health_unindexed_docs_defaults_to_empty():
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW)
+    assert h.unindexed_docs == ()
+
+
 def test_health_accepts_naive_utc_timestamps():
     # Every DB column is `DateTime(timezone=True)`, naive UTC on SQLite (the
     # dialect has no native timezone type and hands the value back

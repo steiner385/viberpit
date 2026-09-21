@@ -352,13 +352,15 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             TriageProposal.status == "pending",
             WorkItem.repo.in_(repo_names)))).all()]
     now = datetime.now(timezone.utc)
+    unindexed = [(d.get("path", ""), d.get("error", "")) for d in (p.unindexed_docs or [])]
     h = roadmap_health(capabilities=caps,
                        initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
                                     i.stage == "done" or i.status == "done") for i in inits],
-                       proposals=props, now=now)
+                       proposals=props, now=now, unindexed_docs=unindexed)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
+            "unindexedDocs": [{"path": path, "error": error} for path, error in h.unindexed_docs],
             "generatedAt": now.isoformat()}
 
 
@@ -1045,12 +1047,25 @@ async def advance_map(
 ) -> dict:
     """Advance the project from ``map_proposed`` → ``map_merged`` after the
     human merges the archaeology map PR. 409 if the project is not in the
-    ``map_proposed`` state."""
+    ``map_proposed`` state, or if the merged map left feature docs pm-sync
+    could not parse — those never became Feature rows (issue #2166), so
+    advancing anyway would silently under-count the map the wizard just
+    congratulated the human for finishing."""
     p = await _load_project(db, slug)
     if p.onboarding_state != "map_proposed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "not_map_proposed",
             "message": f"project is in state '{p.onboarding_state}', not 'map_proposed'"})
+    unindexed = p.unindexed_docs or []
+    if unindexed:
+        paths = [d.get("path", "") for d in unindexed]
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "unindexed_docs",
+            "message": (f"{len(unindexed)} feature doc(s) could not be parsed and are "
+                        f"NOT on the map: " + "; ".join(paths[:5])
+                        + ("; …" if len(paths) > 5 else "") + " — fix them, wait for the "
+                        "next sync pass, and try again"),
+            "unindexedDocs": unindexed})
     orch = request.app.state.sessions
     await orch.pm_advance_map_merged(slug)
     await record_audit(db=db, type="pm.onboard.advance_map", identity=identity,

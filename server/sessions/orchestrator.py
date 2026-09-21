@@ -1177,6 +1177,7 @@ class SessionOrchestrator:
             list_feature_rows=self._pm_sync_list_feature_rows,
             apply_feature_plan=self._pm_sync_apply_feature_plan,
             now_utc=self._pm_sync_now_utc,
+            save_unindexed_docs=self._pm_sync_save_unindexed_docs,
             read_map_changes=self._pm_sync_read_map_changes,
             refresh_map_changes=self._pm_sync_refresh_map_changes,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
@@ -8475,6 +8476,16 @@ class SessionOrchestrator:
             if proj is None:
                 return
             await self.pm_map_changes().refresh(db, proj)
+
+    async def _pm_sync_save_unindexed_docs(
+        self, project_id: str, pairs: list[tuple[str, str]],
+    ) -> None:
+        """Persist this pass's unparseable-feature-doc list onto the project
+        row (issue #2166) — see server/pm/mirror_store.py:set_project_unindexed_docs."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            await db.run_sync(
+                lambda s: mirror_store.set_project_unindexed_docs(s, project_id, pairs))
 
     async def _pm_sync_list_feature_rows(self, project_id: str) -> list:
         """Return FeatureRowView for every Feature belonging to *project_id*."""

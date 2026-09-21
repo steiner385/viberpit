@@ -128,6 +128,10 @@ SaveSyncState = Callable[..., Awaitable[None]]
 ReadFeatureDocs = Callable[..., Awaitable[FeatureDocsRead]]
 ListFeatureRows = Callable[[str], Awaitable[list[FeatureRowView]]]
 ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
+# Persist this pass's (path, error) pairs for docs that could not be parsed
+# (issue #2166) onto the project row. None ⇒ no-op — every pre-existing
+# PmSyncLoop caller keeps today's behaviour (feed event + log only).
+SaveUnindexedDocs = Callable[[str, list[tuple[str, str]]], Awaitable[None]]
 # The product's open map-changes pointer, if any (R8b-4/5). None ⇒ no branch
 # read — every pre-existing PmSyncLoop caller keeps today's default-branch-only
 # behaviour.
@@ -173,6 +177,7 @@ class PmSyncLoop:
         list_feature_rows: ListFeatureRows,
         apply_feature_plan: ApplyFeaturePlan,
         now_utc: NowUtc,
+        save_unindexed_docs: SaveUnindexedDocs | None = None,
         read_map_changes: ReadMapChanges | None = None,
         refresh_map_changes: RefreshMapChanges | None = None,
         list_products: ListProducts | None = None,
@@ -194,6 +199,7 @@ class PmSyncLoop:
         self._list_feature_rows = list_feature_rows
         self._apply_feature_plan = apply_feature_plan
         self._now_utc = now_utc
+        self._save_unindexed_docs = save_unindexed_docs
         # None ⇒ the feature index only ever reads the default branch (R8b-4).
         self._read_map_changes = read_map_changes
         # None ⇒ no PR-lifecycle pass over the open pointer (R8b-6).
@@ -625,6 +631,10 @@ class PmSyncLoop:
         # edited doc from one the branch merely inherited (see R8b-4 there).
         main_text_by_slug: dict[str, str] = {}
         skipped: list[str] = []
+        # Structured twin of `skipped` (issue #2166): persisted onto the
+        # project row so roadmap_health can surface it, whereas `skipped`
+        # stays the human-readable "path: reason" line the feed event prints.
+        skipped_pairs: list[tuple[str, str]] = []
         for path, text in main.docs:
             try:
                 doc = parse_feature_doc(text, path=path)
@@ -636,6 +646,7 @@ class PmSyncLoop:
                                     logging.WARNING, "pm_sync.bad_feature_doc",
                                     exc_info=True, repo=view.repo, path=path)
                 skipped.append(f"{path}: {e}")
+                skipped_pairs.append((path, str(e)))
                 continue  # one bad doc never poisons the index (spec §4)
             docs_by_slug[doc.slug] = (path, doc)
             main_text_by_slug[doc.slug] = text
@@ -668,6 +679,7 @@ class PmSyncLoop:
                             doc = parse_feature_doc(text, path=path)
                         except FeatureDocError as e:
                             skipped.append(f"{path}: {e}")
+                            skipped_pairs.append((path, str(e)))
                             continue
                         if main_text_by_slug.get(doc.slug) == text:
                             continue  # inherited unchanged — not this PR's doing
@@ -714,6 +726,10 @@ class PmSyncLoop:
             else:
                 log_event(log, logging.DEBUG, "pm_sync.feature_docs_skipped",
                           repo=view.repo, skipped=len(skipped), of=total_read)
+        if self._save_unindexed_docs is not None:
+            # Unconditional — an empty list clears a previously-broken doc the
+            # same pass it gets fixed, not just on the next tick's warning.
+            await self._save_unindexed_docs(view.project_id, skipped_pairs)
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(
             rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)
