@@ -40,7 +40,7 @@ def test_modes(mode, effect, trigger, expected, approval):
     assert result.configured_dispatch == mode
 
 
-@pytest.mark.parametrize("policy", [None, {}, {"weight": 2}, {"dispatch": "invalid"}])
+@pytest.mark.parametrize("policy", [None, {}, {"max_in_flight": 2}, {"dispatch": "invalid"}])
 def test_safe_defaults(policy):
     result = decision(policy=policy)
     assert result.state == "refused"

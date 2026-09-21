@@ -297,7 +297,7 @@ class BacklogRunner:
                          "with work. 'balanced': fewest in-flight runs first (equal "
                          "rotation). 'priority': serve products in rank order (Rank on "
                          "Delivery → Capacity; unranked products last, oldest first). "
-                         "'weighted': deprecated, same as priority. 'concurrency-cap': "
+                         "'concurrency-cap': "
                          "never exceed a product's pin."),
         ConfigField(key="max_concurrent", label="Runner ceiling", type="int", default=1,
                     help="Most sessions the Backlog Runner may hold at once, across every product, "

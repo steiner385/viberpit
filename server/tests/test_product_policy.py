@@ -10,13 +10,13 @@ from server.automations.product_policy import (
 def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
-                    "weight", "ladder_top", "give_up_after_bounces", "default_model",
+                    "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "skip_labels", "triage_auto_accept",
                     "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
-        "capacity_mode": "auto", "weight": 1,
+        "capacity_mode": "auto",
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
         "respect_dependencies": True, "skip_labels": [], "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
@@ -41,6 +41,16 @@ def test_ladder_top_choices_are_the_tier_order_and_max_attempts_is_gone():
     assert "max_attempts" not in effective_policy({"dispatch": "auto"})
     # a stored policy still carrying the retired key validates (unknown keys are dropped, not rejected)
     assert effective_policy({"dispatch": "auto", "max_attempts": 2})["ladder_top"] == "fable"
+
+
+def test_weight_is_retired():
+    """Removal (spec 2026-09-20 D6, #2103): ``weight`` fed only the ``weighted``
+    selection strategy, which now orders exactly like ``priority``. A stored row
+    from before the removal still validates — the retired key is dropped, not
+    rejected — same treatment as ``max_attempts``."""
+    from server.automations.product_policy import PRODUCT_POLICY_SCHEMA, effective_policy
+    assert "weight" not in {f.key for f in PRODUCT_POLICY_SCHEMA}
+    assert "weight" not in effective_policy({"dispatch": "auto", "weight": 3})
 
 
 def test_an_in_memory_annotation_survives_a_re_read_as_a_dropped_key():
@@ -144,16 +154,16 @@ def test_unattended_model_floor_is_none_or_a_model_tier():
 
 def test_sparse_policy_merge_preserves_explicit_choices():
     from server.automations.product_policy import merge_policy_patch
-    assert merge_policy_patch({"dispatch": "off"}, {"weight": 3}) == {"dispatch": "off", "weight": 3}
-    assert merge_policy_patch(None, {"weight": 3}) == {"weight": 3}
+    assert merge_policy_patch({"dispatch": "off"}, {"max_in_flight": 3}) == {"dispatch": "off", "max_in_flight": 3}
+    assert merge_policy_patch(None, {"max_in_flight": 3}) == {"max_in_flight": 3}
     assert merge_policy_patch({"dispatch": "auto"}, None) is None
     assert merge_policy_patch({"unknown": True}, None) is None
 
 
 @pytest.mark.parametrize("current,patch", [
-    ({"dispatch": "turbo"}, {"weight": 3}),
-    ({"unknown": True}, {"weight": 3}),
-    ([], {"weight": 3}),
+    ({"dispatch": "turbo"}, {"max_in_flight": 3}),
+    ({"unknown": True}, {"max_in_flight": 3}),
+    ([], {"max_in_flight": 3}),
     ({}, {"unknown": True}),
     ({}, {"dispatch": "turbo"}),
 ])

@@ -313,7 +313,7 @@ or `Backlog` to reach untriaged items — how far down the board the runner reac
 runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
 still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
-no claim while keeping the rest of its policy — never "unlimited"), `max_pipeline_prs` (default blank = unlimited, minimum 0 — the product's **pipeline cap**: the most claims it may have in its pipeline at once (live sessions plus unmerged PRs handed off to PR Doctor); a full pipeline refuses new claims, spec 2026-09-20 D13), `weight` (deprecated since spec 2026-09-20 D6, removal #2103 — read by nothing; rank on Delivery → Capacity is the priority mechanism), `ladder_top`
+no claim while keeping the rest of its policy — never "unlimited"), `max_pipeline_prs` (default blank = unlimited, minimum 0 — the product's **pipeline cap**: the most claims it may have in its pipeline at once (live sessions plus unmerged PRs handed off to PR Doctor); a full pipeline refuses new claims, spec 2026-09-20 D13), `ladder_top`
 (enum over the model tiers, default `fable` — the strongest model the runner climbs to on a
 repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
 Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see
@@ -365,7 +365,7 @@ never-configured or currently-disabled row has nothing to migrate) carries the o
 the products that owned them so the flip changed no behaviour: the prior global mode becomes each
 seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
 primary repo's entry in the old `repo_caps` becomes its `max_in_flight` (`repo_weights` is not
-carried over — `weight` is deprecated, spec 2026-09-20 D6) — or, for a product with no repo flagged
+carried over — `weight` was removed, spec 2026-09-20 D6) — or, for a product with no repo flagged
 primary, its lowest-named repo's entry — and the remaining
 globals (`queue_min_status`, `default_model`, `respect_dependencies`) are copied onto every seeded
 product, but only the keys the legacy config actually set: a key it left unset is left at the schema
@@ -388,7 +388,7 @@ migration.
 
 What stays global on the runner: whether it runs at all (`off | on` — one row-level toggle;
 propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `selection_strategy`
-(how a freed slot chooses among the ON products' repos — balanced / priority / weighted /
+(how a freed slot chooses among the ON products' repos — balanced / priority /
 concurrency-cap), `max_concurrent` (sessions in flight across every product combined),
 `max_spawns_per_day`, `max_issues_per_pr`, and `grouping_interval_minutes` (the give-up cooldown,
 `needs_human_retry_days`, is retired — a give-up now ends only on the hold-release signals in the

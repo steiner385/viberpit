@@ -240,21 +240,6 @@ async def test_strategy_priority_serves_by_enabled_repo_order():
 
 
 @pytest.mark.asyncio
-async def test_strategy_weighted_is_rank_order():
-    """'weighted' is deprecated (spec 2026-09-20 D6): it serves repos in
-    ``repo_order`` exactly like 'priority' — o/b first here although the plan
-    puts o/a's group first and o/a carries less load."""
-    result = await select_batch(
-        make_config(selection_strategy="weighted"),
-        query=canned_query(_MULTI_REPO),
-        load_plan=canned_plan(_MULTI_PLAN),
-        mark_consumed=consumed_recorder([]),
-        repo_order=["o/b", "o/a"], repo_load={"o/a": 0, "o/b": 3},
-    )
-    assert result is not None and result.primary == "o/b#2"
-
-
-@pytest.mark.asyncio
 async def test_strategy_concurrency_cap_skips_capped_repo():
     """A repo at its cap is skipped; the under-cap repo takes the slot."""
     result = await select_batch(

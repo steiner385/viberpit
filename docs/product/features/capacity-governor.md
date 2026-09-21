@@ -71,10 +71,9 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   fields carry `surface = "capacity"` with the D8 labels **Cap mode** / **Pin**, and the Roadmap
   card's *Capacity* legend became *Dispatch* (dispatch, reach, eligibility) with one read-only
   line built from the readout ("Capacity: rank 2 · auto (effective cap 4) · 1 in flight.") linking
-  there. The product `weight` is deprecated (`ConfigField.deprecated`, removal #2103): nothing
-  reads it, both cards hide it, a stored row still validates. The `weighted` selection strategy
-  orders like `priority`, and `priority` now serves products in **rank order** (`priority_rank`,
-  then product age) — the same key `capacity_plan.product_order` uses.
+  there. The product `weight` field was removed (spec 2026-09-20 D6, #2103); `priority` is the
+  one selection strategy that orders by rank, and now serves products in **rank order**
+  (`priority_rank`, then product age) — the same key `capacity_plan.product_order` uses.
 - **One reserve (PR 5)** — Since spec PR 5 (2026-09-20, D4) a per-account `weeklyReservePct` is an
   OVERRIDE of the push level's reserve with the same meaning (percent of the weekly allowance kept
   back; ceiling `100 − reserve`), and the plan honours it: `account_headroom(push_level=…)` judges
