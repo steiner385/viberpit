@@ -14,7 +14,6 @@ const SCHEMA = [
   { key: 'queue_min_status', label: 'Minimum board status', type: 'enum', default: 'ready', help: '', choices: ['ready', 'triaged'] },
   { key: 'max_in_flight', label: 'Pin', type: 'int', default: 1, help: '', choices: null, surface: 'capacity' },
   { key: 'capacity_mode', label: 'Cap mode', type: 'enum', default: 'auto', help: '', choices: ['auto', 'pinned'], surface: 'capacity' },
-  { key: 'weight', label: 'Weight', type: 'int', default: 1, help: '', choices: null, deprecated: true },
   { key: 'ladder_top', label: 'Ladder top tier', type: 'enum', default: 'fable', help: '', choices: ['haiku', 'sonnet', 'opus', 'fable'] },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
@@ -217,12 +216,10 @@ describe('AutomationPolicyCard', () => {
     expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
   })
 
-  it('renders no control for a Capacity-owned or deprecated field (spec 2026-09-20 D5/D6)', () => {
-    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { max_in_flight: 3, weight: 7 } })} />)
+  it('renders no control for a Capacity-owned field (spec 2026-09-20 D5)', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { max_in_flight: 3 } })} />)
     expect(screen.queryByLabelText('Pin')).toBeNull()
     expect(screen.queryByLabelText('Cap mode')).toBeNull()
-    expect(screen.queryByLabelText('Weight')).toBeNull()
-    expect(screen.queryByText('Weight')).toBeNull()
     expect(screen.queryByText('Pin')).toBeNull()
     expect(screen.queryByText('Cap mode')).toBeNull()
     // …and the line reads the READOUT (effective cap 4), not the stored pin (3).

@@ -408,7 +408,7 @@ def plan_to_batch(
     configured per-repo selection ``strategy`` (see
     :func:`~server.automations.backlog_selection.order_live_groups`) — ``balanced``
     (the default) reproduces the old ascending-active-run fairness; ``priority`` /
-    ``concurrency-cap`` let the user rank or cap specific repos (``weighted`` is a deprecated alias of ``priority``, spec 2026-09-20 D6).
+    ``concurrency-cap`` let the user rank or cap specific repos.
     Ordering is always stable, so plan priority stands within a repo.
 
     ``paused_repos`` (repos with stale git credentials, issue #670) are skipped

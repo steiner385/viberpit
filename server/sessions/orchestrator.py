@@ -6334,7 +6334,7 @@ class SessionOrchestrator:
 
     def _backlog_repo_order(self) -> list[str]:
         """The ON products' repos in rank order, for the ``priority`` strategy
-        (and its deprecated alias ``weighted``, spec 2026-09-20 D6).
+        .
 
         Derived from the policy/repo snapshot ``_backlog_query_queue`` just took
         (already rank-ordered there), so selection can never bias toward a

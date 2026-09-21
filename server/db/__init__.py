@@ -9,13 +9,15 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, cast
 
-from sqlalchemy import event, inspect as sa_inspect, text as sa_text
+from sqlalchemy import (
+    Table, event, inspect as sa_inspect, select as sa_select, text as sa_text, update as sa_update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.config import get_settings
-from server.db.models import Base
+from server.db.models import Automation, Base
 from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
@@ -176,6 +178,25 @@ def _normalize_pending_rearm_null(sync_conn) -> None:
         ))
 
 
+def _migrate_weighted_selection_strategy(sync_conn) -> None:
+    """Rewrite a stored Backlog Runner ``selection_strategy: weighted`` to ``priority``.
+
+    ``weighted`` was removed from the enum (spec 2026-09-20 D6, #2103); it already
+    ordered exactly like ``priority``. A stored row still carrying it would fail enum
+    validation and every reader would silently fall back to schema defaults.
+    Idempotent: matches nothing once the row is clean.
+    """
+    if "automation" not in set(sa_inspect(sync_conn).get_table_names()):
+        return
+    table = cast(Table, Automation.__table__)
+    row = sync_conn.execute(
+        sa_select(table.c.config).where(table.c.id == "backlog-runner")).first()
+    config = row[0] if row else None
+    if isinstance(config, dict) and config.get("selection_strategy") == "weighted":
+        sync_conn.execute(sa_update(table).where(table.c.id == "backlog-runner")
+                          .values(config={**config, "selection_strategy": "priority"}))
+
+
 def _backfill_session_engine(sync_conn) -> None:
     """Idempotently migrate legacy session identity into the engine-neutral columns.
 
@@ -252,6 +273,7 @@ async def init_db(db_url: str | None = None) -> None:
         # observe the rows. This is deliberately dialect-generic because the live
         # Postgres deployment does not run Alembic revisions.
         await conn.run_sync(_backfill_session_engine)
+        await conn.run_sync(_migrate_weighted_selection_strategy)
         await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
             # SQLite-only: `pending_rearm = 'null'` compares a json column to text,

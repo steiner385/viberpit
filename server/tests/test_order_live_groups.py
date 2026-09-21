@@ -61,20 +61,6 @@ def test_priority_breaks_ties_within_rank_by_load():
     assert out == ["a", "b"]  # rank wins over load
 
 
-# --------------------------------------------------------------------------- #
-# weighted — deprecated (spec 2026-09-20 D6, #2103): orders exactly like priority #
-# --------------------------------------------------------------------------- #
-
-def test_weighted_orders_by_repo_order_like_priority():
-    """A stored ``selection_strategy: weighted`` keeps working, as rank order:
-    the product weight it used to divide load by is deprecated and read by nothing."""
-    weighted = order_live_groups(["c", "a", "b"], repo_of=ident, strategy="weighted",
-                                 repo_order=["a", "b", "c"], repo_load={"a": 9, "b": 0})
-    priority = order_live_groups(["c", "a", "b"], repo_of=ident, strategy="priority",
-                                 repo_order=["a", "b", "c"], repo_load={"a": 9, "b": 0})
-    assert weighted == priority == ["a", "b", "c"]
-
-
 def test_order_live_groups_has_no_weights_parameter():
     import inspect
     assert "weights" not in inspect.signature(order_live_groups).parameters

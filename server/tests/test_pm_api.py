@@ -335,15 +335,14 @@ def test_policy_schema_and_project_policy_round_trip():
         # The int fields publish their floor so the browser renders the same range
         # the server enforces, instead of hard-coding one (or none).
         assert fields["max_in_flight"]["min"] == 0      # 0 = paused, not unlimited
-        assert fields["weight"]["min"] == 0
-        # Spec 2026-09-20 D5/D6/D8: Delivery → Capacity owns the pin and the cap
-        # mode (the Roadmap card shows them read-only); ``weight`` is deprecated
-        # (#2103) — still in the schema so a stored row validates, read by nothing.
+        # Spec 2026-09-20 D5/D8: Delivery → Capacity owns the pin and the cap
+        # mode (the Roadmap card shows them read-only). ``weight`` was removed
+        # from the schema entirely (D6, #2103).
+        assert "weight" not in fields
         assert fields["max_in_flight"]["surface"] == "capacity"
         assert fields["max_in_flight"]["label"] == "Pin"
         assert fields["capacity_mode"]["surface"] == "capacity"
         assert fields["capacity_mode"]["label"] == "Cap mode"
-        assert fields["weight"]["deprecated"] is True
         # Spec 2026-09-20 D13: the pipeline cap is nullable (blank = unlimited),
         # Capacity-owned, floor 0.
         assert fields["max_pipeline_prs"]["label"] == "Pipeline cap"
@@ -376,13 +375,13 @@ def test_policy_schema_and_project_policy_round_trip():
         assert "queue_min_status" not in pol  # defaults are display/effective only
         assert c.get("/api/pm/projects/kindash", headers=IDENTITY_HEADERS).json()["automationPolicy"] == pol
 
-        # A stale client (or a stored row) still carrying ``weight`` is accepted,
-        # not 422'd: deprecated ≠ retired until #2103.
+        # A stale client (or a pre-#2103 stored row) still carrying ``weight`` is
+        # accepted, not 422'd — and silently dropped, same as ``max_attempts``.
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"weight": 4}},
                     headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         pol2 = r.json()["automationPolicy"]
-        assert pol2["weight"] == 4
+        assert "weight" not in pol2
 
         # Spec 2026-09-20 D13: the pipeline cap is nullable — a blank value is a
         # real None (unlimited), not coerced to 0; a negative cap still 422s.
@@ -2435,10 +2434,10 @@ def test_policy_patch_requires_explicit_policy_and_refuses_stale_reset_edits():
         assert first.status_code == 200, first.text
         rev = first.json()["automationPolicyUpdatedAt"]
         assert rev
-        assert c.patch(url, json={"policy": {"weight": 4}, "expectedUpdatedAt": None}, headers=IDENTITY_HEADERS).status_code == 409
-        merged = c.patch(url, json={"policy": {"weight": 4}, "expectedUpdatedAt": rev}, headers=IDENTITY_HEADERS)
+        assert c.patch(url, json={"policy": {"max_in_flight": 4}, "expectedUpdatedAt": None}, headers=IDENTITY_HEADERS).status_code == 409
+        merged = c.patch(url, json={"policy": {"max_in_flight": 4}, "expectedUpdatedAt": rev}, headers=IDENTITY_HEADERS)
         assert merged.status_code == 200, merged.text
-        assert merged.json()["automationPolicy"] == {"dispatch": "off", "weight": 4}
+        assert merged.json()["automationPolicy"] == {"dispatch": "off", "max_in_flight": 4}
         reset = c.patch(url, json={"policy": None, "expectedUpdatedAt": merged.json()["automationPolicyUpdatedAt"]}, headers=IDENTITY_HEADERS)
         assert reset.status_code == 200, reset.text
         assert reset.json()["automationPolicy"] is None
@@ -2446,8 +2445,8 @@ def test_policy_patch_requires_explicit_policy_and_refuses_stale_reset_edits():
         assert c.patch(url, json={"policy": {"dispatch": "auto"}, "expectedUpdatedAt": rev}, headers=IDENTITY_HEADERS).status_code == 409
         # Compatibility callers merge sparsely, never erase unspecified choices.
         c.patch(url, json={"policy": {"dispatch": "off"}}, headers=IDENTITY_HEADERS)
-        final = c.patch(url, json={"policy": {"weight": 2}}, headers=IDENTITY_HEADERS)
-        assert final.json()["automationPolicy"] == {"dispatch": "off", "weight": 2}
+        final = c.patch(url, json={"policy": {"max_in_flight": 2}}, headers=IDENTITY_HEADERS)
+        assert final.json()["automationPolicy"] == {"dispatch": "off", "max_in_flight": 2}
 
 
 def test_policy_patch_refuses_corrupt_stored_policy_but_allows_explicit_reset():
@@ -2460,7 +2459,7 @@ def test_policy_patch_refuses_corrupt_stored_policy_but_allows_explicit_reset():
                 db.add(Project(name="Bad", slug="bad", automation_policy={"unknown_grant": True}))
         c.portal.call(seed)
         url = "/api/pm/projects/bad/policy"
-        response = c.patch(url, json={"policy": {"weight": 2}}, headers=IDENTITY_HEADERS)
+        response = c.patch(url, json={"policy": {"max_in_flight": 2}}, headers=IDENTITY_HEADERS)
         assert response.status_code == 422, response.text
         async def observed():
             async with db_session() as db:

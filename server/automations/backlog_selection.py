@@ -8,7 +8,7 @@ from server.github.pr_status import PullRequestInfo
 
 # The user-selectable per-repo selection strategies (see ``order_live_groups``).
 # ``balanced`` is the default and reproduces the pre-strategy behavior.
-SELECTION_STRATEGIES = ("balanced", "priority", "weighted", "concurrency-cap")
+SELECTION_STRATEGIES = ("balanced", "priority", "concurrency-cap")
 
 
 @dataclass(frozen=True)
@@ -87,9 +87,6 @@ def order_live_groups(
     * ``priority`` — repos are served in ``repo_order`` order; a repo not listed
       ranks last. ``repo_load`` breaks ties *within* a rank. A deep top-rank
       backlog can legitimately starve lower repos — that is the point of the mode.
-    * ``weighted`` — DEPRECATED (spec 2026-09-20 D6, removal #2103): the product
-      weight it divided load by is read by nothing; it orders exactly like
-      ``priority``. Kept as a value so a stored config keeps working.
     * ``concurrency-cap`` — a repo whose active load is already ``>=`` its cap
       (``caps``; a repo absent from the map is uncapped) is dropped for this slot;
       the survivors are ordered ``balanced``. An empty result means every repo with
@@ -97,7 +94,7 @@ def order_live_groups(
     """
     load = repo_load or {}
 
-    if strategy in ("priority", "weighted"):
+    if strategy == "priority":
         order = repo_order or []
         rank = {r: i for i, r in enumerate(order)}
         return sorted(items, key=lambda it: (rank.get(repo_of(it), len(order)),
