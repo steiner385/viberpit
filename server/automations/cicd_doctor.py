@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
 
@@ -422,6 +423,13 @@ class CicdDoctorLoop:
         self._reopen_issue = reopen_issue
         self._clock = clock
         self._lock = asyncio.Lock()
+        # A run with malformed junit artifacts is an expected degrade path (see
+        # parse_junit_xml's docstring), not a bug — but a repo whose CI keeps
+        # producing bad XML re-enters this path on every ingested run, so an
+        # unthrottled warning turns one standing condition into hundreds of
+        # error-sink occurrences (#1704: 145 in under a day). Keyed on repo,
+        # not run id, since the run id is unbounded like a timestamp.
+        self._junit_malformed_log = LogThrottle()
 
     async def tick(self) -> None:
         async with self._lock:
@@ -475,8 +483,9 @@ class CicdDoctorLoop:
             last_attempt, malformed = await asyncio.to_thread(
                 _junit_last_attempts, artifacts)
             if malformed:
-                log.warning("cicd_doctor.junit_malformed repo=%s run=%s count=%s",
-                            repo, r["id"], malformed)
+                log_event_throttled(log, self._junit_malformed_log, repo,
+                                     logging.WARNING, "cicd_doctor.junit_malformed",
+                                     repo=repo, run=r["id"], count=malformed)
             prepared.append((r, jobs, last_attempt))
         async with db_session() as db:
             # A different writer may have ingested runs while artifacts fetched.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from sqlalchemy import select
 
@@ -13,6 +14,7 @@ from server.db.models import CiFinding, CiTestResult
 JUNIT_FLAKY = b"""<testsuite><testcase classname="t" name="flaky" time="1">
 <failure message="boom"/></testcase></testsuite>"""
 JUNIT_PASS = b'<testsuite><testcase classname="t" name="flaky" time="1"/></testsuite>'
+JUNIT_MALFORMED = b"<testsuite><testcase"
 
 
 def _runs(n, sha="s1", ts=1000.0):
@@ -89,6 +91,25 @@ def test_ingest_is_cursor_idempotent(tmp_path):
         cursor = await ctx.get_target_state("cursor:o/r")
         assert cursor["last_created_ts"] == 1002.0
     asyncio.run(run())
+
+
+def test_malformed_junit_warnings_are_throttled_per_repo(tmp_path, caplog):
+    """#1704: a repo whose CI keeps producing bad junit XML re-entered the
+    per-run warning on every ingested run — 145 records for one standing
+    condition. Throttled on the repo, it must report once per tick."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(3),
+                     junit_by_run={i: [("junit-python", JUNIT_MALFORMED)]
+                                   for i in (1, 2, 3)})
+        with caplog.at_level(logging.WARNING, logger="server.automations.cicd_doctor"):
+            await loop.tick()
+    asyncio.run(run())
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, (
+        f"{len(warnings)} warnings for one standing malformed-junit condition")
+    assert warnings[0].fields == {"repo": "o/r", "run": 1, "count": 1}
 
 
 def test_flaky_test_becomes_finding_and_issue(tmp_path):
