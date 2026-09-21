@@ -13875,6 +13875,37 @@ class SessionOrchestrator:
                     seen.add((repo, info.head_ref))
         return list(seen)
 
+    async def _pr_doctor_pending_products(self) -> frozenset[str]:
+        """Product slugs with at least one PR Doctor considers stuck and has
+        not given up on (spec 2026-09-21 pr-doctor-priority). Backlog Runner's
+        admission gate reads this to refuse NEW claims for a gated product —
+        never an existing one (D8: admission refuses new claims, it never
+        kills a session). Best-effort: any failure yields frozenset() rather
+        than blocking Backlog Runner dispatch on a PR Doctor read.
+        """
+        from server.automations import pr_doctor_engine as engine
+        from server.pm.repo_project import owning_projects_by_repo
+        try:
+            pending_repos: set[str] = set()
+            for repo, branch in await self._pr_doctor_scope_pairs():
+                info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
+                if info is None or engine.target_terminal(info):
+                    continue
+                if engine.classify(info) is None:
+                    continue
+                state = await self._pr_doctor_ctx.get_target_state(f"{repo}#{info.number}")
+                if state.get("gave_up"):
+                    continue
+                pending_repos.add(repo)
+            if not pending_repos:
+                return frozenset()
+            async with db_session() as db:
+                owners = await owning_projects_by_repo(db, pending_repos)
+            return frozenset(owner.slug for owner in owners.values())
+        except Exception:
+            log.warning("orchestrator._pr_doctor_pending_products_failed", exc_info=True)
+            return frozenset()
+
     @staticmethod
     def _session_pr_branches(rec) -> list[str]:
         """Every branch that may carry a PR this session authored: the accumulated
