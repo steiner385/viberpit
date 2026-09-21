@@ -34,6 +34,7 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "product_pipeline_full": "p
                  "approval_required": "product", "runner_off": "runner",
                  "no_account_headroom": "account", "hosts_full": "host",
                  "global_cap_full": "global",
+                 "pr_doctor_priority": "product",
                  # Ruling 20 (product_policy.capacity()): an occupied claim's
                  # ceiling constraint is now "permitted" (`*_held`), so it never
                  # refuses and never binds — these entries exist only so a
@@ -41,7 +42,7 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "product_pipeline_full": "p
                  # that doesn't filter by state) maps it to the same layer as
                  # its `_full` sibling rather than the "product" default.
                  "runner_ceiling_held": "runner", "product_capacity_held": "product",
-                 "product_pipeline_held": "product"}
+                 "product_pipeline_held": "product", "pr_doctor_priority_held": "product"}
 
 
 def _layer_for(code: str) -> str:

@@ -251,6 +251,27 @@ def test_decide_failure_is_contained_to_its_own_product():
     assert by_slug["viberpit"]["eligible"] == 10
 
 
+_FAKE_PR_DOCTOR_DECISION = SimpleNamespace(constraints=[
+    SimpleNamespace(code="pr_doctor_priority", state="refused",
+                    text="PR Doctor is working a stuck PR for this product first."),
+])
+
+
+def test_readout_surfaces_pr_doctor_priority_constraint():
+    """Mirrors the ``product_capacity_full`` coverage above: any refused
+    constraint ``decide()`` returns surfaces generically as the product row's
+    ``constraint``/``waitingOn`` — spec 2026-09-21 pr-doctor-priority."""
+    async def decide(repo, slug):
+        return _FAKE_PR_DOCTOR_DECISION, {}
+
+    async def run():
+        return await build_readout(_make_sources(products=_PRODUCTS, decide=decide))
+
+    r = asyncio.run(run())
+    assert r["products"][0]["constraint"] == "pr_doctor_priority"
+    assert "PR Doctor" in r["products"][0]["waitingOn"]
+
+
 # --- SPEC GAPS (a): binding fallbacks below the product layer, one per layer. ---
 
 def test_binding_falls_back_to_no_account_headroom():

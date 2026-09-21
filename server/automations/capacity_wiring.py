@@ -85,7 +85,8 @@ def sources_for(orch) -> CapacitySources:
         if _snapshot is None:
             all_products = await products()
             repos = sorted({p["primaryRepo"] for p in all_products if p.get("primaryRepo")})
-            _snapshot = await gather_implementation_snapshot(repos, context=orch._backlog_ctx)
+            _snapshot = await gather_implementation_snapshot(
+                repos, context=orch._backlog_ctx, pr_doctor_pending=orch._pr_doctor_pending_products)
         return _snapshot.decide(repo, requested_product=slug, trigger="automatic", effect="dispatch")
 
     async def session_status(sid: str) -> str | None:

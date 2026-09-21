@@ -22,7 +22,8 @@ from server.db.models import AutomationTargetState, CapacityPlanRow, Project, Pr
 # Reuse the orchestrator/runner-row helpers already built for the policy seams
 # suite rather than growing a second "build an orchestrator" / "set the runner
 # row" implementation.
-from server.tests.test_backlog_policy_seams import _init, _orch_with_ctx, _set_runner_row
+from server.tests.test_backlog_policy_seams import (_init, _orch_with_ctx, _seed_product,
+                                                    _set_runner_row)
 
 
 def _plan(per_product: dict, *, fleet: int = 10, applied: bool = True) -> dict:
@@ -177,6 +178,30 @@ def test_wiring_runner_config_feeds_the_planner_the_operators_own_ceiling(tmp_pa
         sources = sources_for(orch)
         _mode, config = await sources.runner_config()
         assert config["max_concurrent"] == 6  # the operator's own ceiling, not the plan's overlay
+
+    asyncio.run(run())
+
+
+def test_wiring_decide_feeds_pr_doctor_pending_into_admission(tmp_path, monkeypatch):
+    """Cheap wiring-level check that ``capacity_wiring.sources_for``'s
+    ``decide`` seam actually passes ``pr_doctor_pending`` through to
+    ``gather_implementation_snapshot`` — spec 2026-09-21 pr-doctor-priority."""
+    async def run():
+        await _init(tmp_path, "seams_pr_doctor.db")
+        _identity(monkeypatch)
+        await _seed_product("test-product", "o/r", policy={"dispatch": "auto"})
+        await _set_runner_row(mode="on", config={"max_concurrent": 5, "max_spawns_per_day": 10})
+        orch = _orch_with_ctx()
+
+        from unittest.mock import AsyncMock
+        orch._pr_doctor_pending_products = AsyncMock(return_value=frozenset({"test-product"}))
+
+        from server.automations.capacity_wiring import sources_for
+        sources = sources_for(orch)
+        decision, _ = await sources.decide("o/r", "test-product")
+
+        assert not decision.permitted
+        assert any(c.code == "pr_doctor_priority" for c in decision.constraints)
 
     asyncio.run(run())
 
