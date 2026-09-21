@@ -85,11 +85,12 @@ class Translator:
             self._task_tool[msg.task_id] = tuid
             d = msg.data or {}
             atype = d.get("subagent_type")
+            raw_depth = d.get("spawn_depth")
             return [ev.SubAgentStarted(
                 tuid, msg.task_id, msg.description or "",
                 atype if isinstance(atype, str) and atype else "agent",
                 backgrounded=bool(d.get("is_backgrounded", False)),
-                depth=int(d.get("spawn_depth") or 1))]
+                depth=int(raw_depth) if raw_depth is not None else 1)]
         if isinstance(msg, TaskProgressMessage):
             if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
                 return []

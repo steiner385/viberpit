@@ -893,6 +893,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     out_q.put_nowait({**PermissionRequest(
                         p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
                         p["input"], plan=(p["tool"] == "ExitPlanMode"), items=p.get("items"),
+                        parent_tool_use_id=p.get("parent_tool_use_id"),
                     ).to_wire(), "sessionId": session_id})
 
                 # Re-emit any pending AskUserQuestion events for this session. Mirrors
@@ -906,6 +907,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         question=q["question"],
                         options=q["options"],
                         multi_select=q["multi_select"],
+                        parent_tool_use_id=q.get("parent_tool_use_id"),
                     ).to_wire(), "sessionId": session_id})
 
             # Re-offer a question whose waiter died with the daemon. The loop above

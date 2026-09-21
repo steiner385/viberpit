@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { SessionMeta } from './SessionMeta'
 import type { SubAgent } from '@/session/selectors'
 import type { UsageWindow } from '@/api/types'
+import { STATUS_TONE } from './subAgentStatus'
 
 const baseProps = {
   sessionId: 's1',
@@ -197,6 +198,20 @@ describe('SessionMeta', () => {
     fireEvent.click(toggle)
     expect(screen.getByText('Explore')).toBeInTheDocument()
     expect(screen.getByText('Plan')).toBeInTheDocument()
+  })
+
+  it('renders the summary dot in the stopped tone when every sub-agent stopped (#1562)', () => {
+    const subAgents: SubAgent[] = [
+      { toolId: 'a', type: 'Explore', description: 'find it', status: 'stopped' },
+      { toolId: 'b', type: 'Plan', description: 'plan it', status: 'stopped' },
+    ]
+    render(<MemoryRouter><SessionMeta {...baseProps} subAgents={subAgents} /></MemoryRouter>)
+    const toggle = screen.getByRole('button', { name: /sub-agent/i })
+    const dot = toggle.querySelector('span[aria-hidden]')
+    expect(dot).not.toBeNull()
+    for (const cls of STATUS_TONE.stopped.split(' ')) {
+      expect(dot).toHaveClass(cls)
+    }
   })
 
   it('marks the ctx readout danger and shows hint when context nearly full', () => {

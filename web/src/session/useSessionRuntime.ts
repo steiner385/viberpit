@@ -429,6 +429,14 @@ export function useSessionRuntime(
   // enough — e.g. the server's questionResolved frame (answered from another tab, or
   // re-resolved after a mid-turn reattach) resolves the block without this client's
   // deliverAnswer ever disarming.
+  //
+  // Scans only `viewState.turns` (the main thread), never a sub-agent's mirrored copy
+  // in `state.subAgents[pid].turns` — deliberately: the reducer's `question` case
+  // always appends the block to the main thread first and mirrors it into the
+  // sub-thread second (reducer.ts `mirrorCard`), and `questionResolved` walks every
+  // sub-thread to resolve both copies together (see `resolveQuestionInPlace`). A
+  // question can therefore never be live in a sub-thread while its main-thread copy
+  // is resolved, so the main copy alone is always sufficient to decide disarm.
   useEffect(() => {
     if (!armedQuestionId) return
     const stillOpen = viewState.turns.some((t) =>

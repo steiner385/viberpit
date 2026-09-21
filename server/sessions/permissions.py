@@ -142,7 +142,7 @@ class PermissionRegistry:
         return tool
 
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
-              items) -> tuple[str, asyncio.Future]:
+              items, parent_tool_use_id=None) -> tuple[str, asyncio.Future]:
         """Register a card and log it. The ONE place a pending record is created, so
         every card — destructive ViberPit tool, mutation tool, or an ordinary tool the
         session mode gates — leaves the same line naming the mode the registry saw.
@@ -153,7 +153,8 @@ class PermissionRegistry:
         fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": always_allowed, "items": items}
+                              "always_allowed": always_allowed, "items": items,
+                              "parent_tool_use_id": parent_tool_use_id}
         log.info("permission.card session=%s tool=%s mode=%s perm_id=%s always_allowed=%s",
                  session_id, tool, mode, pid, always_allowed)
         return pid, fut
@@ -169,7 +170,7 @@ class PermissionRegistry:
         return True
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
-                      items: list[str] | None = None):
+                      items: list[str] | None = None, parent_tool_use_id: str | None = None):
         now = time.time()
         # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
         # before the rebrand) is the app talking to
@@ -207,7 +208,8 @@ class PermissionRegistry:
                 # offers "Always allow" (always_allowed=False on the pending
                 # record; resolve() below refuses to persist a grant for it).
                 pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
-                                      identity=identity, always_allowed=False, items=items)
+                                      identity=identity, always_allowed=False, items=items,
+                                      parent_tool_use_id=parent_tool_use_id)
                 return pid, fut, False
             # MUTATION, or an unknown/not-yet-registered ViberPit tool (treated
             # conservatively as mutation-like rather than raising on a None
@@ -220,7 +222,8 @@ class PermissionRegistry:
             if self.is_granted(session_id, tool, input, now):
                 return None, _resolved(True), True
             pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
-                                  identity=identity, always_allowed=True, items=items)
+                                  identity=identity, always_allowed=True, items=items,
+                                  parent_tool_use_id=parent_tool_use_id)
             return pid, fut, True
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
@@ -268,7 +271,8 @@ class PermissionRegistry:
             # materially larger blast radius — remain gated.
             return None, _resolved(True), True
         pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
-                              identity=identity, always_allowed=True, items=items)
+                              identity=identity, always_allowed=True, items=items,
+                              parent_tool_use_id=parent_tool_use_id)
         return pid, fut, True
 
     async def request_external(self, session_id, turn_id, tool, input, *, identity,
@@ -330,7 +334,7 @@ class PermissionRegistry:
 
     def pending(self, session_id) -> list[dict]:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"],
-                 "items": r.get("items")}
+                 "items": r.get("items"), "parent_tool_use_id": r.get("parent_tool_use_id")}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
     def rethread_identity(self, session_id, old, new) -> int:
