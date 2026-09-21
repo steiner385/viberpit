@@ -9637,6 +9637,8 @@ class SessionOrchestrator:
     # includes settled-but-live states (idle/done), not just terminal ones,
     # because a one-shot session's first finished turn IS the deliverable.
     _CHAINED_SESSION_SETTLED = ("complete", "done", "idle", "ended", "archived")
+    # ...and the subset after which nothing will ever run under this id again.
+    _CHAINED_SESSION_TERMINAL = ("ended", "archived")
 
     async def _await_session_settled(self, session_id: str, *, attempts: int = 60,
                                      interval_s: float = 30.0) -> bool:
@@ -9645,14 +9647,34 @@ class SessionOrchestrator:
         The one settle-poll for every chained ingest (classify, materialize) —
         two copies would drift on the status tuple, and a chain that waits on the
         wrong set either harvests an empty transcript or never harvests at all.
-        A vanished session is a definitive False: nothing will ever settle."""
+        A vanished session is a definitive False: nothing will ever settle.
+
+        "Finished a turn" is a status in the tuple above AND ``last_turn_at``
+        (#1572). Status alone cannot tell the two ``idle``s apart: a session is
+        CREATED at ``idle`` and stays there when its prompt never lands —
+        ``send_prompt`` returns "draining" for the whole of a deploy drain — so
+        the poll called it settled 13 ms after spawn and every chain harvested an
+        empty transcript. ``_persist_status`` advances ``last_turn_at`` only when
+        a turn hands output back (``ACTIVITY_STATUSES``), and
+        ``server/sessions/status.py`` documents ``idle`` as "never ran", so it is
+        the one field that separates finished from never-started. It is a DB
+        column, so the answer survives the restart that ends the drain."""
         for _ in range(attempts):
             rec = self.get_session(session_id)
             if rec is None:
                 log.warning("chain_ingest: session %s vanished — giving up", session_id)
                 return False
-            if getattr(rec, "status", None) in self._CHAINED_SESSION_SETTLED:
+            status = getattr(rec, "status", None)
+            ran = getattr(rec, "last_turn_at", None) is not None
+            if status in self._CHAINED_SESSION_SETTLED and ran:
                 return True
+            if status in self._CHAINED_SESSION_TERMINAL and not ran:
+                # Definitive: no turn ever ran and none ever will, so spending the
+                # rest of the budget (30 min classify / 2 h materialize) only
+                # delays the same answer.
+                log.info("chain_ingest: session %s is %s with no finished turn — "
+                         "nothing to harvest", session_id, status)
+                return False
             await asyncio.sleep(interval_s)
         log.warning("chain_ingest: session %s never settled after %d attempts",
                     session_id, attempts)
@@ -9955,6 +9977,17 @@ class SessionOrchestrator:
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
         from server.pm.classification import (
             ClassificationParseError, parse_classification_output)
+        if not (output_text or "").strip():
+            # Nothing to read is not a parse failure (#1572). ``parse_failed``
+            # carries a traceback and means "the session answered something the
+            # parser could not understand" — a quality signal worth a human.
+            # Raising it over absent text blamed the parser for having nothing to
+            # read. The settle poll no longer hands over a session that never ran,
+            # so reaching here means the transcript read itself came back empty —
+            # already logged by ``_chained_session_output_text``.
+            log.info("pm_classify.no_output session=%s — empty harvest, "
+                     "nothing to ingest", session_id)
+            return 0
         try:
             rows = parse_classification_output(output_text)
         except ClassificationParseError:

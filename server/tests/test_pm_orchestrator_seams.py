@@ -206,6 +206,38 @@ async def test_classify_ingest_writes_pending_proposals(db_env):
 
 
 @pytest.mark.asyncio
+async def test_classify_ingest_reports_an_empty_harvest_as_no_output(caplog):
+    """An empty harvest is not a malformed payload (#1572).
+
+    ``pm_classify.parse_failed`` carries a traceback and reads as "the classify
+    session answered something the parser could not understand" — a quality
+    signal worth a human. Raising it for text that is not there blamed the parser
+    for having nothing to read, and filed the auto-error issue this fixes. The
+    WARNING stays for output that IS present and unparseable."""
+    import logging
+    orch = _bare_orch()
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        assert await orch._pm_classify_ingest("sess-1", "viberpit", "  \n ") == 0
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("pm_classify.no_output" in m for m in msgs), msgs
+    assert not any("parse_failed" in m for m in msgs), msgs
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_classify_ingest_still_warns_on_output_it_cannot_parse(db_env, caplog):
+    """The other half of the split: real output with no JSON array in it keeps
+    the WARNING + traceback, because a human should look at it."""
+    import logging
+    await _seed(db_env)
+    orch = _bare_orch()
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        assert await orch._pm_classify_ingest(
+            "sess-1", "viberpit", "sorry, I could not classify these") == 0
+    assert any("parse_failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_classify_ingest_is_idempotent(db_env):
     await _seed(db_env)
     orch = _bare_orch()
@@ -438,6 +470,17 @@ def _mk_async(value):
     return _f
 
 
+def _rec(sid: str, status: str = "done", *, ran: bool = True):
+    """Session-record stub for the settle poll.
+
+    ``ran`` is ``last_turn_at``: the poll accepts a settled status only once a
+    turn has handed output back, so every stub has to say which it is (#1572).
+    A stub without the field reads as never-run, which is the safe direction."""
+    from datetime import datetime
+    return SimpleNamespace(id=sid, status=status,
+                           last_turn_at=datetime(2026, 1, 1) if ran else None)
+
+
 @pytest.mark.asyncio
 async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env, monkeypatch):
     """The chain polls the session until it settles, then harvests + ingests ONCE.
@@ -448,7 +491,7 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
     orch._records = {}   # no record → _certify_harvested_complete no-ops; see its own tests
     statuses = ["running", "running", "complete"]
     def fake_get_session(sid):
-        return SimpleNamespace(id=sid, status=statuses.pop(0) if statuses else "complete")
+        return _rec(sid, statuses.pop(0) if statuses else "complete")
     orch.get_session = fake_get_session
     orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
     ingested = []
@@ -461,6 +504,61 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
                                                   attempts=10, delay=0.0)
     assert written == 1
     assert ingested == [("sess-1", "viberpit", '```json\n[{"number": 1}]\n```')]
+
+
+@pytest.mark.asyncio
+async def test_classify_chain_ingest_never_harvests_a_session_that_never_ran(
+        db_env, monkeypatch):
+    """#1572 end to end: the chain must not reach the parser at all.
+
+    Production shape — the classify automation spawns during a deploy drain,
+    ``send_prompt`` is rejected, the session sits at ``idle`` with an empty
+    transcript, and the harvest ran 13 ms later. The prompt is recovered and the
+    session runs after the restart, so the only output of that early harvest was
+    a WARNING with a traceback."""
+    orch = _bare_orch()
+    orch.get_session = lambda sid: _rec(sid, "idle", ran=False)
+    orch._chained_session_output_text = _mk_async("")
+    ingested = []
+
+    async def fake_ingest(*a):
+        ingested.append(a)
+        return 0
+
+    orch._pm_classify_ingest = fake_ingest
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._pm_classify_chain_ingest("sess-1", "viberpit",
+                                                attempts=3, delay=0.0) == 0
+    assert ingested == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_chain_ingest_never_harvests_a_session_that_never_ran(
+        db_env, monkeypatch):
+    """The classify chain's sibling, and the costlier half of the same bug.
+
+    ``_sdlc_materialize_ingest`` records a REJECTED MaterializationProposal on a
+    parse failure and that rejection moves the attempt key, so harvesting a
+    never-run session would burn one of ``MATERIALIZE_MAX_ATTEMPTS`` for a
+    decompose the model never performed. Both chains share
+    ``_await_session_settled``, which is why the fix belongs there."""
+    await _seed_initiative(db_env)
+    orch = _bare_orch()
+    orch._sdlc_synth_ctx = FakeAutomationContext()
+    orch.get_session = lambda sid: _rec(sid, "idle", ran=False)
+    ingested = []
+
+    async def fake_ingest(*a):
+        ingested.append(a)
+        return 0
+
+    orch._sdlc_materialize_ingest = fake_ingest
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._sdlc_materialize_chain_ingest("s1", "dark-mode",
+                                                     attempts=3, delay=0.0) == 0
+    assert ingested == []
 
 
 @pytest.mark.asyncio
@@ -490,7 +588,7 @@ async def test_classify_chain_ingest_certifies_completion_after_harvest(db_env, 
     landing in TriageProposal rows is the real completion signal, so certify it
     here — where the harness, not the session, is the one that verified it."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+    orch.get_session = lambda sid: _rec(sid, "done")
     orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
     orch._pm_classify_ingest = _mk_async(1)
     certified = []
@@ -511,7 +609,7 @@ async def test_classify_chain_ingest_leaves_unharvested_session_for_a_human(db_e
     lifting into Active is how they find it. Certifying on a 0-row ingest would
     archive the one session that needed attention."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+    orch.get_session = lambda sid: _rec(sid, "done")
     orch._chained_session_output_text = _mk_async("sorry, I could not classify these")
     orch._pm_classify_ingest = _mk_async(0)
     certified = []
@@ -1645,8 +1743,8 @@ def _materialize_orch(text: str = _DECOMP):
 async def test_await_session_settled_returns_true_once_settled(monkeypatch):
     orch = _bare_orch()
     statuses = ["running", "running", "complete"]
-    orch.get_session = lambda sid: SimpleNamespace(
-        id=sid, status=statuses.pop(0) if statuses else "complete")
+    orch.get_session = lambda sid: _rec(
+        sid, statuses.pop(0) if statuses else "complete")
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=10, interval_s=0.0) is True
@@ -1655,10 +1753,74 @@ async def test_await_session_settled_returns_true_once_settled(monkeypatch):
 @pytest.mark.asyncio
 async def test_await_session_settled_gives_up_after_attempts(monkeypatch):
     orch = _bare_orch()
-    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="running")
+    orch.get_session = lambda sid: _rec(sid, "running")
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=3, interval_s=0.0) is False
+
+
+@pytest.mark.asyncio
+async def test_await_session_settled_does_not_accept_a_session_that_never_ran(monkeypatch):
+    """#1572: a session is CREATED at ``idle``, which is in the settled tuple.
+
+    When its prompt never lands — ``send_prompt`` returns "draining" for the whole
+    of a deploy drain — it stays there, and a status-only poll called it settled
+    13 ms after spawn, harvested an empty transcript, and logged
+    ``pm_classify.parse_failed`` (109 occurrences in production). ``last_turn_at``
+    is the fact the status lacks: ``_persist_status`` sets it only when a turn
+    hands output back (ACTIVITY_STATUSES), and ``server/sessions/status.py``
+    documents ``idle`` as "never ran"."""
+    orch = _bare_orch()
+    polls = 0
+
+    def _idle_never_prompted(sid):
+        nonlocal polls
+        polls += 1
+        return _rec(sid, "idle", ran=False)
+
+    orch.get_session = _idle_never_prompted
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._await_session_settled("s1", attempts=3, interval_s=0.0) is False
+    assert polls == 3  # it WAITED out the budget, it did not answer on first look
+
+
+@pytest.mark.asyncio
+async def test_await_session_settled_accepts_the_turn_the_moment_it_lands(monkeypatch):
+    """The wait ends when the session is settled AND has a finished turn — the
+    drain case recovers on its own once the daemon comes back and resumes it."""
+    orch = _bare_orch()
+    seq = [("idle", False), ("in_progress", False), ("done", True)]
+
+    def _next(sid):
+        status, ran = seq.pop(0)
+        return _rec(sid, status, ran=ran)
+
+    orch.get_session = _next
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._await_session_settled("s1", attempts=10, interval_s=0.0) is True
+    assert seq == []
+
+
+@pytest.mark.asyncio
+async def test_await_session_settled_gives_up_at_once_on_a_terminal_no_turn(monkeypatch):
+    """``ended``/``archived`` with no finished turn is definitive: nothing will
+    ever run under this id, so spending the rest of the budget (30 min for
+    classify, 2 h for materialize) only delays the same answer."""
+    orch = _bare_orch()
+    polls = 0
+
+    def _archived(sid):
+        nonlocal polls
+        polls += 1
+        return _rec(sid, "archived", ran=False)
+
+    orch.get_session = _archived
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._await_session_settled("s1", attempts=30, interval_s=0.0) is False
+    assert polls == 1
 
 
 @pytest.mark.asyncio
@@ -1720,7 +1882,7 @@ async def test_materialize_chain_ingest_swallows_ingest_failures(db_env, monkeyp
     """An exception inside the chained task must never escape — the task is
     fire-and-forget, so an escape is an unretrievable 'never retrieved' log."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="complete")
+    orch.get_session = lambda sid: _rec(sid, "complete")
     orch._sdlc_synth_ctx = FakeAutomationContext()
 
     async def boom(*a, **k):
@@ -1744,7 +1906,7 @@ async def test_materialize_chain_ingest_certifies_only_a_real_proposal(db_env, m
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     for written, expected in ((1, ["s1"]), (0, [])):
         orch = _bare_orch()
-        orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+        orch.get_session = lambda sid: _rec(sid, "done")
         orch._sdlc_synth_ctx = FakeAutomationContext()
         orch._sdlc_materialize_ingest = _mk_async(written)
         certified = []
@@ -2189,7 +2351,7 @@ async def test_materialize_chain_ingest_spends_the_settle_budget(db_env, monkeyp
     def _never_settles(sid):
         nonlocal polls
         polls += 1
-        return SimpleNamespace(id=sid, status="running")
+        return _rec(sid, "running")
 
     orch.get_session = _never_settles
     import asyncio as _a
