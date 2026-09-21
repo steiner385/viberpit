@@ -1,7 +1,7 @@
 """Product automation policy (spec 2026-09-12-product-automation-policy-design §4): the ONE
 schema (`PRODUCT_POLICY_SCHEMA`) and the ONE validated reading (`effective_policy`) for every
 product's automation knobs — whether the Backlog Runner dispatches for it, how far down its
-board it reaches, its pin and cap mode, its attempt cap, its session model.
+board it reaches, its pin, cap mode and pipeline cap, its attempt cap, its session model.
 
 `triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
 `give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8). `risk_tolerance`,
@@ -70,6 +70,17 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="auto: the capacity governor sets this product's cap from the fleet's "
                      "real headroom and its rank. pinned: the pin is a hard cap the governor "
                      "respects."),
+    # Spec 2026-09-20 D13 (C23): the pin bounds SESSIONS, not PRs in CI — once PR
+    # Doctor covers a repo a slot frees at hand-off, so a fast-claiming product
+    # can stack any number of PRs in CI. This caps the product's OPEN, UNMERGED
+    # automation PRs (counted from the runner's durable target states: every row
+    # except gave_up and token-less handed_off, i.e. the same rule as the
+    # per-repo fairness load). Blank = unlimited; 0 refuses every new claim.
+    ConfigField(key="max_pipeline_prs", label="Pipeline cap", type="int", default=None, min=0,
+                nullable=True, surface="capacity",
+                help="Most automation PRs this product may have open and unmerged at once, "
+                     "counting PRs handed off to PR Doctor. A full pipeline refuses new "
+                     "claims so a fast-claiming product cannot stack CI."),
     # Deprecated (spec 2026-09-20 D6, removal #2103): rank is the one priority
     # mechanism; the ``weighted`` selection strategy now orders by rank. Kept in
     # the schema for one release so a stored row still validates.

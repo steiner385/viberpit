@@ -110,6 +110,23 @@ def test_config_field_publishes_deprecated_default_false():
                        deprecated=True).to_dict()["deprecated"] is True
 
 
+def test_nullable_field_accepts_none_and_skips_the_floor():
+    """Spec 2026-09-20 D13: a blank pipeline cap is a real None (unlimited), not 0.
+    ``nullable`` is published like ``surface`` and ``deprecated``; a non-nullable
+    int still rejects None."""
+    from server.automations.base import ConfigField, validate_config
+    nullable = ConfigField(key="cap", label="Cap", type="int", default=None, min=0, nullable=True)
+    strict = ConfigField(key="n", label="N", type="int", default=1, min=0)
+    assert nullable.to_dict()["nullable"] is True and strict.to_dict()["nullable"] is False
+    assert validate_config([nullable], {"cap": None}) == {"cap": None}
+    assert validate_config([nullable], {}) == {"cap": None}
+    assert validate_config([nullable], {"cap": 3}) == {"cap": 3}
+    with pytest.raises(ValueError, match="below the minimum"):
+        validate_config([nullable], {"cap": -1})
+    with pytest.raises(ValueError, match="expected int"):
+        validate_config([strict], {"n": None})
+
+
 def test_status_to_dict():
     from server.automations.base import AutomationStatus
     s = AutomationStatus(text="watching 3 PRs", level="active", counts={"failing": 3})

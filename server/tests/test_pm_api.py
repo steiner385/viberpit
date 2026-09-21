@@ -344,6 +344,13 @@ def test_policy_schema_and_project_policy_round_trip():
         assert fields["capacity_mode"]["surface"] == "capacity"
         assert fields["capacity_mode"]["label"] == "Cap mode"
         assert fields["weight"]["deprecated"] is True
+        # Spec 2026-09-20 D13: the pipeline cap is nullable (blank = unlimited),
+        # Capacity-owned, floor 0.
+        assert fields["max_pipeline_prs"]["label"] == "Pipeline cap"
+        assert fields["max_pipeline_prs"]["default"] is None
+        assert fields["max_pipeline_prs"]["nullable"] is True
+        assert fields["max_pipeline_prs"]["min"] == 0
+        assert fields["max_pipeline_prs"]["surface"] == "capacity"
         assert fields["dispatch"]["surface"] == "config"
         assert fields["dispatch"]["deprecated"] is False
         # ``max_attempts`` is retired (plan 4a task 2): the ladder climbs on a
@@ -376,6 +383,20 @@ def test_policy_schema_and_project_policy_round_trip():
         assert r.status_code == 200, r.text
         pol2 = r.json()["automationPolicy"]
         assert pol2["weight"] == 4
+
+        # Spec 2026-09-20 D13: the pipeline cap is nullable — a blank value is a
+        # real None (unlimited), not coerced to 0; a negative cap still 422s.
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"max_pipeline_prs": 6}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["automationPolicy"]["max_pipeline_prs"] == 6
+        pol3 = r.json()["automationPolicy"]
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"max_pipeline_prs": None}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["automationPolicy"]["max_pipeline_prs"] is None
+        pol4 = r.json()["automationPolicy"]
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"max_pipeline_prs": -1}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 422
 
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"dispatch": "turbo"}},
                     headers=IDENTITY_HEADERS)
@@ -418,10 +439,11 @@ def test_policy_schema_and_project_policy_round_trip():
                 return (await db.execute(select(AuditEvent).where(
                     AuditEvent.type == "pm.project.policy"))).scalars().all()
         found = c.portal.call(_audits)
-        # Four accepted writes: the auto/2 policy, the deprecated-weight patch,
-        # the paused (0) one and the clear. The four rejected ones (bad enum,
-        # unknown key, below-minimum int, unknown slug) write nothing.
-        assert [a.detail["policy"] for a in found] == [pol, pol2, paused, None]
+        # Six accepted writes: the auto/2 policy, the deprecated-weight patch,
+        # the pipeline-cap set (6) and clear (None), the paused (0) one and the
+        # clear. The rejected ones (bad enum, unknown key, below-minimum ints,
+        # unknown slug) write nothing.
+        assert [a.detail["policy"] for a in found] == [pol, pol2, pol3, pol4, paused, None]
         assert {a.detail["slug"] for a in found} == {"kindash"}
         assert {a.identity for a in found} == {IDENTITY_HEADERS["Tailscale-User-Login"]}
 
