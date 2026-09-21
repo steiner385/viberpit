@@ -158,3 +158,25 @@ def test_preview_scope_and_policy_revision():
 def test_continued_work_is_not_admission():
     assert decision(starts_new_session=False).state == "unknown"
     assert decision(effect="proposal", starts_new_session=False).permitted
+
+
+def test_pr_doctor_priority_refuses_a_new_claim_only():
+    """spec 2026-09-21: PR Doctor priority never touches an existing_slot
+    claim (D8), but refuses a brand new one for a gated product."""
+    gated_new = decision(pr_doctor_gated=True)
+    assert gated_new.state == "refused"
+    assert any(c.code == "pr_doctor_priority" and c.state == "refused"
+               for c in gated_new.constraints)
+
+    gated_held = decision(pr_doctor_gated=True, existing_slot=True)
+    assert gated_held.permitted
+    assert any(c.code == "pr_doctor_priority_held" and c.state == "permitted"
+               for c in gated_held.constraints)
+    assert not any(c.code == "pr_doctor_priority" for c in gated_held.constraints)
+
+
+def test_pr_doctor_priority_absent_when_not_gated():
+    result = decision(pr_doctor_gated=False)
+    codes = {c.code for c in result.constraints}
+    assert "pr_doctor_priority" not in codes
+    assert "pr_doctor_priority_held" not in codes
