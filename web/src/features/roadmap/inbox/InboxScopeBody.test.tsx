@@ -19,12 +19,14 @@ import { ViewportProvider } from '@/shell/useViewport'
 const accept = vi.fn()
 const reject = vi.fn()
 const bulk = vi.fn()
+const bulkReject = vi.fn()
 const undo = vi.fn()
 const rejectDecision = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: accept, isPending: false }),
   useRejectProposal: () => ({ mutate: reject, isPending: false }),
   useAcceptBulk: () => ({ mutate: bulk, isPending: false }),
+  useRejectBulk: () => ({ mutate: bulkReject, isPending: false }),
   useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
   useTriageLive: () => undefined,
   // ProposalCard's own undo control (auto-accept chip) — mocked here too since
@@ -85,7 +87,7 @@ const scrollIntoView = vi.fn()
 
 describe('InboxScopeBody', () => {
   beforeEach(() => {
-    accept.mockReset(); reject.mockReset(); bulk.mockReset(); undo.mockReset()
+    accept.mockReset(); reject.mockReset(); bulk.mockReset(); bulkReject.mockReset(); undo.mockReset()
     rejectDecision.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
@@ -211,6 +213,84 @@ describe('InboxScopeBody', () => {
     mount()
     fireEvent.keyDown(window, { key: 'A' })
     expect(bulk).not.toHaveBeenCalled()
+  })
+
+  it('R rejects exactly the selection, and the bar has the same button', () => {
+    mount()
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'R' })
+    expect(bulkReject).toHaveBeenCalledTimes(1)
+    expect(bulkReject.mock.calls[0][0]).toEqual(['First', 'Third'])
+    // Neither sweep reached the other endpoint.
+    expect(bulk).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Reject selected/ }))
+    expect(bulkReject).toHaveBeenCalledTimes(2)
+  })
+
+  it('R with nothing selected rejects nothing', () => {
+    mount()
+    fireEvent.keyDown(window, { key: 'R' })
+    expect(bulkReject).not.toHaveBeenCalled()
+  })
+
+  it('Select all ticks every selectable row, and again clears them', () => {
+    mount()
+    const all = screen.getByRole('checkbox', { name: 'Select all' })
+    expect(screen.getByText('Select all (3)')).toBeInTheDocument()
+    expect(all).not.toBeChecked()
+    fireEvent.click(all)
+    expect(all).toBeChecked()
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+    // What it ticked is what a sweep sends, in rendered order.
+    fireEvent.keyDown(window, { key: 'A' })
+    expect(bulk.mock.calls[0][0]).toEqual(['First', 'Third', 'Second'])
+    fireEvent.click(all)
+    expect(all).not.toBeChecked()
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull()
+  })
+
+  it('Select all is indeterminate with a partial selection, and follows the search', () => {
+    mount()
+    const all = screen.getByRole('checkbox', { name: 'Select all' }) as HTMLInputElement
+    fireEvent.keyDown(window, { key: 'x' })
+    expect(all.indeterminate).toBe(true)
+    expect(all).not.toBeChecked()
+    // Narrowed to one row that is already ticked: the header reads "all".
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search inbox' }),
+                     { target: { value: 'First' } })
+    expect(screen.getByText('Select all (1)')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Select all' })).toBeChecked()
+  })
+
+  it('Select all skips rows that are not pending, and is absent with none to select', () => {
+    const { rerender } = mount({ proposals: [
+      p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }),
+      p({ id: 'Second' }),
+    ] })
+    expect(screen.getByText('Select all (1)')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }))
+    fireEvent.keyDown(window, { key: 'A' })
+    expect(bulk.mock.calls[0][0]).toEqual(['Second'])
+    rerender({ proposals: [
+      p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }),
+    ] })
+    expect(screen.queryByRole('checkbox', { name: 'Select all' })).toBeNull()
+  })
+
+  it('shift-click on a row tick selects the range from the last plain tick', () => {
+    // Rendered order is First, Third | Second: a plain tick on First and a
+    // shift-tick on Second sweep Third in between.
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Select First' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Select Second' }), { shiftKey: true })
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select Third' })).toHaveAttribute('aria-pressed', 'true')
+    // A shift-click with nothing ticked before is a plain tick.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Select Third' }), { shiftKey: true })
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
   })
 
   it('the per-row checkbox is the pointer parity for x', () => {
@@ -362,14 +442,24 @@ describe('InboxScopeBody', () => {
       expect(screen.queryByText(/open ·/)).toBeNull()
     })
 
-    it('x and e are inert on a decision, so A can never send one to accept-bulk', () => {
+    it('x and e are inert on a decision, so A/R can never send one to a bulk sweep', () => {
       const { onOpen } = mount({ proposals: MIXED })
       fireEvent.keyDown(window, { key: 'x' })
       fireEvent.keyDown(window, { key: 'e' })
       expect(screen.queryByRole('button', { name: /Accept selected/ })).toBeNull()
       expect(onOpen).not.toHaveBeenCalled()
       fireEvent.keyDown(window, { key: 'A' })
+      fireEvent.keyDown(window, { key: 'R' })
       expect(bulk).not.toHaveBeenCalled()
+      expect(bulkReject).not.toHaveBeenCalled()
+    })
+
+    it('Select all counts and ticks only the classification rows', () => {
+      mount({ proposals: MIXED })
+      expect(screen.getByText('Select all (1)')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }))
+      fireEvent.keyDown(window, { key: 'R' })
+      expect(bulkReject.mock.calls[0][0]).toEqual(['First'])
     })
 
     it('a bulk sweep carries only the classification rows', () => {

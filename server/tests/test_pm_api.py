@@ -1591,6 +1591,124 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         assert second == ("unclassified", "pending")    # rolled back to itself only
 
 
+def test_reject_bulk_parks_every_id_and_reports_per_id():
+    """reject-bulk runs the SAME park-with-owner-action-hold path as single-reject
+    (one helper, not a second copy) and reports per-id outcomes in a 200
+    aggregate — an unknown id and an already-decided id are that id's failure,
+    never the batch's."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        pid1, wid1 = _seed_one_pending(c, feature_slug="sessions", number=1)
+        pid2, wid2 = _seed_one_pending(c, no_fit_suggestion="billing", number=2)
+
+        r = c.post("/api/pm/triage/reject-bulk",
+                   json={"ids": [pid1, pid2, "ghost"]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rejected"] == 2
+        by_id = {x["id"]: x for x in body["results"]}
+        assert by_id[pid1] == {"id": pid1, "ok": True}
+        assert by_id[pid2] == {"id": pid2, "ok": True}
+        assert by_id["ghost"] == {"id": "ghost", "ok": False, "error": "not_found"}
+
+        # A second sweep over a decided id is `not_pending`, not a 409 or a 500.
+        r2 = c.post("/api/pm/triage/reject-bulk", json={"ids": [pid1]},
+                    headers=IDENTITY_HEADERS)
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["rejected"] == 0
+        assert r2.json()["results"] == [{"id": pid1, "ok": False, "error": "not_pending"}]
+
+        # Both items carry the rejecting PERSON's owner-action hold, exactly as a
+        # single reject leaves them — read back through the overlay read-through.
+        for wid in (wid1, wid2):
+            wi = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                         headers=IDENTITY_HEADERS)
+            assert wi.status_code == 200, wi.text
+            assert wi.json()["holdKind"] == "owner_action"
+            assert wi.json()["holdBy"] == "testuser@example.com"
+
+        async def _check():
+            async with db_session() as db:
+                props = {p.id: p for p in (await db.execute(
+                    select(TriageProposal).where(
+                        TriageProposal.id.in_([pid1, pid2])))).scalars().all()}
+                items = {w.id: w for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.id.in_([wid1, wid2])))).scalars().all()}
+                sweep = (await db.execute(select(AuditEvent.detail).where(
+                    AuditEvent.type == "pm.triage.reject_bulk"))).scalars().all()
+                return props, items, sweep
+        props, items, sweep = c.portal.call(_check)
+        for pid, wid in ((pid1, wid1), (pid2, wid2)):
+            assert props[pid].status == "rejected"
+            assert props[pid].resolved_at is not None
+            # The undo snapshot is taken, so the sweep's toast can take it back.
+            assert props[pid].undo_snapshot is not None
+            assert items[wid].hold_kind == "owner_action"
+        # One sweep audit naming what landed vs what was asked for; the failed
+        # second sweep landed nothing.
+        assert [s["proposalIds"] for s in sweep] == [[pid1, pid2], []]
+        assert sweep[0]["requestedIds"] == [pid1, pid2, "ghost"]
+        assert sweep[0]["rejected"] == 2
+
+        # …and both have left the pending queue.
+        listed = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert listed.status_code == 200
+        assert [i["id"] for i in listed.json()] == []
+
+
+def test_reject_bulk_one_failure_does_not_roll_back_the_batch():
+    """The reject twin of the accept-bulk savepoint guard: one id blowing up
+    mid-write is reported as that id's ``failed`` and its partial work is
+    discarded, while the sibling id's rejection stays committed."""
+    from sqlalchemy import select
+
+    from server.api import pm as pm_api
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        pid1, wid1 = _seed_one_pending(c, feature_slug="sessions", number=1)
+        pid2, wid2 = _seed_one_pending(c, feature_slug="queue", number=2)
+
+        real_apply = pm_api.apply_reject
+
+        async def _flaky(db, prop, **kw):
+            # Mutate first, THEN blow up: the savepoint must discard this id's
+            # hold and status flip while leaving the sibling's committed.
+            await real_apply(db, prop, **kw)
+            if prop.id == pid2:
+                raise RuntimeError("boom")
+
+        with patch.object(pm_api, "apply_reject", _flaky):
+            r = c.post("/api/pm/triage/reject-bulk",
+                       json={"ids": [pid1, pid2]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rejected"] == 1
+        by_id = {x["id"]: x for x in body["results"]}
+        assert by_id[pid1] == {"id": pid1, "ok": True}
+        assert by_id[pid2] == {"id": pid2, "ok": False, "error": "failed"}
+
+        async def _check():
+            async with db_session() as db:
+                items = {w.id: w for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.id.in_([wid1, wid2])))).scalars().all()}
+                props = {p.id: p for p in (await db.execute(
+                    select(TriageProposal).where(
+                        TriageProposal.id.in_([pid1, pid2])))).scalars().all()}
+                return ((items[wid1].hold_kind, props[pid1].status),
+                        (items[wid2].hold_kind, props[pid2].status))
+        first, second = c.portal.call(_check)
+        assert first == ("owner_action", "rejected")   # survived the sibling's failure
+        assert second == (None, "pending")             # rolled back to itself only
+
+
 def _delete_work_item(c, work_item_id):
     """Drop the WorkItem row out from under a still-pending proposal.
 

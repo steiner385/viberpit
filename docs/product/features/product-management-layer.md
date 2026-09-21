@@ -613,7 +613,7 @@ origins' audited engine ceilings and their operator-triggered `modes = ()` decla
 `server/pm/repo_project.py` (the one repo→project resolver); `server/pm/score.py`
 (`rice_score` + `validate_rice` — the RICE formula and its input bounds in one place);
 `server/api/pm.py` (project registry, sync-now, edges, `/onboarding`, `/propose-map`, `/classify`,
-`/triage` accept/reject/accept-bulk/undo, `/work-items/{id}/overlay`);
+`/triage` accept/reject/accept-bulk/reject-bulk/undo, `/work-items/{id}/overlay`);
 `web/src/features/roadmap/RoadmapPage.tsx` (the portfolio / product / capability detail levels,
 with `OnboardingWizard` and `DependencyPanel` mounted as product tabs),
 `web/src/features/roadmap/RoadmapListColumn.tsx` (the Map, Initiatives and Inbox list scopes),

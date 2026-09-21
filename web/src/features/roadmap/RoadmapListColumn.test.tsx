@@ -15,6 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useRejectProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useAcceptBulk: () => ({ mutate: vi.fn(), isPending: false }),
+  useRejectBulk: () => ({ mutate: vi.fn(), isPending: false }),
   useRejectDecision: () => ({ mutate: vi.fn(), isPending: false }),
   useTriageLive: () => undefined,
   useUndoProposal: () => ({ mutate: vi.fn(), isPending: false }),
