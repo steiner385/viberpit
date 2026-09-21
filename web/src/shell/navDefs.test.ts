@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { NAV_DEFS, NAV_BY_ID, navDefForPath, settingsSectionPath } from './navDefs'
+import { NAV_DEFS, NAV_BY_ID, isKioskSafePath, navDefForPath, settingsSectionPath } from './navDefs'
 
 describe('navDefs', () => {
   // Was 'preserves the legacy tab order and labels'. The legacy order survived
@@ -78,6 +78,19 @@ describe('navDefs', () => {
   it('marks exactly the verified read-only sections kiosk-safe', () => {
     const inKiosk = NAV_DEFS.filter((d) => d.showInKiosk).map((d) => d.id)
     expect(inKiosk).toEqual(['pipeline'])
+  })
+
+  // The scope-level claim (#1551): Delivery's CI health scope is read-only, its
+  // Automations scope (and the capacity scope) is not.
+  it('admits only the Delivery CI-health scope through kioskSafe', () => {
+    expect(isKioskSafePath('/delivery', '?scope=ci')).toBe(true)
+    expect(isKioskSafePath('/delivery/ci/o/r', '')).toBe(true)
+    expect(isKioskSafePath('/delivery', '')).toBe(false)
+    expect(isKioskSafePath('/delivery', '?scope=capacity')).toBe(false)
+    expect(isKioskSafePath('/delivery/automations/pr-doctor', '?scope=ci')).toBe(false)
+    expect(isKioskSafePath('/pipeline', '')).toBe(true)
+    expect(isKioskSafePath('/sessions', '?scope=ci')).toBe(false)
+    expect(NAV_DEFS.filter((d) => d.kioskSafe).map((d) => d.id)).toEqual(['delivery'])
   })
 
   it('NAV_BY_ID indexes every entry', () => {
