@@ -17,10 +17,12 @@ def _host(name, active, max):
     return HostCapacity(name=name, enabled=True, healthy=True, active=active, max=max)
 
 
-def _prod(slug, rank, eligible, in_flight=0, mode="auto", pin=1, dispatch="auto"):
+def _prod(slug, rank, eligible, in_flight=0, mode="auto", pin=1, dispatch="auto",
+          pipeline=0, pipeline_cap=None):
     return ProductCapacity(slug=slug, rank=rank, created_at="2026-01-01T00:00:00+00:00",
                            dispatch=dispatch, capacity_mode=mode, pin=pin,
-                           in_flight=in_flight, eligible=eligible)
+                           in_flight=in_flight, eligible=eligible,
+                           pipeline=pipeline, pipeline_cap=pipeline_cap)
 
 
 def _inputs(**overrides):
@@ -188,3 +190,31 @@ def test_push_level_of_normalises_the_governor_config():
     assert push_level_of({"push_level": "bogus"}) == "steady"
     assert push_level_of({}) == "steady"
     assert plan_from_dict({"pushLevel": "bogus"}).push_level == "steady"
+
+
+def test_pipeline_full_product_keeps_its_floor_and_gives_slots_to_the_next_rank():
+    """Spec 2026-09-20 D13 / §9: a pipeline-full product is planned as eligible 0 —
+    its cap is its in-flight count — and the slots it would have taken go to the
+    next rank; the budget and reasons say so."""
+    i = _inputs(products=(_prod("kindash", 1, 50, in_flight=1, pipeline=6, pipeline_cap=6),
+                          _prod("viberpit", 2, 30, pipeline=1, pipeline_cap=8),
+                          _prod("ghostdriver", 3, 5)))
+    plan = plan_capacity(i, push_level="max")           # fleet 6 (runner ceiling)
+    assert plan.per_product["kindash"] == 1             # floor only
+    # A fresh plan (no `previous`) parks any auto product's round-robin value
+    # that differs from its pin in `pending`, confirmed on the NEXT tick (D8
+    # hysteresis, unrelated to this task) — so the redistributed slots show up
+    # in `pending`, not yet in `per_product`.
+    assert plan.pending["viberpit"] + plan.pending["ghostdriver"] == 5
+    assert plan.budget["pipeline"] == {"kindash": {"open": 6, "cap": 6},
+                                       "viberpit": {"open": 1, "cap": 8}}
+    assert "kindash: pipeline full (6/6 PRs open), its slots go to the next rank" in plan.reasons
+
+
+def test_blank_pipeline_cap_changes_nothing():
+    base = plan_capacity(_inputs(), push_level="max")
+    with_zero_count = plan_capacity(_inputs(products=(
+        _prod("kindash", 1, 50, pipeline=40), _prod("viberpit", 2, 30), _prod("ghostdriver", 3, 5))),
+        push_level="max")
+    assert with_zero_count.per_product == base.per_product
+    assert with_zero_count.budget["pipeline"] == {}

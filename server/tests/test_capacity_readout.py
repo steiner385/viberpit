@@ -24,7 +24,8 @@ _ACCOUNT_ROWS = [
 ]
 
 _PRODUCTS = [{"slug": "viberpit", "name": "ViberPit", "priorityRank": 1,
-              "createdAt": "2026-09-01", "policy": {"dispatch": "auto"}, "primaryRepo": "o/r"}]
+              "createdAt": "2026-09-01",
+              "policy": {"dispatch": "auto", "max_pipeline_prs": 3}, "primaryRepo": "o/r"}]
 
 _CANDIDATES = (10, 0, 0, {"viberpit": {"dispatch": "auto", "eligible": 10, "cap": 1}})
 
@@ -527,3 +528,31 @@ def test_readout_hands_the_push_level_to_the_account_seam_and_keeps_each_rows_re
     assert seen["level"] == "max"
     assert r["accounts"]["reservePct"] == 5
     assert [row["reservePct"] for row in r["accounts"]["rows"]] == [60, 20]
+
+
+def test_readout_publishes_the_pipeline_count_cap_and_repo():
+    """Spec 2026-09-20 §7/§9: products[].pipeline counts every row that
+    counts_toward_pipeline (handed-off rows included, gave_up and token-less
+    handed_off excluded), pipelineCap is the policy's max_pipeline_prs (None when
+    blank), primaryRepo rides along for the Waiting-on link."""
+    states = {
+        "o/r#1": {"product": "viberpit", "session_id": "s1", "ownership_token": "t1"},
+        "o/r#2": {"product": "viberpit", "session_id": "s2", "ownership_token": "t2", "handed_off": True},
+        "o/r#3": {"product": "viberpit", "handed_off": True},                 # no token: excluded
+        "o/r#4": {"product": "viberpit", "gave_up": True},                     # terminal: excluded
+    }
+
+    async def live(_sid):
+        return "running"          # a live session: no defect for the token-bearing rows
+
+    async def run():
+        return await build_readout(_make_sources(
+            products=_PRODUCTS, target_states=states, session_status=live))
+
+    r = asyncio.run(run())
+    row = r["products"][0]
+    assert row["pipeline"] == 2
+    assert row["pipelineCap"] == 3
+    assert row["primaryRepo"] == "o/r"
+    inputs = readout_to_inputs(r)
+    assert inputs.products[0].pipeline == 2 and inputs.products[0].pipeline_cap == 3

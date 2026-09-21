@@ -141,3 +141,16 @@ def test_pipeline_count_unknown_when_states_are_unreadable():
                                                 None, {})
     decision, _ = snapshot.decide("org/repo")
     assert {c.code for c in decision.constraints} >= {"product_pipeline_unknown"}
+
+
+def test_pipeline_cap_zero_refuses_every_new_claim():
+    """A blank ``max_pipeline_prs`` is never (checked above); ``0`` is a real cap
+    that refuses every new claim on an otherwise-empty pipeline — pins that
+    blank != 0 (carried item C, spec 2026-09-20 D13)."""
+    cov = _coverage({"dispatch": "auto", "max_in_flight": 9, "max_pipeline_prs": 0})
+    snapshot = admission.ImplementationSnapshot(cov, "on", {"max_concurrent": 9, "max_spawns_per_day": 99},
+                                                {}, {})
+    decision, _ = snapshot.decide("org/repo")
+    codes = {c.code: c for c in decision.constraints}
+    assert not decision.permitted and codes["product_pipeline_full"].state == "refused"
+    assert codes["product_pipeline_full"].text == "pipeline full: 0 PRs open (cap 0)"
