@@ -1,0 +1,58 @@
+# Drop-in gate for another product repo's docs/product/features/*.md (issue
+# #2166). Reference it from that repo's own workflow:
+#
+#   jobs:
+#     feature-docs:
+#       uses: steiner385/viberpit/.github/workflows/feature-doc-lint-reusable.yml@master
+#
+# The `lint feature-docs` CLI subcommand is not itself installable standalone
+# — the `server` package (server/pm/featuredoc_lint.py, the validator) is not
+# part of the packaged CLI distribution (pyproject.toml only packages the CLI
+# sources), by design: it is the SAME parser/planner pm-sync runs, not a copy
+# of it. So this workflow checks out ViberPit alongside the caller's repo and
+# puts it on PYTHONPATH rather than trying to pip-install the check in isolation.
+name: feature-doc-lint (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      docs-repo-path:
+        description: >-
+          Path (relative to the caller's checkout) to lint. Defaults to the
+          repo root, i.e. it looks for docs/product/features/ there.
+        required: false
+        type: string
+        default: "."
+      viberpit-ref:
+        description: "ViberPit ref to check out the validator from."
+        required: false
+        type: string
+        default: "master"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+
+      - name: Check out ViberPit (validator source)
+        uses: actions/checkout@v4
+        with:
+          repository: steiner385/viberpit
+          ref: ${{ inputs.viberpit-ref }}
+          path: .viberpit-lint
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the validator's dependencies
+        working-directory: .viberpit-lint
+        run: pip install -e ".[server]"
+
+      - name: Lint feature docs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.viberpit-lint
+          DOCS_REPO_PATH: ${{ inputs.docs-repo-path }}
+        run: ccswitch lint feature-docs "$DOCS_REPO_PATH"

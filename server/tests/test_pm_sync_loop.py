@@ -63,6 +63,7 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     saved = []
     upserted = []
     applied = []
+    unindexed_saved = []
 
     async def read_config():
         return "on", dict(config or {})
@@ -88,14 +89,21 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def apply_plan(project_id, plan):
         applied.append((project_id, plan))
 
+    async def save_unindexed(project_id, pairs):
+        unindexed_saved.append((project_id, pairs))
+
     loop = PmSyncLoop(
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
         upsert_items=upsert, save_sync_state=save,
         read_feature_docs=read_feature_docs or read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
         now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+        save_unindexed_docs=save_unindexed,
         rename_repo=rename_repo, read_map_changes=read_map_changes,
         refresh_map_changes=refresh_map_changes)
+    # Not part of the 4-tuple every existing caller unpacks — tests that care
+    # about the persisted unindexed-docs list read it off the loop instance.
+    loop.unindexed_saved = unindexed_saved
     return loop, saved, upserted, applied
 
 
@@ -474,6 +482,43 @@ async def test_a_changed_skip_set_reports_immediately():
     skips = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
     assert len(skips) == 2
     assert "worse.md" in skips[1]
+
+
+@pytest.mark.asyncio
+async def test_skipped_docs_are_persisted_onto_the_project_row():
+    """Issue #2166: roadmap_health reads Project.unindexed_docs, so a skipped
+    doc must be saved as structured (path, error) pairs, not just logged."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    docs = [("docs/product/features/bad.md", "---\nslug: bad\n")]
+
+    loop, _saved, _upserted, _applied = _loop(ctx, [view], pages, feature_docs=docs)
+    await loop.tick()
+
+    (project_id, pairs) = loop.unindexed_saved[-1]
+    assert project_id == "p1"
+    assert pairs == [("docs/product/features/bad.md", "unterminated frontmatter fence")]
+
+
+@pytest.mark.asyncio
+async def test_a_fixed_doc_clears_the_persisted_unindexed_list():
+    """A doc that stops being broken must clear the project row the same
+    pass, not leave it stale until something else happens to rewrite it."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)] * 2
+    docs = [("docs/product/features/bad.md", "---\nslug: bad\n")]
+
+    loop, _saved, _upserted, _applied = _loop(ctx, [view], pages, feature_docs=docs)
+    await loop.tick()
+    assert loop.unindexed_saved[-1][1] != []
+
+    docs[0] = ("docs/product/features/bad.md", _fdoc("bad", "Bad"))
+    await loop.tick()
+    assert loop.unindexed_saved[-1][1] == []
 
 
 @pytest.mark.asyncio

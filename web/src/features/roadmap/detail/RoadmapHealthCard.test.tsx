@@ -28,6 +28,7 @@ describe('RoadmapHealthCard', () => {
         unlinkedInitiatives: [],
         staleProposed: ['flaky-test-triage'],
         staleInbox: 3,
+        unindexedDocs: [],
         generatedAt: 'x',
       },
     })
@@ -53,6 +54,7 @@ describe('RoadmapHealthCard', () => {
         unlinkedInitiatives: [],
         staleProposed: [],
         staleInbox: 0,
+        unindexedDocs: [],
         generatedAt: 'x',
       },
     })
@@ -64,5 +66,24 @@ describe('RoadmapHealthCard', () => {
     Object.assign(health, { data: undefined, isLoading: true })
     const { container } = mount()
     expect(container.firstChild).toBeNull()
+  })
+
+  it('lists unparseable feature docs even when every other field is empty', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [
+          { path: 'docs/product/features/bad.md', error: 'unterminated frontmatter fence' },
+        ],
+        generatedAt: 'x',
+      },
+    })
+    mount()
+    expect(screen.getByText('Roadmap hygiene')).toBeInTheDocument()
+    expect(screen.getByText(/1 feature doc could not be parsed/)).toBeInTheDocument()
+    expect(screen.getByText('docs/product/features/bad.md')).toBeInTheDocument()
   })
 })
