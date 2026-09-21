@@ -21,6 +21,7 @@ from ccswitch import gitrepos
 from server.aio import cancel_and_reap
 from server.github import app_auth
 from .api_budget import PriorityGate
+from .host_failures import log_gh_failure
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
@@ -112,10 +113,11 @@ def _supplement_env_deployments(response: dict, repo: str, token: str | None) ->
                 proc.stderr.strip() or "gh api graphql (env deployments) failed"
             )
         env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
-    except Exception:
-        log.warning(
-            "pr_population.env_supplement_failed repo=%s envs=%s",
-            repo, missing, exc_info=True,
+    except Exception as exc:
+        log_gh_failure(
+            log, str(exc),
+            "pr_population.env_supplement_failed repo='%s' envs='%s'",
+            repo, ",".join(missing), exc_info=True,
         )
         return
     merge_env_deployments(repo_node, env_data.get("r0") or {})

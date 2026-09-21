@@ -27,6 +27,7 @@ import re
 from typing import Callable, Iterable
 
 from ccswitch import brand, gitrepos
+from server.github.host_failures import log_gh_failure
 
 from . import backlog_deps
 
@@ -161,8 +162,10 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
         proc = gh_run(["api", "graphql", "-f", f"query={query}"],
                       token=gitrepos.app_token_for_owner(owner))
         if getattr(proc, "returncode", 1) != 0:
-            log.warning("backlog_github.verify_ready_failed owner=%s err=%s",
-                        owner, (getattr(proc, "stderr", "") or "").strip())
+            stderr = str(getattr(proc, "stderr", "") or "")
+            log_gh_failure(log, stderr,
+                           "backlog_github.verify_ready_failed owner='%s' err=%s",
+                           owner, stderr.strip())
             return None
         try:
             data = json.loads(getattr(proc, "stdout", "") or "{}").get("data")
@@ -235,8 +238,10 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
     proc = gh_run(["api", "graphql", "-f", f"query={query}"],
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.find_referencing_pr_failed ref=%s err=%s",
-                    ref, (getattr(proc, "stderr", "") or "").strip())
+        stderr = str(getattr(proc, "stderr", "") or "")
+        log_gh_failure(log, stderr,
+                       "backlog_github.find_referencing_pr_failed ref='%s' err=%s",
+                       ref, stderr.strip())
         return None
     try:
         payload = json.loads(getattr(proc, "stdout", "") or "{}")
@@ -317,8 +322,10 @@ def issue_state_live(ref: str, *, gh_run: GhRun = gitrepos._run_gh) -> str | Non
     proc = gh_run(["issue", "view", number, "--repo", repo, "--json", "state"],
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.issue_state_failed ref=%s err=%s",
-                    ref, (getattr(proc, "stderr", "") or "").strip())
+        stderr = str(getattr(proc, "stderr", "") or "")
+        log_gh_failure(log, stderr,
+                       "backlog_github.issue_state_failed ref='%s' err=%s",
+                       ref, stderr.strip())
         return None
     try:
         state = json.loads(getattr(proc, "stdout", "") or "{}").get("state")
@@ -442,8 +449,10 @@ def _pr_linkage(repo: str, pr_number: int, *, gh_run: GhRun) -> dict | None:
     proc = gh_run(["api", "graphql", "-f", f"query={query}"],
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.pr_linkage_failed repo=%s pr=%s err=%s",
-                    repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
+        stderr = str(getattr(proc, "stderr", "") or "")
+        log_gh_failure(log, stderr,
+                       "backlog_github.pr_linkage_failed repo='%s' pr=%s err=%s",
+                       repo, pr_number, stderr.strip())
         return None
     try:
         payload = json.loads(getattr(proc, "stdout", "") or "{}")
@@ -543,8 +552,10 @@ def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
     proc = gh_run(["api", "graphql", "-f", f"query={query}"],
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.issue_signals_failed ref=%s err=%s",
-                    ref, (getattr(proc, "stderr", "") or "").strip())
+        stderr = str(getattr(proc, "stderr", "") or "")
+        log_gh_failure(log, stderr,
+                       "backlog_github.issue_signals_failed ref='%s' err=%s",
+                       ref, stderr.strip())
         return None
     try:
         payload = json.loads(getattr(proc, "stdout", "") or "{}")
@@ -579,8 +590,10 @@ def _pr_changed_files(repo: str, pr_number: int, *, gh_run: GhRun) -> list[str] 
     proc = gh_run(["api", "graphql", "-f", f"query={query}"],
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.pr_files_failed repo=%s pr=%s err=%s",
-                    repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
+        stderr = str(getattr(proc, "stderr", "") or "")
+        log_gh_failure(log, stderr,
+                       "backlog_github.pr_files_failed repo='%s' pr=%s err=%s",
+                       repo, pr_number, stderr.strip())
         return None
     try:
         payload = json.loads(getattr(proc, "stdout", "") or "{}")

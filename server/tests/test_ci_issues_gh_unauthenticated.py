@@ -14,11 +14,13 @@ import subprocess
 
 import pytest
 
-from server.github import ci_issues
+from server.github import ci_issues, host_failures
 
-#: The classifier the module under test routes through; reached via ci_issues so
-#: the test exercises the same object the production path does.
-ghc = ci_issues.gh_credential
+#: The classifier the module under test routes through; reached via the module
+#: that owns the collapse so the test exercises the object the production path
+#: does. Cross-loop behaviour lives in ``test_gh_host_failures.py``; this file
+#: stays on ci_issues' four gh paths, the ones #2052 actually burned.
+ghc = host_failures.gh_credential
 
 STDERR_401 = "gh: Requires authentication (HTTP 401)"
 STDERR_UNAUTH_403 = (
@@ -30,9 +32,9 @@ STDERR_UNAUTH_403 = (
 @pytest.fixture(autouse=True)
 def _fresh_throttle():
     """The collapse window is module state; each test starts at first-sighting."""
-    ci_issues._HOST_CREDENTIAL_THROTTLE.clear()
+    host_failures._HOST_THROTTLE.clear()
     yield
-    ci_issues._HOST_CREDENTIAL_THROTTLE.clear()
+    host_failures._HOST_THROTTLE.clear()
 
 
 def _runner(*, rc=1, stderr="", stdout=""):

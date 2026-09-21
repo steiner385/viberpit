@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .host_failures import log_gh_failure
 from .pr_status import _DEPLOY_NODE_FIELDS, _alias
 
 log = logging.getLogger(__name__)
@@ -135,15 +136,24 @@ def fetch_deployments(repos: list[str], *, run=None) -> dict[str, list[Deploymen
     for token, group in groups.items():
         query = build_deployments_query(group)
         data: object = None
+        # The group is rendered as ONE quoted string, not as a list. `normalize()`
+        # masks a quoted run to `<str>`, so a list already collapsed its repo
+        # *names* — and #1923/#1924 still filed separately, differing by nothing
+        # but a four- vs five-element `repos=[<str>, <str>, …]`. Arity is as
+        # volatile as content when the group is "whichever repos share a token".
+        group_desc = ",".join(group)
         try:
             proc = runner(["api", "graphql", "-f", f"query={query}"], token=token)
             if getattr(proc, "returncode", 1) == 0:
                 data = json.loads(getattr(proc, "stdout", "") or "")
             else:
-                log.warning("github.deployments_fetch_failed repos=%s: %s", group,
-                            str(getattr(proc, "stderr", "")).strip())
+                stderr = str(getattr(proc, "stderr", "") or "")
+                log_gh_failure(log, stderr,
+                               "github.deployments_fetch_failed repos='%s': %s",
+                               group_desc, stderr.strip())
         except Exception:
-            log.warning("github.deployments_fetch_failed repos=%s", group, exc_info=True)
+            log.warning("github.deployments_fetch_failed repos='%s'", group_desc,
+                        exc_info=True)
         if not isinstance(data, dict):
             out.update({r: None for r in group})
             continue

@@ -34,6 +34,17 @@ STDERR_NOT_LOGGED_IN = (
     "Alternatively, populate the GH_TOKEN environment variable with a GitHub API "
     "authentication token."
 )
+# gh when the request never reached GitHub — byte-for-byte from the 2026-09-17
+# outage that was filed as five separate auto-errors (#1922-#1927).
+STDERR_UNREACHABLE = (
+    "error connecting to api.github.com\n"
+    "check your internet connection or https://githubstatus.com"
+)
+# GitHub's abuse/secondary limit, which names no subject at all.
+STDERR_SECONDARY_403 = (
+    "gh: You have exceeded a secondary rate limit. Please wait a few minutes "
+    "before you try again. (HTTP 403)"
+)
 
 
 class FakeClock:
@@ -88,10 +99,46 @@ def test_not_logged_in_latches_and_backs_off_like_the_401(health):
     assert health.allow_attempt() is False
 
 
-def test_does_not_classify_authenticated_over_limit():
-    """`for user ID N` means the token worked. Latching here would back off the
-    whole fleet for an ordinary busy hour."""
-    assert ghc.classify_gh_failure(STDERR_AUTHED_403) is None
+@pytest.mark.parametrize("stderr", [STDERR_AUTHED_403, STDERR_SECONDARY_403])
+def test_an_authenticated_over_limit_is_its_own_condition(stderr):
+    """`for user ID N` means the token worked — the opposite diagnosis from the
+    IP-shaped 403, and the entire reason `_RE_UNAUTH_RATE_LIMIT` carries a
+    negative lookahead. Naming it RATE_LIMITED keeps the log collapsible without
+    ever confusing it for a missing credential."""
+    assert ghc.classify_gh_failure(stderr) == ghc.RATE_LIMITED
+
+
+def test_classifies_a_transport_failure_as_unreachable():
+    assert ghc.classify_gh_failure(STDERR_UNREACHABLE) == ghc.UNREACHABLE
+
+
+def test_either_half_of_the_transport_message_is_enough():
+    """gh prints two lines and could reword one; matching them independently
+    means a rewrapped dial error still classifies."""
+    for half in STDERR_UNREACHABLE.splitlines():
+        assert ghc.classify_gh_failure(half) == ghc.UNREACHABLE
+
+
+@pytest.mark.parametrize("stderr", [STDERR_UNREACHABLE, STDERR_AUTHED_403,
+                                    STDERR_SECONDARY_403])
+def test_the_non_credential_conditions_never_latch(health, stderr):
+    """The latch gates traffic, and neither waiting out a rate limit nor waiting
+    for a network is helped by that — a connect error spends no budget, so
+    backing off would only delay recovery. They are classified for the LOG."""
+    health.record(1, stderr)
+    assert health.snapshot().unauthenticated is False
+    assert health.allow_attempt() is True
+
+
+def test_every_condition_is_in_the_exported_vocabulary():
+    """`CONDITIONS` is what consumers assert coverage against, so a condition
+    that classify_gh_failure can return but CONDITIONS omits is a silent gap."""
+    returned = {
+        ghc.classify_gh_failure(s)
+        for s in (STDERR_401, STDERR_UNAUTH_403, STDERR_NOT_LOGGED_IN,
+                  STDERR_UNREACHABLE, STDERR_AUTHED_403, STDERR_SECONDARY_403)
+    }
+    assert returned == set(ghc.CONDITIONS)
 
 
 @pytest.mark.parametrize("stderr", [
