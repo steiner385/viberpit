@@ -48,6 +48,15 @@ def _record(sid: str = SID, **kw) -> SessionRecord:
     return SessionRecord(**fields)
 
 
+def _be_host(monkeypatch, name: str) -> None:
+    """Run as *name* by patching the accessor rather than setting the host-name
+    env var: the legacy env prefix sits under a ratchet ceiling
+    (``scripts/brand_ratchet.py``), so each new setenv spends budget the tests
+    below do not need. Same seam the layer-1 tests already patch."""
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "self_host_name", lambda: name)
+
+
 async def _age_lease(sid: str, seconds: float) -> None:
     """Backdate a session lease's heartbeat so takeover paths can be tested."""
     from sqlalchemy import update as sa_update
@@ -261,6 +270,108 @@ async def test_the_renew_loop_releases_leases_whose_driver_is_gone(tmp_path, mon
         # Released for real, not just forgotten locally.
         assert await session_lease.acquire("dropped", "rocky", ttl_s=120) is not None
         assert await session_lease.acquire("kept", "rocky", ttl_s=120) is None
+    finally:
+        await dispose_db()
+
+
+# ---------------------------------------------------------------------------
+# A failed renew is not automatically a two-host split-brain (#1844)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_re_claim_under_the_tick_keeps_the_new_fence(tmp_path, monkeypatch, caplog):
+    """#1844, the damaging half. ``acquire`` bumps the fence for the SAME holder
+    too (that is what lets a restart re-take its own sessions instantly), so a
+    rotation relaunch / resume / swap that re-claims a session while the heartbeat
+    is mid-pass makes that pass renew a fence that is one behind — through no
+    fault of any other host.
+
+    The tick used to read that False as "fenced away" and pop the fence
+    ``_claim_session`` had *just* installed: a live driver on a lease nobody
+    renews, which lapses at the TTL and lets a peer take the session for real.
+    The pass must recognise its own snapshot as stale and leave the claim alone.
+    """
+    _be_host(monkeypatch, "dobby")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        assert await orch._claim_session(SID, why="spawn") is True
+        orch._drivers[SID] = object()
+        stale_fence = orch._session_lease_fences[SID]
+
+        real_renew = session_lease.renew
+
+        async def renew_racing_a_relaunch(sid, holder, fence):
+            # Exactly the production interleaving: a rotation re-claims the
+            # session (bumping the row's fence) while this pass is in flight.
+            monkeypatch.setattr(session_lease, "renew", real_renew)
+            await orch._claim_session(sid, why="relaunch (rotation)")
+            return await real_renew(sid, holder, fence)
+
+        monkeypatch.setattr(session_lease, "renew", renew_racing_a_relaunch)
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._session_lease_tick()
+
+        # The claim the relaunch made survives the pass it raced.
+        assert orch._session_lease_fences.get(SID) == stale_fence + 1
+        assert await session_lease.acquire(SID, "rocky", ttl_s=120) is None
+        # ...and the next beat renews it, so the lease never lapses.
+        await orch._session_lease_tick()
+        assert orch._session_lease_fences.get(SID) == stale_fence + 1
+        assert not [r for r in caplog.records if r.levelname == "CRITICAL"]
+    finally:
+        await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_a_same_host_takeover_is_not_reported_as_two_hosts(tmp_path, monkeypatch, caplog):
+    """#1844, the noise half. All four production occurrences named the REPORTING
+    host as the thief ("fenced takeover by 'dobby'" logged on dobby), which is by
+    construction not two hosts — it is another incarnation of this daemon. Say
+    that instead of raising the fleet-wide alarm that trains people to ignore it."""
+    _be_host(monkeypatch, "dobby")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        assert await orch._claim_session(SID, why="spawn") is True
+        orch._drivers[SID] = object()
+        # Another process on THIS host re-acquires — the orchestrator's own map
+        # keeps the fence it was handed, so the next renew is genuinely fenced out.
+        assert await session_lease.acquire(SID, "dobby", ttl_s=120) is not None
+
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._session_lease_tick()
+
+        assert SID not in orch._session_lease_fences     # really lost; stop renewing
+        assert not [r for r in caplog.records if r.levelname == "CRITICAL"]
+        said = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("session-lease" in m for m in said), said
+        assert not any("TWO hosts" in m for m in said), said
+    finally:
+        await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_a_real_foreign_takeover_still_screams(tmp_path, monkeypatch, caplog):
+    """The alarm #1379 exists for. Narrowing it must not silence it: a DIFFERENT
+    host holding the lease while a driver runs here is still CRITICAL."""
+    _be_host(monkeypatch, "dobby")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        assert await orch._claim_session(SID, why="spawn") is True
+        orch._drivers[SID] = object()
+        await _age_lease(SID, 600)
+        assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._session_lease_tick()
+
+        assert SID not in orch._session_lease_fences
+        screams = [r.getMessage() for r in caplog.records if r.levelname == "CRITICAL"]
+        assert len(screams) == 1, screams
+        assert "'rocky'" in screams[0] and "TWO hosts" in screams[0]
     finally:
         await dispose_db()
 

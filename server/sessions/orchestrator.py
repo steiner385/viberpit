@@ -2555,11 +2555,15 @@ class SessionOrchestrator:
         missed call site keeps a session pinned to a host that is not running it.
         Here the absence of a driver IS the release signal, so the set self-heals.
 
-        A renew that returns False means the lease was fenced away — another host
-        now believes it owns this session while we are still driving it. That is the
-        split-brain this module exists to catch, so it is logged at CRITICAL with the
-        new holder; the running turn is left alone (killing a driver mid-turn has its
-        own failure modes) but the next build re-checks and loses.
+        A renew that returns False means only that THIS fence no longer matches the
+        row, which is three different things (#1844). If our in-memory fence has
+        moved on, a concurrent claim or release re-fenced us mid-pass and the row is
+        still whatever that call made it — say nothing, keep the claim. If the row's
+        holder is our own host, another incarnation of this daemon took it: one host,
+        so a WARNING. Only a DIFFERENT host holding it while we drive the session is
+        the split-brain this module exists to catch, and that is the CRITICAL; the
+        running turn is left alone (killing a driver mid-turn has its own failure
+        modes) but the next build re-checks and loses.
 
         Separate from the loop below so tests drive a pass directly instead of racing
         a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
@@ -2600,14 +2604,45 @@ class SessionOrchestrator:
                 continue
             if ok:
                 continue
+            # A failed renew is NOT automatically the two-host split-brain. Three
+            # states reach here and only the last one is #1379 (#1844).
+            held = self._lease_fences().get(sid)
+            if held != fence:
+                # Our own claim moved under this pass. `acquire` bumps the fence for
+                # the SAME holder too — the property that lets a restart re-take its
+                # sessions instantly — so any re-claim (a rotation relaunch, a
+                # resume, a swap) leaves this pass renewing a fence one behind, and
+                # a release leaves it renewing a fence we gave back. Either way the
+                # verdict is about a claim we no longer hold, and popping would
+                # discard the CURRENT fence: a live driver on a lease nobody renews,
+                # which lapses at the TTL and lets a peer take the session for real.
+                log.debug("session-lease: stale renew for %s (renewed fence %s, now "
+                          "%s) — re-claimed or released under this pass; the next "
+                          "beat renews the live claim", sid, fence, held)
+                continue
             self._lease_fences().pop(sid, None)
             self._lease_building().pop(sid, None)
             state = await _lease_state(sid)
+            holder = state.holder if state is not None else None
+            if holder == me:
+                # Fenced out by our OWN host name: one host, so not #1379. Another
+                # incarnation of this daemon (an overlapping restart) re-acquired
+                # it. Worth knowing — this daemon's driver is now unleased — but
+                # the fleet-wide alarm below is what people must never learn to skip.
+                # One record, not a log_event/prose pair: the sink fingerprints each
+                # WARNING separately, so a pair files two issues for one condition.
+                log.warning(
+                    "session-lease: lost session %s at fence %d — %r still holds it "
+                    "at a newer fence, i.e. another process on THIS host re-claimed "
+                    "it. One host, so not the #1379 two-host split-brain; this "
+                    "daemon stops renewing it and loses the next build.",
+                    sid, fence, holder)
+                continue
             log.critical(
                 "session-lease: LOST session %s (fenced takeover by %r) while a "
                 "driver for it is still live here — TWO hosts may now be running "
                 "this conversation (#1379).",
-                sid, state.holder if state is not None else "<released>")
+                sid, holder if holder is not None else "<released>")
         # Prune refusal-dedupe entries for sessions this daemon no longer tracks, so
         # the map cannot outgrow _records in a daemon that runs for weeks. A refusal
         # for a session with no record is a one-off spawn, not a loop, so re-arming
