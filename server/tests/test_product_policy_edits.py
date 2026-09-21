@@ -51,7 +51,7 @@ async def test_concurrent_policy_edits_have_one_winner(backend, initial, tmp_pat
                 except PolicyEditConflict:
                     await db.rollback()
                     return None
-        results = await asyncio.gather(edit({"weight": 3}), edit({"max_in_flight": 2}))
+        results = await asyncio.gather(edit({"capacity_mode": "pinned"}), edit({"max_in_flight": 2}))
         winners = [r for r in results if r is not None]
         assert len(winners) == 1, results
         async with factory.begin() as db:

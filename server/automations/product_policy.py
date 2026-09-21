@@ -82,13 +82,6 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "runner sessions plus PRs handed off to PR Doctor and not yet merged. "
                      "A full pipeline refuses new claims so a fast-claiming product cannot "
                      "stack CI. A cap below the pin caps the pin."),
-    # Deprecated (spec 2026-09-20 D6, removal #2103): rank is the one priority
-    # mechanism; the ``weighted`` selection strategy now orders by rank. Kept in
-    # the schema for one release so a stored row still validates.
-    ConfigField(key="weight", label="Weight (contested slot share)", type="int", default=1, min=0,
-                deprecated=True,
-                help="Deprecated: nothing reads it. Rank on Delivery → Capacity decides "
-                     "priority. Removed after one release (#2103)."),
     # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt
     # cap: a bounce climbs one tier (``server/pm/outcomes.py:next_rung``) rather
     # than counting toward a fixed number, and a bounce AT this tier is the one
@@ -164,7 +157,7 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
 # ladder. A row a product's policy was already stored with still carries it, and
 # ``validate_config`` rejects unknown keys, so without this list every hand-edited
 # or pre-flip row would 422/fall back to all-defaults the moment it was read.
-PRODUCT_POLICY_RETIRED_KEYS: tuple[str, ...] = ("max_attempts",)
+PRODUCT_POLICY_RETIRED_KEYS: tuple[str, ...] = ("max_attempts", "weight")
 
 # In-memory ANNOTATIONS a reader may hang on a validated policy: never stored, never
 # schema fields, never accepted from a client (``merge_policy_patch`` validates
