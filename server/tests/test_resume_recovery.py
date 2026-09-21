@@ -23,23 +23,33 @@ class MiniOrch:
 
     restore_deploy = SessionOrchestrator.restore_deploy
     _recover_resume_failures_once = SessionOrchestrator._recover_resume_failures_once
+    _drop_unrecoverable = SessionOrchestrator._drop_unrecoverable
     _prune_recovered = SessionOrchestrator._prune_recovered
     resume_recovery_status = SessionOrchestrator.resume_recovery_status
     _owns_record = SessionOrchestrator._owns_record
     _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
 
     def __init__(self, *, drivers=None, records=None, resumable=None, raising=None,
-                 enabled_hosts=None):
+                 enabled_hosts=None, archived=None):
         self._drivers = drivers or {}
         self._records = records or {}
         self._resumable = set(resumable or ())
         self._raising = set(raising or ())
         self._resume_recovery: dict[str, int] = {}
         self._enabled_hosts = enabled_hosts
+        # ids whose DB row is archived/ended (#1035) — everything else queried is
+        # treated as neither present-active nor present-inactive (no row), matching
+        # the real _session_row_liveness contract for ids never persisted.
+        self._archived = set(archived or ())
         self.ensured: list[str] = []
 
     async def _enabled_host_names(self):
         return self._enabled_hosts
+
+    async def _session_row_liveness(self, ids):
+        inactive = {i for i in ids if i in self._archived}
+        active = {i for i in ids if i not in self._archived}
+        return active, inactive
 
     async def ensure_driver(self, session_id, identity="system"):
         self.ensured.append(session_id)
@@ -80,7 +90,7 @@ async def test_recovery_pass_drops_enrollment_now_owned_elsewhere(monkeypatch):
     await o._recover_resume_failures_once()
     assert o.ensured == ["mine"]
     assert o._resume_recovery == {}
-    assert o.resume_recovery_status() == {"failed": [], "gaveUp": []}
+    assert await o.resume_recovery_status() == {"failed": [], "gaveUp": []}
 
 
 @pytest.mark.asyncio
@@ -90,7 +100,7 @@ async def test_recovery_pass_relaunches_transient_failure():
     await o._recover_resume_failures_once()
     # Came back → dropped from the set; the banner will clear.
     assert o._resume_recovery == {}
-    assert o.resume_recovery_status() == {"failed": [], "gaveUp": []}
+    assert await o.resume_recovery_status() == {"failed": [], "gaveUp": []}
 
 
 @pytest.mark.asyncio
@@ -105,7 +115,7 @@ async def test_recovery_pass_gives_up_after_max_attempts():
     await o._recover_resume_failures_once()
     assert len(o.ensured) == attempts_made
     # Still surfaced to the human, flagged as gave-up (not silently dropped).
-    assert o.resume_recovery_status() == {"failed": [], "gaveUp": ["s2"]}
+    assert await o.resume_recovery_status() == {"failed": [], "gaveUp": ["s2"]}
 
 
 @pytest.mark.asyncio
@@ -113,19 +123,47 @@ async def test_manual_open_prunes_from_recovery_set():
     # A human opened s2 (a live driver now exists) before the pass ran.
     o = MiniOrch(drivers={"s2": object()})
     o._resume_recovery = {"s2": 1}
-    o.resume_recovery_status()             # status read prunes now-live ids
+    await o.resume_recovery_status()       # status read prunes now-live ids
     assert o._resume_recovery == {}
     # And the pass never wastes an ensure_driver on it.
     await o._recover_resume_failures_once()
     assert o.ensured == []
 
 
-def test_resume_recovery_status_partitions_by_attempts():
+@pytest.mark.asyncio
+async def test_resume_recovery_status_partitions_by_attempts():
     o = MiniOrch()
     o._resume_recovery = {"a": 0, "b": RESUME_RECOVERY_MAX_ATTEMPTS, "c": 1}
-    st = o.resume_recovery_status()
+    st = await o.resume_recovery_status()
     assert set(st["failed"]) == {"a", "c"}
     assert st["gaveUp"] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_pass_drops_already_archived_session():
+    """#1035: an id enrolled for retry whose row was archived before the pass ran
+    (e.g. the user archived it, or a foreign mirror snapshotted a row another host
+    later archived) can never come back via ensure_driver — drop it outright rather
+    than retrying it to gave-up with a banner the user cannot act on."""
+    o = MiniOrch(archived={"s2"})
+    o._resume_recovery = {"s2": 0}
+    await o._recover_resume_failures_once()
+    assert o.ensured == []                 # never wasted a retry on it
+    assert o._resume_recovery == {}
+    assert await o.resume_recovery_status() == {"failed": [], "gaveUp": []}
+
+
+@pytest.mark.asyncio
+async def test_restore_deploy_skips_already_archived_session(tmp_path):
+    """#1035: a snapshot entry whose row is already archived/ended must not be
+    retried or enrolled — it is reported skipped instead."""
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "s1", "status": "idle"}], path=p)
+    o = MiniOrch(archived={"s1"})
+    res = await o.restore_deploy(path=p)
+    assert res == {"restored": [], "failed": [], "replayed": [], "skipped": ["s1"]}
+    assert o._resume_recovery == {}
+    assert o.ensured == []
 
 
 def test_recovery_runs_in_tick_loop_regardless_of_mode():

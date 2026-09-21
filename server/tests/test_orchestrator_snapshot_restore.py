@@ -25,18 +25,24 @@ class MiniOrch:
     _owns_record = SessionOrchestrator._owns_record
     _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
 
-    def __init__(self, drivers, records, resumable, last_prompts=None, enabled_hosts=None):
+    def __init__(self, drivers, records, resumable, last_prompts=None, enabled_hosts=None,
+                 archived=None):
         self._drivers = drivers
         self._records = records
         self._resumable = resumable        # set of ids ensure_driver succeeds for
         self._resume_recovery: dict[str, int] = {}   # restore_deploy enrolls failures here
         self._last_prompt: dict[str, str] = dict(last_prompts or {})
         self._enabled_hosts = enabled_hosts          # what _enabled_host_names answers
+        self._archived = set(archived or ())         # ids with an archived/ended row (#1035)
         self.ensured: list[str] = []
         self.built: dict[str, FakeDriver] = {}       # drivers handed out by ensure_driver
 
     async def _enabled_host_names(self):
         return self._enabled_hosts
+
+    async def _session_row_liveness(self, ids):
+        inactive = {i for i in ids if i in self._archived}
+        return set(ids) - inactive, inactive
 
     async def ensure_driver(self, session_id, identity="system"):
         self.ensured.append(session_id)
@@ -54,6 +60,21 @@ def test_snapshot_captures_live_drivers(tmp_path):
     ids = {e["id"] for e in snap["live"]}
     assert ids == {"s1", "s2"}
     assert ds.read_snapshot(path=p) == snap["live"]
+
+
+def test_snapshot_excludes_archived_and_ended_drivers(tmp_path):
+    """#1035: a driver whose in-memory record already reads archived/ended (e.g. a
+    stale mirror driver on another host, or a record archived just before the
+    snapshot ran) must not be captured — snapshotting it only guarantees a doomed
+    restore-and-retry cycle after the restart."""
+    p = str(tmp_path / "live.json")
+    o = MiniOrch(drivers={"s1": 1, "s2": 1, "s3": 1},
+                 records={"s1": FakeRec("working"), "s2": FakeRec("archived"),
+                          "s3": FakeRec("ended")},
+                 resumable=set())
+    snap = o.snapshot_deploy(path=p)
+    ids = {e["id"] for e in snap["live"]}
+    assert ids == {"s1"}
 
 
 def test_snapshot_records_last_prompt_for_mid_turn_sessions(tmp_path):
@@ -222,6 +243,23 @@ async def test_restore_on_worker_resumes_only_its_own_stamp(tmp_path, monkeypatc
     res = await o.restore_deploy(path=p)
     assert o.ensured == ["mine"]
     assert res["skipped"] == ["primary", "legacy"]
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_already_archived_row(tmp_path):
+    """#1035: a snapshotted id whose DB row is already archived/ended (e.g. the
+    user archived it after the snapshot was taken but before the restart landed)
+    must not be retried or enrolled for recovery — both banner actions ("open",
+    "archive") are impossible for it, so it is reported skipped instead."""
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "gone", "status": "idle"},
+                       {"id": "s1", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={}, records={}, resumable={"gone", "s1"}, archived={"gone"})
+    res = await o.restore_deploy(path=p)
+    assert o.ensured == ["s1"]
+    assert res["restored"] == ["s1"]
+    assert res["skipped"] == ["gone"]
+    assert "gone" not in o._resume_recovery
 
 
 def test_snapshot_restore_registered_as_rpc():
