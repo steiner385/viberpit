@@ -150,6 +150,9 @@ export interface ActionableItem {
   subtitle?: string | null
   url?: string | null
   actions: ActionSpec[]
+  /** Plain text shown instead of a button when a live predecessor makes the
+   *  action a guaranteed refusal (`actions` is empty then). */
+  status?: string | null
 }
 
 export interface TriggerResult {

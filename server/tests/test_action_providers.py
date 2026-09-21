@@ -7,9 +7,13 @@ from server.github.pr_status import PullRequestInfo
 
 
 class _FakePrOrch:
-    def __init__(self, pr):
+    def __init__(self, pr, *, busy_session=None):
         self._pr = pr
         self.fix_calls = []
+        # None: no live predecessor. Set to a session id to simulate one still
+        # holding the claim, mirroring `_pr_doctor_claim`'s "prior PR execution
+        # has not stopped" refusal (#16348).
+        self._busy_session = busy_session
 
     async def _pr_doctor_scope_pairs(self):
         return [(self._pr.repo, self._pr.head_ref)]
@@ -31,6 +35,9 @@ class _FakePrOrch:
 
     def _pr_doctor_owning_rec(self, repo, branch):
         return None
+
+    async def _pr_doctor_busy_predecessor(self, repo, branch, target):
+        return (self._busy_session is not None, self._busy_session)
 
     async def _pr_doctor_trigger_async(self, repo, branch, info, kind, rec):
         # Async path (issue #668): record the hand-off and hand back a job id.
@@ -64,6 +71,28 @@ async def test_pr_provider_merge_conflict_is_risky():
     items = await prov.actionable()
     assert items[0].actions[0].kind == "merge_conflict"
     assert items[0].actions[0].style == "risky"
+
+
+@pytest.mark.asyncio
+async def test_pr_provider_hides_action_while_predecessor_is_live():
+    # #16348: PR Doctor's own click-path check (`_pr_doctor_claim`) refuses
+    # "prior PR execution has not stopped" while a predecessor session still
+    # holds the claim — the list must not offer a button that click would
+    # immediately bounce. Status text explains why instead.
+    prov = PrDoctorActionProvider(
+        _FakePrOrch(_pr(merge_state_status="DIRTY"), busy_session="sess-predecessor"))
+    items = await prov.actionable()
+    assert len(items) == 1
+    assert items[0].actions == []
+    assert items[0].status == "Being worked by session sess-predecessor"
+
+
+@pytest.mark.asyncio
+async def test_pr_provider_shows_action_once_predecessor_clears():
+    prov = PrDoctorActionProvider(_FakePrOrch(_pr(merge_state_status="DIRTY"), busy_session=None))
+    items = await prov.actionable()
+    assert items[0].status is None
+    assert items[0].actions[0].kind == "merge_conflict"
 
 
 @pytest.mark.asyncio

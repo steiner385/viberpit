@@ -12163,7 +12163,7 @@ class SessionOrchestrator:
         from server.automations.ownership import acquire, owned, OwnershipConflict, StaleOwnership
         from server.automations.ownership_reconciliation import reconcile_legacy_targets
         from server.automations.target_identity import resolve_targets
-        from server.db.models import AutomationTargetState, AutomationOperation
+        from server.db.models import AutomationTargetState
 
         targets = await resolve_targets([f"{repo}#{n}" for n in numbers], kind="pr",
                                         include_linked_issues=True)
@@ -12191,9 +12191,8 @@ class SessionOrchestrator:
             if refreshed != expected:
                 raise StaleOwnership("Prior GitHub update reconciled; refresh recovery decision")
             from server.automations.ownership import ReleaseProof
-            async with db_session() as db:
-                operation = await db.get(AutomationOperation, token)
-                sid = (operation.session_id or operation.reserved_session_id) if operation else None
+            operation = await self._pr_doctor_claim_operation(token)
+            sid = (operation.session_id or operation.reserved_session_id) if operation else None
             stopped = bool(sid and await self._automation_session_work_stopped(sid))
             async with owned(token) as tx:
                 row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
@@ -14366,6 +14365,43 @@ class SessionOrchestrator:
             rec.repo, br, info, "failing_ci", rec)
         return status
 
+    async def _pr_doctor_claim_operation(self, token: str):
+        """The ``AutomationOperation`` row a PR Doctor ownership *token* names,
+        or None. Single read shared by ``_pr_doctor_claim``'s busy check and
+        ``_pr_doctor_busy_predecessor``'s read-only mirror of it."""
+        from server.db.models import AutomationOperation
+        async with db_session() as db:
+            return await db.get(AutomationOperation, token)
+
+    async def _pr_doctor_busy_predecessor(
+        self, repo: str, branch: str, target: str,
+    ) -> tuple[bool, str | None]:
+        """``(busy, session_id)``: whether a live predecessor currently blocks a
+        fresh PR Doctor claim on *target*, and the session holding it (None when
+        the claim is unbound to a session yet).
+
+        Read-only mirror of the two busy checks the click path enforces —
+        ``_pr_doctor_session_fix``'s attached-live-session pre-check
+        (``_pr_doctor_owning_rec``) and ``_pr_doctor_claim``'s unstopped-
+        ownership-token check (``_pr_doctor_claim_operation`` +
+        ``_automation_session_work_stopped``) — reusing the same primitives so
+        the actionable-items list can't offer a button the click path refuses.
+        """
+        rec = self._pr_doctor_owning_rec(repo, branch)
+        if rec is not None and rec.id in self._drivers:
+            return True, rec.id
+        expected = await self._pr_doctor_ctx.get_target_state(target)
+        token = expected.get("ownership_token")
+        if not token:
+            return False, None
+        operation = await self._pr_doctor_claim_operation(token)
+        if operation is None or operation.phase in ("claimed", "completed"):
+            return False, None
+        sid = operation.session_id or operation.reserved_session_id
+        if sid and await self._automation_session_work_stopped(sid):
+            return False, None
+        return True, sid
+
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
         """The live session record that authored *branch* in *repo*, or None.
 
@@ -14458,7 +14494,8 @@ class SessionOrchestrator:
                     try:
                         async with asyncio.timeout(AUTOMATION_ACTIONABLE_TIMEOUT_S):
                             items = await self.automation_actionable(automation_id)
-                        return automation_id, len(items)
+                        # A status-only row (no action to click) is not "actionable".
+                        return automation_id, sum(1 for it in items if it["actions"])
                     except Exception:
                         log.debug("automation_overview.count_failed id=%s", automation_id,
                                   exc_info=True)
