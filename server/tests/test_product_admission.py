@@ -63,6 +63,72 @@ def test_existing_slot_must_belong_to_the_current_product_and_token():
     assert not snapshot.decide("org/repo", existing_slot=True, existing_token="token")[0].permitted
 
 
+def test_pr_doctor_pending_product_refuses_a_new_claim_only():
+    # A real matching state row is required for `existing_slot=True` to verify
+    # as `occupied` (the same D8 carve-out every other capacity check uses,
+    # test_existing_slot_must_belong_to_the_current_product_and_token above
+    # guards it can't be spoofed by the flag alone) — an empty `states` can
+    # never produce a "held" claim.
+    snapshot = admission.ImplementationSnapshot(
+        coverage(), "on", {"max_concurrent": 5, "max_spawns_per_day": 5},
+        {"org/repo#1": {"product": "product", "ownership_token": "t"}}, {},
+        frozenset({"product"}))
+    new_claim, _ = snapshot.decide("org/repo")
+    assert not new_claim.permitted
+    assert any(c.code == "pr_doctor_priority" for c in new_claim.constraints)
+
+    held, _ = snapshot.decide("org/repo", existing_slot=True, existing_token="t")
+    codes = {c.code for c in held.constraints}
+    assert "pr_doctor_priority" not in codes
+    assert "pr_doctor_priority_held" in codes
+
+
+def test_pr_doctor_pending_product_absent_by_default():
+    snapshot = admission.ImplementationSnapshot(
+        coverage(), "on", {"max_concurrent": 5, "max_spawns_per_day": 5}, {}, {})
+    decision, _ = snapshot.decide("org/repo")
+    codes = {c.code for c in decision.constraints}
+    assert "pr_doctor_priority" not in codes and "pr_doctor_priority_held" not in codes
+
+
+@pytest.mark.asyncio
+async def test_gather_implementation_snapshot_reads_pr_doctor_pending(monkeypatch):
+    from server.automations import runner_config
+    monkeypatch.setattr(admission, "gather_product_coverage", AsyncMock(return_value=coverage()))
+    monkeypatch.setattr(runner_config, "read_automation_config", AsyncMock(return_value=(
+        "auto", {"max_concurrent": 5, "max_spawns_per_day": 5})))
+    monkeypatch.setattr(admission, "read_dispatch_accounting", AsyncMock(return_value={}))
+    context = AsyncMock()
+    context.list_target_states.return_value = {}
+
+    async def pending():
+        return frozenset({"product"})
+
+    snapshot = await admission.gather_implementation_snapshot(
+        ["org/repo"], context=context, pr_doctor_pending=pending)
+
+    assert snapshot.pr_doctor_pending == frozenset({"product"})
+
+
+@pytest.mark.asyncio
+async def test_gather_implementation_snapshot_pr_doctor_pending_failure_is_empty(monkeypatch):
+    from server.automations import runner_config
+    monkeypatch.setattr(admission, "gather_product_coverage", AsyncMock(return_value=coverage()))
+    monkeypatch.setattr(runner_config, "read_automation_config", AsyncMock(return_value=(
+        "auto", {"max_concurrent": 5, "max_spawns_per_day": 5})))
+    monkeypatch.setattr(admission, "read_dispatch_accounting", AsyncMock(return_value={}))
+    context = AsyncMock()
+    context.list_target_states.return_value = {}
+
+    async def broken():
+        raise RuntimeError("pr doctor read failed")
+
+    snapshot = await admission.gather_implementation_snapshot(
+        ["org/repo"], context=context, pr_doctor_pending=broken)
+
+    assert snapshot.pr_doctor_pending == frozenset()
+
+
 @pytest.mark.asyncio
 async def test_mixed_repository_batch_cannot_inherit_first_product(monkeypatch):
     evidence = coverage()
