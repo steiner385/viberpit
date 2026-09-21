@@ -137,9 +137,14 @@ ceiling = 296
 
 [[allow]]
 id = "python-package"
-pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
+pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|lint|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
 issue = 1374
-ceiling = 1308
+# #2166 adds the `lint` subcommand (`ccswitch lint feature-docs`, invoked from
+# the reusable workflow) to the subcommand alternation, plus its
+# tests/test_cli.py::TestLintCommands test needs its own `from ccswitch import
+# cli` like every other test class in that file — the package name is not
+# renameable (this category's own reason for existing).
+ceiling = 1310
 
 [[allow]]
 id = "constitution"

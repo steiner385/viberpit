@@ -630,6 +630,42 @@ def test_advance_map_transitions_state():
         c.portal.call(_check)
 
 
+def test_advance_map_409_when_unindexed_docs_exist():
+    """A merged map with a doc pm-sync could not parse must not silently pass
+    as complete (issue #2166): the caller sees the error and the paths, and
+    the state stays map_proposed until the next sync pass clears it."""
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import Project, ProjectRepo
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _set_proposed_with_unindexed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                p.onboarding_state = "map_proposed"
+                p.unindexed_docs = [{"path": "docs/product/features/bad.md",
+                                     "error": "unterminated frontmatter fence"}]
+                (await db.execute(select(ProjectRepo).where(
+                    ProjectRepo.project_id == p.id))).scalar_one().backfill_done = True
+        c.portal.call(_set_proposed_with_unindexed)
+
+        r = c.post("/api/pm/projects/viberpit/advance-map", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert detail["error"] == "unindexed_docs"
+        assert "docs/product/features/bad.md" in detail["message"]
+
+        async def _check_still_proposed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                assert p.onboarding_state == "map_proposed"
+        c.portal.call(_check_still_proposed)
+
+
 def test_classify_dispatches_and_is_idempotent():
     # Full narrated flow: register → force map_merged → classify → accept.
     with _client_with_stubbed_seams() as c:

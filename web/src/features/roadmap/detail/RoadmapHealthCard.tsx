@@ -26,10 +26,10 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
   const { data: health } = useProjectHealth(productSlug)
   if (!health) return null
 
-  const { unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox } = health
+  const { unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs } = health
   const nothingToSay =
     unparentedCapabilities.length === 0 && unlinkedInitiatives.length === 0 &&
-    staleProposed.length === 0 && staleInbox === 0
+    staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0
   if (nothingToSay) return null
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
@@ -60,6 +60,17 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
         )}
         {staleInbox > 0 && (
           <li>{staleInbox} inbox {staleInbox === 1 ? 'item' : 'items'} older than 7 days</li>
+        )}
+        {unindexedDocs.length > 0 && (
+          <li>
+            {unindexedDocs.length} feature {unindexedDocs.length === 1 ? 'doc' : 'docs'} could not be parsed and {unindexedDocs.length === 1 ? "isn't" : "aren't"} on the map: {' '}
+            {unindexedDocs.map((d, i) => (
+              <Fragment key={d.path}>
+                {i > 0 && ', '}
+                <span title={d.error}>{d.path}</span>
+              </Fragment>
+            ))}
+          </li>
         )}
       </ul>
     </Banner>

@@ -207,7 +207,8 @@ describe('ProductDetail', () => {
 
   it('the roadmap hygiene notice is on Needs you, not the Overview', () => {
     Object.assign(projectHealthQuery, {
-      data: { unparentedCapabilities: ['orphan-cap'], unlinkedInitiatives: [], staleProposed: [], staleInbox: 0 },
+      data: { unparentedCapabilities: ['orphan-cap'], unlinkedInitiatives: [], staleProposed: [],
+             staleInbox: 0, unindexedDocs: [] },
       isLoading: false,
       isError: false,
     })

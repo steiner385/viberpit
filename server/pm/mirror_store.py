@@ -87,6 +87,19 @@ def save_field_cache(db: Session, gh_project_db_id: str, cache: dict) -> None:
         row.field_cache = cache
 
 
+def set_project_unindexed_docs(
+    db: Session, project_id: str, pairs: Sequence[tuple[str, str]],
+) -> None:
+    """Persist pm-sync's current per-pass "could not parse" list onto the
+    project row (issue #2166), so ``roadmap_health`` can surface it without
+    re-reading the repo. Rewritten wholesale every pass — an empty *pairs*
+    clears a previously-broken doc the same way a fixed doc stops appearing
+    in the feed warning."""
+    row = db.get(Project, project_id)
+    if row is not None:
+        row.unindexed_docs = [{"path": p, "error": e} for p, e in pairs] or None
+
+
 def _work_item_id(db: Session, repo: str | None, number: int | None,
                   kind: str | None) -> str | None:
     if not repo or number is None or not kind:

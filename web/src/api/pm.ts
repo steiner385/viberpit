@@ -324,11 +324,17 @@ export function rebaseMapChanges(slug: string): Promise<{ pointer: MapChangesPoi
  *  contract `server/api/pm.py` `GET /pm/projects/{slug}/health`, merged in #1597):
  *  capabilities and initiatives the map nesting doesn't reach, capabilities still
  *  `proposed` after their map-changes PR merged, and inbox items no one triaged. */
+export interface UnindexedDoc {
+  path: string
+  error: string
+}
+
 export interface ProjectHealth {
   unparentedCapabilities: string[]
   unlinkedInitiatives: string[]
   staleProposed: string[]
   staleInbox: number
+  unindexedDocs: UnindexedDoc[]
   generatedAt: string
 }
 

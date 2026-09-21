@@ -13,12 +13,14 @@ class RoadmapHealth:
     unlinked_initiatives: tuple[str, ...]
     stale_proposed: tuple[str, ...]
     stale_inbox: int
+    unindexed_docs: tuple[tuple[str, str], ...] = ()
 
 
 def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, datetime | None]],
                    initiatives: Iterable[tuple[str, int, bool, bool]],
                    proposals: Iterable[datetime | None],
-                   now: datetime, stale_days: int = 30, inbox_days: int = 7) -> RoadmapHealth:
+                   now: datetime, stale_days: int = 30, inbox_days: int = 7,
+                   unindexed_docs: Iterable[tuple[str, str]] = ()) -> RoadmapHealth:
     caps = list(capabilities)
     has_child = {p for _, p, _, _ in caps if p}
     tree_in_use = any(p is None and s in has_child for s, p, _, _ in caps)
@@ -33,7 +35,8 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
                          if st == "proposed" and upd is not None and _aware(upd) < cutoff))
     inbox_cutoff = now - timedelta(days=inbox_days)
     stale_inbox = sum(1 for c in proposals if c is not None and _aware(c) < inbox_cutoff)
-    return RoadmapHealth(unparented, unlinked, stale, stale_inbox)
+    unindexed = tuple(sorted(unindexed_docs))
+    return RoadmapHealth(unparented, unlinked, stale, stale_inbox, unindexed)
 
 
 def _aware(dt: datetime) -> datetime:

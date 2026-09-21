@@ -68,6 +68,7 @@ def test_map_initiative_nodes_carry_their_parent():
                 # timestamp from SQLite, which is the path under test.
                 assert health["unparentedCapabilities"] == ["stale-leaf"]
                 assert health["staleProposed"] == ["stale-leaf"]
+                assert health["unindexedDocs"] == []
 
 
 def test_leaves_of_a_program_lists_the_phases_leaf_issue_not_the_sub_epic():
