@@ -665,6 +665,117 @@ def test_unregister_thread_stops_delivery():
 
 
 # ---------------------------------------------------------------------------
+# how an ending is reported (#1857)
+# ---------------------------------------------------------------------------
+#
+# Recovery is identical for all three endings and stays that way here; what the
+# journal (and the auto-error sink behind it) is told about them is not.
+
+_ENDING_EVENTS = frozenset({
+    "codex.manager.runner_exited",
+    "codex.manager.runner_crashed",
+    "codex.manager.runner_client_closed",
+})
+
+
+def _ending_record(caplog):
+    found = [r for r in caplog.records if getattr(r, "event", None) in _ENDING_EVENTS]
+    assert len(found) == 1, [getattr(r, "event", None) for r in caplog.records]
+    return found[0]
+
+
+def test_a_clean_self_exit_is_reported_as_an_exit_and_still_restarts(caplog):
+    """#1857 exactly: ``exit_code=0`` with nothing in flight, 42 times. The
+    app-server left on its own and the replacement was serving before any caller
+    could notice — so the record says what happened, carries the post-mortem the
+    ERROR form computed and threw away, and does not claim a crash."""
+
+    async def go():
+        now = [1000.0]
+        manager, spawned = _manager(clock=lambda: now[0])
+        await manager.ensure("a")
+        manager.attach("a", "s1")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            now[0] += 42.0
+            spawned[0].crash(rc=0)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_exited"
+        assert record.levelno == logging.WARNING
+        assert record.fields["reason"] == "process_exited_clean"
+        assert record.fields["exit_code"] == 0
+        assert record.fields["uptime_s"] == 42.0
+        assert record.fields["pid"] == spawned[0].pid
+        assert record.fields["detail"] == "thread 'main' panicked"
+        assert len(spawned) == 2, "recovery is unchanged; only the report differs"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_an_abnormal_death_is_still_reported_as_a_crash(caplog):
+    """Guard against widening this into 'an ending is never an error'."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            spawned[0].crash(rc=1)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_crashed"
+        assert record.levelno == logging.ERROR
+        assert record.fields["reason"] == "process_crashed"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_a_clean_exit_that_interrupted_a_turn_is_reported_as_an_error(caplog):
+    """The cost, not the exit status, sets the level: this one lost work."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        manager.begin_turn("a", "t1")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            spawned[0].crash(rc=0)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_exited"
+        assert record.levelno == logging.ERROR
+        assert record.fields["interrupted_turns"] == 1
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_a_latched_client_reports_the_latch_not_a_process_exit(caplog):
+    """#1444's shape: the connection died while the process was still alive, and
+    the reason it latched is the whole diagnosis."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            spawned[0].server.eof()  # the client latches; the process lives on
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_client_closed"
+        assert record.levelno == logging.ERROR
+        assert record.fields["reason"] == "client_closed"
+        assert record.fields["detail"], "a latch with no reason diagnoses nothing"
+        assert spawned[0].stopped, "the still-live process must still be reaped"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
 # drain
 # ---------------------------------------------------------------------------
 

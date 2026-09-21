@@ -340,8 +340,22 @@ thread id, prompt, command, or token — the label sets never collect one.
 | `codex_quota_last_read_timestamp_s{account}` | age = `now - value`; a frozen value means quota reads are failing |
 
 Structured logs: `codex.doctor.report` (once per daemon boot),
-`codex.manager.runner_crashed` / `runner_restarted`, `codex.manager.unrouted_approval`,
+`codex.manager.runner_restarted`, `codex.manager.unrouted_approval`,
 `codex.process.version_drift_accepted`.
+
+A runner ending has three records, one per condition, because they diagnose
+nothing like each other (#1857) — all carry `exit_code`, `uptime_s`, `pid` and a
+`detail` post-mortem:
+
+| Record | What ended it | Level |
+|---|---|---|
+| `codex.manager.runner_crashed` | non-zero status or a signal — the app-server died | ERROR |
+| `codex.manager.runner_client_closed` | the connection latched closed with the process still alive (#1444); `detail` is the latch reason | ERROR |
+| `codex.manager.runner_exited` | the app-server exited **0** on its own, unasked | WARNING, or ERROR if it interrupted a turn |
+
+A clean `runner_exited` is absorbed by the supervisor, but it still spends a
+restart; three in a burst is the budget nearly gone, so watch it next to
+`codex_runner_restarts_total{outcome="gave_up"}`.
 
 ---
 
