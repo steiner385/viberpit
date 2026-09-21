@@ -222,5 +222,5 @@ async def test_other_start_failures_stay_retryable(monkeypatch, tmp_path):
         o, rec, monkeypatch, tmp_path, RuntimeError("CLI exited 1"))
 
     assert outcome == "failed"
-    assert o.paused == [("s1", "reassign_failed:stuck_session_sweep")]
+    assert o.paused == [("s1", orch_mod._REASSIGN_FAILED_PAUSE_REASON)]
     assert o.paused[0][1] not in orch_mod._TERMINAL_PAUSE_REASONS

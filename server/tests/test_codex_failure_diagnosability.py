@@ -261,7 +261,7 @@ async def test_re_pausing_an_already_paused_session_reports_once(
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1, f"{len(warnings)} records for one parked session"
-    assert "reason=all_accounts_busy" in warnings[0].getMessage()
+    assert warnings[0].fields["reason"] == "all_accounts_busy"
 
 
 @pytest.mark.asyncio
@@ -302,10 +302,15 @@ async def test_a_shifting_reset_time_does_not_re_open_the_window(
 
 
 @pytest.mark.asyncio
-async def test_a_change_of_reason_always_reports_however_recent_the_last_one(
+async def test_a_newly_seen_reason_reports_however_recent_the_last_one(
         monkeypatch, caplog, tmp_path):
     """The transition is the record an operator is watching for; throttling it
-    would hide the one line carrying new information behind the old one."""
+    would hide the one line carrying new information behind the old one.
+
+    It reports because a different reason is a different KEY, not because the
+    window is re-armed on change. Re-arming was the same statement — and it is
+    what let two retry loops alternating reasons flood one fingerprint (#1780,
+    pinned in test_pause_reason_is_one_condition.py)."""
     o = _pause_orch(monkeypatch)
     rec = _paused_rec(tmp_path)
 
@@ -314,9 +319,9 @@ async def test_a_change_of_reason_always_reports_however_recent_the_last_one(
         await o._pause_session(rec, reason="all_accounts_busy")
         await o._pause_session(rec, reason="crash_cap")
 
-    reasons = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert len(reasons) == 2, reasons
-    assert "reason=crash_cap" in reasons[1]
+    reasons = [r.fields["reason"] for r in caplog.records
+               if r.levelno >= logging.WARNING]
+    assert reasons == ["all_accounts_busy", "crash_cap"], reasons
 
 
 # ---------------------------------------------------------------------------
@@ -423,8 +428,8 @@ async def test_an_unreachable_app_server_stays_retryable(monkeypatch, tmp_path):
         o, monkeypatch, tmp_path,
         codex_protocol.CodexTransportClosed("client was closed"))
 
-    assert o.paused == [("37e13a96", "reassign_failed:process_crash")]
-    assert "reassign_failed:process_crash" not in orch_mod._TERMINAL_PAUSE_REASONS
+    assert o.paused == [("37e13a96", orch_mod._REASSIGN_FAILED_PAUSE_REASON)]
+    assert orch_mod._REASSIGN_FAILED_PAUSE_REASON not in orch_mod._TERMINAL_PAUSE_REASONS
 
 
 @pytest.mark.asyncio
