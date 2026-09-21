@@ -218,7 +218,7 @@ def is_in_flight(state: dict) -> bool:
     return not state.get("gave_up") and not state.get("handed_off")
 
 
-def _by_product(states: dict, predicate) -> dict[str, int]:
+def _by_product(states: dict, predicate: Callable[[dict], bool]) -> dict[str, int]:
     """``{product slug: count}`` over durable target states, bucketed by the
     product recorded ON the claim for rows where ``predicate(state)`` holds. A
     row with no product (a pre-flip claim) counts toward no product's ceiling —

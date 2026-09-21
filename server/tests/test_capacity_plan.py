@@ -208,7 +208,22 @@ def test_pipeline_full_product_keeps_its_floor_and_gives_slots_to_the_next_rank(
     assert plan.pending["viberpit"] + plan.pending["ghostdriver"] == 5
     assert plan.budget["pipeline"] == {"kindash": {"open": 6, "cap": 6},
                                        "viberpit": {"open": 1, "cap": 8}}
-    assert "kindash: pipeline full (6/6 PRs open), its slots go to the next rank" in plan.reasons
+    assert "kindash: pipeline full (6/6 claims and PRs), its slots go to the next rank" in plan.reasons
+
+
+def test_pipeline_cap_zero_is_full_at_the_planner():
+    """A pipeline cap of 0 refuses every claim (blank != 0, D13) — the planner
+    treats it the same as any other pipeline-full product: eligible forced to 0.
+    With no in-flight claim either, kindash never enters `working`/`proposed`
+    (`_split`), so it gets no cap and no reason line (the reasons loop is guarded
+    on `p.slug in proposed`) — only `budget.pipeline` records the fact."""
+    i = _inputs(products=(_prod("kindash", 1, 50, pipeline=0, pipeline_cap=0),
+                          _prod("viberpit", 2, 30), _prod("ghostdriver", 3, 5)))
+    plan = plan_capacity(i, push_level="steady")
+    assert plan.per_product.get("kindash", 0) == 0
+    assert "kindash" not in plan.pending
+    assert plan.budget["pipeline"]["kindash"] == {"open": 0, "cap": 0}
+    assert not any(r.startswith("kindash: pipeline full") for r in plan.reasons)
 
 
 def test_blank_pipeline_cap_changes_nothing():

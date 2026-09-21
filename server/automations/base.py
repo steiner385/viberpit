@@ -38,8 +38,10 @@ class ConfigField:
     deprecated: bool = False
     # Spec 2026-09-20 D13: ``None`` is a legal stored value meaning "no cap"
     # (the pipeline cap). Validation lets None through without the type or
-    # ``min`` check; a non-nullable field still rejects it. Published so the
-    # browser renders "blank = unlimited" instead of coercing blank to 0.
+    # ``min`` check; a non-nullable field still rejects it. Published as part
+    # of the wire contract; today's only nullable field is Capacity-owned, so
+    # the generic editors never render it and the Capacity table hard-codes
+    # blank = null (``parsePipelineCap``).
     nullable: bool = False
 
     def to_dict(self) -> dict:

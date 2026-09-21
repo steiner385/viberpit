@@ -184,8 +184,12 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
                        f"(would have been {budget['rawFleet']})")
         reasons.append(reason)
     for p in ordered:
-        if pipeline_full(p) and p.dispatch != "off":
-            reasons.append(f"{p.slug}: pipeline full ({p.pipeline}/{p.pipeline_cap} PRs open), "
+        # `p.slug in proposed`: a full product with eligible 0 AND in_flight 0
+        # never enters `working` (`_split`), so it never enters `proposed` either —
+        # nothing was planned for it and no reason line explains a redistribution
+        # that has nothing to redistribute.
+        if pipeline_full(p) and p.dispatch != "off" and p.slug in proposed:
+            reasons.append(f"{p.slug}: pipeline full ({p.pipeline}/{p.pipeline_cap} claims and PRs), "
                            "its slots go to the next rank")
     per_product: dict[str, int] = {}
     pending: dict[str, int] = {}

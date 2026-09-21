@@ -78,9 +78,10 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # per-repo fairness load). Blank = unlimited; 0 refuses every new claim.
     ConfigField(key="max_pipeline_prs", label="Pipeline cap", type="int", default=None, min=0,
                 nullable=True, surface="capacity",
-                help="Most automation PRs this product may have open and unmerged at once, "
-                     "counting PRs handed off to PR Doctor. A full pipeline refuses new "
-                     "claims so a fast-claiming product cannot stack CI."),
+                help="Most claims this product may have in its pipeline at once: live "
+                     "runner sessions plus PRs handed off to PR Doctor and not yet merged. "
+                     "A full pipeline refuses new claims so a fast-claiming product cannot "
+                     "stack CI. A cap below the pin caps the pin."),
     # Deprecated (spec 2026-09-20 D6, removal #2103): rank is the one priority
     # mechanism; the ``weighted`` selection strategy now orders by rank. Kept in
     # the schema for one release so a stored row still validates.
@@ -392,6 +393,7 @@ def decide_implementation(
     remaining_checks: tuple[str, ...] = (),
     pipeline_count: int | None = None,
     pipeline_cap: int | None = None,
+    pipeline_existing_slot: bool = False,
 ) -> ImplementationDecision:
     """Compose current implementation admission policy without I/O or claims.
 
@@ -476,10 +478,14 @@ def decide_implementation(
     capacity("daily_budget", daily_count, daily_cap)
     # Spec 2026-09-20 D13: open, unmerged automation PRs vs the product's pipeline
     # cap. Blank cap = unlimited: nothing is emitted. `occupied` keeps governor-spec
-    # D8 — a claim that already holds its slot is never refused by a cap.
+    # D8 — a claim that already holds its slot is never refused by a cap — but the
+    # pipeline's occupancy is judged by the same rule as its count
+    # (`pipeline_existing_slot`, `counts_toward_pipeline`), not `existing_slot`
+    # (`is_in_flight`): a handed-off row is still occupying its pipeline slot even
+    # though it no longer holds a runner slot.
     if pipeline_cap is not None:
-        capacity("product_pipeline", pipeline_count, pipeline_cap, occupied=existing_slot,
-                 full_text=f"pipeline full: {pipeline_count} PRs open (cap {pipeline_cap})")
+        capacity("product_pipeline", pipeline_count, pipeline_cap, occupied=pipeline_existing_slot,
+                 full_text=f"pipeline full: {pipeline_count} claims and PRs open (cap {pipeline_cap})")
     constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
     states = {item.state for item in constraints}
     state: DecisionState = "refused" if "refused" in states else "unknown" if "unknown" in states else "permitted"
