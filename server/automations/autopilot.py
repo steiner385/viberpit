@@ -53,6 +53,14 @@ class Autopilot:
                                      "built-in destructive-command deny-list."),
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[], help="Limit governance to these repos (empty = all)."),
+        ConfigField(key="auto_archive_completed", label="Auto-archive completed sessions",
+                    type="bool", default=True,
+                    help="If off, autopilot surfaces a met goal but never archives the "
+                         "session — it stays in ready_review for a human."),
+        ConfigField(key="auto_archive_origins", label="Auto-archive origins",
+                    type="string-list", default=[],
+                    help="Only auto-archive sessions spawned by these automations "
+                         "(e.g. backlog-runner); empty = any origin."),
     ]
 
     def status(self, ctx) -> AutomationStatus:
@@ -167,11 +175,25 @@ class AutopilotLoop:
                 human_seen=decision.reason.startswith("human steering"))
             return False, False
         if decision.action == "complete":
+            decline_ledger = ctx.ledger if ctx.ledger is not None else ledger
             # A human unarchived this session — it must NEVER be auto-archived again
             # (the user's standing decision outranks the goal-met signal). Surface the
             # met goal once, then stop; autopilot keeps helping it in every other way.
             if ctx.no_auto_archive:
-                return await self._decline_archive(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx, decision)
+                return await self._decline_archive(
+                    sid, decline_ledger, ctx, decision,
+                    suppressed="manual-unarchive", note="you unarchived this")
+            # Operator-level opt-out: auto-archival disabled for the whole automation.
+            if not config.get("auto_archive_completed", True):
+                return await self._decline_archive(
+                    sid, decline_ledger, ctx, decision,
+                    suppressed="auto-archive-disabled", note="auto-archive is disabled")
+            # Operator-level scoping: only archive sessions spawned by a listed automation.
+            archive_origins = config.get("auto_archive_origins") or []
+            if archive_origins and ctx.origin not in archive_origins:
+                return await self._decline_archive(
+                    sid, decline_ledger, ctx, decision,
+                    suppressed="origin-excluded", note="origin not in auto-archive scope")
             # The goal is met — this session is finished. In auto mode archive it
             # (reversible; unarchive exists) via the archive seam — NEVER via apply,
             # which stays reserved for validated in-session actions. In propose mode
@@ -230,10 +252,14 @@ class AutopilotLoop:
         return acted, False
 
     async def _decline_archive(self, sid: str, ledger: dict, ctx: DecisionContext,
-                               decision: Decision) -> tuple[bool, bool]:
-        """Goal met, but the session was manually unarchived → never auto-archive it.
-        Surface the completion ONCE (deduped on the stuck fingerprint, mirroring the
-        escalate de-spam) so the feed isn't buried every tick, and stop advancing it."""
+                               decision: Decision, *, suppressed: str,
+                               note: str) -> tuple[bool, bool]:
+        """Goal met, but something suppresses auto-archival (manual unarchive, the
+        `auto_archive_completed` config off, or `auto_archive_origins` scoping this
+        session's origin out) → surface the completion ONCE (deduped on the stuck
+        fingerprint, mirroring the escalate de-spam) and stop advancing it, without
+        ever archiving. *suppressed* is the machine-readable reason for the detail
+        payload; *note* is the human-readable parenthetical."""
         fp = fingerprint(ctx)
         if ledger.get("archive_declined") and ledger.get("last_fingerprint") == fp:
             return False, False
@@ -241,10 +267,10 @@ class AutopilotLoop:
         new.update(archive_declined=True, last_fingerprint=fp)
         await self._ctx.set_target_state(sid, new)
         await self._ctx.emit(
-            "info", f"{sid}: goal met — not auto-archiving (you unarchived this)",
+            "info", f"{sid}: goal met — not auto-archiving ({note})",
             kind="proposed", session_id=sid,
             detail={"action": "complete", "reason": decision.reason,
-                    "suppressed": "manual-unarchive"})
+                    "suppressed": suppressed})
         return False, False
 
     async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext,

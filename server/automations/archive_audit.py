@@ -407,7 +407,10 @@ async def load_archived_rows(session_factory) -> list[dict]:
     """Load auto-archived Session rows with the fields the audit needs (the list_archived
     seam omits repo/branch/authored_branches/goal, so read the model directly).
     Only rows with an AUTO archived_by (AUTO_ARCHIVE_PROVENANCE) are returned — manual
-    ("user") and NULL-provenance archives are never auto-unarchive candidates.
+    ("user") and NULL-provenance archives are never auto-unarchive candidates. Autopilot's
+    `auto_archive_completed`/`auto_archive_origins` config needs no special handling here:
+    a session it declines to archive never becomes an `archived_by="autopilot"` row, so
+    there is nothing new for this audit to reconcile.
     session_factory() is an async context manager yielding a DB session."""
     from sqlalchemy import select as sa_select
     from server.db.models import AUTO_ARCHIVE_PROVENANCE, Session as DbSession

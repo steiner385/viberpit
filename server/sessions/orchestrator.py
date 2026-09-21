@@ -11464,7 +11464,8 @@ class SessionOrchestrator:
             seconds_since_human=_secs_since_human,
             fleet_context=await self._autopilot_fleet_context(session_id),
             pr_resolution=pr_resolution,
-            instructions=getattr(rec, "initial_prompt", None))
+            instructions=getattr(rec, "initial_prompt", None),
+            origin=getattr(rec, "origin", None))
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the

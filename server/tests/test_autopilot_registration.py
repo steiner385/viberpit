@@ -17,3 +17,5 @@ def test_config_defaults_validate():
     assert cfg["loop_repeat_limit"] == 3
     assert cfg["human_defer_seconds"] == 120
     assert cfg["extra_deny_patterns"] == ""
+    assert cfg["auto_archive_completed"] is True
+    assert cfg["auto_archive_origins"] == []
