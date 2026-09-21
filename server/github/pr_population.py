@@ -453,11 +453,12 @@ class PrPopulationPoller:
             response = await self._fetch_eta(open_keys)
             checks_by_pr = parse_eta_checks_response(response, open_keys)
             merge_by_pr = parse_merge_group_response(response, open_keys)
-        except Exception:
+        except Exception as exc:
             # Fresh fetch failed even after a jittered retry. Rather than blank
             # the board, re-serve each open PR's last-good ETA marked stale
             # (issue #671 — stale-while-revalidate).
-            log.warning("pr_population.eta_fetch_failed", exc_info=True)
+            log_gh_failure(log, str(exc), "pr_population.eta_fetch_failed",
+                           exc_info=True)
             return self._apply_stale_eta(prs_by_repo)
 
         now = self._now_fn()
@@ -627,8 +628,14 @@ class PrPopulationPoller:
                 response = await asyncio.to_thread(self._query_fn, repo)
                 new_cache[repo] = parse_population_response(response, repo)
                 any_ok = True
-            except Exception:
-                log.warning("pr_population.refresh_failed repo=%s", repo, exc_info=True)
+            except Exception as exc:
+                # ``_default_query`` raises ``GhError`` carrying gh's stderr, so
+                # a host condition (offline, rate-limited, no credential) is
+                # readable here and collapses into the one host record instead
+                # of minting a per-repo auto-error issue. Anything else keeps
+                # reporting at WARNING with repo= exactly as before.
+                log_gh_failure(log, str(exc), "pr_population.refresh_failed repo=%s",
+                               repo, exc_info=True)
                 any_fail = True
         # Enrich open PRs with ETA (best-effort; never propagates failures).
         if new_cache:
@@ -645,8 +652,9 @@ class PrPopulationPoller:
                 mq_by_repo = by_repo
                 captured_at = int(self._now_fn().timestamp())
                 await self._merge_queue_sink(by_repo, captured_at)
-            except Exception:
-                log.warning("pr_population.merge_queue_failed", exc_info=True)
+            except Exception as exc:
+                log_gh_failure(log, str(exc), "pr_population.merge_queue_failed",
+                               exc_info=True)
         # Capture PrTimeline waypoints from this cycle's population + queue
         # observations (SPEC §2). Best-effort — NEVER break the poll.
         try:

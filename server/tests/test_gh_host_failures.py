@@ -13,6 +13,15 @@ be reaching for when it noticed:
 #1941 is the same story for a second condition: gh rate-limited with no
 credential, split off by the same per-target reporting.
 
+#1928 is the sixth issue from that same six minutes, and the reason this file
+sweeps a loop's *every* gh boundary rather than one per module: the population
+poller reaches GitHub three times a cycle — the population query, the ETA query
+and the merge-queue query — each behind its own ``except``, so one dead network
+mints ``pr_population.refresh_failed``, ``pr_population.eta_fetch_failed`` and
+``pr_population.merge_queue_failed``. Collapsing whichever one a report names
+leaves the other two live, which is how #1928 outlived the collapse (#2117) that
+had already fixed its siblings.
+
 The assertions below therefore go through ``signature_of`` rather than counting
 log lines. Counting WARNINGs would pass on a change that collapsed the *records*
 while still minting a fingerprint per logger, which is exactly how #1922 stayed
@@ -22,15 +31,29 @@ fixes nothing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import subprocess
 
 import pytest
 
-from server.github import actions_api, ci_issues, deployments, host_failures, pr_poller
+from server.github import (
+    actions_api,
+    ci_issues,
+    deployments,
+    host_failures,
+    pr_poller,
+    pr_population,
+)
 from server.obs.error_signature import signature_of
 from server.sessions import dispatch
+
+from .test_population_eta_wired import (
+    REPO as POP_REPO,
+    _eta_checks_resp_empty,
+    _pop_resp,
+)
 
 #: The classifier, reached through the module that owns the collapse so the test
 #: exercises the object the production path does.
@@ -66,6 +89,51 @@ def _runner(stderr: str, *, rc: int = 1, stdout: str = ""):
 
 
 # --------------------------------------------------------------------------
+# the population poller's three gh boundaries (#1928)
+# --------------------------------------------------------------------------
+# One refresh cycle reaches GitHub three times, each behind its own ``except``.
+# Each drive below lets the OTHER two succeed, so a regression names the
+# boundary that regressed instead of failing as one undifferentiated blob —
+# and so a fix to one of them cannot make the sweep look green for all three.
+
+async def _noop_mq_sink(_by_repo, _captured_at) -> None:
+    return None
+
+
+async def _instant_sleep(_secs: float) -> None:
+    return None
+
+
+def _drive_population_query() -> None:
+    """Boundary 1 — the population query (``_default_query``)."""
+    asyncio.run(pr_population.PrPopulationPoller().refresh_once([POP_REPO]))
+
+
+def _drive_population_eta() -> None:
+    """Boundary 2 — the ETA query. The jittered 5–30 s retry is real behaviour
+    (#671) and is zeroed rather than bypassed: the retry still runs, it just
+    does not make this test sleep for half a minute."""
+    poller = pr_population.PrPopulationPoller(
+        query_fn=lambda repo: _pop_resp(42),
+        eta_retry_min_s=0.0,
+        eta_retry_max_s=0.0,
+        sleep_fn=_instant_sleep,
+    )
+    asyncio.run(poller.refresh_once([POP_REPO]))
+
+
+def _drive_population_merge_queue() -> None:
+    """Boundary 3 — the merge-queue query, the one #1928 was filed against."""
+    poller = pr_population.PrPopulationPoller(
+        query_fn=lambda repo: _pop_resp(42),
+        eta_query_fn=_eta_checks_resp_empty,
+        merge_queue_query_fn=pr_population._default_merge_queue_query,
+        merge_queue_sink=_noop_mq_sink,
+    )
+    asyncio.run(poller.refresh_once([POP_REPO]))
+
+
+# --------------------------------------------------------------------------
 # every loop, one fingerprint
 # --------------------------------------------------------------------------
 
@@ -93,13 +161,24 @@ LOOPS: list[tuple[str, object]] = [
      lambda run: dispatch.fetch_open_issues("steiner385/viberpit", run_gh=run)),
     ("actions_api.repo_ci_meta",
      lambda run: actions_api.repo_ci_meta("steiner385/viberpit", run=run)),
+    ("pr_population(population query)",
+     lambda run: _drive_population_query()),
+    ("pr_population(eta query)",
+     lambda run: _drive_population_eta()),
+    ("pr_population(merge queue)",
+     lambda run: _drive_population_merge_queue()),
 ]
 
 
 def _patch_module_level_runners(run, monkeypatch) -> None:
-    """pr_poller reaches gh through the module rather than an injected runner."""
+    """pr_poller and pr_population reach gh through the module rather than an
+    injected runner. ``token_for_owner`` is stubbed too: minting a real App
+    installation token is itself a gh call, and it would fail first and mask
+    the boundary under test."""
     monkeypatch.setattr(pr_poller.gitrepos, "_run_gh", run)
     monkeypatch.setattr(pr_poller.gitrepos, "app_token_for_owner", lambda owner: None)
+    monkeypatch.setattr(pr_population.gitrepos, "_run_gh", run)
+    monkeypatch.setattr(pr_population.app_auth, "token_for_owner", lambda owner: None)
 
 
 def _drive_every_loop(stderr: str, monkeypatch) -> None:
