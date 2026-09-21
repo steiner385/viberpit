@@ -13,6 +13,18 @@ tuned out. Nothing is lost: suppressed stalls are counted (with their worst lag)
 and reported in the next warning that does get through, and ``peak_lag_s`` is
 updated on every tick regardless of throttling.
 
+The warning is a *structured event*, not an interpolated sentence, because pacing
+and identity are different problems and this record had only the first one solved.
+``server.obs.error_signature`` fingerprints a plain record on its normalized
+message, and normalization masks only the shapes it recognizes — so the measured
+lag leaked into the identity and every distinct value opened its own auto-error
+issue: #1848, #1850, #1705, #1770, #1771, #1774, #1789 and #1797 are one stall
+filed eight times. Keyed on ``loop_lag.stall``, the family is one fingerprint and
+the measurements ride in ``fields``, which feed the issue's title but not its
+identity. Same reasoning as ``server.obs.logdedupe.log_event_throttled``; the
+throttle here predates it and stays, since it also has to bound the log-write cost
+on an already-stalled loop.
+
 Measuring the lag is only half the job: the coroutine that measures it is itself
 unschedulable *during* a block, so by the time it wakes the culprit's frame is
 gone (issue #762 — the daemon blocked for up to 130s and logged nothing about
@@ -36,6 +48,8 @@ import sys
 import threading
 import time
 import traceback
+
+from server.obs.context import emit_event
 
 _default_log = logging.getLogger("server.obs.loop_lag")
 
@@ -215,18 +229,21 @@ class LoopLagWatchdog:
                 self._suppressed_peak = lag
             return
 
-        if self._suppressed:
-            self._log.warning(
-                "loop_lag: event loop blocked for %.2fs (interval=%.2fs); "
-                "%d further stall(s) suppressed in the last %.0fs, worst %.2fs",
-                lag, self.interval, self._suppressed,
-                now - (self._last_warn_at or now), self._suppressed_peak,
-            )
-        else:
-            self._log.warning(
-                "loop_lag: event loop blocked for %.2fs (interval=%.2fs)",
-                lag, self.interval,
-            )
+        # One field shape every time — ``suppressed`` is 0 rather than absent when
+        # nothing was swallowed — so a reader (and the issue title) never has to
+        # tell two record variants apart to answer "how bad, how often".
+        emit_event(
+            self._log,
+            logging.WARNING,
+            "loop_lag.stall",
+            {
+                "lag_s": round(lag, 2),
+                "interval_s": round(self.interval, 2),
+                "suppressed": self._suppressed,
+                "suppressed_peak_s": round(self._suppressed_peak, 2),
+                "since_last_warning_s": round(now - (self._last_warn_at or now), 1),
+            },
+        )
         self._last_warn_at = now
         self._suppressed = 0
         self._suppressed_peak = 0.0

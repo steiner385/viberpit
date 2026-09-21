@@ -30,6 +30,22 @@ def _sig(**kw):
     ("worktree /home/t/.ccswitch/worktrees/viberpit/535694fe gone",
      "worktree /home/t/.ccswitch/worktrees/viberpit/<id> gone"),
     ("a   b\n c", "a b c"),
+    # A number glued to a unit has no trailing word boundary, so `\b\d+\b` used
+    # to mask only its integer part — "blocked for 0.78s" became "<n>.78s" and
+    # every distinct lag minted its own fingerprint (#1848 and seven siblings).
+    ("event loop blocked for 0.78s (interval=1.00s)",
+     "event loop blocked for <n>s (interval=<n>s)"),
+    ("event loop blocked for 4.22s (interval=1.00s)",
+     "event loop blocked for <n>s (interval=<n>s)"),
+    ("12 stall(s) suppressed in the last 61s, worst 4.22s",
+     "<n> stall(s) suppressed in the last <n>s, worst <n>s"),
+    ("upload took 1500ms (p95 250ms)", "upload took <n>ms (p95 <n>ms)"),
+    ("released 1.5 of 10 slots", "released <n> of <n> slots"),
+    # An address is identity noise, not a count: masked as a hex run so the
+    # number masker cannot render it "<n>x7f...".
+    ("thread 0x7F9C1A2B blocked", "thread <hex> blocked"),
+    # Digits inside a word are part of the word, as before.
+    ("sqlite3 driver busy", "sqlite3 driver busy"),
 ])
 def test_normalize(raw, want):
     from server.obs.error_signature import normalize
@@ -142,3 +158,18 @@ def test_sample_is_redacted_and_capped():
     sig = _sig(rec=_rec("token sk-ant-api03-" + "A" * 80 + " " + "y" * 5000))
     assert "sk-ant-api03-AAAA" not in sig.sample_message
     assert len(sig.sample_message) <= 4000
+
+
+def test_measured_values_do_not_split_one_condition_into_many():
+    """#1848/#1850/#1705/#1770/#1771/#1774/#1789/#1797 were one loop_lag stall.
+
+    Every one of those auto-errors is the same record from the same call site;
+    they became eight issue lineages because the measured lag reached the
+    fingerprint. A duration is context, never identity.
+    """
+    fps = {
+        _sig(rec=_rec(f"event loop blocked for {lag:.2f}s (interval=1.00s)",
+                      level=logging.WARNING, name="server.obs.loop_lag")).fingerprint
+        for lag in (0.78, 4.22, 1.12, 5.03, 5.21, 3.04, 3.63, 3.13)
+    }
+    assert len(fps) == 1, f"one condition split into {len(fps)} fingerprints"
