@@ -338,10 +338,12 @@ describe('CapacityDetail', () => {
     setup()
     expect(screen.getByRole('columnheader', { name: 'Pipeline' })).toBeInTheDocument()
     const kindash = screen.getByTestId('capacity-product-kindash')
-    expect(within(kindash).getByText('3 /')).toBeInTheDocument()
+    const kindashPipelineLink = within(kindash).getByRole('link', { name: 'KinDash pipeline' })
+    expect(kindashPipelineLink).toHaveTextContent('3')
+    expect(kindashPipelineLink).toHaveAttribute('href', '/pipeline?pipeline=org%2Fkindash')
     expect(within(kindash).getByLabelText('KinDash pipeline cap')).toHaveValue(6)
     const viberpit = screen.getByTestId('capacity-product-viberpit')
-    expect(within(viberpit).getByText('2 /')).toBeInTheDocument()
+    expect(within(viberpit).getByRole('link', { name: 'ViberPit pipeline' })).toHaveTextContent('2')
     expect(within(viberpit).getByLabelText('ViberPit pipeline cap')).toHaveValue(null)
     expect(within(viberpit).getByLabelText('ViberPit pipeline cap')).toHaveAttribute('placeholder', '∞')
     expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
@@ -377,10 +379,10 @@ describe('CapacityDetail', () => {
 
   it('D13: a pipeline-full product links its Waiting on text to the Pipeline page filtered to its repo', () => {
     setup({ readout: { ...CAPACITY, products: [
-      { ...CAPACITY.products[0]!, pipeline: 6, pipelineCap: 6, constraint: 'product_pipeline_full', waitingOn: 'pipeline full: 6 PRs open (cap 6)' },
+      { ...CAPACITY.products[0]!, pipeline: 6, pipelineCap: 6, constraint: 'product_pipeline_full', waitingOn: 'pipeline full: 6 claims and PRs open (cap 6)' },
       CAPACITY.products[1]!,
     ] } })
-    const link = within(screen.getByTestId('capacity-product-kindash')).getByRole('link', { name: 'pipeline full: 6 PRs open (cap 6)' })
+    const link = within(screen.getByTestId('capacity-product-kindash')).getByRole('link', { name: 'pipeline full: 6 claims and PRs open (cap 6)' })
     expect(link).toHaveAttribute('href', '/pipeline?pipeline=org%2Fkindash')
   })
 

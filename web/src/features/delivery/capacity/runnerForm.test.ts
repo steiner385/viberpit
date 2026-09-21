@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { CAPACITY } from './__fixtures__/capacity'
-import { PIN_KEY, RUNNER_KEYS, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
+import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, parsePipelineCap, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
 
 const CURRENT = { ceiling: 5, budget: 10, perAccount: 2, globalCap: 20 }
 
@@ -8,6 +8,8 @@ describe('seedCapacityDraft (spec 2026-09-20 §5.2 item 3)', () => {
   it('namespaces pins and seeds the runner and governor fields from their configs', () => {
     const d = seedCapacityDraft(CAPACITY, { max_concurrent: 5, max_spawns_per_day: 10 }, { sessions_per_account: 2 })
     expect(d[PIN_KEY('kindash')]).toBe('2')
+    expect(d[PIPELINE_KEY('kindash')]).toBe('6')
+    expect(d[PIPELINE_KEY('viberpit')]).toBe('')
     expect(d[RUNNER_KEYS.ceiling]).toBe('5')
     expect(d[RUNNER_KEYS.budget]).toBe('10')
     expect(d[RUNNER_KEYS.perAccount]).toBe('2')
@@ -17,6 +19,19 @@ describe('seedCapacityDraft (spec 2026-09-20 §5.2 item 3)', () => {
     expect(d[RUNNER_KEYS.ceiling]).toBe(String(CAPACITY.runner.ceiling))
     expect(d[RUNNER_KEYS.budget]).toBe('')
     expect(d[RUNNER_KEYS.perAccount]).toBe('')
+  })
+})
+
+describe('parsePipelineCap', () => {
+  it.each([
+    ['', null],
+    ['0', 0],
+    ['6', 6],
+  ] as const)('%s -> %s', (raw, expected) => {
+    expect(parsePipelineCap(raw, 'KinDash')).toBe(expected)
+  })
+  it.each(['1.5', '-1', 'abc'])('%s throws with the row name', (raw) => {
+    expect(() => parsePipelineCap(raw, 'KinDash')).toThrow(/KinDash: pipeline cap must be a whole number ≥ 0/)
   })
 })
 

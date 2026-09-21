@@ -161,7 +161,18 @@ function CapacityProductRow({
       </td>
       <td className="px-2 py-1.5">
         <div className="flex items-center gap-1 whitespace-nowrap">
-          <span className="tabular-nums text-sm text-ink">{product.pipeline} /</span>
+          {product.primaryRepo
+            ? (
+              <Link
+                to={`${NAV_BY_ID.pipeline.path}?pipeline=${encodeURIComponent(product.primaryRepo)}`}
+                aria-label={`${name} pipeline`}
+                className="text-accent hover:underline tabular-nums"
+              >
+                {product.pipeline}
+              </Link>
+            )
+            : <span className="tabular-nums text-sm text-ink">{product.pipeline}</span>}
+          {' /'}
           <Input
             aria-label={`${name} pipeline cap`}
             type="number"
