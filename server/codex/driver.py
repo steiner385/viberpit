@@ -165,6 +165,13 @@ _CRASH_MESSAGE: Final = (
     "The Codex app-server for this account stopped unexpectedly; the turn that "
     "was running was interrupted."
 )
+#: Same event, this session just wasn't running a turn when it happened — the
+#: crash message above would falsely claim lost work (#2130).
+_CRASH_IDLE_CODE: Final = "codex_runner_restarted"
+_CRASH_IDLE_MESSAGE: Final = (
+    "The Codex app-server for this account stopped unexpectedly and was "
+    "restarted. No turn was running for this session."
+)
 _UNRECOVERABLE_CODE: Final = "codex_runner_unrecoverable"
 _UNRECOVERABLE_MESSAGE: Final = (
     "The Codex app-server for this account could not be restarted. This session "
@@ -1819,7 +1826,10 @@ class CodexAgentDriver:
             return
         if notice.kind is RunnerNoticeKind.CRASHED:
             self._dismiss_pending_prompts()
-            await self._abandon_turn(_CRASH_CODE, _CRASH_MESSAGE)
+            await self._abandon_turn(
+                _CRASH_CODE, _CRASH_MESSAGE,
+                idle_code=_CRASH_IDLE_CODE, idle_message=_CRASH_IDLE_MESSAGE,
+            )
             return
         # RESTARTED: a fresh process with a fresh generation is serving this
         # account. Every id the previous connection streamed is history.
@@ -1828,10 +1838,27 @@ class CodexAgentDriver:
         if notice.recover_via == RECOVER_VIA_THREAD_READ:
             await self._resynchronize()
 
-    async def _abandon_turn(self, code: str, message: str) -> None:
-        """End an in-flight turn as interrupted — never as a success."""
-        await self.emit_error(code, message)
+    async def _abandon_turn(
+        self,
+        code: str,
+        message: str,
+        *,
+        idle_code: str | None = None,
+        idle_message: str | None = None,
+    ) -> None:
+        """End an in-flight turn as interrupted — never as a success.
+
+        When this session had no turn in flight, ``code``/``message`` would
+        falsely assert lost work; ``idle_code``/``idle_message`` (when given)
+        are reported instead. Omit them to always report ``code``/``message``
+        regardless of turn state.
+        """
         turn_id = self._turn_id
+        had_turn = turn_id is not None and self._turn_active
+        if had_turn or idle_code is None:
+            await self.emit_error(code, message)
+        else:
+            await self.emit_error(idle_code, idle_message or message)
         self._finish_turn()
         if turn_id is None or not self._turn_active:
             return

@@ -595,6 +595,27 @@ async def test_a_crash_notice_mid_turn_interrupts_it(harness):
 
 
 @pytest.mark.asyncio
+async def test_a_crash_notice_with_no_turn_in_flight_never_claims_one_was(harness):
+    """A session sitting idle when the runner crashes never had a turn to lose —
+    the transcript must not assert one was interrupted (#2130)."""
+    driver = await harness.boot()
+
+    driver._on_notice(
+        RunnerNotice(
+            kind=RunnerNoticeKind.CRASHED, account=ACCOUNT, generation=1,
+            interrupted_turns=(),
+        )
+    )
+    await harness.settle()
+
+    assert harness.of(ev.TurnEnd) == []
+    assert [e.code for e in harness.of(ev.ErrorEvent)] == ["codex_runner_restarted"]
+    message = harness.of(ev.ErrorEvent)[0].message
+    assert "interrupted" not in message
+    assert driver.turn_active is False
+
+
+@pytest.mark.asyncio
 async def test_a_restart_notice_re_reads_the_thread(harness):
     driver = await harness.boot()
     driver._on_notice(
