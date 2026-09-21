@@ -124,7 +124,7 @@ PR linkage, never on labels alone.
   `gave_up` or `handed_off` row does not (one predicate, `backlog_runner.is_in_flight`, shared with
   the fleet-wide `max_concurrent` count so the two ledgers cannot disagree about a row) — it is
   never translated into a per-repo cap, so a product owning several repos cannot run more than its
-  own cap across all of them combined. Every cap is read literally, `0` included: `0` is the
+  own cap across all of them combined. Which rows count is one predicate, `backlog_runner.counts_toward_pipeline`, shared with the per-product **pipeline cap** (`max_pipeline_prs`, spec 2026-09-20 D13) that refuses a new claim once a product's open, unmerged PRs reach it. Every cap is read literally, `0` included: `0` is the
   PAUSED setting (the product takes no claim but keeps the rest of its policy), not an
   "unlimited" sentinel, and the schema's `min: 0` keeps a negative value — which `_refill` would
   read as an unreachable ceiling — out of the store in the first place. The

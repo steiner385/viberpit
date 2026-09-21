@@ -86,6 +86,18 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   › Capacity › Accounts labels the field **Weekly reserve override** (placeholder "push level's N%"),
   and its over-reserve chip and usage marker sit at the effective ceiling. The CLI selector demotes
   only explicit overrides (a human's own pick is never steered by the push level, D12).
+- **Pipeline cap (PR 6)** — Since spec PR 6 (2026-09-20, D13/C23) a product policy carries
+  `max_pipeline_prs` (**Pipeline cap**, nullable; blank = unlimited): the most automation PRs the
+  product may have open and unmerged at once, counted from the runner's durable target states by
+  `backlog_runner.counts_toward_pipeline` (every row except `gave_up` and token-less `handed_off`,
+  so a PR handed off to PR Doctor still counts — the pin frees a slot at hand-off, the pipeline cap
+  does not). Admission emits `product_pipeline_full` (layer `product`) for a NEW claim at or over
+  the cap and never refuses an existing slot; the planner treats a full product as `eligible = 0`
+  (its in-flight floor) and gives its slots to the next rank, recording `budget.pipeline`
+  `{slug: {open, cap}}` and a reason. The readout's `products[]` carry `pipeline`, `pipelineCap`
+  and `primaryRepo`; the Capacity table's **Pipeline** column (`n / cap`, `∞` when blank) edits the
+  cap in the same form as the pins, a full product's *Waiting on* links to the Pipeline page
+  filtered to its repo, and the Roadmap card's capacity line gains `pipeline n/cap`.
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings

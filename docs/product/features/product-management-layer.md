@@ -305,7 +305,7 @@ design for it is preserved in `docs/superpowers/plans/2026-08-31-pm-product-laye
 loop — read per product instead of one global config row governing every onboarded product alike.
 The schema — `PRODUCT_POLICY_SCHEMA` in `server/automations/product_policy.py`, the one
 `ConfigField` list and the one validated reader (`effective_policy`) every caller shares
-(constitution VI) — has twelve fields: `dispatch`
+(constitution VI) — has thirteen fields: `dispatch`
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
@@ -313,7 +313,7 @@ or `Backlog` to reach untriaged items — how far down the board the runner reac
 runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
 still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
-no claim while keeping the rest of its policy — never "unlimited"), `weight` (deprecated since spec 2026-09-20 D6, removal #2103 — read by nothing; rank on Delivery → Capacity is the priority mechanism), `ladder_top`
+no claim while keeping the rest of its policy — never "unlimited"), `max_pipeline_prs` (default blank = unlimited, minimum 0 — the product's **pipeline cap**: the most automation PRs it may have open and unmerged at once, counting PRs handed off to PR Doctor; a full pipeline refuses new claims, spec 2026-09-20 D13), `weight` (deprecated since spec 2026-09-20 D6, removal #2103 — read by nothing; rank on Delivery → Capacity is the priority mechanism), `ladder_top`
 (enum over the model tiers, default `fable` — the strongest model the runner climbs to on a
 repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
 Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see
