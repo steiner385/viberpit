@@ -218,6 +218,22 @@ def is_in_flight(state: dict) -> bool:
     return not state.get("gave_up") and not state.get("handed_off")
 
 
+def _by_product(states: dict, predicate: Callable[[dict], bool]) -> dict[str, int]:
+    """``{product slug: count}`` over durable target states, bucketed by the
+    product recorded ON the claim for rows where ``predicate(state)`` holds. A
+    row with no product (a pre-flip claim) counts toward no product's ceiling —
+    there is no product to charge it to. Shared by ``in_flight_by_product`` and
+    ``pipeline_by_product`` — one bucketing loop, two row predicates."""
+    out: dict[str, int] = {}
+    for st in states.values():
+        if not predicate(st):
+            continue
+        slug = st.get("product")
+        if slug:
+            out[slug] = out.get(slug, 0) + 1
+    return out
+
+
 def in_flight_by_product(states: dict) -> dict[str, int]:
     """``{product slug: live claims}`` over the runner's durable target states.
 
@@ -225,14 +241,31 @@ def in_flight_by_product(states: dict) -> dict[str, int]:
     row with no product (a pre-flip claim) counts toward the fleet-wide budget
     but against no product's ceiling — there is no product to charge it to.
     """
-    out: dict[str, int] = {}
-    for st in states.values():
-        if not is_in_flight(st):
-            continue
-        slug = st.get("product")
-        if slug:
-            out[slug] = out.get(slug, 0) + 1
-    return out
+    return _by_product(states, is_in_flight)
+
+
+def counts_toward_pipeline(state: dict) -> bool:
+    """THE row rule for "this claim is still in the product's pipeline" (spec
+    2026-09-20 D13/C23), shared by the per-repo fairness load
+    (``SessionOrchestrator._backlog_repo_load``) and the per-product pipeline cap
+    (``pipeline_by_product``). Unlike ``is_in_flight`` (slot occupancy), a
+    ``handed_off`` row still counts: PR Doctor carries the PR now, but it is open
+    and unmerged, and stacking such PRs in CI is exactly what the cap bounds.
+    Excluded: terminal ``gave_up`` rows (needs-human, no active work) and a
+    token-less ``handed_off`` row (pre-ownership, #1648/#1891: the sweep cannot
+    close it out, so counting it would pin the count high for nothing)."""
+    if state.get("gave_up"):
+        return False
+    if state.get("handed_off") and not state.get("ownership_token"):
+        return False
+    return True
+
+
+def pipeline_by_product(states: dict) -> dict[str, int]:
+    """``{product slug: open, unmerged automation PRs}`` over the runner's durable
+    target states — ``counts_toward_pipeline`` per row, bucketed by the product
+    recorded ON the claim (a pre-flip row with no product charges no product)."""
+    return _by_product(states, counts_toward_pipeline)
 
 
 class BacklogRunner:
@@ -1359,6 +1392,10 @@ class BacklogRunnerLoop:
                 kind, status = "skipped_product_cap", "capacity"
                 self._waiting_reason = "capacity"
                 summary += f"; in-flight cap ({policy['max_in_flight']})"
+            elif "product_pipeline_full" in codes:
+                kind, status = "skipped_pipeline_full", "capacity"
+                self._waiting_reason = "capacity"
+                summary += f"; pipeline cap ({policy['max_pipeline_prs']})"
             elif "runner_ceiling_full" in codes:
                 status = "capacity"
             elif "daily_budget_full" in codes:

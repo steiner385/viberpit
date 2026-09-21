@@ -1,7 +1,7 @@
 """Product automation policy (spec 2026-09-12-product-automation-policy-design §4): the ONE
 schema (`PRODUCT_POLICY_SCHEMA`) and the ONE validated reading (`effective_policy`) for every
 product's automation knobs — whether the Backlog Runner dispatches for it, how far down its
-board it reaches, its pin and cap mode, its attempt cap, its session model.
+board it reaches, its pin, cap mode and pipeline cap, its attempt cap, its session model.
 
 `triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
 `give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8). `risk_tolerance`,
@@ -70,6 +70,18 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="auto: the capacity governor sets this product's cap from the fleet's "
                      "real headroom and its rank. pinned: the pin is a hard cap the governor "
                      "respects."),
+    # Spec 2026-09-20 D13 (C23): the pin bounds SESSIONS, not PRs in CI — once PR
+    # Doctor covers a repo a slot frees at hand-off, so a fast-claiming product
+    # can stack any number of PRs in CI. This caps the product's OPEN, UNMERGED
+    # automation PRs (counted from the runner's durable target states: every row
+    # except gave_up and token-less handed_off, i.e. the same rule as the
+    # per-repo fairness load). Blank = unlimited; 0 refuses every new claim.
+    ConfigField(key="max_pipeline_prs", label="Pipeline cap", type="int", default=None, min=0,
+                nullable=True, surface="capacity",
+                help="Most claims this product may have in its pipeline at once: live "
+                     "runner sessions plus PRs handed off to PR Doctor and not yet merged. "
+                     "A full pipeline refuses new claims so a fast-claiming product cannot "
+                     "stack CI. A cap below the pin caps the pin."),
     # Deprecated (spec 2026-09-20 D6, removal #2103): rank is the one priority
     # mechanism; the ``weighted`` selection strategy now orders by rank. Kept in
     # the schema for one release so a stored row still validates.
@@ -379,6 +391,9 @@ def decide_implementation(
     existing_slot: bool = False,
     prerequisites: tuple[ImplementationConstraint, ...] = (),
     remaining_checks: tuple[str, ...] = (),
+    pipeline_count: int | None = None,
+    pipeline_cap: int | None = None,
+    pipeline_existing_slot: bool = False,
 ) -> ImplementationDecision:
     """Compose current implementation admission policy without I/O or claims.
 
@@ -388,6 +403,8 @@ def decide_implementation(
     global/product counts; it does not exempt a zero cap. This function does not
     authorize continued work or other responsibilities. Extra constraints retain
     their authoritative reader's text and links, sorted by code for stable output.
+    ``pipeline_cap`` None means no pipeline cap: no constraint is emitted at all
+    (D13, blank = unlimited).
     """
     effective = effective_policy(policy)
     dispatch = str(effective["dispatch"])
@@ -434,7 +451,8 @@ def decide_implementation(
     else:
         add("dispatch_allowed", "permitted", "The configured product mode permits this dispatch effect.")
 
-    def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False) -> None:
+    def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False,
+                 full_text: str | None = None) -> None:
         if type(count) is not int or type(cap) is not int or count < 0 or cap < 0:
             add(f"{name}_unknown", "unknown", f"The {name.replace('_', ' ')} capacity is unavailable.")
             return
@@ -448,7 +466,7 @@ def decide_implementation(
             add(f"{name}_held", "permitted",
                 f"This claim already holds a {name.replace('_', ' ')} slot ({count}/{cap}).")
         elif cap == 0 or count >= cap:
-            add(f"{name}_full", "refused", f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
+            add(f"{name}_full", "refused", full_text or f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
         else:
             add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")
 
@@ -458,6 +476,16 @@ def decide_implementation(
     capacity("runner_ceiling", global_count, global_cap, occupied=existing_slot)
     capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot)
     capacity("daily_budget", daily_count, daily_cap)
+    # Spec 2026-09-20 D13: open, unmerged automation PRs vs the product's pipeline
+    # cap. Blank cap = unlimited: nothing is emitted. `occupied` keeps governor-spec
+    # D8 — a claim that already holds its slot is never refused by a cap — but the
+    # pipeline's occupancy is judged by the same rule as its count
+    # (`pipeline_existing_slot`, `counts_toward_pipeline`), not `existing_slot`
+    # (`is_in_flight`): a handed-off row is still occupying its pipeline slot even
+    # though it no longer holds a runner slot.
+    if pipeline_cap is not None:
+        capacity("product_pipeline", pipeline_count, pipeline_cap, occupied=pipeline_existing_slot,
+                 full_text=f"pipeline full: {pipeline_count} claims and PRs open (cap {pipeline_cap})")
     constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
     states = {item.state for item in constraints}
     state: DecisionState = "refused" if "refused" in states else "unknown" if "unknown" in states else "permitted"

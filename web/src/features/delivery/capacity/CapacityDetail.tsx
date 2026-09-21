@@ -23,6 +23,7 @@ import { useSettingsForm } from '@/features/settings/useSettingsForm'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { useNow } from '@/hooks/useNow'
 import { sessionPath } from '@/session/sessionNavState'
+import { NAV_BY_ID } from '@/shell/navDefs'
 import { Badge } from '@/ui/Badge'
 import { Banner } from '@/ui/Banner'
 import { ConfirmDialog } from '@/ui/ConfirmDialog'
@@ -36,7 +37,7 @@ import { Switch } from '@/ui/Switch'
 import { accountRowLine, buildCapacityStack } from './capacityStack'
 import { CapacityRowLabel } from './CapacityRowLabel'
 import { governorNotice } from './governorNotice'
-import { PIN_KEY, RUNNER_KEYS, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
+import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, parsePipelineCap, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
 import { RowStatus, type MutationLike, type RowStatusProps } from './RowStatus'
 import { swapRanks } from './swapRanks'
 
@@ -64,7 +65,7 @@ function pushLevelOptions(reservePctByLevel: Record<PushLevel, number>): RadioOp
 }
 
 function CapacityProductRow({
-  product, index, total, defect, rankStatus, onMove, pinValue, onPinChange,
+  product, index, total, defect, rankStatus, onMove, pinValue, onPinChange, pipelineValue, onPipelineChange,
 }: {
   product: CapacityProduct
   index: number
@@ -74,6 +75,8 @@ function CapacityProductRow({
   onMove: (index: number, direction: 'up' | 'down') => void
   pinValue: string
   onPinChange: (value: string) => void
+  pipelineValue: string
+  onPipelineChange: (value: string) => void
 }) {
   const slug = product.slug
   const name = product.name ?? slug
@@ -156,10 +159,41 @@ function CapacityProductRow({
           onChange={(e) => onPinChange(e.target.value)}
         />
       </td>
+      <td className="px-2 py-1.5">
+        <div className="flex items-center gap-1 whitespace-nowrap">
+          {product.primaryRepo
+            ? (
+              <Link
+                to={`${NAV_BY_ID.pipeline.path}?pipeline=${encodeURIComponent(product.primaryRepo)}`}
+                aria-label={`${name} pipeline`}
+                className="text-sm text-accent hover:underline tabular-nums"
+              >
+                {product.pipeline}
+              </Link>
+            )
+            : <span className="tabular-nums text-sm text-ink">{product.pipeline}</span>}
+          <span className="tabular-nums text-sm text-ink">{' /'}</span>
+          <Input
+            aria-label={`${name} pipeline cap`}
+            type="number"
+            size="sm"
+            className="w-16"
+            min={0}
+            step={1}
+            placeholder="∞"
+            value={pipelineValue}
+            onChange={(e) => onPipelineChange(e.target.value)}
+          />
+        </div>
+      </td>
       <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.effectiveCap}</td>
       <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.inFlight}</td>
       <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.eligible}</td>
-      <td className="px-2 py-1.5 text-xs text-ink-muted">{product.waitingOn ?? '—'}</td>
+      <td className="px-2 py-1.5 text-xs text-ink-muted">
+        {product.constraint === 'product_pipeline_full' && product.primaryRepo && product.waitingOn
+          ? <Link to={`${NAV_BY_ID.pipeline.path}?pipeline=${encodeURIComponent(product.primaryRepo)}`} className="text-accent hover:underline">{product.waitingOn}</Link>
+          : (product.waitingOn ?? '—')}
+      </td>
     </tr>
   )
 }
@@ -275,22 +309,34 @@ export function CapacityDetail() {
         if (parsed.governor && governor) await runnerPatch.mutateAsync({ id: governor.id, body: { config: parsed.governor } })
       }
       for (const product of readout.products) {
-        const raw = draft[PIN_KEY(product.slug)]
-        if (raw === undefined) continue
         const name = product.name ?? product.slug
-        // Fix round 2 / item 2: a cleared field is not "0" — `Number('')` is
-        // 0, and silently saving that PAUSES the product (`max_in_flight: 0`
-        // is a real, load-bearing value, not "no input yet"). Checked before
-        // the unchanged-value skip below so a pin that happens to already be
-        // 0 still can't be "saved" by clearing and re-submitting.
-        if (raw.trim() === '') {
-          throw new Error(`${name}: pin must be a whole number ≥ 0`)
+        const policy: { max_in_flight?: number; max_pipeline_prs?: number | null } = {}
+        const rawPin = draft[PIN_KEY(product.slug)]
+        if (rawPin !== undefined) {
+          // Fix round 2 / item 2: a cleared field is not "0" — `Number('')`
+          // is 0, and silently saving that PAUSES the product
+          // (`max_in_flight: 0` is a real, load-bearing value, not "no input
+          // yet"). Checked before the unchanged-value skip below so a pin
+          // that happens to already be 0 still can't be "saved" by clearing
+          // and re-submitting.
+          if (rawPin.trim() === '') {
+            throw new Error(`${name}: pin must be a whole number ≥ 0`)
+          }
+          const next = Number(rawPin)
+          if (!Number.isInteger(next) || next < 0) {
+            throw new Error(`${name}: pin must be a whole number ≥ 0`)
+          }
+          if (next !== product.pin) policy.max_in_flight = next
         }
-        const next = Number(raw)
-        if (next === product.pin) continue
-        if (!Number.isInteger(next) || next < 0) {
-          throw new Error(`${name}: pin must be a whole number ≥ 0`)
+        // Unlike the pin, a blank pipeline cap is a legitimate value (null =
+        // unlimited), not a cleared-field error — `parsePipelineCap` returns
+        // null rather than throwing on blank.
+        const rawCap = draft[PIPELINE_KEY(product.slug)]
+        if (rawCap !== undefined) {
+          const cap = parsePipelineCap(rawCap, name)
+          if (cap !== product.pipelineCap) policy.max_pipeline_prs = cap
         }
+        if (Object.keys(policy).length === 0) continue
         // Fix round 1 / C2: never send `expectedUpdatedAt: null` — the stamp
         // is read straight off the query cache each row's own `useProject`
         // already populated (a plain cache read here, not a second hook call
@@ -299,7 +345,7 @@ export function CapacityDetail() {
         let project: Project
         try {
           project = await updateProductPolicy(product.slug, {
-            policy: { max_in_flight: next },
+            policy,
             ...(stamp ? { expectedUpdatedAt: stamp } : {}),
           })
         } catch (err) {
@@ -449,6 +495,7 @@ export function CapacityDetail() {
               <th scope="col" className="px-2 py-1.5">Dispatch</th>
               <th scope="col" className="px-2 py-1.5">Cap mode</th>
               <th scope="col" className="px-2 py-1.5">Pin</th>
+              <th scope="col" className="px-2 py-1.5">Pipeline</th>
               <th scope="col" className="px-2 py-1.5 text-right">Effective cap</th>
               <th scope="col" className="px-2 py-1.5 text-right">In flight</th>
               <th scope="col" className="px-2 py-1.5 text-right">Eligible</th>
@@ -467,6 +514,8 @@ export function CapacityDetail() {
                 onMove={handleMove}
                 pinValue={pinForm.draft?.[PIN_KEY(product.slug)] ?? String(product.pin)}
                 onPinChange={(value) => pinForm.set(PIN_KEY(product.slug), value)}
+                pipelineValue={pinForm.draft?.[PIPELINE_KEY(product.slug)] ?? (product.pipelineCap == null ? '' : String(product.pipelineCap))}
+                onPipelineChange={(value) => pinForm.set(PIPELINE_KEY(product.slug), value)}
               />
             ))}
           </tbody>

@@ -36,8 +36,8 @@ const GATES = {
 // The readout row the card's read-only capacity line reads (spec 2026-09-20 D5).
 const CAPACITY = {
   products: [
-    { slug: 'kindash', name: 'KinDash', rank: 2, createdAt: null, dispatch: 'auto', capacityMode: 'auto', pin: 1, effectiveCap: 4, inFlight: 1, eligible: 9, constraint: null, waitingOn: null, defect: false },
-    { slug: 'other', name: 'Other', rank: null, createdAt: null, dispatch: 'off', capacityMode: 'pinned', pin: 2, effectiveCap: 2, inFlight: 0, eligible: 0, constraint: 'dispatch_off', waitingOn: 'off', defect: false },
+    { slug: 'kindash', name: 'KinDash', rank: 2, createdAt: null, dispatch: 'auto', capacityMode: 'auto', pin: 1, effectiveCap: 4, inFlight: 1, eligible: 9, constraint: null, waitingOn: null, defect: false, pipeline: 3, pipelineCap: 6, primaryRepo: 'org/kindash' },
+    { slug: 'other', name: 'Other', rank: null, createdAt: null, dispatch: 'off', capacityMode: 'pinned', pin: 2, effectiveCap: 2, inFlight: 0, eligible: 0, constraint: 'dispatch_off', waitingOn: 'off', defect: false, pipeline: 0, pipelineCap: null, primaryRepo: null },
   ],
 }
 
@@ -226,24 +226,24 @@ describe('AutomationPolicyCard', () => {
     expect(screen.queryByText('Pin')).toBeNull()
     expect(screen.queryByText('Cap mode')).toBeNull()
     // …and the line reads the READOUT (effective cap 4), not the stored pin (3).
-    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
+    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight · pipeline 3/6.')).toBeInTheDocument()
   })
 
   it('a pinned product says pin, an unranked one says unranked', () => {
     renderCard(<AutomationPolicyCard product={{ slug: 'other', name: 'Other' } as ProductNode} project={makeProject({ slug: 'other' })} />)
-    expect(screen.getByText('Capacity: unranked · pinned (pin 2) · 0 in flight.')).toBeInTheDocument()
+    expect(screen.getByText('Capacity: unranked · pinned (pin 2) · 0 in flight · pipeline 0/∞.')).toBeInTheDocument()
   })
 
   it('without a readout row the line still links to the capacity page', () => {
     Object.assign(h.capacity, { data: undefined })
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
-    expect(screen.getByText('Capacity: rank, cap mode and pin are set on Delivery → Capacity.')).toBeInTheDocument()
+    expect(screen.getByText('Capacity: rank, cap mode, pin and pipeline cap are set on Delivery → Capacity.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })
 
   it('the read-only capacity line links to the capacity page and is never disabled', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
-    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight.')).toBeInTheDocument()
+    expect(screen.getByText('Capacity: rank 2 · auto (effective cap 4) · 1 in flight · pipeline 3/6.')).toBeInTheDocument()
     const link = screen.getByRole('link', { name: 'Adjust on Delivery → Capacity' })
     expect(link).toHaveAttribute('href', '/delivery?scope=capacity')
     expect(link.closest('fieldset')).toBeNull()

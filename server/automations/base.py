@@ -36,11 +36,19 @@ class ConfigField:
     # release later. ``deprecated`` ≠ retired: a retired key is DROPPED by
     # ``validate_config`` (``retired_config_keys``), a deprecated one is kept.
     deprecated: bool = False
+    # Spec 2026-09-20 D13: ``None`` is a legal stored value meaning "no cap"
+    # (the pipeline cap). Validation lets None through without the type or
+    # ``min`` check; a non-nullable field still rejects it. Published as part
+    # of the wire contract; today's only nullable field is Capacity-owned, so
+    # the generic editors never render it and the Capacity table hard-codes
+    # blank = null (``parsePipelineCap``).
+    nullable: bool = False
 
     def to_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "type": self.type,
                 "default": self.default, "help": self.help, "choices": self.choices,
-                "min": self.min, "surface": self.surface, "deprecated": self.deprecated}
+                "min": self.min, "surface": self.surface, "deprecated": self.deprecated,
+                "nullable": self.nullable}
 
 
 ConfigSchema = list[ConfigField]
@@ -164,6 +172,9 @@ def validate_config(schema: ConfigSchema, config: dict,
     for f in schema:
         if f.key in config:
             value = config[f.key]
+            if value is None and f.nullable:
+                out[f.key] = None
+                continue
             if not _type_ok(f.type, value):
                 raise ValueError(f"{f.key}: expected {f.type}, got {type(value).__name__}")
             if f.type == "enum" and value not in (f.choices or []):

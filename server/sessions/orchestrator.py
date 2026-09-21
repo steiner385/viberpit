@@ -6474,17 +6474,15 @@ class SessionOrchestrator:
         immediately re-win every freed slot ahead of a repo with nothing running.
         Load only reorders repos that both have live plan groups, so counting
         handed_off can never block or starve selection — it only stops the
-        fast-handoff repo from monopolising freed slots. Terminal ``gave_up``
-        (needs-human) guard rows carry no active work and stay excluded."""
+        fast-handoff repo from monopolising freed slots. Which rows count is
+        ``backlog_runner.counts_toward_pipeline`` — the same rule the per-product
+        pipeline cap uses (spec 2026-09-20 D13)."""
+        from server.automations.backlog_runner import counts_toward_pipeline
+
         states = await self._backlog_ctx.list_target_states()
         load: dict[str, int] = {}
         for st in states.values():
-            if st.get("gave_up"):
-                continue
-            # A token-less handed_off row predates ownership (#1648) and the sweep
-            # cannot close it out until it has durable evidence (#1891): counting
-            # it would pin the repo's load high for rows that represent nothing.
-            if st.get("handed_off") and not st.get("ownership_token"):
+            if not counts_toward_pipeline(st):
                 continue
             repo = st.get("repo")
             if repo:

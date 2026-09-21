@@ -38,10 +38,10 @@ def _account_rows(available: int, total: int = 2) -> list[dict]:
 
 def _product(slug: str, *, rank: int = 1, dispatch: str = "auto",
             capacity_mode: str = "auto", pin: int = 0, in_flight: int = 0,
-            eligible: int = 5) -> dict:
+            eligible: int = 5, pipeline: int = 0, pipeline_cap: int | None = None) -> dict:
     return {"slug": slug, "rank": rank, "createdAt": "2026-09-01", "dispatch": dispatch,
             "capacityMode": capacity_mode, "pin": pin, "inFlight": in_flight,
-            "eligible": eligible}
+            "eligible": eligible, "pipeline": pipeline, "pipelineCap": pipeline_cap}
 
 
 _DEFECT = {"product": "viberpit", "target": "o/r#1", "sessionId": "sess-1",

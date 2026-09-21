@@ -334,6 +334,58 @@ describe('CapacityDetail', () => {
     expect(pin).toHaveAttribute('step', '1')
   })
 
+  it('D13: the Pipeline column shows n / cap, ∞ when the cap is blank, with one input per row in the same form', () => {
+    setup()
+    expect(screen.getByRole('columnheader', { name: 'Pipeline' })).toBeInTheDocument()
+    const kindash = screen.getByTestId('capacity-product-kindash')
+    const kindashPipelineLink = within(kindash).getByRole('link', { name: 'KinDash pipeline' })
+    expect(kindashPipelineLink).toHaveTextContent('3')
+    expect(kindashPipelineLink).toHaveAttribute('href', '/pipeline?pipeline=org%2Fkindash')
+    expect(within(kindash).getByLabelText('KinDash pipeline cap')).toHaveValue(6)
+    const viberpit = screen.getByTestId('capacity-product-viberpit')
+    expect(within(viberpit).getByRole('link', { name: 'ViberPit pipeline' })).toHaveTextContent('2')
+    expect(within(viberpit).getByLabelText('ViberPit pipeline cap')).toHaveValue(null)
+    expect(within(viberpit).getByLabelText('ViberPit pipeline cap')).toHaveAttribute('placeholder', '∞')
+    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
+  })
+
+  it('D13: saving a pipeline cap patches max_pipeline_prs; clearing it sends null', async () => {
+    const { qc } = setup()
+    qc.setQueryData(QK.project('kindash'), { automationPolicyUpdatedAt: 'stamp-kindash' })
+    fireEvent.change(screen.getByLabelText('KinDash pipeline cap'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalledTimes(1))
+    expect(updateProductPolicy).toHaveBeenCalledWith('kindash', {
+      policy: { max_pipeline_prs: null }, expectedUpdatedAt: 'stamp-kindash',
+    })
+  })
+
+  it('D13: a pin and a pipeline cap edited on the same row go in ONE policy patch', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('KinDash pin'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('KinDash pipeline cap'), { target: { value: '9' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(updateProductPolicy).toHaveBeenCalledTimes(1))
+    expect(updateProductPolicy.mock.calls[0]![1]).toMatchObject({ policy: { max_in_flight: 5, max_pipeline_prs: 9 } })
+  })
+
+  it('D13: a negative or fractional pipeline cap is refused with the row named', async () => {
+    setup()
+    fireEvent.change(screen.getByLabelText('KinDash pipeline cap'), { target: { value: '-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByText(/KinDash: pipeline cap must be a whole number ≥ 0/)).toBeInTheDocument())
+    expect(updateProductPolicy).not.toHaveBeenCalled()
+  })
+
+  it('D13: a pipeline-full product links its Waiting on text to the Pipeline page filtered to its repo', () => {
+    setup({ readout: { ...CAPACITY, products: [
+      { ...CAPACITY.products[0]!, pipeline: 6, pipelineCap: 6, constraint: 'product_pipeline_full', waitingOn: 'pipeline full: 6 claims and PRs open (cap 6)' },
+      CAPACITY.products[1]!,
+    ] } })
+    const link = within(screen.getByTestId('capacity-product-kindash')).getByRole('link', { name: 'pipeline full: 6 claims and PRs open (cap 6)' })
+    expect(link).toHaveAttribute('href', '/pipeline?pipeline=org%2Fkindash')
+  })
+
   it('Ruling 12: editing a pin dirties the ONE SaveBar; there is no per-row Save button', () => {
     setup()
     // The ONE SaveBar's Save starts disabled (not dirty) — this is what

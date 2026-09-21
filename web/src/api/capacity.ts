@@ -75,6 +75,13 @@ export interface CapacityProduct {
   constraint: string | null
   waitingOn: string | null
   defect: boolean
+  /** Open, unmerged automation PRs (spec 2026-09-20 D13): every runner claim except
+   *  gave_up and token-less handed_off, so a handed-off PR still counts. */
+  pipeline: number
+  /** The policy's `max_pipeline_prs`; null = unlimited. */
+  pipelineCap: number | null
+  /** For the Waiting-on link to the Pipeline page; null when no primary repo is registered. */
+  primaryRepo: string | null
 }
 
 export type CapacityBindingLayer =

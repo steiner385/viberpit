@@ -23,11 +23,13 @@ export const CAPACITY: CapacityReadout = {
       slug: 'kindash', name: 'KinDash', rank: 1, createdAt: '2026-01-01T00:00:00Z',
       dispatch: 'on', capacityMode: 'pinned', pin: 2, effectiveCap: 2, inFlight: 1, eligible: 3,
       constraint: null, waitingOn: null, defect: false,
+      pipeline: 3, pipelineCap: 6, primaryRepo: 'org/kindash',
     },
     {
       slug: 'viberpit', name: 'ViberPit', rank: 2, createdAt: '2026-01-02T00:00:00Z',
       dispatch: 'on', capacityMode: 'auto', pin: 1, effectiveCap: 3, inFlight: 3, eligible: 5,
       constraint: 'product_capacity_full', waitingOn: 'at the product cap (rank 2 of 2)', defect: true,
+      pipeline: 2, pipelineCap: null, primaryRepo: 'org/viberpit',
     },
   ],
   binding: { layer: 'product', code: 'product_capacity_full', text: 'viberpit: at the fleet-wide product cap' },

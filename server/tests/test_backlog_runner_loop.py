@@ -309,7 +309,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         return {DEFAULT_PRODUCT: policy(max_in_flight=1000)}
 
     async def admission(batch, *, source, existing_slot, existing_token=None):
-        from server.automations.backlog_runner import in_flight_by_product
+        from server.automations.backlog_runner import in_flight_by_product, pipeline_by_product
         from server.automations.product_policy import decide_implementation, effective_policy
         from server.pm.repo_project import RepoOwner, RepoOwnership
         policies_now = await read_policies()
@@ -317,7 +317,9 @@ def build_loop(*, mode="on", config=None, clock=None,
         owner = RepoOwner(batch.product or "missing", batch.product or "missing")
         coverage = RepoOwnership(batch.repo, batch.repo or "o/r", "unique", owner,
                                  (owner,), (), "fixture verified ownership")
-        counts = in_flight_by_product(await ctx.list_target_states())
+        states_now = await ctx.list_target_states()
+        counts = in_flight_by_product(states_now)
+        pipeline_counts = pipeline_by_product(states_now)
         decision = decide_implementation(
             ownership=coverage, requested_product_slug=batch.product, policy=current,
             trigger="automatic" if source == "automatic" else "manual",
@@ -325,7 +327,8 @@ def build_loop(*, mode="on", config=None, clock=None,
             else "implementation", runner_mode=mode,
             global_count=await count_in_flight(), global_cap=cfg["max_concurrent"],
             product_count=counts.get(batch.product, 0), daily_count=len(loop._spawns_today),
-            daily_cap=cfg["max_spawns_per_day"], observed_at="fixture", existing_slot=existing_slot)
+            daily_cap=cfg["max_spawns_per_day"], observed_at="fixture", existing_slot=existing_slot,
+            pipeline_count=pipeline_counts.get(batch.product, 0), pipeline_cap=current["max_pipeline_prs"])
         return decision, current
 
     loop = BacklogRunnerLoop(
@@ -1638,6 +1641,33 @@ def test_max_in_flight_caps_one_product_while_another_keeps_going(tmp_path):
 
         assert [b.primary for b, _a in rec.spawns] == ["a#1", "b#3"]
         assert len(await ctx.list_events(kind="skipped_product_cap")) == 1
+
+    asyncio.run(run())
+
+
+def test_pipeline_cap_skips_the_second_pr_while_the_first_still_spawns(tmp_path):
+    """Spec 2026-09-20 D13, carried item A: product_pipeline_full maps to the same
+    ``"capacity"`` wait as product_capacity_full but its OWN event kind
+    (``skipped_pipeline_full``), with the pipeline cap named in the summary —
+    the sibling of test_max_in_flight_caps_one_product_while_another_keeps_going
+    above, capped on the pipeline instead of the in-flight ceiling."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pipelinecap.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="capped"), batch("a#2", product="capped"),
+                        batch("b#3", product="roomy")],
+            policies={"capped": policy(max_in_flight=5, max_pipeline_prs=1),
+                      "roomy": policy(max_in_flight=5)})
+
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["a#1", "b#3"]
+        events = await ctx.list_events(kind="skipped_pipeline_full")
+        assert len(events) == 1 and "pipeline cap (1)" in events[0]["summary"]
 
     asyncio.run(run())
 

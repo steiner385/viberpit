@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from server.db.models import INACTIVE_SESSION_STATUSES
 
-from .backlog_runner import in_flight_by_product, is_in_flight
+from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
 from .capacity_apply import apply_product_plan, plan_is_live
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, product_order, push_level_of)
@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 # The fixed vocabulary decide_implementation refuses with, plus the three
 # spec-gap fallback codes below (deliberately OUTSIDE that vocabulary — nothing
 # in the product loop ever produces them).
-LAYER_OF_CODE = {"product_capacity_full": "product", "runner_ceiling_full": "runner",
+LAYER_OF_CODE = {"product_capacity_full": "product", "product_pipeline_full": "product",
+                 "runner_ceiling_full": "runner",
                  "daily_budget_full": "runner", "dispatch_off": "product",
                  "approval_required": "product", "runner_off": "runner",
                  "no_account_headroom": "account", "hosts_full": "host",
@@ -39,7 +40,8 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "runner_ceiling_full": "run
                  # future reader of one of these codes (e.g. a diagnostic view
                  # that doesn't filter by state) maps it to the same layer as
                  # its `_full` sibling rather than the "product" default.
-                 "runner_ceiling_held": "runner", "product_capacity_held": "product"}
+                 "runner_ceiling_held": "runner", "product_capacity_held": "product",
+                 "product_pipeline_held": "product"}
 
 
 def _layer_for(code: str) -> str:
@@ -104,6 +106,7 @@ async def build_readout(src: CapacitySources) -> dict:
     states = await src.target_states()
     in_flight_total = sum(1 for s in states.values() if is_in_flight(s))
     by_product = in_flight_by_product(states)
+    pipeline_by = pipeline_by_product(states)
     _eligible, _blocked, _untriaged, per_product = await src.candidates()
     per_product = per_product or {}
 
@@ -172,10 +175,13 @@ async def build_readout(src: CapacitySources) -> dict:
             "effectiveCap": effective_cap, "inFlight": by_product.get(slug, 0),
             "eligible": int(counts.get("eligible") or 0), "constraint": constraint,
             "waitingOn": waiting, "defect": slug in defect_products,
+            "pipeline": pipeline_by.get(slug, 0), "pipelineCap": policy["max_pipeline_prs"],
+            "primaryRepo": p.get("primaryRepo"),
         })
     ordered = product_order([ProductCapacity(
         slug=r["slug"], rank=r["rank"], created_at=r["createdAt"] or "", dispatch=r["dispatch"],
-        capacity_mode=r["capacityMode"], pin=r["pin"], in_flight=r["inFlight"], eligible=r["eligible"])
+        capacity_mode=r["capacityMode"], pin=r["pin"], in_flight=r["inFlight"], eligible=r["eligible"],
+        pipeline=r["pipeline"], pipeline_cap=r["pipelineCap"])
         for r in products])
     order = [p.slug for p in ordered]
     products.sort(key=lambda r: order.index(r["slug"]))
@@ -260,6 +266,7 @@ def readout_to_inputs(r: dict) -> CapacityInputs:
                                        a.get("reason"), a.get("nextResetAt")) for a in r["accounts"]["rows"]),
         runner_ceiling=r["runner"]["ceiling"], runner_in_flight=r["runner"]["inFlight"],
         products=tuple(ProductCapacity(p["slug"], p["rank"], p["createdAt"] or "", p["dispatch"],
-                                       p["capacityMode"], p["pin"], p["inFlight"], p["eligible"])
+                                       p["capacityMode"], p["pin"], p["inFlight"], p["eligible"],
+                                       p["pipeline"], p["pipelineCap"])
                        for p in r["products"]),
     )

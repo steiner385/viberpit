@@ -597,6 +597,20 @@ async def test_manual_dispatch_zero_owner_cap_takes_no_claim(dispatch_orch):
 
 
 @pytest.mark.asyncio
+async def test_manual_dispatch_zero_pipeline_cap_takes_no_claim(dispatch_orch):
+    from sqlalchemy import update
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_pipeline_prs": 0}))
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "capacity"
+    assert "product_pipeline_full" in result["reason_codes"]
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_manual_dispatch_rejects_stale_candidate_product(dispatch_orch):
     dispatch_orch._backlog_query_queue = AsyncMock(return_value=[
         {**_CANDIDATES[0], "product": "stale-owner"}])

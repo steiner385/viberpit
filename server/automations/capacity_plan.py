@@ -40,6 +40,7 @@ class HostCapacity:
 class ProductCapacity:
     slug: str; rank: int | None; created_at: str; dispatch: str; capacity_mode: str
     pin: int; in_flight: int; eligible: int
+    pipeline: int = 0; pipeline_cap: int | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,18 @@ def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str,
     return max(raw_fleet, inputs.runner_in_flight), limiting, budget
 
 
+def pipeline_full(p: ProductCapacity) -> bool:
+    """Spec 2026-09-20 D13: at or over its pipeline cap (blank cap = never)."""
+    return p.pipeline_cap is not None and p.pipeline >= p.pipeline_cap
+
+
+def _plannable_eligible(p: ProductCapacity) -> int:
+    # A pipeline-full product cannot take a new claim (admission refuses it), so
+    # planning slots for it would leave them idle: it is planned as eligible 0
+    # and keeps only its in-flight floor; the freed slots go to the next rank.
+    return 0 if pipeline_full(p) else p.eligible
+
+
 def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
     # A product with live claims stays in the plan even with an empty backlog
     # (`eligible == 0`): its cap is its in-flight floor, so it gets no
@@ -122,11 +135,12 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
     # `per_product` either — dropping it would let a later, unfloored read
     # treat its cap as absent rather than as "its current in-flight count".
     # An empty backlog with NO in-flight claim still gets nothing.
-    working = [p for p in products if p.dispatch != "off" and (p.eligible > 0 or p.in_flight > 0)]
+    working = [p for p in products
+               if p.dispatch != "off" and (_plannable_eligible(p) > 0 or p.in_flight > 0)]
     caps: dict[str, int] = {}
     for p in working:
         if p.capacity_mode == "pinned":
-            caps[p.slug] = max(min(p.pin, p.eligible), p.in_flight)
+            caps[p.slug] = max(min(p.pin, _plannable_eligible(p)), p.in_flight)
         else:
             caps[p.slug] = p.in_flight
         fleet -= caps[p.slug]
@@ -137,7 +151,7 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
         for p in auto:
             if fleet <= 0:
                 break
-            if caps[p.slug] < p.eligible:
+            if caps[p.slug] < _plannable_eligible(p):
                 caps[p.slug] += 1
                 fleet -= 1
                 changed = True
@@ -150,6 +164,8 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     reserve = RESERVE_PCT[push_level]
     fleet, limiting, budget = _fleet(inputs, sessions_per_account)
     budget["reservePct"] = reserve
+    budget["pipeline"] = {p.slug: {"open": p.pipeline, "cap": p.pipeline_cap}
+                          for p in inputs.products if p.pipeline_cap is not None}
     ordered = product_order(inputs.products)
     proposed = _split(fleet, ordered)
     reasons: list[str] = []
@@ -167,6 +183,14 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
             reason += (f"; floored at the runner's {inputs.runner_in_flight} in-flight "
                        f"(would have been {budget['rawFleet']})")
         reasons.append(reason)
+    for p in ordered:
+        # `p.slug in proposed`: a full product with eligible 0 AND in_flight 0
+        # never enters `working` (`_split`), so it never enters `proposed` either —
+        # nothing was planned for it and no reason line explains a redistribution
+        # that has nothing to redistribute.
+        if pipeline_full(p) and p.dispatch != "off" and p.slug in proposed:
+            reasons.append(f"{p.slug}: pipeline full ({p.pipeline}/{p.pipeline_cap} claims and PRs), "
+                           "its slots go to the next rank")
     per_product: dict[str, int] = {}
     pending: dict[str, int] = {}
     prev_caps = previous.per_product if previous else {}

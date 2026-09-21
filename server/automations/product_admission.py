@@ -118,7 +118,7 @@ class ImplementationSnapshot:
         existing_slot: bool = False, existing_token: str | None = None,
         prerequisites: tuple[ImplementationConstraint, ...] = (),
     ) -> tuple[ImplementationDecision, dict]:
-        from .backlog_runner import in_flight_by_product, is_in_flight
+        from .backlog_runner import counts_toward_pipeline, in_flight_by_product, is_in_flight, pipeline_by_product
 
         owner = self.coverage.ownership.get(repo)
         raw = self.coverage.policies.get(owner.owner.slug) if owner and owner.owner else None
@@ -131,6 +131,10 @@ class ImplementationSnapshot:
         if self.states is not None:
             product_count = in_flight_by_product(self.states).get(
                 owner.owner.slug if owner and owner.owner else "", 0)
+        pipeline_count = None
+        if self.states is not None:
+            pipeline_count = pipeline_by_product(self.states).get(
+                owner.owner.slug if owner and owner.owner else "", 0)
         daily_count = None if self.accounting is None else len(self.accounting)
         if daily_count is not None and existing_token in (self.accounting or {}):
             daily_count -= 1
@@ -139,6 +143,16 @@ class ImplementationSnapshot:
                                 and owner and owner.owner
                                 and state.get("product") == owner.owner.slug
                                 and is_in_flight(state) for state in self.states.values()))
+        # A handed-off claim frees its RUNNER slot (`is_in_flight` False, so
+        # `occupied` above is False) but is still counted by `pipeline_count`
+        # (`pipeline_by_product`, keyed off `counts_toward_pipeline`) — the same
+        # row, judged by the count's own rule rather than the slot's, so the
+        # pipeline's re-validation can never refuse a claim it is itself counting.
+        pipeline_occupied = bool(existing_slot and existing_token and self.states is not None
+                                 and any(state.get("ownership_token") == existing_token
+                                         and owner and owner.owner
+                                         and state.get("product") == owner.owner.slug
+                                         and counts_toward_pipeline(state) for state in self.states.values()))
         decision = decide_implementation(
             ownership=owner, requested_product_slug=requested_product, policy=raw,
             trigger=trigger, effect=resolved_effect, runner_mode=self.runner_mode,
@@ -148,6 +162,8 @@ class ImplementationSnapshot:
             daily_count=daily_count, daily_cap=self.config.get("max_spawns_per_day"),
             observed_at=self.coverage.observed_at, existing_slot=occupied,
             prerequisites=prerequisites,
+            pipeline_count=pipeline_count, pipeline_cap=policy["max_pipeline_prs"],
+            pipeline_existing_slot=pipeline_occupied,
             remaining_checks=("target_readiness", "dependencies", "attempts", "human_holds",
                               "engine_policy", "security", "target_ownership"),
         )
