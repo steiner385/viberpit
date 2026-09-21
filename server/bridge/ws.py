@@ -55,6 +55,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from server.aio import cancel_and_reap
+from server.automations.ownership import StaleOwnership
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
@@ -63,7 +64,7 @@ from server.auth.middleware import require_ws_identity
 from server.config import get_settings
 from server.db import db_session
 from server.ipc import protocol as proto
-from server.ipc.client import DaemonTimeout, DaemonUnavailable
+from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
 from server.obs.metrics import assistant_prompts_total
 from server.obs.tasks import supervise
@@ -752,7 +753,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 if not auto:
                     await websocket.close(code=1013)
                 return None
-            except Exception:
+            except Exception as exc:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
                 # the stored engine_session_id can no longer be resumed. Letting that
@@ -761,6 +762,25 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # keep the socket alive (replayComplete clears the loading state).
                 log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
                 if not auto:
+                    # StaleOwnership out of the automation execution fence (bare
+                    # locally, or DaemonError(err_type="StaleOwnership") over the
+                    # fleet RPC boundary) means this session's tracked GitHub target
+                    # was legitimately transferred/released elsewhere — e.g. its PR
+                    # merged and backlog-runner closed the claim out — same terminal
+                    # condition `_reassign` already parks as `automation_ownership_stale`
+                    # (see test_reassign_stale_ownership.py). It is not an account
+                    # problem and not retryable, so it must not get the reauth hint
+                    # below, which sent a human straight to the wrong tab.
+                    stale_ownership = isinstance(exc, StaleOwnership) or (
+                        isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")
+                    if stale_ownership:
+                        await _attach_failed(
+                            session_id, "SESSION_OWNERSHIP_STALE",
+                            "This session's tracked GitHub item changed hands (for "
+                            "example, its PR merged) after the session finished, so "
+                            "it can no longer resume — the underlying work is "
+                            "unaffected.", auto)
+                        return None
                     # Only looked up for the banner's account hint, so it is skipped
                     # entirely on the silent auto path (one fewer RPC in remote mode).
                     rec = await orchestrator.get_session(session_id)

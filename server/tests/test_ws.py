@@ -271,6 +271,39 @@ def test_attach_resume_failure_reports_error_and_keeps_ws_alive(ws_env):
     client.portal.call(orch.close_session, session_id)
 
 
+def test_attach_stale_ownership_reports_accurate_error_not_reauth_hint(ws_env):
+    """A resume that hits the automation execution fence's StaleOwnership (its
+    tracked GitHub target was transferred/released elsewhere, e.g. a merged PR
+    close-out — see test_reassign_stale_ownership.py) is not an account problem.
+    It must not get the 'may need re-authentication' hint, which sent a human
+    to the Accounts tab chasing a token that was never the issue (dobby,
+    2026-09-21, session a21a8b88)."""
+    from server.automations.ownership import StaleOwnership
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-stale-ownership")
+    session_id = session.id
+
+    async def _boom(_sid, *_a, **_k):
+        raise StaleOwnership("operation no longer owns its targets")
+    orch.ensure_driver = _boom
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+        errs = [e for e in events if e.get("type") == "error"]
+        assert any(e.get("code") == "SESSION_OWNERSHIP_STALE" for e in errs), (
+            f"no SESSION_OWNERSHIP_STALE in {[e.get('type') for e in events]}"
+        )
+        assert not any("re-authentication" in e.get("message", "") for e in errs), (
+            f"stale-ownership resume still shown as an account problem: {errs}"
+        )
+        assert any(e.get("type") == "replayComplete" for e in events)
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    client.portal.call(orch.close_session, session_id)
+
+
 # ---------------------------------------------------------------------------
 # A dead outbound forwarding task closes the socket (1011) so the client reconnects
 # ---------------------------------------------------------------------------
