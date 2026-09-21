@@ -1,7 +1,7 @@
 """Fresh, read-only implementation admission evidence shared by preview and dispatch."""
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -110,6 +110,7 @@ class ImplementationSnapshot:
     config: dict
     states: dict[str, dict] | None
     accounting: dict[str, datetime] | None
+    pr_doctor_pending: frozenset[str] = frozenset()
 
     def decide(
         self, repo: str, *, requested_product: str | None = None,
@@ -153,6 +154,7 @@ class ImplementationSnapshot:
                                          and owner and owner.owner
                                          and state.get("product") == owner.owner.slug
                                          and counts_toward_pipeline(state) for state in self.states.values()))
+        pr_doctor_gated = bool(owner and owner.owner and owner.owner.slug in self.pr_doctor_pending)
         decision = decide_implementation(
             ownership=owner, requested_product_slug=requested_product, policy=raw,
             trigger=trigger, effect=resolved_effect, runner_mode=self.runner_mode,
@@ -164,6 +166,7 @@ class ImplementationSnapshot:
             prerequisites=prerequisites,
             pipeline_count=pipeline_count, pipeline_cap=policy["max_pipeline_prs"],
             pipeline_existing_slot=pipeline_occupied,
+            pr_doctor_gated=pr_doctor_gated,
             remaining_checks=("target_readiness", "dependencies", "attempts", "human_holds",
                               "engine_policy", "security", "target_ownership"),
         )
@@ -174,6 +177,7 @@ async def gather_implementation_snapshot(
     repos: Collection[str] | None = None, *, requested_product: str | None = None,
     context: AutomationContext | None = None,
     verified_repos: Mapping[str, str | None] | None = None,
+    pr_doctor_pending: Callable[[], Awaitable[frozenset[str]]] | None = None,
 ) -> ImplementationSnapshot:
     from .backlog_runner import BacklogRunner, fold_global_mode
 
@@ -196,7 +200,11 @@ async def gather_implementation_snapshot(
         accounting = await read_dispatch_accounting()
     except Exception:
         accounting = None
-    return ImplementationSnapshot(coverage, fold_global_mode(mode), config, states, accounting)
+    try:
+        pending = await pr_doctor_pending() if pr_doctor_pending is not None else frozenset()
+    except Exception:
+        pending = frozenset()
+    return ImplementationSnapshot(coverage, fold_global_mode(mode), config, states, accounting, pending)
 
 
 async def evaluate_implementation(
@@ -207,6 +215,7 @@ async def evaluate_implementation(
     context: AutomationContext | None = None,
     verified_repos: Mapping[str, str | None] | None = None,
     target_refs: Collection[str] | None = None,
+    pr_doctor_pending: Callable[[], Awaitable[frozenset[str]]] | None = None,
 ) -> tuple[ImplementationDecision, dict]:
     repos = {repo}
     invalid = False
@@ -217,7 +226,8 @@ async def evaluate_implementation(
         else:
             repos.add(target_repo)
     snapshot = await gather_implementation_snapshot(
-        repos, requested_product=requested_product, context=context, verified_repos=verified_repos)
+        repos, requested_product=requested_product, context=context, verified_repos=verified_repos,
+        pr_doctor_pending=pr_doctor_pending)
     prerequisites: list[ImplementationConstraint] = []
     primary = snapshot.coverage.ownership.get(repo)
     if invalid:

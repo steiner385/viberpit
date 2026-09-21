@@ -387,6 +387,7 @@ def decide_implementation(
     pipeline_count: int | None = None,
     pipeline_cap: int | None = None,
     pipeline_existing_slot: bool = False,
+    pr_doctor_gated: bool = False,
 ) -> ImplementationDecision:
     """Compose current implementation admission policy without I/O or claims.
 
@@ -479,6 +480,17 @@ def decide_implementation(
     if pipeline_cap is not None:
         capacity("product_pipeline", pipeline_count, pipeline_cap, occupied=pipeline_existing_slot,
                  full_text=f"pipeline full: {pipeline_count} claims and PRs open (cap {pipeline_cap})")
+    # spec 2026-09-21 pr-doctor-priority: PR Doctor always wins available
+    # capacity for a product with a pending stuck PR. Same D8 carve-out as
+    # every other capacity check — an occupied claim is never refused.
+    if pr_doctor_gated:
+        if existing_slot:
+            add("pr_doctor_priority_held", "permitted",
+                "This claim already holds its slot; PR Doctor's priority does not interrupt it.")
+        else:
+            add("pr_doctor_priority", "refused",
+                "PR Doctor has a stuck pull request pending a fix for this product; "
+                "capacity is reserved until it clears.")
     constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
     states = {item.state for item in constraints}
     state: DecisionState = "refused" if "refused" in states else "unknown" if "unknown" in states else "permitted"

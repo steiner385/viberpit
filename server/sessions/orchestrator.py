@@ -1919,6 +1919,9 @@ class SessionOrchestrator:
                 raise StaleOwnership("implementation admission unknown: missing dispatch provenance")
             if runner_owned and intent and operation is not None:
                 expected = intent["expected"]
+                # `pr_doctor_pending` is deliberately NOT passed here: existing_slot=True
+                # and a refused decision raises StaleOwnership, so the gate must never
+                # reach an in-flight claim (spec 2026-09-21 pr-doctor-priority).
                 decision, _ = await evaluate_implementation(
                     expected["repo"], requested_product=expected.get("product"),
                     trigger="manual" if intent.get("source") in {"manual", "proposal"} else "automatic",
@@ -7664,7 +7667,8 @@ class SessionOrchestrator:
             batch.repo, requested_product=batch.product,
             trigger="automatic" if source == "automatic" else "manual",
             effect="dispatch", existing_slot=existing_slot, context=self._backlog_ctx,
-            target_refs=[batch.primary, *batch.issues], existing_token=existing_token)
+            target_refs=[batch.primary, *batch.issues], existing_token=existing_token,
+            pr_doctor_pending=self._pr_doctor_pending_products)
 
     async def _backlog_dispatch_batch(self, batch, *, source: str) -> dict:
         """Manual actions share the runner's claims, budget and spawn lifecycle."""
@@ -12069,8 +12073,6 @@ class SessionOrchestrator:
         failing PR harmlessly and never double-injects. Best-effort: a per-PR error
         is swallowed so one bad PR can't abort the sweep.
         """
-        from server.automations import pr_doctor_engine as engine
-
         # Reconcile retained work even after a PR leaves the open population or
         # its policy/schedule stops authorizing NEW effects. Observation never submits.
         for target, state in (await self._pr_doctor_ctx.list_target_states()).items():
@@ -12094,13 +12096,7 @@ class SessionOrchestrator:
             raise
         degraded = False
         for repo, branch in pairs:
-            info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
-            # Reconcile: per-branch cache can lag behind a merge; if population confirms
-            # the PR is terminal while per-branch still shows it open, trust population.
-            if info is not None and not engine.target_terminal(info):
-                pop = self._pr_population_pr(repo, branch)
-                if pop is not None and engine.target_terminal(pop):
-                    info = pop
+            info = self._pr_doctor_info_for(repo, branch)
             if info is None:
                 continue
             rec = self._pr_doctor_owning_rec(repo, branch)
@@ -13863,6 +13859,25 @@ class SessionOrchestrator:
                 return info
         return None
 
+    def _pr_doctor_info_for(self, repo: str, branch: str) -> "PullRequestInfo | None":
+        """Resolve the PR Doctor sees for (repo, branch), reconciled against a
+        stale per-branch cache.
+
+        Shared by the sweep, ``PrDoctorActionProvider.actionable``, and
+        ``_pr_doctor_pending_products``: per-branch and population caches can
+        disagree after a merge (the per-branch cache lags), so if the resolved
+        info is not terminal but the population copy says it is, trust the
+        population copy. Single source of truth for this resolve+reconcile so
+        the three call sites can't drift (spec 2026-09-21 pr-doctor-priority,
+        finding #2)."""
+        from server.automations import pr_doctor_engine as engine
+        info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
+        if info is not None and not engine.target_terminal(info):
+            pop = self._pr_population_pr(repo, branch)
+            if pop is not None and engine.target_terminal(pop):
+                info = pop
+        return info
+
     async def _pr_doctor_scope(self) -> "set[str] | None":
         """PR Doctor's configured repo scope; None means 'all watched repos'."""
         from sqlalchemy import select
@@ -13894,6 +13909,53 @@ class SessionOrchestrator:
                 if info.head_ref and info.state not in ("merged", "closed"):
                     seen.add((repo, info.head_ref))
         return list(seen)
+
+    async def _pr_doctor_pending_products(self) -> frozenset[str]:
+        """Product slugs with at least one PR PR Doctor will actually act on
+        (spec 2026-09-21 pr-doctor-priority). Backlog Runner's admission gate
+        reads this to refuse NEW claims for a gated product — never an
+        existing one (D8: admission refuses new claims, it never kills a
+        session). Best-effort: any failure yields frozenset() rather than
+        blocking Backlog Runner dispatch on a PR Doctor read.
+
+        Gates only when ``plan_recovery`` yields ``Mechanical`` or
+        ``SessionFix`` — i.e. PR Doctor is actually going to fix it. A
+        ``Notify``/``Propose``/``GiveUp`` outcome (mode "off", mode
+        "propose", the per-mode auto flag disabled, a "blocked" review-gate
+        classification, or an already-given-up/ceiling-reached target) must
+        NOT gate: nothing is being fixed, so gating would starve the product
+        forever, including whenever PR Doctor itself is switched off.
+        """
+        from server.automations import pr_doctor_engine as engine
+        from server.pm.repo_project import owning_projects_by_repo
+        try:
+            mode = await self._pr_autofix_mode()
+            config = await self._pr_doctor_config()
+            states = await self._pr_doctor_ctx.list_target_states()
+            pending_repos: set[str] = set()
+            for repo, branch in await self._pr_doctor_scope_pairs():
+                info = self._pr_doctor_info_for(repo, branch)
+                if info is None or engine.target_terminal(info):
+                    continue
+                failure_mode = engine.classify(info)
+                if failure_mode is None:
+                    continue
+                state = states.get(f"{repo}#{info.number}", {})
+                action = engine.plan_recovery(failure_mode, mode, config, state)
+                if not isinstance(action, (engine.Mechanical, engine.SessionFix)):
+                    continue
+                pending_repos.add(repo)
+            if not pending_repos:
+                return frozenset()
+            async with db_session() as db:
+                # Registration-only matching (no verified canonical identities):
+                # a repo known by an alias spelling may resolve on the admission
+                # side but be dropped here, so the gate fails open for it.
+                owners = await owning_projects_by_repo(db, pending_repos)
+            return frozenset(owner.slug for owner in owners.values())
+        except Exception:
+            log.warning("orchestrator._pr_doctor_pending_products_failed", exc_info=True)
+            return frozenset()
 
     @staticmethod
     def _session_pr_branches(rec) -> list[str]:
