@@ -25,6 +25,15 @@ STDERR_UNAUTH_403 = (
 # The AUTHENTICATED over-limit message. Same endpoint, same status, opposite
 # meaning: the credential is fine and the host is merely busy.
 STDERR_AUTHED_403 = "gh: API rate limit exceeded for user ID 1234567. (HTTP 403)"
+# gh with NO host config at all — a freshly provisioned runner before someone has
+# run `gh auth login` into it. Captured from the real binary: it short-circuits
+# before making a request, so it never produces the 401 above and, unclassified,
+# every loop on that host retries at full tick rate forever with no signal.
+STDERR_NOT_LOGGED_IN = (
+    "gh: To get started with GitHub CLI, please run:  gh auth login\n"
+    "Alternatively, populate the GH_TOKEN environment variable with a GitHub API "
+    "authentication token."
+)
 
 
 class FakeClock:
@@ -64,6 +73,19 @@ def test_classifies_401_as_unauthenticated():
 
 def test_classifies_ip_shaped_rate_limit_as_unauthenticated():
     assert ghc.classify_gh_failure(STDERR_UNAUTH_403) == ghc.UNAUTHENTICATED
+
+
+def test_classifies_a_host_with_no_gh_config_at_all():
+    """The onboarding shape: gh has no host entry, so it never even attempts the
+    call and never emits the 401. Unambiguous — that message cannot mean anything
+    except "there is no ambient credential on this host"."""
+    assert ghc.classify_gh_failure(STDERR_NOT_LOGGED_IN) == ghc.UNAUTHENTICATED
+
+
+def test_not_logged_in_latches_and_backs_off_like_the_401(health):
+    health.record(1, STDERR_NOT_LOGGED_IN)
+    assert health.snapshot().unauthenticated is True
+    assert health.allow_attempt() is False
 
 
 def test_does_not_classify_authenticated_over_limit():

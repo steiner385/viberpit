@@ -16,6 +16,11 @@ unauthenticated**:
 * reads   → ``gh: API rate limit exceeded for <public IP>`` — the 60/hr
   **unauthenticated** bucket, which the failing loops then burn through.
 
+A third shape belongs to the same condition on a *different* kind of host: one
+with no gh host entry at all (a freshly provisioned runner before ``gh auth
+login``) refuses with ``To get started with GitHub CLI…`` before it ever makes a
+request, so it never produces either of the above.
+
 Before this module, ViberPit discovered that only as one WARNING per attempted
 target, from each of ~7 gh-backed loops (pr_poller, pr_status, merge_queue,
 deploy_monitor, backlog_runner, error triage, the CI/CD Doctor). Two costs:
@@ -131,13 +136,27 @@ _RE_UNAUTH_RATE_LIMIT = re.compile(
     r"api rate limit exceeded for (?!user\b)", re.IGNORECASE
 )
 
+#: ``gh: To get started with GitHub CLI, please run:  gh auth login`` — gh holds no
+#: host entry for github.com, so it refuses *before* making a request and therefore
+#: never emits the 401 above. That is the state a freshly provisioned runner is in
+#: until someone runs ``gh auth login`` into its config dir, and without this shape
+#: such a host backs off from nothing: the loops retry at full tick rate with the
+#: condition unreported. Zero false-positive risk — the message cannot mean
+#: anything other than "this host has no ambient credential".
+_RE_NOT_LOGGED_IN = re.compile(
+    r"to get started with github cli|populate the gh_token environment variable",
+    re.IGNORECASE,
+)
+
+_PATTERNS = (_RE_401, _RE_UNAUTH_RATE_LIMIT, _RE_NOT_LOGGED_IN)
+
 
 def classify_gh_failure(stderr: str) -> str | None:
     """:data:`UNAUTHENTICATED` when *stderr* proves the ambient credential is
     missing, else None. Called only for a non-zero gh exit."""
     if not stderr:
         return None
-    if _RE_401.search(stderr) or _RE_UNAUTH_RATE_LIMIT.search(stderr):
+    if any(p.search(stderr) for p in _PATTERNS):
         return UNAUTHENTICATED
     return None
 
