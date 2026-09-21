@@ -1854,7 +1854,24 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.session_absent_probe_failed sid=%s", sid,
                         exc_info=True)
             return False
-        from .ownership import ReleaseProof
+        from .ownership import ReleaseProof, StaleOwnership, reconcile_absent_session_stopped
+        token = st.get("ownership_token")
+        if token:
+            # Best-effort: closes out this ABSENT session's own execution
+            # history (e.g. a resume's predecessor execution killed by an
+            # earlier restart and never individually attested) so the
+            # WORK_STOPPED proof below has something to validate against.
+            # Scoped to *sid* alone — already proven absent above — never
+            # applied to any other session's still-open history. A failure
+            # here just leaves the release attempt below to fail as it would
+            # have anyway — never stalls the sweep.
+            try:
+                await reconcile_absent_session_stopped(token, sid)
+            except StaleOwnership:
+                return False
+            except Exception:  # pragma: no cover — a repair failure must not stall the sweep
+                log.warning("backlog_runner.tree_reconcile_failed target=%s sid=%s", target, sid,
+                            exc_info=True)
         if not await self._ctx.compare_target_state(
                 target, st, None, release_proof=ReleaseProof.WORK_STOPPED,
                 reason="session row deleted while the claim was open"):

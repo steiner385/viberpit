@@ -352,13 +352,15 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             TriageProposal.status == "pending",
             WorkItem.repo.in_(repo_names)))).all()]
     now = datetime.now(timezone.utc)
+    unindexed = [(d.get("path", ""), d.get("error", "")) for d in (p.unindexed_docs or [])]
     h = roadmap_health(capabilities=caps,
                        initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
                                     i.stage == "done" or i.status == "done") for i in inits],
-                       proposals=props, now=now)
+                       proposals=props, now=now, unindexed_docs=unindexed)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
+            "unindexedDocs": [{"path": path, "error": error} for path, error in h.unindexed_docs],
             "generatedAt": now.isoformat()}
 
 
@@ -1045,12 +1047,25 @@ async def advance_map(
 ) -> dict:
     """Advance the project from ``map_proposed`` → ``map_merged`` after the
     human merges the archaeology map PR. 409 if the project is not in the
-    ``map_proposed`` state."""
+    ``map_proposed`` state, or if the merged map left feature docs pm-sync
+    could not parse — those never became Feature rows (issue #2166), so
+    advancing anyway would silently under-count the map the wizard just
+    congratulated the human for finishing."""
     p = await _load_project(db, slug)
     if p.onboarding_state != "map_proposed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "not_map_proposed",
             "message": f"project is in state '{p.onboarding_state}', not 'map_proposed'"})
+    unindexed = p.unindexed_docs or []
+    if unindexed:
+        paths = [d.get("path", "") for d in unindexed]
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "unindexed_docs",
+            "message": (f"{len(unindexed)} feature doc(s) could not be parsed and are "
+                        f"NOT on the map: " + "; ".join(paths[:5])
+                        + ("; …" if len(paths) > 5 else "") + " — fix them, wait for the "
+                        "next sync pass, and try again"),
+            "unindexedDocs": unindexed})
     orch = request.app.state.sessions
     await orch.pm_advance_map_merged(slug)
     await record_audit(db=db, type="pm.onboard.advance_map", identity=identity,
@@ -1441,30 +1456,41 @@ async def reject_triage(
     db=Depends(get_db),
 ) -> dict:
     """Reject the proposal → the work item is parked with an owner-action hold
-    (no blind retry, spec 2026-09-18 §3). The proposal row remains as audit."""
+    (no blind retry, spec 2026-09-18 §3). The proposal row remains as audit.
+    The batch form is ``reject-bulk``, which reuses the same ``apply_reject``."""
     prop = await _load_pending_proposal(db, proposal_id)
+    await apply_reject(db, prop, request=request, audit_identity=identity)
+    return {"id": prop.id, "status": "rejected", "workItemId": prop.work_item_id}
+
+
+async def apply_reject(
+    db, prop: TriageProposal, *, request: Request, audit_identity: str,
+) -> None:
+    """The one reject write path — single-reject and reject-bulk are both callers.
+
+    Parks the work item under an owner-action hold, snapshots the overlay so
+    the undo route can put it back, and flips the proposal to ``rejected``.
+    Spec 2026-09-18 §3: a rejection is a hold, not a triage state — and §8 names
+    "the two reject flows" as authorised to write owner_action whoever drives
+    them, so this goes through ``set_reject_hold`` (no actor-class gate) rather
+    than ``set_hold``. The ACTOR is resolved exactly as patch_overlay resolves it
+    so an assistant or loopback rejection is recorded as what it was."""
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
     if wi is not None:
         prop.undo_snapshot = _overlay_snapshot(wi)
-        # Spec 2026-09-18 §3: a rejection is a hold, not a triage state — and §8 names
-        # "the two reject flows" as authorised to write owner_action whoever drives
-        # them, so this goes through `set_reject_hold` (no actor-class gate) rather
-        # than `set_hold`. The ACTOR is resolved exactly as patch_overlay resolves it
-        # so an assistant or loopback rejection is recorded as what it was.
         from server.pm.holds import REJECT_HOLD_REASON, actor_class, actor_for_request, set_reject_hold
         actor = actor_for_request(request)
         set_reject_hold(wi, actor=actor, now=now)
-        await record_audit(db=db, type="pm.hold.set", identity=identity, detail={
+        await record_audit(db=db, type="pm.hold.set", identity=audit_identity, detail={
             "workItemId": wi.id, "kind": "owner_action",
             "reason": REJECT_HOLD_REASON, "actorClass": actor_class(actor)})
     prop.status = "rejected"
     prop.resolved_at = now
     await db.flush()
-    await record_audit(db=db, type="pm.triage.reject", identity=identity,
-                       detail={"proposalId": proposal_id})
-    return {"id": prop.id, "status": "rejected", "workItemId": prop.work_item_id}
+    await record_audit(db=db, type="pm.triage.reject", identity=audit_identity,
+                       detail={"proposalId": prop.id})
 
 
 @router.post("/triage/{proposal_id}/undo")
@@ -1527,13 +1553,14 @@ async def undo_triage(
             "triageState": wi.triage_state if wi is not None else None}
 
 
-class AcceptBulkBody(BaseModel):
+class BulkIdsBody(BaseModel):
+    """The selection a bulk sweep (`accept-bulk`, `reject-bulk`) acts on."""
     ids: list[str]
 
 
 @router.post("/triage/accept-bulk")
 async def accept_bulk(
-    body: AcceptBulkBody,
+    body: BulkIdsBody,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1584,6 +1611,50 @@ async def accept_bulk(
                        detail={"proposalIds": landed, "requestedIds": body.ids,
                                "accepted": len(landed)})
     return {"accepted": len(landed), "results": results}
+
+
+@router.post("/triage/reject-bulk")
+async def reject_bulk(
+    body: BulkIdsBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Reject many proposals in one call (the inbox's reject-selected action).
+    The reject twin of ``accept_bulk``, and the same contract: every id runs
+    the SAME ``apply_reject`` path as single-reject inside its OWN savepoint,
+    per-id failures land in ``results``, and the response is always HTTP 200
+    with a 207-style aggregate. A batch-wide failure would silently revert the
+    ids that already parked — the inbox would lose the whole selection."""
+    results: list[dict] = []
+    landed: list[str] = []          # ids that actually committed, for the audit
+    for pid in body.ids:
+        proposal = (await db.execute(
+            select(TriageProposal).where(TriageProposal.id == pid)
+        )).scalar_one_or_none()
+        if proposal is None:
+            results.append({"id": pid, "ok": False, "error": "not_found"})
+            continue
+        if proposal.status != "pending":
+            results.append({"id": pid, "ok": False, "error": "not_pending"})
+            continue
+        try:
+            async with db.begin_nested():
+                await apply_reject(db, proposal, request=request, audit_identity=identity)
+            results.append({"id": pid, "ok": True})
+            landed.append(pid)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {"error": "failed"}
+            results.append({"id": pid, "ok": False, "error": detail.get("error")})
+        except Exception:
+            log.warning("reject-bulk: proposal %s failed", pid, exc_info=True)
+            results.append({"id": pid, "ok": False, "error": "failed"})
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.reject_bulk", identity=identity,
+                       # the ids that actually landed, NOT the requested list
+                       detail={"proposalIds": landed, "requestedIds": body.ids,
+                               "rejected": len(landed)})
+    return {"rejected": len(landed), "results": results}
 
 
 def _work_item_to_dict(w: WorkItem) -> dict:

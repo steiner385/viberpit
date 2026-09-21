@@ -836,6 +836,50 @@ def test_token_holding_claim_kept_when_absent_seam_unwired(tmp_path):
     asyncio.run(run())
 
 
+def test_orphaned_claim_released_despite_unattested_predecessor_execution(tmp_path):
+    """Reproduces cairnea/KinDash#16041 (2026-09-21): a claim whose session was
+    resumed, whose predecessor execution was never individually attested (killed
+    by a restart), and whose row was later deleted entirely — the shape the
+    Delivery capacity card reported as "claim held by a missing session ... a
+    defect, not load" forever, because ``ReleaseProof.WORK_STOPPED`` demanded a
+    tree-wide aggregate that nothing could ever (re)compute once the session row
+    was gone. The sweep must now self-heal it via ``reconcile_tree_stopped``."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orphan3.db'}"
+
+    async def run():
+        from server.automations.ownership import owned
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        pre_ctx = AutomationContext("backlog-runner")
+        await _set_owned_state(pre_ctx, "o/r#9", {"repo": "o/r", "claimed": True, "attempts": 0,
+                                                  "issues": ["o/r#9"]})
+        token = (await pre_ctx.get_target_state("o/r#9"))["ownership_token"]
+        async with owned(token) as tx:
+            sid = tx.reserve_session()
+            tx.bind_session(sid)
+        async with owned(token) as tx:
+            tx.operation.execution_generation = 2
+            tx.operation.execution_sessions = {
+                sid: {"current": "exec-2", "executions": {
+                    "exec-1": {"generation": 1, "stopped": None},  # never attested
+                    "exec-2": {"generation": 2, "stopped": 2},     # closed cleanly
+                }},
+            }
+
+        async def absent(probe_sid):
+            return probe_sid == sid
+
+        loop, rec, ctx = build_loop(candidates=[], session_absent=absent)
+        st = await ctx.get_target_state("o/r#9")
+        await ctx.set_target_state("o/r#9", {**st, "session_id": sid})
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == {}
+        assert len(await ctx.list_events(kind="orphaned_claim_released")) == 1
+
+    asyncio.run(run())
+
+
 def test_circuit_breaker_caps_and_resets_next_day(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'e.db'}"
 

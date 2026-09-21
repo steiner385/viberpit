@@ -55,9 +55,10 @@ import {
 import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './capacity'
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
-  fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
+  fetchTriage, acceptProposal, rejectProposal, acceptBulk, rejectBulk, updateOverlay, undoProposal,
   fetchDecisions, acceptDecision, rejectDecision,
-  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay, type UndoResult,
+  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type RejectBulkResult,
+  type WorkItemOverlay, type UndoResult,
   type DecisionProposal, type DecisionResult,
 } from './triage'
 import { useSessionSocket } from '@/ws/client'
@@ -2492,6 +2493,42 @@ export function useAcceptBulk(projectSlug?: string) {
       if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
       if (res.accepted) {
         triageUndoToast(qc, `Accepted ${res.accepted}`, res.results.filter((r) => r.ok).map((r) => r.id), projectSlug)
+      }
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Reject-selected (the inbox's `R` key) — the reject twin of `useAcceptBulk`:
+ *  optimistically drops all selected rows, restores them all on failure. */
+export function useRejectBulk(projectSlug?: string) {
+  const qc = useQueryClient()
+  const key = [...QK.triage, projectSlug ?? null]
+  return useMutation<
+    RejectBulkResult,
+    ApiRequestError,
+    string[],
+    { prev?: TriageProposal[] }
+  >({
+    mutationFn: (ids) => rejectBulk(ids),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<TriageProposal[]>(key)
+      const drop = new Set(ids)
+      qc.setQueryData<TriageProposal[]>(key, (cur) => (cur ?? []).filter((p) => !drop.has(p.id)))
+      return { prev }
+    },
+    onError: (e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not reject selection'))
+    },
+    // A reject parks each item under an owner-action hold, which moves the
+    // map's awaiting-triage / needs-home counts — same as a single reject.
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      if (res.rejected) {
+        triageUndoToast(qc, `Rejected ${res.rejected}`, res.results.filter((r) => r.ok).map((r) => r.id), projectSlug)
       }
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),

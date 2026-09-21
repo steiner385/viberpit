@@ -191,6 +191,36 @@ def _repo_root() -> str:
     return os.environ.get("CCSWITCH_REPO_ROOT", os.path.expanduser("~/GitHub"))
 
 
+def _cmd_lint(args: argparse.Namespace) -> int:
+    """Handle the `lint` subcommand family (issue #2166).
+
+    ``feature-docs`` imports ``server.pm.featuredoc_lint`` rather than
+    reimplementing the check: that module is pure Python built on the exact
+    parser/planner pm-sync runs, so this command and the indexer cannot
+    disagree. ``server`` is not part of this package's distribution (only
+    ``src/`` is), so a repo other than ViberPit itself must put a ViberPit
+    checkout on ``PYTHONPATH`` to use this — see the reusable workflow at
+    ``.github/workflows/feature-doc-lint-reusable.yml``.
+    """
+    if args.lint_cmd == "feature-docs":
+        try:
+            from server.pm.featuredoc_lint import format_errors, lint_feature_docs
+        except ImportError as e:
+            print(f"{_P}: lint feature-docs needs a ViberPit checkout's `server` "
+                  f"package importable on PYTHONPATH (with its [server] extras "
+                  f"installed): {e}", file=sys.stderr)
+            return 2
+        result = lint_feature_docs(args.path)
+        for line in format_errors(result):
+            print(line)
+        if result.ok:
+            print(f"feature-doc-lint: {result.checked} feature doc(s) conform to "
+                  "the slug/title/state convention.")
+            return 0
+        return 1
+    return 1
+
+
 def _cmd_clones(args: argparse.Namespace) -> int:
     """Handle the `ccswitch clones` subcommand family (issue #1003)."""
     import json
@@ -383,6 +413,14 @@ def main(argv: list[str] | None = None) -> int:
                           help="recorded in the audit log line")
     p_remove.add_argument("--force", action="store_true",
                           help="remove even though worktrees reference it (destructive)")
+    p_lint = sub.add_parser(
+        "lint", help="validate repo conventions ViberPit's automations depend on")
+    lint_sub = p_lint.add_subparsers(dest="lint_cmd", required=True)
+    p_lint_docs = lint_sub.add_parser(
+        "feature-docs",
+        help="validate docs/product/features/*.md against the frontmatter "
+             "convention pm-sync indexes (issue #2166)")
+    p_lint_docs.add_argument("path", nargs="?", default=".", help="repo root (default: .)")
     p_mcp = sub.add_parser(
         "mcp", help=f"serve the {brand.NAME} assistant tools to another agent over stdio MCP")
     p_mcp.add_argument("--url", default=assistant_mcp.DEFAULT_URL,
@@ -461,6 +499,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_crypto(args)
     if args.cmd == "clones":
         return _cmd_clones(args)
+    if args.cmd == "lint":
+        return _cmd_lint(args)
     if args.cmd == "mcp":
         return assistant_mcp.run(args)
     if args.cmd == "ask":

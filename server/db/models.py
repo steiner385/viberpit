@@ -1619,6 +1619,14 @@ class Project(Base):
     # NULL = unranked (sorted after ranked products by created_at). Nullable so
     # reconcile ALTER-ADDs it on both dialects.
     priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # pm_sync's current per-pass "could not parse" list for this product's primary
+    # repo (issue #2166): [{"path": ..., "error": ...}, ...], or NULL when nothing
+    # is skipped. Rewritten wholesale every `_feature_index` pass (see
+    # server/pm/mirror_store.py:set_project_unindexed_docs) so a fixed doc clears
+    # itself rather than accumulating stale entries. roadmap_health surfaces it —
+    # before this, a skipped doc was invisible anywhere but the automation feed
+    # and the process log. Nullable so reconcile ALTER-ADDs it on both dialects.
+    unindexed_docs: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class ProjectRepo(Base):

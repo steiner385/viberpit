@@ -28,8 +28,15 @@ export interface InboxState {
   cursor: number
   /** The row the cursor is on, by identity. The source of truth. */
   cursorId: string | null
-  /** Proposal ids toggled with `x`, accepted together by `A`. */
+  /** Proposal ids toggled with `x`, accepted together by `A` or rejected by `R`. */
   selected: Set<string>
+  /**
+   * The last row ticked WITHOUT shift — the pivot a shift-click range extends
+   * from (`selectRange`). The same rule `useBulkSelection` keeps for the
+   * Sessions lists: it stays put across range extensions, so the range can be
+   * re-extended in either direction without re-clicking the pivot.
+   */
+  anchorId: string | null
   /** Proposal id being edited (`e`), or null. */
   editing: string | null
 }
@@ -40,6 +47,12 @@ export type InboxEvent =
   | { type: 'move'; delta: number; ids: string[] }
   | { type: 'focusRow'; id: string; index: number } // pointer: click a row
   | { type: 'toggleSelect'; id: string }
+  // Shift-click: select every row between the anchor and `id`, over the
+  // SELECTABLE rows in rendered order — the pending classification rows, so a
+  // decision or an auto-accepted row inside the span is skipped, not swept.
+  | { type: 'selectRange'; id: string; ids: string[] }
+  // The header tick: replace the selection with `ids` (the selectable rows).
+  | { type: 'selectAll'; ids: string[] }
   | { type: 'deselect'; id: string }
   | { type: 'clearSelection' }
   // The ids still `pending` in the rendered queue; everything else in the
@@ -88,7 +101,24 @@ export function inboxReducer(s: InboxState, e: InboxEvent): InboxState {
       const selected = new Set(s.selected)
       if (selected.has(e.id)) selected.delete(e.id)
       else selected.add(e.id)
-      return { ...s, selected }
+      return { ...s, selected, anchorId: e.id }
+    }
+    case 'selectRange': {
+      const anchorIdx = s.anchorId === null ? -1 : e.ids.indexOf(s.anchorId)
+      const end = e.ids.indexOf(e.id)
+      // No pivot to extend from (nothing ticked yet, or the anchor left the
+      // selectable set), or a stale click on a row that is no longer selectable:
+      // a plain toggle, which is what the click would have meant without shift.
+      if (anchorIdx === -1 || end === -1) return inboxReducer(s, { type: 'toggleSelect', id: e.id })
+      const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
+      const selected = new Set(s.selected)
+      for (let i = lo; i <= hi; i++) selected.add(e.ids[i])
+      return selected.size === s.selected.size ? s : { ...s, selected }
+    }
+    case 'selectAll': {
+      const selected = new Set(e.ids)
+      const same = selected.size === s.selected.size && e.ids.every((id) => s.selected.has(id))
+      return same ? s : { ...s, selected }
     }
     // A single accept/reject takes its row out of the list, so it must take the
     // row out of the SELECTION too: a later `A` that resends the id gets
@@ -102,7 +132,9 @@ export function inboxReducer(s: InboxState, e: InboxEvent): InboxState {
     // After a bulk accept the selected ids name rows that no longer exist;
     // keeping them would make the next `A` resend already-accepted proposals.
     case 'clearSelection':
-      return s.selected.size === 0 ? s : { ...s, selected: new Set() }
+      return s.selected.size === 0 && s.anchorId === null
+        ? s
+        : { ...s, selected: new Set(), anchorId: null }
     // `deselect` and `clearSelection` both cover a row LEAVING; this covers a
     // row that stays and stops being decidable. A fresh auto-accept remains in
     // the queue for its undo window, so a row ticked while pending can flip to
@@ -138,6 +170,7 @@ export const initialInboxState: InboxState = {
   cursor: 0,
   cursorId: null,
   selected: new Set(),
+  anchorId: null,
   editing: null,
 }
 

@@ -373,34 +373,87 @@ async def attest_session_stopped(token: str, generation: int, *, session_id: str
         tx.operation.execution_sessions = states
         if not allow_tree_stop:
             return True
-        pending, seen = [root] if root else [], set()
-        while pending:
-            current = pending.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            current_state = states.get(current, {})
-            pending_execution = current_state.get("executions", {}).get("pending", {})
-            if pending_execution.get("generation") == 0:
-                row = await tx.db.get(DbSession, current)
-                if row is not None and row.status in ("ended", "archived"):
-                    # This child was registered before launch, and the required
-                    # native-entry generation write never happened. Terminal row
-                    # PLUS that durable not-started record proves no native effect.
-                    states[current] = _pending_execution(stopped=True)
-            pending.extend((await tx.db.scalars(select(DbSession.id).where(
-                DbSession.parent_session_id == current))).all())
-        tx.operation.execution_sessions = dict(states)
-        # Unknown legacy children and queued children with no execution evidence
-        # retain ownership. Completed children retain their OWN proof when their
-        # parent subsequently runs another turn, rather than becoming unknown.
-        if (root and seen.issubset(states) and states
-                and all(session.get("executions") for session in states.values())
-                and all(value.get("generation") is not None
-                        and value.get("generation") == value.get("stopped")
-                        for session in states.values() for value in session["executions"].values())):
-            tx.operation.stopped_generation = tx.operation.execution_generation
+        await _aggregate_tree_stopped(tx, root)
         return True
+
+
+async def _aggregate_tree_stopped(tx: "OwnershipTransaction", root: str | None) -> None:
+    """Recompute the whole-tree stop aggregate from *tx.operation*'s currently
+    retained executions, setting ``stopped_generation`` when every one of them
+    proves stopped. Shared by ``attest_session_stopped`` (as a side effect of a
+    fresh per-execution CAS) and ``reconcile_tree_stopped`` (standalone, when no
+    fresh CAS is coming)."""
+    states = dict(tx.operation.execution_sessions or {})
+    pending, seen = [root] if root else [], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        current_state = states.get(current, {})
+        pending_execution = current_state.get("executions", {}).get("pending", {})
+        if pending_execution.get("generation") == 0:
+            row = await tx.db.get(DbSession, current)
+            if row is not None and row.status in ("ended", "archived"):
+                # This child was registered before launch, and the required
+                # native-entry generation write never happened. Terminal row
+                # PLUS that durable not-started record proves no native effect.
+                states[current] = _pending_execution(stopped=True)
+        pending.extend((await tx.db.scalars(select(DbSession.id).where(
+            DbSession.parent_session_id == current))).all())
+    tx.operation.execution_sessions = dict(states)
+    # Unknown legacy children and queued children with no execution evidence
+    # retain ownership. Completed children retain their OWN proof when their
+    # parent subsequently runs another turn, rather than becoming unknown.
+    if (root and seen.issubset(states) and states
+            and all(session.get("executions") for session in states.values())
+            and all(value.get("generation") is not None
+                    and value.get("generation") == value.get("stopped")
+                    for session in states.values() for value in session["executions"].values())):
+        tx.operation.stopped_generation = tx.operation.execution_generation
+
+
+async def reconcile_absent_session_stopped(token: str, session_id: str) -> bool:
+    """Force the stop proof for every execution retained under *session_id*
+    whose DB row the CALLER has already independently confirmed no longer
+    exists at all (never called on a merely terminal/archived row — a
+    ``done`` row can still be resumed, so terminality alone proves nothing).
+
+    A resumed session superseding its own predecessor execution is NOT proof
+    that predecessor stopped — the predecessor may genuinely still be running,
+    unaccounted for (see ``test_new_driver_cannot_erase_unproven_predecessor_lifetime``),
+    so ``begin_session_execution`` deliberately never assumes it. A
+    PERMANENTLY DELETED row is a categorically stronger signal than
+    supersession: nothing can still be interacting with this target through
+    *session_id*, because the very row any process would reference to persist
+    anything for it no longer exists anywhere — the same proof
+    ``_release_orphaned_claim`` already trusted for its own release call, just
+    never previously reflected onto the tree's per-execution history, so a
+    stale predecessor generation (killed by an earlier restart, never
+    individually attested) permanently blocked the aggregate this operation's
+    ``ReleaseProof.WORK_STOPPED`` depends on.
+
+    Scoped to exactly the session the caller has proven absent — every OTHER
+    session recorded in the tree keeps needing its own real proof. Returns
+    whether the whole tree now proves stopped.
+    """
+    async with owned(token) as tx:
+        states = dict(tx.operation.execution_sessions or {})
+        session = dict(states.get(session_id, {}))
+        executions = dict(session.get("executions", {}))
+        touched = False
+        for exec_id, state in executions.items():
+            if exec_id == "pending":
+                continue
+            if state.get("stopped") is None and state.get("generation") is not None:
+                executions[exec_id] = {**state, "stopped": state["generation"]}
+                touched = True
+        if touched:
+            states[session_id] = {**session, "executions": executions}
+            tx.operation.execution_sessions = states
+        root = tx.operation.session_id or tx.operation.reserved_session_id
+        await _aggregate_tree_stopped(tx, root)
+        return tx.operation.stopped_generation == tx.operation.execution_generation
 
 
 async def attest_terminal_session_stopped(session_id: str) -> bool:

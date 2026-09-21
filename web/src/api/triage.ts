@@ -141,11 +141,18 @@ export interface WorkItemOverlay {
   url: string | null
 }
 
-/** Per-id outcome of an accept-selected sweep — partial success is normal, so
- *  the endpoint reports each id rather than failing the whole batch. */
+/** Per-id outcome of a bulk sweep — partial success is normal, so the
+ *  endpoints report each id rather than failing the whole batch. */
+export interface BulkSweepRow { id: string; ok: boolean; error?: string }
+
 export interface AcceptBulkResult {
   accepted: number
-  results: { id: string; ok: boolean; error?: string }[]
+  results: BulkSweepRow[]
+}
+
+export interface RejectBulkResult {
+  rejected: number
+  results: BulkSweepRow[]
 }
 
 export function fetchTriage(projectSlug?: string): Promise<TriageProposal[]> {
@@ -211,6 +218,11 @@ export function undoProposal(id: string): Promise<UndoResult> {
 /** Accept many proposals in one round trip (the inbox's `A` / accept-selected). */
 export function acceptBulk(ids: string[]): Promise<AcceptBulkResult> {
   return api.post<AcceptBulkResult>('/pm/triage/accept-bulk', { ids })
+}
+
+/** Reject many proposals in one round trip (the inbox's `R` / reject-selected). */
+export function rejectBulk(ids: string[]): Promise<RejectBulkResult> {
+  return api.post<RejectBulkResult>('/pm/triage/reject-bulk', { ids })
 }
 
 /** Edit a work item's overlay directly (inline score edits, triage-state moves). */
