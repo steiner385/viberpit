@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import logging
 import types
@@ -678,6 +679,32 @@ _ENDING_EVENTS = frozenset({
 })
 
 
+@contextlib.contextmanager
+def _capture_endings(sink: list[str]):
+    """Collect every ending event the manager logs for the duration of the block.
+
+    A handler rather than `caplog`, because the teardown paths this guards run
+    inside `asyncio.run(...)` and assert on the ABSENCE of a record — a fixture
+    whose propagation depends on the caller's log configuration would make "no
+    ending was logged" pass for the wrong reason.
+    """
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            event = getattr(record, "event", None)
+            if event in _ENDING_EVENTS:
+                sink.append(event)
+
+    logger = logging.getLogger("server.codex.manager")
+    handler = _Sink(level=logging.DEBUG)
+    previous, logger.disabled = logger.disabled, False
+    logger.addHandler(handler)
+    try:
+        yield sink
+    finally:
+        logger.removeHandler(handler)
+        logger.disabled = previous
+
+
 def _ending_record(caplog):
     found = [r for r in caplog.records if getattr(r, "event", None) in _ENDING_EVENTS]
     assert len(found) == 1, [getattr(r, "event", None) for r in caplog.records]
@@ -790,6 +817,73 @@ def test_stop_is_not_a_crash():
         assert seen == []
         assert len(spawned) == 1  # no restart
         assert manager.client_for("a") is None
+
+    asyncio.run(go())
+
+
+def test_a_deliberate_stop_with_a_turn_in_flight_reports_no_ending():
+    """`test_stop_is_not_a_crash` covers an IDLE stop and asserts only on
+    notices; this covers the case a reader of #1857 would suspect — a stop that
+    lands while a turn is open — and asserts on the LOG RECORD, which is what
+    reaches the error sink and files an issue.
+
+    Two redundant protections keep a deliberate teardown out of `_handle_exit`,
+    and neither is load-bearing alone (verified by mutation: removing either one
+    leaves this green, removing BOTH turns it red with
+    ``runner_exited``):
+
+    * ``stop()`` cancels the supervisor before discarding the process, so
+      ``_await_runner_death`` never returns normally;
+    * ``_supervise`` re-checks ``runner.stopping`` and the registry identity the
+      moment it does return.
+
+    Pinned at the record level because "a runner we asked to leave, reported as
+    an ending" is the #1857 misclassification one path over.
+    """
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        manager.attach("a", "s1")
+        seen = _notices(manager, "a")
+        manager.begin_turn("a", "t1")
+        caught: list[str] = []
+        with _capture_endings(caught):
+            await manager.stop("a")
+            await asyncio.sleep(0.05)
+
+        assert caught == [], f"a deliberate stop reported an ending: {caught}"
+        assert seen == [], "a stop must not notify threads of a crash"
+        assert len(spawned) == 1, "a stop must not respawn"
+
+    asyncio.run(go())
+
+
+def test_an_idle_reap_with_a_turn_in_flight_reports_no_ending():
+    """The idle reaper tears down through the same `stop()`, so it inherits both
+    protections above — asserted here rather than assumed, because the reaper
+    fires on a timer nobody is watching and is by far the commonest way a runner
+    disappears on a quiet host (six reaps on dobby in the hour #1857 was
+    diagnosed, none of them a crash, all of them `idle_reap` → `runner_stopped`).
+
+    Also pins that the reap still HAPPENS: an absence assertion that passed
+    because the teardown silently stopped running would be no guard at all."""
+
+    async def go():
+        manager, spawned = _manager(idle_grace_s=0.05)
+        await manager.ensure("a")
+        manager.attach("a", "s1")
+        seen = _notices(manager, "a")
+        manager.begin_turn("a", "t1")
+        caught: list[str] = []
+        with _capture_endings(caught):
+            manager.detach("s1")  # the last detach arms the reaper
+            await asyncio.sleep(0.4)
+
+        assert caught == [], f"an idle reap reported an ending: {caught}"
+        assert seen == []
+        assert len(spawned) == 1
+        assert manager.client_for("a") is None, "the reaper must still have reaped"
 
     asyncio.run(go())
 
