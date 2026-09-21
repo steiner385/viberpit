@@ -36,7 +36,9 @@ from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noq
                             QuotaWindow, anthropic_snapshot, unknown_snapshot)
 from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
+from server.automations.capacity_governor import CapacityGovernor
 from server.automations.capacity_plan import RESERVE_PCT, normalise_push_level, push_level_of
+from server.automations.config_store import read_automation_config
 from server.codex.auth_client import edge_authority_client
 from server.codex.authorization import push_authorization
 from server.codex.auth_types import (
@@ -223,18 +225,21 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
     return dict(zip(names, results))
 
 
-async def _push_level(orch) -> str:
+async def _push_level() -> str:
     """The governor's current push level, read best-effort (spec 2026-09-20 D4).
 
-    An orchestrator without the governor seam (tests, a worker-role daemon) or a
-    DB blip degrades to ``steady`` — a config read must never fail the accounts
-    list.
+    Reads the shared-DB governor row directly — the same read
+    ``SessionOrchestrator._capacity_governor_read_config`` does — rather than through
+    an orchestrator seam: the API must answer identically in in-process AND remote
+    mode, and in remote mode ``app.state.sessions`` is a ``FleetOrchestrator`` whose
+    primary is a ``RemoteOrchestrator`` with no such seam (no RPC for it, no
+    ``__getattr__`` fallback), so a ``getattr(orch, …)`` here silently returned
+    ``None``/``steady`` on every daemon host. A DB blip still degrades to
+    ``steady`` — a config read must never fail the accounts list.
     """
-    read = getattr(orch, "_capacity_governor_read_config", None)
-    if read is None:
-        return "steady"
     try:
-        _mode, gov = await read()
+        _mode, gov = await read_automation_config(
+            CapacityGovernor, modes=("monitor", "act"), log_key="capacity_governor")
     except Exception:  # noqa: BLE001 — a config read must never fail the accounts list
         log.warning("accounts.push_level_read_failed", exc_info=True)
         return "steady"
@@ -704,10 +709,11 @@ async def get_accounts(
     counts = await orch.live_session_counts()
     load = await orch.live_session_load()
 
-    # The governor's push level supplies the default reserve (spec 2026-09-20 D4).
-    # Read best-effort: an orchestrator without the governor seam (tests, a
-    # worker-role daemon) or a DB blip degrades to steady, never a 500.
-    push_level = await _push_level(orch)
+    # The governor's push level supplies the default reserve (spec 2026-09-20 D4),
+    # read best-effort straight from the shared-DB row (see `_push_level`'s
+    # docstring for why it never goes through `orch`): a DB blip degrades to
+    # steady, never a 500.
+    push_level = await _push_level()
 
     # This map carries only EXPLICIT OVERRIDES — exactly what `pick_account` hands
     # `rank_accounts` (D12: the push level's default never steers a human's own

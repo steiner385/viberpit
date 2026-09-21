@@ -756,10 +756,6 @@ def test_api_orchestrator_reads_are_all_classified():
         # One-shot Codex-native prompt refinement (#1288), primary-routed like the
         # codex_* reads above — see the GLOBAL-set comment in the sibling test.
         "refine_prompt_codex",
-        # Capacity governor config (spec 2026-09-20 D4), read by
-        # server.api.accounts._push_level: the governor row is shared-DB truth, so
-        # the primary answers and it must never fan out per host.
-        "_capacity_governor_read_config",
     }
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials"}  # fleet-wide on FleetOrchestrator
