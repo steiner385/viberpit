@@ -87,7 +87,10 @@ PR linkage, never on labels alone.
   live gate and the retro archive audit. Precedence: merged PR > armed PR (green CI; red
   blocks, #639) > open-unarmed PR (nudge to arm) > pr_resolution claim > explicit
   `--squash --auto` instruction > no-PR-nudge; research/Q&A goals may complete with no PR.
-  Manual unarchives are respected and learned from (#469).
+  Manual unarchives are respected and learned from (#469). Auto-archival itself is a config
+  toggle (`auto_archive_completed`, default on) with an optional origin scope
+  (`auto_archive_origins`, e.g. `["backlog-runner"]`) — off/scoped-out sessions surface their
+  met goal once and stay in `ready_review` for a human to archive.
 - Backlog runner (`backlog_runner.py`) refills slots through shared ownership by
   select → claim → spawn, and sweeps for merged PRs (close-out), handoff readiness (free the
   slot after the implementation stops and effective PR recovery accepts ownership), and

@@ -68,6 +68,10 @@ class DecisionContext:
     instructions: str | None = None
     # Set by the loop after an on-demand refresh: pr_facts is GitHub-fresh.
     facts_verified: bool = False
+    # The automation id that spawned this session (Session.origin), None = human-created.
+    # Read only by the loop's auto-archive origin scope (`auto_archive_origins`); no
+    # guardrail depends on it.
+    origin: str | None = None
 
 
 @dataclass

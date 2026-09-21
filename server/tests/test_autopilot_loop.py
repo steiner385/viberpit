@@ -27,12 +27,13 @@ class FakeCtx:
         return dict(self.states)
 
 
-def _dc(sid="s1", *, no_auto_archive=False):
+def _dc(sid="s1", *, no_auto_archive=False, origin=None):
     return DecisionContext(session_id=sid, status="waiting_input", account="a", repo=None,
                            branch=None, effective_goal="g", goal_source="explicit",
                            stuck={"kind": "permission", "tool_name": "Bash",
                                   "tool_input": {"command": "pytest"}},
-                           transcript_tail=[], ledger={}, no_auto_archive=no_auto_archive)
+                           transcript_tail=[], ledger={}, no_auto_archive=no_auto_archive,
+                           origin=origin)
 
 
 def _armed_facts():
@@ -54,12 +55,13 @@ def _repo_ctx(sid="s1", status="complete", facts=None, tail=None, ledger=None):
 
 
 def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="approve", reason="ok"),
-          applied=None, config=None, no_auto_archive=False,
+          applied=None, config=None, no_auto_archive=False, origin=None,
           compose=None, refresh_facts=None):
     cfg = config or {"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
                      "max_actions_per_day": 300, "recovery_max_attempts": 2,
                      "loop_repeat_limit": 3, "human_defer_seconds": 120,
-                     "extra_deny_patterns": [], "enabled_repos": []}
+                     "extra_deny_patterns": [], "enabled_repos": [],
+                     "auto_archive_completed": True, "auto_archive_origins": []}
     applied = applied if applied is not None else []
 
     async def read_config():
@@ -69,7 +71,7 @@ def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="appro
         return list(governed)
 
     async def get_context(sid):
-        return _dc(sid, no_auto_archive=no_auto_archive)
+        return _dc(sid, no_auto_archive=no_auto_archive, origin=origin)
 
     async def decide_fn(dc):
         return decision
@@ -265,6 +267,81 @@ async def test_opted_out_complete_is_deduped_across_ticks():
     await loop.tick()
     proposed = [e for e in ctx.emits if e[2] == "proposed"]
     assert len(proposed) == 1                            # deduped on the fingerprint
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_archive_when_auto_archive_disabled():
+    """`auto_archive_completed: False` must stop the loop from archiving a goal-met
+    session — same "surface once, never mutate" treatment as the opt-out — while
+    leaving every other governance behavior (nudge/escalate/etc.) untouched."""
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
+                 config={"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
+                         "max_actions_per_day": 300, "recovery_max_attempts": 2,
+                         "loop_repeat_limit": 3, "human_defer_seconds": 120,
+                         "extra_deny_patterns": [], "enabled_repos": [],
+                         "auto_archive_completed": False, "auto_archive_origins": []})
+    loop._archive = archive
+    await loop.tick()
+    assert archived == []
+    assert loop._applied == []
+    assert any(kind == "proposed" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_archives_when_origin_matches_scope():
+    """`auto_archive_origins` scopes archival to sessions spawned by the listed
+    automations — a matching origin still archives normally."""
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
+                 origin="backlog-runner",
+                 config={"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
+                         "max_actions_per_day": 300, "recovery_max_attempts": 2,
+                         "loop_repeat_limit": 3, "human_defer_seconds": 120,
+                         "extra_deny_patterns": [], "enabled_repos": [],
+                         "auto_archive_completed": True,
+                         "auto_archive_origins": ["backlog-runner"]})
+    loop._archive = archive
+    await loop.tick()
+    assert archived == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_archive_when_origin_outside_scope():
+    """A session not spawned by a listed origin (including a human-created session,
+    origin=None) is left unarchived when `auto_archive_origins` is non-empty."""
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
+                 origin=None,
+                 config={"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
+                         "max_actions_per_day": 300, "recovery_max_attempts": 2,
+                         "loop_repeat_limit": 3, "human_defer_seconds": 120,
+                         "extra_deny_patterns": [], "enabled_repos": [],
+                         "auto_archive_completed": True,
+                         "auto_archive_origins": ["backlog-runner"]})
+    loop._archive = archive
+    await loop.tick()
+    assert archived == []
+    assert loop._applied == []
+    assert any(kind == "proposed" for _, _, kind in ctx.emits)
 
 
 @pytest.mark.asyncio
