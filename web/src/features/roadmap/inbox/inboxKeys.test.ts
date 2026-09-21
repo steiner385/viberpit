@@ -46,6 +46,70 @@ describe('inboxReducer', () => {
     expect(s.selected.has('p1')).toBe(false)
   })
 
+  it('x anchors the range pivot on the row it ticked', () => {
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p2' })
+    expect(s.anchorId).toBe('p2')
+    // Un-ticking re-anchors too: the pivot is the last row touched, ticked or not.
+    s = inboxReducer(s, { type: 'toggleSelect', id: 'p1' })
+    expect(s.anchorId).toBe('p1')
+  })
+
+  it('selectRange sweeps from the anchor to the clicked row, in either direction', () => {
+    const ids = ['p1', 'p2', 'p3', 'p4', 'p5']
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p2' })
+    s = inboxReducer(s, { type: 'selectRange', id: 'p4', ids })
+    expect([...s.selected].sort()).toEqual(['p2', 'p3', 'p4'])
+    // The anchor stays put, so the range re-extends the other way from p2.
+    expect(s.anchorId).toBe('p2')
+    s = inboxReducer(s, { type: 'selectRange', id: 'p1', ids })
+    expect([...s.selected].sort()).toEqual(['p1', 'p2', 'p3', 'p4'])
+    // A range that adds nothing keeps the same object.
+    expect(inboxReducer(s, { type: 'selectRange', id: 'p3', ids })).toBe(s)
+  })
+
+  it('selectRange only sweeps the ids it is given — a decision inside the span is skipped', () => {
+    // The component passes the SELECTABLE rows (pending classifications) in
+    // rendered order, so a decision row or an auto-accept between two ticked
+    // rows is simply not in `ids` and cannot be swept into a bulk accept.
+    const selectable = ['p1', 'p3', 'p5']
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p1' })
+    s = inboxReducer(s, { type: 'selectRange', id: 'p5', ids: selectable })
+    expect([...s.selected].sort()).toEqual(['p1', 'p3', 'p5'])
+  })
+
+  it('selectRange with no usable anchor is a plain toggle', () => {
+    const ids = ['p1', 'p2', 'p3']
+    // Nothing ticked yet: shift-click behaves like the click it wraps.
+    let s = inboxReducer(initialInboxState, { type: 'selectRange', id: 'p2', ids })
+    expect([...s.selected]).toEqual(['p2'])
+    expect(s.anchorId).toBe('p2')
+    // The anchor left the selectable set (accepted away): same fallback, and
+    // the clicked row becomes the new pivot.
+    s = inboxReducer(s, { type: 'selectRange', id: 'p3', ids: ['p1', 'p3'] })
+    expect([...s.selected].sort()).toEqual(['p2', 'p3'])
+    expect(s.anchorId).toBe('p3')
+    // A stale shift-click on a row that is not selectable any more: toggle, not
+    // a `[-1, anchor]` sweep that reads `ids[-1]` into the selection.
+    s = inboxReducer(s, { type: 'selectRange', id: 'p9', ids })
+    expect(s.selected.has('p9')).toBe(true)
+    expect(s.selected.has(undefined as unknown as string)).toBe(false)
+  })
+
+  it('selectAll replaces the selection with the given ids', () => {
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p9' })
+    s = inboxReducer(s, { type: 'selectAll', ids: ['p1', 'p2'] })
+    expect([...s.selected].sort()).toEqual(['p1', 'p2'])
+    // Already exactly that set: same object, no needless re-render.
+    expect(inboxReducer(s, { type: 'selectAll', ids: ['p2', 'p1'] })).toBe(s)
+  })
+
+  it('clearSelection drops the anchor with the selection', () => {
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p1' })
+    s = inboxReducer(s, { type: 'clearSelection' })
+    expect(s.anchorId).toBeNull()
+    expect(inboxReducer(s, { type: 'clearSelection' })).toBe(s)
+  })
+
   it('deselect drops one id (a single accept must not leave it for `A`)', () => {
     let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p1' })
     s = inboxReducer(s, { type: 'toggleSelect', id: 'p2' })

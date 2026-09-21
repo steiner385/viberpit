@@ -1,15 +1,24 @@
 /**
  * The Inbox scope of the Roadmap list column (finish-line §4.3, roadmap spec
- * §12): the pending proposals, grouped by product, with the j/k a r e x A key
+ * §12): the pending proposals, grouped by product, with the j/k a r e x A R key
  * map and the bulk bar re-homed from the old standalone Triage page.
  *
  * Since spec 2026-09-18 §6 the queue carries TWO kinds — classification
  * proposals and decision proposals — through one ordering spec and one key map.
  * A decision is not bulk-acceptable (the accept carries the option the person
- * chose) and has no scores to edit, so `x`, `e` and `A` do not reach one; `a`
- * OPENS it rather than accepting, because there is no chosen option in a list
- * row and a decision has no undo window to take a guess back with. `r` rejects
- * either kind: refusing needs no choice, and it parks the item for its owner.
+ * chose) and has no scores to edit, so `x`, `e`, `A` and `R` do not reach one;
+ * `a` OPENS it rather than accepting, because there is no chosen option in a
+ * list row and a decision has no undo window to take a guess back with. `r`
+ * rejects either kind: refusing needs no choice, and it parks the item for its
+ * owner.
+ *
+ * The SELECTION is the Inbox's own reducer rather than `useBulkSelection`
+ * (the Sessions lists' hook): its prune is status-aware (`pruneSelected` — a
+ * ticked row can stop being decidable without leaving the list), which that hook
+ * cannot express. The header tick, the shift-click range and the `A`/`R` sweeps
+ * all act on ONE set, `pendingIds` — the pending classification rows in rendered
+ * order — so what "Select all" ticks, what a range can span, and what a sweep
+ * sends are the same rows by construction.
  *
  * Two cursors, deliberately: SELECTION is the URL (`?proposal=`, arriving as
  * `selectedKey`) because the detail pane is what it opens, while the KEY cursor
@@ -37,15 +46,17 @@
  * rows does NOT hand them to the shell's dispatcher: that can only fire a row
  * whose id has a handler in `AppShellInner`, and none of these do.
  */
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   isDecisionProposal, isTriageProposal, type InboxProposal, type TriageProposal,
 } from '@/api/triage'
 import {
-  useAcceptBulk, useAcceptProposal, useRejectDecision, useRejectProposal, useTriageLive,
+  useAcceptBulk, useAcceptProposal, useRejectBulk, useRejectDecision, useRejectProposal,
+  useTriageLive,
 } from '@/api/hooks'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { BulkActionBar } from '@/ui/list/BulkActionBar'
+import { SELECT_CHECKBOX_CLS } from '@/ui/list/SelectableRow'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
@@ -136,14 +147,28 @@ export function InboxScopeBody({
   }, [ids, pendingIds])
   const current: InboxProposal | undefined = ordered[resolveCursorIndex(ids, state)]
 
+  // The header tick's three states, over the same set the sweeps send. The
+  // selection is pruned to `pendingIds`, so "some" is simply "any".
+  const allSelected = pendingIds.length > 0 && pendingIds.every((id) => state.selected.has(id))
+  const someSelected = state.selected.size > 0
+  // `indeterminate` is a DOM property, not an attribute — same idiom as
+  // `ArchivedSessionList`'s header.
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected
+  }, [someSelected, allSelected])
+
   const accept = useAcceptProposal(product ?? undefined)
   const reject = useRejectProposal(product ?? undefined)
   const rejectDecision = useRejectDecision()
   const bulk = useAcceptBulk(product ?? undefined)
+  const bulkReject = useRejectBulk(product ?? undefined)
   const acceptMutate = accept.mutate
   const rejectMutate = reject.mutate
   const rejectDecisionMutate = rejectDecision.mutate
   const bulkMutate = bulk.mutate
+  const bulkRejectMutate = bulkReject.mutate
+  const sweeping = bulk.isPending || bulkReject.isPending
 
   // A single accept/reject takes its row out of the list, so it takes the row
   // out of the SELECTION too: a later `A` resending the id gets `not_pending`
@@ -171,6 +196,19 @@ export function InboxScopeBody({
     if (sel.length === 0) return
     bulkMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
   }, [bulkMutate, state.selected, pendingIds])
+  // The reject twin — same filter, same clear-on-success, its own endpoint.
+  const rejectSelected = useCallback(() => {
+    const stillPending = new Set(pendingIds)
+    const sel = [...state.selected].filter((id) => stillPending.has(id))
+    if (sel.length === 0) return
+    bulkRejectMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
+  }, [bulkRejectMutate, state.selected, pendingIds])
+  // "Select all" ticks every selectable row; ticked again with all of them
+  // already in, it clears — the `toggleAll` rule the Sessions lists follow.
+  const toggleAll = useCallback(() => {
+    if (allSelected) dispatch({ type: 'clearSelection' })
+    else dispatch({ type: 'selectAll', ids: pendingIds })
+  }, [allSelected, pendingIds])
 
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
@@ -222,6 +260,10 @@ export function InboxScopeBody({
           if (state.selected.size === 0) return
           acceptSelected()
           break
+        case 'inbox.rejectSelected':
+          if (state.selected.size === 0) return
+          rejectSelected()
+          break
         // Every other key is somebody else's; fall through WITHOUT
         // preventDefault so typing, tabbing and browser shortcuts still work.
         default: return
@@ -230,7 +272,7 @@ export function InboxScopeBody({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ids, current, state.selected, acceptOne, rejectOne, acceptSelected, onOpen])
+  }, [ids, current, state.selected, acceptOne, rejectOne, acceptSelected, rejectSelected, onOpen])
 
   const emptyTitle = q
     ? 'No matches'
@@ -273,8 +315,8 @@ export function InboxScopeBody({
               pointer affordance (click a row, the per-row tick, the bulk bar). */}
           {/* And it follows the CURSOR: the two row kinds answer the same keys
               differently, so a fixed strip promising "a accept · r reject" is
-              false half the time. `A` stays on both — it acts on the selection,
-              which a decision can never join. */}
+              false half the time. `A` and `R` stay on both — they act on the
+              selection, which a decision can never join. */}
           <p className="flex flex-wrap items-center gap-1 text-xs text-ink-faint">
             <Kbd keys="j" />/<Kbd keys="k" /> move ·
             {current !== undefined && isDecisionProposal(current)
@@ -286,8 +328,23 @@ export function InboxScopeBody({
                   {' '}<Kbd keys="x" /> select ·
                 </>
               )}
-            {' '}<Kbd keys="A" /> accept selected
+            {' '}<Kbd keys="A" /> accept selected · <Kbd keys="R" /> reject selected
           </p>
+          {/* The header tick, over the rows a sweep can act on — hidden when
+              there are none, since a tick that can select nothing is a lie. */}
+          {pendingIds.length > 0 && (
+            <label className="flex items-center gap-2 text-xs text-ink-muted">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                aria-label="Select all"
+                className={SELECT_CHECKBOX_CLS}
+              />
+              <span>Select all ({pendingIds.length})</span>
+            </label>
+          )}
           {/* In the controls strip, not below the rows — the same place both
               other bulk-selecting lists put it (`SessionList`,
               `ArchivedSessionList`). Inside the scroll band it scrolls away
@@ -299,8 +356,14 @@ export function InboxScopeBody({
             >
               {/* `lg` is the only size that carries the 44px touch target,
                   which is what `BulkActionBar`'s own Clear button pins to. */}
-              <Button type="button" variant="secondary" size="lg" onClick={acceptSelected} disabled={bulk.isPending}>
+              <Button type="button" variant="secondary" size="lg" onClick={acceptSelected} disabled={sweeping}>
                 Accept selected ({state.selected.size})
+              </Button>
+              {/* Not styled as destructive: a reject parks the item under an
+                  owner-action hold and the sweep's toast can undo it, unlike
+                  the archive list's Delete. */}
+              <Button type="button" variant="secondary" size="lg" onClick={rejectSelected} disabled={sweeping}>
+                Reject selected ({state.selected.size})
               </Button>
             </BulkActionBar>
           )}
@@ -335,7 +398,11 @@ export function InboxScopeBody({
               dispatch({ type: 'focusRow', id: p.id, index: ids.indexOf(p.id) })
               onOpen(p)
             }}
-            onToggleSelect={() => dispatch({ type: 'toggleSelect', id: p.id })}
+            // Shift extends a range from the last plain tick, over the
+            // selectable rows in rendered order (`pendingIds`).
+            onToggleSelect={(shift) => dispatch(shift
+              ? { type: 'selectRange', id: p.id, ids: pendingIds }
+              : { type: 'toggleSelect', id: p.id })}
           />
         )}
       />

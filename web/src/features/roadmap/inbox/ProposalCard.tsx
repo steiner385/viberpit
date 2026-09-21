@@ -54,7 +54,8 @@ export interface ProposalCardProps {
   /** Under the inbox's j/k cursor. */
   cursor: boolean
   onOpen: () => void
-  onToggleSelect: () => void
+  /** `shift` is the pointer's shift key: a range from the last plain tick. */
+  onToggleSelect: (shift: boolean) => void
 }
 
 export function ProposalCard({
@@ -101,7 +102,7 @@ function TriageRow({ proposal: p, selected, checked, onOpen, onToggleSelect }: {
   selected: boolean
   checked: boolean
   onOpen: () => void
-  onToggleSelect: () => void
+  onToggleSelect: (shift: boolean) => void
 }) {
   const name = p.title ?? p.id
   const tier = CONF_TIER[p.confidenceLevel ?? 'low'] ?? 'idle'
@@ -135,7 +136,7 @@ function TriageRow({ proposal: p, selected, checked, onOpen, onToggleSelect }: {
           // than hidden, so every row in the list keeps the same leading rail.
           aria-disabled={pending ? undefined : true}
           disabled={!pending}
-          onClick={(e) => { e.stopPropagation(); onToggleSelect() }}
+          onClick={(e) => { e.stopPropagation(); onToggleSelect(e.shiftKey) }}
           className={cn(
             'flex size-6 shrink-0 items-center justify-center rounded-sm border border-edge',
             checked ? 'bg-accent text-accent-ink' : 'text-ink-faint hover:bg-surface-raised',

@@ -320,6 +320,11 @@ describe('shortcuts registry — roadmap-inbox', () => {
     expect(resolve({ key: 'a' })).toBe('inbox.accept')
   })
 
+  it('keeps `r` and Shift+R apart the same way', () => {
+    expect(resolve({ key: 'R', shiftKey: true })).toBe('inbox.rejectSelected')
+    expect(resolve({ key: 'r' })).toBe('inbox.reject')
+  })
+
   it('never fires under a Ctrl/Meta/Alt chord that belongs to the browser', () => {
     expect(resolve({ key: 'a', ctrlKey: true })).toBeUndefined()   // Ctrl+A: select all
     expect(resolve({ key: 'r', metaKey: true })).toBeUndefined()   // ⌘R: reload

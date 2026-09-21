@@ -22,6 +22,7 @@ vi.mock('@/api/triage', async (importOriginal) => {
     acceptProposal: vi.fn(),
     rejectProposal: vi.fn(),
     acceptBulk: vi.fn(),
+    rejectBulk: vi.fn(),
     updateOverlay: vi.fn(),
     undoProposal: vi.fn(),
     fetchDecisions: vi.fn(),
@@ -32,7 +33,7 @@ vi.mock('@/api/triage', async (importOriginal) => {
 
 import { toast } from 'sonner'
 import {
-  QK, useAcceptProposal, useAcceptBulk, useAcceptDecision, useRejectDecision,
+  QK, useAcceptProposal, useAcceptBulk, useRejectBulk, useAcceptDecision, useRejectDecision,
   useUpdateOverlay, useUndoProposal,
 } from '@/api/hooks'
 import * as triage from '@/api/triage'
@@ -152,6 +153,58 @@ describe('useAcceptBulk', () => {
     expect(mocked.acceptBulk).toHaveBeenCalledWith(['p1', 'p2'])
     expect(toast.success).toHaveBeenCalledWith('Accepted 2', expect.objectContaining({ duration: 6000 }))
     expect(rowIds(qc)).toEqual([])
+  })
+})
+
+describe('useRejectBulk', () => {
+  it('drops every selected row and rolls all of them back on failure', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    let release: (() => void) | undefined
+    mocked.rejectBulk.mockImplementationOnce(
+      () => new Promise((_res, rej) => { release = () => rej(new Error('boom')) }),
+    )
+
+    const { result } = renderHook(() => useRejectBulk(), { wrapper: makeWrapper(qc) })
+    act(() => result.current.mutate(['p1', 'p2']))
+
+    await waitFor(() => expect(rowIds(qc)).toEqual([]))
+    await act(async () => { release?.() })
+    await waitFor(() => expect(rowIds(qc)).toEqual(['p1', 'p2']))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports how many were rejected, with an undo that covers only the landed ids', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.rejectBulk.mockResolvedValueOnce({
+      rejected: 1, results: [{ id: 'p1', ok: true }, { id: 'p2', ok: false, error: 'not_pending' }],
+    })
+    mocked.undoProposal.mockResolvedValue({ id: 'p1', status: 'pending', workItemId: 'w1', triageState: 'proposed' })
+
+    const { result } = renderHook(() => useRejectBulk(), { wrapper: makeWrapper(qc) })
+    await act(async () => { result.current.mutate(['p1', 'p2']) })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mocked.rejectBulk).toHaveBeenCalledWith(['p1', 'p2'])
+    expect(toast.success).toHaveBeenCalledWith('Rejected 1', expect.objectContaining({ duration: 6000 }))
+    // The toast's Undo puts back what landed — not the id the server refused.
+    const call = vi.mocked(toast.success).mock.calls.at(-1)!
+    await act(async () => { (call[1] as unknown as { action: { onClick: () => void } }).action.onClick() })
+    await waitFor(() => expect(mocked.undoProposal).toHaveBeenCalledTimes(1))
+    expect(mocked.undoProposal).toHaveBeenCalledWith('p1')
+  })
+
+  it('says nothing when the sweep landed nothing', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.rejectBulk.mockResolvedValueOnce({
+      rejected: 0, results: [{ id: 'p1', ok: false, error: 'not_pending' }],
+    })
+    const { result } = renderHook(() => useRejectBulk(), { wrapper: makeWrapper(qc) })
+    await act(async () => { result.current.mutate(['p1']) })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(toast.success).not.toHaveBeenCalled()
   })
 })
 
