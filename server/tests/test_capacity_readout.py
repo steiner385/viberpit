@@ -502,6 +502,7 @@ def test_runner_layer_codes_are_named_for_the_runner_ceiling():
     from server.automations.capacity_readout import LAYER_OF_CODE
     assert LAYER_OF_CODE["runner_ceiling_full"] == "runner"
     assert LAYER_OF_CODE["runner_ceiling_held"] == "runner"
+    assert LAYER_OF_CODE["product_pipeline_full"] == "product"
     assert "global_capacity_full" not in LAYER_OF_CODE
 
 

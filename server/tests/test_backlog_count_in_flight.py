@@ -109,3 +109,31 @@ def test_repo_load_counts_handed_off_rows(tmp_path):
         assert await orch._backlog_repo_load() == {"o/r": 2}
 
     asyncio.run(run())
+
+
+def test_pipeline_by_product_shares_the_repo_load_rule(tmp_path):
+    """Spec 2026-09-20 D13/C23: the per-product pipeline count applies the SAME
+    row rule as ``_backlog_repo_load`` (one predicate, ``counts_toward_pipeline``):
+    handed_off rows with a token count (PR Doctor coverage makes no difference),
+    gave_up and token-less handed_off rows do not; a row with no product counts
+    toward no product."""
+    from server.automations.backlog_runner import counts_toward_pipeline, pipeline_by_product
+
+    async def run():
+        await _init(tmp_path)
+        orch = _orch_with_ctx()
+        ctx = orch._backlog_ctx
+        await ctx.set_target_state("o/r#1", {"claimed": True, "repo": "o/r", "product": "kindash"})
+        await ctx.set_target_state("o/r#2", {"claimed": True, "repo": "o/r", "product": "kindash",
+                                             "handed_off": True, "ownership_token": "t"})
+        await ctx.set_target_state("o/r#4", {"claimed": True, "repo": "o/r", "product": "kindash",
+                                             "handed_off": True})          # legacy: no token
+        await ctx.set_target_state("o/k#3", {"gave_up": True, "repo": "o/k", "product": "viberpit"})
+        await ctx.set_target_state("o/x#9", {"claimed": True, "repo": "o/x"})   # pre-flip: no product
+        states = await ctx.list_target_states()
+        assert pipeline_by_product(states) == {"kindash": 2}
+        assert await orch._backlog_repo_load() == {"o/r": 2, "o/x": 1}
+        assert [counts_toward_pipeline(states[k]) for k in ("o/r#1", "o/r#2", "o/r#4", "o/k#3")] \
+            == [True, True, False, False]
+
+    asyncio.run(run())

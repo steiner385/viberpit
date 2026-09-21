@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 # The fixed vocabulary decide_implementation refuses with, plus the three
 # spec-gap fallback codes below (deliberately OUTSIDE that vocabulary — nothing
 # in the product loop ever produces them).
-LAYER_OF_CODE = {"product_capacity_full": "product", "runner_ceiling_full": "runner",
+LAYER_OF_CODE = {"product_capacity_full": "product", "product_pipeline_full": "product",
+                 "runner_ceiling_full": "runner",
                  "daily_budget_full": "runner", "dispatch_off": "product",
                  "approval_required": "product", "runner_off": "runner",
                  "no_account_headroom": "account", "hosts_full": "host",

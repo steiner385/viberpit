@@ -78,3 +78,66 @@ async def test_mixed_repository_batch_cannot_inherit_first_product(monkeypatch):
     assert not decision.permitted
     assert "targets_mismatch" in {c.code for c in decision.constraints}
     assert gather.await_args.args[0] == {"org/repo", "org/other"}
+
+
+def _coverage(policy: dict) -> admission.ProductCoverage:
+    owner = RepoOwner("p", "product")
+    return admission.ProductCoverage(
+        {"org/repo": RepoOwnership("org/repo", "org/repo", "unique", owner, (owner,), (), "unique")},
+        {"product": policy}, datetime.now(timezone.utc).isoformat())
+
+
+def _states(n_open: int, *, product: str = "product", handed_off: bool = False) -> dict:
+    """*n_open* claims for *product* on org/repo; with ``handed_off`` each has freed
+    its SLOT (PR Doctor carries the PR) but still counts toward the pipeline."""
+    return {f"org/repo#{i}": {"claimed": True, "repo": "org/repo", "product": product,
+                              "ownership_token": f"t{i}", "session_id": f"s{i}",
+                              **({"handed_off": True} if handed_off else {})}
+            for i in range(1, n_open + 1)}
+
+
+def test_pipeline_full_refuses_a_new_claim_only(monkeypatch):
+    """Spec 2026-09-20 §9: pipeline >= cap refuses a NEW claim with
+    product_pipeline_full; an existing_slot re-validation is never refused on it."""
+    cov = _coverage({"dispatch": "auto", "max_in_flight": 9, "max_pipeline_prs": 2})
+    snapshot = admission.ImplementationSnapshot(cov, "on", {"max_concurrent": 9, "max_spawns_per_day": 99},
+                                                _states(2), {})
+    decision, _ = snapshot.decide("org/repo")
+    codes = {c.code: c for c in decision.constraints}
+    assert not decision.permitted and codes["product_pipeline_full"].state == "refused"
+    assert codes["product_pipeline_full"].text == "pipeline full: 2 PRs open (cap 2)"
+    held, _ = snapshot.decide("org/repo", existing_slot=True, existing_token="t1")
+    held_codes = {c.code: c.state for c in held.constraints}
+    assert "product_pipeline_full" not in held_codes and held_codes["product_pipeline_held"] == "permitted"
+
+
+def test_blank_pipeline_cap_never_refuses():
+    cov = _coverage({"dispatch": "auto", "max_in_flight": 9})   # max_pipeline_prs absent → None
+    # handed_off=True: these free their slots (product_capacity/runner_ceiling stay
+    # under the small caps above) but still count toward the pipeline — the point
+    # is a large pipeline (50) with no cap set never refuses on THAT dimension.
+    snapshot = admission.ImplementationSnapshot(cov, "on", {"max_concurrent": 9, "max_spawns_per_day": 99},
+                                                _states(50, handed_off=True), {})
+    decision, _ = snapshot.decide("org/repo")
+    assert not any(c.code.startswith("product_pipeline") for c in decision.constraints)
+    assert decision.permitted
+
+
+def test_handed_off_prs_count_toward_the_pipeline_regardless_of_pr_doctor():
+    """C23: the pin frees a slot at hand-off when PR Doctor covers the repo; the
+    pipeline cap does not — a handed-off PR is still open and unmerged."""
+    cov = _coverage({"dispatch": "auto", "max_in_flight": 9, "max_pipeline_prs": 2})
+    snapshot = admission.ImplementationSnapshot(cov, "on", {"max_concurrent": 9, "max_spawns_per_day": 99},
+                                                _states(2, handed_off=True), {})
+    decision, _ = snapshot.decide("org/repo")
+    codes = {c.code: c.state for c in decision.constraints}
+    assert codes["product_pipeline_full"] == "refused"
+    assert codes["product_capacity_available"] == "permitted"     # the slots ARE free
+
+
+def test_pipeline_count_unknown_when_states_are_unreadable():
+    cov = _coverage({"dispatch": "auto", "max_pipeline_prs": 2})
+    snapshot = admission.ImplementationSnapshot(cov, "on", {"max_concurrent": 9, "max_spawns_per_day": 99},
+                                                None, {})
+    decision, _ = snapshot.decide("org/repo")
+    assert {c.code for c in decision.constraints} >= {"product_pipeline_unknown"}

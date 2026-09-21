@@ -9,13 +9,14 @@ from server.automations.product_policy import (
 
 def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
-    assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "weight",
-                    "ladder_top", "give_up_after_bounces", "default_model",
+    assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
+                    "weight", "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "skip_labels", "triage_auto_accept",
                     "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
-        "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "capacity_mode": "auto", "weight": 1,
+        "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
+        "capacity_mode": "auto", "weight": 1,
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
         "respect_dependencies": True, "skip_labels": [], "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,

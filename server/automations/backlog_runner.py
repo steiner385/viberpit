@@ -235,6 +235,37 @@ def in_flight_by_product(states: dict) -> dict[str, int]:
     return out
 
 
+def counts_toward_pipeline(state: dict) -> bool:
+    """THE row rule for "this claim is still in the product's pipeline" (spec
+    2026-09-20 D13/C23), shared by the per-repo fairness load
+    (``SessionOrchestrator._backlog_repo_load``) and the per-product pipeline cap
+    (``pipeline_by_product``). Unlike ``is_in_flight`` (slot occupancy), a
+    ``handed_off`` row still counts: PR Doctor carries the PR now, but it is open
+    and unmerged, and stacking such PRs in CI is exactly what the cap bounds.
+    Excluded: terminal ``gave_up`` rows (needs-human, no active work) and a
+    token-less ``handed_off`` row (pre-ownership, #1648/#1891: the sweep cannot
+    close it out, so counting it would pin the count high for nothing)."""
+    if state.get("gave_up"):
+        return False
+    if state.get("handed_off") and not state.get("ownership_token"):
+        return False
+    return True
+
+
+def pipeline_by_product(states: dict) -> dict[str, int]:
+    """``{product slug: open, unmerged automation PRs}`` over the runner's durable
+    target states — ``counts_toward_pipeline`` per row, bucketed by the product
+    recorded ON the claim (a pre-flip row with no product charges no product)."""
+    out: dict[str, int] = {}
+    for st in states.values():
+        if not counts_toward_pipeline(st):
+            continue
+        slug = st.get("product")
+        if slug:
+            out[slug] = out.get(slug, 0) + 1
+    return out
+
+
 class BacklogRunner:
     id = "backlog-runner"
     name = "Backlog Runner"

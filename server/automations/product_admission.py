@@ -118,7 +118,7 @@ class ImplementationSnapshot:
         existing_slot: bool = False, existing_token: str | None = None,
         prerequisites: tuple[ImplementationConstraint, ...] = (),
     ) -> tuple[ImplementationDecision, dict]:
-        from .backlog_runner import in_flight_by_product, is_in_flight
+        from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
 
         owner = self.coverage.ownership.get(repo)
         raw = self.coverage.policies.get(owner.owner.slug) if owner and owner.owner else None
@@ -130,6 +130,10 @@ class ImplementationSnapshot:
         product_count = None
         if self.states is not None:
             product_count = in_flight_by_product(self.states).get(
+                owner.owner.slug if owner and owner.owner else "", 0)
+        pipeline_count = None
+        if self.states is not None:
+            pipeline_count = pipeline_by_product(self.states).get(
                 owner.owner.slug if owner and owner.owner else "", 0)
         daily_count = None if self.accounting is None else len(self.accounting)
         if daily_count is not None and existing_token in (self.accounting or {}):
@@ -148,6 +152,7 @@ class ImplementationSnapshot:
             daily_count=daily_count, daily_cap=self.config.get("max_spawns_per_day"),
             observed_at=self.coverage.observed_at, existing_slot=occupied,
             prerequisites=prerequisites,
+            pipeline_count=pipeline_count, pipeline_cap=policy["max_pipeline_prs"],
             remaining_checks=("target_readiness", "dependencies", "attempts", "human_holds",
                               "engine_policy", "security", "target_ownership"),
         )
