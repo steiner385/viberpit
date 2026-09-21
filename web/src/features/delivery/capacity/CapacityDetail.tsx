@@ -166,13 +166,13 @@ function CapacityProductRow({
               <Link
                 to={`${NAV_BY_ID.pipeline.path}?pipeline=${encodeURIComponent(product.primaryRepo)}`}
                 aria-label={`${name} pipeline`}
-                className="text-accent hover:underline tabular-nums"
+                className="text-sm text-accent hover:underline tabular-nums"
               >
                 {product.pipeline}
               </Link>
             )
             : <span className="tabular-nums text-sm text-ink">{product.pipeline}</span>}
-          {' /'}
+          <span className="tabular-nums text-sm text-ink">{' /'}</span>
           <Input
             aria-label={`${name} pipeline cap`}
             type="number"
