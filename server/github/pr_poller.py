@@ -18,6 +18,7 @@ from ccswitch import gitrepos
 from server.aio import cancel_and_reap
 
 from .api_budget import PriorityGate
+from .host_failures import log_gh_failure
 from .pr_status import (
     PullRequestInfo,
     build_env_deployments_query,
@@ -58,8 +59,12 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
             input=query,
         )
         if proc.returncode != 0:
-            log.warning(
-                "pr_poller.query_failed owner=%s err=%s",
+            # owner is QUOTED so `normalize()` masks it: unquoted, #1926
+            # (cairnea) and #1927 (steiner385) were filed as two issues for one
+            # outage, and would be again for any per-owner-blind failure.
+            log_gh_failure(
+                log, proc.stderr,
+                "pr_poller.query_failed owner='%s' err=%s",
                 owner, proc.stderr.strip() or "gh api graphql failed",
             )
             continue
@@ -110,10 +115,13 @@ def _supplement_env_deployments(response: dict, pairs: list[tuple[str, str]]) ->
                     proc.stderr.strip() or "gh api graphql (env deployments) failed"
                 )
             env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
-        except Exception:
-            log.warning(
-                "pr_poller.env_supplement_failed targets=%s",
-                [t[0] for t in o_targets], exc_info=True,
+        except Exception as exc:
+            # ``GhError`` carries gh's stderr as its message, so the host
+            # condition is readable here without unwrapping the traceback.
+            log_gh_failure(
+                log, str(exc),
+                "pr_poller.env_supplement_failed targets='%s'",
+                ",".join(t[0] for t in o_targets), exc_info=True,
             )
             continue
         for i, (repo, _missing) in enumerate(o_targets):

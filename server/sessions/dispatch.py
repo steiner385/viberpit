@@ -10,6 +10,7 @@ import logging
 from typing import Callable
 
 from ccswitch.gitrepos import _run_gh
+from server.github.host_failures import log_gh_failure
 
 log = logging.getLogger(__name__)
 
@@ -157,7 +158,9 @@ def fetch_open_issues(
         return []
 
     if result.returncode != 0:
-        log.warning("fetch_open_issues: gh exited %d for repo=%s: %s", result.returncode, repo, result.stderr)
+        log_gh_failure(log, result.stderr or "",
+                       "fetch_open_issues: gh exited %d for repo='%s': %s",
+                       result.returncode, repo, result.stderr)
         return []
 
     try:

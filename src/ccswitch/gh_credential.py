@@ -1,4 +1,4 @@
-"""Health of THIS host's ambient ``gh`` credential — one condition, not N failures.
+"""Health of THIS host's ``gh`` access — one condition, not N failures.
 
 Why this module exists (issue #2052)
 ------------------------------------
@@ -65,6 +65,29 @@ Two limits, stated rather than discovered later:
   fails fast. :data:`SUPPRESSED_STDERR` names the runbook so that failure explains
   itself, which is more than the raw 401 did.
 
+Two more host conditions, same shape (issues #1922–#1927, #1941)
+---------------------------------------------------------------
+A missing credential is not the only gh failure that belongs to the *host* rather
+than to whatever repo happened to notice it. Two others produced the same fan-out
+of auto-error issues, so :func:`classify_gh_failure` names them too:
+
+* :data:`UNREACHABLE` — ``error connecting to api.github.com``. One network
+  outage on 2026-09-17 was filed as five issues (#1922, #1923, #1924, #1926,
+  #1927) because three loops each reported the target they failed to reach.
+* :data:`RATE_LIMITED` — an *authenticated* token over its budget
+  (``exceeded for user ID …``, or a secondary limit). Deliberately distinct from
+  the unauthenticated-IP 403 above, which means there was no token at all: the
+  discriminator is the whole reason :data:`_RE_UNAUTH_RATE_LIMIT` carries a
+  negative lookahead, and the two have different fixes.
+
+**Only :data:`UNAUTHENTICATED` latches** (see :meth:`GhCredentialHealth.record`).
+The back-off exists to stop burning an already-exhausted request bucket that no
+amount of retrying can refill; neither of the new conditions has that property. A
+connect error spends no budget and clears the moment the network returns, so
+holding traffic down for a probe interval would only delay recovery, and a
+rate-limit window resets on its own schedule. They are classified so the *log*
+can collapse, not so traffic can be gated.
+
 This module is intentionally dependency-free (stdlib only) so it can sit in the
 CLI core beside ``gitrepos`` and be imported from the server without a cycle.
 
@@ -84,9 +107,22 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-#: The single condition this module names. A str rather than an enum so callers
-#: (including the server-side log collapsing) can use it as a throttle key.
+#: This host has no usable ambient gh credential. A str rather than an enum so
+#: callers (including the server-side log collapsing) can use it as a throttle key.
 UNAUTHENTICATED = "unauthenticated"
+
+#: This host cannot reach api.github.com at all (DNS, routing, a GitHub outage).
+UNREACHABLE = "unreachable"
+
+#: This host's gh calls are authenticated but over GitHub's budget. Separate from
+#: :data:`UNAUTHENTICATED` on purpose: that one is fixed by unlocking a keyring,
+#: this one by waiting, and filing them as one issue would hide both fixes.
+RATE_LIMITED = "rate_limited"
+
+#: The closed vocabulary :func:`classify_gh_failure` can return. Exported so a
+#: consumer can assert it handles every condition rather than discovering a new
+#: one in production — ``server/github/host_failures.py`` has exactly that guard.
+CONDITIONS = (UNAUTHENTICATED, UNREACHABLE, RATE_LIMITED)
 
 #: stderr handed back for a call that was never made. It deliberately reads as a
 #: gh failure (callers all branch on ``returncode``) *and* classifies as the same
@@ -150,14 +186,46 @@ _RE_NOT_LOGGED_IN = re.compile(
 
 _PATTERNS = (_RE_401, _RE_UNAUTH_RATE_LIMIT, _RE_NOT_LOGGED_IN)
 
+#: gh's own transport-failure wording, both halves of the two-line message it
+#: prints when the request never reached GitHub::
+#:
+#:     error connecting to api.github.com
+#:     check your internet connection or https://githubstatus.com
+#:
+#: Either half alone is enough — matching both independently means a reworded
+#: first line (a different host, a wrapped dial error) still classifies. Anchored
+#: on observed output rather than on guessed Go/net phrasings, per constitution
+#: Principle III.
+_RE_UNREACHABLE = re.compile(
+    r"error connecting to |check your internet connection", re.IGNORECASE
+)
+
+#: ``API rate limit exceeded for user ID 1234567`` — the mirror of
+#: :data:`_RE_UNAUTH_RATE_LIMIT`. The token worked; the host is merely busy.
+_RE_USER_RATE_LIMIT = re.compile(r"api rate limit exceeded for user\b", re.IGNORECASE)
+
+#: GitHub's abuse/secondary limit, which has no "for <who>" clause at all.
+_RE_SECONDARY_RATE_LIMIT = re.compile(r"exceeded a secondary rate limit", re.IGNORECASE)
+
+_RATE_LIMITED_PATTERNS = (_RE_USER_RATE_LIMIT, _RE_SECONDARY_RATE_LIMIT)
+
 
 def classify_gh_failure(stderr: str) -> str | None:
-    """:data:`UNAUTHENTICATED` when *stderr* proves the ambient credential is
-    missing, else None. Called only for a non-zero gh exit."""
+    """The host-wide condition *stderr* proves, or None. Called only for a
+    non-zero gh exit.
+
+    Order is load-bearing: the unauthenticated patterns run first because
+    :data:`_RE_UNAUTH_RATE_LIMIT` and :data:`_RE_USER_RATE_LIMIT` read the same
+    sentence and are told apart only by what follows ``for``.
+    """
     if not stderr:
         return None
     if any(p.search(stderr) for p in _PATTERNS):
         return UNAUTHENTICATED
+    if any(p.search(stderr) for p in _RATE_LIMITED_PATTERNS):
+        return RATE_LIMITED
+    if _RE_UNREACHABLE.search(stderr):
+        return UNREACHABLE
     return None
 
 
@@ -267,12 +335,17 @@ class GhCredentialHealth:
         Never call this for a suppressed result (it was not evidence) or for a
         call that carried an App installation token (it did not use this
         credential).
+
+        :data:`UNREACHABLE` and :data:`RATE_LIMITED` fall through the same branch
+        as an unrelated failure, and must: this latch gates traffic, and neither
+        of those conditions is helped by holding traffic down (see the module
+        docstring). They are classified for the log, not for the gate.
         """
         if returncode == 0:
             self._record_success()
             return
         if classify_gh_failure(stderr or "") != UNAUTHENTICATED:
-            return  # an unrelated failure: neither sets nor clears the latch
+            return  # another condition, or an unrelated failure: no latch change
         self._record_unauthenticated()
 
     def _record_unauthenticated(self) -> None:

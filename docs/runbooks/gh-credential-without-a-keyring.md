@@ -13,6 +13,20 @@ limit exceeded for <public IP> … (HTTP 403)`. The named issues/PRs are fine; n
 any of them. Every gh-backed automation on the host is degraded at once: `pr_poller`, `pr_status`,
 `merge_queue`, `deploy_monitor`, `backlog_runner` issue writes, error triage, the CI/CD Doctor.
 
+**Two neighbours you will see beside it, and this runbook is not for either.** All three come from
+the same collapse point (`server/github/host_failures.py`) on the `server.github.host` logger, so
+they read alike in the journal — but they are separate conditions with separate fixes, which is
+exactly why they are separate event names (#1922–#1927, #1941):
+
+| event | means | what to do |
+|---|---|---|
+| `github.host_gh_unauthenticated` | no usable ambient credential | this runbook |
+| `github.host_gh_unreachable` | the request never reached GitHub | check the host's network, then <https://www.githubstatus.com>; it clears itself |
+| `github.host_gh_rate_limited` | the token worked and is over budget | wait for the window to reset; if it recurs, look at poll intervals |
+
+Each reports at most once per six hours while the condition holds (`LogThrottle`); the per-target
+detail is still there at DEBUG.
+
 ## Why it happens
 
 On dobby, `gh`'s token lives **only in the GNOME login keyring**, and gdm's autologin cannot unlock

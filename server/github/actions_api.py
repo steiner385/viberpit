@@ -14,6 +14,8 @@ from typing import Any
 
 from ccswitch import gitrepos
 
+from .host_failures import log_gh_failure
+
 log = logging.getLogger(__name__)
 
 
@@ -142,9 +144,10 @@ def junit_artifacts(repo: str, run_id: int, *, run=None,
                 for member in z.namelist():
                     if member.endswith(".xml"):
                         out.append((a["name"], z.read(member)))
-        except Exception:
-            log.warning("cicd.artifact_fetch_failed repo=%s run=%s artifact=%s",
-                        repo, run_id, a.get("name"), exc_info=True)
+        except Exception as exc:
+            log_gh_failure(log, str(exc),
+                           "cicd.artifact_fetch_failed repo='%s' run=%s artifact='%s'",
+                           repo, run_id, a.get("name"), exc_info=True)
     return out
 
 
@@ -156,8 +159,9 @@ def repo_ci_meta(repo: str, *, run=None) -> tuple[str, set[str]]:
     try:
         meta = _json(run(["api", f"repos/{repo}"]))
         branch = meta.get("default_branch") or "master"
-    except Exception:
-        log.warning("cicd.repo_meta_failed repo=%s", repo, exc_info=True)
+    except Exception as exc:
+        log_gh_failure(log, str(exc), "cicd.repo_meta_failed repo='%s'", repo,
+                       exc_info=True)
     required: set[str] = set()
     try:
         data = _json(run(["api",
