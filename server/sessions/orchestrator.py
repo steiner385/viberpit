@@ -18795,11 +18795,12 @@ class SessionOrchestrator:
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
             "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d "
-            "evicted_dirty=%d orphaned=%d",
+            "evicted_dirty=%d orphaned=%d kept_stray=%d pruned_empty=%d",
             counts["scanned"], counts["removed"], counts["kept_live"],
             counts["kept_young"], counts["kept_dirty"],
             counts["kept_unpushed"], counts["kept_error"],
             counts.get("evicted_dirty", 0), counts.get("orphaned", 0),
+            counts.get("kept_stray", 0), counts.get("pruned_empty", 0),
         )
 
     async def list_archived(self) -> list[dict]:

@@ -9,11 +9,14 @@ Safety invariants
 * Never calls ``git worktree prune`` globally (issue #177 — it can reap a
   sibling session's live worktree).  Uses only scoped ``git worktree remove``
   via the existing ``remove_worktree()`` helper.
-* Two independent dirty guards: ``_is_clean()`` here, then ``remove_worktree()``
-  repeats the check internally.
+* Two independent dirty guards: ``_porcelain_status()`` here, then
+  ``remove_worktree()`` repeats the check internally.
 * Any subprocess failure or dir-level exception → treat conservatively → keep.
 * A repo with no remotes configured → ``_is_fully_pushed()`` returns False →
   keep (unverifiable).
+* A dir git refuses to read at all is a *stray*, never a dirty worktree
+  (#1883).  Strays are only ever reclaimed with ``os.rmdir``, which cannot
+  remove a directory that holds anything.
 * Dirty worktrees whose backing session is no longer active are stash-evicted
   after ``max_dirty_age`` seconds (default 7 days).  The stash SHA is logged
   for recovery.  If stashing fails the worktree is still force-evicted
@@ -29,7 +32,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ccswitch.clone_doctor import clone_dir_from_gitdir, read_gitdir_pointer
-from ccswitch.worktrees import remove_worktree
+from ccswitch.worktrees import remove_worktree, worktrees_base
 
 from . import brand
 
@@ -50,8 +53,8 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _candidate_worktree_dirs(repo_root: str) -> Iterator[Path]:
-    """Yield every ``<repo_root>/.ccswitch/worktrees/<repo>/<short-id>/`` dir."""
-    base = Path(repo_root) / ".ccswitch" / "worktrees"
+    """Yield every ``<worktrees_base>/<repo>/<short-id>/`` dir."""
+    base = worktrees_base(repo_root)
     if not base.is_dir():
         return
     for repo_dir in base.iterdir():
@@ -78,10 +81,20 @@ def _orphaned_clone(wt: str) -> str | None:
     return clone_dir_from_gitdir(gitdir) or gitdir
 
 
-def _is_clean(wt: str) -> bool:
-    """True iff ``git status --porcelain`` returns no output."""
+def _porcelain_status(wt: str) -> tuple[bool, str]:
+    """``(readable, porcelain_output)`` for *wt*.
+
+    ``readable`` is False when git refused the directory outright — the dir is
+    not a working tree at all.  Collapsing that into "dirty" is what let empty
+    leftover dirs accumulate as untouchable "uncommitted work" and trip the
+    inode-exhaustion alert (#1883): ``git status`` walks up to the parent dirs
+    and exits 128 with ``not a git repository`` for any stray dir under the
+    managed root, which the old boolean read as "has modifications".
+    """
     r = _run(["git", "-C", wt, "status", "--porcelain"])
-    return r.returncode == 0 and r.stdout.strip() == ""
+    if r.returncode != 0:
+        return False, ""
+    return True, r.stdout.strip()
 
 
 def _upstream_gone(wt: str) -> bool:
@@ -170,9 +183,14 @@ def sweep_orphaned_worktrees(
     fails the worktree is still force-removed (changes are considered
     abandoned after 7 days with no active session).
 
+    **Strays**: a dir git cannot read as a working tree is not a worktree and
+    is never counted dirty (#1883).  An empty one is reclaimed with
+    ``os.rmdir``; a non-empty one is kept and named in a per-sweep alert.
+
     Returns a count dict with keys:
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
-      ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``
+      ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``,
+      ``orphaned``, ``kept_stray``, ``pruned_empty``
     """
     import time as _time
 
@@ -189,6 +207,8 @@ def sweep_orphaned_worktrees(
         "kept_error": 0,
         "evicted_dirty": 0,
         "orphaned": 0,
+        "kept_stray": 0,
+        "pruned_empty": 0,
     }
     orphan_clones: set[str] = set()
 
@@ -219,7 +239,15 @@ def sweep_orphaned_worktrees(
                 counts["kept_young"] += 1
                 continue
 
-            if not _is_clean(wt):
+            readable, porcelain = _porcelain_status(wt)
+            if not readable:
+                # Not a working tree at all. Checked after the live/young skips
+                # so a worktree mid-creation (no .git pointer yet) is never
+                # misread as abandoned.
+                _handle_stray(wt, counts)
+                continue
+
+            if porcelain:
                 age = now - mtime
                 if age >= max_dirty_age:
                     _evict_dirty(wt, age, counts)
@@ -244,7 +272,31 @@ def sweep_orphaned_worktrees(
 
     _emit_dirty_alerts(counts["kept_dirty"])
     _emit_orphan_alert(counts["orphaned"], orphan_clones)
+    _emit_stray_alert(counts["kept_stray"])
     return counts
+
+
+def _handle_stray(wt: str, counts: dict[str, int]) -> None:
+    """Reclaim an empty stray dir; keep and record a non-empty one.
+
+    ``os.rmdir`` is the guard, not a preceding emptiness check: it raises
+    rather than remove a directory holding anything, so there is no window in
+    which a session could populate the dir between the test and the removal.
+
+    Both paths log at INFO, like ``keep_dirty`` / ``keep_unpushed``: a path is
+    per-worktree detail for the journal, and a varying path in a WARNING+
+    record mints a fresh error-triage fingerprint per host and repo, filing one
+    condition as N auto-error issues.
+    """
+    try:
+        os.rmdir(wt)
+    except OSError as exc:
+        log.info("worktree-janitor: keep_stray path=%s reason=%s", wt, exc.strerror)
+        counts["kept_stray"] += 1
+        return
+    log.info("worktree-janitor: pruned empty stray path=%s", wt)
+    counts["pruned_empty"] += 1
+    counts["removed"] += 1
 
 
 def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
@@ -285,6 +337,29 @@ def _emit_orphan_alert(orphaned: int, clones: set[str]) -> None:
         "worktree-janitor: orphaned=%d worktree(s) reference missing clone(s) %s — "
         "working files are intact; recover with `%s clones repair`",
         orphaned, ", ".join(sorted(clones)), brand.CLI_NAME,
+    )
+
+
+def _emit_stray_alert(kept_stray: int) -> None:
+    """One line per sweep for dirs git cannot read that could not be reclaimed.
+
+    Whatever they hold has no git metadata, so nothing here can recover it
+    automatically — the janitor never deletes them and a human has to decide.
+    WARNING, not CRITICAL: an untidy host is not the inode emergency
+    ``kept_dirty`` reports.
+
+    The text carries no paths, only the count, so error triage normalises every
+    host and repo to a single fingerprint (the count itself is masked to
+    ``<n>``) instead of filing one auto-error issue per directory set.  The
+    paths are in the ``keep_stray path=`` INFO lines of the same sweep.
+    """
+    if not kept_stray:
+        return
+    log.warning(
+        "worktree-janitor: kept_stray=%d dir(s) under the managed root are not "
+        "git working trees and could not be reclaimed — see the keep_stray "
+        "path= lines in this sweep",
+        kept_stray,
     )
 
 
