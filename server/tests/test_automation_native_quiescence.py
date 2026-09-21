@@ -433,6 +433,43 @@ async def test_archived_session_with_no_driver_attests_every_retained_execution(
 
 
 @pytest.mark.asyncio
+async def test_archived_session_falls_through_to_terminal_sweep_when_shortcut_alone_cannot_converge(
+        ownership_db):
+    """cairnea/KinDash#16529 (2026-09-21): the session's OWN current execution
+    closed cleanly and was individually attested before archiving, but an
+    EARLIER resume's predecessor execution never was (killed by a restart).
+    The cheap "my own generation already matches" shortcut fired, tried to
+    reconcile, and failed — the stale sibling still blocks the tree-wide
+    aggregate — and used to return False right there, never trying the
+    terminal-attestation sweep below it, which for an archived, driverless,
+    owned row is allowed to close every retained execution and WOULD have
+    converged (the same bar ``test_archived_session_with_no_driver_attests_
+    every_retained_execution`` already trusts when NEITHER execution was ever
+    individually attested)."""
+    from server.automations.ownership import execution_snapshot
+    from server.db import db_session, models
+    token = await claim([target()])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+    await begin_session_execution(sid, execution_id="gen-a")  # killed, never attested
+    await begin_session_execution(sid, execution_id="gen-b")  # resumed, closes cleanly
+    current = await execution_snapshot(sid, execution_id="gen-b")
+    assert await attest_session_stopped(token, current.generation, session_id=sid,
+                                        execution_id="gen-b")
+    async with db_session() as db:
+        db.add(models.Session(id=sid, name="runner", account_name="acct", cwd="/tmp",
+                              status="archived"))
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {}
+    orch._drivers = {}
+    orch._releasing = {}
+    orch._enabled_host_names = AsyncMock(return_value=frozenset())
+    assert await orch._automation_session_work_stopped(sid)
+    _token, tree_generation, tree_stopped = await session_execution(sid)
+    assert tree_generation == tree_stopped == 2
+
+
+@pytest.mark.asyncio
 async def test_archived_session_still_releasing_or_owned_elsewhere_is_not_attested(ownership_db):
     from server.db import db_session, models
     token = await claim([target()])

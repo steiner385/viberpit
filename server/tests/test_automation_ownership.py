@@ -14,6 +14,7 @@ import server.db as database
 from server.automations.ownership import (
     CanonicalTarget, OwnershipConflict, ReleaseProof, StaleOwnership,
     acquire, owned, begin_session_execution, attest_session_stopped,
+    reconcile_absent_session_stopped,
 )
 from server.db.models import (
     Automation, AutomationOperation, AutomationOwnedTarget, AutomationTargetState, Base, Session,
@@ -366,3 +367,63 @@ async def test_cancelled_launch_transition_keeps_committed_claim(ownership_db):
         assert tx.operation.reserved_session_id is None
     with pytest.raises(OwnershipConflict):
         await claim([target()])
+
+
+@pytest.mark.asyncio
+async def test_reconcile_absent_session_repairs_history_left_by_an_unattested_resume(ownership_db):
+    """``reconcile_absent_session_stopped`` closes out a session's own history
+    once the CALLER has independently proven that session's row is permanently
+    deleted (cairnea/KinDash#16041, 2026-09-21): a driver killed by an earlier
+    restart/drain never attested its own close, so a later resume's clean
+    attestation could not make the tree-wide aggregate converge on its own —
+    nothing calls ``attest_session_stopped`` again once every execution the
+    caller still tracks already answers its own stopped==generation question.
+    Row absence (never mere supersession — see
+    ``test_new_driver_cannot_erase_unproven_predecessor_lifetime``) is what
+    licenses closing the stale entry retroactively."""
+    token = await claim([target()])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+        tx.bind_session(sid)
+    async with owned(token) as tx:
+        tx.operation.execution_generation = 2
+        tx.operation.execution_sessions = {
+            sid: {"current": "exec-2", "executions": {
+                "exec-1": {"generation": 1, "stopped": None},  # never attested (killed)
+                "exec-2": {"generation": 2, "stopped": 2},     # the live resume closed cleanly
+            }},
+        }
+    assert await reconcile_absent_session_stopped(token, sid) is True
+    async with owned(token) as tx:
+        assert tx.operation.stopped_generation == 2
+        tx.release(ReleaseProof.WORK_STOPPED, "session row deleted while the claim was open")
+    assert await claim([target()]) != token
+
+
+@pytest.mark.asyncio
+async def test_reconcile_absent_session_leaves_other_sessions_in_the_tree_untouched(ownership_db):
+    """Only the session the caller has independently proven absent is force-
+    closed. A sibling session recorded in the same tree, not proven absent,
+    must keep blocking release — absence of one session's row is not proof
+    about any other."""
+    token = await claim([target()])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+        tx.bind_session(sid)
+    async with owned(token) as tx:
+        tx.operation.execution_generation = 2
+        tx.operation.execution_sessions = {
+            sid: {"current": "exec-1", "executions": {
+                "exec-1": {"generation": 1, "stopped": None},  # sid's row is absent (proven)
+            }},
+            "sibling": {"current": "exec-2", "executions": {
+                "exec-2": {"generation": 2, "stopped": None},  # NOT proven absent — stays open
+            }},
+        }
+    assert await reconcile_absent_session_stopped(token, sid) is False
+    async with owned(token) as tx:
+        states = tx.operation.execution_sessions
+        assert states[sid]["executions"]["exec-1"]["stopped"] == 1
+        assert states["sibling"]["executions"]["exec-2"]["stopped"] is None
+        with pytest.raises(ValueError):
+            tx.release(ReleaseProof.WORK_STOPPED, "sibling still unproven")
