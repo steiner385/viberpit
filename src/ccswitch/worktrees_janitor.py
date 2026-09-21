@@ -31,7 +31,11 @@ import subprocess
 from pathlib import Path
 from typing import Iterator
 
-from ccswitch.clone_doctor import clone_dir_from_gitdir, read_gitdir_pointer
+from ccswitch.clone_doctor import (
+    clone_dir_from_gitdir,
+    clone_is_repairable,
+    read_gitdir_pointer,
+)
 from ccswitch.worktrees import remove_worktree, worktrees_base
 
 from . import brand
@@ -190,7 +194,13 @@ def sweep_orphaned_worktrees(
     Returns a count dict with keys:
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
       ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``,
-      ``orphaned``, ``kept_stray``, ``pruned_empty``
+      ``orphaned``, ``orphaned_unmanaged``, ``kept_stray``, ``pruned_empty``
+
+    **Orphans**: a worktree whose shared clone is gone is counted, never
+    removed (#1003).  ``orphaned`` is the recoverable shape — the clone sits
+    under the clones base, so ``clones repair`` can re-clone it;
+    ``orphaned_unmanaged`` points outside it and nothing here can restore it
+    (#1992).
     """
     import time as _time
 
@@ -207,10 +217,14 @@ def sweep_orphaned_worktrees(
         "kept_error": 0,
         "evicted_dirty": 0,
         "orphaned": 0,
+        "orphaned_unmanaged": 0,
         "kept_stray": 0,
         "pruned_empty": 0,
     }
-    orphan_clones: set[str] = set()
+    # clone path -> how many worktrees died with it, split by whether
+    # `clones repair` can actually restore it (see _emit_orphan_alert).
+    orphan_clones: dict[str, int] = {}
+    unmanaged_clones: dict[str, int] = {}
 
     for wt_path in _candidate_worktree_dirs(repo_root):
         counts["scanned"] += 1
@@ -222,8 +236,19 @@ def sweep_orphaned_worktrees(
             # removed — the files are intact and recoverable.
             missing_clone = _orphaned_clone(wt)
             if missing_clone:
-                counts["orphaned"] += 1
-                orphan_clones.add(missing_clone)
+                # Split on the one thing that decides the remedy: whether
+                # `clones repair` can restore this clone at all.  Asked through
+                # clone_doctor so the alert and the command cannot disagree — a
+                # clone that is merely missing its admin records IS repairable
+                # even from outside the clones base, while a deleted hand-made
+                # checkout never is (#1992).
+                if clone_is_repairable(repo_root, missing_clone):
+                    counts["orphaned"] += 1
+                    orphan_clones[missing_clone] = orphan_clones.get(missing_clone, 0) + 1
+                else:
+                    counts["orphaned_unmanaged"] += 1
+                    unmanaged_clones[missing_clone] = (
+                        unmanaged_clones.get(missing_clone, 0) + 1)
                 continue
 
             if wt in live_cwds:
@@ -271,7 +296,10 @@ def sweep_orphaned_worktrees(
             counts["kept_error"] += 1
 
     _emit_dirty_alerts(counts["kept_dirty"])
-    _emit_orphan_alert(counts["orphaned"], orphan_clones)
+    _journal_orphan_clones(orphan_clones)
+    _journal_orphan_clones(unmanaged_clones)
+    _emit_orphan_alert(counts["orphaned"])
+    _emit_unmanaged_orphan_alert(counts["orphaned_unmanaged"])
     _emit_stray_alert(counts["kept_stray"])
     return counts
 
@@ -324,19 +352,57 @@ def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
         counts["kept_error"] += 1
 
 
-def _emit_orphan_alert(orphaned: int, clones: set[str]) -> None:
+def _journal_orphan_clones(clones: dict[str, int]) -> None:
+    """One INFO line per missing clone: which one, and how many died with it.
+
+    INFO, like ``keep_stray`` / ``keep_dirty``: a path is per-sweep detail for
+    the journal, and a varying path in a WARNING+ record mints a fresh
+    error-triage fingerprint per host and per path set.
+    """
+    for clone in sorted(clones):
+        log.info("worktree-janitor: orphaned_clone path=%s worktrees=%d",
+                 clone, clones[clone])
+
+
+def _emit_orphan_alert(orphaned: int) -> None:
     """Name a deleted shared clone loudly, with the command that recovers it.
 
     One CRITICAL line per sweep rather than per worktree: the 2026-09-03
     incident orphaned 61 worktrees on one host from a single deletion, and 61
-    identical lines would bury the one fact that matters — which clone is gone.
+    identical lines would bury the one fact that matters.
+
+    The text carries no paths, only the count, so error triage normalises every
+    host and clone set to a single fingerprint — quoting the missing-clone list
+    filed ONE condition as three auto-error issues (#1642, #1663, #1992).  The
+    paths are in the ``orphaned_clone path=`` INFO lines of the same sweep.
     """
     if not orphaned:
         return
     log.critical(
-        "worktree-janitor: orphaned=%d worktree(s) reference missing clone(s) %s — "
-        "working files are intact; recover with `%s clones repair`",
-        orphaned, ", ".join(sorted(clones)), brand.CLI_NAME,
+        "worktree-janitor: orphaned=%d worktree(s) reference a missing shared clone "
+        "— working files are intact; recover with `%s clones repair` (the clone "
+        "paths are in this sweep's orphaned_clone lines)",
+        orphaned, brand.CLI_NAME,
+    )
+
+
+def _emit_unmanaged_orphan_alert(orphaned_unmanaged: int) -> None:
+    """Orphans pointing outside the clones base — `clones repair` cannot help.
+
+    Without an ``<owner>/<name>`` under the clones base there is nothing to
+    re-clone from, and the janitor never removes an orphan, so pointing an
+    operator at ``clones repair`` here promises a remedy that provably cannot
+    run and leaves a CRITICAL nothing will ever clear (#1992).  WARNING, not
+    CRITICAL: a legacy worktree off a hand-made checkout is a cleanup chore,
+    not the fleet-wide outage ``orphaned`` reports.
+    """
+    if not orphaned_unmanaged:
+        return
+    log.warning(
+        "worktree-janitor: orphaned_unmanaged=%d worktree(s) reference a missing "
+        "clone that was never %s-managed — it cannot be re-created here; salvage "
+        "anything in them and remove them (see this sweep's orphaned_clone lines)",
+        orphaned_unmanaged, brand.CLI_NAME,
     )
 
 

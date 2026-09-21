@@ -4,6 +4,7 @@ These run against REAL git (constitution III): the whole point is that
 ``git worktree repair`` alone cannot recover a worktree whose clone was deleted,
 so a mocked git would test the wrong thing.
 """
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -163,6 +164,92 @@ class CloneDoctorTests(unittest.TestCase):
         self.assertEqual(results[0]["action"], "failed")
         self.assertIn("git clone failed", results[0]["error"])
         self.assertTrue(wt.exists())
+
+    def test_repair_relinks_onto_the_clone_ensure_clone_resolved_to(self) -> None:
+        """#1992: a case-variant clone name must not defeat recovery.
+
+        ``clone_path`` deliberately collapses ``cairnea/kindash`` onto an
+        existing ``cairnea/KinDash`` (#1003), so ``ensure_clone`` is a no-op and
+        returns the OTHER spelling.  Re-linking against the diagnosed (still
+        missing) path made every worktree fail with "clone has no resolvable
+        base commit", so ``clones repair`` — the remedy the CRITICAL names —
+        could never clear the alert.
+        """
+        wt = self._add_worktree("0badcafe")
+        (wt / "uncommitted.txt").write_text("keep me\n")
+        lower = self.clone.parent / "kindash"
+        (wt / ".git").write_text(f"gitdir: {lower}/.git/worktrees/0badcafe\n")
+
+        report = clone_doctor.diagnose(str(self.root))[0]
+        self.assertEqual(report.clone_dir, str(lower))
+        self.assertFalse(report.exists)
+
+        results = clone_doctor.repair(
+            str(self.root), base_ref="origin/main", clone_url_for=self._url_for)
+        self.assertEqual(results[0]["action"], "repaired")
+        self.assertEqual(results[0]["results"], {str(wt): "repaired"})
+        # The clone actually used is reported, not just the missing one asked for.
+        self.assertEqual(results[0]["clone"], str(lower))
+        self.assertEqual(results[0]["resolvedClone"], str(self.clone))
+        # No second clone was created under the lowercase spelling.
+        self.assertFalse(lower.exists())
+        # The condition is cleared, and uncommitted work survived.
+        self.assertEqual(clone_doctor.diagnose(str(self.root))[0].broken, [])
+        self.assertEqual((wt / "uncommitted.txt").read_text(), "keep me\n")
+
+    def test_repair_action_reflects_the_per_worktree_outcomes(self) -> None:
+        """``repaired`` must never be printed for a run that repaired nothing.
+
+        ``action`` used to be assigned before ``repair_worktree_links`` ran, so
+        ``ccswitch clones repair`` reported success for a run in which every
+        worktree errored.
+        """
+        wt = self._add_worktree()
+        _rmtree(self.clone)
+        results = clone_doctor.repair(
+            str(self.root), base_ref="refs/heads/no-such-branch",
+            clone_url_for=self._url_for)
+        self.assertEqual(results[0]["results"],
+                         {str(wt): "error: clone has no resolvable base commit"})
+        self.assertEqual(results[0]["action"], "failed")
+
+    def test_repair_names_the_operator_step_for_an_unmanaged_clone_path(self) -> None:
+        """A clone path outside the clones base can never be re-cloned here.
+
+        ``repair`` has no ``<owner>/<name>`` to clone from, so it must say what
+        a human has to do instead of reporting a bare "skipped" that reads like
+        "nothing was wrong".
+        """
+        wt = self._add_worktree()
+        outside = self.root / "my-real-checkout"
+        (wt / ".git").write_text(f"gitdir: {outside}/.git/worktrees/2a158cb3\n")
+
+        results = clone_doctor.repair(str(self.root), clone_url_for=self._url_for)
+        self.assertEqual(results[0]["action"], "unrepairable")
+        self.assertIn("outside", results[0]["error"])
+        self.assertIn("salvage", results[0]["error"])
+        self.assertEqual(results[0]["worktrees"], [str(wt)])
+        self.assertTrue(wt.exists())
+        # A dry run must not promise a repair the real run refuses.
+        self.assertEqual(
+            clone_doctor.repair(str(self.root), dry_run=True)[0]["action"], "unrepairable")
+
+    def test_repair_recovers_a_clone_that_only_lost_its_admin_records(self) -> None:
+        """A present clone outside the clones base is still repairable (#1992).
+
+        Seen on dobby: the clone is on disk, only ``.git/worktrees/<id>`` died,
+        so ``repair_worktree_links`` has a real clone dir to rebuild from — the
+        janitor must not file this as the unrecoverable shape.
+        """
+        wt = self._add_worktree()
+        record = self.clone / ".git" / "worktrees" / wt.name
+        shutil.rmtree(record)
+
+        self.assertTrue(clone_doctor.clone_is_repairable(str(self.root), self.clone))
+        results = clone_doctor.repair(
+            str(self.root), base_ref="origin/main", clone_url_for=self._url_for)
+        self.assertEqual(results[0]["action"], "repaired")
+        self.assertEqual(results[0]["results"], {str(wt): "repaired"})
 
     def test_default_clone_url_is_the_github_https_remote(self) -> None:
         self.assertEqual(
