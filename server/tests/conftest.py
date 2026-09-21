@@ -2,7 +2,7 @@
 
 Loaded by pytest before any test module in this package is collected, so the
 ``write_json_secure`` guard below is in place before tests bind the function via
-their (function-local) ``from ccswitch.creds import write_json_secure`` imports.
+their (function-local) ``creds.write_json_secure`` imports.
 """
 import atexit
 import functools
@@ -271,6 +271,19 @@ def _reset_helper_call_breakers():
     helper_call.reset_breakers()
     yield
     helper_call.reset_breakers()
+
+
+@pytest.fixture(autouse=True)
+def _reset_gh_credential_health():
+    # Same hazard as the breakers above, one layer down: the gh_credential
+    # module keeps a process-global latch for "this host's gh credential is
+    # unauthenticated" (#2052), and any test whose fake gh returns a 401 would
+    # otherwise leave every LATER test on that xdist worker having its gh calls
+    # suppressed — an order-dependent failure that looks nothing like its cause.
+    from ccswitch import gh_credential
+    gh_credential.host_health().reset()
+    yield
+    gh_credential.host_health().reset()
 
 
 @pytest.fixture

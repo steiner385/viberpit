@@ -16,11 +16,46 @@ import logging
 import re
 from collections.abc import Sequence
 
-from ccswitch import brand, gitrepos
+from ccswitch import brand, gh_credential, gitrepos
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
 
 LABEL = "ci-doctor"
+
+#: Window for the "this host's gh credential is unauthenticated" record (#2052).
+#: Keyed on the condition, never on the target, which is the whole point: the
+#: 2026-09-17 burst was 18 WARNINGs naming 18 healthy issues, because each write
+#: reported the target it failed to reach rather than the credential it lacked.
+_HOST_CREDENTIAL_THROTTLE = LogThrottle()
+
+
+def _log_gh_failure(stderr: str, msg: str, *args: object) -> None:
+    """Report one failed gh call — as the host condition when it is one.
+
+    Two shapes, deliberately:
+
+    * **Host credential missing** (a locked keyring — see the ``gh_credential``
+      module and its runbook). Every caller in this module is hitting the
+      same wall, so the per-target record is noise: it is demoted to DEBUG and a
+      single throttled ``github.host_gh_unauthenticated`` event stands for the
+      family. The 401s from writes and the unauthenticated-IP 403s from reads
+      collapse together — they are one condition seen from two sides.
+    * **Anything else** — logged at WARNING with *exactly* the format string the
+      call site always used. :func:`server.obs.error_signature.signature_of`
+      fingerprints on the normalized message, so rewording one of these would
+      fork its existing auto-error issue into a fresh lineage.
+    """
+    if gh_credential.classify_gh_failure(stderr or "") == gh_credential.UNAUTHENTICATED:
+        log.debug(msg, *args)
+        log_event_throttled(
+            log, _HOST_CREDENTIAL_THROTTLE, gh_credential.UNAUTHENTICATED,
+            logging.WARNING, "github.host_gh_unauthenticated",
+            runbook="docs/runbooks/gh-credential-without-a-keyring.md",
+        )
+        return
+    log.warning(msg, *args)
+
 
 _REPO_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -96,7 +131,8 @@ def create_issue(repo: str, title: str, body: str, *,
             args += ["-f", f"labels[]={name}"]
         proc = run(args)
         if proc.returncode != 0:
-            log.warning("cicd.issue_create_failed repo=%s: %s", repo, proc.stderr.strip())
+            _log_gh_failure(proc.stderr,
+                            "cicd.issue_create_failed repo=%s: %s", repo, proc.stderr.strip())
             return None
         return int(json.loads(proc.stdout)["number"])
     except Exception:
@@ -116,8 +152,8 @@ def comment_on_pr(repo: str, number: int, body: str, *,
     try:
         proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}"])
         if proc.returncode != 0:
-            log.warning("github.pr_comment_failed repo=%s #%s: %s",
-                        repo, number, proc.stderr.strip())
+            _log_gh_failure(proc.stderr, "github.pr_comment_failed repo=%s #%s: %s",
+                            repo, number, proc.stderr.strip())
             return None
         return str(json.loads(proc.stdout)["html_url"])
     except Exception:
@@ -137,8 +173,8 @@ def comment_on_issue(repo: str, number: int, body: str, *,
     try:
         proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}"])
         if proc.returncode != 0:
-            log.warning("github.issue_comment_failed repo=%s #%s: %s",
-                        repo, number, proc.stderr.strip())
+            _log_gh_failure(proc.stderr, "github.issue_comment_failed repo=%s #%s: %s",
+                            repo, number, proc.stderr.strip())
             return None
         return str(json.loads(proc.stdout)["html_url"])
     except Exception:
@@ -164,7 +200,8 @@ def issue_states(repo: str, numbers: Sequence[int], *,
         query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {aliases} }} }}'
         proc = run(["api", "graphql", "-f", f"query={query}"])
         if proc.returncode != 0:
-            log.warning("github.issue_states_failed repo=%s: %s", repo, proc.stderr.strip())
+            _log_gh_failure(proc.stderr,
+                            "github.issue_states_failed repo=%s: %s", repo, proc.stderr.strip())
             return {}
         repo_data = (json.loads(proc.stdout).get("data") or {}).get("repository") or {}
         out: dict[int, tuple[bool, str | None]] = {}

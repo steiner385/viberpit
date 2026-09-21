@@ -6,7 +6,7 @@ activity it performs — clones AND worktrees — lives under
 
   * clones:    ``<repo_root>/.ccswitch/clones/<owner>/<name>``
   * worktrees: ``<repo_root>/.ccswitch/worktrees/<name>/<session>`` (see
-    :mod:`ccswitch.worktrees`)
+    :mod:`worktrees`)
 
 The "New session" repo picker lists the GitHub repos the user's ``gh``
 credentials can access (via the GraphQL API), and clones-on-select into the
@@ -22,6 +22,12 @@ KinDash bot login into that config hijacks the active identity and makes the
 user's own private repos vanish (``NOT_FOUND``).  EVERY ``gh`` subprocess therefore
 runs with those tokens stripped and, when ``CCSWITCH_GH_CONFIG_DIR`` is set, pinned
 to a dedicated config dir authed only as the ViberPit identity (see :func:`_gh_env`).
+
+The cost of that discipline is that a host with no dedicated gh config dir has no
+file-backed fallback: if gh's token lives only in a desktop keyring and that
+keyring is locked, every ambient call here runs unauthenticated. That condition is
+detected and backed off once rather than per caller — see :mod:`gh_credential` and
+``docs/runbooks/gh-credential-without-a-keyring.md``.
 """
 from __future__ import annotations
 
@@ -34,6 +40,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+from . import gh_credential
 
 log = logging.getLogger(__name__)
 
@@ -430,7 +438,20 @@ def _run_gh(
     long`` — e.g. the batched PR-status GraphQL query.
 
     ``timeout`` bounds the child (seconds); on expiry ``subprocess`` raises
-    ``TimeoutExpired``, which callers that want a soft failure must catch themselves."""
+    ``TimeoutExpired``, which callers that want a soft failure must catch themselves.
+
+    Every call WITHOUT ``token`` is also evidence about this host's ambient gh
+    credential, and is gated on it: while that credential is known-missing (a
+    locked keyring — issue #2052) only one probe per
+    :data:`gh_credential.PROBE_INTERVAL_S` is attempted and the rest
+    fail fast, so the ~7 gh-backed loops stop spending an already-exhausted
+    60/hr unauthenticated budget one futile retry at a time. A call WITH a token
+    is exempt in both directions: it sets ``GH_TOKEN`` explicitly and never reads
+    the keyring, so it neither proves nor suffers from that condition (#913)."""
+    ambient = token is None
+    health = gh_credential.host_health()
+    if ambient and not health.allow_attempt():
+        return health.suppressed_result(args)
     env = _gh_env()
     if token:
         env["GH_TOKEN"] = token
@@ -440,9 +461,12 @@ def _run_gh(
     if timeout is not None:
         run_kwargs["timeout"] = timeout
     try:
-        return subprocess.run(["gh", *args], **run_kwargs)
+        proc = subprocess.run(["gh", *args], **run_kwargs)
     except FileNotFoundError as exc:  # gh not installed
         raise GhError("the `gh` CLI is not installed or not on PATH") from exc
+    if ambient:
+        health.record(proc.returncode, proc.stderr or "")
+    return proc
 
 
 # A git credential helper that answers from the environment. The token is read
