@@ -426,6 +426,36 @@ _TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
 # rediscovery is what logged 199 session.lease_denied warnings for one session (#1778).
 _LEASE_HELD_PAUSE_REASON: str = "lease_held"
 
+# Pause reason for a rebuild that failed for no classified cause — the residual of
+# the three branches in _reassign_locked's handler. Deliberately does NOT carry the
+# trigger that asked for the rebuild. It used to (`reassign_failed:<trigger>`), and
+# that one interpolation caused both halves of the 2026-09-15 flood: the reason is a
+# LogThrottle key, which must be bounded in cardinality by construction
+# (server/obs/logdedupe.py), and two retry loops for one stuck session minted two
+# reasons that forgot each other's window every tick. The trigger is context, not
+# cause; it rides the `reassign.*` record instead (#1766, #1780).
+_REASSIGN_FAILED_PAUSE_REASON: str = "reassign_failed"
+
+# Every value `paused_reason` may hold: the ONE vocabulary (constitution VI). It is
+# a closed set on purpose — the reason reaches a throttle key, an error-sink title
+# and the dashboard's parked-cause copy, none of which can absorb free text. Adding
+# a reason means adding it here; interpolating one means reopening #1766/#1780.
+# `pinned_account_limited` is the odd one out: the rotation monitor stamps it on the
+# record directly (with status `limited`) rather than through _pause_session.
+PAUSE_REASONS: frozenset[str] = frozenset({
+    "all_accounts_busy",
+    "crash_cap",
+    "engine_rotation_unsupported",
+    "invalid_rotation_target",
+    "pinned_account_limited",
+    "rotation_cap",
+    "stall_cap",
+    "turn_dropped_cap",
+    "automation_ownership_stale",
+    _LEASE_HELD_PAUSE_REASON,
+    _REASSIGN_FAILED_PAUSE_REASON,
+})
+
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
 # debounce a fleet of healthy accounts would re-run the sweep every few seconds.
@@ -17628,8 +17658,16 @@ class SessionOrchestrator:
         are what the dashboard reads, and a client that attached after the first
         pause still needs to be told why the session is parked. Only the journal
         line, whose reader is a human asking "what went wrong", is paced.
+
+        Structured rather than formatted, because throttling and identity are two
+        different halves and the window alone does not fix the second: the error
+        sink fingerprints a plain record on its normalized message, and
+        normalization masks ids but not a reason slug, so
+        ``"recover.paused … reason=%s"`` filed one issue per reason for one stuck
+        session — #1766, #1780 and #1843 are this single call site split three ways.
+        Keyed on `session.paused` the family is one condition and the reason rides
+        in `fields`, where it feeds the issue's title but not its identity.
         """
-        previous_reason = record.paused_reason
         record.paused_reason = reason
         record.paused_until = _naive_utc(earliest_reset)
         try:
@@ -17641,19 +17679,17 @@ class SessionOrchestrator:
             "reason": reason,
             "earliestReset": iso_utc(earliest_reset),
         })
-        if previous_reason != reason:
-            # A CHANGE of reason is always news, however recently the last one was
-            # logged: "all_accounts_busy" becoming "crash_cap" is the transition an
-            # operator is watching for, and throttling it would hide the one record
-            # that carried new information behind a window opened by the old one.
-            #
-            # Keyed on the reason ALONE, deliberately — `earliest_reset` is not in
-            # the record, and treating a shifted reset time as news would re-open
-            # the window on any tick that moved it, which is the whole defect.
-            _PAUSE_LOG.forget(f"{record.id}:{reason}")
-        log_throttled(
+        # Keyed on session+reason and NOT re-armed when the reason changes. A change
+        # already reports promptly — a different reason is a different key, so its
+        # window has not been opened — and forgetting on every change is what let two
+        # retry loops for one session (the stuck-session sweep and the rotation
+        # monitor, parking under different reasons) re-arm each other every tick:
+        # 161 records in 2.8 h against a window that caps one key at four a day
+        # (#1780). `earliest_reset` stays out of the key for the same reason a
+        # shifting reset time is not news (#1702).
+        log_event_throttled(
             log, _PAUSE_LOG, f"{record.id}:{reason}", logging.WARNING,
-            "recover.paused session=%s reason=%s", record.id, reason)
+            "session.paused", session_id=record.id, reason=reason)
 
     def _mark_needs_reauth(self, account: str) -> None:
         """Propagate a recompose-failed in-session 401 to the ledger so the dashboard
@@ -18342,10 +18378,10 @@ class SessionOrchestrator:
             #
             # Record WHY it failed, not just what triggered the attempt. Revoked
             # automation ownership is settled — the execution fence will refuse every
-            # future rebuild identically — so parking it as `reassign_failed:<trigger>`
-            # fed it straight back to the stuck-session sweep, which re-enters on that
-            # very reason. A lease another host holds is the same trap for as long as
-            # it holds; unlike ownership it can lapse, so it gets its own reason the
+            # future rebuild identically — so parking it as a generic retryable
+            # failure fed it straight back to the stuck-session sweep, which re-enters
+            # on that very reason. A lease another host holds is the same trap for as
+            # long as it holds; unlike ownership it can lapse, so it gets its own reason the
             # retry loops gate on rather than a place in _TERMINAL_PAUSE_REASONS. Every
             # other failure here is genuinely worth retrying and keeps the retryable
             # reason.
@@ -18391,13 +18427,17 @@ class SessionOrchestrator:
                     "will retry once the runner is back", record.id, reason,
                     scrub_exception(exc))
             else:
-                log.exception("reassign.error session=%s", record.id)
+                # The trigger belongs on THIS record, not in the pause reason: it
+                # answers "which loop kept retrying?" for a reader of the traceback,
+                # while a reason that carried it minted one throttle key and one
+                # filed issue per caller of _reassign (#1766, #1780).
+                log.exception("reassign.error session=%s trigger=%s", record.id, reason)
             if lease_held:
                 paused_reason = _LEASE_HELD_PAUSE_REASON
             elif terminal:
                 paused_reason = "automation_ownership_stale"
             else:
-                paused_reason = f"reassign_failed:{reason}"
+                paused_reason = _REASSIGN_FAILED_PAUSE_REASON
             try:
                 await self._pause_session(record, reason=paused_reason)
             except Exception:

@@ -174,7 +174,7 @@ async def test_other_start_failures_stay_retryable(monkeypatch, tmp_path):
     _stub_env(monkeypatch)
 
     assert await o._reassign(rec, "b", reason="weekly limit reached") == "failed"
-    assert o.paused == [("s1", "reassign_failed:weekly limit reached")]
+    assert o.paused == [("s1", orch_mod._REASSIGN_FAILED_PAUSE_REASON)]
 
 
 # ---------------------------------------------------------------------------
