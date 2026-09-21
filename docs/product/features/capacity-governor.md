@@ -96,8 +96,10 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   (its in-flight floor) and gives its slots to the next rank, recording `budget.pipeline`
   `{slug: {open, cap}}` and a reason. The readout's `products[]` carry `pipeline`, `pipelineCap`
   and `primaryRepo`; the Capacity table's **Pipeline** column (`n / cap`, `∞` when blank) edits the
-  cap in the same form as the pins, a full product's *Waiting on* links to the Pipeline page
-  filtered to its repo, and the Roadmap card's capacity line gains `pipeline n/cap`.
+  cap in the same form as the pins (the link filters to the product's primary repo), a full
+  product's *Waiting on* links to the Pipeline page filtered to its repo, and the Roadmap card's
+  capacity line gains `pipeline n/cap`. The count is claims, not only PRs: a live session with no
+  PR yet counts, so a pipeline cap below the pin effectively lowers the pin.
 - **Pins vs auto** — `capacity_mode` on the product policy is `auto` (the governor sets
   `max_in_flight` from the plan) or `pinned` (the stored value is a hard cap the governor respects
   and allocates around). The runner's `max_concurrent` and the global active-session cap stay ceilings
