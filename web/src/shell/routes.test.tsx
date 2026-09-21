@@ -138,7 +138,7 @@ import { ErrorBoundary } from '@/shell/ErrorBoundary'
 import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { ThemeProvider } from '@/shell/theme'
 import { AppShell } from './AppShell'
-import { NAV_BY_ID, NAV_DEFS, navDefForPath } from './navDefs'
+import { NAV_BY_ID, NAV_DEFS, isKioskSafePath, navDefForPath } from './navDefs'
 import { readKioskConfig } from './kiosk'
 import { buildRoutes } from './routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
@@ -598,7 +598,7 @@ describe('every route renders in every layout mode', () => {
    */
   const CELLS = LAYOUT_MODES.flatMap((mode) =>
     MATRIX_PATHS.map(([path, testid]) => {
-      const kioskRefused = mode === 'kiosk' && !navDefForPath(path)?.showInKiosk
+      const kioskRefused = mode === 'kiosk' && !isKioskSafePath(path, '')
       return [
         mode,
         path,
@@ -619,7 +619,7 @@ describe('every route renders in every layout mode', () => {
   // keystroke. `/initiatives/views` reaches Roadmap through the SECTION ALIAS
   // rather than a path prefix; it is refused either way (a null def fails the
   // `showInKiosk` check exactly as `false` does), so what that row pins is that
-  // the alias does not accidentally ADMIT it. The three `/delivery` rows are the
+  // the alias does not accidentally ADMIT it. The two refused `/delivery` rows (`/delivery/ci/*` is admitted by `kioskSafe`, #1551) are the
   // finish-line row 4 successors of `/automations` (refused for the same reason:
   // its trigger buttons fire a job for real) and of `/insights`, which WAS
   // kiosk-safe — CI health is still read-only, but it is now a scope of a section
@@ -628,7 +628,7 @@ describe('every route renders in every layout mode', () => {
     const refused = CELLS.filter(([mode, path, , url]) => mode === 'kiosk' && url !== path)
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
-      '/delivery', '/delivery/automations/pr-doctor', '/delivery/ci/o/r',
+      '/delivery', '/delivery/automations/pr-doctor',
       '/roadmap', '/roadmap/kindash', '/roadmap/kindash/capabilities/tasks', '/initiatives/views',
       '/sessions/archived', '/sessions/archived/abc',
       '/sessions/background', '/sessions/background/abc', '/sessions/background/abc/agents/x',

@@ -28,7 +28,7 @@ import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
 import { listColumnFor } from './listColumns'
-import { NAV_BY_ID, navDefForPath } from './navDefs'
+import { NAV_BY_ID, isKioskSafePath, navDefForPath } from './navDefs'
 import { useAttractCycle } from './useAttractCycle'
 import { useIdleCursor } from './useIdleCursor'
 import { useWakeLock } from './useWakeLock'
@@ -222,7 +222,7 @@ function KioskPageGuard({ children }: { children: React.ReactNode }) {
   const { kiosk } = useViewport()
   const { pathname, search } = useLocation()
   if (!kiosk?.enabled) return <>{children}</>
-  if (navDefForPath(pathname)?.showInKiosk) return <>{children}</>
+  if (isKioskSafePath(pathname, search)) return <>{children}</>
   return <Navigate to={{ pathname: NAV_BY_ID[kiosk.pages[0]].path, search }} replace />
 }
 

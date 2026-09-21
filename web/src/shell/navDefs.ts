@@ -3,7 +3,7 @@ import {
   Settings,
   type LucideIcon,
 } from 'lucide-react'
-import { DELIVERY_PATH } from '@/features/delivery/deliveryNavState'
+import { DELIVERY_PATH, deliveryScope } from '@/features/delivery/deliveryNavState'
 import { DELIVERY, ROADMAP } from '@/features/products/vocab'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
@@ -50,15 +50,23 @@ interface NavDefShape {
    * The old `insights` row was the second, and finish-line row 4 cost it the
    * flag: the check tables are still read-only, but they are now the CI health
    * SCOPE of `delivery`, whose other scope triggers automation jobs for real —
-   * and `showInKiosk` gates a SECTION, not a scope. R5's follow-up is to decide
-   * whether a scope-level kiosk claim is worth the machinery; until it lands,
-   * `?pages=` has one member and a wall display cannot reach CI health.
+   * and `showInKiosk` gates a SECTION, not a scope. `kioskSafe` (below) is the
+   * scope-level claim: `delivery` admits its CI scope through it, so a wall
+   * display can be parked on CI health, though `?pages=` still cannot name it.
    *
    * The other four are `false` with the mutation that disqualifies each named
    * beside the row. Widening this is a per-section change with evidence, not a
    * default — see `navDefs.test.ts`'s pinned kiosk-safe set.
    */
   showInKiosk: boolean
+  /**
+   * Scope-level kiosk claim for a section that is NOT `showInKiosk`: admits the
+   * read-only slice of it (verified by the same criterion) while the section as
+   * a whole stays refused. Consulted only by `isKioskSafePath`, i.e. the route
+   * guard — it does not make the section an attract-cycle `?pages=` member,
+   * because that list names sections, not scopes.
+   */
+  kioskSafe?: (pathname: string, search: string) => boolean
   /** Renders a list column in `app.list`. Sessions, Roadmap and Delivery do
    *  today. */
   hasList: boolean
@@ -107,9 +115,11 @@ const DEFS = [
   // showInKiosk:false — `AutomationControls` patches the automation (mode select,
   // enable switch) and `AutomationActions` runs
   // `trigger.mutateAsync({ item_id, kind })`, which fires the job for real. The
-  // CI health scope is read-only, but the flag is per SECTION — see the
-  // `showInKiosk` docstring.
+  // CI health scope is read-only (`CiScopeBody`, `CiRepoDetail` and `CheckTable`
+  // render two `useQuery` reads into tables; the window `Select` is URL state),
+  // so `kioskSafe` admits exactly that scope and nothing else.
   { id: 'delivery',    label: DELIVERY.label, icon: Workflow,       path: DELIVERY_PATH,  badge: 'delivery',    showInKiosk: false, hasList: true,
+    kioskSafe: (pathname, search) => deliveryScope(pathname, search) === 'ci',
     help: DELIVERY.help },
   // showInKiosk:false — accounts, rotation and preferences are all mutations.
   { id: 'settings',    label: 'Settings',    icon: Settings,        path: '/settings',    badge: 'settings',    showInKiosk: false, hasList: false,
@@ -188,4 +198,14 @@ export function navDefForPath(pathname: string): NavDef | null {
     if (pathname === a.prefix || pathname.startsWith(a.prefix + '/')) return NAV_BY_ID[a.id]
   }
   return null
+}
+
+/**
+ * Whether kiosk may be ON this location: its section is `showInKiosk`, or the
+ * section's `kioskSafe` scope predicate admits it. The one reader of both claims
+ * for the route guard and the tests that pin the refusal lists.
+ */
+export function isKioskSafePath(pathname: string, search: string): boolean {
+  const def = navDefForPath(pathname)
+  return !!def && (def.showInKiosk || (def.kioskSafe?.(pathname, search) ?? false))
 }
