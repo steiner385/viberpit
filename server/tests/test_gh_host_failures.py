@@ -28,10 +28,13 @@ import subprocess
 
 import pytest
 
-from ccswitch import gh_credential as ghc
 from server.github import actions_api, ci_issues, deployments, host_failures, pr_poller
 from server.obs.error_signature import signature_of
 from server.sessions import dispatch
+
+#: The classifier, reached through the module that owns the collapse so the test
+#: exercises the object the production path does.
+ghc = host_failures.gh_credential
 
 # Byte-for-byte from the issues named above.
 STDERR_UNREACHABLE = (

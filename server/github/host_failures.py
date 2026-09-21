@@ -42,8 +42,8 @@ this module supplies:
 The per-target detail is demoted to DEBUG, never dropped: someone who turned on
 debug logging to watch an outage still needs to know which calls were lost.
 
-Conditions come from :func:`ccswitch.gh_credential.classify_gh_failure`, the one
-place that reads gh stderr and names a host condition. Adding a fourth means
+Conditions come from ``gh_credential.classify_gh_failure`` in the CLI core, the
+one place that reads gh stderr and names a host condition. Adding a fourth means
 adding it there *and* an entry in :data:`_EVENTS` here; a condition with no entry
 degrades to the old per-target WARNING rather than being filed under a
 neighbouring condition's name, because folding unrelated conditions into one
