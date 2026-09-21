@@ -19622,6 +19622,8 @@ class SessionOrchestrator:
         live = []
         for sid in list(self._drivers.keys()):
             status = getattr(self._records.get(sid), "status", "idle")
+            if status in INACTIVE_SESSION_STATUSES:
+                continue   # archived/ended: nothing to resume (#1035)
             entry = {"id": sid, "status": status}
             last = self._last_prompt.get(sid)
             if last and status in _REPLAY_STATUSES:
@@ -19658,8 +19660,18 @@ class SessionOrchestrator:
         # for retry. A row with no in-memory record is not fenced; ensure_driver
         # decides for it, exactly as before.
         enabled_hosts = await self._enabled_host_names() if entries else None
+        # A snapshotted driver can outlive its row's usefulness: a stale mirror
+        # driver on this host survives an archive that ran on the owning host, and
+        # resuming an already-archived/ended row can only fail into a banner whose
+        # actions the user cannot take (#1035). Skip, and never enroll.
+        _, inactive_ids = await self._session_row_liveness([e["id"] for e in entries])
         for entry in entries:
             sid = entry["id"]
+            if sid in inactive_ids:
+                skipped.append(sid)
+                log_event(log, logging.INFO, "deploy.restore.skip_inactive",
+                          session_id=sid)
+                continue
             rec = self._records.get(sid)
             if rec is not None and not self._owns_record(rec, enabled_hosts):
                 skipped.append(sid)
@@ -19704,6 +19716,19 @@ class SessionOrchestrator:
         for sid in [s for s in self._resume_recovery if s in self._drivers]:
             self._resume_recovery.pop(sid, None)
 
+    async def _drop_unrecoverable(self) -> None:
+        """Drop enrolled ids whose row is archived/ended: ``ensure_driver`` can
+        never revive them and the banner's "open"/"archive" actions are both
+        impossible, so keeping them only strands the banner until gave-up (#1035).
+        An id with no row at all (not yet committed) is left enrolled — that
+        ambiguity belongs to ``ensure_driver``, exactly as before."""
+        if not self._resume_recovery:
+            return
+        _, inactive_ids = await self._session_row_liveness(list(self._resume_recovery))
+        for sid in [s for s in self._resume_recovery if s in inactive_ids]:
+            self._resume_recovery.pop(sid, None)
+            log_event(log, logging.INFO, "deploy.resume.drop_inactive", session_id=sid)
+
     async def _recover_resume_failures_once(self) -> None:
         """One daemon-side pass over sessions that failed to resume after a deploy.
 
@@ -19714,6 +19739,7 @@ class SessionOrchestrator:
         RESUME_RECOVERY_MAX_ATTEMPTS: a permanently-broken session stays enrolled
         (flagged gave-up by resume_recovery_status) but stops burning retries."""
         self._prune_recovered()
+        await self._drop_unrecoverable()
         enabled_hosts = (await self._enabled_host_names()
                          if self._resume_recovery else None)
         for sid, attempts in list(self._resume_recovery.items()):
@@ -19810,13 +19836,15 @@ class SessionOrchestrator:
         for sid in [s for s in self._mirror_missing_strikes if s not in self._records]:
             self._mirror_missing_strikes.pop(sid, None)
 
-    def resume_recovery_status(self) -> dict:
+    async def resume_recovery_status(self) -> dict:
         """Live view of unresolved deploy-resume failures for the banner.
 
         ``failed`` = still being retried; ``gaveUp`` = capped out (kept visible so a
         human sees a permanently-broken session). Prunes now-live ids first so the
-        banner clears the moment a session comes back — by auto-retry or manual open."""
+        banner clears the moment a session comes back — by auto-retry or manual open —
+        and drops archived/ended ids so it never lists a session nobody can act on."""
         self._prune_recovered()
+        await self._drop_unrecoverable()
         m = RESUME_RECOVERY_MAX_ATTEMPTS
         return {"failed": [s for s, a in self._resume_recovery.items() if a < m],
                 "gaveUp": [s for s, a in self._resume_recovery.items() if a >= m]}
