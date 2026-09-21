@@ -36,7 +36,9 @@ single code distinguishes a transient fault from a permanently unreadable thread
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -44,12 +46,14 @@ import pytest
 import server.sessions.orchestrator as orch_mod
 from server.codex import manager as mgr_mod
 from server.codex import protocol as codex_protocol
-from server.codex import redaction
+from server.codex import redaction, schema
+from server.codex.capabilities import CodexAvailability
 from server.obs.context import log_event
 from server.obs.error_signature import signature_of
 from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
+from server.tests.fakes.fake_codex_app_server import FakeCodexAppServer
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +71,7 @@ from server.sessions.types import SessionRecord
         (codex_protocol.CodexRequestOverloaded("full"), "overloaded"),
         (codex_protocol.CodexExternalAuthDisabled("off"), "external_auth_disabled"),
         (codex_protocol.CodexProtocolError("other"), "protocol_error"),
+        (codex_protocol.CodexRequestUnrouted("nobody"), "unrouted"),
     ],
 )
 def test_each_app_server_failure_reduces_to_its_own_category(exc, category):
@@ -93,6 +98,7 @@ def test_every_protocol_category_is_distinguishable():
         codex_protocol.CodexExternalAuthDisabled("x"),
         codex_protocol.CodexRequestFailed(-32600),
         codex_protocol.CodexProtocolError("x"),
+        codex_protocol.CodexRequestUnrouted("x"),
     ]
     categories = [redaction.scrub_exception(e) for e in excs]
     assert len(set(categories)) == len(categories), f"categories collide: {categories}"
@@ -542,3 +548,196 @@ def test_one_ending_is_still_one_issue_however_it_is_numbered(caplog):
     """The other half of the split: a crash storm must not mint an issue per exit
     status. Two deaths of the same kind are two occurrences of one condition."""
     assert _sink_fingerprint(caplog, _ending(1)) == _sink_fingerprint(caplog, _ending(137))
+
+
+# ---------------------------------------------------------------------------
+# #1485 / #1991 — a request nobody owns is a routing outcome, reported twice
+# ---------------------------------------------------------------------------
+#
+# ``error_signatures`` on dobby recorded the entire defect. ``codex.manager.
+# unrouted_approval`` (WARNING, 20 occurrences, 2026-09-09 09:36:39.945 →
+# 12:14:09.267, issue #1486) and ``codex.protocol.approval_failed`` (ERROR, 20
+# occurrences, 09:36:39.952 → 12:14:09.274, issue #1485) are the SAME twenty
+# events, seven milliseconds apart. The manager names the account and the
+# method; the dispatcher's catch-all can only reduce a ``CodexManagerError`` —
+# a ``RuntimeError`` subclass, so #1861's taxonomy never reached it — to
+# ``error=runtime_error``, and file a second, contentless issue for an incident
+# already reported. Closing #1486 muted one half; the other kept filing.
+#
+# The incident is also a designed outcome rather than a fault:
+# ``unregister_thread`` drops a thread's sinks BEFORE its turn fence precisely
+# so a request landing during teardown finds no owner and fails closed. The
+# codebase already had a settled shape for "no sink owns this thread-scoped
+# frame" — ``_on_notification`` logs it at DEBUG and counts it. The approval,
+# user-input and dynamic-tool siblings are the three that diverged, which is
+# why #1991 is the identical pair for ``item/tool/call``.
+#
+# So the fix is the #1857 statement from the other side: the condition belongs
+# in the event NAME, and one condition gets ONE report — by the layer that can
+# describe it. The wire answer is deliberately untouched; fail-closed is the
+# property these paths exist for, and an unanswered approval must stay one.
+
+_UNROUTED_SURFACES = ("approval", "user_input", "dynamic_tool")
+
+
+def _unrouted_manager(tmp_path) -> mgr_mod.CodexRunnerManager:
+    """A manager with no registered threads — every sink lookup misses.
+
+    The real object rather than a stub: what is under test is the pair of
+    records one incident produces across both layers, so both layers have to be
+    the production ones.
+    """
+
+    async def _creds(account: str):  # pragma: no cover - no runner is started
+        raise AssertionError("no runner is started in these tests")
+
+    return mgr_mod.CodexRunnerManager(
+        availability=CodexAvailability(available=True, binary_path="/usr/bin/codex"),
+        codex_home_base=tmp_path,
+        credential_supplier=_creds,
+    )
+
+
+def _server_request(surface: str) -> tuple[str, dict]:
+    """The wire frame for one of the three server-request surfaces."""
+    if surface == "approval":
+        return (
+            schema.METHOD_COMMAND_EXECUTION_APPROVAL,
+            {"itemId": "i1", "threadId": "ghost", "turnId": "u1", "startedAtMs": 1,
+             "command": "ls"},
+        )
+    if surface == "user_input":
+        return (
+            schema.METHOD_ITEM_TOOL_REQUEST_USER_INPUT,
+            {"threadId": "ghost", "turnId": "u1", "itemId": "i1", "isBlocking": True,
+             "questions": [{"id": "q1", "header": "h", "question": "why?"}]},
+        )
+    return (
+        schema.METHOD_ITEM_TOOL_CALL,
+        {"threadId": "ghost", "turnId": "u1", "callId": "c1", "tool": "list_sessions",
+         "arguments": {}},
+    )
+
+
+async def _dispatch_to_a_dead_thread(manager, surface: str) -> dict:
+    """Send one server request for a thread nobody owns; return the wire reply.
+
+    Wired exactly as ``CodexRunnerManager._start_runner`` wires it, because the
+    handler identity is what decides which of the two records gets emitted.
+    """
+    method, params = _server_request(surface)
+    async with FakeCodexAppServer() as fake:
+        client = codex_protocol.CodexAppServerClient(
+            fake.transport,
+            external_auth_enabled=False,
+            request_timeout_s=2.0,
+            approval_handler=partial(manager._on_approval, "acct"),
+            user_input_handler=partial(manager._on_user_input, "acct"),
+            dynamic_tool_handler=partial(manager._on_dynamic_tool, "acct"),
+        )
+        await client.start()
+        await asyncio.gather(client.initialize(), fake.serve_initialize())
+        try:
+            request_id = fake.request(method, params)
+            return await fake.receive_reply(request_id)
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", _UNROUTED_SURFACES)
+async def test_one_unrouted_request_files_one_issue_not_two(caplog, tmp_path, surface):
+    """The #1485 defect itself: two WARNING+ records for one incident.
+
+    Counted across BOTH loggers, because the sink does not care which module a
+    record came from — two records above the capture threshold are two
+    fingerprints, and two fingerprints are two issues.
+    """
+    manager = _unrouted_manager(tmp_path)
+
+    with caplog.at_level(logging.DEBUG):
+        await _dispatch_to_a_dead_thread(manager, surface)
+
+    reported = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and r.name in ("server.codex.manager", "server.codex.protocol")
+    ]
+    assert len(reported) == 1, (
+        "one incident reported twice: "
+        f"{[(r.name, getattr(r, 'event', None)) for r in reported]}"
+    )
+    # The surviving report is the one that can name the account and the method.
+    assert reported[0].name == "server.codex.manager"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", _UNROUTED_SURFACES)
+async def test_an_unrouted_request_is_still_answered_fail_closed(tmp_path, surface):
+    """Behaviour is unchanged — only the reporting is. An approval nobody owns
+    must never become an allow, and a tool call nobody owns must never come back
+    as a result the model would reason from."""
+    reply = await _dispatch_to_a_dead_thread(_unrouted_manager(tmp_path), surface)
+
+    assert "result" not in reply
+    assert reply["error"]["code"] == codex_protocol.JSONRPC_INTERNAL_ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", _UNROUTED_SURFACES)
+async def test_the_dispatcher_still_names_the_surface_it_could_not_route(
+        caplog, tmp_path, surface):
+    """Dropping the ERROR must not drop the breadcrumb: the dispatcher's own
+    trail still has to show which request it declined, next to the
+    ``*_answered`` line it emits for every one it served."""
+    manager = _unrouted_manager(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="server.codex.protocol"):
+        await _dispatch_to_a_dead_thread(manager, surface)
+
+    events = [getattr(r, "event", None) for r in caplog.records]
+    assert f"codex.protocol.{surface}_unrouted" in events, events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", _UNROUTED_SURFACES)
+async def test_a_genuine_handler_fault_is_still_an_error(caplog, tmp_path, surface):
+    """Guard against widening this into 'a failed server request is never an
+    error'. A handler that raises for any other reason is a bug in this process,
+    and the record that says so is the only one there is."""
+    manager = _unrouted_manager(tmp_path)
+
+    async def _boom(*args, **kwargs):
+        raise AttributeError("genuine bug")
+
+    manager.register_thread(
+        "acct", "ghost", lambda n: None,
+        approvals=_boom, user_input=_boom, dynamic_tools=_boom)
+
+    with caplog.at_level(logging.DEBUG, logger="server.codex.protocol"):
+        reply = await _dispatch_to_a_dead_thread(manager, surface)
+
+    assert reply["error"]["code"] == codex_protocol.JSONRPC_INTERNAL_ERROR
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [getattr(r, "event", None) for r in errors] == [
+        f"codex.protocol.{surface}_failed"
+    ]
+
+
+def test_the_two_records_would_have_been_two_issues(caplog):
+    """Why 'report once' is the fix and not merely tidier: the sink fingerprints
+    on (source, level, logger, event, …), so the manager's WARNING and the
+    dispatcher's ERROR could never have been folded into one issue — which is
+    exactly how muting #1486 left #1485 filing."""
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        log_event(_MGR_LOGGER, logging.WARNING, "codex.manager.unrouted_approval",
+                  account="chatgpt-tonystein85_gmail.com", method="x")
+        log_event(logging.getLogger("server.codex.protocol"), logging.ERROR,
+                  "codex.protocol.approval_failed", method="x", error="runtime_error")
+
+    fingerprints = {
+        signature_of(record, source="daemon", host="rocky").fingerprint
+        for record in caplog.records
+    }
+    assert len(fingerprints) == 2

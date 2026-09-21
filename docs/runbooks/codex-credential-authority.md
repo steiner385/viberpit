@@ -343,6 +343,16 @@ Structured logs: `codex.doctor.report` (once per daemon boot),
 `codex.manager.runner_restarted`, `codex.manager.unrouted_approval`,
 `codex.process.version_drift_accepted`.
 
+`codex.manager.unrouted_approval` (and its `unrouted_user_input` /
+`unrouted_dynamic_tool` siblings) is the **only** report for a server request
+no live thread owns — `unregister_thread` drops a thread's sinks before its turn
+fence on purpose, so one landing during teardown fails closed by design. The
+protocol dispatcher logs `codex.protocol.<surface>_unrouted` at INFO and stops
+there; it used to add an ERROR whose whole content was `error=runtime_error`,
+which filed a second issue per incident (#1485 beside #1486, #1991 beside its
+own). A genuine handler fault still arrives as
+`codex.protocol.<surface>_failed` at ERROR.
+
 A runner ending has three records, one per condition, because they diagnose
 nothing like each other (#1857) — all carry `exit_code`, `uptime_s`, `pid` and a
 `detail` post-mortem:

@@ -305,7 +305,7 @@ def test_a_crash_that_wipes_the_turn_book_also_releases_the_gauge() -> None:
 @pytest.mark.asyncio
 async def test_approval_latency_is_measured_and_separates_unrouted_requests() -> None:
     from server.codex import schema
-    from server.codex.manager import CodexRunnerMissingError
+    from server.codex.protocol import CodexRequestUnrouted
 
     manager = _manager()
     account = "metrics-approvals"
@@ -318,7 +318,7 @@ async def test_approval_latency_is_measured_and_separates_unrouted_requests() ->
     # No sink registered → the request is refused, never answered. An approval
     # nobody owns must not become an allow, so it gets its own outcome label
     # rather than being timed as a decision.
-    with pytest.raises(CodexRunnerMissingError):
+    with pytest.raises(CodexRequestUnrouted):
         await manager._on_approval(account, method, params)
     assert m.codex_approval_ms.count_for("unrouted") == before_unrouted + 1
     assert m.codex_approval_ms.count_for("decided") == before_decided

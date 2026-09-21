@@ -13,9 +13,9 @@ import pytest
 from server.codex import schema
 from server.codex.manager import (
     CodexRunnerManager,
-    CodexRunnerMissingError,
     RunnerNoticeKind,
 )
+from server.codex.protocol import CodexRequestUnrouted
 from server.codex.capabilities import CodexAvailability
 
 
@@ -178,9 +178,13 @@ async def test_an_approval_reaches_the_thread_that_raised_it(tmp_path):
 @pytest.mark.asyncio
 async def test_an_unowned_approval_is_never_answered(tmp_path):
     """Raising is the point: the protocol turns it into a JSON-RPC error, and an
-    error can never become an allow."""
+    error can never become an allow.
+
+    The type is `CodexRequestUnrouted` rather than a generic manager error so
+    the dispatcher can tell a routing outcome from a handler that broke, and
+    report this incident once instead of twice (#1485)."""
     manager = _manager(tmp_path)
-    with pytest.raises(CodexRunnerMissingError):
+    with pytest.raises(CodexRequestUnrouted):
         await manager._on_approval(
             "acct", schema.METHOD_COMMAND_EXECUTION_APPROVAL, _approval("ghost"))
     assert manager.unrouted_approvals == 1
@@ -196,7 +200,7 @@ async def test_an_approval_arriving_during_teardown_is_never_answered(tmp_path):
     manager.register_thread("acct", "thread-a", lambda n: None, approvals=_answer)
     manager.unregister_thread("acct", "thread-a")
 
-    with pytest.raises(CodexRunnerMissingError):
+    with pytest.raises(CodexRequestUnrouted):
         await manager._on_approval(
             "acct", schema.METHOD_COMMAND_EXECUTION_APPROVAL, _approval("thread-a"))
 
