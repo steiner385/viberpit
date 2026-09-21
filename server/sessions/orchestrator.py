@@ -7654,7 +7654,8 @@ class SessionOrchestrator:
             batch.repo, requested_product=batch.product,
             trigger="automatic" if source == "automatic" else "manual",
             effect="dispatch", existing_slot=existing_slot, context=self._backlog_ctx,
-            target_refs=[batch.primary, *batch.issues], existing_token=existing_token)
+            target_refs=[batch.primary, *batch.issues], existing_token=existing_token,
+            pr_doctor_pending=self._pr_doctor_pending_products)
 
     async def _backlog_dispatch_batch(self, batch, *, source: str) -> dict:
         """Manual actions share the runner's claims, budget and spawn lifecycle."""
