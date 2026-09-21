@@ -238,9 +238,20 @@ def _cmd_clones(args: argparse.Namespace) -> int:
         for entry in results:
             outcomes = entry.get("results") or {}
             errors = [f"{p}: {o}" for p, o in outcomes.items() if o.startswith("error")]
-            failed += len(errors) + (1 if entry["action"] == "failed" else 0)
+            # Count per-worktree errors when there are any, else the whole entry
+            # once: `action` is now derived from those same outcomes, so adding
+            # both would double-count a run where every link failed.
+            if errors:
+                failed += len(errors)
+            elif entry["action"] in ("failed", "unrepairable"):
+                failed += 1
             print(f"{entry['repo'] or entry['clone']}: {entry['action']} "
                   f"({len(entry['worktrees'])} worktree(s))")
+            resolved = entry.get("resolvedClone")
+            if resolved and resolved != entry["clone"]:
+                # The #1003 case collapse: name the clone actually used, or the
+                # operator cannot tell why the missing path is still missing.
+                print(f"  re-linked onto existing clone {resolved}")
             if entry.get("error"):
                 print(f"  error: {entry['error']}")
             for line in errors:

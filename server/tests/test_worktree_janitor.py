@@ -427,9 +427,13 @@ class TestStrayDirs:
 class TestOrphanedWorktrees:
     """A worktree whose shared clone was deleted (#1003) is named, not reaped."""
 
+    def _clone(self, base, rel="cairnea/KinDash"):
+        """A managed clone path under *base* — one spelling of the clones base."""
+        return base / ".ccswitch" / "clones" / rel
+
     def _orphan(self, tmp_path, name="orphan1", *, live=False):
         wt = _make_wt(tmp_path, name, OLD, NOW)
-        clone = tmp_path / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+        clone = self._clone(tmp_path)
         (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/{name}\n")
         return wt
 
@@ -449,7 +453,7 @@ class TestOrphanedWorktrees:
             str(tmp_path), frozenset([str(wt.resolve())]), now=NOW)
         assert counts["orphaned"] == 1
 
-    def test_orphan_alert_names_the_missing_clone_once(self, tmp_path, caplog):
+    def test_orphan_alert_is_one_aggregated_critical(self, tmp_path, caplog):
         import logging
         for i in range(3):
             self._orphan(tmp_path, f"orphan{i}")
@@ -458,8 +462,103 @@ class TestOrphanedWorktrees:
         assert counts["orphaned"] == 3
         criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
         assert len(criticals) == 1
-        assert "clones/cairnea/KinDash" in criticals[0].getMessage()
+        assert "orphaned=3" in criticals[0].getMessage()
         assert "ccswitch clones repair" in criticals[0].getMessage()
+
+    def test_orphan_alert_is_one_triage_fingerprint(self, tmp_path, caplog):
+        """#1992: the clone paths must stay out of the CRITICAL text.
+
+        Interpolating the missing-clone list minted a fresh triage fingerprint
+        per host and per set of paths, so ONE condition was filed three times
+        (#1642 dobby, #1663 rocky, #1992 rocky).  ``_emit_stray_alert`` right
+        next door already documents and obeys this rule.
+        """
+        import logging
+        from server.obs.error_signature import normalize
+
+        def _critical_for(sub, clones):
+            base = tmp_path / sub
+            paths = []
+            for i, clone in enumerate(clones):
+                wt = _make_wt(base, f"wt{i}", OLD, NOW)
+                path = self._clone(base, clone)
+                paths.append(str(path))
+                (wt / ".git").write_text(f"gitdir: {path}/.git/worktrees/wt{i}\n")
+                _age(wt, OLD, NOW)
+            caplog.clear()
+            with caplog.at_level(logging.CRITICAL, logger=_MOD):
+                sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
+            msg = next(r.getMessage() for r in caplog.records
+                       if r.levelno == logging.CRITICAL)
+            # Asserted directly, not only through ``normalize``: that truncates
+            # at 200 chars, so a path appended to an already-long message would
+            # be masked by the truncation rather than by the fix.
+            for p in paths:
+                assert p not in msg, msg
+            assert "/clones/" not in msg, msg
+            return msg
+
+        a = _critical_for("rocky", ["cairnea/kindash", "cairnea/KinDash"])
+        b = _critical_for("dobby", ["steiner385/viberpit"])
+        assert normalize(a) == normalize(b)
+
+    def test_orphan_clone_paths_are_journalled_at_info(self, tmp_path, caplog):
+        """The paths still reach the journal — just below the triage threshold."""
+        import logging
+        for i in range(2):
+            self._orphan(tmp_path, f"orphan{i}")
+        with caplog.at_level(logging.INFO, logger=_MOD):
+            sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any("orphaned_clone" in m and "clones/cairnea/KinDash" in m
+                   and "worktrees=2" in m for m in info), info
+
+    def test_present_clone_missing_its_records_is_a_repairable_orphan(self, tmp_path):
+        """Found on dobby: a clone that exists, outside THIS root's clones base.
+
+        Only its ``.git/worktrees`` records died, so ``repair_worktree_links``
+        gets a real clone dir and recovers it.  Classifying it by "is it under
+        the clones base" would file it as the unrecoverable shape and hide a
+        fixable outage behind a cleanup chore.
+        """
+        wt = _make_wt(tmp_path, "recordless", OLD, NOW)
+        elsewhere = tmp_path / "other-root" / "clones" / "cairnea" / "KinDash"
+        (elsewhere / ".git").mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {elsewhere}/.git/worktrees/recordless\n")
+        _age(wt, OLD, NOW)
+        with patch(_REMOVE) as rm:
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 1
+        assert counts["orphaned_unmanaged"] == 0
+        rm.assert_not_called()
+
+    def test_unmanaged_clone_path_is_not_a_clones_repair_orphan(self, tmp_path, caplog):
+        """A clone path outside the clones base can never be re-cloned (#1992).
+
+        `clones repair` has no ``<owner>/<name>`` to clone from, so naming it as
+        the remedy guarantees a CRITICAL nothing can ever clear.  Counted and
+        alerted separately, at WARNING, with the step that does apply.
+        """
+        import logging
+        wt = _make_wt(tmp_path, "legacy", OLD, NOW)
+        outside = tmp_path / "GitHub" / "a-hand-made-checkout"
+        (wt / ".git").write_text(f"gitdir: {outside}/.git/worktrees/legacy\n")
+        _age(wt, OLD, NOW)
+        with patch(_REMOVE) as rm:
+            with caplog.at_level(logging.INFO, logger=_MOD):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned_unmanaged"] == 1
+        assert counts["orphaned"] == 0
+        assert counts["removed"] == 0
+        rm.assert_not_called()
+        assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "orphaned_unmanaged=1" in warnings[0].getMessage()
+        assert "clones repair" not in warnings[0].getMessage()
+        # The path is journalled at INFO, like every other per-worktree detail.
+        assert any("orphaned_clone" in r.getMessage() and str(outside) in r.getMessage()
+                   for r in caplog.records if r.levelno == logging.INFO)
 
     def test_healthy_worktree_is_not_an_orphan(self, tmp_path):
         wt = _make_wt(tmp_path, "healthy", OLD, NOW)

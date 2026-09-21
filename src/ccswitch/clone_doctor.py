@@ -209,6 +209,27 @@ def name_with_owner_for(repo_root: str, clone_dir: str | os.PathLike[str]) -> st
     return f"{rel.parts[0]}/{rel.parts[1]}"
 
 
+def clone_is_repairable(repo_root: str, clone_dir: str | os.PathLike[str]) -> bool:
+    """Whether :func:`repair` has any way to restore links into ``clone_dir``.
+
+    The single source of truth for that question — :func:`repair` and the
+    worktree janitor's orphan alert must agree, or the alert names a remedy
+    that provably cannot run and so can never be cleared (#1992).  Two ways in:
+
+    * the clone is on disk (only its ``.git/worktrees`` records died), so
+      :func:`repair_worktree_links` can rebuild them as-is; or
+    * it sits under the clones base, so it has an ``<owner>/<name>``
+      ``ensure_clone`` can re-clone from.
+
+    Anything else — a hand-made checkout outside the clones base, since deleted
+    — has no source to recover from and needs a human.
+    """
+    return (
+        os.path.isdir(os.path.join(str(clone_dir), ".git"))
+        or name_with_owner_for(repo_root, clone_dir) is not None
+    )
+
+
 def diagnose(repo_root: str) -> list[CloneReport]:
     """Group every session worktree by the clone it depends on.
 
@@ -331,7 +352,19 @@ def repair(
 
     Re-clones through ``gitrepos.ensure_clone`` (a no-op when the clone is
     already there) and re-links the orphaned worktrees.  Returns one dict per
-    affected clone: ``{clone, repo, action, worktrees, results}``.
+    affected clone: ``{clone, repo, action, worktrees, resolvedClone, results}``.
+
+    ``clone`` is the path the worktrees point at; ``resolvedClone`` is the path
+    the re-link actually targeted.  They differ when ``clone_path`` collapses a
+    case variant (#1003): ``cairnea/kindash`` resolves onto an existing
+    ``cairnea/KinDash``, so ``ensure_clone`` is a no-op and returns the other
+    spelling.  Re-linking against the diagnosed — still missing — path is what
+    made every recovery fail with "clone has no resolvable base commit", so the
+    `clones repair` the janitor's CRITICAL names could never clear it (#1992).
+
+    ``action`` is derived from the per-worktree outcomes, never assumed:
+    ``repaired`` (all links restored), ``partial``, ``failed``, ``would-repair``
+    (dry run) or ``unrepairable`` (nothing here can fix it — see below).
 
     ``dry_run`` reports what would happen and changes nothing.
 
@@ -353,32 +386,64 @@ def repair(
             "cloneExists": report.exists,
             "worktrees": broken,
         }
+        target = report.clone_dir
+        # Checked BEFORE the dry-run branch: a dry run that promises
+        # "would-repair" for a clone the real run refuses is worse than no
+        # preview at all.
+        if not clone_is_repairable(repo_root, report.clone_dir):
+            # Gone, and with no <owner>/<name> there is nothing to re-clone
+            # from: the path was never ViberPit-managed and its remote URL died
+            # with it. Say what a human has to do instead — reporting "skipped"
+            # read like "nothing was wrong" while the janitor kept alerting on
+            # it forever (#1992).
+            entry["action"] = "unrepairable"
+            entry["error"] = (
+                f"clone path is outside the {brand.CLI_NAME} clones base, so it was "
+                "never managed here and cannot be re-cloned; salvage anything in the "
+                "listed worktree(s) and remove them — their git metadata is gone"
+            )
+            out.append(entry)
+            continue
         if dry_run:
             entry["action"] = "would-repair"
             out.append(entry)
             continue
-        if not report.exists:
-            if not report.name_with_owner:
-                entry["action"] = "skipped"
-                entry["error"] = "clone path is outside the ccswitch clones base"
-                out.append(entry)
-                continue
+        # The `and` can only be false when the gate above already skipped this
+        # report; it is there to narrow the Optional, not to hide a fallthrough.
+        if not report.exists and report.name_with_owner:
             url = (clone_url_for or default_clone_url)(report.name_with_owner)
             try:
-                gitrepos.ensure_clone(repo_root, report.name_with_owner, url)
+                # Use the path ensure_clone RESOLVED to, not the one we asked
+                # for: clone_path collapses case variants onto whatever is
+                # already on disk (#1003), and the diagnosed path is by
+                # definition the one that does not exist (#1992).
+                target = gitrepos.ensure_clone(repo_root, report.name_with_owner, url)
             except gitrepos.CloneError as exc:
                 entry["action"] = "failed"
                 entry["error"] = str(exc)
                 out.append(entry)
                 continue
-        entry["action"] = "repaired"
+        entry["resolvedClone"] = target
         # force: these paths were diagnosed broken before the re-clone above, and
         # ensure_clone's self-heal may already have re-linked them at origin/HEAD
         # — rewriting is idempotent and is what honours an explicit ``base_ref``.
-        entry["results"] = repair_worktree_links(
-            report.clone_dir, broken, base_ref=base_ref, force=True)
+        results = repair_worktree_links(target, broken, base_ref=base_ref, force=True)
+        entry["results"] = results
+        entry["action"] = _repair_action(results)
         out.append(entry)
     return out
+
+
+def _repair_action(results: dict[str, str]) -> str:
+    """The run's verdict, read back off the outcomes it actually produced.
+
+    Assuming ``"repaired"`` up front is how ``clones repair`` came to print
+    success for a run in which every single worktree errored (#1992).
+    """
+    errors = [outcome for outcome in results.values() if outcome.startswith("error")]
+    if not errors:
+        return "repaired"
+    return "failed" if len(errors) == len(results) else "partial"
 
 
 # ---------------------------------------------------------------------------
