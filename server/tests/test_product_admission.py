@@ -72,7 +72,7 @@ def test_pr_doctor_pending_product_refuses_a_new_claim_only():
     snapshot = admission.ImplementationSnapshot(
         coverage(), "on", {"max_concurrent": 5, "max_spawns_per_day": 5},
         {"org/repo#1": {"product": "product", "ownership_token": "t"}}, {},
-        frozenset({"product"}))
+        {"product": ("org/repo#9",)})
     new_claim, _ = snapshot.decide("org/repo")
     assert not new_claim.permitted
     assert any(c.code == "pr_doctor_priority" for c in new_claim.constraints)
@@ -81,6 +81,18 @@ def test_pr_doctor_pending_product_refuses_a_new_claim_only():
     codes = {c.code for c in held.constraints}
     assert "pr_doctor_priority" not in codes
     assert "pr_doctor_priority_held" in codes
+
+
+def test_pr_doctor_refusal_names_the_prs_reserving_the_product():
+    """#2202: the Capacity page shows the binding constraint's text as the
+    product's "waiting on", so it must say WHICH PRs reserve the capacity."""
+    snapshot = admission.ImplementationSnapshot(
+        coverage(), "on", {"max_concurrent": 5, "max_spawns_per_day": 5}, {}, {},
+        {"product": ("org/repo#7", "org/repo#9")})
+    decision, _ = snapshot.decide("org/repo")
+    text = next(c.text for c in decision.constraints if c.code == "pr_doctor_priority")
+    assert "2 stuck pull requests" in text
+    assert "org/repo#7, org/repo#9" in text
 
 
 def test_pr_doctor_pending_product_absent_by_default():
@@ -102,12 +114,12 @@ async def test_gather_implementation_snapshot_reads_pr_doctor_pending(monkeypatc
     context.list_target_states.return_value = {}
 
     async def pending():
-        return frozenset({"product"})
+        return {"product": ("org/repo#9",)}
 
     snapshot = await admission.gather_implementation_snapshot(
         ["org/repo"], context=context, pr_doctor_pending=pending)
 
-    assert snapshot.pr_doctor_pending == frozenset({"product"})
+    assert snapshot.pr_doctor_pending == {"product": ("org/repo#9",)}
 
 
 @pytest.mark.asyncio
@@ -126,7 +138,7 @@ async def test_gather_implementation_snapshot_pr_doctor_pending_failure_is_empty
     snapshot = await admission.gather_implementation_snapshot(
         ["org/repo"], context=context, pr_doctor_pending=broken)
 
-    assert snapshot.pr_doctor_pending == frozenset()
+    assert snapshot.pr_doctor_pending == {}
 
 
 @pytest.mark.asyncio
