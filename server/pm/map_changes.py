@@ -385,10 +385,27 @@ class MapChangesService:
         the DB to already reflect a doc edit before its own response
         returns. A no-op if this service was built without the three sync
         seams wired (e.g. a bare unit-test instance for
-        reconcile_updates/manual_update, which never calls this)."""
+        reconcile_updates/manual_update, which never calls this).
+
+        CALLER CONTRACT: do your own mutations AND your own ``record_audit``
+        on *db* before calling this, not after. ``_list_feature_rows``/
+        ``_apply_feature_plan`` each open their OWN ``db_session()`` — a
+        second SQLite connection that writes through it — while *db* (the
+        caller's session, e.g. the request's ``Depends(get_db)`` session,
+        which only commits once the route returns) may still be holding an
+        uncommitted write from earlier in the same call (a flushed pointer
+        row, an audit insert). On SQLite that is two writers contending for
+        the single file-level write lock: the second one blocks for the full
+        ``busy_timeout`` and then fails with ``database is locked`` — a
+        genuine deadlock, not a flake. Committing *db* here, first, before
+        doing any cross-session work, is what avoids it; it is a necessary
+        side effect of this method, not optional cleanup, which is why the
+        caller must have already recorded anything it needs durable (its
+        audit row included) before reaching this line."""
         if (self._read_feature_docs is None or self._list_feature_rows is None
                 or self._apply_feature_plan is None):
             return
+        await db.commit()
         repo = await self._primary_repo(db, project)
         main = await self._read_feature_docs(repo)
         pointer = await self.open_pointer(db, project)
@@ -566,21 +583,19 @@ class MapChangesService:
             db, project, gh, repo, branch, base, base_sha, pointer,
             MapOp(op="retire", slug=slug))
 
-        # `_resync_now`'s list/apply seams open their own DB session (a
-        # second connection) and write to it. On SQLite that second writer
-        # deadlocks against this request's still-open transaction (which has
-        # flushed, not committed, the pointer row above) for the full
-        # `busy_timeout` and then fails outright — so the pending writes here
-        # must be committed first to release the write lock before resync's
-        # own connection needs it. `expire_on_commit=False` (server/db)
-        # means `pointer` stays usable afterward without a reload.
-        await db.commit()
-        await self._resync_now(db, project)
+        # Record the audit row BEFORE `_resync_now`: that call commits *db*
+        # as a necessary side effect of the cross-session work it does (see
+        # its docstring), so anything durable this action needs — the audit
+        # row is the only durable record of who retired this capability,
+        # since `commit_message()` embeds no identity — must be written to
+        # *db* first. Nothing in the detail dict depends on `_resync_now`
+        # having run.
         await record_audit(
             db=db, type="pm.map_changes.retire", identity=identity,
             detail={"slug": project.slug, "capability": slug,
                     "childrenReparented": reparented, "commitSha": sha,
                     "prNumber": pointer.pr_number})
+        await self._resync_now(db, project)
         return Pointer.from_row(pointer)
 
     async def refresh(
