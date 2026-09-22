@@ -254,6 +254,9 @@ export interface BacklogGroup {
 export interface BacklogGroupsView {
   generation: string | null
   createdAt: string | null
+  /** The grouping model's reply could not be parsed, so this generation is the
+   *  parser's all-singletons fallback rather than a real plan (#2217). */
+  degraded: boolean
   groups: BacklogGroup[]
 }
 

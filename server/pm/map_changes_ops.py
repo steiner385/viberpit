@@ -22,7 +22,7 @@ from .featuredoc import (
     parse_feature_doc,
     serialize_feature_doc,
 )
-MAP_OPS: tuple[str, ...] = ("create", "rename", "reparent", "summary", "links")
+MAP_OPS: tuple[str, ...] = ("create", "rename", "reparent", "summary", "links", "retire")
 
 
 class MapOpError(ValueError):
@@ -52,7 +52,7 @@ class MapContext:
     link_targets: frozenset[tuple[str, str]]
 
 
-def _is_ancestor(ctx: MapContext, candidate: str, of: str) -> bool:
+def is_ancestor(ctx: MapContext, candidate: str, of: str) -> bool:
     """True when ``candidate`` is ``of`` itself or one of its descendants —
     i.e. making it ``of``'s parent would close a cycle."""
     seen: set[str] = set()
@@ -91,7 +91,7 @@ def validate_op(op: MapOp, ctx: MapContext) -> None:
     if op.op in ("create", "reparent") and op.parent_slug is not None:
         if op.parent_slug not in ctx.parents:
             raise MapOpError("parent_not_found", f"parent '{op.parent_slug}' does not exist")
-        if op.op == "reparent" and _is_ancestor(ctx, op.parent_slug, op.slug):
+        if op.op == "reparent" and is_ancestor(ctx, op.parent_slug, op.slug):
             raise MapOpError("parent_cycle", "a capability cannot sit under itself or its descendants")
     if op.op == "summary" and not (op.summary or "").strip():
         raise MapOpError("bad_summary", "summary must not be blank")
@@ -154,6 +154,8 @@ def apply_op(op: MapOp, current: str | None) -> tuple[str, str]:
         doc = replace(doc, body=_replace_summary(doc.body, op.summary or ""))
     elif op.op == "links":
         doc = replace(doc, links=tuple(op.links))
+    elif op.op == "retire":
+        doc = replace(doc, state="sunset")
     else:
         raise MapOpError("bad_op", f"op must be one of {MAP_OPS}")
     return path, serialize_feature_doc(doc)
@@ -162,6 +164,6 @@ def apply_op(op: MapOp, current: str | None) -> tuple[str, str]:
 def commit_message(op: MapOp, product_name: str) -> str:
     verb = {"create": "add capability", "rename": "rename capability",
             "reparent": "move capability", "summary": "update summary of",
-            "links": "update links of"}[op.op]
+            "links": "update links of", "retire": "retire capability"}[op.op]
     slug_prefix = product_name.lower().replace(" ", "-")
     return f"map({slug_prefix}): {verb} {op.slug}"

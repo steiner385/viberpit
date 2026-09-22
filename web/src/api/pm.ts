@@ -302,10 +302,46 @@ export interface AbandonResult {
   cleanup: { deleted: number; orphaned: number }
 }
 
+export interface RetireCapabilityInput {
+  slug: string
+}
+
+export interface RetireCapabilityResult {
+  pointer: MapChangesPointer
+}
+
+export interface MergeCapabilitiesInput {
+  fromSlug: string
+  intoSlug: string
+}
+
+export interface MergeCapabilityResult {
+  pointer: MapChangesPointer
+  workItems: number
+  initiatives: number
+  linksRepointed: number
+  linksNotRepointed: number
+  childrenReparented: number
+}
+
 /** One capability edit on the product's map-changes branch (R8c-1/R8c-2: a dialog
  *  sends one op per request, in sequence, for only the fields that changed). */
 export function editMapChanges(slug: string, input: MapChangeInput): Promise<MapChangeResult> {
   return api.post<MapChangeResult>(`/pm/projects/${encodeURIComponent(slug)}/map-changes`, input)
+}
+
+export function retireCapability(
+  slug: string, input: RetireCapabilityInput,
+): Promise<RetireCapabilityResult> {
+  return api.post<RetireCapabilityResult>(
+    `/pm/projects/${encodeURIComponent(slug)}/map-changes/retire`, input)
+}
+
+export function mergeCapabilities(
+  slug: string, input: MergeCapabilitiesInput,
+): Promise<MergeCapabilityResult> {
+  return api.post<MergeCapabilityResult>(
+    `/pm/projects/${encodeURIComponent(slug)}/map-changes/merge`, input)
 }
 
 /** R8c-4's one destructive roadmap action: closes the PR, deletes the branch, and

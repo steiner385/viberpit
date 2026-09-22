@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from server.pm.featuredoc import FeatureDoc, FeatureLinkRef
+from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
 _SUMMARY_MAX = 200
 
@@ -94,6 +94,56 @@ def _resolve_parents(docs: list[tuple[str, FeatureDoc]]) -> tuple[dict[str, str 
             seen.add(cur)
             cur = parent.get(cur)
     return parent, warnings
+
+
+def merge_branch_over_main(
+    main_docs: list[tuple[str, str]],
+    branch_docs: list[tuple[str, str]],
+    *, pr_number: int | None, pr_url: str | None,
+) -> tuple[list[tuple[str, FeatureDoc]], dict[str, tuple[int | None, str | None]], list[str]]:
+    """Parse every default-branch doc, then override by slug with any branch
+    doc that differs from what the branch merely inherited (R8b-4, mirrored
+    from the inline block in ``PmSyncLoop._feature_index``,
+    ``server/automations/pm_sync.py:654-694`` — see that method for the
+    throttled-logging/feed-event variant of this same decision used by the
+    background loop).
+
+    A branch inherits every default-branch doc, so the branch read returns all
+    of them — stamping the whole set "proposed" would null every untouched
+    capability's ``commit_sha`` and hand it this PR's number, so abandoning
+    the PR would delete the entire index. An unchanged inherited doc is
+    therefore skipped: it keeps its default-branch identity untouched.
+
+    Returns ``(docs, proposed, skipped)``: ``docs`` is ready for
+    ``plan_feature_index``, ``proposed`` maps a proposed slug to
+    ``(pr_number, pr_url)``, ``skipped`` is one ``"path: message"`` string per
+    doc (from either side) that failed to parse, for the caller to log.
+    """
+    docs_by_slug: dict[str, tuple[str, FeatureDoc]] = {}
+    main_text_by_slug: dict[str, str] = {}
+    skipped: list[str] = []
+    for path, text in main_docs:
+        try:
+            doc = parse_feature_doc(text, path=path)
+        except FeatureDocError as e:
+            skipped.append(f"{path}: {e}")
+            continue
+        docs_by_slug[doc.slug] = (path, doc)
+        main_text_by_slug[doc.slug] = text
+
+    proposed: dict[str, tuple[int | None, str | None]] = {}
+    for path, text in branch_docs:
+        try:
+            doc = parse_feature_doc(text, path=path)
+        except FeatureDocError as e:
+            skipped.append(f"{path}: {e}")
+            continue
+        if main_text_by_slug.get(doc.slug) == text:
+            continue  # inherited unchanged — not this PR's doing
+        docs_by_slug[doc.slug] = (path, doc)
+        proposed[doc.slug] = (pr_number, pr_url)
+
+    return list(docs_by_slug.values()), proposed, skipped
 
 
 def plan_feature_index(

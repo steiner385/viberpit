@@ -3,7 +3,7 @@ import pathlib
 
 import yaml
 
-from server.pm.feature_index import FeatureRowView, plan_feature_index
+from server.pm.feature_index import FeatureRowView, merge_branch_over_main, plan_feature_index
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
 FEATURE_DOCS_DIR = pathlib.Path(__file__).parents[2] / "docs" / "product" / "features"
@@ -247,3 +247,47 @@ def test_every_checked_in_feature_doc_targets_a_slug_this_repo_has():
             for p in sorted(FEATURE_DOCS_DIR.glob("*.md"))]
     slugs = {p.stem for p in FEATURE_DOCS_DIR.glob("*.md")}
     assert feature_doc_edge_problems(docs, slugs) == []
+
+
+# -- merge_branch_over_main tests ------------------------------------------------
+
+
+ROOT_TEXT = "---\nslug: sessions\ntitle: Sessions\nstate: live\n---\n# Sessions\n"
+CHILD_TEXT = ("---\nslug: dictation\ntitle: Dictation\nstate: live\nparent: sessions\n"
+              "---\n# Dictation\n")
+
+
+def test_merge_branch_over_main_uses_main_when_no_branch_docs():
+    docs, proposed, skipped = merge_branch_over_main(
+        [("docs/product/features/sessions.md", ROOT_TEXT)], [],
+        pr_number=None, pr_url=None)
+    assert [d.slug for _p, d in docs] == ["sessions"]
+    assert proposed == {}
+    assert skipped == []
+
+
+def test_merge_branch_over_main_overrides_only_changed_slugs():
+    """A branch inherits every default-branch doc — an UNCHANGED inherited doc
+    must not be marked proposed (R8b-4), only a doc that is new or edited there."""
+    changed_root = ROOT_TEXT.replace("state: live", "state: sunset")
+    docs, proposed, skipped = merge_branch_over_main(
+        main_docs=[("docs/product/features/sessions.md", ROOT_TEXT),
+                   ("docs/product/features/dictation.md", CHILD_TEXT)],
+        branch_docs=[("docs/product/features/sessions.md", changed_root),  # changed
+                     ("docs/product/features/dictation.md", CHILD_TEXT)],   # unchanged
+        pr_number=7, pr_url="https://github.com/o/r/pull/7")
+    by_slug = {d.slug: d for _p, d in docs}
+    assert by_slug["sessions"].state == "sunset"
+    assert by_slug["dictation"].state == "live"
+    assert proposed == {"sessions": (7, "https://github.com/o/r/pull/7")}
+    assert skipped == []
+
+
+def test_merge_branch_over_main_collects_unparseable_docs_from_either_side():
+    docs, proposed, skipped = merge_branch_over_main(
+        main_docs=[("docs/product/features/broken.md", "not frontmatter at all")],
+        branch_docs=[("docs/product/features/also-broken.md", "still not frontmatter")],
+        pr_number=1, pr_url=None)
+    assert docs == []
+    assert len(skipped) == 2
+    assert "broken.md" in skipped[0] and "also-broken.md" in skipped[1]

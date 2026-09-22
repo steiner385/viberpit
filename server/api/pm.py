@@ -57,7 +57,7 @@ from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
-    owning_projects_by_repo, require_unregistered_repos,
+    owning_projects_by_repo, require_mutation_owner, require_unregistered_repos,
 )
 from server.pm.score import RICE_FIELDS, rice_score, validate_rice
 from server.pm.sync_request import request_project_sync
@@ -1141,6 +1141,55 @@ async def map_changes_edit(
     return {"pointer": pointer.to_dict(), "path": path, "commitSha": sha}
 
 
+class MapChangesRetireBody(BaseModel):
+    slug: str
+
+
+@router.post("/projects/{slug}/map-changes/retire", status_code=status.HTTP_200_OK)
+async def map_changes_retire(
+    slug: str,
+    body: MapChangesRetireBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Retire a capability (capability-management spec). Refuses (422
+    ``has_dependents``) while it still has initiative/issue dependents;
+    auto-reparents live children to its own parent."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        pointer = await svc.retire(db, p, body.slug, identity)
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return {"pointer": pointer.to_dict()}
+
+
+class MapChangesMergeBody(BaseModel):
+    fromSlug: str
+    intoSlug: str
+
+
+@router.post("/projects/{slug}/map-changes/merge", status_code=status.HTTP_200_OK)
+async def map_changes_merge(
+    slug: str,
+    body: MapChangesMergeBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Fold one capability into another (capability-management spec):
+    repoints every initiative/issue/link/proposal reference, reparents the
+    source's children onto the target, retires the source."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        result = await svc.merge(db, p, body.fromSlug, body.intoSlug, identity)
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return result.to_dict()
+
+
 @router.delete("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)
 async def map_changes_abandon(
     slug: str,
@@ -1417,6 +1466,7 @@ async def _validate_accept_edits(db, edits: dict | None) -> None:
 @router.post("/triage/{proposal_id}/accept")
 async def accept_triage(
     proposal_id: str,
+    request: Request,
     body: dict | None = Body(default=None),
     identity: str = Depends(current_identity),
     db=Depends(get_db),
@@ -1424,14 +1474,78 @@ async def accept_triage(
     """Copy the proposal onto the WorkItem overlay and mark it classified
     (spec §7), via the shared ``apply_accept`` (server/pm/triage_accept.py). An
     OPTIONAL request body
-    ``{edits?: {reach?, impact?, effort?, confidence?, featureId?}}`` overrides
-    the copied values (lets phase-3 edit-then-accept work without a route
-    change); absent body = plain accept. The batch form is ``accept-bulk``,
+    ``{edits?: {reach?, impact?, effort?, confidence?, featureId?, newCapability?}}``
+    overrides the copied values (lets phase-3 edit-then-accept work without a
+    route change); absent body = plain accept. ``edits.newCapability``
+    (``{title, slug}``) creates a brand-new capability on the work item's
+    owning product's map-changes branch, resyncs it into the ``Feature``
+    index synchronously, then classifies onto it in the same call — mutually
+    exclusive with ``edits.featureId``. The batch form is ``accept-bulk``,
     which reuses the same helper."""
     from server.pm.triage_accept import gather_accept_ownership
     ownership = await gather_accept_ownership([proposal_id])
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
+    # PRESENCE, not truthiness: `{}`, `null`, `""` and `0` are all falsy, so a
+    # bare `if new_capability` let a malformed-but-present value fall silently
+    # through to a plain accept onto the AI's original suggestion — the caller
+    # believes it created a capability and gets a 200 saying so. Every other
+    # malformed shape here answers 400 `bad_edit`; so does this one now.
+    new_capability = (edits or {}).get("newCapability")
+    wants_new_capability = isinstance(edits, dict) and "newCapability" in edits
+    if wants_new_capability and (edits or {}).get("featureId") is not None:
+        raise HTTPException(status_code=400, detail={
+            "error": "bad_edit",
+            "message": "featureId and newCapability are mutually exclusive"})
+    if wants_new_capability:
+        if not isinstance(new_capability, dict) or not new_capability:
+            raise HTTPException(status_code=400, detail={
+                "error": "bad_edit", "message": "newCapability must be {title, slug}"})
+        title = new_capability.get("title")
+        slug = new_capability.get("slug")
+        if (not isinstance(title, str) or not title
+                or not isinstance(slug, str) or not slug):
+            raise HTTPException(status_code=400, detail={
+                "error": "bad_edit", "message": "newCapability must be {title, slug}"})
+        work_item = await db.get(WorkItem, prop.work_item_id)
+        if work_item is None:
+            raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
+        try:
+            owner = await require_mutation_owner(db, work_item.repo or "", snapshot=ownership)
+        except OwnershipConflict as e:
+            raise HTTPException(status_code=409, detail=e.result()) from e
+        project = await db.get(Project, owner.project_id) if owner else None
+        if project is None:
+            raise HTTPException(status_code=404, detail={
+                "error": "project_not_found",
+                "message": "Work item's registered product no longer exists"})
+        svc = request.app.state.sessions.pm_map_changes()
+        op = MapOp(op="create", slug=slug, title=title)
+        try:
+            await svc.edit(db, project, op, identity)
+            await svc._resync_now(db, project)
+        except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+            raise _map_changes_http(e) from e
+        # _resync_now() commits `db` as a documented side effect (server/pm/
+        # map_changes.py), which ends the transaction _load_pending_proposal's
+        # SELECT ... FOR UPDATE opened — releasing that lock for the whole
+        # GitHub round-trip svc.edit() just did (ensure_branch/read/commit/PR,
+        # seconds not microseconds on Postgres; SQLite renders FOR UPDATE as a
+        # no-op so this window is untestable here but real in prod). Re-running
+        # the SAME call re-takes the lock and re-checks status, so a pm-triage
+        # loop auto-accept that raced in during the round-trip is caught as
+        # "already_resolved" (409) instead of silently overwritten below. Do
+        # NOT remove this as a redundant duplicate of the call above it.
+        prop = await _load_pending_proposal(db, proposal_id)
+        feature = (await db.execute(select(Feature).where(
+            Feature.project_id == project.id,
+            Feature.slug == slug,
+        ))).scalars().first()
+        if feature is None:
+            raise HTTPException(status_code=502, detail={
+                "error": "capability_not_indexed",
+                "message": "the new capability was created but could not be indexed"})
+        edits = {**(edits or {}), "featureId": feature.id}
     await _validate_accept_edits(db, edits)
     try:
         await apply_accept(db, prop, decided_by=DECIDED_BY_HUMAN,

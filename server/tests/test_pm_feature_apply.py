@@ -177,13 +177,13 @@ def test_unresolved_link_warns_once_not_once_per_tick(caplog):
     #1531 was closed without the doc being fixed — same fingerprint, same
     first-seen). Repeats within the throttle window must not re-report at
     WARNING."""
-    from server.sessions import orchestrator as orch_mod
+    from server.pm import feature_sync_seams as seams_mod
     from server.db.models import Project
     from server.db import db_session
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    orch_mod._PM_SYNC_LINK_LOG.clear()
+    seams_mod._PM_SYNC_LINK_LOG.clear()
 
     with _orch() as orch:
         async def _seed() -> str:
@@ -224,13 +224,13 @@ def test_two_unresolved_links_from_one_doc_each_warn_independently(caplog):
     structured form: the edge stays fully recoverable from the record while no
     longer forking the error sink's fingerprint, which is what filed these as
     separate issues in the first place."""
-    from server.sessions import orchestrator as orch_mod
+    from server.pm import feature_sync_seams as seams_mod
     from server.db.models import Project
     from server.db import db_session
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    orch_mod._PM_SYNC_LINK_LOG.clear()
+    seams_mod._PM_SYNC_LINK_LOG.clear()
 
     with _orch() as orch:
         async def _seed() -> str:
@@ -276,14 +276,14 @@ def test_unresolved_link_edges_share_one_fingerprint(caplog):
     per-edge, so a newly broken edge still reports at WARNING immediately —
     which is what the test above pins.
     """
-    from server.sessions import orchestrator as orch_mod
+    from server.pm import feature_sync_seams as seams_mod
     from server.db.models import Project
     from server.db import db_session
     from server.obs.error_signature import signature_of
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    orch_mod._PM_SYNC_LINK_LOG.clear()
+    seams_mod._PM_SYNC_LINK_LOG.clear()
 
     def _plan(src: str, dst_feature: str) -> "FeatureIndexPlan":
         # example-infra is never seeded, so every link below stays unresolved.
@@ -341,13 +341,13 @@ def test_link_to_a_renamed_product_s_former_slug_still_resolves(caplog):
     next touched.
     """
     from sqlalchemy import select
-    from server.sessions import orchestrator as orch_mod
+    from server.pm import feature_sync_seams as seams_mod
     from server.db import db_session
     from server.db.models import Feature, FeatureLink, Project
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    orch_mod._PM_SYNC_LINK_LOG.clear()
+    seams_mod._PM_SYNC_LINK_LOG.clear()
 
     with _orch() as orch:
         async def _seed() -> tuple[str, str]:
@@ -403,13 +403,13 @@ def test_a_doc_naming_its_OWN_product_by_a_former_slug_still_links(caplog):
     stops being able to link to itself.
     """
     from sqlalchemy import select
-    from server.sessions import orchestrator as orch_mod
+    from server.pm import feature_sync_seams as seams_mod
     from server.db import db_session
     from server.db.models import Feature, FeatureLink, Project
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    orch_mod._PM_SYNC_LINK_LOG.clear()
+    seams_mod._PM_SYNC_LINK_LOG.clear()
 
     with _orch() as orch:
         async def _seed() -> str:

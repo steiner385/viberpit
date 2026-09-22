@@ -119,6 +119,9 @@ export interface OverlayEdits {
   effort?: number
   confidence?: number
   featureId?: string | null
+  /** Inline-create a capability at accept time (spec 2026-09-22 §3) instead of
+   *  homing on an existing one — mutually exclusive with `featureId` server-side. */
+  newCapability?: { title: string; slug: string }
   triageState?: string
 }
 
