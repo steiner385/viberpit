@@ -6,6 +6,7 @@ import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Select'
 import { CAPABILITY, capabilityStateLabel } from './vocab'
+import { RemapDependentsDialog } from './RemapDependentsDialog'
 
 interface Props {
   product: ProductNode
@@ -43,6 +44,8 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
   const [mergeTarget, setMergeTarget] = useState<string>('')
   const [mergeError, setMergeError] = useState<string | null>(null)
   const [mergeInfo, setMergeInfo] = useState<string | null>(null)
+  const [remapping, setRemapping] = useState<string | null>(null)
+  const remapNode = remapping ? rows.find((r) => r.node.slug === remapping)?.node : undefined
 
   const doRetire = async (slug: string) => {
     setError(null)
@@ -151,6 +154,9 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
                     </span>
                   ) : (
                     <span className="flex items-center justify-end gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => setRemapping(node.slug)}>
+                        Re-map…
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => setMerging(node.slug)}>
                         Merge into…
                       </Button>
@@ -165,6 +171,18 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
           })}
         </tbody>
       </table>
+      {/* Mounted only while open (the RoadmapPage idiom — see
+          `CapabilityDetail.tsx`): a left-mounted dialog would keep polling
+          `useLeaves` for a capability the user is no longer looking at. */}
+      {remapNode && (
+        <RemapDependentsDialog
+          product={product}
+          capability={remapNode}
+          allCapabilities={rows.map((r) => r.node)}
+          open
+          onClose={() => setRemapping(null)}
+        />
+      )}
     </div>
   )
 }
