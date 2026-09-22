@@ -27,8 +27,7 @@ MAX_ROTATIONS: int = 3            # rotations per session allowed within ROTATIO
 ROTATION_WINDOW: float = 300.0
 CRASH_CAP: int = 3                # crashes per session allowed within CRASH_WINDOW
 CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashes
-STALL_CAP: int = 3                # stall-watchdog interrupts per session within STALL_WINDOW
-STALL_WINDOW: float = 120.0       # window (seconds) for tracking session stalls
+STALL_CAP: int = 3                # consecutive stall-watchdog interrupts per session before escalating
 STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300"))
 # Extended stall timeout for a turn whose silence is attributable to API throttling
 # (the driver is backing off, or its account is in recovery quarantine). The SDK can
@@ -50,9 +49,8 @@ class RecoveryState:
         self._crashes: dict[str, list[float]] = defaultdict(list)  # session_id -> crash timestamps
         self._crash_cap = CRASH_CAP
         self._crash_window = CRASH_WINDOW
-        self._stalls: dict[str, list[float]] = defaultdict(list)  # session_id -> stall timestamps
+        self._stalls: dict[str, int] = defaultdict(int)  # session_id -> consecutive stall count
         self._stall_cap = STALL_CAP
-        self._stall_window = STALL_WINDOW
         self._resends: dict[str, list[float]] = defaultdict(list)  # session_id -> resend timestamps
         self._resend_cap = RESEND_CAP
         self._resend_window = RESEND_WINDOW
@@ -92,15 +90,25 @@ class RecoveryState:
         return len(recent) >= self._crash_cap
 
     # --- per-session stall cap ------------------------------------------------
+    # A *consecutive-streak* counter, not a sliding time window like the caps above.
+    # A wedged turn re-stalls roughly once per STALL_TIMEOUT (or the longer throttled
+    # timeout) after each interrupt — both comfortably exceed any window short enough
+    # to still be a useful rate limit — so a window-pruned count could never reach
+    # stall_cap and a turn that reliably re-wedges every watchdog cycle looped forever
+    # instead of escalating (observed: session 808f63fc, 2026-09-22, 3.5h/2 account
+    # rotations). The streak accumulates across repeated stalls regardless of spacing
+    # and only resets via clear_stalls(), which the watchdog calls once it observes
+    # the turn genuinely resolve (no longer active or draining).
     def record_stall(self, session_id: str, *, now: float) -> None:
-        self._stalls[session_id].append(now)
+        self._stalls[session_id] += 1
 
     def stall_cap_reached(self, session_id: str, *, now: float) -> bool:
-        """True if *session_id* has already stalled ``stall_cap`` times in the window."""
-        cutoff = now - self._stall_window
-        recent = [t for t in self._stalls.get(session_id, ()) if t > cutoff]
-        self._stalls[session_id] = recent
-        return len(recent) >= self._stall_cap
+        """True if *session_id* has already stalled ``stall_cap`` times in a row."""
+        return self._stalls.get(session_id, 0) >= self._stall_cap
+
+    def clear_stalls(self, session_id: str) -> None:
+        """Reset the consecutive-stall streak once a turn is seen to genuinely resolve."""
+        self._stalls.pop(session_id, None)
 
     # --- per-session dropped-turn resend cap ----------------------------------
     def record_resend(self, session_id: str, *, now: float) -> None:

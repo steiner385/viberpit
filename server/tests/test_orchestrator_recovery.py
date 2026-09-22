@@ -236,6 +236,65 @@ def test_check_stalls_escalates_zombie_to_recompose_after_cap():
     assert reassigned == [("s1", "kindash", "stall_recompose")]
 
 
+def test_check_stalls_escalates_across_widely_spaced_stalls():
+    """Real-world wedge (session 808f63fc, 2026-09-22): each interrupt kicks off a
+    resend that produces enough progress (thinking, a permission ask) to look alive
+    for a while before re-stalling, so consecutive stalls land roughly STALL_TIMEOUT
+    apart — minutes, not seconds. The old window-pruned cap (120s) could never
+    accumulate stalls spaced that far apart, so the turn looped between "interrupt"
+    and "recovering" for 3.5 hours across two account rotations instead of ever
+    escalating. It must now escalate regardless of the gap between stalls."""
+    o = _make_orch(); _rec(o)
+    reassigned = []
+    async def spy_reassign(record, new_account, *, reason):
+        reassigned.append((record.id, new_account, reason))
+    o._reassign = spy_reassign
+    interrupted = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 0.0   # never advances — the turn never truly progresses
+        async def interrupt(self, *, keep_queue=False):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    # Each check lands STALL_TIMEOUT+1s after the last — far wider than the old
+    # (now-removed) STALL_WINDOW ever was — mirroring the watchdog's own cadence.
+    gap = R.STALL_TIMEOUT + 1.0
+    for i in range(1, R.STALL_CAP + 1):
+        asyncio.run(o._check_stalls(now=gap * i))
+    assert len(interrupted) == R.STALL_CAP
+    assert reassigned == []   # cap not yet reached — still just interrupting
+    # One more cycle at the same wide cadence must now escalate instead of looping.
+    asyncio.run(o._check_stalls(now=gap * (R.STALL_CAP + 1)))
+    assert reassigned == [("s1", "kindash", "stall_recompose")]
+
+
+def test_check_stalls_clears_streak_once_turn_resolves():
+    """A stall streak must not survive a genuine resolution: once the watchdog sees
+    the turn is no longer active or draining, a later fresh wedge starts its own
+    escalation count instead of inheriting the old streak."""
+    o = _make_orch(); _rec(o)
+    for _ in range(R.STALL_CAP):
+        o._recovery.record_stall("s1", now=1000.0)
+    assert o._recovery.stall_cap_reached("s1", now=1000.0)
+
+    class _Resolved:
+        turn_active = False
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 1000.0
+        async def interrupt(self, *, keep_queue=False):
+            raise AssertionError("resolved turn must be left alone")
+    o._drivers["s1"] = _Resolved()
+    asyncio.run(o._check_stalls(now=1001.0))
+    assert not o._recovery.stall_cap_reached("s1", now=1001.0)
+
+
 def test_check_stalls_zombie_pauses_after_crash_cap():
     """A turn that keeps wedging through repeated recomposes is bounded by crash_cap —
     it ends at needs_attention (paused), not an endless recompose loop."""

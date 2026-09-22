@@ -68,12 +68,36 @@ def test_crash_cap_resets_outside_window():
     assert not s.crash_cap_reached("sess", now=200.0)
 
 
-def test_stall_cap_reached_after_max_within_window():
+def test_stall_cap_reached_after_max():
     s = RecoveryState()
     for t in (0.0, 10.0, 20.0):
         assert not s.stall_cap_reached("sess", now=t)
         s.record_stall("sess", now=t)
     assert s.stall_cap_reached("sess", now=30.0)
+
+
+def test_stall_cap_is_a_streak_not_a_sliding_window():
+    """Unlike rotation/crash/resend, the stall cap must NOT reset just because
+    stalls are spaced apart. A wedged turn typically re-stalls once per
+    STALL_TIMEOUT (or the longer throttled timeout) after each interrupt/resend —
+    both comfortably exceed any window short enough to still be a useful rate
+    limit — so a window-pruned count could never reach the cap and a session that
+    reliably re-wedges every watchdog cycle looped forever instead of escalating
+    (session 808f63fc, 2026-09-22: 3.5h and two account rotations)."""
+    s = RecoveryState()
+    s.record_stall("sess", now=0.0)
+    s.record_stall("sess", now=10_000.0)
+    s.record_stall("sess", now=20_000.0)
+    assert s.stall_cap_reached("sess", now=20_000.0)
+
+
+def test_clear_stalls_resets_the_streak():
+    s = RecoveryState()
+    for _ in range(3):
+        s.record_stall("sess", now=1000.0)
+    assert s.stall_cap_reached("sess", now=1000.0)
+    s.clear_stalls("sess")
+    assert not s.stall_cap_reached("sess", now=1000.0)
 
 
 def test_stall_and_crash_caps_are_independent():

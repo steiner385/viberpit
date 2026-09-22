@@ -17332,6 +17332,9 @@ class SessionOrchestrator:
             active = driver.turn_active
             zombie = (not active) and driver.drain_alive
             if not active and not zombie:
+                # Turn genuinely resolved (not just quiet between resends) — a fresh
+                # wedge later starts its escalation streak over, not mid-cap.
+                self._recovery.clear_stalls(sid)
                 continue
             # A turn whose silence is attributable to API throttling — the driver is
             # backing off, or its account is in recovery quarantine (recently 429'd) —
