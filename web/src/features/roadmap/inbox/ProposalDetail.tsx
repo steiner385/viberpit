@@ -177,7 +177,15 @@ function TriageDetail({
   }
   const differs = (f: ScoreField) => (effective[f] ?? null) !== (p[f] ?? null)
   const featureChanged = (effective.featureId ?? null) !== (p.proposedFeatureId ?? null)
-  const newCapPending = creatingCapability && newCapTitle.trim().length > 0
+  // BOTH fields, not just the title: `edited.newCapability` below is only
+  // emitted when the slug is non-empty too (the title can slugify to '' — a
+  // punctuation-only title — and the user can clear the field by hand). If
+  // this gate were looser than that one, Save would enable on a state that
+  // submits NEITHER `newCapability` NOR `featureId`, silently downgrading to a
+  // plain accept onto the AI's original suggestion while the user believes
+  // they created a capability.
+  const newCapPending = creatingCapability
+    && newCapTitle.trim().length > 0 && newCapSlug.trim().length > 0
   const changed = SCORE_FIELDS.some(differs) || featureChanged || newCapPending
   // Only what actually moved: an accept body that restates the proposal's own
   // values is noise in the audit trail and in the diff a reviewer reads.

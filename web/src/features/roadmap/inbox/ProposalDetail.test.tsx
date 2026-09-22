@@ -140,6 +140,22 @@ describe('ProposalDetail', () => {
     expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
   })
 
+  it('leaves Save disabled when the slug is cleared even though a title is typed', () => {
+    // The submit only emits `newCapability` when BOTH fields are non-empty, so
+    // enabling Save on the title alone would silently downgrade the accept to
+    // a plain one onto the AI's original suggestion. (A punctuation-only title
+    // reaches the same state via `slugify` returning ''.)
+    mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: '' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeDisabled()
+    // Typing a slug back in re-enables it — the gate is the pair, not a latch.
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'payments' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
+  })
+
   it('switching back to an existing capability drops the new-capability draft', () => {
     const { onDone } = mount()
     fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })

@@ -1486,14 +1486,23 @@ async def accept_triage(
     ownership = await gather_accept_ownership([proposal_id])
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
+    # PRESENCE, not truthiness: `{}`, `null`, `""` and `0` are all falsy, so a
+    # bare `if new_capability` let a malformed-but-present value fall silently
+    # through to a plain accept onto the AI's original suggestion — the caller
+    # believes it created a capability and gets a 200 saying so. Every other
+    # malformed shape here answers 400 `bad_edit`; so does this one now.
     new_capability = (edits or {}).get("newCapability")
-    if new_capability and (edits or {}).get("featureId") is not None:
+    wants_new_capability = isinstance(edits, dict) and "newCapability" in edits
+    if wants_new_capability and (edits or {}).get("featureId") is not None:
         raise HTTPException(status_code=400, detail={
             "error": "bad_edit",
             "message": "featureId and newCapability are mutually exclusive"})
-    if new_capability:
-        title = new_capability.get("title") if isinstance(new_capability, dict) else None
-        slug = new_capability.get("slug") if isinstance(new_capability, dict) else None
+    if wants_new_capability:
+        if not isinstance(new_capability, dict) or not new_capability:
+            raise HTTPException(status_code=400, detail={
+                "error": "bad_edit", "message": "newCapability must be {title, slug}"})
+        title = new_capability.get("title")
+        slug = new_capability.get("slug")
         if (not isinstance(title, str) or not title
                 or not isinstance(slug, str) or not slug):
             raise HTTPException(status_code=400, detail={

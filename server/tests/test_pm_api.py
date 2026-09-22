@@ -2039,6 +2039,41 @@ def test_accept_new_capability_missing_slug_is_400_not_500():
         assert r.json()["detail"]["error"] == "bad_edit"
 
 
+def test_accept_falsy_new_capability_is_400_not_a_silent_plain_accept():
+    """A PRESENT but falsy ``newCapability`` (``{}``, ``null``, ``""``, ``0``)
+    used to slip past the route's truthiness check and fall through to a plain
+    accept onto the AI's own suggestion — a 200 saying the capability was
+    created when nothing was. Presence, not truthiness, is the gate."""
+    for value in ({}, None, "", 0, [], "payments"):
+        with _client() as c:
+            _register(c, "Viberpit", repo="o/r")
+            c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+            pid, _wid = _seed_one_pending(c, repo="o/r")
+
+            r = c.post(f"/api/pm/triage/{pid}/accept",
+                       json={"edits": {"newCapability": value}},
+                       headers=IDENTITY_HEADERS)
+            assert r.status_code == 400, f"{value!r} -> {r.status_code}: {r.text}"
+            assert r.json()["detail"]["error"] == "bad_edit"
+
+
+def test_accept_falsy_new_capability_with_feature_id_is_still_mutually_exclusive():
+    """…and a falsy ``newCapability`` alongside ``featureId`` is refused as the
+    mutually-exclusive pair it is, rather than quietly honouring the
+    ``featureId`` leg."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions", repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"featureId": "some-id", "newCapability": {}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+        assert "mutually exclusive" in r.json()["detail"]["message"]
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
