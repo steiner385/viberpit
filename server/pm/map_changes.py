@@ -40,7 +40,7 @@ from server.db.models import (
 
 from .classification import FEATURE_DOCS_DIR, feature_doc_path
 from .feature_index import FeatureDocsRead, FeatureIndexPlan, merge_branch_over_main, plan_feature_index
-from .featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
+from .featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 from .map_changes_gh import GhWrite, GhWriteError, PrState
 from .map_changes_ops import (
     SLUG_RE,
@@ -220,6 +220,32 @@ class Pointer:
             "headSha": self.head_sha,
             "behind": self.behind,
             "conflicting": self.conflicting,
+        }
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """``merge()``'s outcome: the pointer plus what it actually did — the
+    Capabilities tab UI (a later task) needs these counts visible in the
+    response, ``links_not_repointed`` especially, so an incomplete
+    cross-project link repoint is surfaced to whoever triggered the merge
+    rather than silently invisible."""
+
+    pointer: Pointer
+    work_items: int
+    initiatives: int
+    links_repointed: int
+    links_not_repointed: int
+    children_reparented: int
+
+    def to_dict(self) -> dict:
+        return {
+            "pointer": self.pointer.to_dict(),
+            "workItems": self.work_items,
+            "initiatives": self.initiatives,
+            "linksRepointed": self.links_repointed,
+            "linksNotRepointed": self.links_not_repointed,
+            "childrenReparented": self.children_reparented,
         }
 
 
@@ -519,6 +545,29 @@ class MapChangesService:
         await db.flush()
         return pointer, path, sha
 
+    async def _current_doc(self, gh: GhWrite, branch: str, slug: str) -> FeatureDoc | None:
+        """The doc currently at the branch head for *slug* (the branch already
+        inherits every default-branch doc once it exists — the CALLER must
+        have already ensured it does, e.g. via ``gh.ensure_branch``). ``None``
+        if no doc exists or it cannot be parsed.
+
+        Used by ``merge()``'s ``FeatureLink`` repoint, which needs each
+        affected capability's CURRENT full links list before computing its
+        replacement — a DB-only ``FeatureLink`` write would be silently
+        reverted by the next resync, since ``FeatureLink`` is entirely
+        doc-derived (see ``plan_feature_index`` /
+        ``SessionOrchestrator._pm_sync_apply_feature_plan``, which rewrites
+        every outgoing edge of every project Feature from doc frontmatter on
+        every apply)."""
+        path = feature_doc_path(slug)
+        current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+        if current is None:
+            return None
+        try:
+            return parse_feature_doc(current, path=path)
+        except FeatureDocError:
+            return None
+
     async def edit(
         self, db, project: Project, op: MapOp, identity: str,
     ) -> tuple[Pointer, str, str]:
@@ -601,13 +650,26 @@ class MapChangesService:
 
     async def merge(
         self, db, project: Project, from_slug: str, into_slug: str, identity: str,
-    ) -> Pointer:
+    ) -> MergeResult:
         """Fold ``from_slug`` into ``into_slug``: repoint every WorkItem/
         InitiativeFeature/FeatureLink/TriageProposal reference, reparent
         ``from_slug``'s children onto ``into_slug``, retire ``from_slug``,
         resync inline. ``into_slug`` must not be ``from_slug`` itself or one
         of its descendants — a merge target below the source would cycle once
-        the source's other children reparent onto it."""
+        the source's other children reparent onto it.
+
+        ``FeatureLink`` is entirely doc-derived (``plan_feature_index`` /
+        ``SessionOrchestrator._pm_sync_apply_feature_plan`` rewrites every
+        outgoing edge of every project Feature from doc frontmatter on every
+        resync), so a DB-only ``FeatureLink`` repoint would be silently
+        reverted by this method's own ``_resync_now`` call before the request
+        even returns. Every link repoint below is therefore a doc-level
+        ``op="links"`` commit, not a raw table write — the DB rows the
+        resync produces afterward are a byproduct of those doc edits, never
+        the source of truth themselves. A cross-project incoming link (one
+        living in another product's repo) cannot be edited from this
+        branch at all; those are left pointing at ``from_slug`` and counted
+        in ``linksNotRepointed`` rather than silently dropped."""
         if from_slug == into_slug:
             raise MapOpError("bad_merge", "a capability cannot be merged into itself")
         src = await self._feature_by_slug(db, project, from_slug)
@@ -652,37 +714,21 @@ class MapChangesService:
             else:
                 row.feature_id = dst.id
             moved_initiatives += 1
-        await db.flush()  # the FeatureLink dedup probes below must see these
-                           # adds/deletes, not a stale read
+        await db.flush()
 
-        moved_links = 0
-        for side, other_attr in (("src_feature_id", "dst_feature_id"),
-                                  ("dst_feature_id", "src_feature_id")):
-            rows = (await db.execute(select(FeatureLink).where(
-                getattr(FeatureLink, side) == src.id))).scalars().all()
-            for link in rows:
-                other = getattr(link, other_attr)
-                if other == dst.id:
-                    # A direct link already connects src and dst (e.g.
-                    # `dictation powered_by sessions`) — repointing `side`
-                    # to `dst.id` too would turn it into a self-link
-                    # (`sessions -> sessions`). Not a constraint violation
-                    # (no unique index forbids it), just semantically wrong:
-                    # a capability cannot link to itself. Drop it.
-                    await db.delete(link)
-                    await db.flush()
-                    moved_links += 1
-                    continue
-                dup = (await db.execute(select(FeatureLink.id).where(
-                    getattr(FeatureLink, side) == dst.id,
-                    FeatureLink.kind == link.kind,
-                    getattr(FeatureLink, other_attr) == other).limit(1))).first()
-                if dup is not None:
-                    await db.delete(link)
-                else:
-                    setattr(link, side, dst.id)
-                await db.flush()  # each dedup probe must see prior iterations
-                moved_links += 1
+        # Read FeatureLink's pre-mutation state now — nothing below mutates
+        # this table directly (see the docstring); these rows are only ever
+        # used to compute the doc-level `op="links"` commits further down.
+        outgoing = (await db.execute(select(FeatureLink, Project.slug, Feature.slug).join(
+            Feature, FeatureLink.dst_feature_id == Feature.id).join(
+            Project, Feature.project_id == Project.id).where(
+            FeatureLink.src_feature_id == src.id))).all()
+        incoming = (await db.execute(select(FeatureLink, Project.slug, Feature.slug, Feature.project_id).join(
+            Feature, FeatureLink.src_feature_id == Feature.id).join(
+            Project, Feature.project_id == Project.id).where(
+            FeatureLink.dst_feature_id == src.id))).all()
+        same_project_incoming = [row for row in incoming if row[3] == project.id]
+        links_not_repointed = len(incoming) - len(same_project_incoming)
 
         await db.execute(update(TriageProposal).where(
             TriageProposal.proposed_feature_id == src.id).values(proposed_feature_id=dst.id))
@@ -693,6 +739,58 @@ class MapChangesService:
 
         base = await self._default_branch(repo)
         base_sha = await asyncio.to_thread(gh.default_branch_head, base)
+        # Ensure the branch exists before any doc read below: a fresh
+        # product's first-ever map-changes edit has no branch yet, and
+        # `_current_doc` needs one to read from (a newly created branch
+        # inherits every default-branch doc, including ones no edit here has
+        # touched yet — `into_slug`'s doc in particular).
+        await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
+
+        links_repointed = 0
+        if outgoing:
+            # A DIRECT src->dst link (e.g. `dictation powered_by sessions`)
+            # must be DROPPED, not merged into into_slug's own doc — adding
+            # it there would write a self-link (`sessions -> sessions`).
+            outgoing_refs = [
+                FeatureLinkRef(kind=str(link.kind), project=proj_slug, feature=feat_slug)
+                for link, proj_slug, feat_slug in outgoing
+                if not (proj_slug == project.slug and feat_slug == into_slug)]
+            into_doc = await self._current_doc(gh, branch, into_slug)
+            into_existing = list(into_doc.links) if into_doc is not None else []
+            merged = tuple(dict.fromkeys([*into_existing, *outgoing_refs]))
+            validate_op(MapOp(op="links", slug=into_slug, links=merged), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="links", slug=into_slug, links=merged))
+            # The source doc is being retired — clear its own outgoing list
+            # rather than let it linger on the sunset doc.
+            validate_op(MapOp(op="links", slug=from_slug, links=()), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="links", slug=from_slug, links=()))
+            links_repointed += len(outgoing)
+
+        for _link, _other_project_slug, other_slug, _other_project_id in same_project_incoming:
+            other_doc = await self._current_doc(gh, branch, other_slug)
+            if other_doc is None:
+                continue
+            new_links = []
+            for ref in other_doc.links:
+                if (ref.project, ref.feature) != (project.slug, from_slug):
+                    new_links.append(ref)
+                elif other_slug != into_slug:
+                    new_links.append(FeatureLinkRef(
+                        kind=ref.kind, project=project.slug or "", feature=into_slug))
+                # else: this incoming link is DIRECTLY `into_slug -> from_slug`
+                # — repointing it would write a self-link (`into_slug ->
+                # into_slug`); drop it instead.
+            deduped = tuple(dict.fromkeys(new_links))
+            validate_op(MapOp(op="links", slug=other_slug, links=deduped), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="links", slug=other_slug, links=deduped))
+            links_repointed += 1
+
         reparented = 0
         for child in children:
             validate_op(MapOp(op="reparent", slug=child.slug, parent_slug=into_slug), ctx)
@@ -714,10 +812,14 @@ class MapChangesService:
             db=db, type="pm.map_changes.merge", identity=identity,
             detail={"slug": project.slug, "from": from_slug, "into": into_slug,
                     "workItems": moved_work_items, "initiatives": moved_initiatives,
-                    "links": moved_links, "childrenReparented": reparented,
+                    "linksRepointed": links_repointed, "linksNotRepointed": links_not_repointed,
+                    "childrenReparented": reparented,
                     "commitSha": sha, "prNumber": pointer.pr_number})
         await self._resync_now(db, project)
-        return Pointer.from_row(pointer)
+        return MergeResult(
+            pointer=Pointer.from_row(pointer), work_items=moved_work_items,
+            initiatives=moved_initiatives, links_repointed=links_repointed,
+            links_not_repointed=links_not_repointed, children_reparented=reparented)
 
     async def refresh(
         self, db, project: Project, gh: GhWrite | None = None,

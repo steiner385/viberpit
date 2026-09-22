@@ -1184,10 +1184,10 @@ async def map_changes_merge(
     p = await _load_project(db, slug)
     svc = request.app.state.sessions.pm_map_changes()
     try:
-        pointer = await svc.merge(db, p, body.fromSlug, body.intoSlug, identity)
+        result = await svc.merge(db, p, body.fromSlug, body.intoSlug, identity)
     except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
         raise _map_changes_http(e) from e
-    return {"pointer": pointer.to_dict()}
+    return result.to_dict()
 
 
 @router.delete("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)

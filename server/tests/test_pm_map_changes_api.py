@@ -131,17 +131,70 @@ def _retire_answers() -> list:
     ]
 
 
-# The scripted answers merging `dictation` into `sessions` produces: the
-# branch-doc probe, the base head, then ONE `_commit_and_track` (retire
+# The scripted answers merging `dictation` into `sessions` produces when
+# NEITHER has any FeatureLink to repoint: the branch-doc probe, the base
+# head, `merge()`'s own explicit `ensure_branch` (ref absent, then created —
+# it has to exist before `merge()` can read any doc off it, even though
+# nothing here needs a `links` commit), then ONE `_commit_and_track` (retire
 # dictation) — dictation has no children in the seed fixture, so unlike
-# `_retire_answers()` there is no reparent op first. This is the branch's
-# first commit, so it opens the branch and the PR too: ensure_branch (ref
-# absent, then created), the existing doc read, the commit, the PR lookup,
-# the PR. Mirrors `_first_create_answers()`'s single-op shape, but with the
-# doc PRESENT (retire needs to read/rewrite it, unlike create).
+# `_retire_answers()` there is no reparent op first. That commit's OWN
+# internal `ensure_branch` now finds the ref `merge()` already created (a
+# single GET, no second create), then the existing doc read, the commit, the
+# PR lookup, the PR (this is still the branch's first REAL content commit).
 def _merge_answers() -> list:
-    return [_404, _ref("base1"), _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"),
+    return [_404, _ref("base1"), _404, _created("base1"),
+            _ref("base1"), _contents(CHILD_DOC), _commit("c1"),
             _NO_PR, _pr()]
+
+
+# The scripted answers merging `dictation` into `sessions` where `dictation`
+# has TWO outgoing FeatureLink rows: one to `third-cap` (must repoint onto
+# `sessions`' own doc) and one DIRECTLY to `sessions` (must be dropped, not
+# turned into a self-link). `dictation` has no children. Sequence: the
+# branch-doc probe, the base head, the explicit `ensure_branch` (has to exist
+# before any doc can be read off it), `_current_doc(sessions)` (read the
+# target's current links before merging in the repointed ones), the
+# `op=links` commit for `sessions` (opens the branch's first REAL commit —
+# the PR too), the `op=links` commit clearing `dictation`'s own list, and
+# finally the `op=retire` commit for `dictation`.
+def _merge_outgoing_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(ROOT_DOC),                                        # _current_doc(sessions)
+        _ref("base1"), _contents(ROOT_DOC), _commit("c1"), _NO_PR, _pr(),   # op=links sessions
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=links dictation (clear)
+        _ref("c2"), _contents(CHILD_DOC), _commit("c3"),             # op=retire dictation
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` where `fourth-cap`
+# (same project) already links TO `dictation` — the incoming-link repoint
+# case. `dictation` has no outgoing links and no children, so there is no
+# `sessions`-doc commit at all here, only `fourth-cap`'s and the retire.
+def _merge_incoming_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(FOURTH_DOC_LINKING_TO_DICTATION),                  # _current_doc(fourth-cap)
+        _ref("base1"), _contents(FOURTH_DOC_LINKING_TO_DICTATION), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=retire dictation
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` where `sessions`
+# itself (== into_slug) already links DIRECTLY to `dictation` — the incoming
+# SELF-link case: repointing it naively would write `sessions -> sessions`
+# into sessions' own doc; it must be dropped instead. `dictation` has no
+# outgoing links and no children.
+def _merge_incoming_self_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(SESSIONS_DOC_LINKING_TO_DICTATION),                # _current_doc(sessions)
+        _ref("base1"), _contents(SESSIONS_DOC_LINKING_TO_DICTATION), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=retire dictation
+    ]
 
 
 # -- fixtures -----------------------------------------------------------------
@@ -530,6 +583,22 @@ def _stub_pm_sync(orch, gh, main_docs: dict[str, str]) -> None:
 ROOT_DOC = "---\nslug: sessions\ntitle: Sessions\nstate: live\n---\n# Sessions\n"
 CHILD_DOC = ("---\nslug: dictation\ntitle: Dictation\nstate: live\nparent: sessions\n"
              "---\n# Dictation\n")
+# A third, unrelated capability — the `merge()` FeatureLink-repoint tests'
+# outgoing-link target. No links of its own.
+THIRD_DOC = "---\nslug: third-cap\ntitle: Third\nstate: live\n---\n# Third\n"
+# A fourth capability that already links TO `dictation` — the incoming-link
+# repoint case.
+FOURTH_DOC_LINKING_TO_DICTATION = (
+    "---\nslug: fourth-cap\ntitle: Fourth\nstate: live\n"
+    "links:\n  - kind: integrates_with\n    project: example-product\n    feature: dictation\n"
+    "---\n# Fourth\n")
+# `sessions` (the merge TARGET) already linking DIRECTLY to `dictation` (the
+# merge SOURCE) — the incoming self-link case: repointing this naively would
+# write `sessions -> sessions` into sessions' own doc.
+SESSIONS_DOC_LINKING_TO_DICTATION = (
+    "---\nslug: sessions\ntitle: Sessions\nstate: live\n"
+    "links:\n  - kind: powered_by\n    project: example-product\n    feature: dictation\n"
+    "---\n# Sessions\n")
 
 
 # -- tests --------------------------------------------------------------------
@@ -1348,8 +1417,8 @@ def test_merge_repoints_work_items_and_initiatives_and_retires_the_source():
 
         assert _audits(c, "pm.map_changes.merge") == [{
             "slug": SLUG, "from": "dictation", "into": "sessions",
-            "workItems": 1, "initiatives": 1, "links": 0, "childrenReparented": 0,
-            "commitSha": "c1", "prNumber": 12}]
+            "workItems": 1, "initiatives": 1, "linksRepointed": 0, "linksNotRepointed": 0,
+            "childrenReparented": 0, "commitSha": "c1", "prNumber": 12}]
 
 
 def test_merge_dedupes_an_initiative_classified_onto_both_ends():
@@ -1398,94 +1467,160 @@ def test_merge_dedupes_an_initiative_classified_onto_both_ends():
 
         assert _audits(c, "pm.map_changes.merge") == [{
             "slug": SLUG, "from": "dictation", "into": "sessions",
-            "workItems": 0, "initiatives": 1, "links": 0, "childrenReparented": 0,
-            "commitSha": "c1", "prNumber": 12}]
+            "workItems": 0, "initiatives": 1, "linksRepointed": 0, "linksNotRepointed": 0,
+            "childrenReparented": 0, "commitSha": "c1", "prNumber": 12}]
 
 
-def test_merge_service_dedupes_feature_links_and_drops_a_direct_src_dst_link():
-    """`merge()`'s `FeatureLink` dedup loop (both `src_feature_id`/
-    `dst_feature_id` directions, plus the direct-src-dst self-link case) is
-    hand-traced against `uq_feature_link` in `server/db/models.py` but was
-    never exercised: the seed fixture gives `dictation` zero `FeatureLink`
-    rows, so the existing merge tests never reach the dedup branches.
+def test_merge_repoints_outgoing_links_and_drops_a_direct_link_to_the_target():
+    """`FeatureLink` is entirely doc-derived: `_pm_sync_apply_feature_plan`
+    (which `merge()`'s own `_resync_now` call triggers, inside the SAME
+    request, before the response returns) DELETES AND REBUILDS every outgoing
+    edge of every project Feature from doc frontmatter on every resync. A
+    merge that only repointed the `FeatureLink` TABLE would have its repoint
+    silently reverted by that very resync before the caller ever saw a
+    response — this is a real bug a prior round of this task shipped and a
+    deeper review caught. `merge()` now repoints via doc-level `op="links"`
+    commits instead, which DO survive the resync (they're what the resync
+    reads from).
 
-    This uses a BARE `MapChangesService` (no sync seams wired, like
-    `server/tests/test_map_update_background.py`'s pattern) rather than the
-    full HTTP+`_seeded` path, because `_resync_now` — when wired, as it is
-    behind the API — commits to a real `_apply_feature_plan`
-    (`SessionOrchestrator._pm_sync_apply_feature_plan`) that DELETES AND
-    REBUILDS every outgoing `FeatureLink` of every one of the project's
-    Features from doc frontmatter on every resync (see its docstring: "Links
-    are REWRITTEN each apply"). Going through the full pipeline, as the other
-    merge tests do, would silently wipe whatever `merge()`'s own dedup SQL did
-    to `feature_links` and mask a bug in it — a bare service with
-    `_resync_now` a no-op is the only way to observe `merge()`'s own mutation
-    directly."""
-    from sqlalchemy import select
+    This goes through the REAL `_seeded`/HTTP path — not a bare service that
+    skips `_resync_now` — specifically to prove the repoint survives it.
 
-    from server.db import db_session, init_db
-    from server.db.models import Feature, FeatureLink, Project, ProjectRepo
-    from server.pm.map_changes import MapChangesService
-    from server.pm.map_changes_gh import GhWrite
-    from server.tests.test_pm_map_changes_gh import PAT_ENV
+    Also covers the direct-link case: `dictation` links straight to
+    `sessions` (the merge target) in addition to `third-cap` — repointing
+    that naively would write a self-link (`sessions -> sessions`); it must be
+    dropped instead."""
+    gh = FakeGh(_merge_outgoing_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/third-cap.md": THIRD_DOC})
 
-    async def _master(_repo: str) -> str:
-        return "master"
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
 
-    async def _go() -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-            await init_db(db_url)
-            async with db_session() as db:
-                proj = Project(slug=SLUG, name="Example product")
-                db.add(proj)
-                await db.flush()
-                db.add(ProjectRepo(project_id=proj.id, repo=REPO, is_primary=True))
-                dictation = Feature(project_id=proj.id, slug="dictation",
-                                    title="Dictation", state="live")
-                sessions_cap = Feature(project_id=proj.id, slug="sessions",
-                                       title="Sessions", state="live")
-                third = Feature(project_id=proj.id, slug="third-cap",
-                                title="Third", state="live")
-                db.add_all([dictation, sessions_cap, third])
-                await db.flush()
-                # Becomes a duplicate once dictation's side repoints to
-                # sessions: both already link to `third` the same way.
-                db.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
-                                   kind="integrates_with"))
-                db.add(FeatureLink(src_feature_id=sessions_cap.id, dst_feature_id=third.id,
-                                   kind="integrates_with"))
-                # A DIRECT link between src and dst — repointing naively would
-                # create a self-link (sessions -> sessions).
-                db.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=sessions_cap.id,
-                                   kind="powered_by"))
-                sessions_id, third_id = sessions_cap.id, third.id
+        from server.db.models import Feature, FeatureLink, Project
 
-            gh = FakeGh(_merge_answers())
-            service = MapChangesService(
-                gh_factory=lambda repo: GhWrite(
-                    repo, run=gh, app_token=lambda owner: "app-tok", env=PAT_ENV),
-                default_branch=_master)
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            third = Feature(project_id=proj.id, slug="third-cap", title="Third", state="live")
+            s.add(third)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
+                              kind="integrates_with"))
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=sessions_cap.id,
+                              kind="powered_by"))
+            s.commit()
+            dictation_id, sessions_id, third_id = dictation.id, sessions_cap.id, third.id
 
-            async with db_session() as db:
-                proj_row = (await db.execute(
-                    select(Project).where(Project.slug == SLUG))).scalars().one()
-                await service.merge(db, proj_row, "dictation", "sessions", "tester@example.com")
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pointer"]["status"] == "open"
+        assert body["linksRepointed"] == 2
+        assert body["linksNotRepointed"] == 0
 
-            async with db_session() as db:
-                # Exactly one surviving (sessions, third, integrates_with)
-                # link — the would-be duplicate was dropped, not doubled.
-                links = (await db.execute(select(FeatureLink).where(
-                    FeatureLink.src_feature_id == sessions_id,
-                    FeatureLink.dst_feature_id == third_id,
-                    FeatureLink.kind == "integrates_with"))).scalars().all()
-                assert len(links) == 1
-                # The direct dictation<->sessions link is gone entirely —
-                # never turned into a self-link.
-                assert (await db.execute(select(FeatureLink).where(
-                    FeatureLink.src_feature_id == sessions_id,
-                    FeatureLink.dst_feature_id == sessions_id))).first() is None
-                assert (await db.execute(select(FeatureLink).where(
-                    FeatureLink.kind == "powered_by"))).first() is None
+        with Session() as s:
+            # The repoint survived `_resync_now`, which already ran inside
+            # this same request — the exact bug this test guards against.
+            survivors = s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=third_id,
+                kind="integrates_with").all()
+            assert len(survivors) == 1
+            assert s.query(FeatureLink).filter_by(src_feature_id=dictation_id).all() == []
+            # Never turned into a self-link.
+            assert s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=sessions_id).all() == []
 
-    asyncio.run(_go())
+
+def test_merge_repoints_a_same_project_incoming_link():
+    """The incoming-link half of the same bug: `fourth-cap` (same project)
+    already links TO `dictation` — after merging `dictation` into `sessions`,
+    `fourth-cap` must link to `sessions` instead, and that repoint (a doc-level
+    `op="links"` commit on `fourth-cap`'s own doc) must survive `_resync_now`
+    the same way the outgoing case does. Real `_seeded`/HTTP path, not a bare
+    service."""
+    gh = FakeGh(_merge_incoming_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/fourth-cap.md": FOURTH_DOC_LINKING_TO_DICTATION})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            fourth = Feature(project_id=proj.id, slug="fourth-cap", title="Fourth", state="live")
+            s.add(fourth)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=fourth.id, dst_feature_id=dictation.id,
+                              kind="integrates_with"))
+            s.commit()
+            fourth_id, dictation_id = fourth.id, dictation.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
+        assert body["linksNotRepointed"] == 0
+
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            survivors = s.query(FeatureLink).filter_by(
+                src_feature_id=fourth_id, dst_feature_id=sessions_cap.id,
+                kind="integrates_with").all()
+            assert len(survivors) == 1
+            assert s.query(FeatureLink).filter_by(dst_feature_id=dictation_id).all() == []
+
+
+def test_merge_drops_a_direct_incoming_link_from_the_target_instead_of_self_linking():
+    """The incoming SELF-link case: `sessions` (the merge TARGET) already
+    links DIRECTLY to `dictation` (the merge SOURCE) — repointing that ref
+    naively would write `sessions -> sessions` into sessions' own doc. It
+    must be dropped instead, and — same guard as the other two merge-link
+    tests — that has to be verified through the real resync, not a bare
+    service."""
+    gh = FakeGh(_merge_incoming_self_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": SESSIONS_DOC_LINKING_TO_DICTATION,
+            f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            s.add(FeatureLink(src_feature_id=sessions_cap.id, dst_feature_id=dictation.id,
+                              kind="powered_by"))
+            s.commit()
+            sessions_id = sessions_cap.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
+        assert body["linksNotRepointed"] == 0
+
+        with Session() as s:
+            # Dropped, not turned into a self-link.
+            assert s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=sessions_id).all() == []
+            assert s.query(FeatureLink).filter_by(kind="powered_by").all() == []
