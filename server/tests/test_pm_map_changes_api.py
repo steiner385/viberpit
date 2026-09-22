@@ -114,6 +114,23 @@ def _first_create_answers() -> list:
     return [_404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _NO_PR, _pr()]
 
 
+# The scripted answers retiring `sessions` (one live child, `dictation`)
+# produces: the branch-doc probe, the base head, then one `_commit_and_track`
+# per op. `dictation` is reparented FIRST (children before the capability
+# itself) — its commit is also the branch's first, so it opens the branch and
+# the PR too. The `retire` commit on `sessions` follows on the now-existing
+# branch, so its `ensure_branch` finds the ref directly (no create) and no PR
+# call is made (the pointer from the first commit is already tracked).
+def _retire_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        # reparent dictation → sessions' parent (None, sessions is root)
+        _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"), _NO_PR, _pr(),
+        # retire sessions itself
+        _ref("c1"), _contents(ROOT_DOC), _commit("c2"),
+    ]
+
+
 # -- fixtures -----------------------------------------------------------------
 
 
@@ -191,7 +208,12 @@ def _client(db_url: str, gh):
                 # Belt and braces: the lifespan has just registered the real
                 # owner-token provider on the process-global `gitrepos` seam.
                 gitrepos.set_token_provider(None)
-                yield c
+                # `db_url` and `orch` (the real SessionOrchestrator, not the
+                # facade `app.state.sessions` may wrap) are yielded alongside
+                # `c` for tests that need a synchronous verification session
+                # or that stub an orchestrator seam directly (e.g. pm-sync's
+                # doc-read seam ahead of an inline resync).
+                yield c, db_url, orch
         finally:
             gitrepos.set_token_provider(None)
             for k, v in saved.items():
@@ -421,17 +443,26 @@ async def _loop_thread() -> threading.Thread:
 
 @contextmanager
 def _seeded(gh):
+    """Yields ``(c, db_url, orch)`` — see ``_client``. Most call sites only
+    need ``c``; unpack all three and ignore what you don't use (``F841`` is
+    ignored for test modules)."""
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         _seed(db_url)
-        with _client(db_url, gh) as c:
-            yield c
+        with _client(db_url, gh) as (c, url, orch):
+            yield c, url, orch
 
 
 def _edit(c, project: str = SLUG, **body):
     """POST one edit. The project slug is positional so ``slug=`` stays free for
     the body's capability slug."""
     return c.post(f"/api/pm/projects/{project}/map-changes", json=body,
+                  headers=IDENTITY_HEADERS)
+
+
+def _retire(c, project: str = SLUG, *, slug: str):
+    """POST one retire. Mirrors ``_edit``'s convention for the sibling route."""
+    return c.post(f"/api/pm/projects/{project}/map-changes/retire", json={"slug": slug},
                   headers=IDENTITY_HEADERS)
 
 
@@ -442,12 +473,51 @@ def _committed(gh, index: int = -1) -> str:
     return base64.b64decode(added["contents"]).decode()
 
 
+def _all_committed(gh) -> list[tuple[str, str]]:
+    """(path, text) for every recorded GraphQL commit, in call order — the
+    generalization of `_committed()` (above) over the whole call history
+    instead of one index."""
+    out: list[tuple[str, str]] = []
+    for args, _token, stdin in gh.calls:
+        if args[:2] != ["api", "graphql"] or not stdin:
+            continue
+        try:
+            payload = json.loads(stdin)
+            added = payload["variables"]["input"]["fileChanges"]["additions"][0]
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        out.append((added["path"], base64.b64decode(added["contents"]).decode()))
+    return out
+
+
+def _stub_pm_sync(orch, gh, main_docs: dict[str, str]) -> None:
+    """Point the orchestrator's pm-sync doc-read seam at fixture text instead
+    of a real git clone: `ref=None` (default branch) returns *main_docs*
+    verbatim; any other ref (the map-changes branch) overlays every doc this
+    FakeGh has actually committed so far on top of *main_docs*, keyed by path
+    — so `_resync_now` sees exactly what the SUT under test wrote, not a
+    hand-maintained guess."""
+    from server.pm.feature_index import FeatureDocsRead
+
+    async def _fake_read(repo: str, ref: str | None = None):
+        docs = dict(main_docs)
+        if ref is not None:
+            docs.update(_all_committed(gh))
+        return FeatureDocsRead(sha="fake-sha", docs=list(docs.items()))
+    orch._pm_sync_read_feature_docs = _fake_read
+
+
+ROOT_DOC = "---\nslug: sessions\ntitle: Sessions\nstate: live\n---\n# Sessions\n"
+CHILD_DOC = ("---\nslug: dictation\ntitle: Dictation\nstate: live\nparent: sessions\n"
+             "---\n# Dictation\n")
+
+
 # -- tests --------------------------------------------------------------------
 
 
 def test_create_opens_the_branch_the_pr_and_the_pointer_row():
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments", summary="Take money.")
         assert r.status_code == 200, r.text
         body = r.json()
@@ -500,7 +570,7 @@ def test_second_edit_reuses_the_pointer_and_sees_the_branch_only_capability():
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
         _ref("base1"), _ref("c0"), _404, _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = _edit(c, op="create", slug="billing", title="Billing", parentSlug="payments")
@@ -528,7 +598,7 @@ def test_a_branch_only_capability_is_a_valid_link_target():
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
         _ref("base1"), _ref("c0"), _contents(_doc("sessions", "Sessions")), _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         r = _edit(c, op="links", slug="sessions",
                   links=[{"kind": "powered_by", "project": SLUG, "feature": "payments"}])
@@ -539,7 +609,7 @@ def test_a_branch_only_capability_is_a_valid_link_target():
 
 def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
     gh = FakeGh([_404, *_first_create_answers()])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="rename", slug="nope", title="Nope")
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "not_found"
@@ -568,7 +638,7 @@ def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
 
 def test_a_project_slug_that_is_not_branch_safe_is_422_before_any_github_call():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, UNSAFE_SLUG, op="create", slug="payments", title="Payments")
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "bad_slug"
@@ -579,7 +649,7 @@ def test_delete_on_a_project_slug_that_is_not_branch_safe_is_422_not_500():
     # `_adopt_stranded` derives the branch through `map_changes_branch_name`, so
     # the DELETE route must map MapOpError like the edit route does.
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{UNSAFE_SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "bad_slug"
@@ -591,7 +661,7 @@ def test_create_of_an_existing_branch_doc_is_slug_taken_and_names_the_branch():
         *_first_create_answers(),
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         r = _edit(c, op="create", slug="payments", title="Payments again")
         assert r.status_code == 422, r.text
@@ -614,7 +684,7 @@ def test_a_moved_head_re_reads_the_doc_and_re_applies_the_op():
         _ref("moved"), _contents(v2),             # re-read BOTH, re-apply
         _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = _edit(c, op="summary", slug="payments", summary="New summary.")
@@ -636,7 +706,7 @@ def test_a_head_that_moves_twice_is_409_conflict():
         _404, _ref("base1"), _404, _created("base1"), _404,
         _STALE, _ref("moved"), _404, _STALE,
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["error"] == "conflict"
@@ -646,7 +716,7 @@ def test_a_head_that_moves_twice_is_409_conflict():
 
 def test_a_github_failure_is_502_with_the_step():
     gh = FakeGh([_404, ("", 1, "HTTP 502: Bad Gateway")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"]["error"] == "github"
@@ -663,7 +733,7 @@ def test_a_gh_timeout_is_502_not_a_500():
             raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
 
     gh = _TimeoutGh()
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"] == {
@@ -678,7 +748,7 @@ def test_these_tests_never_mint_a_real_github_token():
     and the App-token provider is the injected one, not ``app_token_for_repo``
     (which reads the App's private key, signs a JWT and calls api.github.com)."""
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         orch = getattr(c.app.state.sessions, "_orch", c.app.state.sessions)
         assert orch._gh_token_provider("o/r") is None
         assert orch._gh_env == {}
@@ -703,7 +773,7 @@ def test_the_github_client_is_built_off_the_event_loop():
         built.append(threading.current_thread())
         return real(*a, **k)
 
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         with patch.object(gh_mod, "GhWrite", _record):
             assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         loop_thread = c.portal.call(_loop_thread)
@@ -727,7 +797,7 @@ def test_a_pr_that_failed_to_record_is_adopted_not_reopened():
         _ref("base1"), _ref("c0"), _contents(doc), _commit("c1"),
         _pr_list(), _pr(mergeable_state="behind"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"]["step"] == "pr"
@@ -762,7 +832,7 @@ def test_an_open_pr_without_a_row_is_adopted_and_read_for_its_state():
         _ref("base1"), _ref("c0"), _404, _commit("c1"),
         _pr_list(number=12), _pr(number=12, mergeable_state="behind"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["prNumber"] == 12
@@ -784,7 +854,7 @@ def test_the_newest_open_row_is_the_products_pointer():
     from server.pm.map_changes import open_pointer_row, open_pointer_rows
 
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         old = datetime(2026, 9, 1, tzinfo=timezone.utc)
         new = datetime(2026, 9, 10, tzinfo=timezone.utc)
         _seed_pointer(c, pr_number=11, head_sha="old", opened_at=old)
@@ -827,7 +897,7 @@ def test_a_nameless_product_titles_the_pr_with_its_slug():
     """``project.name`` is nullable, and an f-string over it titles the PR
     "Capability map changes: None"."""
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, NAMELESS_SLUG, op="create", slug="payments", title="Payments")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["branch"] == NAMELESS_BRANCH
@@ -846,7 +916,7 @@ def test_a_pointer_that_appeared_mid_edit_is_reused_not_duplicated():
         _ref("c0"), _EMPTY_LIST,   # the branch exists, with no docs on it yet
         _ref("base1"), _ref("c0"), _404, _commit("c1"), _pr_list(), _pr(),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _seed_pointer(c)                       # the racing writer's row
         real = mc.open_pointer_row
         seen = {"n": 0}
@@ -870,7 +940,7 @@ def test_delete_without_a_pointer_a_branch_or_a_pr_is_404():
         _404,          # GET git/ref/heads/<branch> — no branch
         _EMPTY_LIST,   # GET pulls?head=… — no PR either
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
@@ -885,7 +955,7 @@ def test_delete_adopts_a_stranded_pr_and_abandons_it():
         _OK,                           # PATCH pulls/12 state=closed
         _OK,                           # DELETE git/refs/heads/<branch>
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _seed_proposed_capabilities(c)
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
@@ -911,7 +981,7 @@ def test_delete_deletes_a_stranded_branch_that_never_got_a_pr():
         _EMPTY_LIST,    # …but no PR was ever opened
         _OK,            # DELETE git/refs/heads/<branch>
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["status"] == "abandoned"
@@ -933,7 +1003,7 @@ def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
         _OK,  # DELETE git/refs/heads/<branch>
         _404, _EMPTY_LIST,  # the second abandon: neither branch nor PR is left
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
@@ -975,7 +1045,7 @@ def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
         (json.dumps({"status": "ahead", "base_commit": {"sha": "b" * 40},
                      "merge_base_commit": {"sha": "b" * 40}}), 0, ""),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
 
@@ -1000,7 +1070,7 @@ def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
 
 def test_rebase_without_a_pointer_is_404():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.post(f"/api/pm/projects/{SLUG}/map-changes/rebase", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
@@ -1012,7 +1082,7 @@ def test_rebase_without_a_pointer_is_404():
 def test_refresh_reads_the_pr_and_records_behind_and_conflicting():
     gh = FakeGh([*_first_create_answers(),
                  _pr(mergeable_state="behind"), _pr(mergeable_state="dirty")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
 
@@ -1029,7 +1099,7 @@ def test_refresh_reads_the_pr_and_records_behind_and_conflicting():
 
 def test_refresh_marks_a_merged_pr_merged():
     gh = FakeGh([*_first_create_answers(), _pr_closed(merged=True)])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
         _refresh(c)
@@ -1052,7 +1122,7 @@ def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
     """A PR closed on GitHub rather than through the UI reaches the same end
     state (R8b-7): the never-merged proposals must not linger forever."""
     gh = FakeGh([*_first_create_answers(), _pr_closed(merged=False)])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
         _refresh(c)
@@ -1070,7 +1140,7 @@ def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
 
 def test_a_failed_pr_read_records_last_error_and_leaves_the_status():
     gh = FakeGh([*_first_create_answers(), ("", 1, "HTTP 502: Bad Gateway")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _refresh(c)
         row = _pointer_row(c)
@@ -1099,7 +1169,7 @@ def test_a_hung_gh_during_a_pr_read_does_not_abandon_the_pr():
             raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
 
     gh = _HangAfter(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _refresh(c)
         row = _pointer_row(c)
@@ -1109,7 +1179,7 @@ def test_a_hung_gh_during_a_pr_read_does_not_abandon_the_pr():
 
 def test_refresh_without_an_open_pointer_makes_no_github_call():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _refresh(c)
         assert gh.calls == []
 
@@ -1119,7 +1189,7 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
     on it is deleted — unless something references it, which is orphaned instead
     so no FK (a work item's ``feature_id``) is left dangling."""
     gh = FakeGh([*_first_create_answers(), _OK, _OK])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
 
@@ -1137,3 +1207,60 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
         assert "payments-child" in feats
         assert _dangling_fks(c) == {"parent_feature_id": None,
                                     "proposed_feature_id": None}
+
+
+# -- retire (capability-management spec) --------------------------------------
+
+
+def test_retire_refuses_with_live_dependents():
+    gh = FakeGh([])
+    with _seeded(gh) as (c, db_url, orch):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Initiative, InitiativeFeature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            init = Initiative(slug="init-a", title="Init A")
+            s.add(init)
+            s.flush()
+            s.add(InitiativeFeature(initiative_id=init.id, feature_id=dictation.id, is_primary=True))
+            s.commit()
+
+        r = _retire(c, slug="dictation")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "has_dependents"
+        # The guard is a pure DB check before any GitHub call.
+        assert gh.calls == []
+
+
+def test_retire_reparents_children_and_syncs_the_db_inline():
+    gh = FakeGh(_retire_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+        r = _retire(c, slug="sessions")
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["prNumber"] == 12
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            sessions_row = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            dictation_row = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            assert sessions_row.state == "sunset"
+            assert dictation_row.parent_feature_id is None  # reparented to root (the grandparent)
+
+        assert _audits(c, "pm.map_changes.retire") == [{
+            "slug": SLUG, "capability": "sessions", "childrenReparented": 1,
+            "commitSha": "c2", "prNumber": 12}]

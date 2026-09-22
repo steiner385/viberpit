@@ -298,6 +298,25 @@ class MapChangesService:
                 f"product '{project.slug}' has no primary repo to write capability docs to")
         return row.repo
 
+    async def _feature_by_slug(self, db, project: Project, slug: str) -> Feature | None:
+        return (await db.execute(select(Feature).where(
+            Feature.project_id == project.id, Feature.slug == slug,
+            Feature.orphaned.isnot(True)))).scalars().first()
+
+    async def _guard_no_dependents(self, db, target: Feature, slug: str) -> None:
+        """Refuse to retire/fold away a capability that initiatives or issues
+        are still classified onto — the caller re-maps them first (or uses
+        ``merge``, which re-points them automatically)."""
+        has_work_item = (await db.execute(select(WorkItem.id).where(
+            WorkItem.feature_id == target.id).limit(1))).first() is not None
+        has_initiative = (await db.execute(select(InitiativeFeature.id).where(
+            InitiativeFeature.feature_id == target.id).limit(1))).first() is not None
+        if has_work_item or has_initiative:
+            raise MapOpError(
+                "has_dependents",
+                f"capability '{slug}' still has initiatives or issues mapped to it; "
+                "re-map them first, or use merge")
+
     def _read_branch_docs(self, gh: GhWrite, branch: str) -> list[FeatureDoc]:
         """Every parseable feature doc on the branch. Unparseable ones are
         skipped: a human commit on the branch must not break validation."""
@@ -510,6 +529,59 @@ class MapChangesService:
             detail={"slug": project.slug, "op": op.op, "capability": op.slug,
                     "path": path, "commitSha": sha, "prNumber": pointer.pr_number})
         return Pointer.from_row(pointer), path, sha
+
+    async def retire(self, db, project: Project, slug: str, identity: str) -> Pointer:
+        """Retire a capability: refuse while it still has WorkItem/
+        InitiativeFeature dependents, auto-reparent its live children to its
+        own parent, commit ``retire`` (state=sunset) for the capability
+        itself, then resync this product inline so the tree and state are
+        consistent before returning."""
+        target = await self._feature_by_slug(db, project, slug)
+        if target is None:
+            raise MapOpError("not_found", f"capability '{slug}' does not exist")
+        await self._guard_no_dependents(db, target, slug)
+        children = (await db.execute(select(Feature).where(
+            Feature.parent_feature_id == target.id,
+            Feature.orphaned.isnot(True)))).scalars().all()
+
+        branch = map_changes_branch_name(project.slug or "")
+        repo = await self._primary_repo(db, project)
+        gh = await asyncio.to_thread(self._gh_factory, repo)
+        pointer = await self.open_pointer(db, project)
+        docs = await self.branch_docs(gh, branch, pointer=pointer)
+        ctx = await self.context(db, project, docs)
+        grandparent_slug = ctx.parents.get(target.slug or "")
+        validate_op(MapOp(op="retire", slug=slug), ctx)
+
+        base = await self._default_branch(repo)
+        base_sha = await asyncio.to_thread(gh.default_branch_head, base)
+        reparented = 0
+        for child in children:
+            validate_op(MapOp(op="reparent", slug=child.slug, parent_slug=grandparent_slug), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="reparent", slug=child.slug, parent_slug=grandparent_slug))
+            reparented += 1
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer,
+            MapOp(op="retire", slug=slug))
+
+        # `_resync_now`'s list/apply seams open their own DB session (a
+        # second connection) and write to it. On SQLite that second writer
+        # deadlocks against this request's still-open transaction (which has
+        # flushed, not committed, the pointer row above) for the full
+        # `busy_timeout` and then fails outright — so the pending writes here
+        # must be committed first to release the write lock before resync's
+        # own connection needs it. `expire_on_commit=False` (server/db)
+        # means `pointer` stays usable afterward without a reload.
+        await db.commit()
+        await self._resync_now(db, project)
+        await record_audit(
+            db=db, type="pm.map_changes.retire", identity=identity,
+            detail={"slug": project.slug, "capability": slug,
+                    "childrenReparented": reparented, "commitSha": sha,
+                    "prNumber": pointer.pr_number})
+        return Pointer.from_row(pointer)
 
     async def refresh(
         self, db, project: Project, gh: GhWrite | None = None,

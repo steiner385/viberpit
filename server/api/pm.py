@@ -1141,6 +1141,30 @@ async def map_changes_edit(
     return {"pointer": pointer.to_dict(), "path": path, "commitSha": sha}
 
 
+class MapChangesRetireBody(BaseModel):
+    slug: str
+
+
+@router.post("/projects/{slug}/map-changes/retire", status_code=status.HTTP_200_OK)
+async def map_changes_retire(
+    slug: str,
+    body: MapChangesRetireBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Retire a capability (capability-management spec). Refuses (422
+    ``has_dependents``) while it still has initiative/issue dependents;
+    auto-reparents live children to its own parent."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        pointer = await svc.retire(db, p, body.slug, identity)
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return {"pointer": pointer.to_dict()}
+
+
 @router.delete("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)
 async def map_changes_abandon(
     slug: str,
