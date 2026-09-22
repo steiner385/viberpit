@@ -175,3 +175,84 @@ async def test_effective_coverage_uses_live_policy_and_schedule(doctor, ownershi
         await db.commit()
     doctor._pr_doctor_ctx.launch_plan_or_refuse = AsyncMock(return_value=None if case == "engine" else ("claude", {}))
     assert await doctor._backlog_pr_doctor_active("o/r") is (case == "ready")
+
+
+async def _finished_runner_closeout(ownership_db, issues, *, owner="backlog-runner",
+                                    finished=True, runner_target="o/r#1"):
+    """A Backlog Runner ``terminal-closeout`` operation left in phase
+    ``completed`` (the merged-PR close-out escalated to a human), retaining
+    the batch's issue keys with no session attached — the live shape behind
+    cairnea/KinDash#16440/#16465/#16489/#16490/#16492/#16498/#16512/#16538 on
+    2026-09-22. ``finished=False`` leaves a session bound and the op ``active``."""
+    from server.automations.ownership import acquire
+    from server.db.models import AutomationTargetState
+    async with ownership_db() as db:
+        db.add(Automation(id="backlog-runner"))
+        await db.commit()
+    async with acquire(issues, owner=owner, source="terminal-closeout",
+                       reason="merged PR close-out",
+                       provenance={"origin_ref": runner_target,
+                                   "implementation_session_id": "impl-sid"}) as tx:
+        token = tx.token
+        if finished:
+            tx.start_action()
+            tx.complete_action()
+        else:
+            sid = tx.reserve_session()
+            tx.bind_session(sid)
+        state = {"ownership_token": token, "session_id": "impl-sid", "claimed": False,
+                 "gave_up": True, "held": True, "closeout_started": True, "closing_pr": 99,
+                 "issues": [t.display_ref for t in issues], "attempts": 0}
+        tx.db.add(AutomationTargetState(automation_id="backlog-runner", target=runner_target,
+                                        state=state))
+    return token, state
+
+
+@pytest.mark.asyncio
+async def test_claim_adopts_finished_runner_closeout_holding_the_linked_issue(
+        doctor, ownership_db, monkeypatch):
+    """A finished runner close-out has no live actor; it must not orphan the PR
+    that closes its issue. PR Doctor claims the PR by taking the close-out over
+    as a ``runner-handoff`` successor covering PR + issue."""
+    issue, pr = CanonicalTarget("I_1", "o/r#1"), CanonicalTarget("PR_2", "o/r#2")
+    token, runner_state = await _finished_runner_closeout(ownership_db, [issue])
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets",
+                        AsyncMock(return_value=(pr, issue)))
+    state = await doctor._pr_doctor_claim("o/r", [2], "o/r#2")
+    successor = state["ownership_token"]
+    assert successor and successor != token
+    async with ownership_db() as db:
+        op = await db.get(AutomationOperation, successor)
+        assert (op.owner, op.source, op.phase) == ("pr-doctor", "runner-handoff", "claimed")
+        assert set(op.targets) == {issue.key, pr.key}
+        assert op.provenance["runner_target"] == "o/r#1"
+        assert op.provenance["dispatch_claimed"] is True
+        assert op.predecessor_token == token
+        assert (await db.get(AutomationOperation, token)).phase == "transferred"
+    runner_after = await AutomationContext("backlog-runner").get_target_state("o/r#1")
+    assert runner_after["ownership_token"] == successor
+    assert runner_after["handed_off"] is True and runner_after["session_id"] is None
+    assert runner_after["closeout_started"] is True  # the runner stays parked, never re-attributes
+    assert (await doctor._pr_doctor_ctx.get_target_state("o/r#2"))["ownership_token"] == successor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["live_runner_session", "partial_batch", "foreign_owner"])
+async def test_claim_refuses_runner_work_that_is_live_partial_or_foreign(
+        doctor, ownership_db, monkeypatch, case):
+    from server.automations.ownership import OwnershipConflict
+    issue, other, pr = (CanonicalTarget("I_1", "o/r#1"), CanonicalTarget("I_3", "o/r#3"),
+                        CanonicalTarget("PR_2", "o/r#2"))
+    if case == "live_runner_session":
+        token, _ = await _finished_runner_closeout(ownership_db, [issue], finished=False)
+    elif case == "partial_batch":
+        token, _ = await _finished_runner_closeout(ownership_db, [issue, other])
+    else:
+        token, _ = await _finished_runner_closeout(ownership_db, [issue], owner="error-triage")
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets",
+                        AsyncMock(return_value=(pr, issue)))
+    with pytest.raises(OwnershipConflict, match="target already has an operation"):
+        await doctor._pr_doctor_claim("o/r", [2], "o/r#2")
+    async with ownership_db() as db:
+        assert (await db.get(AutomationOperation, token)).phase in ("completed", "active")
+    assert (await AutomationContext("backlog-runner").get_target_state("o/r#1"))["ownership_token"] == token
