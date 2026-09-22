@@ -316,6 +316,8 @@ async def backlog_runner_groups(_identity: str = Depends(current_identity),
     return {
         "generation": rows[0].generation if rows else None,
         "createdAt": rows[0].created_at if rows else None,
+        # Generation-level: the parser fell back to all singletons (#2217).
+        "degraded": bool(rows[0].degraded) if rows else False,
         "groups": [group_view(r) for r in rows],
     }
 

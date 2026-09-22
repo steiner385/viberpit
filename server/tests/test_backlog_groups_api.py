@@ -42,6 +42,23 @@ async def _seed():
     await mark_consumed(plan[0]["id"])
 
 
+async def _seed_degraded():
+    from server.automations.backlog_grouping import store_plan
+    candidates = [{"ref": "o/r#2", "number": 2, "repo": "o/r", "title": "Fix two"}]
+    await store_plan([{"refs": ["o/r#2"], "rationale": None}], candidates, degraded=True)
+
+
+def test_groups_view_carries_the_generations_degraded_flag():
+    """A plan the parser fell back to (all singletons, #2217) must be told apart
+    from a real one on the page, so the flag rides the generation out."""
+    with _client() as c:
+        assert c.portal is not None
+        c.portal.call(_seed)
+        assert c.get("/api/automations/backlog-runner/groups", headers=H).json()["degraded"] is False
+        c.portal.call(_seed_degraded)
+        assert c.get("/api/automations/backlog-runner/groups", headers=H).json()["degraded"] is True
+
+
 def test_groups_shape_priority_order_and_consumed_stamp():
     with _client() as c:
         # Seed on the app's own loop: a bare asyncio.run shares the engine pool
@@ -63,7 +80,7 @@ def test_groups_shape_priority_order_and_consumed_stamp():
 def test_groups_empty_plan_returns_empty_shape():
     with _client() as c:
         body = c.get("/api/automations/backlog-runner/groups", headers=H).json()
-        assert body == {"generation": None, "createdAt": None, "groups": []}
+        assert body == {"generation": None, "createdAt": None, "degraded": False, "groups": []}
 
 
 def test_groups_requires_auth():

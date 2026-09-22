@@ -802,6 +802,10 @@ class BacklogGroup(Base):
     rationale: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str | None] = mapped_column(String, nullable=True)
     consumed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Generation-level, stamped on every row of the generation: True when the
+    # grouping model's reply was unparseable and the plan is the parser's
+    # all-singletons fallback (#2217). NULL on pre-flag generations = False.
+    degraded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class CapacityPlanRow(Base):

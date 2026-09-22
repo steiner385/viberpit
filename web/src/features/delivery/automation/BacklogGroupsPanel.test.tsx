@@ -16,10 +16,16 @@ const baseGroup = (): BacklogGroup => ({
   consumedAt: null,
 })
 let currentGroups = [baseGroup()]
+let currentDegraded = false
 
 vi.mock('@/api/hooks', () => ({
   useBacklogGroups: () => ({
-    data: { generation: 'g1', createdAt: '2026-07-20T10:00:00Z', groups: currentGroups },
+    data: {
+      generation: 'g1',
+      createdAt: '2026-07-20T10:00:00Z',
+      groups: currentGroups,
+      degraded: currentDegraded,
+    },
     isLoading: false,
   }),
   useDispatchBacklogGroup: () => ({ mutateAsync: mutate, isPending: false }),
@@ -33,6 +39,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 describe('BacklogGroupsPanel', () => {
   beforeEach(() => {
     currentGroups = [baseGroup()]
+    currentDegraded = false
     mutate.mockReset()
     mutate.mockResolvedValue({
       status: 'spawned',
@@ -45,6 +52,18 @@ describe('BacklogGroupsPanel', () => {
     render(<BacklogGroupsPanel enabled />)
     expect(screen.getByText(/Fix seven/)).toBeInTheDocument()
     expect(screen.getByText(/Fix eight/)).toBeInTheDocument()
+  })
+
+  it('flags a plan the grouping model could not be parsed for', () => {
+    // #2217: an all-singletons fallback looked exactly like a real plan.
+    currentDegraded = true
+    render(<BacklogGroupsPanel enabled />)
+    expect(screen.getByRole('status')).toHaveTextContent(/could not be parsed/i)
+  })
+
+  it('shows no fallback notice for a real plan', () => {
+    render(<BacklogGroupsPanel enabled />)
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('shows dispatch button for unconsumed groups', () => {

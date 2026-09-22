@@ -102,6 +102,12 @@ export function BacklogGroupsPanel({
           </span>
         )}
       </h4>
+      {data?.degraded && (
+        <p role="status" className="text-xs text-warning mb-2 leading-snug">
+          The grouping model&apos;s reply could not be parsed, so this plan is every
+          issue on its own. It retries at the next refresh.
+        </p>
+      )}
       {error && <p role="alert" className="text-sm text-danger mb-2">{error}</p>}
       <ul className="space-y-2">
         {groups.map((g) => (

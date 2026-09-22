@@ -8,6 +8,8 @@ GitHub call is involved — a real (SQLite) mirror is seeded and read.
 """
 from __future__ import annotations
 
+from server.automations.backlog_grouping import ParsedPlan
+
 import asyncio
 
 from server.db import db_session, init_db
@@ -364,16 +366,16 @@ def test_refresh_groups_groups_the_queue_pool(tmp_path, monkeypatch):
 
         async def _propose(cands, config, _config_dir=None):
             seen["candidates"] = cands
-            return [{"refs": [c["ref"] for c in cands], "repo": "o/r"}]
+            return ParsedPlan(groups=[{"refs": [c["ref"] for c in cands], "repo": "o/r"}])
 
-        async def _store(groups, cands):
+        async def _store(groups, cands, *, degraded=False):
             seen["stored"] = cands
             return len(groups)
 
         monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
         monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
 
-        assert await orch._backlog_refresh_groups(_config()) == 1
+        assert (await orch._backlog_refresh_groups(_config())).groups == 1
         assert [c["ref"] for c in seen["candidates"]] == ["o/r#1"]
 
     asyncio.run(run())
@@ -453,9 +455,9 @@ def test_refresh_groups_keeps_evidence_out_of_the_model_pool(tmp_path, monkeypat
 
         async def _propose(cands, config, _config_dir=None):
             seen["proposed"] = [c["ref"] for c in cands]
-            return [{"refs": [c["ref"] for c in cands], "rationale": "model"}]
+            return ParsedPlan(groups=[{"refs": [c["ref"] for c in cands], "rationale": "model"}])
 
-        async def _store(groups, cands):
+        async def _store(groups, cands, *, degraded=False):
             seen["stored"] = groups
             seen["pool"] = [c["ref"] for c in cands]
             return len(groups)
@@ -463,7 +465,7 @@ def test_refresh_groups_keeps_evidence_out_of_the_model_pool(tmp_path, monkeypat
         monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
         monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
 
-        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 2
+        assert (await orch._backlog_refresh_groups(_config(max_issues_per_pr=2))).groups == 2
         assert seen["proposed"] == [f"{TRIAGE_REPO}#103"]
         assert [g["refs"] for g in seen["stored"]] == [
             [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#102"],
@@ -496,14 +498,14 @@ def test_refresh_groups_stores_an_evidence_only_plan_without_a_model_call(tmp_pa
         async def _propose(cands, config, _config_dir=None):  # pragma: no cover
             raise AssertionError("no model call for an evidence-only pool")
 
-        async def _store(groups, cands):
+        async def _store(groups, cands, *, degraded=False):
             seen["stored"] = groups
             return len(groups)
 
         monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
         monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
 
-        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 1
+        assert (await orch._backlog_refresh_groups(_config(max_issues_per_pr=2))).groups == 1
         assert [g["refs"] for g in seen["stored"]] == [[f"{TRIAGE_REPO}#101"]]
 
     asyncio.run(run())
@@ -534,16 +536,16 @@ def test_refresh_groups_float_an_urgent_group_ahead_of_the_evidence_half(tmp_pat
         seen: dict = {}
 
         async def _propose(cands, config, _config_dir=None):
-            return [{"refs": [c["ref"] for c in cands], "rationale": "model"}]
+            return ParsedPlan(groups=[{"refs": [c["ref"] for c in cands], "rationale": "model"}])
 
-        async def _store(groups, cands):
+        async def _store(groups, cands, *, degraded=False):
             seen["stored"] = groups
             return len(groups)
 
         monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
         monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
 
-        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 2
+        assert (await orch._backlog_refresh_groups(_config(max_issues_per_pr=2))).groups == 2
         assert [g["refs"] for g in seen["stored"]] == [
             [f"{TRIAGE_REPO}#900"],                          # the incident, first
             [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#102"],    # the family, behind it
@@ -575,16 +577,16 @@ def test_refresh_groups_ranks_the_evidence_half_among_the_model_half(tmp_path,
         seen: dict = {}
 
         async def _propose(cands, config, _config_dir=None):
-            return [{"refs": [c["ref"] for c in cands], "rationale": "model"}]
+            return ParsedPlan(groups=[{"refs": [c["ref"] for c in cands], "rationale": "model"}])
 
-        async def _store(groups, cands):
+        async def _store(groups, cands, *, degraded=False):
             seen["stored"] = groups
             return len(groups)
 
         monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
         monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
 
-        assert await orch._backlog_refresh_groups(_config(max_issues_per_pr=2)) == 2
+        assert (await orch._backlog_refresh_groups(_config(max_issues_per_pr=2))).groups == 2
         assert [g["refs"] for g in seen["stored"]] == [
             [f"{TRIAGE_REPO}#103"],                          # the score-9 issue, first
             [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#102"],    # the family, behind it
@@ -614,5 +616,40 @@ def test_query_queue_survives_a_family_lookup_that_raises(tmp_path, monkeypatch)
 
         assert [c["ref"] for c in cands] == [f"{TRIAGE_REPO}#101", f"{TRIAGE_REPO}#103"]
         assert cands[0]["family"] is None
+
+    asyncio.run(run())
+
+
+def test_refresh_groups_carries_a_degraded_reply_to_the_store_and_the_summary(
+        tmp_path, monkeypatch):
+    """An unparseable model reply is stored as a plan (the runner needs SOMETHING
+    to pop) but flagged all the way out — onto the generation, so the page can
+    say so, and into the summary, so the loop emits a warning instead of a
+    routine "refreshed" (#2217)."""
+    async def run():
+        await _init(tmp_path, "groups_degraded.db")
+        await _seed_product("viberpit", "o/r")
+        await _seed_item("o/r", 1, score=5.0)
+        orch = _orch_with_ctx()
+
+        async def _healthy():
+            return None
+        orch._backlog_healthy_account = _healthy
+        seen: dict = {}
+
+        async def _propose(cands, config, _config_dir=None):
+            return ParsedPlan(groups=[{"refs": [c["ref"]], "rationale": None} for c in cands],
+                              degraded=True)
+
+        async def _store(groups, cands, *, degraded=False):
+            seen["degraded"] = degraded
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        summary = await orch._backlog_refresh_groups(_config())
+        assert (summary.groups, summary.degraded) == (1, True)
+        assert seen["degraded"] is True
 
     asyncio.run(run())

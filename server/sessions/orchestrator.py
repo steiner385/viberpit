@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
+    from server.automations.backlog_grouping import RefreshSummary
     from datetime import datetime
 
     from server.assistant.client import AssistantApi
@@ -6487,15 +6488,18 @@ class SessionOrchestrator:
         (daemon-process) gitrepos registry that ``ensure_clone`` populates."""
         return gitrepos.stale_credential_repos()
 
-    async def _backlog_refresh_groups(self, config: dict) -> int:
+    async def _backlog_refresh_groups(self, config: dict) -> "RefreshSummary":
         """The grouping-optimizer seam: recompute + persist the group plan.
 
-        Reads the global priority queue, asks Sonnet (``propose_groups``) to
-        partition it into coherent 1..K groups, and REPLACES the stored plan.
-        An empty backlog stores an empty plan (cheap, no model call). A model
-        failure over a real backlog RAISES instead of storing an empty plan, so
-        the loop backs off a full grouping interval and the runner keeps
-        waiting rather than losing the plan it has.
+        Reads the global priority queue, asks Sonnet (``propose_groups``) which
+        issues bundle into 2..K groups, and REPLACES the stored plan (everything
+        the model leaves out is a singleton). An empty backlog stores an empty
+        plan (cheap, no model call). A model failure over a real backlog RAISES
+        instead of storing an empty plan, so the loop backs off a full grouping
+        interval and the runner keeps waiting rather than losing the plan it
+        has. An UNPARSEABLE reply is different: it is stored as the all-singletons
+        fallback and flagged ``degraded`` on the generation and in the returned
+        summary, so the page and the runner's event both say so (#2217).
 
         The one-shot SDK call needs a config dir — the DAEMON process has no
         ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account (same trick the
@@ -6515,27 +6519,25 @@ class SessionOrchestrator:
         every auto-filed error report ahead of every implement issue. Urgent work
         still leads, floated over the whole plan last."""
         from server.automations.backlog_grouping import (
-            family_groups, float_urgent_first, order_by_pool_rank, propose_groups,
-            store_plan)
+            RefreshSummary, family_groups, float_urgent_first, order_by_pool_rank,
+            propose_groups, store_plan)
         candidates = await self._backlog_query_queue(config)
         if not candidates:
-            return await store_plan([], [])
+            return RefreshSummary(groups=await store_plan([], []))
         evidence, rest = family_groups(
             candidates, max_k=int(config.get("max_issues_per_pr") or 1))
         groups: list[dict] = []
+        degraded = False
         # An evidence-only pool has nothing for the model to partition — asking
-        # would burn a call to be told so, and an empty answer is the shape this
-        # seam treats as a refresh FAILURE.
+        # would burn a call to be told so.
         if rest:
             config_dir = None
             acct = await self._backlog_healthy_account()
             if acct is not None:
                 from ccswitch import paths
                 config_dir = str(paths.account_cfg_dir(acct))
-            groups = await propose_groups(rest, config, _config_dir=config_dir)
-            if not groups:
-                raise RuntimeError(
-                    f"grouping model returned no parseable plan for {len(rest)} candidate(s)")
+            proposed = await propose_groups(rest, config, _config_dir=config_dir)
+            groups, degraded = proposed.groups, proposed.degraded
         # Two orderings, applied in this order and nowhere else. First rank: the
         # concatenation itself must not decide priority (spec §5 dispatches an
         # evidence hold as an ordinary candidate, ranking included), so the halves
@@ -6548,8 +6550,8 @@ class SessionOrchestrator:
             order_by_pool_rank(evidence + groups, candidates), candidates)
         # The WHOLE pool, not ``rest``: ``store_plan`` resolves each stored ref's
         # repo and title through it.
-        await store_plan(plan, candidates)
-        return len(plan)
+        await store_plan(plan, candidates, degraded=degraded)
+        return RefreshSummary(groups=len(plan), degraded=degraded)
 
     async def _backlog_repo_load(self) -> dict[str, int]:
         """Per-repo pipeline pressure, derived from durable target states — the

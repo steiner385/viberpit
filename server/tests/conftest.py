@@ -633,9 +633,9 @@ def _install_no_real_grouping_guard():
     optimizer: ``propose_groups`` is the sole entry to the real SDK on the
     plan-refresh path, and any orchestrator/loop test that walks a refresh
     would otherwise make a REAL Sonnet call. Without an injected ``_query_fn``
-    it returns ``[]`` — production's own model-failure behavior (the refresh
-    seam raises and the loop backs off). Direct grouping tests inject
-    ``_query_fn`` and exercise the real logic."""
+    it raises ``GroupingModelError`` — production's own model-failure behavior
+    (the refresh seam raises and the loop backs off). Direct grouping tests
+    inject ``_query_fn`` and exercise the real logic."""
     import server.automations.backlog_grouping as _bg
 
     _orig = _bg.propose_groups
@@ -644,7 +644,8 @@ def _install_no_real_grouping_guard():
 
     async def _guarded_propose_groups(candidates, config, *, _query_fn=None, **kw):
         if _query_fn is None:
-            return []
+            raise _bg.GroupingModelError(
+                "no real grouping model in tests — inject _query_fn")
         return await _orig(candidates, config, _query_fn=_query_fn, **kw)
 
     _guarded_propose_groups._no_real_model_guard = True

@@ -4,26 +4,34 @@ The runner used to pick and bundle issues INLINE at spawn time: a one-shot
 title-only Haiku ranking whose top-K slice always bundled the maximum
 ``max_issues_per_pr`` issues, related or not. This module replaces that with a
 precomputed GROUP PLAN: a background pass (driven by ``BacklogRunnerLoop``)
-reads the full candidate pool — titles AND bodies — and asks Sonnet to
-partition it into coherent groups of 1..K genuinely-related issues, in
-priority order. Singleton groups are the expected norm; bundling needs
-positive evidence of relatedness.
+reads the full candidate pool — titles AND bodies — and asks Sonnet which
+issues genuinely belong together in groups of 2..K. Singleton groups are the
+expected norm; bundling needs positive evidence of relatedness. The model
+lists ONLY the bundles: every candidate it leaves out is appended as a
+singleton in queue-rank order, so the reply stays a few dozen entries no
+matter how large the pool is. (Asking for a full partition of ~450 issues
+overran the 64k output cap on half of all refreshes, and the truncated reply
+was thrown away — #2217.)
 
 The plan is persisted generation-at-a-time in the ``backlog_groups`` table
 (surfaced read-only via ``GET /api/automations/backlog-runner/groups``); the
 runner's selection path only ever POPS the next still-live group off the plan
 — it never invents a grouping of its own. No plan → the runner waits and the
-loop nudges a refresh, so the old always-max behavior cannot resurface.
+loop nudges a refresh, so the old always-max behavior cannot resurface. An
+UNPARSEABLE reply still yields a plan (all singletons, the safe direction) but
+is flagged ``degraded`` end to end — parser → store → API → runner event — so
+it can never again pass for a real plan.
 """
 from __future__ import annotations
 
 import asyncio
 
 import json
+from dataclasses import dataclass
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Final
 
 from server.sessions.account_auth import helper_env
 from server.sessions.helper_call import helper_cwd
@@ -38,21 +46,31 @@ log = logging.getLogger(__name__)
 # issue can't crowd the rest of the backlog out of the context window.
 _BODY_EXCERPT_CHARS = 800
 
+# Effort for the one-shot grouping call. At the default (high) Sonnet spent
+# 30k–60k of a 64k output budget thinking before the JSON even started, and the
+# reply was cut off mid-list (#2217). A fixed ``budget_tokens`` is NOT honored on
+# Sonnet 5 — verified live 2026-09-22: 31k thinking tokens against a 12k budget
+# — so the lever is adaptive thinking plus effort. On the same 120-issue slice,
+# medium thought ~10k tokens (low: 0) and still found real bundles.
+GROUPING_EFFORT: Final = "medium"
+
 _GROUPING_SYSTEM = (
     "You are a backlog grouping optimizer. You receive the full list of open, "
-    "eligible GitHub issues and partition it into pull-request-sized groups. "
-    "A group holds issues that GENUINELY belong in the same PR: same subsystem "
-    "and a shared change surface, one issue depends on another, or they are "
-    "facets of one underlying defect. Superficial similarity (same component "
-    "name, same label, similar wording) is NOT enough. When in doubt, keep "
-    "issues apart — a singleton group is the normal, expected case. Order "
-    "groups by implementation priority: highest value, lowest risk first."
+    "eligible GitHub issues and find the ones that belong in the same "
+    "pull request. A group holds issues that GENUINELY belong in one PR: same "
+    "subsystem and a shared change surface, one issue depends on another, or "
+    "they are facets of one underlying defect. Superficial similarity (same "
+    "component name, same label, similar wording) is NOT enough. When in doubt, "
+    "keep issues apart — an issue worked on its own is the normal, expected "
+    "case. Only list groups of two or more issues; every issue you leave out is "
+    "worked on its own."
 )
 
 
 def _grouping_prompt(candidates: list[dict], max_k: int) -> str:
     """The user prompt: every candidate (ref, title, body excerpt) plus the
-    strict-JSON output contract."""
+    strict-JSON output contract. Bundles only — singletons are implied, and
+    :func:`parse_group_plan` appends them in queue-rank order."""
     blocks = []
     for c in candidates:
         body = (c.get("body") or "").strip()
@@ -64,33 +82,54 @@ def _grouping_prompt(candidates: list[dict], max_k: int) -> str:
         blocks.append(block)
     issues = "\n\n".join(blocks)
     return (
-        f"Partition ALL of the following issues into groups of 1 to {max_k} "
-        f"issues each. Only put issues in the same group when they genuinely "
-        f"belong in one pull request; singletons are normal. Every issue must "
-        f"appear in exactly one group. Order groups by implementation "
-        f"priority (highest first) and order refs within a group so the "
-        f"primary issue comes first.\n\n"
+        f"From the following issues, list ONLY the groups of 2 to {max_k} "
+        f"issues that genuinely belong in one pull request. Do NOT list single "
+        f"issues: every issue you leave out is worked on its own, and that is "
+        f"the normal case. Order refs within a group so the primary issue comes "
+        f'first. If nothing belongs together, reply {{"groups": []}}.\n\n'
         f"Issues:\n\n{issues}\n\n"
         f'Reply with ONLY this JSON, no code fences, no prose:\n'
-        f'{{"groups": [{{"refs": ["owner/repo#1"], "rationale": "why these '
-        f'belong together (or a one-line priority note for singletons)"}}]}}'
+        f'{{"groups": [{{"refs": ["owner/repo#1", "owner/repo#2"], '
+        f'"rationale": "why these belong together"}}]}}'
     )
 
 
-def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]:
+@dataclass(frozen=True)
+class ParsedPlan:
+    """:func:`parse_group_plan`'s answer. ``degraded`` is True when the model's
+    text was not a plan at all and ``groups`` is the all-singletons fallback —
+    the shape is identical to a real plan, so the flag is the only tell."""
+
+    groups: list[dict]
+    degraded: bool = False
+
+
+@dataclass(frozen=True)
+class RefreshSummary:
+    """What one plan refresh produced, for the runner loop's event: the stored
+    group count and whether the generation is a parser fallback."""
+
+    groups: int
+    degraded: bool = False
+
+
+def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> ParsedPlan:
     """Pure: model text → validated plan ``[{"refs": [...], "rationale": ...}]``.
 
     Enforced invariants (the model is NOT trusted):
     - only known candidate refs survive; unknown refs are dropped;
     - groups are disjoint — a ref's first appearance wins;
     - a group is truncated to ``max_k`` refs; emptied groups vanish;
-    - candidates the model failed to place are appended as singleton groups in
+    - candidates the model did not place are appended as singleton groups in
       the order they arrived — the queue's own ranking — so the plan always
-      covers the whole pool without re-deciding its priority.
+      covers the whole pool without re-deciding its priority. Under the
+      bundle-only contract this is the NORMAL path for most of the pool, and
+      an empty ``groups`` list is a real plan (nothing belongs together).
 
     Unparseable output degrades to the all-singletons plan, still in queue
     order — ungrouped work proceeds one issue at a time rather than mis-bundled,
-    and in the order the queue asked for rather than one invented here.
+    and in the order the queue asked for rather than one invented here — and is
+    flagged ``degraded`` so the caller can say so (#2217).
     """
     by_ref = {c["ref"]: c for c in candidates}
     max_k = max(1, int(max_k))
@@ -104,13 +143,16 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
         first_nl = text.find("\n")
         if first_nl != -1 and text[:first_nl].strip().isalpha():
             text = text[first_nl + 1:]
+    degraded = False
     try:
         payload = json.loads(text)
         raw_groups = payload.get("groups") if isinstance(payload, dict) else payload
         if not isinstance(raw_groups, list):
             raw_groups = []
+            degraded = True
     except (json.JSONDecodeError, AttributeError):
         raw_groups = []
+        degraded = True
 
     for g in raw_groups:
         if not isinstance(g, dict):
@@ -140,7 +182,7 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     for c in (c for c in candidates if c["ref"] not in seen):
         groups.append({"refs": [c["ref"]], "rationale": None})
 
-    return float_urgent_first(groups, candidates)
+    return ParsedPlan(groups=float_urgent_first(groups, candidates), degraded=degraded)
 
 
 def float_urgent_first(groups: list[dict], candidates: list[dict]) -> list[dict]:
@@ -267,19 +309,19 @@ async def propose_groups(
     _query_fn=None,
     _config_dir: str | None = None,
     _cwd: str | None = None,
-) -> list[dict]:
-    """One-shot Sonnet call that partitions *candidates* into a group plan.
+) -> ParsedPlan:
+    """One-shot Sonnet call that finds the bundles in *candidates*.
 
-    Returns the validated plan (see :func:`parse_group_plan`) — ``[]`` when the
-    model answered with nothing parseable — and raises :class:`GroupingModelError`
-    when the model call ITSELF fails, carrying the SDK's message. Either way the
-    caller treats no-plan-with-candidates as a refresh failure and backs off, so
-    a broken SDK never stores an empty plan over a real backlog. Tests inject
-    ``_query_fn``; the conftest guard makes an un-injected call return ``[]`` so
-    no test ever reaches the real model.
+    Returns the validated plan (see :func:`parse_group_plan`), ``degraded`` when
+    the model answered with nothing parseable (logged here, the one place the
+    raw reply is in hand), and raises :class:`GroupingModelError` when the model
+    call ITSELF fails, carrying the SDK's message — the caller treats that as a
+    refresh failure and backs off, so a broken SDK never stores an empty plan
+    over a real backlog. Tests inject ``_query_fn``; the conftest guard makes an
+    un-injected call raise so no test ever reaches the real model.
     """
     if not candidates:
-        return []
+        return ParsedPlan(groups=[])
 
     max_k = max(1, int(config.get("max_issues_per_pr") or 1))
     query_fn = _query_fn or _default_sdk_query_fn()
@@ -296,6 +338,8 @@ async def propose_groups(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
+            thinking={"type": "adaptive"},
+            effort=GROUPING_EFFORT,
             **(await asyncio.to_thread(cli_path_kwargs)),
         )
         text_parts: list[str] = []
@@ -312,17 +356,26 @@ async def propose_groups(
     except Exception as exc:
         log.warning("backlog_grouping: model call failed: %s", exc)
         raise GroupingModelError(str(exc)) from exc
-    return parse_group_plan(raw, candidates, max_k)
+    plan = parse_group_plan(raw, candidates, max_k)
+    if plan.degraded:
+        log.warning(
+            "backlog_grouping: model reply unparseable (%d chars, starts %r) — plan "
+            "degraded to all singletons for %d candidate(s)",
+            len(raw), raw[:80], len(candidates))
+    return plan
 
 
 # --------------------------------------------------------------------------- #
 # Plan persistence (backlog_groups table)                                      #
 # --------------------------------------------------------------------------- #
 
-async def store_plan(groups: list[dict], candidates: list[dict]) -> int:
+async def store_plan(groups: list[dict], candidates: list[dict], *,
+                     degraded: bool = False) -> int:
     """Persist *groups* as the new plan generation, REPLACING the previous one
     wholesale (consumed rows included — claimed issues are out of the candidate
     pool, so the new plan simply doesn't contain them). Returns the group count.
+    ``degraded`` stamps every row of the generation (#2217) so the API can tell
+    a parser fallback from a real plan.
     """
     from sqlalchemy import delete
 
@@ -346,6 +399,7 @@ async def store_plan(groups: list[dict], candidates: list[dict]) -> int:
                         if (t := (by_ref.get(r) or {}).get("title"))},
                 rationale=g.get("rationale"),
                 created_at=now,
+                degraded=degraded,
             ))
         await db.flush()
     return len(groups)

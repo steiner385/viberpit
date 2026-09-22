@@ -42,7 +42,7 @@ def test_parse_valid_plan_preserves_groups_and_order():
         {"refs": ["o/r#9", "o/r#5"], "rationale": "same subsystem"},
         {"refs": ["o/r#2"], "rationale": "standalone"},
     ])
-    plan = parse_group_plan(raw, C, 3)
+    plan = parse_group_plan(raw, C, 3).groups
     assert plan == [
         {"refs": ["o/r#9", "o/r#5"], "rationale": "same subsystem"},
         {"refs": ["o/r#2"], "rationale": "standalone"},
@@ -51,13 +51,13 @@ def test_parse_valid_plan_preserves_groups_and_order():
 
 def test_parse_strips_code_fences():
     raw = "```json\n" + _plan_json([{"refs": ["o/r#2"], "rationale": "r"}]) + "\n```"
-    plan = parse_group_plan(raw, C, 2)
+    plan = parse_group_plan(raw, C, 2).groups
     assert plan[0] == {"refs": ["o/r#2"], "rationale": "r"}
 
 
 def test_parse_drops_unknown_refs():
     raw = _plan_json([{"refs": ["o/x#1", "o/r#5"], "rationale": None}])
-    plan = parse_group_plan(raw, C, 3)
+    plan = parse_group_plan(raw, C, 3).groups
     assert plan[0]["refs"] == ["o/r#5"]
 
 
@@ -66,7 +66,7 @@ def test_parse_groups_are_disjoint_first_wins():
         {"refs": ["o/r#5", "o/r#2"]},
         {"refs": ["o/r#2", "o/r#9"]},  # #2 already placed → dropped here
     ])
-    plan = parse_group_plan(raw, C, 3)
+    plan = parse_group_plan(raw, C, 3).groups
     assert plan[0]["refs"] == ["o/r#5", "o/r#2"]
     assert plan[1]["refs"] == ["o/r#9"]
 
@@ -75,7 +75,7 @@ def test_parse_truncates_oversize_groups_to_max_k():
     """max_issues_per_pr is a HARD CAP the model cannot exceed — the exact
     invariant the old rank-and-slice path inverted into a target."""
     raw = _plan_json([{"refs": ["o/r#2", "o/r#5", "o/r#9"], "rationale": "all"}])
-    plan = parse_group_plan(raw, C, 2)
+    plan = parse_group_plan(raw, C, 2).groups
     assert plan[0]["refs"] == ["o/r#2", "o/r#5"]
     # The truncated ref is re-covered as a singleton, not lost.
     assert {"refs": ["o/r#9"], "rationale": None} in plan
@@ -89,7 +89,7 @@ def test_parse_appends_unplaced_candidates_in_the_ranked_order_they_arrived():
     consumer, that outranked the canonical one — see the module comment.
     """
     raw = _plan_json([{"refs": ["o/r#9"], "rationale": "top"}])
-    plan = parse_group_plan(raw, C, 3)
+    plan = parse_group_plan(raw, C, 3).groups
     assert plan[0]["refs"] == ["o/r#9"]
     assert [g["refs"] for g in plan[1:]] == [["o/r#5"], ["o/r#2"]]
 
@@ -103,7 +103,7 @@ def test_parse_garbage_degrades_to_all_singletons_still_in_ranked_order():
     whole pool falls through here. So this ordering, not the model's, is what
     decides what gets worked on.
     """
-    plan = parse_group_plan("sorry, I cannot help with that", C, 3)
+    plan = parse_group_plan("sorry, I cannot help with that", C, 3).groups
     assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
 
 
@@ -119,13 +119,42 @@ def test_leftover_order_preserves_score_and_age_not_just_urgency():
         {"ref": "o/r#900", "number": 900, "repo": "o/r", "title": "scored top", "body": ""},
         {"ref": "o/r#100", "number": 100, "repo": "o/r", "title": "unscored", "body": ""},
     ]
-    plan = parse_group_plan("not json", ranked, 3)
+    plan = parse_group_plan("not json", ranked, 3).groups
     assert [g["refs"] for g in plan] == [["o/r#900"], ["o/r#100"]]
 
 
 def test_parse_accepts_top_level_list():
-    plan = parse_group_plan(json.dumps([{"refs": ["o/r#5"]}]), C, 2)
+    plan = parse_group_plan(json.dumps([{"refs": ["o/r#5"]}]), C, 2).groups
     assert plan[0]["refs"] == ["o/r#5"]
+
+
+def test_parse_flags_garbage_as_degraded():
+    """The all-singletons fallback is indistinguishable from a real plan by
+    shape alone, so the parser has to SAY it fell back (#2217: 19 of 40 live
+    refreshes were this, and the page showed a normal plan)."""
+    assert parse_group_plan("not json", C, 3).degraded is True
+
+
+def test_parse_treats_no_bundles_as_a_real_plan_not_a_degraded_one():
+    """Under the bundle-only contract an empty ``groups`` list is the model
+    saying "nothing belongs together" — every issue proceeds alone, and that is
+    a healthy plan, not a fallback."""
+    plan = parse_group_plan(_plan_json([]), C, 3)
+    assert plan.degraded is False
+    assert [g["refs"] for g in plan.groups] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+
+
+def test_grouping_prompt_asks_only_for_bundles():
+    """Singletons are implied (the parser appends every unplaced candidate), so
+    listing them only costs output tokens: with ~450 issues the reply overran the
+    64k output cap and the whole plan was thrown away (#2217). The model is told
+    to list bundles only, and that an issue it leaves out is worked alone."""
+    from server.automations.backlog_grouping import _GROUPING_SYSTEM, _grouping_prompt
+    prompt = _grouping_prompt(C, 3)
+    assert "groups of 2 to 3" in prompt
+    assert "Do NOT list single issues" in prompt
+    assert '{"groups": []}' in prompt
+    assert "Only list groups of two or more" in _GROUPING_SYSTEM
 
 
 # --------------------------------------------------------------------------- #
@@ -199,11 +228,41 @@ async def test_propose_groups_parses_model_reply():
     calls: list[dict] = []
     plan = await propose_groups(C, {"max_issues_per_pr": 2},
                                 _query_fn=_canned_query_fn(reply, calls))
-    assert plan[0] == {"refs": ["o/r#9", "o/r#5"], "rationale": "related"}
+    assert plan.groups[0] == {"refs": ["o/r#9", "o/r#5"], "rationale": "related"}
     # The prompt carries titles AND body excerpts, and the call runs on Sonnet.
     assert "Fix nine" in calls[0]["prompt"]
     assert "stack trace in auth" in calls[0]["prompt"]
     assert calls[0]["options"].model == "sonnet"
+    assert plan.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_propose_groups_caps_thinking_via_effort():
+    """Live refreshes spent 30k–60k of a 64k output budget THINKING before the
+    JSON even started (#2217). A fixed ``budget_tokens`` is ignored on Sonnet 5
+    (verified live: 31k thinking against a 12k budget), so the call pins
+    adaptive thinking at a reduced effort instead of the high default."""
+    from server.automations.backlog_grouping import GROUPING_EFFORT
+    calls: list[dict] = []
+    await propose_groups(C, {"max_issues_per_pr": 2},
+                         _query_fn=_canned_query_fn(_plan_json([]), calls))
+    assert calls[0]["options"].thinking == {"type": "adaptive"}
+    assert calls[0]["options"].effort == GROUPING_EFFORT
+    assert GROUPING_EFFORT in ("low", "medium")
+
+
+@pytest.mark.asyncio
+async def test_propose_groups_reports_and_logs_a_degraded_reply(caplog):
+    """An unparseable reply is a fallback plan the runner will dispatch from for
+    a whole grouping interval — it must be visible in the journal AND to the
+    caller, not silently indistinguishable from a real plan (#2217)."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="server.automations.backlog_grouping"):
+        plan = await propose_groups(C, {"max_issues_per_pr": 2},
+                                    _query_fn=_canned_query_fn("```json\n{\"groups\": [tru"))
+    assert plan.degraded is True
+    assert [g["refs"] for g in plan.groups] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+    assert any("degraded" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -215,7 +274,7 @@ async def test_propose_groups_empty_candidates_no_model_call():
         called = True
         raise AssertionError("must not be called")
 
-    assert await propose_groups([], {}, _query_fn=_query) == []
+    assert (await propose_groups([], {}, _query_fn=_query)).groups == []
     assert not called
 
 
@@ -289,7 +348,7 @@ def test_parse_floats_an_urgent_group_to_the_front_of_a_model_plan():
     raw = _plan_json([{"refs": ["o/r#2"], "rationale": "a"},
                       {"refs": ["o/r#5"], "rationale": "b"},
                       {"refs": ["o/r#900"], "rationale": "c"}])
-    plan = parse_group_plan(raw, _URGENT, 1)
+    plan = parse_group_plan(raw, _URGENT, 1).groups
     assert [g["refs"] for g in plan] == [["o/r#900"], ["o/r#2"], ["o/r#5"]]
 
 
@@ -297,14 +356,14 @@ def test_parse_floats_an_urgent_leftover_too():
     """The degraded path is the one that actually bit: unparseable output becomes
     all-singletons in ISSUE-NUMBER order, and an incident is the newest issue
     there is — so it sorts last, every single refresh."""
-    plan = parse_group_plan("not json at all", _URGENT, 1)
+    plan = parse_group_plan("not json at all", _URGENT, 1).groups
     assert plan[0]["refs"] == ["o/r#900"]
 
 
 def test_parse_keeps_a_bundled_urgent_group_whole_and_first():
     raw = _plan_json([{"refs": ["o/r#2"], "rationale": "a"},
                       {"refs": ["o/r#5", "o/r#900"], "rationale": "same break"}])
-    plan = parse_group_plan(raw, _URGENT, 2)
+    plan = parse_group_plan(raw, _URGENT, 2).groups
     assert [g["refs"] for g in plan] == [["o/r#5", "o/r#900"], ["o/r#2"]]
 
 
@@ -314,7 +373,7 @@ def test_parse_preserves_relative_order_among_equally_urgent_groups():
     # o/r#9 is unplaced by this plan, so it trails as a leftover singleton — the
     # model's own #5-before-#2 ordering is what must survive untouched.
     plan = parse_group_plan(_plan_json([{"refs": ["o/r#5"], "rationale": "b"},
-                                        {"refs": ["o/r#2"], "rationale": "a"}]), C, 1)
+                                        {"refs": ["o/r#2"], "rationale": "a"}]), C, 1).groups
     assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
 
 

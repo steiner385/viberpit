@@ -181,16 +181,17 @@ class Harness:
         entries, _skipped = rank(rows, now=NOW)
         return [to_candidate(e) for e in entries]
 
-    async def _refresh_groups(self, config) -> int:
-        # Canned grouping: all-singletons in issue-number order (what
-        # parse_group_plan degrades to) written through the REAL plan store.
-        # The real Sonnet model is never called; the grouping logic itself is
-        # covered by test_backlog_grouping.
-        from server.automations.backlog_grouping import parse_group_plan, store_plan
+    async def _refresh_groups(self, config):
+        # Canned grouping: all-singletons in queue order (what parse_group_plan
+        # degrades to) written through the REAL plan store. The real Sonnet
+        # model is never called; the grouping logic itself is covered by
+        # test_backlog_grouping.
+        from server.automations.backlog_grouping import (
+            RefreshSummary, parse_group_plan, store_plan)
         cands = await self._query_queue(config)
-        groups = parse_group_plan("", cands, int(config.get("max_issues_per_pr") or 1))
+        groups = parse_group_plan("", cands, int(config.get("max_issues_per_pr") or 1)).groups
         await store_plan(groups, cands)
-        return len(groups)
+        return RefreshSummary(groups=len(groups))
 
     async def _select_batch(self, config):
         # REAL plan-based selection: the live queue pool ∩ the stored group plan.

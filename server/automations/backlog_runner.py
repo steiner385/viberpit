@@ -16,7 +16,7 @@ from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.db.models import DECISION_PROPOSED_CAUSE
 from server.github.pr_status import PullRequestInfo
 
-from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
+from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
@@ -565,7 +565,7 @@ SessionRan = Callable[[str], Awaitable[bool]]
 # backlog; returns the number of groups stored. MUST raise on a model/plan
 # failure (rather than storing an empty plan over a real backlog) so the loop
 # backs off a full grouping interval instead of hammering the model every tick.
-RefreshGroups = Callable[[dict], Awaitable[int]]
+RefreshGroups = Callable[[dict], Awaitable[RefreshSummary]]
 # Stale-credential seam (issue #670): the current list of repos whose last git
 # fetch failed with an auth-class error (each dict: repo/since/error/settingsUrl).
 # The loop uses it to notify the dashboard; selection pauses those repos
@@ -795,6 +795,7 @@ class BacklogRunnerLoop:
         self._group_refresh_last_error: str | None = None  # debounce the failure event per distinct error
         self._counts_published = False                  # cold start: first ``_stash_counts`` done
         self._last_groups_emitted: int | None = None    # debounce the refreshed event
+        self._group_degraded_emitted = False            # once per degraded streak (#2217)
         self._lock = asyncio.Lock()
         self._accounted_dispatches: set[str] = set()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
@@ -1097,7 +1098,13 @@ class BacklogRunnerLoop:
         full grouping interval) lets a transient model / connectivity blip
         recover the plan quickly while still never retrying per-tick (#666). The
         refreshed event is emitted only when the group count CHANGES, so an idle
-        empty backlog doesn't flood the activity feed."""
+        empty backlog doesn't flood the activity feed.
+
+        A DEGRADED plan (the model's reply was unparseable and the parser fell
+        back to all singletons, #2217) is stored — the runner needs something to
+        pop — but announced as a WARN once per streak rather than as a routine
+        refresh, and the first real plan after it is news even at the same
+        count: it is the operator's signal that batching is back."""
         if self._refresh_groups is None:
             return
         now = self._clock()
@@ -1116,7 +1123,7 @@ class BacklogRunnerLoop:
         self._last_group_refresh = now
         self._group_nudge = False
         try:
-            n = await self._refresh_groups(config)
+            summary = await self._refresh_groups(config)
         except Exception as exc:
             log.warning("backlog_runner.group_refresh_failed", exc_info=True)
             self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
@@ -1132,7 +1139,21 @@ class BacklogRunnerLoop:
             return
         self._group_refresh_retry_at = None
         self._group_refresh_last_error = None
-        if n != self._last_groups_emitted:
+        n = summary.groups
+        if summary.degraded:
+            self._last_groups_emitted = n
+            if not self._group_degraded_emitted:
+                self._group_degraded_emitted = True
+                await self._ctx.emit(
+                    "warn",
+                    f"group plan degraded — the grouping model's reply could not be "
+                    f"parsed, so every issue is planned on its own ({n} group(s)); "
+                    f"retrying at the next refresh",
+                    kind="groups_refresh_degraded", detail={"groups": n})
+            return
+        recovered = self._group_degraded_emitted
+        self._group_degraded_emitted = False
+        if recovered or n != self._last_groups_emitted:
             self._last_groups_emitted = n
             await self._ctx.emit(
                 "info", f"group plan refreshed — {n} group(s) planned",
