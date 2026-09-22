@@ -91,9 +91,15 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
         <tbody>
           {rows.map(({ node, depth }) => {
             const blocked = selfAndDescendants(product, node)
+            // An already-sunset capability is not a place to fold live work
+            // INTO — offering it would let a merge move issues and initiatives
+            // straight onto a retired capability, which is exactly what
+            // `retire()`'s own dependents guard exists to prevent.
             const mergeTargets = rows
-              .filter(({ node: n }) => !blocked.has(n.slug))
+              .filter(({ node: n }) => !blocked.has(n.slug) && n.state !== 'sunset')
               .map(({ node: n }) => n)
+            // …and there is nothing to retire about a capability already there.
+            const retirable = node.state !== 'sunset'
 
             return (
               <tr key={node.id} className="border-t border-line">
@@ -105,7 +111,13 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
                 <td className="py-2 text-right">
                   {confirming === node.slug ? (
                     <span className="flex items-center justify-end gap-2">
-                      <span className="text-xs text-ink-muted">Retire {node.title ?? node.slug}?</span>
+                      {/* Name the side effect: retiring does not just sunset
+                          this row, it silently moves every live child up to
+                          this capability's own parent. */}
+                      <span className="text-xs text-ink-muted">
+                        Retire {node.title ?? node.slug}? Any sub-{CAPABILITY.plural.toLowerCase()} will
+                        move up to its parent.
+                      </span>
                       <Button size="sm" variant="danger" onClick={() => void doRetire(node.slug)}
                               disabled={retire.isPending}>
                         Confirm
@@ -160,9 +172,11 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
                       <Button size="sm" variant="ghost" onClick={() => setMerging(node.slug)}>
                         Merge into…
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setConfirming(node.slug)}>
-                        Retire
-                      </Button>
+                      {retirable && (
+                        <Button size="sm" variant="ghost" onClick={() => setConfirming(node.slug)}>
+                          Retire
+                        </Button>
+                      )}
                     </span>
                   )}
                 </td>

@@ -35,9 +35,24 @@ const CAPS: CapabilityNode[] = [
   },
 ]
 
+// A third, already-retired capability — neither retirable again nor a place to
+// fold live work into.
+const SUNSET: CapabilityNode = {
+  id: 'f3', slug: 'legacy', title: 'Legacy', state: 'sunset', summary: null,
+  docPath: null, commitSha: 'ghi', prNumber: null, parentSlug: null, tier: 'live',
+  counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 }, links: [], initiatives: [],
+  children: [],
+}
+const CAPS_WITH_SUNSET: CapabilityNode[] = [...CAPS, SUNSET]
+
 const PRODUCT = {
   slug: 'kindash',
   capabilities: CAPS,
+} as never
+
+const PRODUCT_WITH_SUNSET = {
+  slug: 'kindash',
+  capabilities: CAPS_WITH_SUNSET,
 } as never
 
 describe('CapabilitiesTab', () => {
@@ -89,5 +104,28 @@ describe('CapabilitiesTab', () => {
       fromSlug: 'dictation', intoSlug: 'sessions',
     }))
     expect(await screen.findByText(/2 cross-product link/i)).toBeInTheDocument()
+  })
+
+  it('warns that retiring reparents live children before confirming', () => {
+    render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
+    fireEvent.click(screen.getAllByRole('button', { name: /^retire$/i })[0]) // sessions
+    expect(screen.getByText(/Retire Sessions\?/)).toHaveTextContent(
+      /sub-capabilities will move up to its parent/i,
+    )
+  })
+
+  it('offers neither Retire nor a merge target for an already-sunset capability', () => {
+    render(<CapabilitiesTab product={PRODUCT_WITH_SUNSET} capabilities={CAPS_WITH_SUNSET} />)
+    // Three rows, but only the two live ones can be retired.
+    expect(screen.getByText('Legacy')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^retire$/i })).toHaveLength(2)
+
+    // …and `legacy` is not offered as somewhere to fold `dictation` into.
+    fireEvent.click(screen.getAllByRole('button', { name: /merge into/i })[1]) // dictation
+    const targets = Array.from(
+      screen.getByRole('combobox', { name: /merge dictation into/i })
+        .querySelectorAll('option'),
+    ).map((o) => o.value)
+    expect(targets).toEqual(['', 'sessions'])
   })
 })
