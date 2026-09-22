@@ -1887,6 +1887,115 @@ def test_accept_with_edits_rejects_an_unknown_feature_id():
         assert ok2.status_code == 200, ok2.text
 
 
+class _FakeMapChangesService:
+    """Stands in for the real GitHub-backed ``MapChangesService`` (mirrors the
+    ``pm_onboard_spawn_map``/``pm_classify_run`` stub pattern above): records a
+    ``create`` op on ``edit()`` — 422'ing ``slug_taken`` exactly as the real
+    service does when a ``Feature`` with that slug already exists — then
+    materializes it into the ``Feature`` table on ``_resync_now()``, standing
+    in for a real doc commit + index resync without touching GitHub."""
+
+    def __init__(self):
+        self._pending: list[tuple[str, object]] = []
+
+    async def edit(self, db, project, op, identity):
+        from sqlalchemy import select
+
+        from server.db.models import Feature
+        from server.pm.map_changes_ops import MapOpError
+        existing = (await db.execute(select(Feature).where(
+            Feature.project_id == project.id, Feature.slug == op.slug,
+        ))).scalar_one_or_none()
+        if op.op == "create" and existing is not None:
+            raise MapOpError("slug_taken", f"'{op.slug}' already exists")
+        self._pending.append((project.id, op))
+        return None, None, None
+
+    async def _resync_now(self, db, project):
+        from server.db.models import Feature
+        still_pending = []
+        for project_id, op in self._pending:
+            if project_id == project.id:
+                db.add(Feature(project_id=project_id, slug=op.slug, title=op.title,
+                               state="proposed"))
+            else:
+                still_pending.append((project_id, op))
+        self._pending = still_pending
+        await db.flush()
+
+
+def test_accept_with_new_capability_creates_it_and_classifies_in_one_call():
+    """`edits.newCapability` creates the capability on the product's
+    map-changes branch, resyncs it into the ``Feature`` index synchronously,
+    and classifies the work item onto it — all in the one accept call, so a
+    triage reviewer never has to round-trip through the map-changes UI first."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, WorkItem
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        async def _check():
+            async with db_session() as db:
+                feat = (await db.execute(select(Feature).where(
+                    Feature.slug == "payments"))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return feat, wi
+        feat, wi = c.portal.call(_check)
+        assert feat.title == "Payments"
+        assert feat.state == "proposed"
+        assert wi.feature_id == feat.id
+
+
+def test_accept_rejects_both_feature_id_and_new_capability():
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions", repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"featureId": "some-id",
+                                  "newCapability": {"title": "X", "slug": "x"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+
+
+def test_accept_new_capability_slug_collision_is_422():
+    from server.db import db_session
+    from server.db.models import Feature, Project
+    from sqlalchemy import select
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+
+        async def _seed_existing():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                db.add(Feature(project_id=p.id, slug="payments", title="Payments",
+                               state="live"))
+        c.portal.call(_seed_existing)
+
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "slug_taken"
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")

@@ -1466,6 +1466,7 @@ async def _validate_accept_edits(db, edits: dict | None) -> None:
 @router.post("/triage/{proposal_id}/accept")
 async def accept_triage(
     proposal_id: str,
+    request: Request,
     body: dict | None = Body(default=None),
     identity: str = Depends(current_identity),
     db=Depends(get_db),
@@ -1473,14 +1474,49 @@ async def accept_triage(
     """Copy the proposal onto the WorkItem overlay and mark it classified
     (spec §7), via the shared ``apply_accept`` (server/pm/triage_accept.py). An
     OPTIONAL request body
-    ``{edits?: {reach?, impact?, effort?, confidence?, featureId?}}`` overrides
-    the copied values (lets phase-3 edit-then-accept work without a route
-    change); absent body = plain accept. The batch form is ``accept-bulk``,
+    ``{edits?: {reach?, impact?, effort?, confidence?, featureId?, newCapability?}}``
+    overrides the copied values (lets phase-3 edit-then-accept work without a
+    route change); absent body = plain accept. ``edits.newCapability``
+    (``{title, slug}``) creates a brand-new capability on the work item's
+    owning product's map-changes branch, resyncs it into the ``Feature``
+    index synchronously, then classifies onto it in the same call — mutually
+    exclusive with ``edits.featureId``. The batch form is ``accept-bulk``,
     which reuses the same helper."""
     from server.pm.triage_accept import gather_accept_ownership
     ownership = await gather_accept_ownership([proposal_id])
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
+    new_capability = (edits or {}).get("newCapability")
+    if new_capability and (edits or {}).get("featureId") is not None:
+        raise HTTPException(status_code=400, detail={
+            "error": "bad_edit",
+            "message": "featureId and newCapability are mutually exclusive"})
+    if new_capability:
+        work_item = await db.get(WorkItem, prop.work_item_id)
+        owners = await owning_projects_by_repo(
+            db, [work_item.repo] if work_item and work_item.repo else [])
+        owner = owners.get(work_item.repo) if work_item else None
+        if owner is None:
+            raise HTTPException(status_code=404, detail={
+                "error": "project_not_found",
+                "message": "Work item's repository has no unique registered product"})
+        project = await db.get(Project, owner.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail={
+                "error": "project_not_found",
+                "message": "Work item's registered product no longer exists"})
+        svc = request.app.state.sessions.pm_map_changes()
+        op = MapOp(op="create", slug=new_capability["slug"], title=new_capability["title"])
+        try:
+            await svc.edit(db, project, op, identity)
+            await svc._resync_now(db, project)
+        except MapOpError as e:
+            raise _map_changes_http(e) from e
+        feature = (await db.execute(select(Feature).where(
+            Feature.project_id == project.id,
+            Feature.slug == new_capability["slug"],
+        ))).scalars().first()
+        edits = {**(edits or {}), "featureId": feature.id if feature else None}
     await _validate_accept_edits(db, edits)
     try:
         await apply_accept(db, prop, decided_by=DECIDED_BY_HUMAN,
