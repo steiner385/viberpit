@@ -39,6 +39,7 @@ from server.db.models import (
 )
 
 from .classification import FEATURE_DOCS_DIR, feature_doc_path
+from .feature_index import FeatureDocsRead, FeatureIndexPlan, merge_branch_over_main, plan_feature_index
 from .featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
 from .map_changes_gh import GhWrite, GhWriteError, PrState
 from .map_changes_ops import (
@@ -231,10 +232,19 @@ class MapChangesService:
         gh_factory: Callable[[str], GhWrite] = GhWrite,
         default_branch: Callable[[str], Awaitable[str]] | None = None,
         now: Callable[[], datetime] | None = None,
+        read_feature_docs: Callable[..., Awaitable[FeatureDocsRead]] | None = None,
+        list_feature_rows: Callable[[str], Awaitable[list]] | None = None,
+        apply_feature_plan: Callable[[str, FeatureIndexPlan], Awaitable[None]] | None = None,
     ) -> None:
         self._gh_factory = gh_factory
         self._default_branch = default_branch or resolve_default_branch
         self._now = now or (lambda: datetime.now(timezone.utc))
+        # Only wired by `pm_map_changes()` — a bare `MapChangesService()` (as
+        # existing tests construct it for reconcile_updates/manual_update)
+        # leaves these None; `_resync_now` treats that as a no-op.
+        self._read_feature_docs = read_feature_docs
+        self._list_feature_rows = list_feature_rows
+        self._apply_feature_plan = apply_feature_plan
 
     # -- reads ----------------------------------------------------------------
 
@@ -347,6 +357,35 @@ class MapChangesService:
         link_targets = {(str(ps), str(fs)) for ps, fs in targets if ps and fs}
         link_targets |= {(str(project.slug), doc.slug) for doc in branch_docs if doc.slug}
         return MapContext(parents=parents, link_targets=frozenset(link_targets))
+
+    async def _resync_now(self, db, project: Project) -> None:
+        """Materialize this product's just-committed doc changes into the
+        Feature table synchronously, instead of leaving them to the next
+        pm-sync tick (up to 300s away) — used by ``retire()``, ``merge()``,
+        and triage's inline capability-create path, where the caller needs
+        the DB to already reflect a doc edit before its own response
+        returns. A no-op if this service was built without the three sync
+        seams wired (e.g. a bare unit-test instance for
+        reconcile_updates/manual_update, which never calls this)."""
+        if (self._read_feature_docs is None or self._list_feature_rows is None
+                or self._apply_feature_plan is None):
+            return
+        repo = await self._primary_repo(db, project)
+        main = await self._read_feature_docs(repo)
+        pointer = await self.open_pointer(db, project)
+        branch_docs: list[tuple[str, str]] = []
+        pr_number = pr_url = None
+        if pointer is not None and pointer.status == MAP_CHANGES_STATUS_OPEN and pointer.branch:
+            branch = await self._read_feature_docs(repo, pointer.branch)
+            branch_docs = branch.docs
+            pr_number, pr_url = pointer.pr_number, pointer.pr_url
+        docs, proposed, skipped = merge_branch_over_main(
+            main.docs, branch_docs, pr_number=pr_number, pr_url=pr_url)
+        if skipped:
+            log.warning("map_changes.resync_skipped_docs project=%s %s", project.slug, skipped)
+        rows = await self._list_feature_rows(project.id)
+        plan = plan_feature_index(rows, docs, read_sha=main.sha, proposed=proposed)
+        await self._apply_feature_plan(project.id, plan)
 
     # -- writes ---------------------------------------------------------------
 

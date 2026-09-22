@@ -10122,9 +10122,10 @@ class SessionOrchestrator:
     def pm_map_changes(self) -> "MapChangesService":
         """The capability map-changes service (roadmap spec §9), wired to this
         orchestrator's injectable ``gh`` runner, token provider and environment
-        plus its default-branch probe — so the API routes never construct a
-        GitHub client themselves and a test that swaps ``orch._gh_run`` for a
-        recorder is genuinely offline, credentials included."""
+        plus its default-branch probe and pm-sync seams — so the API routes
+        never construct a GitHub client themselves and a test that swaps
+        ``orch._gh_run``/``orch._pm_sync_read_feature_docs`` for a recorder is
+        genuinely offline, credentials included."""
         from server.pm.map_changes import MapChangesService
         from server.pm.map_changes_gh import GhWrite
         return MapChangesService(
@@ -10132,6 +10133,9 @@ class SessionOrchestrator:
                 repo, run=self._gh_run, app_token=self._gh_token_provider,
                 env=self._gh_env),
             default_branch=self._sdlc_default_branch,
+            read_feature_docs=self._pm_sync_read_feature_docs,
+            list_feature_rows=self._pm_sync_list_feature_rows,
+            apply_feature_plan=self._pm_sync_apply_feature_plan,
         )
 
     # ------------------------------------------------------------------
