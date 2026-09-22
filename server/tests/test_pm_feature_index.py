@@ -3,7 +3,7 @@ import pathlib
 
 import yaml
 
-from server.pm.feature_index import FeatureRowView, plan_feature_index
+from server.pm.feature_index import FeatureRowView, merge_branch_over_main, plan_feature_index
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
 FEATURE_DOCS_DIR = pathlib.Path(__file__).parents[2] / "docs" / "product" / "features"
@@ -250,9 +250,6 @@ def test_every_checked_in_feature_doc_targets_a_slug_this_repo_has():
 
 
 # -- merge_branch_over_main tests ------------------------------------------------
-
-
-from server.pm.feature_index import merge_branch_over_main
 
 
 ROOT_TEXT = "---\nslug: sessions\ntitle: Sessions\nstate: live\n---\n# Sessions\n"

@@ -1,8 +1,10 @@
 // `/roadmap/:productSlug` — one product, on the page-tabs standard
 // (`docs/PAGE-TABS.md`): Overview · In flight · Needs you · Ranked ·
-// Dependencies · Automation. The tiles say how big it is; the tabs answer
-// what it is, what is moving, what needs me, what is next, what it waits on,
-// and what it is configured to do.
+// Dependencies · Automation, plus a 7th, Capabilities, as a recorded
+// exception (docs/PAGE-TABS.md §8). The tiles say how big it is; the tabs
+// answer what it is, what is moving, what needs me, what is next, what it
+// waits on, what it is configured to do, and (Capabilities) what it is made
+// of and how that's managed.
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
@@ -16,6 +18,7 @@ import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
 import { OnboardingWizard } from '@/projects/OnboardingWizard'
 import { DependencyPanel } from '@/projects/DependencyPanel'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TAB_LABEL, TIER_LABEL } from '@/features/products/vocab'
+import { CapabilitiesTab } from '@/features/products/CapabilitiesTab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
 import { programTitleOf } from '../lookup'
@@ -32,7 +35,7 @@ import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
 
-const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies', 'automation'] as const
+const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies', 'automation', 'capabilities'] as const
 
 /** The Overview previews this many in-flight initiatives; the In-flight tab
  *  lists them all (`docs/PAGE-TABS.md` §5). */
@@ -102,6 +105,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           { id: 'ranked', label: TAB_LABEL.ranked },
           { id: 'dependencies', label: TAB_LABEL.dependencies },
           { id: 'automation', label: TAB_LABEL.automation },
+          { id: 'capabilities', label: CAPABILITY.plural },
         ]}
       />
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
@@ -219,6 +223,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
         {tab === 'automation' && (isLoading && !project
           ? <Skeleton lines={3} />
           : project && <AutomationPolicyCard product={product} project={project} />)}
+        {tab === 'capabilities' && (
+          <CapabilitiesTab product={product} capabilities={product.capabilities ?? []} />
+        )}
       </div>
       {/* Mounted only while open (the RoadmapPage idiom), so each opening starts
           on a blank form rather than on whatever the last one was abandoned

@@ -92,6 +92,37 @@ async def resolve_default_branch(repo: str) -> str:
         return "master"
 
 
+async def read_feature_docs_via_gh_api(
+    gh: GhWrite, repo: str, ref: str | None = None,
+) -> FeatureDocsRead:
+    """Edge-local equivalent of `_pm_sync_read_feature_docs`
+    (`server/sessions/orchestrator.py`) for an orchestrator with no local
+    repo clone (``RemoteOrchestrator`` — the edge process, which only ever
+    makes GitHub API calls, never a local `git show`). Reads every capability
+    doc via the GitHub API (one list + one read per file) instead of local
+    git plumbing — costs real GitHub API calls where the local-clone version
+    costs none, which is acceptable here: this feeds the synchronous resync
+    path (retire/merge/triage-inline-create), a rare interactive action, not
+    the high-frequency background pm-sync loop (which only ever runs on
+    ``SessionOrchestrator``/the daemon side, where the local-clone version
+    is used instead).
+
+    Unlike the clone version this cannot pin the whole read to one immutable
+    SHA up front — the contents API is per-path — so the head SHA is resolved
+    last, after the reads. A doc that 404s (deleted between the list and the
+    read) is skipped rather than raising: the same fail-safe shape
+    ``_read_branch_docs`` already uses for an unparseable doc."""
+    branch = ref or await resolve_default_branch(repo)
+    paths = await asyncio.to_thread(gh.list_dir, FEATURE_DOCS_DIR, branch)
+    docs: list[tuple[str, str]] = []
+    for path in paths:
+        text, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+        if text is not None:
+            docs.append((path, text))
+    sha = await asyncio.to_thread(gh.default_branch_head, branch)
+    return FeatureDocsRead(sha=sha, docs=docs)
+
+
 PR_BODY = f"""\
 Capability-map changes for this product, opened and maintained by {brand.NAME}.
 
@@ -633,6 +664,29 @@ class MapChangesService:
             db, project, gh, repo, branch, base, base_sha, pointer,
             MapOp(op="retire", slug=slug))
 
+        # A PENDING triage proposal aimed at the capability being sunset is not
+        # a dependent in `_guard_no_dependents`' sense — it is a machine
+        # SUGGESTION, not a committed classification, so refusing the retire
+        # over one would be needlessly restrictive (a stale AI guess could
+        # block a human's cleanup indefinitely). But accepting it later WOULD
+        # classify a work item onto a sunset capability, so the suggestion is
+        # cleared here instead: the proposal survives (its scores and rationale
+        # are still useful) and simply comes back as "no fit", which the accept
+        # UI already handles. Only `pending` rows — a resolved proposal is an
+        # audit record of what was actually decided and is never rewritten.
+        # Done AFTER the doc commits so a GitHub failure cannot leave the
+        # proposal cleared while the capability is still live.
+        cleared_proposals = (await db.execute(update(TriageProposal).where(
+            TriageProposal.proposed_feature_id == target.id,
+            TriageProposal.status == "pending",
+        ).values(proposed_feature_id=None))).rowcount or 0
+
+        # Defense in depth alongside `_resync_now()` below (and what `edit()`
+        # does for every other op): `_resync_now` already materializes this
+        # change synchronously, but bumping the watermark keeps the periodic
+        # pm-sync loop's view of "this product changed" consistent with the
+        # inline path, so a resync that fails part-way is still picked up.
+        await request_project_sync(db, project.id, self._now())
         # Record the audit row BEFORE `_resync_now`: that call commits *db*
         # as a necessary side effect of the cross-session work it does (see
         # its docstring), so anything durable this action needs — the audit
@@ -643,7 +697,8 @@ class MapChangesService:
         await record_audit(
             db=db, type="pm.map_changes.retire", identity=identity,
             detail={"slug": project.slug, "capability": slug,
-                    "childrenReparented": reparented, "commitSha": sha,
+                    "childrenReparented": reparented,
+                    "proposalsCleared": cleared_proposals, "commitSha": sha,
                     "prNumber": pointer.pr_number})
         await self._resync_now(db, project)
         return Pointer.from_row(pointer)
@@ -826,6 +881,8 @@ class MapChangesService:
             db, project, gh, repo, branch, base, base_sha, pointer,
             MapOp(op="retire", slug=from_slug))
 
+        # Same defense-in-depth watermark bump as `retire()` — see there.
+        await request_project_sync(db, project.id, self._now())
         # Record the audit row BEFORE `_resync_now`: that call commits *db* as
         # a necessary side effect of the cross-session work it does (see its
         # docstring), so anything durable this action needs — the audit row is

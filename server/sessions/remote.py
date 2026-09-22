@@ -1268,13 +1268,40 @@ class RemoteOrchestrator:
         edge already makes its own ``gh`` calls (repo/branch enumeration for the
         chooser). Same service class as in-process, on the same three injectable
         GitHub seams (runner, App-token provider, environment) so a test that
-        swaps them is offline here too."""
-        from server.pm.map_changes import MapChangesService
+        swaps them is offline here too.
+
+        The three pm-sync seams ``_resync_now`` needs are wired here too, so a
+        retire/merge/triage-inline-create materializes into the ``Feature``
+        table before the response returns on the edge exactly as it does on the
+        daemon. Two of them (``list_feature_rows``/``apply_feature_plan``) are
+        pure DB work and are the SAME module functions ``SessionOrchestrator``
+        delegates to. The third differs by necessity: this process has no local
+        clone, so it reads the capability docs over the GitHub API rather than
+        with git plumbing — riding the same injected ``gh`` seams, so a test
+        that swaps ``_gh_run`` is still offline."""
+        from server.pm.feature_index import FeatureDocsRead
+        from server.pm.feature_sync_seams import apply_feature_plan, list_feature_rows
+        from server.pm.map_changes import MapChangesService, read_feature_docs_via_gh_api
         from server.pm.map_changes_gh import GhWrite
+
+        def _gh_factory(repo: str) -> GhWrite:
+            return GhWrite(repo, run=self._gh_run, app_token=self._gh_token_provider,
+                           env=self._gh_env)
+
+        async def _read_feature_docs(
+            repo: str, ref: str | None = None,
+        ) -> FeatureDocsRead:
+            # Building the seam mints a GitHub App token (reads the PEM, takes
+            # a process-global lock): blocking, so never on the loop.
+            gh = await asyncio.to_thread(_gh_factory, repo)
+            return await read_feature_docs_via_gh_api(gh, repo, ref)
+
         return MapChangesService(
-            gh_factory=lambda repo: GhWrite(
-                repo, run=self._gh_run, app_token=self._gh_token_provider,
-                env=self._gh_env))
+            gh_factory=_gh_factory,
+            read_feature_docs=_read_feature_docs,
+            list_feature_rows=list_feature_rows,
+            apply_feature_plan=apply_feature_plan,
+        )
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

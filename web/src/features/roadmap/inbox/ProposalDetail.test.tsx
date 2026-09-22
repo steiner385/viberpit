@@ -112,6 +112,61 @@ describe('ProposalDetail', () => {
     expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
   })
 
+  it('accepting with a newly typed capability sends newCapability instead of featureId', () => {
+    const { onDone } = mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
+    expect(accept).toHaveBeenCalledWith({ id: 'p1', edits: { newCapability: { title: 'Payments', slug: 'payments' } } })
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('derives the slug from the typed title until the slug field is edited by hand', () => {
+    mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments & Billing' } })
+    expect(screen.getByLabelText('Slug')).toHaveValue('payments-billing')
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'custom-slug' } })
+    // Taken over: further typing in the title no longer overwrites it.
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments & Billing 2' } })
+    expect(screen.getByLabelText('Slug')).toHaveValue('custom-slug')
+  })
+
+  it('leaves Save edits & accept disabled while the new-capability title is still empty', () => {
+    mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
+  })
+
+  it('leaves Save disabled when the slug is cleared even though a title is typed', () => {
+    // The submit only emits `newCapability` when BOTH fields are non-empty, so
+    // enabling Save on the title alone would silently downgrade the accept to
+    // a plain one onto the AI's original suggestion. (A punctuation-only title
+    // reaches the same state via `slugify` returning ''.)
+    mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: '' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeDisabled()
+    // Typing a slug back in re-enables it — the gate is the pair, not a latch.
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'payments' } })
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
+  })
+
+  it('switching back to an existing capability drops the new-capability draft', () => {
+    const { onDone } = mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: '__new__' } })
+    fireEvent.change(screen.getByLabelText(/new capability title/i), { target: { value: 'Payments' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: 'f-billing' } })
+    expect(screen.queryByLabelText(/new capability title/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
+    expect(accept).toHaveBeenCalledWith({ id: 'p1', edits: { featureId: 'f-billing' } })
+    expect(onDone).toHaveBeenCalled()
+  })
+
   it('keeps the proposal\'s value for a field the user cleared', () => {
     mount()
     fireEvent.change(screen.getByLabelText('effort'), { target: { value: '' } })
@@ -179,7 +234,7 @@ describe('ProposalDetail', () => {
     // select — the note is about the QUERY, not about the count.
     mount({ capabilities: [] })
     const select = screen.getByRole('combobox', { name: 'Capability' }) as HTMLSelectElement
-    expect([...select.options].map((o) => o.textContent)).toEqual(['— keep proposal —'])
+    expect([...select.options].map((o) => o.textContent)).toEqual(['— keep proposal —', '+ New capability'])
   })
 
   it('says what Accept and Reject do under the product policy', () => {
