@@ -40,11 +40,18 @@ import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { Badge, type Tone } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
+import { Input } from '@/ui/Input'
 import { Select } from '@/ui/Select'
 import { CAPABILITY } from '@/features/products/vocab'
+import { slugify } from '../slug'
 import { ConsequenceList } from '../guidance/ConsequenceList'
 import { ScoreFields, SCORE_FIELDS, type ScoreField } from './ScoreFields'
 import { riceScore } from './rice'
+
+/** The capability select's sentinel for "stop picking an existing one — I'm
+ *  typing a new one instead." Never a real id: capability ids come from the
+ *  map, which never mints `__new__`. */
+const NEW_CAPABILITY_VALUE = '__new__'
 
 /** A capability the proposal could be homed on — `flattenCapabilities` of its
  *  product, indent and all. */
@@ -122,6 +129,13 @@ function TriageDetail({
   const reject = useRejectProposal(scopeProduct ?? undefined)
 
   const [edits, setEdits] = useState<OverlayEdits>(() => editsOf(p))
+  // Inline "+ New capability" (spec 2026-09-22 §3): a triage-created capability
+  // lands at root, no parent picker in v1 — reparenting later goes through the
+  // Capabilities tab, which already has one.
+  const [creatingCapability, setCreatingCapability] = useState(false)
+  const [newCapTitle, setNewCapTitle] = useState('')
+  const [newCapSlug, setNewCapSlug] = useState('')
+  const [slugTouched, setSlugTouched] = useState(false)
   const firstRef = useRef<HTMLInputElement>(null)
   // The pane does not unmount between proposals (the page swaps the prop), so
   // the form is re-seeded when the proposal IDENTITY changes — and only then.
@@ -136,6 +150,12 @@ function TriageDetail({
   if (seededFor !== p.id) {
     setSeededFor(p.id)
     setEdits(editsOf(p))
+    // A new proposal is a new decision — the previous one's half-typed
+    // capability draft (if any) belongs to the row that just left the queue.
+    setCreatingCapability(false)
+    setNewCapTitle('')
+    setNewCapSlug('')
+    setSlugTouched(false)
   }
   useEffect(() => {
     if (autoFocusScores) firstRef.current?.focus()
@@ -157,12 +177,19 @@ function TriageDetail({
   }
   const differs = (f: ScoreField) => (effective[f] ?? null) !== (p[f] ?? null)
   const featureChanged = (effective.featureId ?? null) !== (p.proposedFeatureId ?? null)
-  const changed = SCORE_FIELDS.some(differs) || featureChanged
+  const newCapPending = creatingCapability && newCapTitle.trim().length > 0
+  const changed = SCORE_FIELDS.some(differs) || featureChanged || newCapPending
   // Only what actually moved: an accept body that restates the proposal's own
   // values is noise in the audit trail and in the diff a reviewer reads.
   const edited: OverlayEdits = {}
   for (const f of SCORE_FIELDS) if (differs(f)) edited[f] = effective[f]
-  if (featureChanged) edited.featureId = effective.featureId
+  // `newCapability` and `featureId` are mutually exclusive server-side — typing
+  // a new capability's title wins over whatever the select last held.
+  if (creatingCapability && newCapTitle.trim() && newCapSlug.trim()) {
+    edited.newCapability = { title: newCapTitle.trim(), slug: newCapSlug.trim() }
+  } else if (featureChanged) {
+    edited.featureId = effective.featureId
+  }
   const score = riceScore(effective.reach, effective.impact, effective.effort, effective.confidence)
   const options = useMemo(
     () => capabilities.map((c) => ({ ...c, label: `${'  '.repeat(c.depth)}${c.title ?? c.slug}` })),
@@ -212,13 +239,23 @@ function TriageDetail({
           <Select
             id="proposal-capability"
             aria-label={CAPABILITY.singular}
-            value={edits.featureId ?? ''}
-            onChange={(e) => setEdits((s) => ({ ...s, featureId: e.target.value || undefined }))}
+            value={creatingCapability ? NEW_CAPABILITY_VALUE : (edits.featureId ?? '')}
+            onChange={(e) => {
+              const value = e.target.value
+              if (value === NEW_CAPABILITY_VALUE) {
+                setCreatingCapability(true)
+                setEdits((s) => ({ ...s, featureId: undefined }))
+                return
+              }
+              setCreatingCapability(false)
+              setEdits((s) => ({ ...s, featureId: value || undefined }))
+            }}
           >
             {/* Empty means "as proposed" — which for a no-fit proposal is no
                 capability at all, and the option has to say so rather than
                 offering to keep a proposal that does not exist. */}
             <option value="">{p.proposedFeatureId ? '— keep proposal —' : '— no fit —'}</option>
+            <option value={NEW_CAPABILITY_VALUE}>+ New {CAPABILITY.singular.toLowerCase()}</option>
             {/* Why the list below is short, while it still is. Disabled so it can
                 never be chosen, and inside the select rather than beside it: the
                 sentence has to be where the user is looking when they open it. */}
@@ -226,6 +263,33 @@ function TriageDetail({
             {options.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </Select>
         </Field>
+        {creatingCapability && (
+          // No parent picker in v1: a triage-created capability lands at root;
+          // reparenting goes through the Capabilities tab's own dialog.
+          <div className="flex flex-col gap-2">
+            <Field label={`New ${CAPABILITY.singular.toLowerCase()} title`} htmlFor="new-cap-title">
+              <Input
+                id="new-cap-title"
+                value={newCapTitle}
+                onChange={(e) => {
+                  const title = e.target.value
+                  setNewCapTitle(title)
+                  if (!slugTouched) setNewCapSlug(slugify(title))
+                }}
+              />
+            </Field>
+            <Field label="Slug" htmlFor="new-cap-slug">
+              <Input
+                id="new-cap-slug"
+                value={newCapSlug}
+                onChange={(e) => {
+                  setSlugTouched(true)
+                  setNewCapSlug(e.target.value)
+                }}
+              />
+            </Field>
+          </div>
+        )}
         {/* The consequence of each way out, from the owning product's dispatch
             policy (spec 2026-09-17 §4.3). No tick: the Backlog Runner's cadence is
             not the synthesizer's, so the timing says only "next run". */}
