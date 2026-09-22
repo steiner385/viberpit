@@ -101,7 +101,7 @@ async def retire(self, db, project: Project, slug: str, identity: str) -> Pointe
     are consistent before the response returns."""
 ```
 
-- Guard (409 `has_dependents`): query `WorkItem.feature_id == target.id` and
+- Guard (422 `has_dependents`): query `WorkItem.feature_id == target.id` and
   `InitiativeFeature.feature_id == target.id`; any row refuses before any commit is
   made. Error shape matches the existing `_map_changes_http` convention (`detail:
   {error, message}`).
@@ -162,9 +162,10 @@ already wires the service with orchestrator-owned seams (`orchestrator.py:10122`
 
 - `POST /api/pm/projects/{slug}/map-changes/retire` — body `{slug: str}`. Calls
   `svc.retire`; maps `MapOpError`/dependents-guard to `_map_changes_http` codes
-  (`has_dependents` → 409, `not_found` → 404).
+  (`has_dependents` → 422, `not_found` → 422 — see the Correction below:
+  `_map_changes_http` maps every `MapOpError` to 422).
 - `POST /api/pm/projects/{slug}/map-changes/merge` — body `{from: str, into:
-  str}`. Calls `svc.merge`; same error mapping plus `parent_cycle` → 409.
+  str}`. Calls `svc.merge`; same error mapping plus `parent_cycle` → 422.
 
 Both follow the existing route shape: `identity: str = Depends(current_identity)`,
 `db=Depends(get_db)`, hand-built camelCase response dict (`pointer`, plus repointed
@@ -245,7 +246,7 @@ Capabilities tab.
   `InitiativeFeature` dedup preserves `is_primary` correctly in both directions;
   cycle rejected; children land under `into_slug`.
 - `server/tests/test_pm_api.py` (or equivalent) — new retire/merge routes: success
-  shape, 404/409 mappings, audit row written.
+  shape, 422 error mappings (see the Correction below), audit row written.
 - `server/tests/test_triage_accept.py` — `newCapability` + `featureId` together is
   400; `newCapability` creates the doc, resyncs, and classifies the work item onto
   the new `Feature.id` in one call; slug collision surfaces 422.
@@ -264,6 +265,27 @@ Capabilities tab.
 - No change to `MAP_OPS`' existing five ops beyond adding `retire`.
 - No un-retire / restore-from-sunset action (a capability can be un-sunset via the
   ordinary `rename`/`summary`-style edit machinery if ever needed — not built here).
+- **No undo for `merge()`'s DB repoints — abandoning the map-changes PR does not
+  revert them.** `merge()` has two halves with different durability. The doc half
+  (sunsetting `from_slug`, rewriting `links:` frontmatter) is a commit on the
+  product's `pm/map-changes-<slug>` branch, so `DELETE
+  /api/pm/projects/{slug}/map-changes` (the roadmap's pre-existing *Abandon*
+  action, untouched by this work) drops it: `from_slug`'s doc goes back to
+  `state: live`. The DB half — repointing `WorkItem.feature_id`,
+  `InitiativeFeature.feature_id` and `TriageProposal.proposed_feature_id` from
+  `from_slug`'s `Feature` onto `into_slug`'s — is written straight to the tables
+  with no corresponding doc commit, so nothing about abandoning the PR reverts it.
+  The reachable end state is therefore a revived `from_slug` with **zero
+  dependents**, every issue and initiative that was merged onto `into_slug`
+  staying there permanently, and no record on the branch of where they came from
+  (the `map_changes.merge` audit row is the only trail). Recovery is manual:
+  re-map them back with the Capabilities tab's *Re-map dependents* action. This is
+  a known, accepted limitation of this iteration, not an oversight — making the
+  repoints reversible needs either a doc-committed representation of
+  classification (which does not exist; classification is DB-only) or an
+  abandon-time compensating write, both larger than this work. The *Abandon*
+  confirmation UI is deliberately left alone here: it is pre-existing code outside
+  this plan's blast radius.
 
 ## Tab placement (resolved)
 
