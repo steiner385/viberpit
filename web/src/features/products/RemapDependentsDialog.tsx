@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { useLeaves, useUpdateInitiative, useUpdateOverlay } from '@/api/hooks'
 import type { CapabilityNode, ProductNode } from '@/api/roadmap'
+import type { UpdateInitiativeInput } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
 import { Field } from '@/ui/Field'
@@ -47,13 +48,27 @@ export function RemapDependentsDialog({ product, capability, allCapabilities, op
   const updateOverlay = useUpdateOverlay()
   const moving = updateInitiative.isPending || updateOverlay.isPending
 
+  // `capabilityIds` REPLACES an initiative's full touched-capability set
+  // (UpdateInitiativeInput's own doc comment). An initiative that touches
+  // BOTH `capability` and some unrelated capability must keep that other
+  // touch — the user only asked to re-map ITS relationship to `capability`,
+  // not to blow away everything else it's linked to. `primaryCapabilityId`
+  // is sent only when `capability` was actually this initiative's primary —
+  // "send only what changed" (same doc comment) means an initiative whose
+  // primary lives elsewhere gets no primary change at all.
   const moveSelected = async () => {
     setError(null)
     try {
       await Promise.all([
-        ...[...selectedInitiatives].map((slug) => updateInitiative.mutateAsync({
-          slug, input: { capabilityIds: [target], primaryCapabilityId: target },
-        })),
+        ...[...selectedInitiatives].map((slug) => {
+          const initiative = initiatives.find((i) => i.slug === slug)
+          const otherTouches = (initiative?.capabilities ?? []).filter((s) => s !== capability.slug)
+          const input: UpdateInitiativeInput = {
+            capabilityIds: Array.from(new Set([...otherTouches, target])),
+          }
+          if (initiative?.primaryCapability === capability.slug) input.primaryCapabilityId = target
+          return updateInitiative.mutateAsync({ slug, input })
+        }),
         ...[...selectedIssues].map((id) => updateOverlay.mutateAsync({
           itemId: id, edit: { featureId: target },
         })),
