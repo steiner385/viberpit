@@ -1165,6 +1165,31 @@ async def map_changes_retire(
     return {"pointer": pointer.to_dict()}
 
 
+class MapChangesMergeBody(BaseModel):
+    fromSlug: str
+    intoSlug: str
+
+
+@router.post("/projects/{slug}/map-changes/merge", status_code=status.HTTP_200_OK)
+async def map_changes_merge(
+    slug: str,
+    body: MapChangesMergeBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Fold one capability into another (capability-management spec):
+    repoints every initiative/issue/link/proposal reference, reparents the
+    source's children onto the target, retires the source."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        result = await svc.merge(db, p, body.fromSlug, body.intoSlug, identity)
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return result.to_dict()
+
+
 @router.delete("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)
 async def map_changes_abandon(
     slug: str,
