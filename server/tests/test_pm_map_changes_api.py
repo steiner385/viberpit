@@ -1379,7 +1379,7 @@ def test_retire_reparents_children_and_syncs_the_db_inline():
 
         assert _audits(c, "pm.map_changes.retire") == [{
             "slug": SLUG, "capability": "sessions", "childrenReparented": 1,
-            "commitSha": "c2", "prNumber": 12}]
+            "proposalsCleared": 0, "commitSha": "c2", "prNumber": 12}]
 
 
 # -- merge (capability-management spec) ---------------------------------------
@@ -1696,3 +1696,194 @@ def test_merge_succeeds_despite_a_stale_link_on_the_target_doc_it_rewrites():
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["linksRepointed"] == 1
+
+
+# -- retire clears pending triage suggestions ---------------------------------
+
+
+def _retire_leaf_answers() -> list:
+    """Retiring `dictation` (a leaf — no children to reparent first): the
+    branch-doc probe, the base head, then ONE `_commit_and_track`, which is
+    also the branch's first commit (so it creates the ref and opens the PR)."""
+    return [_404, _ref("base1"),
+            _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"), _NO_PR, _pr()]
+
+
+def _seed_triage_proposals(c) -> tuple[str, str, str]:
+    """A pending and an accepted triage proposal, both pointing at
+    ``dictation``, plus a pending one pointing at ``sessions`` (a control that
+    retiring ``dictation`` must not touch). Returns their ids in that order."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+
+    async def _go():
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one()
+            feats = {f.slug: f for f in (await db.execute(select(Feature).where(
+                Feature.project_id == proj.id))).scalars().all()}
+            wi = WorkItem(repo=REPO, number=1, kind="issue", title="An issue")
+            db.add(wi)
+            await db.flush()
+            pending = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["dictation"].id,
+                status="pending")
+            accepted = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["dictation"].id,
+                status="accepted")
+            control = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["sessions"].id,
+                status="pending")
+            db.add_all([pending, accepted, control])
+            await db.flush()
+            ids = (pending.id, accepted.id, control.id)
+            await db.commit()
+            return ids
+
+    return c.portal.call(_go)
+
+
+def test_retire_clears_pending_triage_suggestions_for_the_capability():
+    """A pending AI suggestion is not a dependent (it must not BLOCK the
+    retire — a stale guess would hold a human's cleanup hostage), but it must
+    not survive as a live suggestion either: accepting it later would classify
+    a work item onto a sunset capability. So `retire()` NULLs
+    `proposed_feature_id` on the pending ones and leaves resolved proposals —
+    which are audit records of what was actually decided — untouched."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from server.db.models import TriageProposal
+
+    gh = FakeGh(_retire_leaf_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        pending_id, accepted_id, control_id = _seed_triage_proposals(c)
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        r = _retire(c, slug="dictation")
+        assert r.status_code == 200, r.text
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            by_id = {p.id: p for p in s.query(TriageProposal).all()}
+            # Cleared: a later accept now comes back as "no fit" rather than
+            # classifying onto a sunset capability.
+            assert by_id[pending_id].proposed_feature_id is None
+            # Untouched: already decided, so it is history, not a suggestion.
+            assert by_id[accepted_id].proposed_feature_id is not None
+            # Untouched: a pending suggestion for a DIFFERENT capability.
+            assert by_id[control_id].proposed_feature_id is not None
+
+        assert _audits(c, "pm.map_changes.retire")[0]["proposalsCleared"] == 1
+
+
+# -- triage inline capability creation, against the REAL MapChangesService ----
+
+
+def _triage_product_answers() -> list:
+    """One `create` on a product whose map-changes branch does not exist yet —
+    the same shape as `_first_create_answers()`, spelled out here because the
+    triage product has its own branch name."""
+    return [_404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"),
+            _NO_PR, _pr()]
+
+
+TRIAGE_SLUG = "triage-product"
+TRIAGE_REPO = "o/triage"
+
+
+def _seed_triage_product(c) -> str:
+    """A SECOND product with its own repo (so repo→product ownership resolves
+    uniquely — ``o/r`` is registered to two products in this module's seed),
+    one indexed capability, and one pending proposal on a work item of that
+    repo. Returns the proposal id."""
+    from server.db import db_session
+    from server.db.models import (
+        Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+
+    async def _go():
+        async with db_session() as db:
+            p = Project(slug=TRIAGE_SLUG, name="Triage product",
+                        onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(ProjectRepo(project_id=p.id, repo=TRIAGE_REPO, is_primary=True))
+            db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
+                           state="live"))
+            wi = WorkItem(repo=TRIAGE_REPO, number=4, kind="issue",
+                          title="Take money")
+            db.add(wi)
+            await db.flush()
+            prop = TriageProposal(work_item_id=wi.id, proposed_feature_id=None,
+                                  no_fit_suggestion="payments", status="pending",
+                                  reach=3, impact=2, effort=1, confidence=3)
+            db.add(prop)
+            await db.flush()
+            ids = (prop.id, wi.id)
+            await db.commit()
+            return ids
+
+    return c.portal.call(_go)
+
+
+def test_triage_accept_with_new_capability_end_to_end_through_the_real_service(
+    monkeypatch,
+):
+    """The inline-create path driven through the REAL ``MapChangesService``
+    and its REAL ``_resync_now``, not a fake whose resync is a bare
+    ``db.add(Feature(...))``.
+
+    That distinction is the whole point: a fake resync materializes a Feature
+    row no matter how the service is wired, so every one of the existing
+    ``newCapability`` tests would still pass against an orchestrator whose
+    resync seams were never wired at all. This one reads the doc, plans the
+    index and applies it for real, then asserts the resulting DB state."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from server.automations import target_identity
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.tests.pm_ownership_fixtures import identity_repositories
+
+    monkeypatch.setattr(target_identity, "resolve_repositories", identity_repositories)
+
+    gh = FakeGh(_triage_product_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        proposal_id, work_item_id = _seed_triage_product(c)
+        # The triage product's own docs — `payments.md` is NOT among them; the
+        # route's `svc.edit()` commit is what puts it on the branch, and the
+        # real `_resync_now` is what has to find it there.
+        _stub_pm_sync(orch, gh, {f"{DOCS}/sessions.md": ROOT_DOC})
+
+        r = c.post(f"/api/pm/triage/{proposal_id}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments",
+                                                     "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["triageState"] == "classified"
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=TRIAGE_SLUG).one()
+            feat = s.query(Feature).filter_by(
+                project_id=proj.id, slug="payments").one()
+            assert feat.title == "Payments"
+            # Indexed off the OPEN map-changes branch, so it carries the PR
+            # columns rather than a default-branch commit_sha — proof the real
+            # `_resync_now` (not a stub) produced this row.
+            assert feat.pr_number == 12
+            assert feat.commit_sha is None
+            # …and the work item is classified onto that very row.
+            wi = s.query(WorkItem).filter_by(id=work_item_id).one()
+            assert wi.feature_id == feat.id
+            assert s.query(TriageProposal).filter_by(
+                id=proposal_id).one().status == "accepted"
+
+        # The doc really was committed to the product's own map-changes branch.
+        assert (f"{DOCS}/payments.md", ) == tuple(
+            path for path, _text in _all_committed(gh))
