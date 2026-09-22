@@ -756,15 +756,30 @@ class MapChangesService:
                 for link, proj_slug, feat_slug in outgoing
                 if not (proj_slug == project.slug and feat_slug == into_slug)]
             into_doc = await self._current_doc(gh, branch, into_slug)
-            into_existing = list(into_doc.links) if into_doc is not None else []
+            into_existing = tuple(into_doc.links) if into_doc is not None else ()
             merged = tuple(dict.fromkeys([*into_existing, *outgoing_refs]))
-            validate_op(MapOp(op="links", slug=into_slug, links=merged), ctx)
-            pointer, _path, _sha = await self._commit_and_track(
-                db, project, gh, repo, branch, base, base_sha, pointer,
-                MapOp(op="links", slug=into_slug, links=merged))
+            # No `validate_op` pre-check here (unlike every other op this
+            # method commits): `merged` is a FULL replacement list, and
+            # `validate_op`'s "links" branch re-validates every ref in it
+            # against `ctx.link_targets` — including `into_existing` refs
+            # `merge()` never touched. A capability's doc can carry a stale
+            # ref `_pm_sync_apply_feature_plan` never cleaned up (its target
+            # renamed/vanished elsewhere), and re-validating it here would
+            # 422 a merge that has nothing to do with that ref. Every ref in
+            # `merged` is either copied verbatim from an already-committed
+            # doc (valid or not, not this merge's problem to fix) or
+            # `into_slug` itself, which trivially exists — so there is
+            # nothing for `validate_op` to usefully catch. `_commit_and_track`
+            # still runs `apply_op`'s own structural checks (e.g. the doc
+            # must be readable at all).
+            if merged != into_existing:
+                pointer, _path, _sha = await self._commit_and_track(
+                    db, project, gh, repo, branch, base, base_sha, pointer,
+                    MapOp(op="links", slug=into_slug, links=merged))
             # The source doc is being retired — clear its own outgoing list
-            # rather than let it linger on the sunset doc.
-            validate_op(MapOp(op="links", slug=from_slug, links=()), ctx)
+            # rather than let it linger on the sunset doc. Same no-validate
+            # reasoning: the replacement list is empty, so there is nothing
+            # to validate regardless.
             pointer, _path, _sha = await self._commit_and_track(
                 db, project, gh, repo, branch, base, base_sha, pointer,
                 MapOp(op="links", slug=from_slug, links=()))
@@ -773,6 +788,11 @@ class MapChangesService:
         for _link, _other_project_slug, other_slug, _other_project_id in same_project_incoming:
             other_doc = await self._current_doc(gh, branch, other_slug)
             if other_doc is None:
+                # Its doc cannot be read at all (missing/unparseable) — this
+                # capability's own incoming ref cannot be repointed, same
+                # honestly-surfaced-limitation treatment as a cross-project
+                # incoming link: counted, never silently dropped.
+                links_not_repointed += 1
                 continue
             new_links = []
             for ref in other_doc.links:
@@ -785,10 +805,13 @@ class MapChangesService:
                 # — repointing it would write a self-link (`into_slug ->
                 # into_slug`); drop it instead.
             deduped = tuple(dict.fromkeys(new_links))
-            validate_op(MapOp(op="links", slug=other_slug, links=deduped), ctx)
-            pointer, _path, _sha = await self._commit_and_track(
-                db, project, gh, repo, branch, base, base_sha, pointer,
-                MapOp(op="links", slug=other_slug, links=deduped))
+            # No `validate_op` here either — same reasoning as the into_slug
+            # commit above: `deduped` only ever carries refs already on
+            # `other_slug`'s own committed doc, plus `into_slug` itself.
+            if deduped != other_doc.links:
+                pointer, _path, _sha = await self._commit_and_track(
+                    db, project, gh, repo, branch, base, base_sha, pointer,
+                    MapOp(op="links", slug=other_slug, links=deduped))
             links_repointed += 1
 
         reparented = 0

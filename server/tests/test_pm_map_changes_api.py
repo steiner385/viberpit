@@ -197,6 +197,25 @@ def _merge_incoming_self_link_answers() -> list:
     ]
 
 
+# The scripted answers merging `dictation` into `sessions` where `sessions`
+# (the merge TARGET, whose doc `merge()` rewrites to add `dictation`'s
+# outgoing link to `third-cap`) already carries a STALE, unresolvable link —
+# same shape as `_merge_outgoing_link_answers()`, just with
+# `SESSIONS_DOC_WITH_STALE_REF` instead of `ROOT_DOC` at the two points that
+# read/re-read `sessions`' doc. Proves the stale ref does not block the
+# merge: `merge()`'s link commits skip `validate_op`'s full-list
+# re-validation (see the comment in `map_changes.py`).
+def _merge_stale_ref_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(SESSIONS_DOC_WITH_STALE_REF),                      # _current_doc(sessions)
+        _ref("base1"), _contents(SESSIONS_DOC_WITH_STALE_REF), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=links dictation (clear)
+        _ref("c2"), _contents(CHILD_DOC), _commit("c3"),             # op=retire dictation
+    ]
+
+
 # -- fixtures -----------------------------------------------------------------
 
 
@@ -598,6 +617,14 @@ FOURTH_DOC_LINKING_TO_DICTATION = (
 SESSIONS_DOC_LINKING_TO_DICTATION = (
     "---\nslug: sessions\ntitle: Sessions\nstate: live\n"
     "links:\n  - kind: powered_by\n    project: example-product\n    feature: dictation\n"
+    "---\n# Sessions\n")
+# `sessions` carrying a STALE link — `gone-cap` is not (and never will be, for
+# this test) an indexed capability. `_pm_sync_apply_feature_plan` never
+# cleans up a ref it can't resolve (it just skips it with a warning), so this
+# is a real, reachable doc state, not a contrived one.
+SESSIONS_DOC_WITH_STALE_REF = (
+    "---\nslug: sessions\ntitle: Sessions\nstate: live\n"
+    "links:\n  - kind: integrates_with\n    project: example-product\n    feature: gone-cap\n"
     "---\n# Sessions\n")
 
 
@@ -1624,3 +1651,48 @@ def test_merge_drops_a_direct_incoming_link_from_the_target_instead_of_self_link
             assert s.query(FeatureLink).filter_by(
                 src_feature_id=sessions_id, dst_feature_id=sessions_id).all() == []
             assert s.query(FeatureLink).filter_by(kind="powered_by").all() == []
+
+
+def test_merge_succeeds_despite_a_stale_link_on_the_target_doc_it_rewrites():
+    """`merge()`'s link-commit call sites deliberately skip `validate_op`
+    (see the comment above each commit in `map_changes.py`) because that
+    call would re-validate EVERY ref in the full replacement list, including
+    refs `merge()` never touched. `sessions` (the merge target here, whose
+    doc gets rewritten to add `dictation`'s outgoing link to `third-cap`)
+    already carries a STALE `integrates_with example-product/gone-cap` ref —
+    a real, reachable state: `_pm_sync_apply_feature_plan` never cleans up a
+    ref it can't resolve (its target may have been renamed or removed in
+    another product), it just skips it with a warning. Before this fix, ANY
+    merge that rewrote `sessions.md` would 422 with `bad_link: unknown link
+    target example-product/gone-cap` — even though that stale ref has
+    nothing to do with the merge being attempted. This asserts the merge now
+    SUCCEEDS."""
+    gh = FakeGh(_merge_stale_ref_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": SESSIONS_DOC_WITH_STALE_REF, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/third-cap.md": THIRD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            third = Feature(project_id=proj.id, slug="third-cap", title="Third", state="live")
+            s.add(third)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
+                              kind="integrates_with"))
+            s.commit()
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        # Previously would have 422'd with `bad_link: unknown link target
+        # example-product/gone-cap` — a ref this merge never touched.
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
