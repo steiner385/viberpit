@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { useRetireCapability, useMergeCapabilities } from '@/api/hooks'
 import type { CapabilityNode, ProductNode } from '@/api/roadmap'
 import { flattenCapabilities, findCapability } from '@/features/roadmap/lookup'
@@ -42,6 +42,7 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
   const [merging, setMerging] = useState<string | null>(null)
   const [mergeTarget, setMergeTarget] = useState<string>('')
   const [mergeError, setMergeError] = useState<string | null>(null)
+  const [mergeInfo, setMergeInfo] = useState<string | null>(null)
 
   const doRetire = async (slug: string) => {
     setError(null)
@@ -55,10 +56,16 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
 
   const doMerge = async (fromSlug: string, intoSlug: string) => {
     setMergeError(null)
+    setMergeInfo(null)
     try {
-      await merge.mutateAsync({ fromSlug, intoSlug })
+      const result = await merge.mutateAsync({ fromSlug, intoSlug })
       setMerging(null)
       setMergeTarget('')
+      if (result.linksNotRepointed > 0) {
+        setMergeInfo(
+          `Merge complete — ${result.linksNotRepointed} cross-product link(s) could not be repointed and still point at the retired capability.`,
+        )
+      }
     } catch (e) {
       setMergeError(extractMutationErrorMessage(e, `Could not merge ${fromSlug}`))
     }
@@ -68,6 +75,7 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
     <div className="flex flex-col gap-4">
       {error && <div role="alert" className="text-sm text-danger">{error}</div>}
       {mergeError && <div role="alert" className="text-sm text-danger">{mergeError}</div>}
+      {mergeInfo && <div className="text-sm text-ink">{mergeInfo}</div>}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs uppercase text-ink-muted">
@@ -79,11 +87,10 @@ export function CapabilitiesTab({ product, capabilities }: Props) {
         </thead>
         <tbody>
           {rows.map(({ node, depth }) => {
-            const blocked = useMemo(() => selfAndDescendants(product, node), [product, node])
-            const mergeTargets = useMemo(
-              () => rows.filter(({ node: n }) => !blocked.has(n.slug)).map(({ node: n }) => n),
-              [blocked],
-            )
+            const blocked = selfAndDescendants(product, node)
+            const mergeTargets = rows
+              .filter(({ node: n }) => !blocked.has(n.slug))
+              .map(({ node: n }) => n)
 
             return (
               <tr key={node.id} className="border-t border-line">

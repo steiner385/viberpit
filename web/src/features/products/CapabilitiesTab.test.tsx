@@ -73,6 +73,11 @@ describe('CapabilitiesTab', () => {
     mergeAsync.mockResolvedValue({
       pointer: { branch: 'pm/map-changes-kindash', prNumber: 9, prUrl: null, status: 'open',
                  openedAt: null, headSha: 'x', behind: false, conflicting: false },
+      workItems: 0,
+      initiatives: 0,
+      linksRepointed: 1,
+      linksNotRepointed: 2,
+      childrenReparented: 0,
     })
     render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
     fireEvent.click(screen.getAllByRole('button', { name: /merge into/i })[1]) // dictation
@@ -83,5 +88,6 @@ describe('CapabilitiesTab', () => {
     await waitFor(() => expect(mergeAsync).toHaveBeenCalledWith({
       fromSlug: 'dictation', intoSlug: 'sessions',
     }))
+    expect(await screen.findByText(/2 cross-product link/i)).toBeInTheDocument()
   })
 })
