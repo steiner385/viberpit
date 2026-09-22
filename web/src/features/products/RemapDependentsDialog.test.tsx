@@ -26,13 +26,23 @@ const PRODUCT = {
       slug: 'init-d', title: 'Init D', primaryCapability: 'notifications',
       capabilities: ['dictation', 'notifications'],
     },
+    // Touches `dictation` plus a slug that is NOT in `allCapabilities` (stale
+    // / dangling) — the unresolvable slug must be dropped rather than sent as
+    // an `undefined` the API would reject.
+    {
+      slug: 'init-e', title: 'Init E', primaryCapability: 'dictation',
+      capabilities: ['dictation', 'ghost-cap'],
+    },
   ],
 } as never
 
+// Both endpoints the dialog calls key on `Feature.id`, never on the slug, so
+// every assertion below is in terms of ids ('f1'/'f3'), not slugs.
 const CAPABILITY = { id: 'f2', slug: 'dictation', title: 'Dictation' } as never
 const ALL_CAPABILITIES = [
   { id: 'f2', slug: 'dictation', title: 'Dictation' },
   { id: 'f1', slug: 'sessions', title: 'Sessions' },
+  { id: 'f3', slug: 'notifications', title: 'Notifications' },
 ] as never
 
 describe('RemapDependentsDialog', () => {
@@ -67,37 +77,47 @@ describe('RemapDependentsDialog', () => {
     expect(screen.getByRole('checkbox', { name: /^init c/i })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /^init d/i })).toBeInTheDocument()
 
+    // The "Move to" options carry Feature ids, never slugs.
+    const target = screen.getByRole('combobox', { name: /move to/i })
+    expect(
+      Array.from(target.querySelectorAll('option')).map((o) => o.value),
+    ).toEqual(['', 'f1', 'f3'])
+
     fireEvent.click(screen.getByRole('checkbox', { name: /^init a/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /^init c/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /^init d/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /^init e/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /issue 1/i }))
-    fireEvent.change(screen.getByRole('combobox', { name: /move to/i }), {
-      target: { value: 'sessions' },
-    })
+    fireEvent.change(target, { target: { value: 'f1' } })
     fireEvent.click(screen.getByRole('button', { name: /move selected/i }))
 
     await waitFor(() => {
       // init-a touched ONLY `dictation`, and `dictation` was its primary:
-      // capabilityIds collapses to just the target, and the primary moves too.
+      // capabilityIds collapses to just the target id, and the primary moves too.
       expect(updateInitiative).toHaveBeenCalledWith({
-        slug: 'init-a', input: { capabilityIds: ['sessions'], primaryCapabilityId: 'sessions' },
+        slug: 'init-a', input: { capabilityIds: ['f1'], primaryCapabilityId: 'f1' },
       })
-      // init-c also touched `notifications` — that touch must survive — and
-      // `dictation` was its primary, so the primary moves to the target too.
+      // init-c also touched `notifications` — that touch must survive, as its
+      // id — and `dictation` was its primary, so the primary moves too.
       expect(updateInitiative).toHaveBeenCalledWith({
         slug: 'init-c',
-        input: { capabilityIds: ['notifications', 'sessions'], primaryCapabilityId: 'sessions' },
+        input: { capabilityIds: ['f3', 'f1'], primaryCapabilityId: 'f1' },
       })
       // init-d also touched `notifications` — survives — but `dictation` was
       // NOT its primary (`notifications` was), so no primaryCapabilityId is
       // sent at all: this initiative's primary genuinely isn't changing.
       expect(updateInitiative).toHaveBeenCalledWith({
         slug: 'init-d',
-        input: { capabilityIds: ['notifications', 'sessions'] },
+        input: { capabilityIds: ['f3', 'f1'] },
       })
       const initDCall = updateInitiative.mock.calls.find(([arg]) => arg.slug === 'init-d')
       expect(initDCall?.[0].input).not.toHaveProperty('primaryCapabilityId')
-      expect(updateOverlay).toHaveBeenCalledWith({ itemId: 'wi-1', edit: { featureId: 'sessions' } })
+      // init-e's dangling `ghost-cap` slug resolves to nothing and is dropped,
+      // leaving just the target — no `undefined` leaks into the payload.
+      expect(updateInitiative).toHaveBeenCalledWith({
+        slug: 'init-e', input: { capabilityIds: ['f1'], primaryCapabilityId: 'f1' },
+      })
+      expect(updateOverlay).toHaveBeenCalledWith({ itemId: 'wi-1', edit: { featureId: 'f1' } })
     })
   })
 
@@ -127,7 +147,7 @@ describe('RemapDependentsDialog', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /issue 1/i }))
     expect(screen.getByRole('button', { name: /move selected/i })).toBeDisabled()
     fireEvent.change(screen.getByRole('combobox', { name: /move to/i }), {
-      target: { value: 'sessions' },
+      target: { value: 'f1' },
     })
     expect(screen.getByRole('button', { name: /move selected/i })).toBeEnabled()
   })

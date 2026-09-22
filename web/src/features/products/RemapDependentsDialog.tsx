@@ -40,6 +40,16 @@ export function RemapDependentsDialog({ product, capability, allCapabilities, op
   const { data: leaves } = useLeaves({ capability: capability.slug })
   const issues = (leaves ?? []).filter((leaf) => leaf.kind === 'issue')
 
+  // BOTH endpoints this dialog calls resolve capabilities by `Feature.id`, not
+  // slug: `PATCH /api/sdlc/initiatives/{slug}`'s `capabilityIds` /
+  // `primaryCapabilityId` do `select(Feature).where(Feature.id.in_(...))`
+  // (422 `capability_not_found` otherwise), and `PATCH
+  // /api/pm/work-items/{id}/overlay`'s `featureId` does
+  // `Feature.id == body.featureId` (404 otherwise) — same as
+  // `EditInitiativeDialog` / `LeafEditors` already do. But `InitiativeNode`
+  // only carries capability SLUGS, so resolve them through `allCapabilities`.
+  const idBySlug = new Map(allCapabilities.map((c) => [c.slug, c.id]))
+
   const [selectedInitiatives, setSelectedInitiatives] = useState<Set<string>>(new Set())
   const [selectedIssues, setSelectedIssues] = useState<Set<string>>(new Set())
   const [target, setTarget] = useState('')
@@ -62,7 +72,12 @@ export function RemapDependentsDialog({ product, capability, allCapabilities, op
       await Promise.all([
         ...[...selectedInitiatives].map((slug) => {
           const initiative = initiatives.find((i) => i.slug === slug)
-          const otherTouches = (initiative?.capabilities ?? []).filter((s) => s !== capability.slug)
+          // slug -> id, dropping anything that doesn't resolve (shouldn't
+          // happen — `allCapabilities` is the product's full set — but a
+          // stale slug must not become an `undefined` in the payload).
+          const otherTouches = (initiative?.capabilities ?? [])
+            .map((s) => idBySlug.get(s))
+            .filter((id): id is string => id !== undefined && id !== capability.id)
           const input: UpdateInitiativeInput = {
             capabilityIds: Array.from(new Set([...otherTouches, target])),
           }
@@ -119,8 +134,8 @@ export function RemapDependentsDialog({ product, capability, allCapabilities, op
         <Field label="Move to" htmlFor="remap-target">
           <Select id="remap-target" value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="">— choose a capability —</option>
-            {allCapabilities.filter((c) => c.slug !== capability.slug).map((c) => (
-              <option key={c.id} value={c.slug}>{c.title ?? c.slug}</option>
+            {allCapabilities.filter((c) => c.id !== capability.id).map((c) => (
+              <option key={c.id} value={c.id}>{c.title ?? c.slug}</option>
             ))}
           </Select>
         </Field>
