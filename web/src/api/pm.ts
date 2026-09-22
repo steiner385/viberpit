@@ -306,6 +306,10 @@ export interface RetireCapabilityInput {
   slug: string
 }
 
+export interface RetireCapabilityResult {
+  pointer: MapChangesPointer
+}
+
 export interface MergeCapabilitiesInput {
   fromSlug: string
   intoSlug: string
@@ -328,8 +332,8 @@ export function editMapChanges(slug: string, input: MapChangeInput): Promise<Map
 
 export function retireCapability(
   slug: string, input: RetireCapabilityInput,
-): Promise<MapChangeResult> {
-  return api.post<MapChangeResult>(
+): Promise<RetireCapabilityResult> {
+  return api.post<RetireCapabilityResult>(
     `/pm/projects/${encodeURIComponent(slug)}/map-changes/retire`, input)
 }
 

@@ -44,7 +44,7 @@ import {
   type Project, type CreateProjectInput, type UpdateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
-  type MapChangeInput, type MapChangeResult, type AbandonResult, type RetireCapabilityInput, type MergeCapabilitiesInput, type MergeCapabilityResult,
+  type MapChangeInput, type MapChangeResult, type AbandonResult, type RetireCapabilityInput, type RetireCapabilityResult, type MergeCapabilitiesInput, type MergeCapabilityResult,
   type ProjectHealth,
   type DispatchOutcome,
 } from './pm'
@@ -2211,7 +2211,7 @@ export function useEditMapChanges(slug: string) {
 
 export function useRetireCapability(slug: string) {
   const qc = useQueryClient()
-  return useMutation<MapChangeResult, ApiRequestError, RetireCapabilityInput>({
+  return useMutation<RetireCapabilityResult, ApiRequestError, RetireCapabilityInput>({
     mutationFn: (input) => retireCapability(slug, input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
