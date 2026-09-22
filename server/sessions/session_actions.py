@@ -84,6 +84,15 @@ async def resolve_permission(
     await _audit(db, "permission." + decision, identity,
                  {"sessionId": session_id, "permId": perm_id}, via)
     if not ok:
+        if any(p.get("permId") == perm_id
+               for p in await orch.pending_permissions(session_id)):
+            raise ActionError(
+                "PERMISSION_NOT_OWNED",
+                "That permission request is still pending, but it was raised under a "
+                "different identity than yours, so your decision was refused. A chat "
+                "message will deny it with your reply.",
+                403,
+            )
         raise ActionError(
             "PERMISSION_NOT_PENDING",
             "That permission request is no longer pending — the session may have "
@@ -106,6 +115,20 @@ async def answer_question(
                  {"sessionId": session_id, "questionId": question_id,
                   "selected": selected, "mode": mode}, via)
     if not ok:
+        # The registry refuses BOTH an unknown id and an answer from an identity
+        # other than the one the ask was registered under. Telling those apart is
+        # what stops a still-pending card from being reported as "no longer
+        # pending" and sending the user to reload a page that re-offers it
+        # (2026-09-22, session 75994c11: every answer refused, card still live).
+        if any(q.get("question_id") == question_id
+               for q in await orch.pending_questions(session_id)):
+            raise ActionError(
+                "QUESTION_NOT_OWNED",
+                "That question is still pending, but it was asked under a different "
+                "identity than yours, so this answer was refused. Send a chat message "
+                "to answer it instead.",
+                403,
+            )
         raise ActionError(
             "QUESTION_NOT_PENDING",
             "That question is no longer pending — the session may have moved on. "

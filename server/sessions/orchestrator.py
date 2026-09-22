@@ -124,6 +124,7 @@ from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
     RESUME_ELIGIBLE_STATUSES, is_assistant, is_assistant_kind,
 )
+from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
@@ -322,6 +323,16 @@ class _RowEngineRef:
     model: str | None
 
 
+#: Owners that are "nobody in particular": a driver under one of these hands itself
+#: to the first real user who attaches. ``SYSTEM_IDENTITY`` is the internal paths
+#: (rehydrate, dispatch, eager re-launch); ``OPEN_LAN_IDENTITY`` is the LAN-open
+#: guest — deliberately unauthenticated, so it protects no boundary a verified user
+#: could cross (2026-09-22: the assistant drawer's create call was mis-attributed to
+#: the guest and the real user's every answer was refused; see
+#: test_ensure_driver_identity_rethread.py).
+_UNOWNED_IDENTITIES: frozenset[str] = frozenset({SYSTEM_IDENTITY, OPEN_LAN_IDENTITY})
+
+
 def _rethread_identity(driver, identity: str) -> None:
     """Upgrade a live driver's identity to a real attaching user.
 
@@ -330,10 +341,10 @@ def _rethread_identity(driver, identity: str) -> None:
     answers are registered under ``driver.identity`` and resolved against the
     answering WS identity, so if a real user attaches to a system-built driver and
     its identity isn't upgraded, every answer is rejected and the agent hangs on
-    the question forever. Only upgrade FROM the system sentinel TO a real user —
-    never downgrade a real identity back to system (an internal call must not clobber
-    the attached user)."""
-    if identity != SYSTEM_IDENTITY and driver.identity == SYSTEM_IDENTITY:
+    the question forever. Only upgrade FROM an unowned sentinel TO a real user —
+    never downgrade a real identity back (an internal call must not clobber the
+    attached user)."""
+    if identity not in _UNOWNED_IDENTITIES and driver.identity in _UNOWNED_IDENTITIES:
         driver.identity = identity
 
 
@@ -1986,14 +1997,21 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         status: str | None
         host: str | None
+        purged = False
         if record is not None:
             status, host = record.status, getattr(record, "host", None)
         else:
             async with db_session() as db:
                 row = await db.get(DbSession, session_id)
-                status = row.status if row is not None else None
-                host = row.host if row is not None else None
-        if status not in ("complete", "ended", "archived"):
+            status = row.status if row is not None else None
+            host = row.host if row is not None else None
+            # No record AND no DB row: permanent_delete already archived (and
+            # tore the driver down for) this session before removing the row,
+            # so its absence IS the stop proof — never "still working" forever.
+            # Without this, a claim naming a since-purged session held PR
+            # Doctor capacity for a whole product indefinitely (#2199).
+            purged = row is None
+        if status not in ("complete", "ended", "archived") and not purged:
             return False
         if snapshot.tree_stopped_generation == snapshot.tree_generation:
             return True
@@ -2019,7 +2037,7 @@ class SessionOrchestrator:
             # giving up here: the terminal-attestation path below can close a
             # RETAINED execution too, under its own stronger evidence bar
             # (torn-down driver, owned record) — never assumed by this shortcut.
-        if (record is None and status in ("ended", "archived")
+        if (record is None and (status in ("ended", "archived") or purged)
                 and session_id not in self._drivers):
             # A terminal row whose record is gone is this orchestrator's own act —
             # archive_session and close_session pop the record and the driver and
@@ -12231,18 +12249,122 @@ class SessionOrchestrator:
                     tx.operation.provenance = {**tx.operation.provenance, "dispatch_claimed": True}
             return expected
         await reconcile_legacy_targets(targets)
-        async with acquire(targets, owner="pr-doctor", source=source,
-                           reason="PR recovery requested",
-                           provenance={"origin_ref": target, "dispatch_claimed": True}) as tx:
+        try:
+            async with acquire(targets, owner="pr-doctor", source=source,
+                               reason="PR recovery requested",
+                               provenance={"origin_ref": target, "dispatch_claimed": True}) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if (dict(row.state) if row else {}) != expected:
+                    raise StaleOwnership("PR state changed during acquisition")
+                state = {**expected, "ownership_token": tx.token}
+                if row is None:
+                    tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=target, state=state))
+                else:
+                    row.state = state
+            return state
+        except OwnershipConflict:
+            adopted = await self._pr_doctor_adopt_finished_runner_closeout(targets, target, expected)
+            if adopted is None:
+                raise
+            return adopted
+
+    async def _pr_doctor_adopt_finished_runner_closeout(self, targets, target, expected):
+        """Take over a Backlog Runner ``terminal-closeout`` operation that still
+        holds this PR's linked issues, or return None when the conflict is real.
+
+        The runner's merged-PR close-out can escalate to a human ("merged PR
+        needs a human close-out") and park: its ``completed`` operation keeps
+        the batch's issue keys with no session attached. PR Doctor claims a PR
+        together with the issues it closes, so every later PR referencing one
+        of those issues was refused with "target already has an operation" —
+        the manual button bounced, the sweep re-refused every tick, and, via
+        ``_pr_doctor_pending_products``, the whole product's Backlog Runner
+        dispatch sat gated behind a PR nothing could claim (2026-09-22: eight
+        cairnea/KinDash PRs, 70 ``skipped_pr_doctor_priority`` in 20 min).
+
+        A ``completed`` operation with no session is proven stopped by
+        construction (``complete_action`` only records a finished non-session
+        effect), so this is the same ``runner-handoff`` transfer
+        ``_backlog_handoff`` performs from the runner side — same coverage rule
+        (the PR's targets must cover the ENTIRE batch), same fenced
+        ``expanded_handoff``, same successor provenance (``runner_target``) so
+        the rest of PR Doctor's runner-handoff lifecycle applies unchanged. The
+        runner row keeps ``closeout_started`` so its sweep stays parked on the
+        close-out branch and never re-attributes the PR mid-recovery.
+        """
+        from sqlalchemy import select
+        from server.automations.ownership import OwnershipConflict, ReleaseProof, StaleOwnership
+        from server.automations.ownership_handoff import expanded_handoff
+        from server.db.models import (
+            AutomationOperation, AutomationOwnedTarget, AutomationTargetState,
+        )
+        keys = {t.key for t in targets}
+        async with db_session() as db:
+            tokens = set((await db.scalars(select(AutomationOwnedTarget.operation_token).where(
+                AutomationOwnedTarget.key.in_(sorted(keys)),
+                AutomationOwnedTarget.operation_token.is_not(None)))).all())
+            if len(tokens) != 1:
+                return None
+            (token,) = tokens
+            operation = await db.get(AutomationOperation, token)
+        if (operation is None or operation.owner != "backlog-runner"
+                or operation.source != "terminal-closeout" or operation.phase != "completed"
+                or operation.session_id or operation.reserved_session_id
+                or not set(operation.targets) <= keys):
+            return None
+        runner_target = operation.provenance.get("origin_ref")
+        if not runner_target:
+            return None
+        async with expanded_handoff(token, targets) as tx:
+            if (tx.operation.phase != "completed" or tx.operation.session_id
+                    or tx.operation.reserved_session_id):
+                raise OwnershipConflict("target already has an operation")
+            runner = await tx.db.get(AutomationTargetState, ("backlog-runner", runner_target))
+            if runner is None or runner.state.get("ownership_token") != token:
+                raise StaleOwnership("runner close-out no longer owns its predecessor")
             row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
             if (dict(row.state) if row else {}) != expected:
-                raise StaleOwnership("PR state changed during acquisition")
-            state = {**expected, "ownership_token": tx.token}
+                raise StaleOwnership("PR state changed during adoption")
+            successor = await tx.transfer(
+                owner="pr-doctor", source="runner-handoff", proof=ReleaseProof.WORK_STOPPED,
+                reason="finished implementation close-out adopted by PR recovery",
+                provenance={"origin_ref": target, "runner_target": runner_target,
+                            "implementation_session_id":
+                                operation.provenance.get("implementation_session_id"),
+                            "dispatch_claimed": True},
+                successor_targets=targets)
+            runner.state = {**runner.state, "ownership_token": successor, "handed_off": True,
+                            "implementation_session_id":
+                                runner.state.get("implementation_session_id")
+                                or runner.state.get("session_id"),
+                            "session_id": None}
+            state = {**expected, "ownership_token": successor}
             if row is None:
                 tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=target, state=state))
             else:
                 row.state = state
+        await self._pr_doctor_ctx.emit(
+            "info", f"{target}: adopted the finished implementation close-out of {runner_target}",
+            kind="handoff", target=target)
         return state
+
+    @staticmethod
+    def _pr_doctor_refusal_detail(exc: BaseException, info) -> dict | None:
+        """``ownership_wait`` event detail recording that a CLAIM was refused
+        because the target is owned elsewhere, and at which head SHA.
+
+        This is the durable evidence ``_pr_doctor_pending_products`` reads to
+        stop reserving Backlog Runner capacity for a PR PR Doctor cannot take
+        (#2202). Only ``OwnershipConflict`` qualifies: ``StaleOwnership`` (the
+        target state moved under a decision), ``TargetIdentityError`` (GitHub
+        identity briefly unavailable) and a mechanical ``ValueError`` are races
+        the next sweep tick retries, so recording them would un-gate a product
+        for a whole head SHA over a blip.
+        """
+        from server.automations.ownership import OwnershipConflict
+        if not isinstance(exc, OwnershipConflict):
+            return None
+        return {"claim_refused": True, "head_sha": info.head_sha, "reason": str(exc)}
 
     async def _pr_doctor_prepare_attempt(self, target, expected, result, kind):
         from server.automations.ownership import owned, StaleOwnership
@@ -12363,7 +12485,8 @@ class SessionOrchestrator:
                                                   source="manual" if on_phase else "automatic",
                                                   expected_state=expected_state)
         except (OwnershipConflict, StaleOwnership, TargetIdentityError) as exc:
-            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
+            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target,
+                                           detail=self._pr_doctor_refusal_detail(exc, info))
             return "transient", None, str(exc)
         admitted = engine.record_attempt(engine.apply_rearm(expected, info),
                                          engine.SessionFix(kind), info.head_sha)
@@ -12603,6 +12726,10 @@ class SessionOrchestrator:
         try:
             state = await self._pr_doctor_claim(repo, want, target, source="manual-consolidation")
         except (OwnershipConflict, StaleOwnership, TargetIdentityError) as exc:
+            # No `_pr_doctor_refusal_detail` here: a consolidation target
+            # (`consolidation_target`) is not a `repo#N` the Backlog Runner gate
+            # ever reads, and it spans several PRs, so there is no one head SHA
+            # a refusal marker could be true of (#2202).
             await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
             return "duplicate", None
 
@@ -12713,7 +12840,8 @@ class SessionOrchestrator:
             expected = await self._pr_doctor_claim(repo, [info.number], target,
                                                   expected_state=expected_state)
         except (OwnershipConflict, StaleOwnership, TargetIdentityError, ValueError) as exc:
-            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
+            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target,
+                                           detail=self._pr_doctor_refusal_detail(exc, info))
             return False
         token = expected["ownership_token"]
         admitted = engine.record_attempt(engine.apply_rearm(expected, info),
@@ -13914,13 +14042,74 @@ class SessionOrchestrator:
                     seen.add((repo, info.head_ref))
         return list(seen)
 
-    async def _pr_doctor_pending_products(self) -> frozenset[str]:
-        """Product slugs with at least one PR PR Doctor will actually act on
-        (spec 2026-09-21 pr-doctor-priority). Backlog Runner's admission gate
-        reads this to refuse NEW claims for a gated product — never an
+    async def _pr_doctor_claim_refusals(self) -> dict[str, str]:
+        """``target -> head_sha`` for every target whose NEWEST
+        ``ownership_wait`` event recorded a claim refusal
+        (``_pr_doctor_refusal_detail``).
+
+        Newest-per-target, not any-match: a target whose latest
+        ``ownership_wait`` is the attached-live-session refusal
+        (``_pr_doctor_session_fix_owned``, which fires only AFTER a successful
+        claim) carries no ``claim_refused`` marker and must read as "live work
+        holds it" — the opposite of a refused claim. ``limit`` bounds this read
+        on the admission hot path: the pr-doctor feed is itself capped at 500
+        events and a refusing sweep re-emits every blocked target on every
+        tick, so the newest 200 always contain each target's latest word.
+        """
+        refusals: dict[str, str] = {}
+        seen: set[str] = set()
+        for event in await self._pr_doctor_ctx.list_events(kind="ownership_wait", limit=200):
+            target = event.get("target")
+            if not isinstance(target, str) or target in seen:
+                continue
+            seen.add(target)
+            detail = event.get("detail")
+            if not isinstance(detail, dict) or not detail.get("claim_refused"):
+                continue
+            head_sha = detail.get("head_sha")
+            if isinstance(head_sha, str) and head_sha:
+                refusals[target] = head_sha
+        return refusals
+
+    @staticmethod
+    def _pr_doctor_claim_unclaimable(state: dict, refused_at_sha: str | None, info) -> bool:
+        """Whether PR Doctor provably cannot CLAIM this PR, so reserving
+        Backlog Runner capacity for it would gate a product on a repair that
+        cannot start (#2202: a product sat behind eight PRs whose every claim
+        was refused, 70 ``skipped_pr_doctor_priority`` in 20 minutes with
+        nothing live in either automation).
+
+        Evidence, never inference — the marker
+        ``_pr_doctor_refusal_detail`` wrote when the claim was actually
+        refused. Three conditions must hold to stop gating:
+
+        * the refusal names the PR's CURRENT head. A push re-arms the target
+          and PR Doctor tries again, so an older refusal proves nothing.
+        * PR Doctor holds no ownership of the target. A refusal under its own
+          ``ownership_token`` is the predecessor transfer waiting for work to
+          stop — its own recovery lifecycle, which clears itself and does
+          legitimately reserve capacity. Only a FOREIGN owner (the ``acquire``
+          conflict: a live foreign owner, a legacy conflict, a partial batch)
+          deadlocks the gate.
+        * PR Doctor has not acted at this head since. A recorded
+          ``last_action_sha`` means a claim succeeded after that refusal and a
+          repair really is running.
+        """
+        if not refused_at_sha or not info.head_sha or refused_at_sha != info.head_sha:
+            return False
+        if state.get("ownership_token"):
+            return False
+        return state.get("last_action_sha") != info.head_sha
+
+    async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
+        """Product slug -> the PR refs PR Doctor will actually act on (spec
+        2026-09-21 pr-doctor-priority; #2202). Backlog Runner's admission gate
+        reads MEMBERSHIP to refuse NEW claims for a gated product — never an
         existing one (D8: admission refuses new claims, it never kills a
-        session). Best-effort: any failure yields frozenset() rather than
-        blocking Backlog Runner dispatch on a PR Doctor read.
+        session) — and the refs are what the refusal text and the Capacity
+        page name, so "capacity is reserved" says which PRs reserve it.
+        Best-effort: any failure yields an empty mapping rather than blocking
+        Backlog Runner dispatch on a PR Doctor read.
 
         Gates only when ``plan_recovery`` yields ``Mechanical`` or
         ``SessionFix`` — i.e. PR Doctor is actually going to fix it. A
@@ -13929,6 +14118,11 @@ class SessionOrchestrator:
         classification, or an already-given-up/ceiling-reached target) must
         NOT gate: nothing is being fixed, so gating would starve the product
         forever, including whenever PR Doctor itself is switched off.
+
+        Deciding to fix is not the same as being ABLE to: the busy/foreign-owner
+        checks run at dispatch time, so a target whose claim is refused is
+        dropped here too (``_pr_doctor_claim_unclaimable``) — otherwise the
+        product stays reserved for a PR nothing can pick up.
         """
         from server.automations import pr_doctor_engine as engine
         from server.pm.repo_project import owning_projects_by_repo
@@ -13936,7 +14130,9 @@ class SessionOrchestrator:
             mode = await self._pr_autofix_mode()
             config = await self._pr_doctor_config()
             states = await self._pr_doctor_ctx.list_target_states()
-            pending_repos: set[str] = set()
+            refusals = await self._pr_doctor_claim_refusals()
+            gating: dict[str, list[str]] = {}
+            unclaimable: dict[str, list[str]] = {}
             for repo, branch in await self._pr_doctor_scope_pairs():
                 info = self._pr_doctor_info_for(repo, branch)
                 if info is None or engine.target_terminal(info):
@@ -13944,22 +14140,38 @@ class SessionOrchestrator:
                 failure_mode = engine.classify(info)
                 if failure_mode is None:
                     continue
-                state = states.get(f"{repo}#{info.number}", {})
+                target = f"{repo}#{info.number}"
+                state = states.get(target, {})
                 action = engine.plan_recovery(failure_mode, mode, config, state)
                 if not isinstance(action, (engine.Mechanical, engine.SessionFix)):
                     continue
-                pending_repos.add(repo)
-            if not pending_repos:
-                return frozenset()
+                bucket = (unclaimable if self._pr_doctor_claim_unclaimable(
+                    state, refusals.get(target), info) else gating)
+                bucket.setdefault(repo, []).append(target)
+            if not gating and not unclaimable:
+                return {}
             async with db_session() as db:
                 # Registration-only matching (no verified canonical identities):
                 # a repo known by an alias spelling may resolve on the admission
                 # side but be dropped here, so the gate fails open for it.
-                owners = await owning_projects_by_repo(db, pending_repos)
-            return frozenset(owner.slug for owner in owners.values())
+                owners = await owning_projects_by_repo(db, set(gating) | set(unclaimable))
+            pending: dict[str, list[str]] = {}
+            excluded: dict[str, list[str]] = {}
+            for repo, owner in owners.items():
+                for source, into in ((gating, pending), (unclaimable, excluded)):
+                    if source.get(repo):
+                        into.setdefault(owner.slug, []).extend(source[repo])
+            for slug, refs in excluded.items():
+                # The only readout of the deadlock this guards against: the
+                # runner logs "capacity reserved" per skipped item while PR
+                # Doctor logs a refusal per tick, and nothing tied the two
+                # together per product (#2202).
+                log.info("pr_doctor_gate product=%s reserving=%s unclaimable=%s",
+                         slug, sorted(pending.get(slug, ())), sorted(refs))
+            return {slug: tuple(sorted(refs)) for slug, refs in pending.items()}
         except Exception:
             log.warning("orchestrator._pr_doctor_pending_products_failed", exc_info=True)
-            return frozenset()
+            return {}
 
     @staticmethod
     def _session_pr_branches(rec) -> list[str]:

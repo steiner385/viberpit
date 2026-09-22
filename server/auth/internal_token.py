@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from server.auth.middleware import _signing_secret
+from server.auth.middleware import _cross_process_signing_secret
 
 PREFIX = "ccsys1:"
 _SALT = "viberpit-internal-system-v1"
@@ -27,7 +27,8 @@ ALLOWED_PATH = "/api/internal/automation-sessions"
 
 
 def _serializer() -> URLSafeTimedSerializer:
-    return URLSafeTimedSerializer(_signing_secret(), salt=_SALT)
+    # Daemon-minted, edge-verified — same cross-process key rule as ccas1.
+    return URLSafeTimedSerializer(_cross_process_signing_secret(), salt=_SALT)
 
 
 def mint_token() -> str:

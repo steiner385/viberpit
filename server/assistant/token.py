@@ -7,9 +7,11 @@ from dataclasses import dataclass
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from server.auth.middleware import _signing_secret
+from server.auth.middleware import (
+    ASSISTANT_TOKEN_PREFIX, _cross_process_signing_secret, _signing_secret,
+)
 
-PREFIX = "ccas1:"
+PREFIX = ASSISTANT_TOKEN_PREFIX
 _SALT = "ccswitch-assistant-v1"
 
 
@@ -20,7 +22,10 @@ class AssistantClaims:
 
 
 def _serializer() -> URLSafeTimedSerializer:
-    return URLSafeTimedSerializer(_signing_secret(), salt=_SALT)
+    # Minted by the DAEMON (assistant overlay), verified by the EDGE: two processes,
+    # two env files. Signed with the fleet-shared key, not the edge-local cookie
+    # secret — see _cross_process_signing_secret.
+    return URLSafeTimedSerializer(_cross_process_signing_secret(), salt=_SALT)
 
 
 def mint_token(identity: str, session_id: str) -> str:

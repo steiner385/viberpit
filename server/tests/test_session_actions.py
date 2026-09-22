@@ -28,6 +28,10 @@ class FakeOrch:
         # (a gated model is refused there rather than parked). None = an ordinary
         # session, which is what every test here drives.
         self.get_session = AsyncMock(return_value=None)
+        # What is STILL pending after a refused answer/decision — lets the helpers
+        # tell "gone" (404) from "pending, but owned by another identity" (403).
+        self.pending_questions = AsyncMock(return_value=[])
+        self.pending_permissions = AsyncMock(return_value=[])
 
 
 @pytest.fixture
@@ -127,6 +131,24 @@ async def test_resolve_permission_not_pending_raises_after_recording_audit(orch)
     audit.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_resolve_permission_still_pending_for_another_identity_is_403_not_404(orch):
+    """The registry refuses a decision from an identity other than the one the ask
+    was registered under — but the card is still pending. Reporting that as
+    "no longer pending" (2026-09-22, session 75994c11) sent the user reloading a
+    page that re-offered the same card. Name the real cause instead."""
+    orch.resolve_permission.return_value = False
+    orch.pending_permissions.return_value = [{"permId": "p1", "tool": "Bash"}]
+    with _patched_audit():
+        with pytest.raises(sa.ActionError) as exc_info:
+            await sa.resolve_permission(
+                orch, db=object(), session_id="s1", perm_id="p1", decision="allow",
+                identity="u@example.com")
+    assert exc_info.value.code == "PERMISSION_NOT_OWNED"
+    assert exc_info.value.http == 403
+    assert "identity" in exc_info.value.message
+
+
 # ---------------------------------------------------------------------------
 # answer_question
 # ---------------------------------------------------------------------------
@@ -168,6 +190,22 @@ async def test_answer_question_not_pending_raises_after_recording_audit(orch):
     assert exc_info.value.http == 404
     orch.note_user_interaction.assert_awaited_once_with("s1")
     audit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_answer_question_still_pending_for_another_identity_is_403_not_404(orch):
+    orch.answer_question.return_value = False
+    orch.pending_questions.return_value = [{"question_id": "q1", "question": "Q?"}]
+    with _patched_audit():
+        with pytest.raises(sa.ActionError) as exc_info:
+            await sa.answer_question(
+                orch, db=object(), session_id="s1", question_id="q1", selected=["a"],
+                mode="option", identity="u@example.com")
+    assert exc_info.value.code == "QUESTION_NOT_OWNED"
+    assert exc_info.value.http == 403
+    # The one path that ignores the identity gate is a plain chat message
+    # (QuestionRegistry.resolve_all) — tell the user so instead of "reload".
+    assert "message" in exc_info.value.message
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,27 @@ work for the same product.
    interrupts one already running. A Backlog Runner session already spawned for a
    now-gated product runs to completion; only its *next* new claim is blocked.
 
+5. **Amended 2026-09-22 (#2202): pending also requires that PR Doctor can CLAIM the
+   PR.** Decision 2 asks whether PR Doctor *decides* to fix a PR; the busy /
+   foreign-owner ownership checks run later, at dispatch. A PR whose claim is refused
+   therefore gated its product for a repair that could never start — on 2026-09-22
+   one product took 70 `skipped_pr_doctor_priority` refusals in 20 minutes while
+   every PR Doctor claim on those same PRs was refused (`ownership_wait` ×463), a
+   cross-automation deadlock with nothing live in either. So a target is dropped from
+   the pending set when the newest `ownership_wait` event for it recorded a claim
+   refusal (`_pr_doctor_refusal_detail`) at the PR's *current* head SHA, PR Doctor
+   holds no `ownership_token` for it, and no attempt has been recorded at that head.
+   Evidence PR Doctor already produced, not a second copy of the ownership rules:
+   re-deriving claimability here would need the PR's linked-issue node IDs (a GitHub
+   round trip per PR on the admission hot path) and a parallel implementation of
+   `acquire`'s conflict conditions.
+   - A refusal under PR Doctor's OWN token (`prior PR execution has not stopped`) is
+     its predecessor transfer waiting for work to stop: its own lifecycle, which
+     clears itself, so that still gates. A predecessor that never attests stopped is
+     the attestation layer's defect, not the gate's.
+   - `StaleOwnership` / `TargetIdentityError` are races the next sweep tick retries
+     and are deliberately NOT recorded — one blip must not un-gate a whole head SHA.
+
 ## Why the capacity governor is NOT the enforcement point
 
 The original idea was to fold this into the Capacity Governor's per-product plan
@@ -56,11 +77,13 @@ constraint as that product's `waitingOn`/binding text.
 ### 1. `server/sessions/orchestrator.py` — new `_pr_doctor_pending_products()`
 
 ```python
-async def _pr_doctor_pending_products(self) -> frozenset[str]:
-    """Product slugs with at least one PR PR Doctor will actually act on
-    (plan_recovery yields Mechanical or SessionFix). Best-effort: any failure
-    yields frozenset() rather than blocking admission — a stale PR Doctor
-    read must never wedge Backlog Runner dispatch."""
+# Signature amended by decision 5 (#2202): a mapping, so the refusal can name
+# the PRs; MEMBERSHIP is still the whole gate.
+async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
+    """Product slug -> the PR refs PR Doctor will actually act on (plan_recovery
+    yields Mechanical or SessionFix, and the claim is not known-refused).
+    Best-effort: any failure yields {} rather than blocking admission — a stale
+    PR Doctor read must never wedge Backlog Runner dispatch."""
 ```
 
 Iterates `await self._pr_doctor_scope_pairs()` (the same (repo, branch) universe the
@@ -79,27 +102,37 @@ repo_project.py`) — ambiguous/unresolved repos are silently dropped (same post
 `owning_projects_by_repo` already documents: "absence is not proof of no owner"; a
 repo automations can't confidently attribute to one product should not block that
 product's backlog for a reason nobody can name). Wrapped in `try/except Exception`
-returning `frozenset()`, same resilience posture as `states`/`accounting` in
+returning `{}`, same resilience posture as `states`/`accounting` in
 `gather_implementation_snapshot`.
+
+Per decision 5, each pending target is bucketed claimable vs unclaimable through
+`_pr_doctor_claim_unclaimable(state, refusals.get(target), info)`, reading
+`_pr_doctor_claim_refusals()` (newest `ownership_wait` event per target). Only the
+claimable refs reach the returned mapping; any product with dropped targets is
+logged once per evaluation with both lists, since before #2202 nothing tied a
+runner "capacity reserved" skip to the PR Doctor refusal causing it.
 
 ### 2. `server/automations/product_admission.py`
 
 - `gather_implementation_snapshot(...)` gains `pr_doctor_pending:
-  Callable[[], Awaitable[frozenset[str]]] | None = None`. Read once per snapshot
-  (best-effort, `except Exception: pending = frozenset()`), same pattern as the
+  Callable[[], Awaitable[Mapping[str, tuple[str, ...]]]] | None = None`. Read once
+  per snapshot (best-effort, `except Exception: pending = {}`), same pattern as the
   existing `states`/`accounting` reads a few lines below.
-- `ImplementationSnapshot` gains a field `pr_doctor_pending: frozenset[str] =
-  frozenset()`.
-- `ImplementationSnapshot.decide()` computes
-  `pr_doctor_gated = bool(owner and owner.owner and owner.owner.slug in
-  self.pr_doctor_pending)` and passes `pr_doctor_gated=pr_doctor_gated` into
+- `ImplementationSnapshot` gains a field `pr_doctor_pending: Mapping[str,
+  tuple[str, ...]]`, defaulting empty.
+- `ImplementationSnapshot.decide()` computes `pr_doctor_gated` from MEMBERSHIP of
+  the owning product's slug (an entry mapped to `()` still gates) and passes
+  `pr_doctor_gated=` plus `pr_doctor_pending_refs=` into
   `decide_implementation(...)`.
 - `evaluate_implementation(...)` gains the same `pr_doctor_pending` parameter,
   threaded straight through to its `gather_implementation_snapshot(...)` call.
 
 ### 3. `server/automations/product_policy.py` — `decide_implementation()`
 
-New parameter `pr_doctor_gated: bool = False`. New constraint, added alongside the
+New parameters `pr_doctor_gated: bool = False` and `pr_doctor_pending_refs:
+tuple[str, ...] = ()` (the latter from #2202 — refs supplied, the refused text names
+up to three of them so the Capacity page's `waitingOn` says which PRs reserve the
+product; no refs keeps the original sentence). New constraint, added alongside the
 existing `capacity()` checks:
 
 ```python
@@ -109,8 +142,7 @@ if pr_doctor_gated:
             "This claim already holds its slot; PR Doctor's priority does not interrupt it.")
     else:
         add("pr_doctor_priority", "refused",
-            "PR Doctor has a stuck pull request pending a fix for this product; "
-            "capacity is reserved until it clears.")
+            _pr_doctor_priority_text(pr_doctor_pending_refs))
 ```
 
 Mirrors the existing `_held`/`_full` naming convention used by `capacity()`'s own

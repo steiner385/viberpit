@@ -366,6 +366,27 @@ class ImplementationDecision:
         return self.state == "permitted"
 
 
+def _pr_doctor_priority_text(refs: tuple[str, ...]) -> str:
+    """Why the product is reserved, naming the PRs when the caller supplied them.
+
+    The Capacity page renders this as the product's "waiting on" (the binding
+    constraint's text), and "a stuck pull request" alone gave an operator
+    nothing to go and check — the #2202 deadlock was diagnosable only from
+    journal logs. Bounded at three refs so one very stuck product cannot push
+    a paragraph into the page. No refs supplied (a caller that only knows the
+    gate is on) keeps the original sentence.
+    """
+    if not refs:
+        return ("PR Doctor has a stuck pull request pending a fix for this product; "
+                "capacity is reserved until it clears.")
+    shown = ", ".join(refs[:3]) + (f" +{len(refs) - 3} more" if len(refs) > 3 else "")
+    if len(refs) == 1:
+        return (f"PR Doctor has a stuck pull request pending a fix for this product "
+                f"({shown}); capacity is reserved until it clears.")
+    return (f"PR Doctor has {len(refs)} stuck pull requests pending a fix for this "
+            f"product ({shown}); capacity is reserved until they clear.")
+
+
 def decide_implementation(
     *,
     ownership: RepoOwnership | None,
@@ -388,6 +409,7 @@ def decide_implementation(
     pipeline_cap: int | None = None,
     pipeline_existing_slot: bool = False,
     pr_doctor_gated: bool = False,
+    pr_doctor_pending_refs: tuple[str, ...] = (),
 ) -> ImplementationDecision:
     """Compose current implementation admission policy without I/O or claims.
 
@@ -488,9 +510,7 @@ def decide_implementation(
             add("pr_doctor_priority_held", "permitted",
                 "This claim already holds its slot; PR Doctor's priority does not interrupt it.")
         else:
-            add("pr_doctor_priority", "refused",
-                "PR Doctor has a stuck pull request pending a fix for this product; "
-                "capacity is reserved until it clears.")
+            add("pr_doctor_priority", "refused", _pr_doctor_priority_text(pr_doctor_pending_refs))
     constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
     states = {item.state for item in constraints}
     state: DecisionState = "refused" if "refused" in states else "unknown" if "unknown" in states else "permitted"

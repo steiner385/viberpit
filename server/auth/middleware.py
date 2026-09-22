@@ -70,6 +70,9 @@ _COOKIE_NAMES = (_COOKIE_NAME, _LEGACY_COOKIE_NAME)
 # brand); `request_attribution` below is the accept side and takes either.
 VIA_HEADER = f"X-{brand.NAME}-Via"
 ASSISTANT_SESSION_HEADER = f"X-{brand.NAME}-Assistant-Session"
+# Wire prefix of the daemon-minted assistant bearer token (server/assistant/token.py
+# re-exports it as PREFIX; defined here because that module imports this one).
+ASSISTANT_TOKEN_PREFIX = "ccas1:"
 # The pre-rebrand spellings. Not derivable from `brand.LEGACY_SLUG`: the old headers
 # used a CamelCase the slug does not carry. Retired with the rest of #1368's compat.
 LEGACY_VIA_HEADER = "X-CCSwitch-Via"
@@ -152,6 +155,26 @@ def _signing_secret() -> str | bytes:
     return _PROCESS_SECRET
 
 
+def _cross_process_signing_secret() -> str | bytes:
+    """Key for tokens minted in ONE process and verified in ANOTHER: the daemon-minted,
+    edge-verified ``ccas1`` assistant token and ``ccsys1`` internal token.
+
+    ``_signing_secret`` above serves the session cookie — minted and verified by the
+    edge alone — and prefers the session secret, an edge-local setting. The daemon
+    reads a dedicated env file (runbook: onboarding-a-session-runner) that carries
+    only the master key, the ONE secret the runbook requires to match on every host. A daemon with the master key alone and an edge with both
+    therefore signed with different keys: every assistant token failed signature at
+    the edge and, in LAN-open mode, the call was silently admitted as the ``lan@local``
+    guest (2026-09-22 — sessions the drawer created were owned by the guest and the
+    real user's every AskUserQuestion answer was refused). Prefer the fleet-shared
+    master key; fall back to the cookie chain only when no master key is configured.
+    """
+    settings = get_settings()
+    if settings.master_key:
+        return settings.master_key
+    return _signing_secret()
+
+
 def _get_signer() -> TimestampSigner:
     return TimestampSigner(_signing_secret())
 
@@ -174,10 +197,10 @@ def _unsign_session_id(signed: str) -> str | None:
 def _assistant_claims(request: Request) -> "AssistantClaims | None":
     """Claims from a `Bearer ccas1:…` header, or None. Loopback peers only: the token is
     minted for the daemon on THIS host and must never be usable from the tailnet."""
-    from server.assistant.token import PREFIX, verify_token  # noqa: PLC0415
+    from server.assistant.token import verify_token  # noqa: PLC0415
     from server.config import get_settings  # noqa: PLC0415
     auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer " + PREFIX):
+    if not auth.startswith("Bearer " + ASSISTANT_TOKEN_PREFIX):
         return None
     client = request.client
     if client is None or not host_is_loopback(client.host):
@@ -335,6 +358,20 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         claims = _assistant_claims(request)
+        if claims is None and request.headers.get("authorization", "").startswith(
+                "Bearer " + ASSISTANT_TOKEN_PREFIX):
+            # A PRESENTED assistant token that does not verify (bad signature — e.g.
+            # the daemon and edge signing with different keys —, expired, or sent
+            # from a non-loopback peer) is refused here. Falling through to the
+            # ordinary identity resolution below let it collect the LAN-open guest
+            # identity instead: every route open, sessions owned by `lan@local`,
+            # and not one log line (2026-09-22). Loud and closed, like ccsys1.
+            peer = request.client.host if request.client else "<unknown>"
+            log.warning("assistant token refused (invalid, expired, or non-loopback peer %s) "
+                        "path=%s", peer, request.url.path)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+                "code": "ASSISTANT_TOKEN_INVALID",
+                "message": "invalid or expired assistant token"}})
         if claims is not None:
             from server.assistant.policy import operator_tools_enabled, route_allowed  # noqa: PLC0415
             from server.db import db_session as _assistant_db_session  # noqa: PLC0415

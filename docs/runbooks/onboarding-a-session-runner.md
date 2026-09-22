@@ -181,7 +181,10 @@ sudo tee /etc/viberpit/daemon.env > /dev/null <<'EOF'
 # Shared Postgres on dobby (tailnet address — cleartext wire; WireGuard encrypts)
 CCSWITCH_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
 
-# Must match the CCSWITCH_MASTER_KEY on the edge and all other daemons
+# Must match the CCSWITCH_MASTER_KEY on the edge and all other daemons. This is ALSO
+# the key the daemon signs cross-process bearer tokens with (the assistant drawer's
+# ccas1 token, the internal ccsys1 token) and the edge verifies them with — the
+# edge's session secret is cookie-only and must NOT be needed here.
 CCSWITCH_MASTER_KEY=<master-key>
 
 # This daemon's own bind endpoint (tailnet DNS + port 9443)

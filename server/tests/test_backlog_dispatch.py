@@ -615,7 +615,7 @@ async def test_manual_dispatch_pr_doctor_priority_takes_no_claim(dispatch_orch):
     """`_backlog_admission` must thread `_pr_doctor_pending_products` into real
     admission: a product PR Doctor has a pending stuck PR for takes no new claim,
     even on an ungated manual dispatch."""
-    dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value=frozenset({"test-product"}))
+    dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value={"test-product": ("o/r#9",)})
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     # "capacity", not "refused": the same per-product shape as
     # product_capacity_full/product_pipeline_full above — "refused" is reserved
@@ -631,7 +631,7 @@ async def test_manual_dispatch_pr_doctor_priority_takes_no_claim(dispatch_orch):
 async def test_manual_dispatch_pr_doctor_priority_is_per_product(dispatch_orch):
     """The gate only refuses the pending product; a different product's dispatch
     is unaffected."""
-    dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value=frozenset({"some-other-product"}))
+    dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value={"some-other-product": ("o/r#9",)})
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "spawned"
     dispatch_orch._backlog_spawn.assert_awaited_once()
