@@ -124,6 +124,7 @@ from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
     RESUME_ELIGIBLE_STATUSES, is_assistant, is_assistant_kind,
 )
+from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
@@ -322,6 +323,16 @@ class _RowEngineRef:
     model: str | None
 
 
+#: Owners that are "nobody in particular": a driver under one of these hands itself
+#: to the first real user who attaches. ``SYSTEM_IDENTITY`` is the internal paths
+#: (rehydrate, dispatch, eager re-launch); ``OPEN_LAN_IDENTITY`` is the LAN-open
+#: guest — deliberately unauthenticated, so it protects no boundary a verified user
+#: could cross (2026-09-22: the assistant drawer's create call was mis-attributed to
+#: the guest and the real user's every answer was refused; see
+#: test_ensure_driver_identity_rethread.py).
+_UNOWNED_IDENTITIES: frozenset[str] = frozenset({SYSTEM_IDENTITY, OPEN_LAN_IDENTITY})
+
+
 def _rethread_identity(driver, identity: str) -> None:
     """Upgrade a live driver's identity to a real attaching user.
 
@@ -330,10 +341,10 @@ def _rethread_identity(driver, identity: str) -> None:
     answers are registered under ``driver.identity`` and resolved against the
     answering WS identity, so if a real user attaches to a system-built driver and
     its identity isn't upgraded, every answer is rejected and the agent hangs on
-    the question forever. Only upgrade FROM the system sentinel TO a real user —
-    never downgrade a real identity back to system (an internal call must not clobber
-    the attached user)."""
-    if identity != SYSTEM_IDENTITY and driver.identity == SYSTEM_IDENTITY:
+    the question forever. Only upgrade FROM an unowned sentinel TO a real user —
+    never downgrade a real identity back (an internal call must not clobber the
+    attached user)."""
+    if identity not in _UNOWNED_IDENTITIES and driver.identity in _UNOWNED_IDENTITIES:
         driver.identity = identity
 
 
