@@ -265,6 +265,42 @@ Capabilities tab.
 - No un-retire / restore-from-sunset action (a capability can be un-sunset via the
   ordinary `rename`/`summary`-style edit machinery if ever needed — not built here).
 
+## Tab placement (resolved)
+
+`ProductDetail.tsx` is already at `docs/PAGE-TABS.md`'s six-tab cap
+(`overview, in-flight, needs-you, ranked, dependencies, automation`). The
+existing `dependencies` tab is a different concern (cross-*product*
+`FeatureLink`s — "Between Products") from intra-product capability
+retire/merge/re-map, so folding in there conflates two questions under one
+tab. Decision: add a 7th `capabilities` tab and record it in
+`docs/PAGE-TABS.md` §8 alongside the existing #2078 exception, rather than
+force capability management into a drawer (too dense for that) or rename an
+existing tab (bigger churn, worse fit).
+
+## Correction: `_resync_now` must merge the open branch over the default branch by slug
+
+A capability doc committed by `retire`/`merge`/`create` lives ONLY on the
+product's `pm/map-changes-<slug>` branch until its PR merges — reading just
+the default branch would silently miss it. `PmSyncLoop._feature_index`
+(`server/automations/pm_sync.py:610-736`) already does exactly this merge
+(lines 654-694): parse every default-branch doc, then override by slug with
+any branch doc that differs from what the branch merely inherited. This logic
+is extracted into a shared pure function,
+`server/pm/feature_index.py::merge_branch_over_main`, used by BOTH
+`PmSyncLoop._feature_index` (replacing its inline block, behavior-preserving)
+and the new `MapChangesService._resync_now` — one implementation, not two
+(constitution VI). See the implementation plan for the exact signature.
+
+## Correction: no new error-mapping branch needed
+
+`_map_changes_http` (`server/api/pm.py:1088`) already maps every `MapOpError`
+to 422 regardless of code — `not_found`, `slug_taken`, and `parent_cycle` all
+already come back as 422 today, not 404/409. `retire`'s dependents guard
+raises `MapOpError("has_dependents", ...)` and flows through this **existing,
+unchanged** mapping to 422 — no new exception type or new branch in
+`_map_changes_http`, contrary to this doc's earlier (incorrect) assumption of
+409/404.
+
 ## PR series
 
 1. `retire` op + `MapChangesService.retire()` (guard, auto-reparent children,
