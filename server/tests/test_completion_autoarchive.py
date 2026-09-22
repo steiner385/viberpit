@@ -218,6 +218,91 @@ def test_repeated_not_ready_completes_stop_nudging_after_cap():
     asyncio.run(run())
 
 
+# --------------------------------------------------------- stuck-complete recheck
+#
+# Once `_complete_nudge_over_cap` gives up, a `complete` session has no other trigger
+# back to the completion gate: `_autopilot_list_governed` deliberately excludes
+# `complete` from autopilot's own periodic tick (to avoid a second decision path
+# racing this deterministic one), and nothing re-emits `complete` for a session whose
+# driver was never resumed. `_recheck_stuck_complete_sessions_once` (the always-on
+# loop) and `recheck_stuck_complete_session` (the StaleOwnership resume-path trigger
+# in ws.py) are the only two ways such a session ever leaves `complete` once its
+# tracked PR/issue resolves after the give-up.
+
+def test_stuck_complete_session_archives_once_pr_merges_after_nudge_cap():
+    """A session nudged to COMPLETE_NUDGE_CAP on an open-unarmed PR is left parked at
+    `complete` forever under the OLD behavior. Once the PR actually merges — well
+    after the session went quiet, e.g. via the merge queue — the periodic sweep must
+    catch it and archive; nothing else asks again."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "complete"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        for _ in range(6):
+            orch._maybe_autoarchive_completed("s1", "complete", rec)
+            await _drain()
+        assert archived == []
+        from server.sessions.orchestrator import COMPLETE_NUDGE_CAP
+        assert len(nudged) == COMPLETE_NUDGE_CAP, "must have given up nudging first"
+
+        # The PR merges after the give-up.
+        orch.pr_for = lambda repo, branch: _merged_pr()  # type: ignore[method-assign]
+        await orch._recheck_stuck_complete_sessions_once()
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"], (
+            "the periodic recheck must archive once met_bar is satisfied")
+    asyncio.run(run())
+
+
+def test_recheck_sweep_skips_a_session_still_inside_its_nudge_window():
+    """A `complete` session that has not yet exhausted its nudge cap must NOT be
+    touched by the periodic sweep — it already gets its own retry when the nudge's
+    follow-up turn completes; double-poking it here would race that path."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "complete"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert len(nudged) == 1
+        nudged.clear()
+
+        await orch._recheck_stuck_complete_sessions_once()
+        await _drain()
+        assert archived == [] and nudged == [], (
+            "must not re-nudge or archive before the nudge cap is exhausted")
+    asyncio.run(run())
+
+
+def test_recheck_stuck_complete_session_ignores_non_complete_status():
+    """`recheck_stuck_complete_session` — the direct StaleOwnership resume-path
+    trigger — must no-op for any status other than `complete`. It must never
+    resurrect a session that already archived or moved on to something else."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "archived"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_merged_pr())
+        await orch.recheck_stuck_complete_session("s1")
+        await _drain()
+        assert archived == [] and nudged == []
+    asyncio.run(run())
+
+
+def test_recheck_stuck_complete_session_archives_immediately_on_stale_ownership():
+    """The ws.py StaleOwnership path calls this directly (not via the periodic sweep)
+    the moment a resume attempt discovers the tracked item resolved — it must archive
+    right away without waiting for the nudge cap, since this is direct live evidence,
+    not a guess."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "complete"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_merged_pr())
+        await orch.recheck_stuck_complete_session("s1")
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
 # --------------------------------------------------------- open-question hold
 #
 # A completed session whose final hand-back still awaits the user (prose question

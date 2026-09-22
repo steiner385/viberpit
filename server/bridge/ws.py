@@ -761,19 +761,33 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).
                 log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
+                # StaleOwnership out of the automation execution fence (bare locally, or
+                # DaemonError(err_type="StaleOwnership") over the fleet RPC boundary)
+                # means this session's tracked GitHub target was legitimately
+                # transferred/released elsewhere — e.g. its PR merged and
+                # backlog-runner closed the claim out — same terminal condition
+                # `_reassign` already parks as `automation_ownership_stale` (see
+                # test_reassign_stale_ownership.py).
+                stale_ownership = isinstance(exc, StaleOwnership) or (
+                    isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")
+                if stale_ownership:
+                    # This resume attempt IS live evidence the tracked item resolved —
+                    # stronger and more immediate than the periodic sweep
+                    # (_recheck_stuck_complete_sessions_once), and possibly the first
+                    # signal at all for a session that reached `complete` and hit
+                    # StaleOwnership before ever exhausting its nudge cap. Fire on both
+                    # the manual and silent-auto attach paths: fire-and-forget, and it
+                    # must never block or fail the banner/replay below either way.
+                    supervise(
+                        asyncio.create_task(
+                            orchestrator.recheck_stuck_complete_session(session_id),
+                            name=f"stale-ownership-recheck-{session_id}"),
+                        name=f"stale-ownership-recheck-{session_id}")
                 if not auto:
-                    # StaleOwnership out of the automation execution fence (bare
-                    # locally, or DaemonError(err_type="StaleOwnership") over the
-                    # fleet RPC boundary) means this session's tracked GitHub target
-                    # was legitimately transferred/released elsewhere — e.g. its PR
-                    # merged and backlog-runner closed the claim out — same terminal
-                    # condition `_reassign` already parks as `automation_ownership_stale`
-                    # (see test_reassign_stale_ownership.py). It is not an account
-                    # problem and not retryable, so it must not get the reauth hint
-                    # below, which sent a human straight to the wrong tab.
-                    stale_ownership = isinstance(exc, StaleOwnership) or (
-                        isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")
                     if stale_ownership:
+                        # Not an account problem and not retryable, so it must not get
+                        # the reauth hint below, which sent a human straight to the
+                        # wrong tab.
                         await _attach_failed(
                             session_id, "SESSION_OWNERSHIP_STALE",
                             "This session's tracked GitHub item changed hands (for "
