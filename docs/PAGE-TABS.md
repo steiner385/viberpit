@@ -132,6 +132,7 @@ An exception is a decision with a reason and a re-review trigger, not an oversig
 | Delivery → Capacity (`CapacityDetail.tsx`) | The capacity settings spec (2026-09-20, §5.2) pins it as one scroll: it is a comparison surface where a person sets a dial while looking at the stack that dial changes. | after that spec's PR 6 lands, if the page still reads as a lump |
 | Settings › Notifications | Split variant; the fix is the `SettingsGroup` idiom and sibling sections, owned by the settings redesign, not tabs. | the settings redesign PR that migrates it (#2077) |
 | Capability detail Overview | mounts the links chip editor; §5 says editors get a tab | #2078 |
+| Product Capabilities | 7th tab past the 6-tab cap (§4); capability retire/merge/re-map needs its own home, distinct from Overview (creation only) and Dependencies (cross-product links) | #<this-PR-number> |
 | Pipeline repo strip | A selector, not a partition (§2). | never |
 | Inbox proposal detail | One decision task; splitting hides the evidence from the Accept button. | if a third body kind appears |
 | Pipeline legend | A glossary (§2). | never |
