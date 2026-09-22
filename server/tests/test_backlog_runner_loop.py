@@ -1716,6 +1716,56 @@ def test_pipeline_cap_skips_the_second_pr_while_the_first_still_spawns(tmp_path)
     asyncio.run(run())
 
 
+def test_pr_doctor_priority_skips_its_product_while_another_keeps_going(tmp_path):
+    """Spec 2026-09-21 pr-doctor-priority: a ``pr_doctor_priority`` refusal must
+    skip only the gated product's batch, the same as every other per-product
+    capacity constraint (product_capacity_full, product_pipeline_full) above —
+    never fall through to the bare ``"refused"`` status, which halts the whole
+    tick (the ``{"refused", "uncertain"}`` break in ``_refill``) and starves a
+    product PR Doctor has nothing to do with."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prdoctorpriority.db'}"
+
+    async def run():
+        from server.automations.product_policy import (
+            ImplementationConstraint, ImplementationDecision)
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="gated"), batch("b#2", product="clear")])
+
+        def _decision(permitted, slug, code=None, text=None):
+            constraints = () if permitted else (
+                ImplementationConstraint(code=code, state="refused", text=text),)
+            return ImplementationDecision(
+                state="permitted" if permitted else "refused", constraints=constraints,
+                configured_dispatch="auto", policy_source="test", product_id=None,
+                product_slug=slug, canonical_repo=None, approval_required=False,
+                observed_at="2026-09-22T00:00:00+00:00", policy_revision="x",
+                remaining_checks=())
+
+        pol = policy()
+
+        async def fake_admission(b, **_kw):
+            if b.product == "gated":
+                return _decision(
+                    False, "gated", "pr_doctor_priority",
+                    "PR Doctor has a stuck pull request pending a fix for this "
+                    "product; capacity is reserved until it clears."), pol
+            return _decision(True, "clear"), pol
+
+        loop._admission = fake_admission
+
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["b#2"]
+        events = await ctx.list_events(kind="skipped_pr_doctor_priority")
+        assert len(events) == 1
+
+    asyncio.run(run())
+
+
 def test_max_in_flight_is_one_ceiling_across_all_of_a_products_repos(tmp_path):
     """The bug the per-repo aliasing had: a product owning N repos ran N × its cap
     while the card (product-aggregated) showed a number nothing enforced."""

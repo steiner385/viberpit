@@ -617,7 +617,12 @@ async def test_manual_dispatch_pr_doctor_priority_takes_no_claim(dispatch_orch):
     even on an ungated manual dispatch."""
     dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value=frozenset({"test-product"}))
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
-    assert result["status"] == "refused"
+    # "capacity", not "refused": the same per-product shape as
+    # product_capacity_full/product_pipeline_full above — "refused" is reserved
+    # for outcomes that must halt the whole runner tick (_refill's
+    # {"refused", "uncertain"} break), which a single gated product must not do
+    # to every other product's unrelated, fully-permitted candidates.
+    assert result["status"] == "capacity"
     assert "pr_doctor_priority" in result["reason_codes"]
     dispatch_orch._backlog_spawn.assert_not_awaited()
 
