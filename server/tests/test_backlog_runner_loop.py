@@ -645,7 +645,8 @@ def test_refill_with_planned_groups_but_nothing_claimable_emits_stalled(tmp_path
         assert "3 group(s)" in events[0]["summary"]
 
         async def empty_plan(_config):
-            return 0
+            from server.automations.backlog_grouping import RefreshSummary
+            return RefreshSummary(groups=0)
 
         # Same DB and automation id, so the feed still holds the ONE event above.
         loop2, _rec2, ctx2 = build_loop(candidates=[], refresh_groups=empty_plan)
@@ -2293,16 +2294,54 @@ def test_live_check_absent_seam_keeps_legacy_behaviour(tmp_path):
 # Grouping-optimizer refresh gating (_maybe_refresh_groups)                    #
 # --------------------------------------------------------------------------- #
 
-def _refresh_recorder(fail: bool = False):
+def _refresh_recorder(fail: bool = False, degraded: bool = False):
+    from server.automations.backlog_grouping import RefreshSummary
     calls: list = []
 
     async def refresh(config):
         calls.append(config)
         if fail:
             raise RuntimeError("model down (injected)")
-        return 3
+        return RefreshSummary(groups=3, degraded=degraded)
 
     return refresh, calls
+
+
+def test_group_refresh_degraded_plan_emits_warn_once_and_recovery_emits_info(tmp_path):
+    """A refresh whose model reply was unparseable stores an all-singletons plan
+    (#2217). That is a WARN the operator sees once per streak, not a normal
+    "refreshed" info event; and the first real plan after it is news even when
+    the group count did not change."""
+    from server.automations.backlog_grouping import RefreshSummary
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr6.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        refresh, _calls = _refresh_recorder(degraded=True)
+        loop, rec, ctx = build_loop(mode="on", clock=clock, candidates=[],
+                                    refresh_groups=refresh)
+        await loop.tick()
+        clock.advance(31 * 60)
+        await loop.tick()                # still degraded → no second warn
+        warns = await ctx.list_events(kind="groups_refresh_degraded")
+        assert len(warns) == 1
+        assert warns[0]["detail"] == {"groups": 3}
+        assert warns[0]["level"] == "warn"
+        assert await ctx.list_events(kind="groups_refreshed") == []
+
+        async def recovered(_config):
+            return RefreshSummary(groups=3, degraded=False)
+
+        loop._refresh_groups = recovered
+        clock.advance(31 * 60)
+        await loop.tick()                # same count, but a REAL plan again
+        infos = await ctx.list_events(kind="groups_refreshed")
+        assert len(infos) == 1
+        assert infos[0]["detail"] == {"groups": 3}
+
+    asyncio.run(run())
 
 
 def test_group_refresh_runs_on_first_enabled_tick_only(tmp_path):
