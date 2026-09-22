@@ -12227,17 +12227,103 @@ class SessionOrchestrator:
                     tx.operation.provenance = {**tx.operation.provenance, "dispatch_claimed": True}
             return expected
         await reconcile_legacy_targets(targets)
-        async with acquire(targets, owner="pr-doctor", source=source,
-                           reason="PR recovery requested",
-                           provenance={"origin_ref": target, "dispatch_claimed": True}) as tx:
+        try:
+            async with acquire(targets, owner="pr-doctor", source=source,
+                               reason="PR recovery requested",
+                               provenance={"origin_ref": target, "dispatch_claimed": True}) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if (dict(row.state) if row else {}) != expected:
+                    raise StaleOwnership("PR state changed during acquisition")
+                state = {**expected, "ownership_token": tx.token}
+                if row is None:
+                    tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=target, state=state))
+                else:
+                    row.state = state
+            return state
+        except OwnershipConflict:
+            adopted = await self._pr_doctor_adopt_finished_runner_closeout(targets, target, expected)
+            if adopted is None:
+                raise
+            return adopted
+
+    async def _pr_doctor_adopt_finished_runner_closeout(self, targets, target, expected):
+        """Take over a Backlog Runner ``terminal-closeout`` operation that still
+        holds this PR's linked issues, or return None when the conflict is real.
+
+        The runner's merged-PR close-out can escalate to a human ("merged PR
+        needs a human close-out") and park: its ``completed`` operation keeps
+        the batch's issue keys with no session attached. PR Doctor claims a PR
+        together with the issues it closes, so every later PR referencing one
+        of those issues was refused with "target already has an operation" —
+        the manual button bounced, the sweep re-refused every tick, and, via
+        ``_pr_doctor_pending_products``, the whole product's Backlog Runner
+        dispatch sat gated behind a PR nothing could claim (2026-09-22: eight
+        cairnea/KinDash PRs, 70 ``skipped_pr_doctor_priority`` in 20 min).
+
+        A ``completed`` operation with no session is proven stopped by
+        construction (``complete_action`` only records a finished non-session
+        effect), so this is the same ``runner-handoff`` transfer
+        ``_backlog_handoff`` performs from the runner side — same coverage rule
+        (the PR's targets must cover the ENTIRE batch), same fenced
+        ``expanded_handoff``, same successor provenance (``runner_target``) so
+        the rest of PR Doctor's runner-handoff lifecycle applies unchanged. The
+        runner row keeps ``closeout_started`` so its sweep stays parked on the
+        close-out branch and never re-attributes the PR mid-recovery.
+        """
+        from sqlalchemy import select
+        from server.automations.ownership import OwnershipConflict, ReleaseProof, StaleOwnership
+        from server.automations.ownership_handoff import expanded_handoff
+        from server.db.models import (
+            AutomationOperation, AutomationOwnedTarget, AutomationTargetState,
+        )
+        keys = {t.key for t in targets}
+        async with db_session() as db:
+            tokens = set((await db.scalars(select(AutomationOwnedTarget.operation_token).where(
+                AutomationOwnedTarget.key.in_(sorted(keys)),
+                AutomationOwnedTarget.operation_token.is_not(None)))).all())
+            if len(tokens) != 1:
+                return None
+            (token,) = tokens
+            operation = await db.get(AutomationOperation, token)
+        if (operation is None or operation.owner != "backlog-runner"
+                or operation.source != "terminal-closeout" or operation.phase != "completed"
+                or operation.session_id or operation.reserved_session_id
+                or not set(operation.targets) <= keys):
+            return None
+        runner_target = operation.provenance.get("origin_ref")
+        if not runner_target:
+            return None
+        async with expanded_handoff(token, targets) as tx:
+            if (tx.operation.phase != "completed" or tx.operation.session_id
+                    or tx.operation.reserved_session_id):
+                raise OwnershipConflict("target already has an operation")
+            runner = await tx.db.get(AutomationTargetState, ("backlog-runner", runner_target))
+            if runner is None or runner.state.get("ownership_token") != token:
+                raise StaleOwnership("runner close-out no longer owns its predecessor")
             row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
             if (dict(row.state) if row else {}) != expected:
-                raise StaleOwnership("PR state changed during acquisition")
-            state = {**expected, "ownership_token": tx.token}
+                raise StaleOwnership("PR state changed during adoption")
+            successor = await tx.transfer(
+                owner="pr-doctor", source="runner-handoff", proof=ReleaseProof.WORK_STOPPED,
+                reason="finished implementation close-out adopted by PR recovery",
+                provenance={"origin_ref": target, "runner_target": runner_target,
+                            "implementation_session_id":
+                                operation.provenance.get("implementation_session_id"),
+                            "dispatch_claimed": True},
+                successor_targets=targets)
+            runner.state = {**runner.state, "ownership_token": successor, "handed_off": True,
+                            "implementation_session_id":
+                                runner.state.get("implementation_session_id")
+                                or runner.state.get("session_id"),
+                            "session_id": None}
+            state = {**expected, "ownership_token": successor}
             if row is None:
                 tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=target, state=state))
             else:
                 row.state = state
+        await self._pr_doctor_ctx.emit(
+            "info", f"{target}: adopted the finished implementation close-out of {runner_target}",
+            kind="handoff", target=target)
         return state
 
     async def _pr_doctor_prepare_attempt(self, target, expected, result, kind):
