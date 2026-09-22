@@ -1997,14 +1997,21 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         status: str | None
         host: str | None
+        purged = False
         if record is not None:
             status, host = record.status, getattr(record, "host", None)
         else:
             async with db_session() as db:
                 row = await db.get(DbSession, session_id)
-                status = row.status if row is not None else None
-                host = row.host if row is not None else None
-        if status not in ("complete", "ended", "archived"):
+            status = row.status if row is not None else None
+            host = row.host if row is not None else None
+            # No record AND no DB row: permanent_delete already archived (and
+            # tore the driver down for) this session before removing the row,
+            # so its absence IS the stop proof — never "still working" forever.
+            # Without this, a claim naming a since-purged session held PR
+            # Doctor capacity for a whole product indefinitely (#2199).
+            purged = row is None
+        if status not in ("complete", "ended", "archived") and not purged:
             return False
         if snapshot.tree_stopped_generation == snapshot.tree_generation:
             return True
@@ -2030,7 +2037,7 @@ class SessionOrchestrator:
             # giving up here: the terminal-attestation path below can close a
             # RETAINED execution too, under its own stronger evidence bar
             # (torn-down driver, owned record) — never assumed by this shortcut.
-        if (record is None and status in ("ended", "archived")
+        if (record is None and (status in ("ended", "archived") or purged)
                 and session_id not in self._drivers):
             # A terminal row whose record is gone is this orchestrator's own act —
             # archive_session and close_session pop the record and the driver and

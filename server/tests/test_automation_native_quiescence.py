@@ -110,6 +110,24 @@ async def test_missing_or_remote_driver_cannot_attest(ownership_db):
 
 
 @pytest.mark.asyncio
+async def test_purged_session_is_treated_as_stopped_not_perpetually_busy(ownership_db):
+    # #2199: permanent_delete archives (tearing the driver down) then deletes the
+    # DB row. A claim still naming that session must not read as "still working"
+    # forever just because there is no row left to carry a terminal status — that
+    # held PR Doctor capacity for an entire product indefinitely with no session
+    # left anywhere to ever flip it.
+    token = await claim([target()])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+    await begin_session_execution(sid)
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {}
+    orch._drivers = {}
+    orch._releasing = {}
+    assert await orch._automation_session_work_stopped(sid)
+
+
+@pytest.mark.asyncio
 async def test_freeze_while_generation_write_waits_prevents_effect():
     entered, release = asyncio.Event(), asyncio.Event()
     async def before():
