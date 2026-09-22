@@ -114,6 +114,108 @@ def _first_create_answers() -> list:
     return [_404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _NO_PR, _pr()]
 
 
+# The scripted answers retiring `sessions` (one live child, `dictation`)
+# produces: the branch-doc probe, the base head, then one `_commit_and_track`
+# per op. `dictation` is reparented FIRST (children before the capability
+# itself) — its commit is also the branch's first, so it opens the branch and
+# the PR too. The `retire` commit on `sessions` follows on the now-existing
+# branch, so its `ensure_branch` finds the ref directly (no create) and no PR
+# call is made (the pointer from the first commit is already tracked).
+def _retire_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        # reparent dictation → sessions' parent (None, sessions is root)
+        _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"), _NO_PR, _pr(),
+        # retire sessions itself
+        _ref("c1"), _contents(ROOT_DOC), _commit("c2"),
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` produces when
+# NEITHER has any FeatureLink to repoint: the branch-doc probe, the base
+# head, `merge()`'s own explicit `ensure_branch` (ref absent, then created —
+# it has to exist before `merge()` can read any doc off it, even though
+# nothing here needs a `links` commit), then ONE `_commit_and_track` (retire
+# dictation) — dictation has no children in the seed fixture, so unlike
+# `_retire_answers()` there is no reparent op first. That commit's OWN
+# internal `ensure_branch` now finds the ref `merge()` already created (a
+# single GET, no second create), then the existing doc read, the commit, the
+# PR lookup, the PR (this is still the branch's first REAL content commit).
+def _merge_answers() -> list:
+    return [_404, _ref("base1"), _404, _created("base1"),
+            _ref("base1"), _contents(CHILD_DOC), _commit("c1"),
+            _NO_PR, _pr()]
+
+
+# The scripted answers merging `dictation` into `sessions` where `dictation`
+# has TWO outgoing FeatureLink rows: one to `third-cap` (must repoint onto
+# `sessions`' own doc) and one DIRECTLY to `sessions` (must be dropped, not
+# turned into a self-link). `dictation` has no children. Sequence: the
+# branch-doc probe, the base head, the explicit `ensure_branch` (has to exist
+# before any doc can be read off it), `_current_doc(sessions)` (read the
+# target's current links before merging in the repointed ones), the
+# `op=links` commit for `sessions` (opens the branch's first REAL commit —
+# the PR too), the `op=links` commit clearing `dictation`'s own list, and
+# finally the `op=retire` commit for `dictation`.
+def _merge_outgoing_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(ROOT_DOC),                                        # _current_doc(sessions)
+        _ref("base1"), _contents(ROOT_DOC), _commit("c1"), _NO_PR, _pr(),   # op=links sessions
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=links dictation (clear)
+        _ref("c2"), _contents(CHILD_DOC), _commit("c3"),             # op=retire dictation
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` where `fourth-cap`
+# (same project) already links TO `dictation` — the incoming-link repoint
+# case. `dictation` has no outgoing links and no children, so there is no
+# `sessions`-doc commit at all here, only `fourth-cap`'s and the retire.
+def _merge_incoming_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(FOURTH_DOC_LINKING_TO_DICTATION),                  # _current_doc(fourth-cap)
+        _ref("base1"), _contents(FOURTH_DOC_LINKING_TO_DICTATION), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=retire dictation
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` where `sessions`
+# itself (== into_slug) already links DIRECTLY to `dictation` — the incoming
+# SELF-link case: repointing it naively would write `sessions -> sessions`
+# into sessions' own doc; it must be dropped instead. `dictation` has no
+# outgoing links and no children.
+def _merge_incoming_self_link_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(SESSIONS_DOC_LINKING_TO_DICTATION),                # _current_doc(sessions)
+        _ref("base1"), _contents(SESSIONS_DOC_LINKING_TO_DICTATION), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=retire dictation
+    ]
+
+
+# The scripted answers merging `dictation` into `sessions` where `sessions`
+# (the merge TARGET, whose doc `merge()` rewrites to add `dictation`'s
+# outgoing link to `third-cap`) already carries a STALE, unresolvable link —
+# same shape as `_merge_outgoing_link_answers()`, just with
+# `SESSIONS_DOC_WITH_STALE_REF` instead of `ROOT_DOC` at the two points that
+# read/re-read `sessions`' doc. Proves the stale ref does not block the
+# merge: `merge()`'s link commits skip `validate_op`'s full-list
+# re-validation (see the comment in `map_changes.py`).
+def _merge_stale_ref_answers() -> list:
+    return [
+        _404, _ref("base1"),
+        _404, _created("base1"),
+        _contents(SESSIONS_DOC_WITH_STALE_REF),                      # _current_doc(sessions)
+        _ref("base1"), _contents(SESSIONS_DOC_WITH_STALE_REF), _commit("c1"), _NO_PR, _pr(),
+        _ref("c1"), _contents(CHILD_DOC), _commit("c2"),             # op=links dictation (clear)
+        _ref("c2"), _contents(CHILD_DOC), _commit("c3"),             # op=retire dictation
+    ]
+
+
 # -- fixtures -----------------------------------------------------------------
 
 
@@ -191,7 +293,12 @@ def _client(db_url: str, gh):
                 # Belt and braces: the lifespan has just registered the real
                 # owner-token provider on the process-global `gitrepos` seam.
                 gitrepos.set_token_provider(None)
-                yield c
+                # `db_url` and `orch` (the real SessionOrchestrator, not the
+                # facade `app.state.sessions` may wrap) are yielded alongside
+                # `c` for tests that need a synchronous verification session
+                # or that stub an orchestrator seam directly (e.g. pm-sync's
+                # doc-read seam ahead of an inline resync).
+                yield c, db_url, orch
         finally:
             gitrepos.set_token_provider(None)
             for k, v in saved.items():
@@ -421,17 +528,33 @@ async def _loop_thread() -> threading.Thread:
 
 @contextmanager
 def _seeded(gh):
+    """Yields ``(c, db_url, orch)`` — see ``_client``. Most call sites only
+    need ``c``; unpack all three and ignore what you don't use (``F841`` is
+    ignored for test modules)."""
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         _seed(db_url)
-        with _client(db_url, gh) as c:
-            yield c
+        with _client(db_url, gh) as (c, url, orch):
+            yield c, url, orch
 
 
 def _edit(c, project: str = SLUG, **body):
     """POST one edit. The project slug is positional so ``slug=`` stays free for
     the body's capability slug."""
     return c.post(f"/api/pm/projects/{project}/map-changes", json=body,
+                  headers=IDENTITY_HEADERS)
+
+
+def _retire(c, project: str = SLUG, *, slug: str):
+    """POST one retire. Mirrors ``_edit``'s convention for the sibling route."""
+    return c.post(f"/api/pm/projects/{project}/map-changes/retire", json={"slug": slug},
+                  headers=IDENTITY_HEADERS)
+
+
+def _merge(c, project: str = SLUG, *, from_slug: str, into_slug: str):
+    """POST one merge. Mirrors ``_retire``'s convention for the sibling route."""
+    return c.post(f"/api/pm/projects/{project}/map-changes/merge",
+                  json={"fromSlug": from_slug, "intoSlug": into_slug},
                   headers=IDENTITY_HEADERS)
 
 
@@ -442,12 +565,75 @@ def _committed(gh, index: int = -1) -> str:
     return base64.b64decode(added["contents"]).decode()
 
 
+def _all_committed(gh) -> list[tuple[str, str]]:
+    """(path, text) for every recorded GraphQL commit, in call order — the
+    generalization of `_committed()` (above) over the whole call history
+    instead of one index."""
+    out: list[tuple[str, str]] = []
+    for args, _token, stdin in gh.calls:
+        if args[:2] != ["api", "graphql"] or not stdin:
+            continue
+        try:
+            payload = json.loads(stdin)
+            added = payload["variables"]["input"]["fileChanges"]["additions"][0]
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        out.append((added["path"], base64.b64decode(added["contents"]).decode()))
+    return out
+
+
+def _stub_pm_sync(orch, gh, main_docs: dict[str, str]) -> None:
+    """Point the orchestrator's pm-sync doc-read seam at fixture text instead
+    of a real git clone: `ref=None` (default branch) returns *main_docs*
+    verbatim; any other ref (the map-changes branch) overlays every doc this
+    FakeGh has actually committed so far on top of *main_docs*, keyed by path
+    — so `_resync_now` sees exactly what the SUT under test wrote, not a
+    hand-maintained guess."""
+    from server.pm.feature_index import FeatureDocsRead
+
+    async def _fake_read(repo: str, ref: str | None = None):
+        docs = dict(main_docs)
+        if ref is not None:
+            docs.update(_all_committed(gh))
+        return FeatureDocsRead(sha="fake-sha", docs=list(docs.items()))
+    orch._pm_sync_read_feature_docs = _fake_read
+
+
+ROOT_DOC = "---\nslug: sessions\ntitle: Sessions\nstate: live\n---\n# Sessions\n"
+CHILD_DOC = ("---\nslug: dictation\ntitle: Dictation\nstate: live\nparent: sessions\n"
+             "---\n# Dictation\n")
+# A third, unrelated capability — the `merge()` FeatureLink-repoint tests'
+# outgoing-link target. No links of its own.
+THIRD_DOC = "---\nslug: third-cap\ntitle: Third\nstate: live\n---\n# Third\n"
+# A fourth capability that already links TO `dictation` — the incoming-link
+# repoint case.
+FOURTH_DOC_LINKING_TO_DICTATION = (
+    "---\nslug: fourth-cap\ntitle: Fourth\nstate: live\n"
+    "links:\n  - kind: integrates_with\n    project: example-product\n    feature: dictation\n"
+    "---\n# Fourth\n")
+# `sessions` (the merge TARGET) already linking DIRECTLY to `dictation` (the
+# merge SOURCE) — the incoming self-link case: repointing this naively would
+# write `sessions -> sessions` into sessions' own doc.
+SESSIONS_DOC_LINKING_TO_DICTATION = (
+    "---\nslug: sessions\ntitle: Sessions\nstate: live\n"
+    "links:\n  - kind: powered_by\n    project: example-product\n    feature: dictation\n"
+    "---\n# Sessions\n")
+# `sessions` carrying a STALE link — `gone-cap` is not (and never will be, for
+# this test) an indexed capability. `_pm_sync_apply_feature_plan` never
+# cleans up a ref it can't resolve (it just skips it with a warning), so this
+# is a real, reachable doc state, not a contrived one.
+SESSIONS_DOC_WITH_STALE_REF = (
+    "---\nslug: sessions\ntitle: Sessions\nstate: live\n"
+    "links:\n  - kind: integrates_with\n    project: example-product\n    feature: gone-cap\n"
+    "---\n# Sessions\n")
+
+
 # -- tests --------------------------------------------------------------------
 
 
 def test_create_opens_the_branch_the_pr_and_the_pointer_row():
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments", summary="Take money.")
         assert r.status_code == 200, r.text
         body = r.json()
@@ -500,7 +686,7 @@ def test_second_edit_reuses_the_pointer_and_sees_the_branch_only_capability():
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
         _ref("base1"), _ref("c0"), _404, _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = _edit(c, op="create", slug="billing", title="Billing", parentSlug="payments")
@@ -528,7 +714,7 @@ def test_a_branch_only_capability_is_a_valid_link_target():
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
         _ref("base1"), _ref("c0"), _contents(_doc("sessions", "Sessions")), _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         r = _edit(c, op="links", slug="sessions",
                   links=[{"kind": "powered_by", "project": SLUG, "feature": "payments"}])
@@ -539,7 +725,7 @@ def test_a_branch_only_capability_is_a_valid_link_target():
 
 def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
     gh = FakeGh([_404, *_first_create_answers()])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="rename", slug="nope", title="Nope")
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "not_found"
@@ -568,7 +754,7 @@ def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
 
 def test_a_project_slug_that_is_not_branch_safe_is_422_before_any_github_call():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, UNSAFE_SLUG, op="create", slug="payments", title="Payments")
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "bad_slug"
@@ -579,7 +765,7 @@ def test_delete_on_a_project_slug_that_is_not_branch_safe_is_422_not_500():
     # `_adopt_stranded` derives the branch through `map_changes_branch_name`, so
     # the DELETE route must map MapOpError like the edit route does.
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{UNSAFE_SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "bad_slug"
@@ -591,7 +777,7 @@ def test_create_of_an_existing_branch_doc_is_slug_taken_and_names_the_branch():
         *_first_create_answers(),
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         r = _edit(c, op="create", slug="payments", title="Payments again")
         assert r.status_code == 422, r.text
@@ -614,7 +800,7 @@ def test_a_moved_head_re_reads_the_doc_and_re_applies_the_op():
         _ref("moved"), _contents(v2),             # re-read BOTH, re-apply
         _commit("c1"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = _edit(c, op="summary", slug="payments", summary="New summary.")
@@ -636,7 +822,7 @@ def test_a_head_that_moves_twice_is_409_conflict():
         _404, _ref("base1"), _404, _created("base1"), _404,
         _STALE, _ref("moved"), _404, _STALE,
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["error"] == "conflict"
@@ -646,7 +832,7 @@ def test_a_head_that_moves_twice_is_409_conflict():
 
 def test_a_github_failure_is_502_with_the_step():
     gh = FakeGh([_404, ("", 1, "HTTP 502: Bad Gateway")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"]["error"] == "github"
@@ -663,7 +849,7 @@ def test_a_gh_timeout_is_502_not_a_500():
             raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
 
     gh = _TimeoutGh()
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"] == {
@@ -678,7 +864,7 @@ def test_these_tests_never_mint_a_real_github_token():
     and the App-token provider is the injected one, not ``app_token_for_repo``
     (which reads the App's private key, signs a JWT and calls api.github.com)."""
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         orch = getattr(c.app.state.sessions, "_orch", c.app.state.sessions)
         assert orch._gh_token_provider("o/r") is None
         assert orch._gh_env == {}
@@ -703,7 +889,7 @@ def test_the_github_client_is_built_off_the_event_loop():
         built.append(threading.current_thread())
         return real(*a, **k)
 
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         with patch.object(gh_mod, "GhWrite", _record):
             assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         loop_thread = c.portal.call(_loop_thread)
@@ -727,7 +913,7 @@ def test_a_pr_that_failed_to_record_is_adopted_not_reopened():
         _ref("base1"), _ref("c0"), _contents(doc), _commit("c1"),
         _pr_list(), _pr(mergeable_state="behind"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"]["step"] == "pr"
@@ -762,7 +948,7 @@ def test_an_open_pr_without_a_row_is_adopted_and_read_for_its_state():
         _ref("base1"), _ref("c0"), _404, _commit("c1"),
         _pr_list(number=12), _pr(number=12, mergeable_state="behind"),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["prNumber"] == 12
@@ -784,7 +970,7 @@ def test_the_newest_open_row_is_the_products_pointer():
     from server.pm.map_changes import open_pointer_row, open_pointer_rows
 
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         old = datetime(2026, 9, 1, tzinfo=timezone.utc)
         new = datetime(2026, 9, 10, tzinfo=timezone.utc)
         _seed_pointer(c, pr_number=11, head_sha="old", opened_at=old)
@@ -827,7 +1013,7 @@ def test_a_nameless_product_titles_the_pr_with_its_slug():
     """``project.name`` is nullable, and an f-string over it titles the PR
     "Capability map changes: None"."""
     gh = FakeGh(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = _edit(c, NAMELESS_SLUG, op="create", slug="payments", title="Payments")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["branch"] == NAMELESS_BRANCH
@@ -846,7 +1032,7 @@ def test_a_pointer_that_appeared_mid_edit_is_reused_not_duplicated():
         _ref("c0"), _EMPTY_LIST,   # the branch exists, with no docs on it yet
         _ref("base1"), _ref("c0"), _404, _commit("c1"), _pr_list(), _pr(),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _seed_pointer(c)                       # the racing writer's row
         real = mc.open_pointer_row
         seen = {"n": 0}
@@ -870,7 +1056,7 @@ def test_delete_without_a_pointer_a_branch_or_a_pr_is_404():
         _404,          # GET git/ref/heads/<branch> — no branch
         _EMPTY_LIST,   # GET pulls?head=… — no PR either
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
@@ -885,7 +1071,7 @@ def test_delete_adopts_a_stranded_pr_and_abandons_it():
         _OK,                           # PATCH pulls/12 state=closed
         _OK,                           # DELETE git/refs/heads/<branch>
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _seed_proposed_capabilities(c)
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
@@ -911,7 +1097,7 @@ def test_delete_deletes_a_stranded_branch_that_never_got_a_pr():
         _EMPTY_LIST,    # …but no PR was ever opened
         _OK,            # DELETE git/refs/heads/<branch>
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["status"] == "abandoned"
@@ -933,7 +1119,7 @@ def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
         _OK,  # DELETE git/refs/heads/<branch>
         _404, _EMPTY_LIST,  # the second abandon: neither branch nor PR is left
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
@@ -975,7 +1161,7 @@ def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
         (json.dumps({"status": "ahead", "base_commit": {"sha": "b" * 40},
                      "merge_base_commit": {"sha": "b" * 40}}), 0, ""),
     ])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
 
@@ -1000,7 +1186,7 @@ def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
 
 def test_rebase_without_a_pointer_is_404():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         r = c.post(f"/api/pm/projects/{SLUG}/map-changes/rebase", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
@@ -1012,7 +1198,7 @@ def test_rebase_without_a_pointer_is_404():
 def test_refresh_reads_the_pr_and_records_behind_and_conflicting():
     gh = FakeGh([*_first_create_answers(),
                  _pr(mergeable_state="behind"), _pr(mergeable_state="dirty")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         first = len(gh.calls)
 
@@ -1029,7 +1215,7 @@ def test_refresh_reads_the_pr_and_records_behind_and_conflicting():
 
 def test_refresh_marks_a_merged_pr_merged():
     gh = FakeGh([*_first_create_answers(), _pr_closed(merged=True)])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
         _refresh(c)
@@ -1052,7 +1238,7 @@ def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
     """A PR closed on GitHub rather than through the UI reaches the same end
     state (R8b-7): the never-merged proposals must not linger forever."""
     gh = FakeGh([*_first_create_answers(), _pr_closed(merged=False)])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
         _refresh(c)
@@ -1070,7 +1256,7 @@ def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
 
 def test_a_failed_pr_read_records_last_error_and_leaves_the_status():
     gh = FakeGh([*_first_create_answers(), ("", 1, "HTTP 502: Bad Gateway")])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _refresh(c)
         row = _pointer_row(c)
@@ -1099,7 +1285,7 @@ def test_a_hung_gh_during_a_pr_read_does_not_abandon_the_pr():
             raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
 
     gh = _HangAfter(_first_create_answers())
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _refresh(c)
         row = _pointer_row(c)
@@ -1109,7 +1295,7 @@ def test_a_hung_gh_during_a_pr_read_does_not_abandon_the_pr():
 
 def test_refresh_without_an_open_pointer_makes_no_github_call():
     gh = FakeGh([])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         _refresh(c)
         assert gh.calls == []
 
@@ -1119,7 +1305,7 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
     on it is deleted — unless something references it, which is orphaned instead
     so no FK (a work item's ``feature_id``) is left dangling."""
     gh = FakeGh([*_first_create_answers(), _OK, _OK])
-    with _seeded(gh) as c:
+    with _seeded(gh) as (c, db_url, orch):
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
         _seed_proposed_capabilities(c)
 
@@ -1137,3 +1323,567 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
         assert "payments-child" in feats
         assert _dangling_fks(c) == {"parent_feature_id": None,
                                     "proposed_feature_id": None}
+
+
+# -- retire (capability-management spec) --------------------------------------
+
+
+def test_retire_refuses_with_live_dependents():
+    gh = FakeGh([])
+    with _seeded(gh) as (c, db_url, orch):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Initiative, InitiativeFeature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            init = Initiative(slug="init-a", title="Init A")
+            s.add(init)
+            s.flush()
+            s.add(InitiativeFeature(initiative_id=init.id, feature_id=dictation.id, is_primary=True))
+            s.commit()
+
+        r = _retire(c, slug="dictation")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "has_dependents"
+        # The guard is a pure DB check before any GitHub call.
+        assert gh.calls == []
+
+
+def test_retire_reparents_children_and_syncs_the_db_inline():
+    gh = FakeGh(_retire_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+        r = _retire(c, slug="sessions")
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["prNumber"] == 12
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            sessions_row = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            dictation_row = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            assert sessions_row.state == "sunset"
+            assert dictation_row.parent_feature_id is None  # reparented to root (the grandparent)
+
+        assert _audits(c, "pm.map_changes.retire") == [{
+            "slug": SLUG, "capability": "sessions", "childrenReparented": 1,
+            "proposalsCleared": 0, "commitSha": "c2", "prNumber": 12}]
+
+
+# -- merge (capability-management spec) ---------------------------------------
+
+
+def test_merge_refuses_a_cycle():
+    gh = FakeGh([])
+    with _seeded(gh) as (c, db_url, orch):
+        # dictation is a CHILD of sessions — merging sessions into its own
+        # child would cycle once sessions' other children reparent onto it.
+        r = _merge(c, from_slug="sessions", into_slug="dictation")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "parent_cycle"
+        # The guard is a pure DB check before any GitHub call.
+        assert gh.calls == []
+
+
+def test_merge_repoints_work_items_and_initiatives_and_retires_the_source():
+    gh = FakeGh(_merge_answers())  # dictation (the merge source here) has no
+                                    # children in the seed fixture, so this is
+                                    # a single ensure_branch/read_file/commit
+                                    # sequence — the branch's first commit, so
+                                    # it also opens the branch and the PR.
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, InitiativeFeature, Initiative, Project, WorkItem
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            init = Initiative(slug="init-a", title="Init A")
+            s.add(init)
+            s.flush()
+            s.add(InitiativeFeature(initiative_id=init.id, feature_id=dictation.id, is_primary=True))
+            s.add(WorkItem(repo="o/r", number=1, kind="issue", feature_id=dictation.id))
+            s.commit()
+            init_id = init.id  # captured before the session closes below —
+                                # `init` itself is detached after that, and a
+                                # later access to `init.id` raises
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()["pointer"]
+        assert body["status"] == "open"
+
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation_row = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            assert dictation_row.state == "sunset"
+            wi = s.query(WorkItem).filter_by(repo="o/r", number=1, kind="issue").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            assert wi.feature_id == sessions_cap.id
+            link = s.query(InitiativeFeature).filter_by(initiative_id=init_id).one()
+            assert link.feature_id == sessions_cap.id and link.is_primary is True
+
+        assert _audits(c, "pm.map_changes.merge") == [{
+            "slug": SLUG, "from": "dictation", "into": "sessions",
+            "workItems": 1, "initiatives": 1, "linksRepointed": 0, "linksNotRepointed": 0,
+            "childrenReparented": 0, "commitSha": "c1", "prNumber": 12}]
+
+
+def test_merge_dedupes_an_initiative_classified_onto_both_ends():
+    """The trivial move-only test above only exercises the `InitiativeFeature`
+    "no conflict, just move the row" branch (`else: row.feature_id = dst.id`)
+    — hand-traced against `uq_initiative_feature` in `server/db/models.py` but
+    never run: an initiative already classified onto BOTH `dictation`
+    (is_primary) and `sessions` (not primary) must dedupe to ONE surviving row
+    on `sessions`, with `is_primary` OR'd true, not a `uq_initiative_feature`
+    violation."""
+    gh = FakeGh(_merge_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Initiative, InitiativeFeature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+
+            dual = Initiative(slug="init-dual", title="Init Dual")
+            s.add(dual)
+            s.flush()
+            s.add(InitiativeFeature(
+                initiative_id=dual.id, feature_id=dictation.id, is_primary=True))
+            s.add(InitiativeFeature(
+                initiative_id=dual.id, feature_id=sessions_cap.id, is_primary=False))
+            s.commit()
+            dual_id, sessions_id = dual.id, sessions_cap.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+
+        with Session() as s:
+            rows = s.query(InitiativeFeature).filter_by(initiative_id=dual_id).all()
+            assert len(rows) == 1
+            assert rows[0].feature_id == sessions_id
+            assert rows[0].is_primary is True
+
+        assert _audits(c, "pm.map_changes.merge") == [{
+            "slug": SLUG, "from": "dictation", "into": "sessions",
+            "workItems": 0, "initiatives": 1, "linksRepointed": 0, "linksNotRepointed": 0,
+            "childrenReparented": 0, "commitSha": "c1", "prNumber": 12}]
+
+
+def test_merge_repoints_outgoing_links_and_drops_a_direct_link_to_the_target():
+    """`FeatureLink` is entirely doc-derived: `_pm_sync_apply_feature_plan`
+    (which `merge()`'s own `_resync_now` call triggers, inside the SAME
+    request, before the response returns) DELETES AND REBUILDS every outgoing
+    edge of every project Feature from doc frontmatter on every resync. A
+    merge that only repointed the `FeatureLink` TABLE would have its repoint
+    silently reverted by that very resync before the caller ever saw a
+    response — this is a real bug a prior round of this task shipped and a
+    deeper review caught. `merge()` now repoints via doc-level `op="links"`
+    commits instead, which DO survive the resync (they're what the resync
+    reads from).
+
+    This goes through the REAL `_seeded`/HTTP path — not a bare service that
+    skips `_resync_now` — specifically to prove the repoint survives it.
+
+    Also covers the direct-link case: `dictation` links straight to
+    `sessions` (the merge target) in addition to `third-cap` — repointing
+    that naively would write a self-link (`sessions -> sessions`); it must be
+    dropped instead."""
+    gh = FakeGh(_merge_outgoing_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/third-cap.md": THIRD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            third = Feature(project_id=proj.id, slug="third-cap", title="Third", state="live")
+            s.add(third)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
+                              kind="integrates_with"))
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=sessions_cap.id,
+                              kind="powered_by"))
+            s.commit()
+            dictation_id, sessions_id, third_id = dictation.id, sessions_cap.id, third.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pointer"]["status"] == "open"
+        assert body["linksRepointed"] == 2
+        assert body["linksNotRepointed"] == 0
+
+        with Session() as s:
+            # The repoint survived `_resync_now`, which already ran inside
+            # this same request — the exact bug this test guards against.
+            survivors = s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=third_id,
+                kind="integrates_with").all()
+            assert len(survivors) == 1
+            assert s.query(FeatureLink).filter_by(src_feature_id=dictation_id).all() == []
+            # Never turned into a self-link.
+            assert s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=sessions_id).all() == []
+
+
+def test_merge_repoints_a_same_project_incoming_link():
+    """The incoming-link half of the same bug: `fourth-cap` (same project)
+    already links TO `dictation` — after merging `dictation` into `sessions`,
+    `fourth-cap` must link to `sessions` instead, and that repoint (a doc-level
+    `op="links"` commit on `fourth-cap`'s own doc) must survive `_resync_now`
+    the same way the outgoing case does. Real `_seeded`/HTTP path, not a bare
+    service."""
+    gh = FakeGh(_merge_incoming_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/fourth-cap.md": FOURTH_DOC_LINKING_TO_DICTATION})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            fourth = Feature(project_id=proj.id, slug="fourth-cap", title="Fourth", state="live")
+            s.add(fourth)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=fourth.id, dst_feature_id=dictation.id,
+                              kind="integrates_with"))
+            s.commit()
+            fourth_id, dictation_id = fourth.id, dictation.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
+        assert body["linksNotRepointed"] == 0
+
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            survivors = s.query(FeatureLink).filter_by(
+                src_feature_id=fourth_id, dst_feature_id=sessions_cap.id,
+                kind="integrates_with").all()
+            assert len(survivors) == 1
+            assert s.query(FeatureLink).filter_by(dst_feature_id=dictation_id).all() == []
+
+
+def test_merge_drops_a_direct_incoming_link_from_the_target_instead_of_self_linking():
+    """The incoming SELF-link case: `sessions` (the merge TARGET) already
+    links DIRECTLY to `dictation` (the merge SOURCE) — repointing that ref
+    naively would write `sessions -> sessions` into sessions' own doc. It
+    must be dropped instead, and — same guard as the other two merge-link
+    tests — that has to be verified through the real resync, not a bare
+    service."""
+    gh = FakeGh(_merge_incoming_self_link_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": SESSIONS_DOC_LINKING_TO_DICTATION,
+            f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            s.add(FeatureLink(src_feature_id=sessions_cap.id, dst_feature_id=dictation.id,
+                              kind="powered_by"))
+            s.commit()
+            sessions_id = sessions_cap.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
+        assert body["linksNotRepointed"] == 0
+
+        with Session() as s:
+            # Dropped, not turned into a self-link.
+            assert s.query(FeatureLink).filter_by(
+                src_feature_id=sessions_id, dst_feature_id=sessions_id).all() == []
+            assert s.query(FeatureLink).filter_by(kind="powered_by").all() == []
+
+
+def test_merge_succeeds_despite_a_stale_link_on_the_target_doc_it_rewrites():
+    """`merge()`'s link-commit call sites deliberately skip `validate_op`
+    (see the comment above each commit in `map_changes.py`) because that
+    call would re-validate EVERY ref in the full replacement list, including
+    refs `merge()` never touched. `sessions` (the merge target here, whose
+    doc gets rewritten to add `dictation`'s outgoing link to `third-cap`)
+    already carries a STALE `integrates_with example-product/gone-cap` ref —
+    a real, reachable state: `_pm_sync_apply_feature_plan` never cleans up a
+    ref it can't resolve (its target may have been renamed or removed in
+    another product), it just skips it with a warning. Before this fix, ANY
+    merge that rewrote `sessions.md` would 422 with `bad_link: unknown link
+    target example-product/gone-cap` — even though that stale ref has
+    nothing to do with the merge being attempted. This asserts the merge now
+    SUCCEEDS."""
+    gh = FakeGh(_merge_stale_ref_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": SESSIONS_DOC_WITH_STALE_REF, f"{DOCS}/dictation.md": CHILD_DOC,
+            f"{DOCS}/third-cap.md": THIRD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, FeatureLink, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            third = Feature(project_id=proj.id, slug="third-cap", title="Third", state="live")
+            s.add(third)
+            s.flush()
+            s.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
+                              kind="integrates_with"))
+            s.commit()
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        # Previously would have 422'd with `bad_link: unknown link target
+        # example-product/gone-cap` — a ref this merge never touched.
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["linksRepointed"] == 1
+
+
+# -- retire clears pending triage suggestions ---------------------------------
+
+
+def _retire_leaf_answers() -> list:
+    """Retiring `dictation` (a leaf — no children to reparent first): the
+    branch-doc probe, the base head, then ONE `_commit_and_track`, which is
+    also the branch's first commit (so it creates the ref and opens the PR)."""
+    return [_404, _ref("base1"),
+            _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"), _NO_PR, _pr()]
+
+
+def _seed_triage_proposals(c) -> tuple[str, str, str]:
+    """A pending and an accepted triage proposal, both pointing at
+    ``dictation``, plus a pending one pointing at ``sessions`` (a control that
+    retiring ``dictation`` must not touch). Returns their ids in that order."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+
+    async def _go():
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one()
+            feats = {f.slug: f for f in (await db.execute(select(Feature).where(
+                Feature.project_id == proj.id))).scalars().all()}
+            wi = WorkItem(repo=REPO, number=1, kind="issue", title="An issue")
+            db.add(wi)
+            await db.flush()
+            pending = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["dictation"].id,
+                status="pending")
+            accepted = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["dictation"].id,
+                status="accepted")
+            control = TriageProposal(
+                work_item_id=wi.id, proposed_feature_id=feats["sessions"].id,
+                status="pending")
+            db.add_all([pending, accepted, control])
+            await db.flush()
+            ids = (pending.id, accepted.id, control.id)
+            await db.commit()
+            return ids
+
+    return c.portal.call(_go)
+
+
+def test_retire_clears_pending_triage_suggestions_for_the_capability():
+    """A pending AI suggestion is not a dependent (it must not BLOCK the
+    retire — a stale guess would hold a human's cleanup hostage), but it must
+    not survive as a live suggestion either: accepting it later would classify
+    a work item onto a sunset capability. So `retire()` NULLs
+    `proposed_feature_id` on the pending ones and leaves resolved proposals —
+    which are audit records of what was actually decided — untouched."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from server.db.models import TriageProposal
+
+    gh = FakeGh(_retire_leaf_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        pending_id, accepted_id, control_id = _seed_triage_proposals(c)
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        r = _retire(c, slug="dictation")
+        assert r.status_code == 200, r.text
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            by_id = {p.id: p for p in s.query(TriageProposal).all()}
+            # Cleared: a later accept now comes back as "no fit" rather than
+            # classifying onto a sunset capability.
+            assert by_id[pending_id].proposed_feature_id is None
+            # Untouched: already decided, so it is history, not a suggestion.
+            assert by_id[accepted_id].proposed_feature_id is not None
+            # Untouched: a pending suggestion for a DIFFERENT capability.
+            assert by_id[control_id].proposed_feature_id is not None
+
+        assert _audits(c, "pm.map_changes.retire")[0]["proposalsCleared"] == 1
+
+
+# -- triage inline capability creation, against the REAL MapChangesService ----
+
+
+def _triage_product_answers() -> list:
+    """One `create` on a product whose map-changes branch does not exist yet —
+    the same shape as `_first_create_answers()`, spelled out here because the
+    triage product has its own branch name."""
+    return [_404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"),
+            _NO_PR, _pr()]
+
+
+TRIAGE_SLUG = "triage-product"
+TRIAGE_REPO = "o/triage"
+
+
+def _seed_triage_product(c) -> str:
+    """A SECOND product with its own repo (so repo→product ownership resolves
+    uniquely — ``o/r`` is registered to two products in this module's seed),
+    one indexed capability, and one pending proposal on a work item of that
+    repo. Returns the proposal id."""
+    from server.db import db_session
+    from server.db.models import (
+        Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+
+    async def _go():
+        async with db_session() as db:
+            p = Project(slug=TRIAGE_SLUG, name="Triage product",
+                        onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(ProjectRepo(project_id=p.id, repo=TRIAGE_REPO, is_primary=True))
+            db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
+                           state="live"))
+            wi = WorkItem(repo=TRIAGE_REPO, number=4, kind="issue",
+                          title="Take money")
+            db.add(wi)
+            await db.flush()
+            prop = TriageProposal(work_item_id=wi.id, proposed_feature_id=None,
+                                  no_fit_suggestion="payments", status="pending",
+                                  reach=3, impact=2, effort=1, confidence=3)
+            db.add(prop)
+            await db.flush()
+            ids = (prop.id, wi.id)
+            await db.commit()
+            return ids
+
+    return c.portal.call(_go)
+
+
+def test_triage_accept_with_new_capability_end_to_end_through_the_real_service(
+    monkeypatch,
+):
+    """The inline-create path driven through the REAL ``MapChangesService``
+    and its REAL ``_resync_now``, not a fake whose resync is a bare
+    ``db.add(Feature(...))``.
+
+    That distinction is the whole point: a fake resync materializes a Feature
+    row no matter how the service is wired, so every one of the existing
+    ``newCapability`` tests would still pass against an orchestrator whose
+    resync seams were never wired at all. This one reads the doc, plans the
+    index and applies it for real, then asserts the resulting DB state."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from server.automations import target_identity
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.tests.pm_ownership_fixtures import identity_repositories
+
+    monkeypatch.setattr(target_identity, "resolve_repositories", identity_repositories)
+
+    gh = FakeGh(_triage_product_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        proposal_id, work_item_id = _seed_triage_product(c)
+        # The triage product's own docs — `payments.md` is NOT among them; the
+        # route's `svc.edit()` commit is what puts it on the branch, and the
+        # real `_resync_now` is what has to find it there.
+        _stub_pm_sync(orch, gh, {f"{DOCS}/sessions.md": ROOT_DOC})
+
+        r = c.post(f"/api/pm/triage/{proposal_id}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments",
+                                                     "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["triageState"] == "classified"
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=TRIAGE_SLUG).one()
+            feat = s.query(Feature).filter_by(
+                project_id=proj.id, slug="payments").one()
+            assert feat.title == "Payments"
+            # Indexed off the OPEN map-changes branch, so it carries the PR
+            # columns rather than a default-branch commit_sha — proof the real
+            # `_resync_now` (not a stub) produced this row.
+            assert feat.pr_number == 12
+            assert feat.commit_sha is None
+            # …and the work item is classified onto that very row.
+            wi = s.query(WorkItem).filter_by(id=work_item_id).one()
+            assert wi.feature_id == feat.id
+            assert s.query(TriageProposal).filter_by(
+                id=proposal_id).one().status == "accepted"
+
+        # The doc really was committed to the product's own map-changes branch.
+        assert (f"{DOCS}/payments.md", ) == tuple(
+            path for path, _text in _all_committed(gh))

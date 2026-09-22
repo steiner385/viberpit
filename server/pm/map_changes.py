@@ -39,7 +39,8 @@ from server.db.models import (
 )
 
 from .classification import FEATURE_DOCS_DIR, feature_doc_path
-from .featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
+from .feature_index import FeatureDocsRead, FeatureIndexPlan, merge_branch_over_main, plan_feature_index
+from .featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 from .map_changes_gh import GhWrite, GhWriteError, PrState
 from .map_changes_ops import (
     SLUG_RE,
@@ -48,6 +49,7 @@ from .map_changes_ops import (
     MapOpError,
     apply_op,
     commit_message,
+    is_ancestor,
     validate_op,
     validate_op_shape,
 )
@@ -88,6 +90,37 @@ async def resolve_default_branch(repo: str) -> str:
             lambda: gitrepos.list_remote_branches(repo).get("default") or "master")
     except Exception:
         return "master"
+
+
+async def read_feature_docs_via_gh_api(
+    gh: GhWrite, repo: str, ref: str | None = None,
+) -> FeatureDocsRead:
+    """Edge-local equivalent of `_pm_sync_read_feature_docs`
+    (`server/sessions/orchestrator.py`) for an orchestrator with no local
+    repo clone (``RemoteOrchestrator`` — the edge process, which only ever
+    makes GitHub API calls, never a local `git show`). Reads every capability
+    doc via the GitHub API (one list + one read per file) instead of local
+    git plumbing — costs real GitHub API calls where the local-clone version
+    costs none, which is acceptable here: this feeds the synchronous resync
+    path (retire/merge/triage-inline-create), a rare interactive action, not
+    the high-frequency background pm-sync loop (which only ever runs on
+    ``SessionOrchestrator``/the daemon side, where the local-clone version
+    is used instead).
+
+    Unlike the clone version this cannot pin the whole read to one immutable
+    SHA up front — the contents API is per-path — so the head SHA is resolved
+    last, after the reads. A doc that 404s (deleted between the list and the
+    read) is skipped rather than raising: the same fail-safe shape
+    ``_read_branch_docs`` already uses for an unparseable doc."""
+    branch = ref or await resolve_default_branch(repo)
+    paths = await asyncio.to_thread(gh.list_dir, FEATURE_DOCS_DIR, branch)
+    docs: list[tuple[str, str]] = []
+    for path in paths:
+        text, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+        if text is not None:
+            docs.append((path, text))
+    sha = await asyncio.to_thread(gh.default_branch_head, branch)
+    return FeatureDocsRead(sha=sha, docs=docs)
 
 
 PR_BODY = f"""\
@@ -221,6 +254,32 @@ class Pointer:
         }
 
 
+@dataclass(frozen=True)
+class MergeResult:
+    """``merge()``'s outcome: the pointer plus what it actually did — the
+    Capabilities tab UI (a later task) needs these counts visible in the
+    response, ``links_not_repointed`` especially, so an incomplete
+    cross-project link repoint is surfaced to whoever triggered the merge
+    rather than silently invisible."""
+
+    pointer: Pointer
+    work_items: int
+    initiatives: int
+    links_repointed: int
+    links_not_repointed: int
+    children_reparented: int
+
+    def to_dict(self) -> dict:
+        return {
+            "pointer": self.pointer.to_dict(),
+            "workItems": self.work_items,
+            "initiatives": self.initiatives,
+            "linksRepointed": self.links_repointed,
+            "linksNotRepointed": self.links_not_repointed,
+            "childrenReparented": self.children_reparented,
+        }
+
+
 class MapChangesService:
     """Edits on a product's map-changes branch. ``gh_factory`` builds the write
     seam for a repo (so the orchestrator can inject its ``gh`` runner) and
@@ -231,10 +290,19 @@ class MapChangesService:
         gh_factory: Callable[[str], GhWrite] = GhWrite,
         default_branch: Callable[[str], Awaitable[str]] | None = None,
         now: Callable[[], datetime] | None = None,
+        read_feature_docs: Callable[..., Awaitable[FeatureDocsRead]] | None = None,
+        list_feature_rows: Callable[[str], Awaitable[list]] | None = None,
+        apply_feature_plan: Callable[[str, FeatureIndexPlan], Awaitable[None]] | None = None,
     ) -> None:
         self._gh_factory = gh_factory
         self._default_branch = default_branch or resolve_default_branch
         self._now = now or (lambda: datetime.now(timezone.utc))
+        # Only wired by `pm_map_changes()` — a bare `MapChangesService()` (as
+        # existing tests construct it for reconcile_updates/manual_update)
+        # leaves these None; `_resync_now` treats that as a no-op.
+        self._read_feature_docs = read_feature_docs
+        self._list_feature_rows = list_feature_rows
+        self._apply_feature_plan = apply_feature_plan
 
     # -- reads ----------------------------------------------------------------
 
@@ -287,6 +355,25 @@ class MapChangesService:
             raise NoPrimaryRepo(
                 f"product '{project.slug}' has no primary repo to write capability docs to")
         return row.repo
+
+    async def _feature_by_slug(self, db, project: Project, slug: str) -> Feature | None:
+        return (await db.execute(select(Feature).where(
+            Feature.project_id == project.id, Feature.slug == slug,
+            Feature.orphaned.isnot(True)))).scalars().first()
+
+    async def _guard_no_dependents(self, db, target: Feature, slug: str) -> None:
+        """Refuse to retire/fold away a capability that initiatives or issues
+        are still classified onto — the caller re-maps them first (or uses
+        ``merge``, which re-points them automatically)."""
+        has_work_item = (await db.execute(select(WorkItem.id).where(
+            WorkItem.feature_id == target.id).limit(1))).first() is not None
+        has_initiative = (await db.execute(select(InitiativeFeature.id).where(
+            InitiativeFeature.feature_id == target.id).limit(1))).first() is not None
+        if has_work_item or has_initiative:
+            raise MapOpError(
+                "has_dependents",
+                f"capability '{slug}' still has initiatives or issues mapped to it; "
+                "re-map them first, or use merge")
 
     def _read_branch_docs(self, gh: GhWrite, branch: str) -> list[FeatureDoc]:
         """Every parseable feature doc on the branch. Unparseable ones are
@@ -348,6 +435,52 @@ class MapChangesService:
         link_targets |= {(str(project.slug), doc.slug) for doc in branch_docs if doc.slug}
         return MapContext(parents=parents, link_targets=frozenset(link_targets))
 
+    async def _resync_now(self, db, project: Project) -> None:
+        """Materialize this product's just-committed doc changes into the
+        Feature table synchronously, instead of leaving them to the next
+        pm-sync tick (up to 300s away) — used by ``retire()``, ``merge()``,
+        and triage's inline capability-create path, where the caller needs
+        the DB to already reflect a doc edit before its own response
+        returns. A no-op if this service was built without the three sync
+        seams wired (e.g. a bare unit-test instance for
+        reconcile_updates/manual_update, which never calls this).
+
+        CALLER CONTRACT: do your own mutations AND your own ``record_audit``
+        on *db* before calling this, not after. ``_list_feature_rows``/
+        ``_apply_feature_plan`` each open their OWN ``db_session()`` — a
+        second SQLite connection that writes through it — while *db* (the
+        caller's session, e.g. the request's ``Depends(get_db)`` session,
+        which only commits once the route returns) may still be holding an
+        uncommitted write from earlier in the same call (a flushed pointer
+        row, an audit insert). On SQLite that is two writers contending for
+        the single file-level write lock: the second one blocks for the full
+        ``busy_timeout`` and then fails with ``database is locked`` — a
+        genuine deadlock, not a flake. Committing *db* here, first, before
+        doing any cross-session work, is what avoids it; it is a necessary
+        side effect of this method, not optional cleanup, which is why the
+        caller must have already recorded anything it needs durable (its
+        audit row included) before reaching this line."""
+        if (self._read_feature_docs is None or self._list_feature_rows is None
+                or self._apply_feature_plan is None):
+            return
+        await db.commit()
+        repo = await self._primary_repo(db, project)
+        main = await self._read_feature_docs(repo)
+        pointer = await self.open_pointer(db, project)
+        branch_docs: list[tuple[str, str]] = []
+        pr_number = pr_url = None
+        if pointer is not None and pointer.status == MAP_CHANGES_STATUS_OPEN and pointer.branch:
+            branch = await self._read_feature_docs(repo, pointer.branch)
+            branch_docs = branch.docs
+            pr_number, pr_url = pointer.pr_number, pointer.pr_url
+        docs, proposed, skipped = merge_branch_over_main(
+            main.docs, branch_docs, pr_number=pr_number, pr_url=pr_url)
+        if skipped:
+            log.warning("map_changes.resync_skipped_docs project=%s %s", project.slug, skipped)
+        rows = await self._list_feature_rows(project.id)
+        plan = plan_feature_index(rows, docs, read_sha=main.sha, proposed=proposed)
+        await self._apply_feature_plan(project.id, plan)
+
     # -- writes ---------------------------------------------------------------
 
     async def _adopt_or_open_pr(
@@ -375,6 +508,97 @@ class MapChangesService:
             return found
         return await asyncio.to_thread(gh.read_pr, found.number)
 
+    async def _commit_and_track(
+        self, db, project: Project, gh: GhWrite, repo: str, branch: str, base: str,
+        base_sha: str, pointer: FeatureMapChange | None, op: MapOp,
+    ) -> tuple[FeatureMapChange, str, str]:
+        """Commit one validated op to the branch, opening/adopting the PR on
+        the first commit for this product, and return the (now-current)
+        pointer row, doc path and commit sha.
+
+        Caller has already run ``validate_op``; this only refuses the shapes
+        ``apply_op`` itself cannot compute (e.g. no doc at head for a
+        non-create op). Shared by ``edit()`` (one op, one audit row) and
+        ``retire()``/``merge()`` (several ops, one audit row for the whole
+        action) — extracted from what was previously ``edit()``'s own body,
+        with no behavior change to ``edit()``."""
+        message = commit_message(op, project.name or project.slug or "")
+
+        async def _read_and_apply() -> tuple[str, str, str]:
+            # Re-read the branch head even when the row has one: the row may
+            # be stale (a merge, or a commit by another writer) and it is
+            # cheap.
+            head = await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
+            path = feature_doc_path(op.slug)
+            current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+            if op.op == "create" and current is not None:
+                raise MapOpError("slug_taken", _slug_taken_on_branch(op.slug, branch))
+            path, text = apply_op(op, current)
+            return head, path, text
+
+        head, path, text = await _read_and_apply()
+        try:
+            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
+        except GhWriteError as e:
+            if not e.conflict:
+                raise
+            # Someone committed between the read and the write. Re-read the
+            # head AND the doc and re-apply the op — `fileChanges.additions`
+            # replaces the file wholesale, so committing the text computed at
+            # the old head would silently drop their change. A second
+            # conflict is the caller's to resolve (409).
+            head, path, text = await _read_and_apply()
+            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
+
+        if pointer is None:
+            pr = await self._adopt_or_open_pr(gh, branch, base, project)
+            # Re-run the lookup immediately before inserting: "one open
+            # pointer per product" is enforced by lookup, not by a partial
+            # unique index (R8b-5), so two concurrent first edits would
+            # otherwise both insert. Everything above is idempotent — the
+            # commit is atomic and the PR is adopted, not re-opened — so the
+            # loser just reuses the winner's row.
+            existing = await open_pointer_row(db, project.id)
+            if existing is not None:
+                pointer = existing
+                pointer.head_sha = sha
+                if not pointer.pr_number and pr.number:
+                    pointer.pr_number, pointer.pr_url = pr.number, pr.url or None
+            else:
+                pointer = FeatureMapChange(
+                    project_id=project.id, repo=repo, branch=branch,
+                    pr_number=pr.number or None, pr_url=pr.url or None,
+                    status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
+                    behind=pr.behind, conflicting=pr.conflicting, opened_at=self._now())
+                db.add(pointer)
+        else:
+            pointer.head_sha = sha
+        await db.flush()
+        return pointer, path, sha
+
+    async def _current_doc(self, gh: GhWrite, branch: str, slug: str) -> FeatureDoc | None:
+        """The doc currently at the branch head for *slug* (the branch already
+        inherits every default-branch doc once it exists — the CALLER must
+        have already ensured it does, e.g. via ``gh.ensure_branch``). ``None``
+        if no doc exists or it cannot be parsed.
+
+        Used by ``merge()``'s ``FeatureLink`` repoint, which needs each
+        affected capability's CURRENT full links list before computing its
+        replacement — a DB-only ``FeatureLink`` write would be silently
+        reverted by the next resync, since ``FeatureLink`` is entirely
+        doc-derived (see ``plan_feature_index`` /
+        ``SessionOrchestrator._pm_sync_apply_feature_plan``, which rewrites
+        every outgoing edge of every project Feature from doc frontmatter on
+        every apply)."""
+        path = feature_doc_path(slug)
+        current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+        if current is None:
+            return None
+        try:
+            return parse_feature_doc(current, path=path)
+        except FeatureDocError:
+            return None
+
     async def edit(
         self, db, project: Project, op: MapOp, identity: str,
     ) -> tuple[Pointer, str, str]:
@@ -394,64 +618,288 @@ class MapChangesService:
 
         base = await self._default_branch(repo)
         base_sha = await asyncio.to_thread(gh.default_branch_head, base)
-        message = commit_message(op, project.name or project.slug or "")
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer, op)
 
-        async def _read_and_apply() -> tuple[str, str, str]:
-            """Branch head, doc path and the text to commit, read fresh."""
-            # Re-read the branch head even when the row has one: the row may be
-            # stale (a merge, or a commit by another writer) and it is cheap.
-            head = await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
-            path = feature_doc_path(op.slug)
-            current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
-            if op.op == "create" and current is not None:
-                raise MapOpError("slug_taken", _slug_taken_on_branch(op.slug, branch))
-            path, text = apply_op(op, current)
-            return head, path, text
-
-        head, path, text = await _read_and_apply()
-        try:
-            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
-        except GhWriteError as e:
-            if not e.conflict:
-                raise
-            # Someone committed between the read and the write. Re-read the head
-            # AND the doc and re-apply the op: `fileChanges.additions` replaces
-            # the file wholesale, so committing the text computed at the old head
-            # would silently drop their change. A second conflict is the caller's
-            # to resolve (409).
-            head, path, text = await _read_and_apply()
-            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
-
-        now = self._now()
-        if pointer is None:
-            pr = await self._adopt_or_open_pr(gh, branch, base, project)
-            # Re-run the lookup immediately before inserting: "one open pointer
-            # per product" is enforced by lookup, not by a partial unique index
-            # (R8b-5), so two concurrent first edits would otherwise both insert.
-            # Everything above is idempotent — the commit is atomic and the PR is
-            # adopted, not re-opened — so the loser just reuses the winner's row.
-            existing = await open_pointer_row(db, project.id)
-            if existing is not None:
-                pointer = existing
-                pointer.head_sha = sha
-                if not pointer.pr_number and pr.number:
-                    pointer.pr_number, pointer.pr_url = pr.number, pr.url or None
-            else:
-                pointer = FeatureMapChange(
-                    project_id=project.id, repo=repo, branch=branch,
-                    pr_number=pr.number or None, pr_url=pr.url or None,
-                    status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
-                    behind=pr.behind, conflicting=pr.conflicting, opened_at=now)
-                db.add(pointer)
-        else:
-            pointer.head_sha = sha
-        await db.flush()
-        await request_project_sync(db, project.id, now)
+        await request_project_sync(db, project.id, self._now())
         await record_audit(
             db=db, type=f"pm.map_changes.{op.op}", identity=identity,
             detail={"slug": project.slug, "op": op.op, "capability": op.slug,
                     "path": path, "commitSha": sha, "prNumber": pointer.pr_number})
         return Pointer.from_row(pointer), path, sha
+
+    async def retire(self, db, project: Project, slug: str, identity: str) -> Pointer:
+        """Retire a capability: refuse while it still has WorkItem/
+        InitiativeFeature dependents, auto-reparent its live children to its
+        own parent, commit ``retire`` (state=sunset) for the capability
+        itself, then resync this product inline so the tree and state are
+        consistent before returning."""
+        target = await self._feature_by_slug(db, project, slug)
+        if target is None:
+            raise MapOpError("not_found", f"capability '{slug}' does not exist")
+        await self._guard_no_dependents(db, target, slug)
+        children = (await db.execute(select(Feature).where(
+            Feature.parent_feature_id == target.id,
+            Feature.orphaned.isnot(True)))).scalars().all()
+
+        branch = map_changes_branch_name(project.slug or "")
+        repo = await self._primary_repo(db, project)
+        gh = await asyncio.to_thread(self._gh_factory, repo)
+        pointer = await self.open_pointer(db, project)
+        docs = await self.branch_docs(gh, branch, pointer=pointer)
+        ctx = await self.context(db, project, docs)
+        grandparent_slug = ctx.parents.get(target.slug or "")
+        validate_op(MapOp(op="retire", slug=slug), ctx)
+
+        base = await self._default_branch(repo)
+        base_sha = await asyncio.to_thread(gh.default_branch_head, base)
+        reparented = 0
+        for child in children:
+            validate_op(MapOp(op="reparent", slug=child.slug, parent_slug=grandparent_slug), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="reparent", slug=child.slug, parent_slug=grandparent_slug))
+            reparented += 1
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer,
+            MapOp(op="retire", slug=slug))
+
+        # A PENDING triage proposal aimed at the capability being sunset is not
+        # a dependent in `_guard_no_dependents`' sense — it is a machine
+        # SUGGESTION, not a committed classification, so refusing the retire
+        # over one would be needlessly restrictive (a stale AI guess could
+        # block a human's cleanup indefinitely). But accepting it later WOULD
+        # classify a work item onto a sunset capability, so the suggestion is
+        # cleared here instead: the proposal survives (its scores and rationale
+        # are still useful) and simply comes back as "no fit", which the accept
+        # UI already handles. Only `pending` rows — a resolved proposal is an
+        # audit record of what was actually decided and is never rewritten.
+        # Done AFTER the doc commits so a GitHub failure cannot leave the
+        # proposal cleared while the capability is still live.
+        cleared_proposals = (await db.execute(update(TriageProposal).where(
+            TriageProposal.proposed_feature_id == target.id,
+            TriageProposal.status == "pending",
+        ).values(proposed_feature_id=None))).rowcount or 0
+
+        # Defense in depth alongside `_resync_now()` below (and what `edit()`
+        # does for every other op): `_resync_now` already materializes this
+        # change synchronously, but bumping the watermark keeps the periodic
+        # pm-sync loop's view of "this product changed" consistent with the
+        # inline path, so a resync that fails part-way is still picked up.
+        await request_project_sync(db, project.id, self._now())
+        # Record the audit row BEFORE `_resync_now`: that call commits *db*
+        # as a necessary side effect of the cross-session work it does (see
+        # its docstring), so anything durable this action needs — the audit
+        # row is the only durable record of who retired this capability,
+        # since `commit_message()` embeds no identity — must be written to
+        # *db* first. Nothing in the detail dict depends on `_resync_now`
+        # having run.
+        await record_audit(
+            db=db, type="pm.map_changes.retire", identity=identity,
+            detail={"slug": project.slug, "capability": slug,
+                    "childrenReparented": reparented,
+                    "proposalsCleared": cleared_proposals, "commitSha": sha,
+                    "prNumber": pointer.pr_number})
+        await self._resync_now(db, project)
+        return Pointer.from_row(pointer)
+
+    async def merge(
+        self, db, project: Project, from_slug: str, into_slug: str, identity: str,
+    ) -> MergeResult:
+        """Fold ``from_slug`` into ``into_slug``: repoint every WorkItem/
+        InitiativeFeature/FeatureLink/TriageProposal reference, reparent
+        ``from_slug``'s children onto ``into_slug``, retire ``from_slug``,
+        resync inline. ``into_slug`` must not be ``from_slug`` itself or one
+        of its descendants — a merge target below the source would cycle once
+        the source's other children reparent onto it.
+
+        ``FeatureLink`` is entirely doc-derived (``plan_feature_index`` /
+        ``SessionOrchestrator._pm_sync_apply_feature_plan`` rewrites every
+        outgoing edge of every project Feature from doc frontmatter on every
+        resync), so a DB-only ``FeatureLink`` repoint would be silently
+        reverted by this method's own ``_resync_now`` call before the request
+        even returns. Every link repoint below is therefore a doc-level
+        ``op="links"`` commit, not a raw table write — the DB rows the
+        resync produces afterward are a byproduct of those doc edits, never
+        the source of truth themselves. A cross-project incoming link (one
+        living in another product's repo) cannot be edited from this
+        branch at all; those are left pointing at ``from_slug`` and counted
+        in ``linksNotRepointed`` rather than silently dropped."""
+        if from_slug == into_slug:
+            raise MapOpError("bad_merge", "a capability cannot be merged into itself")
+        src = await self._feature_by_slug(db, project, from_slug)
+        if src is None:
+            raise MapOpError("not_found", f"capability '{from_slug}' does not exist")
+        dst = await self._feature_by_slug(db, project, into_slug)
+        if dst is None:
+            raise MapOpError("not_found", f"capability '{into_slug}' does not exist")
+
+        # A pure DB check before any GitHub call (mirrors retire's dependents
+        # guard): both slugs are already-indexed Features, so their ancestry
+        # is fully answered by the indexed rows alone — no need to pay for a
+        # branch-docs read just to refuse a cycle.
+        precheck_ctx = await self.context(db, project)
+        if is_ancestor(precheck_ctx, into_slug, from_slug):
+            raise MapOpError("parent_cycle",
+                              f"'{into_slug}' is '{from_slug}' or one of its descendants")
+
+        branch = map_changes_branch_name(project.slug or "")
+        repo = await self._primary_repo(db, project)
+        gh = await asyncio.to_thread(self._gh_factory, repo)
+        pointer = await self.open_pointer(db, project)
+        docs = await self.branch_docs(gh, branch, pointer=pointer)
+        ctx = await self.context(db, project, docs)
+
+        moved_work_items = (await db.execute(update(WorkItem).where(
+            WorkItem.feature_id == src.id).values(feature_id=dst.id))).rowcount or 0
+
+        existing_pairs = {
+            row.initiative_id for row in (await db.execute(select(InitiativeFeature).where(
+                InitiativeFeature.feature_id == dst.id))).scalars().all()}
+        src_links = (await db.execute(select(InitiativeFeature).where(
+            InitiativeFeature.feature_id == src.id))).scalars().all()
+        moved_initiatives = 0
+        for row in src_links:
+            if row.initiative_id in existing_pairs:
+                if row.is_primary:
+                    await db.execute(update(InitiativeFeature).where(
+                        InitiativeFeature.initiative_id == row.initiative_id,
+                        InitiativeFeature.feature_id == dst.id).values(is_primary=True))
+                await db.delete(row)
+            else:
+                row.feature_id = dst.id
+            moved_initiatives += 1
+        await db.flush()
+
+        # Read FeatureLink's pre-mutation state now — nothing below mutates
+        # this table directly (see the docstring); these rows are only ever
+        # used to compute the doc-level `op="links"` commits further down.
+        outgoing = (await db.execute(select(FeatureLink, Project.slug, Feature.slug).join(
+            Feature, FeatureLink.dst_feature_id == Feature.id).join(
+            Project, Feature.project_id == Project.id).where(
+            FeatureLink.src_feature_id == src.id))).all()
+        incoming = (await db.execute(select(FeatureLink, Project.slug, Feature.slug, Feature.project_id).join(
+            Feature, FeatureLink.src_feature_id == Feature.id).join(
+            Project, Feature.project_id == Project.id).where(
+            FeatureLink.dst_feature_id == src.id))).all()
+        same_project_incoming = [row for row in incoming if row[3] == project.id]
+        links_not_repointed = len(incoming) - len(same_project_incoming)
+
+        await db.execute(update(TriageProposal).where(
+            TriageProposal.proposed_feature_id == src.id).values(proposed_feature_id=dst.id))
+
+        children = (await db.execute(select(Feature).where(
+            Feature.parent_feature_id == src.id,
+            Feature.orphaned.isnot(True)))).scalars().all()
+
+        base = await self._default_branch(repo)
+        base_sha = await asyncio.to_thread(gh.default_branch_head, base)
+        # Ensure the branch exists before any doc read below: a fresh
+        # product's first-ever map-changes edit has no branch yet, and
+        # `_current_doc` needs one to read from (a newly created branch
+        # inherits every default-branch doc, including ones no edit here has
+        # touched yet — `into_slug`'s doc in particular).
+        await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
+
+        links_repointed = 0
+        if outgoing:
+            # A DIRECT src->dst link (e.g. `dictation powered_by sessions`)
+            # must be DROPPED, not merged into into_slug's own doc — adding
+            # it there would write a self-link (`sessions -> sessions`).
+            outgoing_refs = [
+                FeatureLinkRef(kind=str(link.kind), project=proj_slug, feature=feat_slug)
+                for link, proj_slug, feat_slug in outgoing
+                if not (proj_slug == project.slug and feat_slug == into_slug)]
+            into_doc = await self._current_doc(gh, branch, into_slug)
+            into_existing = tuple(into_doc.links) if into_doc is not None else ()
+            merged = tuple(dict.fromkeys([*into_existing, *outgoing_refs]))
+            # No `validate_op` pre-check here (unlike every other op this
+            # method commits): `merged` is a FULL replacement list, and
+            # `validate_op`'s "links" branch re-validates every ref in it
+            # against `ctx.link_targets` — including `into_existing` refs
+            # `merge()` never touched. A capability's doc can carry a stale
+            # ref `_pm_sync_apply_feature_plan` never cleaned up (its target
+            # renamed/vanished elsewhere), and re-validating it here would
+            # 422 a merge that has nothing to do with that ref. Every ref in
+            # `merged` is either copied verbatim from an already-committed
+            # doc (valid or not, not this merge's problem to fix) or
+            # `into_slug` itself, which trivially exists — so there is
+            # nothing for `validate_op` to usefully catch. `_commit_and_track`
+            # still runs `apply_op`'s own structural checks (e.g. the doc
+            # must be readable at all).
+            if merged != into_existing:
+                pointer, _path, _sha = await self._commit_and_track(
+                    db, project, gh, repo, branch, base, base_sha, pointer,
+                    MapOp(op="links", slug=into_slug, links=merged))
+            # The source doc is being retired — clear its own outgoing list
+            # rather than let it linger on the sunset doc. Same no-validate
+            # reasoning: the replacement list is empty, so there is nothing
+            # to validate regardless.
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="links", slug=from_slug, links=()))
+            links_repointed += len(outgoing)
+
+        for _link, _other_project_slug, other_slug, _other_project_id in same_project_incoming:
+            other_doc = await self._current_doc(gh, branch, other_slug)
+            if other_doc is None:
+                # Its doc cannot be read at all (missing/unparseable) — this
+                # capability's own incoming ref cannot be repointed, same
+                # honestly-surfaced-limitation treatment as a cross-project
+                # incoming link: counted, never silently dropped.
+                links_not_repointed += 1
+                continue
+            new_links = []
+            for ref in other_doc.links:
+                if (ref.project, ref.feature) != (project.slug, from_slug):
+                    new_links.append(ref)
+                elif other_slug != into_slug:
+                    new_links.append(FeatureLinkRef(
+                        kind=ref.kind, project=project.slug or "", feature=into_slug))
+                # else: this incoming link is DIRECTLY `into_slug -> from_slug`
+                # — repointing it would write a self-link (`into_slug ->
+                # into_slug`); drop it instead.
+            deduped = tuple(dict.fromkeys(new_links))
+            # No `validate_op` here either — same reasoning as the into_slug
+            # commit above: `deduped` only ever carries refs already on
+            # `other_slug`'s own committed doc, plus `into_slug` itself.
+            if deduped != other_doc.links:
+                pointer, _path, _sha = await self._commit_and_track(
+                    db, project, gh, repo, branch, base, base_sha, pointer,
+                    MapOp(op="links", slug=other_slug, links=deduped))
+            links_repointed += 1
+
+        reparented = 0
+        for child in children:
+            validate_op(MapOp(op="reparent", slug=child.slug, parent_slug=into_slug), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="reparent", slug=child.slug, parent_slug=into_slug))
+            reparented += 1
+        validate_op(MapOp(op="retire", slug=from_slug), ctx)
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer,
+            MapOp(op="retire", slug=from_slug))
+
+        # Same defense-in-depth watermark bump as `retire()` — see there.
+        await request_project_sync(db, project.id, self._now())
+        # Record the audit row BEFORE `_resync_now`: that call commits *db* as
+        # a necessary side effect of the cross-session work it does (see its
+        # docstring), so anything durable this action needs — the audit row is
+        # the only durable record of who merged these capabilities — must be
+        # written to *db* first. Mirrors `retire()`'s ordering.
+        await record_audit(
+            db=db, type="pm.map_changes.merge", identity=identity,
+            detail={"slug": project.slug, "from": from_slug, "into": into_slug,
+                    "workItems": moved_work_items, "initiatives": moved_initiatives,
+                    "linksRepointed": links_repointed, "linksNotRepointed": links_not_repointed,
+                    "childrenReparented": reparented,
+                    "commitSha": sha, "prNumber": pointer.pr_number})
+        await self._resync_now(db, project)
+        return MergeResult(
+            pointer=Pointer.from_row(pointer), work_items=moved_work_items,
+            initiatives=moved_initiatives, links_repointed=links_repointed,
+            links_not_repointed=links_not_repointed, children_reparented=reparented)
 
     async def refresh(
         self, db, project: Project, gh: GhWrite | None = None,

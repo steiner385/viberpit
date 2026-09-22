@@ -180,3 +180,36 @@ def test_edits_preserve_route_labels():
                              summary="Still a live, unfixed flake."), text)
     assert "labels:" in text
     assert parse_feature_doc(text).labels == ("flaky", "ci-failure")
+
+
+def test_retire_sets_state_to_sunset_and_keeps_everything_else():
+    op = MapOp(op="retire", slug="dictation")
+    validate_op(op, CTX)
+    path, text = apply_op(op, DOC)
+    assert path == "docs/product/features/dictation.md"
+    doc = parse_feature_doc(text)
+    assert doc.state == "sunset"
+    assert doc.title == "Dictation" and doc.parent == "sessions"
+    assert "More prose that must survive." in doc.body
+
+
+def test_retire_refuses_a_missing_slug():
+    with pytest.raises(MapOpError) as e:
+        validate_op(MapOp(op="retire", slug="ghost"), CTX)
+    assert e.value.code == "not_found"
+
+
+def test_retire_preserves_route_labels():
+    """Same regression class as the existing rename/reparent/summary/links
+    label-preservation test — every op must dataclasses.replace() rather than
+    reconstruct, or a doc's `labels:` frontmatter silently drops (fix round 1,
+    Task 7)."""
+    _, text = apply_op(MapOp(op="retire", slug="flaky-test-triage"), LABELLED_DOC)
+    doc = parse_feature_doc(text)
+    assert doc.state == "sunset"
+    assert doc.labels  # unchanged from LABELLED_DOC's frontmatter
+
+
+def test_commit_message_names_retire():
+    assert commit_message(MapOp(op="retire", slug="dictation"), "KinDash") == (
+        "map(kindash): retire capability dictation")

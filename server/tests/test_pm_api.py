@@ -1887,6 +1887,193 @@ def test_accept_with_edits_rejects_an_unknown_feature_id():
         assert ok2.status_code == 200, ok2.text
 
 
+class _FakeMapChangesService:
+    """Stands in for the real GitHub-backed ``MapChangesService`` (mirrors the
+    ``pm_onboard_spawn_map``/``pm_classify_run`` stub pattern above): records a
+    ``create`` op on ``edit()`` — 422'ing ``slug_taken`` exactly as the real
+    service does when a ``Feature`` with that slug already exists — then
+    materializes it into the ``Feature`` table on ``_resync_now()``, standing
+    in for a real doc commit + index resync without touching GitHub."""
+
+    def __init__(self):
+        self._pending: list[tuple[str, object]] = []
+
+    async def edit(self, db, project, op, identity):
+        from sqlalchemy import select
+
+        from server.db.models import Feature
+        from server.pm.map_changes_ops import MapOpError
+        existing = (await db.execute(select(Feature).where(
+            Feature.project_id == project.id, Feature.slug == op.slug,
+        ))).scalar_one_or_none()
+        if op.op == "create" and existing is not None:
+            raise MapOpError("slug_taken", f"'{op.slug}' already exists")
+        self._pending.append((project.id, op))
+        return None, None, None
+
+    async def _resync_now(self, db, project):
+        from server.db.models import Feature
+        still_pending = []
+        for project_id, op in self._pending:
+            if project_id == project.id:
+                db.add(Feature(project_id=project_id, slug=op.slug, title=op.title,
+                               state="proposed"))
+            else:
+                still_pending.append((project_id, op))
+        self._pending = still_pending
+        await db.flush()
+
+
+def test_accept_with_new_capability_creates_it_and_classifies_in_one_call():
+    """`edits.newCapability` creates the capability on the product's
+    map-changes branch, resyncs it into the ``Feature`` index synchronously,
+    and classifies the work item onto it — all in the one accept call, so a
+    triage reviewer never has to round-trip through the map-changes UI first."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, WorkItem
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        async def _check():
+            async with db_session() as db:
+                feat = (await db.execute(select(Feature).where(
+                    Feature.slug == "payments"))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return feat, wi
+        feat, wi = c.portal.call(_check)
+        assert feat.title == "Payments"
+        assert feat.state == "proposed"
+        assert wi.feature_id == feat.id
+
+
+def test_accept_rejects_both_feature_id_and_new_capability():
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions", repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"featureId": "some-id",
+                                  "newCapability": {"title": "X", "slug": "x"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+
+
+def test_accept_new_capability_slug_collision_is_422():
+    from server.db import db_session
+    from server.db.models import Feature, Project
+    from sqlalchemy import select
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+
+        async def _seed_existing():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                db.add(Feature(project_id=p.id, slug="payments", title="Payments",
+                               state="live"))
+        c.portal.call(_seed_existing)
+
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "slug_taken"
+
+
+def test_accept_new_capability_gh_write_error_is_502_not_500():
+    """A GitHub write failure inside ``svc.edit()`` (e.g. the commit mutation
+    itself fails) must translate through the same ``_map_changes_http`` every
+    other map-changes route uses, not bubble up as an unhandled 500 — the
+    except clause on the ``svc.edit``/``_resync_now`` call has to match the
+    other three map-changes routes' tuple exactly, not just ``MapOpError``."""
+    from server.pm.map_changes_gh import GhWriteError
+
+    class _FailingMapChangesService:
+        async def edit(self, db, project, op, identity):
+            raise GhWriteError("commit", "boom")
+
+        async def _resync_now(self, db, project):
+            raise AssertionError("must not be reached: edit() already raised")
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FailingMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"]["error"] == "github"
+
+
+def test_accept_new_capability_missing_slug_is_400_not_500():
+    """A malformed ``newCapability`` (missing the ``slug`` key) must 400 as
+    ``bad_edit`` — before this fix, ``new_capability["slug"]`` raised a bare
+    ``KeyError`` out of the route as an unhandled 500."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+
+
+def test_accept_falsy_new_capability_is_400_not_a_silent_plain_accept():
+    """A PRESENT but falsy ``newCapability`` (``{}``, ``null``, ``""``, ``0``)
+    used to slip past the route's truthiness check and fall through to a plain
+    accept onto the AI's own suggestion — a 200 saying the capability was
+    created when nothing was. Presence, not truthiness, is the gate."""
+    for value in ({}, None, "", 0, [], "payments"):
+        with _client() as c:
+            _register(c, "Viberpit", repo="o/r")
+            c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+            pid, _wid = _seed_one_pending(c, repo="o/r")
+
+            r = c.post(f"/api/pm/triage/{pid}/accept",
+                       json={"edits": {"newCapability": value}},
+                       headers=IDENTITY_HEADERS)
+            assert r.status_code == 400, f"{value!r} -> {r.status_code}: {r.text}"
+            assert r.json()["detail"]["error"] == "bad_edit"
+
+
+def test_accept_falsy_new_capability_with_feature_id_is_still_mutually_exclusive():
+    """…and a falsy ``newCapability`` alongside ``featureId`` is refused as the
+    mutually-exclusive pair it is, rather than quietly honouring the
+    ``featureId`` leg."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions", repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"featureId": "some-id", "newCapability": {}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+        assert "mutually exclusive" in r.json()["detail"]["message"]
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
