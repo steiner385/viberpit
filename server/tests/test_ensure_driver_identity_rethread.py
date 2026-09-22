@@ -129,3 +129,33 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
     assert approved is True, "same for a permission prompt registered under 'system'"
     assert result == (["A"], "option")
     assert perm is True
+
+
+def test_ensure_driver_upgrades_lan_guest_identity_to_real_user(tmp_path):
+    """The LAN-open guest (`lan@local`) is "nobody in particular", like "system":
+    a session built under it (2026-09-22: the assistant drawer's create call was
+    mis-attributed to the guest, see test_assistant_token.py) must hand ownership to
+    the first verified user who attaches, or every answer they give is rejected."""
+    from server.auth.identity import OPEN_LAN_IDENTITY
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'viberpit.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed([dict(id="s4", name="S4", account_name="acct1",
+                          engine_session_id="cs4", status="idle", cwd=str(tmp_path))])
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        d_guest = await _ensure(orch, tmp_path, "s4", OPEN_LAN_IDENTITY)
+        qid, fut = d_guest._qreg.request("s4", "t1", "H", "Q?", [{"label": "A"}], False,
+                                         d_guest.identity)
+        d_user = await _ensure(orch, tmp_path, "s4", "user@example.test")
+        answered = await orch.answer_question("s4", qid, ["A"], "user@example.test")
+        # Bounded: an unresolved future (the answer was refused) must FAIL, not hang.
+        result = await asyncio.wait_for(fut, timeout=2) if answered else None
+        return d_guest is d_user, d_user.identity, answered, result
+
+    same, identity, answered, result = asyncio.run(run())
+    assert same
+    assert identity == "user@example.test", "a lan@local-built driver must hand over to the attaching user"
+    assert answered is True
+    assert result == (["A"], "option")

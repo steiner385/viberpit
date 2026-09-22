@@ -1,6 +1,9 @@
 from __future__ import annotations
 import asyncio
+import logging
 import uuid as _uuid
+
+log = logging.getLogger(__name__)
 
 
 class QuestionRegistry:
@@ -90,7 +93,15 @@ class QuestionRegistry:
         rec = self._pending.get(question_id)
         if rec is None and session_id is not None:
             question_id, rec = self._reconcile(question_id, session_id)
-        if rec is None or rec["identity"] != identity:
+        if rec is None:
+            return False
+        if rec["identity"] != identity:
+            # Loud: this is the "answers refused, card still pending" shape
+            # (2026-09-22, session 75994c11) and the two identities are the
+            # whole diagnosis. Both are principals ViberPit already logs.
+            log.warning("question.answer refused: identity mismatch session=%s qid=%s "
+                        "owner=%s answerer=%s", rec["session_id"], question_id,
+                        rec["identity"], identity)
             return False
         del self._pending[question_id]
         if not rec["future"].done():

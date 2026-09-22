@@ -315,7 +315,14 @@ class PermissionRegistry:
 
     def resolve(self, perm_id, decision, identity) -> bool:
         rec = self._pending.get(perm_id)
-        if rec is None or rec["identity"] != identity:
+        if rec is None:
+            return False
+        if rec["identity"] != identity:
+            # Same diagnosis line as QuestionRegistry.resolve — the two identities
+            # are what explain a "refused, but still pending" card.
+            log.warning("permission.decision refused: identity mismatch session=%s perm=%s "
+                        "owner=%s decider=%s", rec["session_id"], perm_id,
+                        rec["identity"], identity)
             return False
         del self._pending[perm_id]
         raw = rec.get("raw_decision", False)

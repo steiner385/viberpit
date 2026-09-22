@@ -381,3 +381,20 @@ def test_rethread_identity_leaves_real_identities_alone():
         await fut
         return moved
     assert asyncio.run(run()) == 0
+
+
+def test_system_identity_cannot_answer_a_question_owned_by_a_real_user():
+    """Pins the guard behind "autopilot answered for me" reports (2026-09-22,
+    session 75994c11): autopilot resolves questions under the "system" identity,
+    and the registry's identity gate rejects that for a question registered under a
+    real user — autopilot can only answer on a driver nobody has attached to. The
+    2026-09-22 rejections were an identity mismatch of a different kind (the
+    session was created as the `lan@local` guest), never an autopilot answer."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, identity="user@example.test")
+        assert reg.resolve(qid, ["Option A"], "system") is False
+        assert reg.pending("s1")[0]["question_id"] == qid
+        assert reg.resolve(qid, ["Option A"], "user@example.test") is True
+        return await fut
+    assert asyncio.run(run()) == (["Option A"], "option")

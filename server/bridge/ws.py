@@ -1945,10 +1945,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # unresolvable decision must surface, not 200-and-vanish.
                         log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
                                     session_id, perm_id, identity)
+                        # The helper's message, not a copy: it distinguishes "gone"
+                        # from "still pending, owned by another identity".
                         await _send({"type": "error", "code": action_error.code,
-                                     "message": "That permission request is no longer pending "
-                                                "— the session may have moved on. Reload to "
-                                                "see its current state.",
+                                     "message": action_error.message,
                                      "sessionId": session_id})
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
@@ -1970,9 +1970,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
                                     session_id, question_id, identity)
                         await _send({"type": "error", "code": action_error.code,
-                                     "message": "That question is no longer pending — the "
-                                                "session may have moved on. Reload to see "
-                                                "its current state.",
+                                     "message": action_error.message,
                                      "sessionId": session_id})
                 elif msg_type == "activity":
                     # Lightweight steering signal — user typing / interacting before send. Refreshes
