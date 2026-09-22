@@ -451,6 +451,34 @@ async def test_archived_session_with_no_driver_attests_every_retained_execution(
 
 
 @pytest.mark.asyncio
+async def test_permanently_deleted_session_row_attests_every_retained_execution(ownership_db):
+    # The purged-row twin of the archived case above, and the breadth half of
+    # #2199's gate test (test_purged_session_is_treated_as_stopped_not_perpetually_busy,
+    # which proves a single-execution claim converges at all): once a purged row
+    # gets through the gate, the sweep must close EVERY execution the operation
+    # retains, not just the current one. An implementation attesting only the
+    # current generation passes the gate test and still strands a resumed
+    # session's predecessor open forever — #2009's shape, which is why the
+    # shortcut above falls through here instead of giving up.
+    # Independently reproduced against the live prod DB as cairnea/KinDash#16348:
+    # a PR Doctor claim bound to a session_id with no ``sessions`` row at all.
+    # No Session row is added here — that absence is the whole point.
+    token = await claim([target()])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+    await begin_session_execution(sid, execution_id="gen-a")
+    await begin_session_execution(sid, execution_id="gen-b")   # a resume: two retained lifetimes
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {}
+    orch._drivers = {}
+    orch._releasing = {}
+    orch._enabled_host_names = AsyncMock(return_value=frozenset())
+    assert await orch._automation_session_work_stopped(sid)
+    _token, tree_generation, tree_stopped = await session_execution(sid)
+    assert tree_generation == tree_stopped == 2
+
+
+@pytest.mark.asyncio
 async def test_archived_session_falls_through_to_terminal_sweep_when_shortcut_alone_cannot_converge(
         ownership_db):
     """cairnea/KinDash#16529 (2026-09-21): the session's OWN current execution
