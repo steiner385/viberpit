@@ -49,6 +49,7 @@ from .map_changes_ops import (
     MapOpError,
     apply_op,
     commit_message,
+    is_ancestor,
     validate_op,
     validate_op_shape,
 )
@@ -595,6 +596,115 @@ class MapChangesService:
             detail={"slug": project.slug, "capability": slug,
                     "childrenReparented": reparented, "commitSha": sha,
                     "prNumber": pointer.pr_number})
+        await self._resync_now(db, project)
+        return Pointer.from_row(pointer)
+
+    async def merge(
+        self, db, project: Project, from_slug: str, into_slug: str, identity: str,
+    ) -> Pointer:
+        """Fold ``from_slug`` into ``into_slug``: repoint every WorkItem/
+        InitiativeFeature/FeatureLink/TriageProposal reference, reparent
+        ``from_slug``'s children onto ``into_slug``, retire ``from_slug``,
+        resync inline. ``into_slug`` must not be ``from_slug`` itself or one
+        of its descendants — a merge target below the source would cycle once
+        the source's other children reparent onto it."""
+        if from_slug == into_slug:
+            raise MapOpError("bad_merge", "a capability cannot be merged into itself")
+        src = await self._feature_by_slug(db, project, from_slug)
+        if src is None:
+            raise MapOpError("not_found", f"capability '{from_slug}' does not exist")
+        dst = await self._feature_by_slug(db, project, into_slug)
+        if dst is None:
+            raise MapOpError("not_found", f"capability '{into_slug}' does not exist")
+
+        # A pure DB check before any GitHub call (mirrors retire's dependents
+        # guard): both slugs are already-indexed Features, so their ancestry
+        # is fully answered by the indexed rows alone — no need to pay for a
+        # branch-docs read just to refuse a cycle.
+        precheck_ctx = await self.context(db, project)
+        if is_ancestor(precheck_ctx, into_slug, from_slug):
+            raise MapOpError("parent_cycle",
+                              f"'{into_slug}' is '{from_slug}' or one of its descendants")
+
+        branch = map_changes_branch_name(project.slug or "")
+        repo = await self._primary_repo(db, project)
+        gh = await asyncio.to_thread(self._gh_factory, repo)
+        pointer = await self.open_pointer(db, project)
+        docs = await self.branch_docs(gh, branch, pointer=pointer)
+        ctx = await self.context(db, project, docs)
+
+        moved_work_items = (await db.execute(update(WorkItem).where(
+            WorkItem.feature_id == src.id).values(feature_id=dst.id))).rowcount or 0
+
+        existing_pairs = {
+            row.initiative_id for row in (await db.execute(select(InitiativeFeature).where(
+                InitiativeFeature.feature_id == dst.id))).scalars().all()}
+        src_links = (await db.execute(select(InitiativeFeature).where(
+            InitiativeFeature.feature_id == src.id))).scalars().all()
+        moved_initiatives = 0
+        for row in src_links:
+            if row.initiative_id in existing_pairs:
+                if row.is_primary:
+                    await db.execute(update(InitiativeFeature).where(
+                        InitiativeFeature.initiative_id == row.initiative_id,
+                        InitiativeFeature.feature_id == dst.id).values(is_primary=True))
+                await db.delete(row)
+            else:
+                row.feature_id = dst.id
+            moved_initiatives += 1
+        await db.flush()  # the FeatureLink dedup probes below must see these
+                           # adds/deletes, not a stale read
+
+        moved_links = 0
+        for side, other_attr in (("src_feature_id", "dst_feature_id"),
+                                  ("dst_feature_id", "src_feature_id")):
+            rows = (await db.execute(select(FeatureLink).where(
+                getattr(FeatureLink, side) == src.id))).scalars().all()
+            for link in rows:
+                other = getattr(link, other_attr)
+                dup = (await db.execute(select(FeatureLink.id).where(
+                    getattr(FeatureLink, side) == dst.id,
+                    FeatureLink.kind == link.kind,
+                    getattr(FeatureLink, other_attr) == other).limit(1))).first()
+                if dup is not None:
+                    await db.delete(link)
+                else:
+                    setattr(link, side, dst.id)
+                await db.flush()  # each dedup probe must see prior iterations
+                moved_links += 1
+
+        await db.execute(update(TriageProposal).where(
+            TriageProposal.proposed_feature_id == src.id).values(proposed_feature_id=dst.id))
+
+        children = (await db.execute(select(Feature).where(
+            Feature.parent_feature_id == src.id,
+            Feature.orphaned.isnot(True)))).scalars().all()
+
+        base = await self._default_branch(repo)
+        base_sha = await asyncio.to_thread(gh.default_branch_head, base)
+        reparented = 0
+        for child in children:
+            validate_op(MapOp(op="reparent", slug=child.slug, parent_slug=into_slug), ctx)
+            pointer, _path, _sha = await self._commit_and_track(
+                db, project, gh, repo, branch, base, base_sha, pointer,
+                MapOp(op="reparent", slug=child.slug, parent_slug=into_slug))
+            reparented += 1
+        validate_op(MapOp(op="retire", slug=from_slug), ctx)
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer,
+            MapOp(op="retire", slug=from_slug))
+
+        # Record the audit row BEFORE `_resync_now`: that call commits *db* as
+        # a necessary side effect of the cross-session work it does (see its
+        # docstring), so anything durable this action needs — the audit row is
+        # the only durable record of who merged these capabilities — must be
+        # written to *db* first. Mirrors `retire()`'s ordering.
+        await record_audit(
+            db=db, type="pm.map_changes.merge", identity=identity,
+            detail={"slug": project.slug, "from": from_slug, "into": into_slug,
+                    "workItems": moved_work_items, "initiatives": moved_initiatives,
+                    "links": moved_links, "childrenReparented": reparented,
+                    "commitSha": sha, "prNumber": pointer.pr_number})
         await self._resync_now(db, project)
         return Pointer.from_row(pointer)
 

@@ -131,6 +131,19 @@ def _retire_answers() -> list:
     ]
 
 
+# The scripted answers merging `dictation` into `sessions` produces: the
+# branch-doc probe, the base head, then ONE `_commit_and_track` (retire
+# dictation) — dictation has no children in the seed fixture, so unlike
+# `_retire_answers()` there is no reparent op first. This is the branch's
+# first commit, so it opens the branch and the PR too: ensure_branch (ref
+# absent, then created), the existing doc read, the commit, the PR lookup,
+# the PR. Mirrors `_first_create_answers()`'s single-op shape, but with the
+# doc PRESENT (retire needs to read/rewrite it, unlike create).
+def _merge_answers() -> list:
+    return [_404, _ref("base1"), _404, _created("base1"), _contents(CHILD_DOC), _commit("c1"),
+            _NO_PR, _pr()]
+
+
 # -- fixtures -----------------------------------------------------------------
 
 
@@ -463,6 +476,13 @@ def _edit(c, project: str = SLUG, **body):
 def _retire(c, project: str = SLUG, *, slug: str):
     """POST one retire. Mirrors ``_edit``'s convention for the sibling route."""
     return c.post(f"/api/pm/projects/{project}/map-changes/retire", json={"slug": slug},
+                  headers=IDENTITY_HEADERS)
+
+
+def _merge(c, project: str = SLUG, *, from_slug: str, into_slug: str):
+    """POST one merge. Mirrors ``_retire``'s convention for the sibling route."""
+    return c.post(f"/api/pm/projects/{project}/map-changes/merge",
+                  json={"fromSlug": from_slug, "intoSlug": into_slug},
                   headers=IDENTITY_HEADERS)
 
 
@@ -1264,3 +1284,69 @@ def test_retire_reparents_children_and_syncs_the_db_inline():
         assert _audits(c, "pm.map_changes.retire") == [{
             "slug": SLUG, "capability": "sessions", "childrenReparented": 1,
             "commitSha": "c2", "prNumber": 12}]
+
+
+# -- merge (capability-management spec) ---------------------------------------
+
+
+def test_merge_refuses_a_cycle():
+    gh = FakeGh([])
+    with _seeded(gh) as (c, db_url, orch):
+        # dictation is a CHILD of sessions — merging sessions into its own
+        # child would cycle once sessions' other children reparent onto it.
+        r = _merge(c, from_slug="sessions", into_slug="dictation")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "parent_cycle"
+        # The guard is a pure DB check before any GitHub call.
+        assert gh.calls == []
+
+
+def test_merge_repoints_work_items_and_initiatives_and_retires_the_source():
+    gh = FakeGh(_merge_answers())  # dictation (the merge source here) has no
+                                    # children in the seed fixture, so this is
+                                    # a single ensure_branch/read_file/commit
+                                    # sequence — the branch's first commit, so
+                                    # it also opens the branch and the PR.
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, InitiativeFeature, Initiative, Project, WorkItem
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            init = Initiative(slug="init-a", title="Init A")
+            s.add(init)
+            s.flush()
+            s.add(InitiativeFeature(initiative_id=init.id, feature_id=dictation.id, is_primary=True))
+            s.add(WorkItem(repo="o/r", number=1, kind="issue", feature_id=dictation.id))
+            s.commit()
+            init_id = init.id  # captured before the session closes below —
+                                # `init` itself is detached after that, and a
+                                # later access to `init.id` raises
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+        body = r.json()["pointer"]
+        assert body["status"] == "open"
+
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation_row = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            assert dictation_row.state == "sunset"
+            wi = s.query(WorkItem).filter_by(repo="o/r", number=1, kind="issue").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+            assert wi.feature_id == sessions_cap.id
+            link = s.query(InitiativeFeature).filter_by(initiative_id=init_id).one()
+            assert link.feature_id == sessions_cap.id and link.is_primary is True
+
+        assert _audits(c, "pm.map_changes.merge") == [{
+            "slug": SLUG, "from": "dictation", "into": "sessions",
+            "workItems": 1, "initiatives": 1, "links": 0, "childrenReparented": 0,
+            "commitSha": "c1", "prNumber": 12}]
