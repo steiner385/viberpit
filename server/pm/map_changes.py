@@ -375,6 +375,74 @@ class MapChangesService:
             return found
         return await asyncio.to_thread(gh.read_pr, found.number)
 
+    async def _commit_and_track(
+        self, db, project: Project, gh: GhWrite, repo: str, branch: str, base: str,
+        base_sha: str, pointer: FeatureMapChange | None, op: MapOp,
+    ) -> tuple[FeatureMapChange, str, str]:
+        """Commit one validated op to the branch, opening/adopting the PR on
+        the first commit for this product, and return the (now-current)
+        pointer row, doc path and commit sha.
+
+        Caller has already run ``validate_op``; this only refuses the shapes
+        ``apply_op`` itself cannot compute (e.g. no doc at head for a
+        non-create op). Shared by ``edit()`` (one op, one audit row) and
+        ``retire()``/``merge()`` (several ops, one audit row for the whole
+        action) — extracted from what was previously ``edit()``'s own body,
+        with no behavior change to ``edit()``."""
+        message = commit_message(op, project.name or project.slug or "")
+
+        async def _read_and_apply() -> tuple[str, str, str]:
+            # Re-read the branch head even when the row has one: the row may
+            # be stale (a merge, or a commit by another writer) and it is
+            # cheap.
+            head = await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
+            path = feature_doc_path(op.slug)
+            current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
+            if op.op == "create" and current is not None:
+                raise MapOpError("slug_taken", _slug_taken_on_branch(op.slug, branch))
+            path, text = apply_op(op, current)
+            return head, path, text
+
+        head, path, text = await _read_and_apply()
+        try:
+            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
+        except GhWriteError as e:
+            if not e.conflict:
+                raise
+            # Someone committed between the read and the write. Re-read the
+            # head AND the doc and re-apply the op — `fileChanges.additions`
+            # replaces the file wholesale, so committing the text computed at
+            # the old head would silently drop their change. A second
+            # conflict is the caller's to resolve (409).
+            head, path, text = await _read_and_apply()
+            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
+
+        if pointer is None:
+            pr = await self._adopt_or_open_pr(gh, branch, base, project)
+            # Re-run the lookup immediately before inserting: "one open
+            # pointer per product" is enforced by lookup, not by a partial
+            # unique index (R8b-5), so two concurrent first edits would
+            # otherwise both insert. Everything above is idempotent — the
+            # commit is atomic and the PR is adopted, not re-opened — so the
+            # loser just reuses the winner's row.
+            existing = await open_pointer_row(db, project.id)
+            if existing is not None:
+                pointer = existing
+                pointer.head_sha = sha
+                if not pointer.pr_number and pr.number:
+                    pointer.pr_number, pointer.pr_url = pr.number, pr.url or None
+            else:
+                pointer = FeatureMapChange(
+                    project_id=project.id, repo=repo, branch=branch,
+                    pr_number=pr.number or None, pr_url=pr.url or None,
+                    status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
+                    behind=pr.behind, conflicting=pr.conflicting, opened_at=self._now())
+                db.add(pointer)
+        else:
+            pointer.head_sha = sha
+        await db.flush()
+        return pointer, path, sha
+
     async def edit(
         self, db, project: Project, op: MapOp, identity: str,
     ) -> tuple[Pointer, str, str]:
@@ -394,59 +462,10 @@ class MapChangesService:
 
         base = await self._default_branch(repo)
         base_sha = await asyncio.to_thread(gh.default_branch_head, base)
-        message = commit_message(op, project.name or project.slug or "")
+        pointer, path, sha = await self._commit_and_track(
+            db, project, gh, repo, branch, base, base_sha, pointer, op)
 
-        async def _read_and_apply() -> tuple[str, str, str]:
-            """Branch head, doc path and the text to commit, read fresh."""
-            # Re-read the branch head even when the row has one: the row may be
-            # stale (a merge, or a commit by another writer) and it is cheap.
-            head = await asyncio.to_thread(gh.ensure_branch, branch, base_sha)
-            path = feature_doc_path(op.slug)
-            current, _blob = await asyncio.to_thread(gh.read_file, path, branch)
-            if op.op == "create" and current is not None:
-                raise MapOpError("slug_taken", _slug_taken_on_branch(op.slug, branch))
-            path, text = apply_op(op, current)
-            return head, path, text
-
-        head, path, text = await _read_and_apply()
-        try:
-            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
-        except GhWriteError as e:
-            if not e.conflict:
-                raise
-            # Someone committed between the read and the write. Re-read the head
-            # AND the doc and re-apply the op: `fileChanges.additions` replaces
-            # the file wholesale, so committing the text computed at the old head
-            # would silently drop their change. A second conflict is the caller's
-            # to resolve (409).
-            head, path, text = await _read_and_apply()
-            sha = await asyncio.to_thread(gh.commit_file, branch, head, path, text, message)
-
-        now = self._now()
-        if pointer is None:
-            pr = await self._adopt_or_open_pr(gh, branch, base, project)
-            # Re-run the lookup immediately before inserting: "one open pointer
-            # per product" is enforced by lookup, not by a partial unique index
-            # (R8b-5), so two concurrent first edits would otherwise both insert.
-            # Everything above is idempotent — the commit is atomic and the PR is
-            # adopted, not re-opened — so the loser just reuses the winner's row.
-            existing = await open_pointer_row(db, project.id)
-            if existing is not None:
-                pointer = existing
-                pointer.head_sha = sha
-                if not pointer.pr_number and pr.number:
-                    pointer.pr_number, pointer.pr_url = pr.number, pr.url or None
-            else:
-                pointer = FeatureMapChange(
-                    project_id=project.id, repo=repo, branch=branch,
-                    pr_number=pr.number or None, pr_url=pr.url or None,
-                    status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
-                    behind=pr.behind, conflicting=pr.conflicting, opened_at=now)
-                db.add(pointer)
-        else:
-            pointer.head_sha = sha
-        await db.flush()
-        await request_project_sync(db, project.id, now)
+        await request_project_sync(db, project.id, self._now())
         await record_audit(
             db=db, type=f"pm.map_changes.{op.op}", identity=identity,
             detail={"slug": project.slug, "op": op.op, "capability": op.slug,
