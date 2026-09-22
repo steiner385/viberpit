@@ -1350,3 +1350,142 @@ def test_merge_repoints_work_items_and_initiatives_and_retires_the_source():
             "slug": SLUG, "from": "dictation", "into": "sessions",
             "workItems": 1, "initiatives": 1, "links": 0, "childrenReparented": 0,
             "commitSha": "c1", "prNumber": 12}]
+
+
+def test_merge_dedupes_an_initiative_classified_onto_both_ends():
+    """The trivial move-only test above only exercises the `InitiativeFeature`
+    "no conflict, just move the row" branch (`else: row.feature_id = dst.id`)
+    — hand-traced against `uq_initiative_feature` in `server/db/models.py` but
+    never run: an initiative already classified onto BOTH `dictation`
+    (is_primary) and `sessions` (not primary) must dedupe to ONE surviving row
+    on `sessions`, with `is_primary` OR'd true, not a `uq_initiative_feature`
+    violation."""
+    gh = FakeGh(_merge_answers())
+    with _seeded(gh) as (c, db_url, orch):
+        _stub_pm_sync(orch, gh, {
+            f"{DOCS}/sessions.md": ROOT_DOC, f"{DOCS}/dictation.md": CHILD_DOC})
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from server.db.models import Feature, Initiative, InitiativeFeature, Project
+
+        engine = create_engine(db_url.replace("+aiosqlite", ""))
+        Session = sessionmaker(bind=engine)
+        with Session() as s:
+            proj = s.query(Project).filter_by(slug=SLUG).one()
+            dictation = s.query(Feature).filter_by(project_id=proj.id, slug="dictation").one()
+            sessions_cap = s.query(Feature).filter_by(project_id=proj.id, slug="sessions").one()
+
+            dual = Initiative(slug="init-dual", title="Init Dual")
+            s.add(dual)
+            s.flush()
+            s.add(InitiativeFeature(
+                initiative_id=dual.id, feature_id=dictation.id, is_primary=True))
+            s.add(InitiativeFeature(
+                initiative_id=dual.id, feature_id=sessions_cap.id, is_primary=False))
+            s.commit()
+            dual_id, sessions_id = dual.id, sessions_cap.id
+
+        r = _merge(c, from_slug="dictation", into_slug="sessions")
+        assert r.status_code == 200, r.text
+
+        with Session() as s:
+            rows = s.query(InitiativeFeature).filter_by(initiative_id=dual_id).all()
+            assert len(rows) == 1
+            assert rows[0].feature_id == sessions_id
+            assert rows[0].is_primary is True
+
+        assert _audits(c, "pm.map_changes.merge") == [{
+            "slug": SLUG, "from": "dictation", "into": "sessions",
+            "workItems": 0, "initiatives": 1, "links": 0, "childrenReparented": 0,
+            "commitSha": "c1", "prNumber": 12}]
+
+
+def test_merge_service_dedupes_feature_links_and_drops_a_direct_src_dst_link():
+    """`merge()`'s `FeatureLink` dedup loop (both `src_feature_id`/
+    `dst_feature_id` directions, plus the direct-src-dst self-link case) is
+    hand-traced against `uq_feature_link` in `server/db/models.py` but was
+    never exercised: the seed fixture gives `dictation` zero `FeatureLink`
+    rows, so the existing merge tests never reach the dedup branches.
+
+    This uses a BARE `MapChangesService` (no sync seams wired, like
+    `server/tests/test_map_update_background.py`'s pattern) rather than the
+    full HTTP+`_seeded` path, because `_resync_now` — when wired, as it is
+    behind the API — commits to a real `_apply_feature_plan`
+    (`SessionOrchestrator._pm_sync_apply_feature_plan`) that DELETES AND
+    REBUILDS every outgoing `FeatureLink` of every one of the project's
+    Features from doc frontmatter on every resync (see its docstring: "Links
+    are REWRITTEN each apply"). Going through the full pipeline, as the other
+    merge tests do, would silently wipe whatever `merge()`'s own dedup SQL did
+    to `feature_links` and mask a bug in it — a bare service with
+    `_resync_now` a no-op is the only way to observe `merge()`'s own mutation
+    directly."""
+    from sqlalchemy import select
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, FeatureLink, Project, ProjectRepo
+    from server.pm.map_changes import MapChangesService
+    from server.pm.map_changes_gh import GhWrite
+    from server.tests.test_pm_map_changes_gh import PAT_ENV
+
+    async def _master(_repo: str) -> str:
+        return "master"
+
+    async def _go() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+            await init_db(db_url)
+            async with db_session() as db:
+                proj = Project(slug=SLUG, name="Example product")
+                db.add(proj)
+                await db.flush()
+                db.add(ProjectRepo(project_id=proj.id, repo=REPO, is_primary=True))
+                dictation = Feature(project_id=proj.id, slug="dictation",
+                                    title="Dictation", state="live")
+                sessions_cap = Feature(project_id=proj.id, slug="sessions",
+                                       title="Sessions", state="live")
+                third = Feature(project_id=proj.id, slug="third-cap",
+                                title="Third", state="live")
+                db.add_all([dictation, sessions_cap, third])
+                await db.flush()
+                # Becomes a duplicate once dictation's side repoints to
+                # sessions: both already link to `third` the same way.
+                db.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=third.id,
+                                   kind="integrates_with"))
+                db.add(FeatureLink(src_feature_id=sessions_cap.id, dst_feature_id=third.id,
+                                   kind="integrates_with"))
+                # A DIRECT link between src and dst — repointing naively would
+                # create a self-link (sessions -> sessions).
+                db.add(FeatureLink(src_feature_id=dictation.id, dst_feature_id=sessions_cap.id,
+                                   kind="powered_by"))
+                sessions_id, third_id = sessions_cap.id, third.id
+
+            gh = FakeGh(_merge_answers())
+            service = MapChangesService(
+                gh_factory=lambda repo: GhWrite(
+                    repo, run=gh, app_token=lambda owner: "app-tok", env=PAT_ENV),
+                default_branch=_master)
+
+            async with db_session() as db:
+                proj_row = (await db.execute(
+                    select(Project).where(Project.slug == SLUG))).scalars().one()
+                await service.merge(db, proj_row, "dictation", "sessions", "tester@example.com")
+
+            async with db_session() as db:
+                # Exactly one surviving (sessions, third, integrates_with)
+                # link — the would-be duplicate was dropped, not doubled.
+                links = (await db.execute(select(FeatureLink).where(
+                    FeatureLink.src_feature_id == sessions_id,
+                    FeatureLink.dst_feature_id == third_id,
+                    FeatureLink.kind == "integrates_with"))).scalars().all()
+                assert len(links) == 1
+                # The direct dictation<->sessions link is gone entirely —
+                # never turned into a self-link.
+                assert (await db.execute(select(FeatureLink).where(
+                    FeatureLink.src_feature_id == sessions_id,
+                    FeatureLink.dst_feature_id == sessions_id))).first() is None
+                assert (await db.execute(select(FeatureLink).where(
+                    FeatureLink.kind == "powered_by"))).first() is None
+
+    asyncio.run(_go())

@@ -662,6 +662,17 @@ class MapChangesService:
                 getattr(FeatureLink, side) == src.id))).scalars().all()
             for link in rows:
                 other = getattr(link, other_attr)
+                if other == dst.id:
+                    # A direct link already connects src and dst (e.g.
+                    # `dictation powered_by sessions`) — repointing `side`
+                    # to `dst.id` too would turn it into a self-link
+                    # (`sessions -> sessions`). Not a constraint violation
+                    # (no unique index forbids it), just semantically wrong:
+                    # a capability cannot link to itself. Drop it.
+                    await db.delete(link)
+                    await db.flush()
+                    moved_links += 1
+                    continue
                 dup = (await db.execute(select(FeatureLink.id).where(
                     getattr(FeatureLink, side) == dst.id,
                     FeatureLink.kind == link.kind,
