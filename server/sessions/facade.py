@@ -155,6 +155,15 @@ class InProcessOrchestratorAdapter:
     async def run_command(self, *a, **k): return await _maybe_await(self._orch.run_command(*a, **k))
     async def list_sessions(self, *a, **k): return await _maybe_await(self._orch.list_sessions(*a, **k))
     async def get_session(self, *a, **k): return await _maybe_await(self._orch.get_session(*a, **k))
+    async def recheck_stuck_complete_session(self, *a, **k):
+        # Best-effort: a fleet remote proxy may not implement this yet — its owning
+        # host's own periodic sweep (_recheck_stuck_complete_sessions_once) still
+        # catches the same session independently, so a missing method here is not a
+        # bug worth logging, just a slower path to the same outcome.
+        fn = getattr(self._orch, "recheck_stuck_complete_session", None)
+        if fn is None:
+            return
+        return await _maybe_await(fn(*a, **k))
     async def find_assistant(self, *a, **k): return await _maybe_await(self._orch.find_assistant(*a, **k))
     async def post_notice(self, *a, **k): return await _maybe_await(self._orch.post_notice(*a, **k))
     async def pop_pending_notices(self, *a, **k): return await _maybe_await(self._orch.pop_pending_notices(*a, **k))

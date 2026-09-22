@@ -5406,6 +5406,57 @@ class SessionOrchestrator:
         counts[session_id] = counts.get(session_id, 0) + 1
         return counts[session_id] > COMPLETE_NUDGE_CAP
 
+    def _complete_nudge_exhausted(self, session_id: str) -> bool:
+        """Peek whether *session_id* already exceeded ``COMPLETE_NUDGE_CAP`` — unlike
+        ``_complete_nudge_over_cap`` this never increments the counter, so it is safe
+        to call from a read-only periodic scan. Used to scope
+        ``_recheck_stuck_complete_sessions_once`` to sessions the one-shot completion
+        path already gave up on (``completion.autoarchive_giveup``); a session still
+        inside its normal nudge window gets its own re-check naturally when the nudge's
+        follow-up turn completes, so the periodic sweep would be redundant for it."""
+        counts = getattr(self, "_complete_nudge_counts", None)
+        if not counts:
+            return False
+        return counts.get(session_id, 0) > COMPLETE_NUDGE_CAP
+
+    async def recheck_stuck_complete_session(self, session_id: str) -> None:
+        """Re-enter the completion readiness gate for a session already parked at
+        ``complete``. This is the only way such a session ever leaves that status once
+        the one-shot ``_persist_status`` trigger has already run (and, if its nudge cap
+        was exhausted, given up): ``_autopilot_list_governed`` deliberately excludes
+        ``complete`` sessions from autopilot's own periodic tick to avoid a second
+        decision path racing this deterministic one, so nothing else ever asks again.
+
+        Safe to call at any time from any trigger — a no-op unless the record is still
+        exactly ``complete``, and idempotent via the same ``_auto_archiving`` guard
+        ``_maybe_autoarchive_completed`` already uses. Two callers: the periodic sweep
+        (``_recheck_stuck_complete_sessions_once``, gated on the nudge cap already being
+        exhausted) and the StaleOwnership resume path (``ws.py``), which is direct live
+        evidence the tracked item resolved and may fire before the cap is ever reached."""
+        rec = self._records.get(session_id)
+        if rec is None or rec.status != "complete":
+            return
+        self._maybe_autoarchive_completed(session_id, "complete", rec)
+
+    async def _recheck_stuck_complete_sessions_once(self) -> None:
+        """Give every stuck-``complete`` session whose nudge cap is already exhausted
+        another chance to archive, on the always-on tick loop (independent of
+        autopilot's mode — matching ``_auto_archive_completed``'s own "independent of
+        autopilot mode" rule, since this is the same deterministic path, just retried).
+
+        Without this, a session's tracked PR/issue resolving AFTER
+        ``completion.autoarchive_giveup`` never gets re-checked: the session sits on
+        the dashboard forever, and the only remaining signal is a human opening it and
+        hitting the StaleOwnership "changed hands" dead end in ``ws.py``."""
+        for session_id, rec in list(self._records.items()):
+            if rec.status != "complete":
+                continue
+            if session_id in self._auto_archiving:
+                continue
+            if not self._complete_nudge_exhausted(session_id):
+                continue
+            await self.recheck_stuck_complete_session(session_id)
+
     async def _auto_archive_completed(self, session_id: str) -> None:
         """Archive a completed session (any origin) once the completion bar confirms the
         goal is met; otherwise nudge it toward the remaining work. A failure clears the
@@ -11808,6 +11859,14 @@ class SessionOrchestrator:
                 await self._recover_resume_failures_once()
             except Exception:  # pragma: no cover — recovery must never stall the loop
                 log.warning("deploy.resume.recover_failed", exc_info=True)
+            try:
+                # Also always-on: a `complete` session whose nudge cap is exhausted has
+                # no other trigger back to the completion gate (`_autopilot_list_governed`
+                # excludes `complete` from the mode-gated tick below), so this must not be
+                # gated by autopilot's mode either.
+                await self._recheck_stuck_complete_sessions_once()
+            except Exception:  # pragma: no cover — recheck must never stall the loop
+                log.warning("completion.recheck_loop_error", exc_info=True)
             try:
                 await self._autopilot_loop.tick()
             except Exception:  # pragma: no cover — tick() already swallows; belt+braces

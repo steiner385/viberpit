@@ -34,7 +34,16 @@ _ORCH_VARS = {"orch", "orchestrator"}
 # Attribute accesses that are intentionally NOT on RemoteOrchestrator (e.g. a path
 # guarded to local mode only). Keep empty unless a deliberate exclusion is documented
 # here — a bare AttributeError in daemon mode is a 500, not a graceful fallback.
-_LOCAL_ONLY: set[str] = set()
+_LOCAL_ONLY: set[str] = {
+    # InProcessOrchestratorAdapter.recheck_stuck_complete_session (server/sessions/
+    # facade.py) looks the method up with getattr(self._orch, ..., None) and no-ops
+    # when it is absent — unlike every other proxied call, so a RemoteOrchestrator
+    # without it degrades to "the periodic sweep on the owning host catches this
+    # session anyway" instead of an AttributeError -> 500. ws.py's StaleOwnership
+    # resume path fires it as an immediate, best-effort optimization on top of that
+    # sweep; wiring the full daemon RPC round trip was out of scope for that fix.
+    "recheck_stuck_complete_session",
+}
 
 
 def _orch_attr_accesses(*, private: bool = False) -> set[str]:
