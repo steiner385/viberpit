@@ -36,7 +36,7 @@ import {
   createProject, updateProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
-  editMapChanges, abandonMapChanges, rebaseMapChanges,
+  editMapChanges, abandonMapChanges, rebaseMapChanges, retireCapability, mergeCapabilities,
   fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
   fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold,
@@ -44,7 +44,7 @@ import {
   type Project, type CreateProjectInput, type UpdateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
-  type MapChangeInput, type MapChangeResult, type AbandonResult,
+  type MapChangeInput, type MapChangeResult, type AbandonResult, type RetireCapabilityInput, type RetireCapabilityResult, type MergeCapabilitiesInput, type MergeCapabilityResult,
   type ProjectHealth,
   type DispatchOutcome,
 } from './pm'
@@ -2201,6 +2201,30 @@ export function useEditMapChanges(slug: string) {
   const qc = useQueryClient()
   return useMutation<MapChangeResult, ApiRequestError, MapChangeInput>({
     mutationFn: (input) => editMapChanges(slug, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useRetireCapability(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<RetireCapabilityResult, ApiRequestError, RetireCapabilityInput>({
+    mutationFn: (input) => retireCapability(slug, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useMergeCapabilities(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<MergeCapabilityResult, ApiRequestError, MergeCapabilitiesInput>({
+    mutationFn: (input) => mergeCapabilities(slug, input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
       void qc.invalidateQueries({ queryKey: QK.project(slug) })
