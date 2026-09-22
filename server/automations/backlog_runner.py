@@ -1400,6 +1400,16 @@ class BacklogRunnerLoop:
                 status = "capacity"
             elif "daily_budget_full" in codes:
                 status = "budget"
+            elif "pr_doctor_priority" in codes:
+                # Spec 2026-09-21 pr-doctor-priority: gates only the product PR
+                # Doctor is fixing — the same "skip this product, keep serving
+                # others" shape as product_capacity_full/product_pipeline_full
+                # above. Falling through to the bare "refused" default would hit
+                # the `{"refused", "uncertain"}` break in `_refill` and halt the
+                # whole tick, starving every OTHER product's fully-permitted,
+                # unrelated candidates too.
+                kind, status = "skipped_pr_doctor_priority", "capacity"
+                self._waiting_reason = "capacity"
             await self._ctx.emit(
                 "info", summary,
                 kind=kind, target=batch.primary,
