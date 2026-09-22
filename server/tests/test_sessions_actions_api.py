@@ -50,6 +50,11 @@ class _FakeSessions:
         self.note_user_interaction_calls: list[str] = []
         self.answer_question_calls: list[tuple] = []
         self.answer_question_result = True
+        # What the registries still hold after a refused decision/answer. The action
+        # helpers read these to tell "gone" (404) from "still pending, but owned by
+        # another identity" (403); empty means gone, which is what most tests want.
+        self.pending_permissions_result: list[dict] = []
+        self.pending_questions_result: list[dict] = []
         self.set_permission_mode_calls: list[tuple] = []
         self.set_model_calls: list[tuple] = []
         self.set_model_result: bool = False
@@ -80,6 +85,12 @@ class _FakeSessions:
 
     async def note_user_interaction(self, sid):
         self.note_user_interaction_calls.append(sid)
+
+    async def pending_permissions(self, sid):
+        return self.pending_permissions_result
+
+    async def pending_questions(self, sid):
+        return self.pending_questions_result
 
     async def answer_question(self, sid, question_id, selected, identity, mode):
         self.answer_question_calls.append((sid, question_id, selected, identity, mode))
@@ -169,6 +180,19 @@ def test_permission_route_not_pending_is_404():
     assert fake.note_user_interaction_calls == ["11111111-1111-4111-8111-111111111111"]
 
 
+def test_permission_route_still_pending_for_another_identity_is_403():
+    """As above for permissions: the card is still live, so "no longer pending"
+    would send the user reloading a page that re-offers it. `permId` is the key
+    the real registries use."""
+    client, fake = _make_client()
+    fake.resolve_permission_result = False
+    fake.pending_permissions_result = [{"permId": "p1", "tool": "Bash"}]
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/sessions/11111111-1111-4111-8111-111111111111/permissions/p1", json={"decision": "deny"}, headers=_H)
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "PERMISSION_NOT_OWNED"
+
+
 def test_permission_always_forbidden_via_assistant():
     from server.assistant.token import mint_token
 
@@ -213,6 +237,19 @@ def test_question_route_not_pending_is_404():
         r = client.post("/api/sessions/11111111-1111-4111-8111-111111111111/questions/q1", json={"selected": []}, headers=_H)
     assert r.status_code == 404
     assert r.json()["detail"]["code"] == "QUESTION_NOT_PENDING"
+
+
+def test_question_route_still_pending_for_another_identity_is_403():
+    """The 403 branch over HTTP, with the pending entry in the shape the real
+    orchestrators return (`question_id`) — a fake that only ever answers `[]`
+    proves the seam exists but not that its shape matches production."""
+    client, fake = _make_client()
+    fake.answer_question_result = False
+    fake.pending_questions_result = [{"question_id": "q1", "question": "Q?"}]
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/sessions/11111111-1111-4111-8111-111111111111/questions/q1", json={"selected": []}, headers=_H)
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "QUESTION_NOT_OWNED"
 
 
 # ---------------------------------------------------------------------------
