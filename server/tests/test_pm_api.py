@@ -1996,6 +1996,49 @@ def test_accept_new_capability_slug_collision_is_422():
         assert r.json()["detail"]["error"] == "slug_taken"
 
 
+def test_accept_new_capability_gh_write_error_is_502_not_500():
+    """A GitHub write failure inside ``svc.edit()`` (e.g. the commit mutation
+    itself fails) must translate through the same ``_map_changes_http`` every
+    other map-changes route uses, not bubble up as an unhandled 500 — the
+    except clause on the ``svc.edit``/``_resync_now`` call has to match the
+    other three map-changes routes' tuple exactly, not just ``MapOpError``."""
+    from server.pm.map_changes_gh import GhWriteError
+
+    class _FailingMapChangesService:
+        async def edit(self, db, project, op, identity):
+            raise GhWriteError("commit", "boom")
+
+        async def _resync_now(self, db, project):
+            raise AssertionError("must not be reached: edit() already raised")
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FailingMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments", "slug": "payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"]["error"] == "github"
+
+
+def test_accept_new_capability_missing_slug_is_400_not_500():
+    """A malformed ``newCapability`` (missing the ``slug`` key) must 400 as
+    ``bad_edit`` — before this fix, ``new_capability["slug"]`` raised a bare
+    ``KeyError`` out of the route as an unhandled 500."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        c.app.state.orchestrator.pm_map_changes = _FakeMapChangesService  # type: ignore[method-assign]
+        pid, _wid = _seed_one_pending(c, repo="o/r")
+
+        r = c.post(f"/api/pm/triage/{pid}/accept",
+                   json={"edits": {"newCapability": {"title": "Payments"}}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "bad_edit"
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")

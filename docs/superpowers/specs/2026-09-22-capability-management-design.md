@@ -182,9 +182,9 @@ counts for merge).
   `edits["featureId"]` into the existing `apply_accept` path — no change to
   `apply_accept` itself. Project is resolved from the `TriageProposal`'s product,
   same as today.
-- 409 `slug_taken` if the slug collides with an existing/branch-proposed capability
-  (surfaced from the underlying `create` op, same as `NewCapabilityDialog`'s
-  existing error handling).
+- 422 `slug_taken` if the slug collides with an existing/branch-proposed capability
+  (surfaced from the underlying `create` op via `_map_changes_http`, same as
+  `NewCapabilityDialog`'s existing error handling).
 
 ### 6. Web — `web/src/features/products/CapabilitiesTab.tsx` (new)
 
@@ -248,7 +248,7 @@ Capabilities tab.
   shape, 404/409 mappings, audit row written.
 - `server/tests/test_triage_accept.py` — `newCapability` + `featureId` together is
   400; `newCapability` creates the doc, resyncs, and classifies the work item onto
-  the new `Feature.id` in one call; slug collision surfaces 409.
+  the new `Feature.id` in one call; slug collision surfaces 422.
 - Web: `CapabilitiesTab.test.tsx` (retire/merge/re-map flows against mocked
   hooks, matching the existing `@/api/hooks` mock convention — **run the full
   `npm run test`**, not just changed files, since shared components are widely

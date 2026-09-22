@@ -57,7 +57,7 @@ from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
-    owning_projects_by_repo, require_unregistered_repos,
+    owning_projects_by_repo, require_mutation_owner, require_unregistered_repos,
 )
 from server.pm.score import RICE_FIELDS, rice_score, validate_rice
 from server.pm.sync_request import request_project_sync
@@ -1492,31 +1492,51 @@ async def accept_triage(
             "error": "bad_edit",
             "message": "featureId and newCapability are mutually exclusive"})
     if new_capability:
+        title = new_capability.get("title") if isinstance(new_capability, dict) else None
+        slug = new_capability.get("slug") if isinstance(new_capability, dict) else None
+        if (not isinstance(title, str) or not title
+                or not isinstance(slug, str) or not slug):
+            raise HTTPException(status_code=400, detail={
+                "error": "bad_edit", "message": "newCapability must be {title, slug}"})
         work_item = await db.get(WorkItem, prop.work_item_id)
-        owners = await owning_projects_by_repo(
-            db, [work_item.repo] if work_item and work_item.repo else [])
-        owner = owners.get(work_item.repo) if work_item else None
-        if owner is None:
-            raise HTTPException(status_code=404, detail={
-                "error": "project_not_found",
-                "message": "Work item's repository has no unique registered product"})
-        project = await db.get(Project, owner.project_id)
+        if work_item is None:
+            raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
+        try:
+            owner = await require_mutation_owner(db, work_item.repo or "", snapshot=ownership)
+        except OwnershipConflict as e:
+            raise HTTPException(status_code=409, detail=e.result()) from e
+        project = await db.get(Project, owner.project_id) if owner else None
         if project is None:
             raise HTTPException(status_code=404, detail={
                 "error": "project_not_found",
                 "message": "Work item's registered product no longer exists"})
         svc = request.app.state.sessions.pm_map_changes()
-        op = MapOp(op="create", slug=new_capability["slug"], title=new_capability["title"])
+        op = MapOp(op="create", slug=slug, title=title)
         try:
             await svc.edit(db, project, op, identity)
             await svc._resync_now(db, project)
-        except MapOpError as e:
+        except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
             raise _map_changes_http(e) from e
+        # _resync_now() commits `db` as a documented side effect (server/pm/
+        # map_changes.py), which ends the transaction _load_pending_proposal's
+        # SELECT ... FOR UPDATE opened — releasing that lock for the whole
+        # GitHub round-trip svc.edit() just did (ensure_branch/read/commit/PR,
+        # seconds not microseconds on Postgres; SQLite renders FOR UPDATE as a
+        # no-op so this window is untestable here but real in prod). Re-running
+        # the SAME call re-takes the lock and re-checks status, so a pm-triage
+        # loop auto-accept that raced in during the round-trip is caught as
+        # "already_resolved" (409) instead of silently overwritten below. Do
+        # NOT remove this as a redundant duplicate of the call above it.
+        prop = await _load_pending_proposal(db, proposal_id)
         feature = (await db.execute(select(Feature).where(
             Feature.project_id == project.id,
-            Feature.slug == new_capability["slug"],
+            Feature.slug == slug,
         ))).scalars().first()
-        edits = {**(edits or {}), "featureId": feature.id if feature else None}
+        if feature is None:
+            raise HTTPException(status_code=502, detail={
+                "error": "capability_not_indexed",
+                "message": "the new capability was created but could not be indexed"})
+        edits = {**(edits or {}), "featureId": feature.id}
     await _validate_accept_edits(db, edits)
     try:
         await apply_accept(db, prop, decided_by=DECIDED_BY_HUMAN,
