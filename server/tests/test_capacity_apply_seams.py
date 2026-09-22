@@ -194,7 +194,7 @@ def test_wiring_decide_feeds_pr_doctor_pending_into_admission(tmp_path, monkeypa
         orch = _orch_with_ctx()
 
         from unittest.mock import AsyncMock
-        orch._pr_doctor_pending_products = AsyncMock(return_value=frozenset({"test-product"}))
+        orch._pr_doctor_pending_products = AsyncMock(return_value={"test-product": ("o/r#9",)})
 
         from server.automations.capacity_wiring import sources_for
         sources = sources_for(orch)
