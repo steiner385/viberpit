@@ -25,6 +25,11 @@ STDERR_UNAUTH_403 = (
 # The AUTHENTICATED over-limit message. Same endpoint, same status, opposite
 # meaning: the credential is fine and the host is merely busy.
 STDERR_AUTHED_403 = "gh: API rate limit exceeded for user ID 1234567. (HTTP 403)"
+# gh's client-side short-circuit against its own cached rate-limit state, rather
+# than a server 403 round-trip — one word ("already") different from the two
+# messages above. Byte-for-byte from issue #2169.
+STDERR_AUTHED_403_ALREADY = "gh: API rate limit already exceeded for user ID 9727664."
+STDERR_UNAUTH_403_ALREADY = "gh: API rate limit already exceeded for 203.0.113.7."
 # gh with NO host config at all — a freshly provisioned runner before someone has
 # run `gh auth login` into it. Captured from the real binary: it short-circuits
 # before making a request, so it never produces the 401 above and, unclassified,
@@ -86,6 +91,12 @@ def test_classifies_ip_shaped_rate_limit_as_unauthenticated():
     assert ghc.classify_gh_failure(STDERR_UNAUTH_403) == ghc.UNAUTHENTICATED
 
 
+def test_classifies_ip_shaped_already_exceeded_as_unauthenticated():
+    """gh's client-side short-circuit wording (#2169) — 'already' must not break
+    the IP-shaped match any more than the user-ID one below."""
+    assert ghc.classify_gh_failure(STDERR_UNAUTH_403_ALREADY) == ghc.UNAUTHENTICATED
+
+
 def test_classifies_a_host_with_no_gh_config_at_all():
     """The onboarding shape: gh has no host entry, so it never even attempts the
     call and never emits the 401. Unambiguous — that message cannot mean anything
@@ -99,7 +110,9 @@ def test_not_logged_in_latches_and_backs_off_like_the_401(health):
     assert health.allow_attempt() is False
 
 
-@pytest.mark.parametrize("stderr", [STDERR_AUTHED_403, STDERR_SECONDARY_403])
+@pytest.mark.parametrize(
+    "stderr", [STDERR_AUTHED_403, STDERR_AUTHED_403_ALREADY, STDERR_SECONDARY_403]
+)
 def test_an_authenticated_over_limit_is_its_own_condition(stderr):
     """`for user ID N` means the token worked — the opposite diagnosis from the
     IP-shaped 403, and the entire reason `_RE_UNAUTH_RATE_LIMIT` carries a
