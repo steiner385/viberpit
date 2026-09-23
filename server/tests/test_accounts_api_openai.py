@@ -672,6 +672,36 @@ def test_codex_status_outage_overrides_prior_available_usage(authority):
     assert entry["rank"] is None
 
 
+def test_codex_status_timeout_degrades_quietly(authority, caplog):
+    """A wedged/unreachable daemon must not file a fresh auto-error every poll.
+
+    #1727: a plain ``DaemonTimeout`` from the Codex status RPC is pure httpx/
+    httpcore boilerplate the client already diagnosed, so it must be reported
+    without a traceback (mirrors fleet_orchestrator's ``_EXPECTED_UNREACHABLE``)
+    and throttled per account — the accounts page still degrades to "unknown"
+    either way.
+    """
+    from server.ipc.client import DaemonTimeout
+
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, sessions = _make_client(authority)
+        sessions.codex_account_status.side_effect = DaemonTimeout(
+            "codex_account_status timed out"
+        )
+        with client, caplog.at_level("WARNING", logger="server.api.accounts"):
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    entry = next(a for a in resp.json() if a["name"] == "chatgpt-pro")
+    assert entry["codex"]["quota"]["availability"] == "unknown"
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                and "codex status for chatgpt-pro" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+
+
 @pytest.mark.parametrize(
     "malformed",
     [

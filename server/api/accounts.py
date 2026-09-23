@@ -70,6 +70,14 @@ _USAGE_FALLBACK_LOG = LogThrottle()
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
+# Same fix as _USAGE_FALLBACK_LOG above, for the Codex status RPC: the account
+# name in "codex status for %s failed" makes server.obs.errsink fingerprint one
+# auto-error issue per account for what is really one wedged/unreachable daemon
+# (#1727). Throttled per account+reason, and a plain timeout — pure httpx/
+# httpcore boilerplate, already diagnosed by its type — drops exc_info the way
+# fleet_orchestrator's _EXPECTED_UNREACHABLE does; any other exception keeps it.
+_CODEX_STATUS_LOG = LogThrottle()
+
 # Env keys that must never be overridable (constitution II: strict isolation)
 _BLOCKED_ENV_KEYS = frozenset({"CLAUDE_CONFIG_DIR", "CREDENTIALS_DIR", "HOME"})
 
@@ -512,8 +520,13 @@ async def _codex_details(
     async def _one(account: str) -> tuple[str, dict]:
         try:
             status = await orch.codex_account_status(account, force=force)
+        except (asyncio.TimeoutError, DaemonTimeout):
+            log_throttled(log, _CODEX_STATUS_LOG, f"{account}:timeout", logging.WARNING,
+                          "codex status for %s timed out", account)
+            status = {}
         except Exception:  # noqa: BLE001 -- one account must not fail the list
-            log.warning("codex status for %s failed", account, exc_info=True)
+            log_throttled(log, _CODEX_STATUS_LOG, f"{account}:error", logging.WARNING,
+                          "codex status for %s failed", account, exc_info=True)
             status = {}
         raw_quota = status.get("quota")
         # A failed status read is a CURRENT unknown, never permission to fall
