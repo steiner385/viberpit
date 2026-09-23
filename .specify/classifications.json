@@ -1,0 +1,38 @@
+[
+  {
+    "number": 2228,
+    "kind": "auto-error",
+    "feature_slug": "autopilot-backlog-runner",
+    "no_fit_suggestion": null,
+    "reach": 5,
+    "impact": 4,
+    "effort": 2,
+    "confidence": 3,
+    "rationale": "Backlog grouping automation fails to parse model output. The LLM response is structurally valid JSON but truncated or malformed. Blocks the grouping phase that batches related issues, affecting every backlog sweep cycle.",
+    "confidence_level": "medium"
+  },
+  {
+    "number": 2232,
+    "kind": "auto-error",
+    "feature_slug": "autopilot-backlog-runner",
+    "no_fit_suggestion": null,
+    "reach": 2,
+    "impact": 4,
+    "effort": 3,
+    "confidence": 2,
+    "rationale": "Backlog runner sweep fails on a specific viberpit target (#2202). Prevents that work item from being assigned to an agent. Root cause unclear from truncated traceback; likely a per-target or per-issue condition.",
+    "confidence_level": "low"
+  },
+  {
+    "number": 2233,
+    "kind": "auto-error",
+    "feature_slug": "autopilot-backlog-runner",
+    "no_fit_suggestion": null,
+    "reach": 2,
+    "impact": 4,
+    "effort": 3,
+    "confidence": 2,
+    "rationale": "Backlog runner sweep fails on a specific ghostdriver-mcp target (#199). Prevents that work item from being assigned to an agent. Pattern mirrors #2232; likely the same or related sweep-stage failure affecting multiple repos.",
+    "confidence_level": "low"
+  }
+]
