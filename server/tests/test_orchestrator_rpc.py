@@ -52,3 +52,15 @@ def test_send_prompt_forwards_to_orch():
     # The RPC handler now relays send_prompt's delivery status to the edge so the WS
     # bridge can ack a drain-refused prompt (promptRejected). See orchestrator_rpc.send_prompt.
     assert r["result"] == {"status": "sent"}
+
+
+def test_usage_rpc_routes_through_orch_usage():
+    # Must call orch.usage(name) — the single source of truth SessionOrchestrator
+    # also exposes to capacity_wiring.sources_for — not re-hand-roll
+    # orch.poller.get(name) as a second, driftable copy of the same seam (#2035).
+    app, orch = _app_with_orch()
+    with mock.patch.object(orch, "usage", new=mock.AsyncMock(return_value=None)) as u:
+        with TestClient(app) as c:
+            r = c.post("/rpc/usage", json={"name": "acct"}).json()
+        u.assert_awaited_once_with("acct")
+    assert r["result"] == {"usage": None}

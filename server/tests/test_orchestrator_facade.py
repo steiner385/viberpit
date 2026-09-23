@@ -11,6 +11,7 @@ def _orch():
     orch.resolve_permission = mock.MagicMock(return_value=True)    # sync
     orch.poller = mock.MagicMock()
     orch.poller.get = mock.AsyncMock(return_value={"usage": 1})
+    orch.usage = mock.AsyncMock(return_value={"usage": 1})
     orch._registry = mock.MagicMock()
     orch._registry.pending = mock.MagicMock(return_value=["p1"])
     return orch
@@ -69,11 +70,15 @@ async def test_refine_prompt_codex_is_forwarded_and_awaited():
 
 
 @pytest.mark.asyncio
-async def test_usage_wraps_poller_get():
+async def test_usage_routes_through_orchestrator_usage():
+    # facade.usage must call the orchestrator's own usage(name) — the single
+    # source of truth also used by capacity_wiring.sources_for and the RPC
+    # handler — rather than re-hand-rolling orch.poller.get(name) (#2035).
     orch = _orch()
     f = InProcessOrchestratorAdapter(orch)
     assert await f.usage("acct") == {"usage": 1}
-    orch.poller.get.assert_awaited_once_with("acct")
+    orch.usage.assert_awaited_once_with("acct")
+    orch.poller.get.assert_not_awaited()
 
 
 @pytest.mark.asyncio

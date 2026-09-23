@@ -470,7 +470,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "resolve_model_approval", resolve_model_approval)
 
     async def usage(params: dict) -> dict:
-        u = await orch.poller.get(params["name"])
+        u = await orch.usage(params["name"])
         return {"usage": u.to_dict() if u is not None else None}
 
     async def pending_permissions(params: dict):
