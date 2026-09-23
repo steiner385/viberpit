@@ -6,6 +6,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -22,6 +23,7 @@ from server.config import get_settings
 from server.db import get_db
 from server.db.models import AssistantToken, NotificationChannel, NotificationRule
 from server.db.models import Session as DbSession
+from server.obs.metrics import assistant_feedback_total
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
@@ -297,6 +299,34 @@ async def revoke_token(token_id: str, identity: str = Depends(current_identity),
         row.revoked_at = datetime.now(timezone.utc)
         await record_audit(db, "assistant.token.revoke", identity, {"id": token_id})
         await db.commit()
+    return {"ok": True}
+
+
+class FeedbackBody(BaseModel):
+    sessionId: str
+    turnId: str
+    vote: Literal["up", "down"]
+    note: str | None = None
+
+
+@router.post("/feedback")
+async def feedback(body: FeedbackBody, request: Request,
+                   identity: str = Depends(current_identity), db=Depends(get_db)):
+    """Per-turn thumbs feedback on the assistant drawer (spec v2 §4.10, Task 10.1).
+
+    Self-recursion guarded like `create`/`resume`/`create_token` above, even though
+    this route is also absent from `ASSISTANT_ROUTE_ALLOW` (so a `ccas1:` bearer is
+    already 403'd by the middleware before reaching here) — the assistant voting on
+    its own turns makes no sense regardless of which layer catches it.
+    """
+    if getattr(request.state, "via", None) == "assistant":
+        return _err("ASSISTANT_RECURSION", "the assistant cannot vote on its own turns", 403)
+    detail: dict[str, str] = {"sessionId": body.sessionId, "turnId": body.turnId, "vote": body.vote}
+    if body.note:
+        detail["note"] = body.note
+    await record_audit(db, "assistant.feedback", identity, detail)
+    await db.commit()
+    assistant_feedback_total.labels(body.vote).inc()
     return {"ok": True}
 
 

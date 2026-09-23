@@ -221,6 +221,10 @@ assistant_sessions_live = Gauge("assistant_sessions_live", "Live assistant sessi
 assistant_gap_reports_total = Counter(
     "assistant_gap_reports_total", "Capability gaps the assistant reported",
     labelnames=("capability",))
+# Per-turn thumbs feedback on the assistant drawer (spec v2 §4.10/§10.1, Task 10.1).
+assistant_feedback_total = Counter(
+    "assistant_feedback_total", "Per-turn thumbs feedback recorded on assistant turns",
+    labelnames=("vote",))
 
 # Session tool surface (session tools spec §3, §4). Same shape as the assistant's
 # counters so one Grafana row can compare the two surfaces.
