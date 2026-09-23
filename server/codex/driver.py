@@ -746,14 +746,17 @@ class CodexAgentDriver:
             # no handler and takes the protocol's fail-closed `-32601` path
             # instead of reaching a driver that is already closing.
             self._manager.unregister_thread(self.account, thread_id)
-        self._dismiss_pending_prompts()
-        self._finish_turn()
-        pump, self._pump = self._pump, None
-        await cancel_and_reap(
-            pump, phase=f"codex.driver.pump:{self.session_id}", timeout=_CLOSE_GRACE_S
-        )
-        for q in self._subscribers:
-            q.put_nowait(_STREAM_DONE)
+        try:
+            self._dismiss_pending_prompts()
+            self._finish_turn()
+            pump, self._pump = self._pump, None
+            await cancel_and_reap(
+                pump, phase=f"codex.driver.pump:{self.session_id}", timeout=_CLOSE_GRACE_S
+            )
+        finally:
+            # Same guarantee as ClaudeAgentDriver.aclose: streams always end (#1690).
+            for q in self._subscribers:
+                q.put_nowait(_STREAM_DONE)
         log_event(
             logger, logging.INFO, "codex.driver.closed", session=self.session_id
         )
