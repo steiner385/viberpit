@@ -362,6 +362,93 @@ def test_check_stalls_leaves_progressing_turn_alone():
     assert interrupted == []
 
 
+def test_check_stalls_logs_diagnostic_snapshot_past_threshold(caplog):
+    """A turn silent past STALL_DIAG_THRESHOLD_S (but still under STALL_TIMEOUT) gets
+    ONE diagnostic snapshot logged and nothing else — observability only, no action.
+    Session 808f63fc (2026-09-22) went silent for minutes with no local error at all;
+    this gives the next occurrence real evidence instead of just a timestamp gap."""
+    o = _make_orch()
+    interrupted = []
+    snapshots = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 10_000.0 - R.STALL_DIAG_THRESHOLD_S - 1.0
+        async def interrupt(self, *, keep_queue=False):
+            interrupted.append(True)
+        def diagnostic_snapshot(self):
+            snapshots.append(True)
+            return "MARKER-AWAIT-CHAIN"
+    o._drivers["s1"] = _StubDriver()
+    with caplog.at_level("INFO"):
+        asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == []          # still well under STALL_TIMEOUT — no action
+    assert snapshots == [True]
+    assert "MARKER-AWAIT-CHAIN" in caplog.text
+
+
+def test_check_stalls_diagnostic_snapshot_logged_once_per_episode():
+    """Ticking the watchdog repeatedly during the same silence must not re-log the
+    snapshot every 30s between the diag threshold and the real stall timeout."""
+    o = _make_orch()
+    snapshots = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 10_000.0 - R.STALL_DIAG_THRESHOLD_S - 1.0
+        async def interrupt(self, *, keep_queue=False): pass
+        def diagnostic_snapshot(self):
+            snapshots.append(True)
+            return "MARKER"
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    asyncio.run(o._check_stalls(now=10_030.0))
+    asyncio.run(o._check_stalls(now=10_060.0))
+    assert snapshots == [True]
+
+
+def test_check_stalls_diagnostic_skipped_below_threshold():
+    """No snapshot yet if silence hasn't crossed STALL_DIAG_THRESHOLD_S."""
+    o = _make_orch()
+    snapshots = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 10_000.0 - R.STALL_DIAG_THRESHOLD_S + 1.0
+        async def interrupt(self, *, keep_queue=False): pass
+        def diagnostic_snapshot(self):
+            snapshots.append(True)
+            return "MARKER"
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert snapshots == []
+
+
+def test_check_stalls_diagnostic_skipped_for_driver_without_snapshot():
+    """A driver with no diagnostic_snapshot() (e.g. a non-Claude engine, or a fake
+    used elsewhere in the suite) must not error — the hook is purely optional."""
+    o = _make_orch()
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 10_000.0 - R.STALL_DIAG_THRESHOLD_S - 1.0
+        async def interrupt(self, *, keep_queue=False): pass
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))  # must not raise
+
+
 def test_check_stalls_leaves_turn_blocked_on_user_alone():
     """A turn blocked awaiting user input (permission/question/plan) is not wedged —
     last_progress_at is frozen only because the human hasn't answered yet."""

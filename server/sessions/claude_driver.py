@@ -17,7 +17,7 @@ from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import brand
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_or_none as _provider_of
-from server.aio import bounded_wait, cancel_and_reap
+from server.aio import bounded_wait, cancel_and_reap, format_task_dump
 from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
@@ -465,6 +465,28 @@ class ClaudeAgentDriver:
     def last_progress_at(self) -> float:
         """Timestamp of the last meaningful driver event (set at driver construction)."""
         return self._last_progress_at
+
+    def diagnostic_snapshot(self) -> str:
+        """Render what this driver's pump task is actually doing right now.
+
+        Observability-only (never called on any recovery/action path): a turn can go
+        silent for minutes with no local error and no SDK stream-death signature in the
+        journal (2026-09-22, session 808f63fc — a single large Write's underlying model
+        generation hung with zero events, only ever visible via the 300s stall watchdog
+        after the fact). This gives the orchestrator's stall watchdog something to log
+        well before that timeout trips, so the NEXT occurrence has real evidence — the
+        live await chain — instead of just "no progress for N seconds".
+        """
+        turn_id = self._turn()
+        bits = [
+            f"turn={turn_id} active={self._turn_active} drain_alive={self.drain_alive} "
+            f"in_api_backoff={self.in_api_backoff} silent_for={self._clock() - self._last_progress_at:.0f}s"
+        ]
+        if self._pump is not None:
+            bits.append(format_task_dump([self._pump]))
+        else:
+            bits.append("<no pump task>")
+        return "\n".join(bits)
 
     @property
     def drain_alive(self) -> bool:
