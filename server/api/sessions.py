@@ -49,6 +49,7 @@ from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
 
@@ -403,6 +404,14 @@ async def _session_is_archived(orch, session_id: str) -> bool:
 # answers or gives up), not from an asyncio timer on the edge.
 ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
 
+# A daemon-connectivity blip (ConnectTimeout, PoolTimeout, ...) makes every page poll
+# during the blip fail the same batched RPC, so a single multi-minute outage turns into
+# thousands of identical WARNING+traceback records — the error sink files one auto-error
+# issue per fingerprint (#1722, 1998 occurrences of one ConnectTimeout over a week) but
+# still buries the signal under its own repeats in the journal. Windowed per RPC name so
+# a genuinely new failure (a different batch breaking) still reports promptly.
+_ENRICH_BATCH_FAIL_LOG = LogThrottle()
+
 
 async def _enrich_batch(orch, records, viewing: bool, timeout: float):
     """Fetch every session's enrichment in three batched RPCs instead of three per session.
@@ -428,8 +437,9 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
         try:
             return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
         except Exception:
-            log.warning("list_sessions: %s failed for %d sessions", name, len(ids),
-                        exc_info=True)
+            log_event_throttled(log, _ENRICH_BATCH_FAIL_LOG, name, logging.WARNING,
+                                 "list_sessions.enrich_batch_failed",
+                                 rpc=name, session_count=len(ids), exc_info=True)
             return {}
 
     repos, sugg_map, pr_map, sum_map = await asyncio.gather(

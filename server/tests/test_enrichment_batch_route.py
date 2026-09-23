@@ -3,9 +3,11 @@
 The count assertion is the whole point of the change; everything else here guards the
 shape of what those three calls return.
 """
+import logging
+
 import pytest
 
-from server.api.sessions import _enrich_batch
+from server.api.sessions import _ENRICH_BATCH_FAIL_LOG, _enrich_batch
 from server.github.pr_status import PullRequestInfo
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
@@ -95,3 +97,25 @@ async def test_any_daemon_error_degrades_to_empty():
         orch, [_rec("a")], viewing=False, timeout=3.0)
     assert list(suggs) == [[]]
     assert [p[0].title for p in prs] == ["t-a"]  # the other two still landed
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_batch_failure_is_throttled_not_flooded(caplog):
+    """A daemon-connectivity blip fails the same batched RPC on every poll during the
+    outage; #1722 was 1998 WARNING+traceback records for one such blip. The repeat
+    within the throttle window must be demoted to DEBUG so it stays out of the error
+    sink while still reporting the first occurrence promptly (see server/obs/logdedupe.py)."""
+    _ENRICH_BATCH_FAIL_LOG.clear()
+
+    class _Broken(_BatchOrch):
+        async def prs_for_many(self, session_ids, *, timeout=None):
+            self.calls.append("prs_for_many")
+            raise RuntimeError("daemon down")
+
+    orch = _Broken()
+    with caplog.at_level(logging.DEBUG, logger="server.api.sessions"):
+        await _enrich_batch(orch, [_rec("a")], viewing=False, timeout=3.0)
+        await _enrich_batch(orch, [_rec("a")], viewing=False, timeout=3.0)
+
+    records = [r for r in caplog.records if r.getMessage() == "list_sessions.enrich_batch_failed"]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
