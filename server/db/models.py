@@ -102,9 +102,11 @@ class Session(Base):
     # GitHub repo (nameWithOwner, e.g. "owner/name") this session works on, or NULL
     # for a scratch / arbitrary-cwd session. Surfaced in the dashboard sessions list.
     repo: Mapped[str | None] = mapped_column(String, nullable=True)
-    # The session's per-session worktree branch (e.g. ccswitch/main-abcd), used
-    # to join the session to its GitHub PR by headRefName. NULL for detached/
-    # scratch sessions. Nullable so init_db backfills it without a migration.
+    # The session's per-session worktree branch (e.g. viberpit/main-abcd; rows
+    # written before the rebrand carry the legacy prefix and are NOT rewritten —
+    # the branch itself exists under that name on the remote), used to join the
+    # session to its GitHub PR by headRefName. NULL for detached/scratch
+    # sessions. Nullable so init_db backfills it without a migration.
     branch: Mapped[str | None] = mapped_column(String, nullable=True)
     # Feature branches this session has authored (for multi-PR badges). JSON list,
     # nullable so init_db backfills it on existing rows without a migration.

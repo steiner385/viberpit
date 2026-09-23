@@ -101,15 +101,28 @@ ceiling = 25
 
 [[allow]]
 id = "persisted-keys"
+# Phase 2c landed (#1369): no emitter spells a dedupe key with the old slug any more
+# (they are composed from the product's CURRENT slug), and `0061_brand_automation_keys`
+# converges rows written before the product was renamed. What is left is ONE key that
+# Phase 2c did not cover: the `ccswitch-pr-cycle-time` control band in
+# `server/sdlc/bands.yaml`, whose id is referenced by stored ControlBandBreach rows and
+# so needs its own migration. Re-pointed at the epic, since #1369 is closed.
 pattern = '\bccswitch:[a-z][a-z-]*|feature-map-ccswitch|ccswitch-pr-cycle-time'
-issue = 1369
-ceiling = 6
+issue = 1365
+ceiling = 4
 
 [[allow]]
 id = "branch-prefix"
+# Phase 2c landed (#1369): `viberpit/<base>-<id>` is what gets created, and
+# `brand.is_session_branch` matches BOTH spellings — permanently, because a pushed
+# branch is not ours to rewrite and `git branch -D` is the only thing that ever
+# deletes one. The residual count is NOT branch prefixes: this entry is tried before
+# `repo-namespace`, `host-legacy-names` and `python-package`, so it also claims every
+# `.ccswitch/`, `/etc/ccswitch/` and `src/ccswitch/` path they own. Those shrink under
+# #1373 / #1592 / #1374; re-pointed at the epic, since #1369 is closed.
 pattern = '\bccswitch/'
-issue = 1369
-ceiling = 213
+issue = 1365
+ceiling = 204
 
 [[allow]]
 id = "repo-namespace"
