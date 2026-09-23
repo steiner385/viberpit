@@ -158,6 +158,7 @@ class FleetRouter:
         prefer: str | None = None,
         engine: AgentEngine | None = None,
         expected_contract_sha256: str | None = None,
+        ignore_capacity: bool = False,
     ) -> list[str]:
         """Return hosts to try, best first.
 
@@ -166,13 +167,18 @@ class FleetRouter:
         a preference, never permission — a preferred host that cannot run *engine*
         is filtered out with the rest rather than promoted into a dispatch that
         would fail at the daemon.
+
+        *ignore_capacity* is for a session that occupies no slot (the assistant);
+        see ``rank_hosts``. Every other refusal leg still applies, and still
+        arrives here as NoHostAvailable.
         """
         if prefer and prefer not in self._orchs:
             raise UnknownHost(
                 f"no orchestrator for host {prefer!r}; known hosts: {self.names()}")
         candidates = await self.candidates()
         order = rank_hosts(
-            candidates, engine=engine, expected_contract_sha256=expected_contract_sha256)
+            candidates, engine=engine, expected_contract_sha256=expected_contract_sha256,
+            ignore_capacity=ignore_capacity)
         if prefer and prefer in order:
             order = [prefer] + [h for h in order if h != prefer]
         elif prefer:
@@ -185,7 +191,7 @@ class FleetRouter:
                 # excluded *for the engine*; an unhealthy host is a health problem,
                 # and reporting it as "codex not advertised" would send an operator
                 # to install a binary on a box that is simply unreachable.
-                healthy = set(rank_hosts(candidates))
+                healthy = set(rank_hosts(candidates, ignore_capacity=ignore_capacity))
                 incompatible = {
                     c.name: why
                     for c in candidates

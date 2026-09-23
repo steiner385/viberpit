@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { ApiRequestError } from '@/api/client'
 import { MUTATION_ERROR_FALLBACK } from '@/api/queryClient'
 import {
-  describeCreateSessionFailure, REAUTH_MESSAGE, CREATE_SESSION_FALLBACK,
-  ENGINE_UNAVAILABLE_FALLBACK, MODEL_EFFORT_MISMATCH_FALLBACK, MODELS_UNAVAILABLE_MESSAGE,
+  describeCreateSessionFailure, createSessionFailureMessage, REAUTH_MESSAGE,
+  CREATE_SESSION_FALLBACK, ENGINE_UNAVAILABLE_FALLBACK, MODEL_EFFORT_MISMATCH_FALLBACK,
+  MODELS_UNAVAILABLE_MESSAGE, ALL_LIMITED_MESSAGE,
 } from './createSessionFailure'
 
 describe('describeCreateSessionFailure — the 409 triage', () => {
@@ -140,5 +141,29 @@ describe('describeCreateSessionFailure — the engine-aware failures', () => {
     expect(describeCreateSessionFailure(err)).toEqual({
       kind: 'engine', message: ENGINE_UNAVAILABLE_FALLBACK, hostReasons: {},
     })
+  })
+})
+
+describe('createSessionFailureMessage — one line for a single-sentence surface', () => {
+  it('gives all-limited, the only kind with no message of its own, copy', () => {
+    const err = new ApiRequestError(409, {
+      error: { code: 'all_accounts_limited' }, earliestReset: '2026-09-21T15:00:00Z',
+    })
+    expect(createSessionFailureMessage(describeCreateSessionFailure(err))).toBe(ALL_LIMITED_MESSAGE)
+  })
+
+  it('passes every other kind its own message through', () => {
+    // #2184: the assistant drawer renders exactly this string, and used to render
+    // `Error.message` — the literal "API error 409" — instead.
+    const err = new ApiRequestError(409, {
+      error: { code: 'no_host_available', message: 'no enabled, healthy host with capacity' },
+    })
+    expect(createSessionFailureMessage(describeCreateSessionFailure(err)))
+      .toBe('no enabled, healthy host with capacity')
+  })
+
+  it('falls back rather than returning an empty line for an unrecognized failure', () => {
+    expect(createSessionFailureMessage(describeCreateSessionFailure(new Error('boom'))))
+      .toBe(CREATE_SESSION_FALLBACK)
   })
 })

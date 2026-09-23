@@ -23,6 +23,8 @@ export const MODEL_EFFORT_MISMATCH_FALLBACK =
   'That model and reasoning effort are not offered together — pick another.'
 export const MODELS_UNAVAILABLE_MESSAGE =
   'Could not load the model list for this account — its app-server did not answer.'
+export const ALL_LIMITED_MESSAGE =
+  'Every account is at its usage limit — the banner above says when the next one resets.'
 
 export type CreateSessionFailure =
   /** The user picked a branch the server could not switch to. Recoverable in place. */
@@ -132,4 +134,21 @@ export function describeCreateSessionFailure(err: unknown): CreateSessionFailure
     }
   }
   return { kind: 'other', message: extractMutationErrorMessage(err, CREATE_SESSION_FALLBACK) }
+}
+
+/**
+ * One sentence for a failure of any kind.
+ *
+ * For surfaces that have room for a line of text and a Retry button but no
+ * per-kind affordance — the assistant drawer, which auto-creates its session and
+ * has no form to render the failure beside. Without it the drawer read
+ * `Error.message`, which for an `ApiRequestError` is the literal string
+ * `API error <status>`: #2184's 500 surfaced to the user as "API error 500".
+ *
+ * `all-limited` is the only kind with no message of its own (the shell's banner
+ * normally owns it, and it carries a reset timestamp instead), so it is the only
+ * one that needs copy here.
+ */
+export function createSessionFailureMessage(failure: CreateSessionFailure): string {
+  return failure.kind === 'all-limited' ? ALL_LIMITED_MESSAGE : failure.message
 }

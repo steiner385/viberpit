@@ -14,6 +14,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
 from ccswitch.selector import AllAccountsBusy
+from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.assistant.token import mint_user_token
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -114,6 +115,14 @@ async def create(body: CreateBody, request: Request,
             name="Assistant", cwd=_scratch_cwd(identity), identity=identity,
             permission_mode="interactive", name_is_auto=False, model=model,
             kind=ASSISTANT_KIND, owner_identity=identity, engine=engine)
+    except FleetDispatchRefused as e:
+        # A fleet edge refuses a dispatch with these three whenever every daemon
+        # is restarting, disabled or skew-fenced — routine conditions, but nothing
+        # here caught them, so they escaped as an unhandled 500 and the drawer
+        # rendered "internal server error" instead of the reason (#2184). Shared
+        # with POST /api/sessions rather than re-triaged: identical codes, so the
+        # drawer reads them with the New Session dialog's own copy.
+        return fleet_refusal_response(e)
     except AgentEngineUnavailable as e:
         # A deployment that asked for a Codex drawer on a host with no Codex
         # runner gets a typed refusal, not a silent Claude fallback: the two

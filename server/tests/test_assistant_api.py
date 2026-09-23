@@ -331,3 +331,65 @@ def test_resume_threads_the_callers_identity_onto_the_resumed_driver(tmp_path):
             r = c.post(f"/api/assistant/session/{first}/resume", headers=_H)
         assert r.status_code == 200, r.text
         assert ed.await_args.kwargs.get("identity") == "u@example.com"
+
+
+# ---------------------------------------------------------------------------
+# #2184: fleet dispatch refusals must be typed, never an unhandled 500
+# ---------------------------------------------------------------------------
+
+
+class _RefusingCreate:
+    """A ``create_session`` that always raises *exc* — the fleet conditions the
+    drawer's create genuinely hits (a restart window, every host at capacity, a
+    stale host preference), with no second host needed to produce them."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    async def __call__(self, *a, **k):
+        raise self.exc
+
+
+def _refusal(tmp_path, exc: Exception):
+    with _client(tmp_path) as c, \
+            patch.object(SessionOrchestrator, "create_session", _RefusingCreate(exc)):
+        return c.post("/api/assistant/session", json={}, headers=_H)
+
+
+def test_no_host_available_is_a_typed_409_not_a_500(tmp_path):
+    """The bug: on 2026-09-21 every daemon was mid-restart, ``FleetRouter.pick``
+    raised ``NoHostAvailable``, and nothing in ``create`` caught it — a routine,
+    fully-expected fleet condition escaped as an unhandled 500 (#2184), so the
+    drawer said "internal server error" instead of why."""
+    from server.sessions.fleet_router import NoHostAvailable
+
+    r = _refusal(tmp_path, NoHostAvailable("no enabled, healthy host with capacity"))
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "no_host_available"
+
+
+def test_no_engine_host_available_keeps_its_engine_and_host_reasons(tmp_path):
+    """Ordered before ``NoHostAvailable``, which it subclasses: "no host available"
+    sends an operator to look at host health when the real answer names the runner
+    to fix. Same body the public create path returns."""
+    # Via the server re-export, not the legacy package path: the brand ratchet's
+    # `python-package` entry sits AT its ceiling, so one more import of it here
+    # goes red. Every other server-side fleet test reads AgentEngine this way too.
+    from server.sessions.engine import AgentEngine
+    from server.sessions.fleet_router import NoEngineHostAvailable
+
+    r = _refusal(tmp_path, NoEngineHostAvailable(
+        AgentEngine.CODEX, {"dobby": "binary_not_found"}))
+    assert r.status_code == 409, r.text
+    err = r.json()["error"]
+    assert err["code"] == "no_engine_host_available"
+    assert err["engine"] == "codex"
+    assert err["hostReasons"] == {"dobby": "binary_not_found"}
+
+
+def test_unknown_host_is_a_typed_400(tmp_path):
+    from server.sessions.fleet_router import UnknownHost
+
+    r = _refusal(tmp_path, UnknownHost("no orchestrator for host 'bogus'"))
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "unknown_host"

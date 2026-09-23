@@ -48,11 +48,7 @@ from server.sessions.facade import call_with_deadline
 from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
-from server.sessions.fleet_router import (
-    NoEngineHostAvailable,
-    NoHostAvailable,
-    UnknownHost,
-)
+from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
 
@@ -772,32 +768,12 @@ async def create_session(
                if _resolved_effort is not None else {}),
             **_toggle_kwargs,
         )
-    except UnknownHost as exc:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": {"code": "unknown_host", "message": str(exc)}},
-        )
-    except NoEngineHostAvailable as exc:
-        # Ordered BEFORE NoHostAvailable, which it subclasses. "No host available"
-        # sends an operator to look at host health; the real answer is that the
-        # fleet is healthy and simply cannot run this engine, and the per-host
-        # reasons say which runner to fix.
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "error": {
-                    "code": "no_engine_host_available",
-                    "message": str(exc),
-                    "engine": exc.engine.value,
-                    "hostReasons": exc.reasons,
-                },
-            },
-        )
-    except NoHostAvailable as exc:
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={"error": {"code": "no_host_available", "message": str(exc)}},
-        )
+    except FleetDispatchRefused as exc:
+        # UnknownHost -> 400, NoEngineHostAvailable/NoHostAvailable -> typed 409.
+        # Shared with the assistant drawer's create so the subclass ordering that
+        # keeps "install the Codex binary" from reading as "no host available"
+        # cannot drift between the two (#2184).
+        return fleet_refusal_response(exc)
     except AgentEngineUnavailable as exc:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,

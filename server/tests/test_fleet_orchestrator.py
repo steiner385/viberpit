@@ -25,7 +25,7 @@ class _FakeRouter:
     def get(self, name): return self._orchs[name]
     def names(self): return sorted(self._orchs)
     async def pick(self, *, prefer=None, engine=None,
-                   expected_contract_sha256=None): return sorted(self._orchs)
+                   expected_contract_sha256=None, ignore_capacity=False): return sorted(self._orchs)
 
 
 @pytest.mark.asyncio
@@ -260,7 +260,7 @@ async def test_create_picks_top_host_and_stamps(monkeypatch):
     async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby})
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         return ["dobby", "rocky"]  # dobby ranked first
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -274,6 +274,32 @@ async def test_create_picks_top_host_and_stamps(monkeypatch):
     assert fo._host_cache["sess-dobby"] == "dobby"
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind,expected", [("assistant", True), ("coding", False), (None, False)])
+async def test_create_exempts_only_the_assistant_from_the_capacity_leg(
+        monkeypatch, kind, expected):
+    """#2184: the assistant neither counts against nor queues behind the session cap
+    (orchestrator.py's global-cap gate and `_consumes_capacity_slot` both exempt it),
+    yet `pick` applied `active_sessions >= max_sessions` to it uniformly — so the
+    drawer was refused for lack of a slot it never takes. Every other kind must keep
+    respecting capacity."""
+    rocky = _FakeOrch("rocky")
+    async def create_session(self, **kw): return _Rec("s1")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky})
+    seen = {}
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None,
+                   ignore_capacity=False):
+        seen["ignore_capacity"] = ignore_capacity
+        return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+
+    await fo.create_session(**({"kind": kind} if kind is not None else {}))
+    assert seen["ignore_capacity"] is expected
+
+
+@pytest.mark.asyncio
 async def test_create_cascades_on_spawn_failure(monkeypatch):
     good = _FakeOrch("rocky")
     bad = _FakeOrch("dobby")
@@ -281,7 +307,7 @@ async def test_create_cascades_on_spawn_failure(monkeypatch):
     async def boom(self, **kw): raise RuntimeError("spawn failed")
     bad.create_session = boom.__get__(bad); good.create_session = ok.__get__(good)
     router = _FakeRouter({"rocky": good, "dobby": bad})
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         return ["dobby", "rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -306,7 +332,7 @@ async def test_create_does_not_cascade_when_the_first_host_outcome_is_unknown(mo
         return _Rec("s2")
     slow.create_session = timed_out.__get__(slow); spare.create_session = ok.__get__(spare)
     router = _FakeRouter({"rocky": slow, "dobby": spare})
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         return ["rocky", "dobby"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -329,7 +355,7 @@ async def test_create_cascades_when_the_first_host_was_never_reached(monkeypatch
         return _Rec("s2")
     down.create_session = unreachable.__get__(down); spare.create_session = ok.__get__(spare)
     router = _FakeRouter({"rocky": down, "dobby": spare})
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         return ["rocky", "dobby"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -344,7 +370,7 @@ async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     async def create_session(self, **kw): seen.update(kw); return _Rec("s1")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky}); got = {}
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got["prefer"] = prefer
         return ["rocky"]
     router.pick = pick
@@ -801,7 +827,7 @@ async def test_local_client_prefers_its_own_host(monkeypatch):
     async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = {}
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got["prefer"] = prefer; return ["dobby", "rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -820,7 +846,7 @@ async def test_explicit_host_beats_the_nudge(monkeypatch):
     async def create_session(self, **kw): return _Rec("s")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got.append(prefer); return ["rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -839,7 +865,7 @@ async def test_explicit_virtual_suppresses_the_nudge(monkeypatch):
     async def create_session(self, **kw): return _Rec("s")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got.append(prefer); return ["rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -858,7 +884,7 @@ async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
     async def create_session(self, **kw): return _Rec("s")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got.append(prefer); return ["rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
@@ -879,7 +905,7 @@ async def test_client_node_match_is_case_insensitive(monkeypatch):
     async def create_session(self, **kw): return _Rec("s")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
-    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None, ignore_capacity=False):
         got.append(prefer); return ["dobby", "rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")

@@ -72,15 +72,19 @@ def engine_rejection(
     return None if ok else (reason or "unavailable")
 
 
-def _dispatchable(c: HostCandidate) -> bool:
+def _dispatchable(c: HostCandidate, *, ignore_capacity: bool = False) -> bool:
     """True iff *c* may receive a new session right now.
 
     ``healthy is None`` (never probed) is NOT dispatchable. Treating unknown as
     up is how you dispatch into a host that has been down since boot.
+
+    ``ignore_capacity`` drops the slot-count leg ONLY, for a session that does
+    not occupy a slot — see ``rank_hosts``.
     """
     if not c.enabled or c.healthy is not True:
         return False
-    if c.max_sessions is not None and c.active_sessions >= c.max_sessions:
+    if (not ignore_capacity
+            and c.max_sessions is not None and c.active_sessions >= c.max_sessions):
         return False
     return True
 
@@ -106,6 +110,7 @@ def rank_hosts(
     *,
     engine: AgentEngine | None = None,
     expected_contract_sha256: str | None = None,
+    ignore_capacity: bool = False,
 ) -> list[str]:
     """Return dispatchable host names, best first.
 
@@ -114,8 +119,22 @@ def rank_hosts(
     ``engine`` filters BEFORE scoring, not after: a host that cannot run the
     requested engine is not a lower-ranked candidate, it is not a candidate. The
     default (None) preserves the pre-engine behavior for every existing caller.
+
+    ``ignore_capacity`` admits a host that is merely FULL, for a session that
+    consumes no capacity slot. Today that is exactly the assistant, which the
+    daemon's global-cap gate and ``_consumes_capacity_slot`` already exempt — and
+    which ``owned_active_session_count`` (the number ``active_sessions`` mirrors)
+    therefore never counts. Ranking it against a cap it is not in was how a
+    slotless session got refused *for lack of a slot*, leaving the drawer
+    unopenable whenever the primary was full (#2184).
+
+    It relaxes that one leg and no other. ``enabled``/``healthy``/engine
+    compatibility still apply: refusing an assistant launch when every daemon is
+    down or skew-fenced is correct, and the caller turns it into a typed 409.
+    Scoring is unchanged — an over-cap host simply scores zero headroom and ranks
+    last, so it is a fallback, not a preference.
     """
-    usable = [c for c in candidates if _dispatchable(c)]
+    usable = [c for c in candidates if _dispatchable(c, ignore_capacity=ignore_capacity)]
     if engine is not None:
         usable = [
             c for c in usable

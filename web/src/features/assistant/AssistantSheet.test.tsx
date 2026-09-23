@@ -23,7 +23,8 @@ vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   useSessionRuntimeContext: vi.fn(),
 }))
 
-import { useAssistantStatus } from '@/api/assistant'
+import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
+import { ApiRequestError } from '@/api/client'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 // `renderApp` (web/src/test/renderApp.tsx) mounts the real shell at a path in a
 // layout mode; opening `?drawer=assistant` on desktop renders the sheet through
@@ -161,5 +162,26 @@ describe('AssistantSheet', () => {
     renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
     const dlg = screen.getByRole('dialog', { name: /assistant/i })
     expect(within(dlg).getByRole('region', { name: /pending question/i })).toBeInTheDocument()
+  })
+
+  it('a failed create names the reason instead of "API error <status>"', () => {
+    // #2184: a fleet refusal reached the drawer as an `ApiRequestError`, whose
+    // `message` is the literal `API error 500` — the only thing the user saw.
+    // The typed body now carries why, read with the New Session dialog's copy.
+    // Last in the file: it is the only case that overrides the create mock, and
+    // nothing here resets mocks between tests.
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
+    )
+    vi.mocked(useAssistantSession).mockReturnValue({
+      mutateAsync: vi.fn(), isPending: false, isError: true,
+      error: new ApiRequestError(409, {
+        error: { code: 'no_host_available', message: 'no enabled, healthy host with capacity' },
+      }),
+    } as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    expect(within(dlg).getByText(/no enabled, healthy host with capacity/i)).toBeInTheDocument()
+    expect(within(dlg).queryByText(/API error/i)).toBeNull()
   })
 })
