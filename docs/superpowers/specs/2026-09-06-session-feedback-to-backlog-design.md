@@ -257,10 +257,26 @@ Each tick (60 s; idle work when nothing is pending):
    `issue_number` back in a short second session. A failed create leaves the row `pending`;
    retried next tick.
 
-`server/github/ci_issues.py` is generalized, not copied: `create_issue` and `_ensure_label`
-take `label` / `label_description` keyword arguments (defaults keep `ci-doctor` byte-for-byte)
-and gain a `comment_on_issue(repo, number, body)` sibling. Auth stays the ambient
-`gitrepos._run_gh` path the doctor uses.
+`server/github/ci_issues.py` is generalized, not copied: `create_issue` takes a `labels`
+keyword argument (the default keeps `ci-doctor` byte-for-byte) and gains
+`comment_on_issue(repo, number, body)` and `issue_states(repo, numbers)` siblings. Auth stays
+the ambient `gitrepos._run_gh` path the doctor uses.
+
+**The file / comment / regress / skip rule above is not written here either** — it is the
+shared `server/automations/issue_filing.py` helper (`decide` / `apply`, error-triage design
+§6.1), which all three fingerprint→issue filers go through: error triage, this one (#1434) and
+the CI/CD Doctor (#1433, which gave up its `reopen`-on-recurrence path to join them). This
+filer owns only its `SessionFeedback` row transitions. Two consequences for step 4: a failed
+*create* leaves the row **claimed** (`filed`, `issue_number` NULL) and is retried next tick
+outside the cap, because `decide`'s `retry` branch is what makes a duplicate issue impossible;
+a failed *comment* leaves the row `pending`, because the opposite order would mark a row
+`merged` with nothing posted and lose the report. An issue closed as `not_planned` is a
+decision about the fingerprint, so further reports of it are `dismissed` rather than re-filed.
+
+Step 3's `throttled` is a **deferral, not a verdict**: each tick considers `pending` and
+`throttled` rows together, oldest first, so a row that lost yesterday's cap race competes again
+today. (Only `capped` — the per-session cap from §4 — and `dismissed` are out of the tick's
+reach, and **File now** overrides all three.)
 
 Issue body template:
 

@@ -68,9 +68,44 @@ leaving its own turn; `server/tests/test_session_tools_real_binary.py` (gated on
 `CCSWITCH_TEST_CLAUDE_MCP=1`) verifies against the real `claude` binary, per Constitution III, that
 a project's own `.mcp.json` servers and `viberpit` coexist and `report_feedback` raises no prompt.
 
-**Non-goals (Phase 1)** — filing to GitHub (Phase 2's automation), an API/UI/assistant view of
-`session_feedback`, and `session_url` in the context snapshot (needs the edge's public URL, known
-only to the Phase 2 filer).
+**Non-goals (Phase 1)** — filing to GitHub (Phase 2's automation, shipped since — see below), an
+API/UI/assistant view of `session_feedback`, and `session_url` in the context snapshot (needs the
+edge's public URL, which nothing on the server derives today; the filer names the session and host
+instead of linking to it).
+
+## Filing: the `session-feedback` automation (Phase 2, #1434)
+
+`SessionFeedbackFiler` (`server/automations/session_feedback.py`, id `session-feedback`, modes
+`off`/`file`) ticks on the primary daemon every 60 s and turns `pending` rows into labeled issues.
+It ships **disabled**, like every other GitHub-writing automation; until an operator enables it the
+rows simply accumulate as a visible inbox.
+
+It does not decide for itself whether a fingerprint has already been filed — that rule lives once, in
+`server/automations/issue_filing.py` (`decide` / `apply`), shared with Error Triage and the CI/CD
+Doctor. What the filer owns is the row transition each decision implies:
+
+| Decision | Row becomes | Why |
+|---|---|---|
+| no linked issue | `filed` + `issue_number` | first report of this fingerprint |
+| linked issue open | `merged` | the report becomes a comment on it |
+| linked issue closed (completed) | `filed` on a NEW `[regression]` issue | never reopened — the new issue links the old |
+| linked issue closed `not_planned` | `dismissed` | a human's decision about the fingerprint, not one report |
+| over `daily_cap` | `throttled` | retried tomorrow; **File now** overrides |
+| below `min_impact` | stays `pending` | visible, deliberately unfiled |
+
+Config: `target_repo`, `label` (`session-feedback`, self-provisioned), `daily_cap` (20 new issues
+per UTC day — comments do not count), `min_impact`. The card lists the pending/throttled/capped
+inbox with **File now** (bypasses both caps for one row) and **Dismiss**.
+
+Two safety properties are worth knowing when reading the code, because the two halves are
+deliberately *not* symmetric. A **create** claims its row before calling `gh`, so a failed create
+leaves it claimed-but-unlinked and is retried next tick outside the cap — a duplicate issue in a
+public backlog is permanent noise. A **comment** posts first and only then marks the row `merged`,
+because the opposite order would mark a row handled with nothing posted and lose the report
+outright. Report bodies are agent-authored and treated as untrusted: blockquoted under an explicit
+header, run through the shared credential redactor, and `<!--`/`-->` neutralized so a body cannot
+smuggle a marker into the issue. The Backlog Runner's eligible label is never applied, so a report
+cannot enter unattended implementation until a human labels it.
 
 ## The `SIGNAL` tool class, and why it renders no card
 
@@ -236,8 +271,9 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
   reversible today only by disabling the whole surface.
 - **Feedback row lifecycle (Phase 1)** — `record_feedback` (`server/sessions/feedback.py`) dedupes
   exact repeats by `(session_id, fingerprint)` → `status="duplicate"`, else `"pending"` or
-  `"capped"` against `session_feedback_cap`; Phase 2 adds `"filed"`/`"merged"`/`"throttled"`/
-  `"dismissed"` as the automation takes rows off `pending`.
+  `"capped"` against `session_feedback_cap`; the Phase 2 filer adds `"filed"`/`"merged"`/
+  `"throttled"`/`"dismissed"` as it takes rows off `pending` (see the filing section above).
+  `"capped"` rows are out of the tick's reach entirely — only **File now** can move one.
 - **Codex resume gap** — Codex declares `session_context`/`report_feedback` as `dynamicTools` on a
   fresh `thread/start` only; `thread/resume` silently drops them (no schema field, no rejection), so
   a resumed Codex thread has none until respawned. Confirmed against codex-cli 0.153.2 in

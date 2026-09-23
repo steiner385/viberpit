@@ -1,0 +1,510 @@
+"""The session-feedback filer: `report_feedback` rows → deduplicated backlog issues
+(session-tools spec docs/superpowers/specs/2026-09-06-session-feedback-to-backlog-design.md §6).
+
+Phase 1 gave coding sessions a way to report a problem with the harness itself; every
+row it wrote sat `pending` forever because nothing filed them. This is that filer.
+
+It owns its `SessionFeedback` rows and nothing else: the "have we already filed this
+fingerprint — file, comment, regress or skip" rule comes from the shared
+``issue_filing`` helper (#1434), the same one error triage and the CI/CD Doctor use,
+so the three filers cannot drift on what a recurrence means.
+
+Two-phase, deliberately asymmetric (both halves follow error triage):
+
+* a CREATE claims its row first (`status="filed"`, `issue_number` NULL) and writes
+  the number back after; a failed create leaves the row claimed-but-unlinked and is
+  retried next tick, outside the daily cap, because a duplicate issue in a public
+  backlog is permanent noise.
+* a COMMENT posts first and marks the row `merged` only on success, because the
+  opposite failure — a row marked merged with no comment posted — silently loses the
+  report, and a repeated comment on an issue that already exists is cheap.
+"""
+from __future__ import annotations
+
+from .context import observation_failed, publish_observation
+
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable
+
+from ccswitch import brand, gitrepos
+from server.audit import redact_text
+from server.github import ci_issues
+
+from .base import ActionableItem, ActionSpec, AutomationStatus, ConfigField, TriggerResult
+from .engine_policy import EnginePolicy
+from .issue_filing import Decision, Linked, apply, decide, neutralize_markers
+
+log = logging.getLogger(__name__)
+
+LABEL = "session-feedback"
+_TITLE_MAX = 140
+_TS = "%Y-%m-%d %H:%M UTC"
+_QUOTED_BLOCK_MAX = 5000
+
+#: `min_impact` is a floor, so the three impacts need an order. Ascending severity.
+IMPACT_ORDER: dict[str, int] = {"minor": 0, "degraded": 1, "blocked": 2}
+
+#: Every report is a distinct row processed exactly once, so there is no second
+#: comment for `comment_every` to throttle — `decide` short-circuits on the absent
+#: `last_commented_at` before it reads the gap. Named rather than inlined so the
+#: reason travels with the value.
+_NO_COMMENT_THROTTLE = timedelta(0)
+
+
+class SessionFeedbackFiler:
+    id = "session-feedback"
+    name = "Session Feedback"
+    work_class = "maintenance"
+    description = (f"Turns what coding sessions report about {brand.NAME} itself — via the "
+                   "`report_feedback` session tool — into deduplicated backlog issues.")
+    modes: tuple[str, ...] = ("off", "file")
+    # It files issues from its own loop and never spawns an agent session, so the
+    # fail-closed default costs nothing; declared explicitly like its siblings.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
+    config_schema = [
+        ConfigField(key="target_repo", label="Target repository", type="string",
+                    default="steiner385/viberpit",
+                    help="Where reports are filed — this project's own backlog."),
+        ConfigField(key="label", label="Issue label", type="string", default=LABEL,
+                    help="Applied to every filed issue; created in the repo if absent."),
+        ConfigField(key="daily_cap", label="New issues per day", type="int", default=20,
+                    min=0,
+                    help="Across all sessions, per UTC day. Comments on an existing "
+                         "issue do not count."),
+        ConfigField(key="min_impact", label="Minimum impact to file", type="enum",
+                    default="minor", choices=list(IMPACT_ORDER),
+                    help="Reports below this stay visible as pending, but are not filed."),
+    ]
+
+    def status(self, ctx: Any) -> AutomationStatus:
+        counts = getattr(ctx, "session_feedback_counts", None) if ctx is not None else None
+        if not counts:
+            return AutomationStatus(text="idle", level="idle")
+        pending = int(counts.get("pending", 0))
+        filed_today, cap = int(counts.get("filed_today", 0)), int(counts.get("daily_cap", 0))
+        throttled = int(counts.get("throttled", 0))
+        bits = [f"{pending} pending", f"{filed_today}/{cap} filed today",
+                f"{int(counts.get('filed', 0))} filed", f"{int(counts.get('merged', 0))} merged"]
+        if throttled:
+            bits.append(f"{throttled} throttled")
+        if throttled or (pending and cap and filed_today >= cap):
+            level = "warn"
+        elif pending or filed_today:
+            level = "active"
+        else:
+            level = "idle"
+        return AutomationStatus(text=", ".join(bits), level=level, counts=counts)
+
+    async def on_state_change(self, *, enabled: bool, mode: str | None,
+                              config: dict, ctx: Any) -> None:
+        ...  # the loop reads mode/config each tick
+
+
+# ---------------------------------------------------------------------------
+# Issue text (pure)
+# ---------------------------------------------------------------------------
+
+def meets_min_impact(impact: str | None, min_impact: str | None) -> bool:
+    """Whether a report is severe enough to file. An unknown impact is treated as
+    the lowest, so a malformed row is held back rather than filed by accident."""
+    floor = IMPACT_ORDER.get(str(min_impact or "minor"), 0)
+    return IMPACT_ORDER.get(str(impact or ""), -1) >= floor
+
+
+def _fmt(ts: datetime | None) -> str:
+    return ts.strftime(_TS) if ts else "?"
+
+
+def issue_title(row: Any, *, regression: bool) -> str:
+    prefix = f"[{LABEL}][regression] " if regression else f"[{LABEL}] "
+    return (prefix + str(row.title or row.fingerprint))[:_TITLE_MAX]
+
+
+def _quote(text: str | None) -> str:
+    """Blockquote agent-authored text after redacting credentials and breaking any
+    HTML-comment delimiters — a report body is untrusted input that must not be able
+    to smuggle a marker into, or hide content from, the issue it lands in."""
+    clean = neutralize_markers(redact_text(str(text or "")))
+    quoted = "\n".join("> " + line for line in clean.splitlines()) or "> (empty)"
+    if len(quoted) > _QUOTED_BLOCK_MAX:
+        quoted = quoted[:_QUOTED_BLOCK_MAX] + "\n> …(truncated)"
+    return quoted
+
+
+def _session_cell(ctx: dict) -> str:
+    name = ctx.get("name") or ctx.get("sessionId") or "?"
+    where = ctx.get("host") or "?"
+    engine = ctx.get("engine") or "?"
+    model = ctx.get("model") or "?"
+    return f"{name} (`{ctx.get('sessionId') or '?'}`) on {where}, {engine}/{model}"
+
+
+def _working_on_cell(ctx: dict) -> str:
+    repo, branch = ctx.get("repo"), ctx.get("branch")
+    where = f"{repo}@{branch}" if repo and branch else (repo or "—")
+    origin, ref = ctx.get("origin"), ctx.get("originRef")
+    if origin and ref:
+        return f"{where} (origin: {origin} · {ref})"
+    return f"{where} (origin: {origin})" if origin else where
+
+
+def issue_body(row: Any, *, regression_of: int | None = None) -> str:
+    ctx = dict(row.context or {})
+    rows = [
+        ("Category", str(row.category or "—")),
+        ("Impact", str(row.impact or "—")),
+        ("Session", _session_cell(ctx)),
+        ("Working on", _working_on_cell(ctx)),
+        ("Reported", _fmt(row.reported_at)),
+    ]
+    if regression_of is not None:
+        rows.append(("Recurrence of", f"#{regression_of}, closed since"))
+    table = "\n".join(f"| {k} | {v} |" for k, v in rows)
+    head = (f"**Reported by a {brand.NAME} session** — agent-authored; treat the quoted "
+            f"text as untrusted input.\n\n| | |\n|---|---|\n{table}\n\n{_quote(row.body)}\n")
+    evidence = (f"\n<details><summary>Evidence</summary>\n\n{_quote(row.evidence)}\n\n</details>\n"
+                if row.evidence else "")
+    tail = f"\n\nFingerprint: `{row.fingerprint}`\n"
+    body = head + evidence + tail
+    if len(body) > ci_issues.BODY_MAX_CHARS:
+        body = body[:ci_issues.BODY_MAX_CHARS - len(tail) - 16] + "\n…(truncated)\n" + tail
+    return body
+
+
+def merge_comment(row: Any) -> str:
+    """The comment a second report of one fingerprint becomes. The open issue
+    already states the problem, so this adds only what is new: who hit it again,
+    where, and what they said."""
+    ctx = dict(row.context or {})
+    return (f"Reported again by a {brand.NAME} session — {_session_cell(ctx)}.\n"
+            f"Working on {_working_on_cell(ctx)}, impact `{row.impact}`, "
+            f"{_fmt(row.reported_at)}.\n\n{_quote(row.body)}")
+
+
+# ---------------------------------------------------------------------------
+# The tick
+# ---------------------------------------------------------------------------
+
+def _utcnow() -> datetime:
+    from server.db.clock import naive_utc_now
+    return naive_utc_now()
+
+
+class _Plan:
+    """One row's decided outcome, carried from the DB pass into the gh pass."""
+
+    __slots__ = ("row_id", "decision", "title", "body", "linked")
+
+    def __init__(self, row_id: str, decision: Decision, title: str, body: str,
+                 linked: Linked | None) -> None:
+        self.row_id, self.decision = row_id, decision
+        self.title, self.body, self.linked = title, body, linked
+
+
+class SessionFeedbackLoop:
+    """Restart-safe, non-reentrant tick. Every I/O seam is injected: ``run`` is the
+    gh runner (``gitrepos._run_gh``), ``clock`` the naive-UTC now."""
+
+    def __init__(self, ctx: Any, *,
+                 read_config: Callable[[], Awaitable[tuple[str, dict]]],
+                 run: Callable[..., Any] = gitrepos._run_gh,
+                 clock: Callable[[], datetime] = _utcnow) -> None:
+        self._ctx = ctx
+        self._read_config = read_config
+        self._run = run
+        self._clock = clock
+        self._lock = asyncio.Lock()
+
+    async def tick(self) -> None:
+        async with self._lock:
+            try:
+                await self._run_once()
+            except Exception:  # noqa: BLE001 — a tick must never crash the loop
+                observation_failed(self._ctx)
+                log.warning("session_feedback.tick_failed", exc_info=True)
+
+    async def _run_once(self) -> None:
+        mode, config = await self._read_config()
+        if mode == "off":
+            return
+        repo = str(config.get("target_repo") or "")
+        if not ci_issues.valid_repo(repo):
+            log.warning("session_feedback.invalid_target_repo repo=%r", repo)
+            return
+        now = self._clock()
+        pending, filed_today = await self._file_pending(repo, config, now)
+        publish_observation(self._ctx, "session_feedback_counts", {
+            **(await self._counts()), "pending": pending, "filed_today": filed_today,
+            "daily_cap": int(config.get("daily_cap", 0))})
+
+    # -- steps ----------------------------------------------------------------
+    async def _linked_issues(self, fingerprints: set[str]) -> dict[str, int]:
+        """fingerprint → the most recently filed issue for it, across all sessions.
+
+        This is the dedupe join: one session's report links to the issue another
+        session's report of the same fingerprint already produced."""
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+        if not fingerprints:
+            return {}
+        async with db_session() as db:
+            # Only rows the filer actually put ON an issue. A `dismissed` or
+            # `throttled` row can carry an issue_number it was merely compared
+            # against, and its filed_at is NULL — which sorts to opposite ends
+            # under SQLite and Postgres, so including them would make "most
+            # recent" mean different things on the two dialects.
+            rows = (await db.execute(
+                select(SF.fingerprint, SF.issue_number, SF.filed_at)
+                .where(SF.fingerprint.in_(sorted(fingerprints)),
+                       SF.issue_number.is_not(None),
+                       SF.status.in_(("filed", "merged")))
+                .order_by(SF.filed_at.desc()))).all()
+        out: dict[str, int] = {}
+        for fp, number, _ in rows:
+            if fp is not None and number is not None:
+                out.setdefault(str(fp), int(number))  # first == most recently filed
+        return out
+
+    async def _file_pending(self, repo: str, config: dict,
+                            now: datetime) -> tuple[int, int]:
+        """Returns (rows still pending after this tick, issues filed today)."""
+        from sqlalchemy import func, select, update
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        cap = int(config.get("daily_cap", 20))
+        label = str(config.get("label") or LABEL)
+        min_impact = str(config.get("min_impact") or "minor")
+
+        async with db_session() as db:
+            filed_today = int((await db.execute(select(func.count()).select_from(SF).where(
+                SF.status == "filed", SF.filed_at >= day_start))).scalar() or 0)
+            # A prior create failed (row claimed, no issue): retried first and
+            # outside the cap — its filed_at already counted toward today.
+            retry = (await db.execute(select(SF).where(
+                SF.status == "filed", SF.issue_number.is_(None))
+                .order_by(SF.reported_at))).scalars().all()
+            # `throttled` is a deferral, not a verdict: a row that lost yesterday's
+            # cap race is a candidate again today, and competes for a slot by age
+            # like any other. Without it here the cap would strand a report exactly
+            # the way `pending` stranded every report before this filer existed.
+            candidates = (await db.execute(
+                select(SF).where(SF.status.in_(("pending", "throttled")))
+                .order_by(SF.reported_at))).scalars().all()
+            plan = [_Plan(str(r.id), Decision("file", "retry"),
+                          issue_title(r, regression=False), issue_body(r), None)
+                    for r in retry]
+            eligible = [r for r in candidates if meets_min_impact(r.impact, min_impact)]
+            # Rows outlive their session deliberately: the factory sets
+            # expire_on_commit=False, so a detached row keeps the values loaded
+            # here. Only reads happen after this block; every write goes through an
+            # explicit UPDATE in the session below.
+            snapshots = {str(r.id): (str(r.fingerprint or ""), r) for r in eligible}
+
+        # Which of those fingerprints already reached GitHub, and is that issue still
+        # open? One GraphQL call for every candidate, outside any DB write lock.
+        linked_by_fp = await self._linked_issues({fp for fp, _ in snapshots.values()})
+        states: dict[int, tuple[bool, str | None]] = {}
+        if linked_by_fp:
+            states = await asyncio.to_thread(ci_issues.issue_states, repo,
+                                             sorted(set(linked_by_fp.values())),
+                                             run=self._run)
+
+        cap_remaining = max(0, cap - filed_today)
+        still_pending = 0
+        async with db_session() as db:
+            for row_id, (fp, r) in snapshots.items():
+                number = linked_by_fp.get(fp)
+                linked = None
+                if number is not None:
+                    # An issue gh could not tell us about is treated as unchanged,
+                    # i.e. open — commenting on a closed issue is recoverable, while
+                    # filing a duplicate for an open one is not.
+                    closed, reason = states.get(number, (False, None))
+                    linked = Linked(number=number, closed=closed, closed_reason=reason)
+                d = decide(linked, cap_remaining=cap_remaining,
+                           comment_every=_NO_COMMENT_THROTTLE, now=now)
+                if d.kind == "skip":
+                    if d.reason == "muted_by_close":
+                        # A human closed this fingerprint's issue as not planned:
+                        # a decision about every future report of it, not just this
+                        # one. The number is recorded because it is WHY the row was
+                        # dropped.
+                        await db.execute(update(SF).where(SF.id == row_id).values(
+                            status="dismissed", issue_number=number))
+                    else:
+                        # Over the daily cap — try again tomorrow. issue_number is
+                        # deliberately left NULL: nothing was posted anywhere, and a
+                        # number here would point the card's link at an issue this
+                        # report is not on.
+                        await db.execute(update(SF).where(SF.id == row_id).values(
+                            status="throttled"))
+                    continue
+                if d.kind == "comment":
+                    # Posted BEFORE the row moves — see the module docstring. The
+                    # title rides along for the feed line only; apply() ignores it
+                    # on a comment.
+                    plan.append(_Plan(row_id, d, str(r.title or ""), merge_comment(r), linked))
+                    continue
+                regression_of = number if d.kind == "regress" else None
+                plan.append(_Plan(row_id, d, issue_title(r, regression=regression_of is not None),
+                                  issue_body(r, regression_of=regression_of), linked))
+                # Phase 1: claim the row, so a crash before the create cannot lose it
+                # and a retry cannot double-file.
+                await db.execute(update(SF).where(SF.id == row_id).values(
+                    status="filed", filed_at=now, issue_number=None))
+                cap_remaining -= 1
+                filed_today += 1
+
+        # Phase 2: gh, outside the DB write lock.
+        for p in plan:
+            await self._apply_one(p, repo, label)
+        # Counted after the side effects: a comment only clears its row once it has
+        # actually landed, so counting before would report it as already handled.
+        async with db_session() as db:
+            still_pending = int((await db.execute(select(func.count()).select_from(SF)
+                                                  .where(SF.status == "pending"))).scalar() or 0)
+        return still_pending, filed_today
+
+    async def _apply_one(self, plan: _Plan, repo: str, label: str) -> None:
+        from sqlalchemy import update
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+        applied = await apply(plan.decision, repo=repo, title=plan.title, body=plan.body,
+                              labels=[label], linked=plan.linked, run=self._run)
+        if plan.decision.kind == "comment":
+            if not applied.commented:
+                await self._ctx.emit("warn", "comment failed — will retry",
+                                     kind="file_failed", target=plan.row_id)
+                return  # row stays pending; retried next tick
+            async with db_session() as db:
+                await db.execute(update(SF).where(SF.id == plan.row_id).values(
+                    status="merged", issue_number=applied.issue_number,
+                    filed_at=self._clock()))
+            await self._ctx.emit("info", f"merged into #{applied.issue_number}: {plan.title}",
+                                 kind="merged", target=plan.row_id,
+                                 detail={"url": ci_issues.issue_url(repo, int(applied.issue_number or 0))})
+            return
+        if applied.issue_number is None:
+            await self._ctx.emit("warn", f"issue create failed — will retry: {plan.title}",
+                                 kind="file_failed", target=plan.row_id)
+            return  # row stays claimed with a NULL issue_number; retried next tick
+        async with db_session() as db:
+            await db.execute(update(SF).where(SF.id == plan.row_id)
+                             .values(issue_number=applied.issue_number))
+        await self._ctx.emit("info", f"filed #{applied.issue_number}: {plan.title}",
+                             kind="regressed" if plan.decision.kind == "regress" else "filed",
+                             target=plan.row_id,
+                             detail={"url": ci_issues.issue_url(repo, applied.issue_number)})
+
+    async def _counts(self) -> dict[str, int]:
+        from sqlalchemy import func, select
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+        async with db_session() as db:
+            rows = (await db.execute(select(SF.status, func.count())
+                                     .group_by(SF.status))).all()
+        by = {str(s): int(n) for s, n in rows}
+        return {k: by.get(k, 0) for k in ("filed", "merged", "throttled", "capped", "dismissed")}
+
+    # -- card actions ---------------------------------------------------------
+    async def actionable_items(self, limit: int = 50) -> list[ActionableItem]:
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+        _, config = await self._read_config()
+        repo = str(config.get("target_repo") or "")
+        async with db_session() as db:
+            rows = (await db.execute(select(SF)
+                                     .where(SF.status.in_(("pending", "throttled", "capped")))
+                                     .order_by(SF.reported_at.desc()).limit(limit))).scalars().all()
+        items: list[ActionableItem] = []
+        for r in rows:
+            ctx = dict(r.context or {})
+            subtitle = (f"{r.category} · {r.impact} · {r.status} · "
+                        f"{ctx.get('name') or ctx.get('sessionId') or '?'} · "
+                        f"{_fmt(r.reported_at)}")
+            url = ci_issues.issue_url(repo, int(r.issue_number)) if r.issue_number and repo else None
+            items.append(ActionableItem(
+                id=str(r.id), title=str(r.title or r.fingerprint), subtitle=subtitle, url=url,
+                actions=[ActionSpec(kind="file_now", label="File now"),
+                         ActionSpec(kind="dismiss", label="Dismiss", style="risky")]))
+        return items
+
+    async def action_result(self, row_id: str, kind: str) -> tuple[str, int | None]:
+        """``(status, issue number filed by THIS call)``. The number is returned
+        rather than stashed on the instance so a concurrent trigger, or the tick's
+        own filing, cannot leak its number into this caller."""
+        from sqlalchemy import select, update
+        from server.db import db_session
+        from server.db.models import SessionFeedback as SF
+        mode, config = await self._read_config()
+        now = self._clock()
+        async with db_session() as db:
+            row = (await db.execute(select(SF).where(SF.id == row_id))).scalars().one_or_none()
+            if row is None:
+                return "not_found", None
+            if kind == "dismiss":
+                await db.execute(update(SF).where(SF.id == row_id).values(status="dismissed"))
+                return "dismissed", None
+            if kind != "file_now":
+                return "failed", None
+            if mode == "off":
+                return "off", None
+            repo = str(config.get("target_repo") or "")
+            if not ci_issues.valid_repo(repo) or row.status not in ("pending", "throttled", "capped"):
+                return "failed", None
+            # "File now" is the operator override for BOTH caps and min_impact, so it
+            # files unconditionally — but it still respects the dedupe rule, because
+            # a second issue for an open fingerprint is a mistake no operator wants.
+            title = issue_title(row, regression=False)
+            body = issue_body(row)
+            plan = _Plan(row_id, Decision("file", "no_issue"), title, body, None)
+            await db.execute(update(SF).where(SF.id == row_id).values(
+                status="filed", filed_at=now, issue_number=None))
+        await self._apply_one(plan, repo, str(config.get("label") or LABEL))
+        async with db_session() as db:
+            number = (await db.execute(select(SF.issue_number)
+                                       .where(SF.id == row_id))).scalar()
+        return ("filed", int(number)) if number is not None else ("failed", None)
+
+
+# ---------------------------------------------------------------------------
+# The action provider
+# ---------------------------------------------------------------------------
+
+_ACTION_STATUS = {
+    "filed": ("ok", "Issue filed"),
+    "dismissed": ("ok", "Dismissed — it will not be filed"),
+    "not_found": ("warn", "That report no longer exists"),
+    "off": ("warn", "Session Feedback is off — enable it first"),
+    "failed": ("error", "Action failed — see the feed"),
+}
+
+
+class SessionFeedbackActionProvider:
+    """Card actions for session-feedback. Reads the loop off the orchestrator lazily —
+    the providers dict is built before the loops are (orchestrator.__init__ order)."""
+
+    valid_kinds = frozenset({"file_now", "dismiss"})
+
+    def __init__(self, orch: Any) -> None:
+        self._orch = orch
+
+    @property
+    def _loop(self) -> "SessionFeedbackLoop":
+        return self._orch._session_feedback_loop
+
+    async def actionable(self) -> list[ActionableItem]:
+        return await self._loop.actionable_items()
+
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+        status, number = await self._loop.action_result(item_id, kind)
+        level, message = _ACTION_STATUS.get(status, ("error", "Action failed — see the feed"))
+        if status == "filed" and number is not None:
+            message = f"Issue filed: #{number}"
+        return TriggerResult(status=status, level=level, message=message)

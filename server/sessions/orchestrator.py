@@ -677,7 +677,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_sdlc_synth_task", "_control_band_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
-    "_error_triage_task",
+    "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task",
 })
 
@@ -1026,6 +1026,7 @@ class SessionOrchestrator:
             CicdDoctorActionProvider,
         )
         from server.automations.error_triage import ErrorTriageActionProvider
+        from server.automations.session_feedback import SessionFeedbackActionProvider
         from server.automations.deploy_monitor import DeployMonitorActionProvider
         from server.automations.base import ActionProvider
         self._action_providers: dict[str, ActionProvider] = {
@@ -1033,6 +1034,7 @@ class SessionOrchestrator:
             "backlog-runner": BacklogRunnerActionProvider(self),
             "cicd-doctor": CicdDoctorActionProvider(self),
             "error-triage": ErrorTriageActionProvider(self),
+            "session-feedback": SessionFeedbackActionProvider(self),
             "deploy-monitor": DeployMonitorActionProvider(self),
         }
         # In-memory map: session_id → SessionRecord
@@ -1396,7 +1398,7 @@ class SessionOrchestrator:
         # CI/CD Doctor control loop: system-level CI health (flaky tests, check
         # graduation, waste). Real seams shell out to gh via asyncio.to_thread.
         from server.automations.cicd_doctor import CicdDoctorLoop
-        from server.github import actions_api, ci_issues
+        from server.github import actions_api
         self._cicd_ctx = AutomationContext("cicd-doctor")
         self._cicd_loop = CicdDoctorLoop(
             self._cicd_ctx,
@@ -1412,12 +1414,9 @@ class SessionOrchestrator:
                 actions_api.repo_ci_meta, repo),
             fetch_workflows=lambda repo, branch: asyncio.to_thread(
                 actions_api.workflow_texts, repo, branch),
-            file_issue=lambda repo, title, body: asyncio.to_thread(
-                ci_issues.create_issue, repo, title, body),
-            close_issue=lambda repo, n: asyncio.to_thread(
-                ci_issues.close_issue, repo, n),
-            reopen_issue=lambda repo, n: asyncio.to_thread(
-                ci_issues.reopen_issue, repo, n),
+            # Issue writes go through the loop's one gh seam (issue_filing.apply for
+            # file/comment, ci_issues.close_issue for the close sweep), which defaults
+            # to the ambient gitrepos._run_gh — the same path error triage uses.
             clock=time.time,  # wall clock: created_ts from GitHub is epoch time
         )
         self._cicd_task: asyncio.Task | None = None
@@ -1428,6 +1427,14 @@ class SessionOrchestrator:
         self._error_triage_loop = ErrorTriageLoop(
             self._error_triage_ctx, read_config=self._error_triage_read_config)
         self._error_triage_task: asyncio.Task | None = None
+        # Session Feedback: what sessions report about ViberPit via `report_feedback`
+        # -> deduplicated backlog issues (session-tools spec §6). Capture happens on
+        # whatever host owns the session; only the primary files, over the shared DB.
+        from server.automations.session_feedback import SessionFeedbackLoop
+        self._session_feedback_ctx = AutomationContext("session-feedback")
+        self._session_feedback_loop = SessionFeedbackLoop(
+            self._session_feedback_ctx, read_config=self._session_feedback_read_config)
+        self._session_feedback_task: asyncio.Task | None = None
         # Deploy Monitor: GitHub deployment statuses → incidents / one alert / one
         # issue per failing environment (spec 2026-09-12). Repos come from the same
         # "managed repos" seam the CI/CD Doctor uses; the fetch is one GraphQL doc.
@@ -2331,6 +2338,11 @@ class SessionOrchestrator:
             self._error_triage_task = asyncio.create_task(
                 self._error_triage_tick_loop(interval=60.0), name="error-triage-loop"
             )
+            # Session Feedback: 60 s — a report should reach the backlog within a
+            # tick of being written, and a tick with nothing pending costs one query.
+            self._session_feedback_task = asyncio.create_task(
+                self._session_feedback_tick_loop(interval=60.0), name="session-feedback-loop"
+            )
             # Deploy Monitor: 120 s — deployments are minutes apart and the read is
             # one GraphQL call per App token, so a slower cadence loses nothing.
             self._deploy_monitor_task = asyncio.create_task(
@@ -2934,7 +2946,8 @@ class SessionOrchestrator:
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
                      "_autopilot_task", "_mirror_task",
-                     "_cicd_task", "_error_triage_task", "_deploy_monitor_task", "_archaudit_task", "_sweep_task",
+                     "_cicd_task", "_error_triage_task", "_session_feedback_task",
+                     "_deploy_monitor_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
@@ -11272,6 +11285,34 @@ class SessionOrchestrator:
             log_key="error_triage")
 
     # ------------------------------------------------------------------
+    # Session Feedback control loop
+    # ------------------------------------------------------------------
+    async def _session_feedback_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._session_feedback_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _session_feedback_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("session-feedback"):
+            return
+        await self._session_feedback_loop.tick()
+        try:
+            mode, _ = await self._session_feedback_read_config()
+            if mode != "off":
+                await self._bump_automation_active("session-feedback")
+        except Exception:
+            log.debug("session_feedback.heartbeat_failed", exc_info=True)
+
+    async def _session_feedback_read_config(self) -> tuple[str, dict]:
+        """(effective mode, validated config); off + defaults on any bad row."""
+        from server.automations.session_feedback import SessionFeedbackFiler
+        from server.automations.config_store import read_automation_config
+        active = tuple(m for m in SessionFeedbackFiler.modes if m != "off")
+        return await read_automation_config(
+            SessionFeedbackFiler, modes=active, default_mode=active[0],
+            log_key="session_feedback")
+
+    # ------------------------------------------------------------------
     # Deploy Monitor control loop
     # ------------------------------------------------------------------
     async def _deploy_monitor_tick_loop(self, interval: float) -> None:
@@ -14903,6 +14944,7 @@ class SessionOrchestrator:
             "pm-triage": getattr(self, "_pm_triage_ctx", None),
             "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
             "error-triage": getattr(self, "_error_triage_ctx", None),
+            "session-feedback": getattr(self, "_session_feedback_ctx", None),
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
