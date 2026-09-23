@@ -29,8 +29,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ccswitch import brand, paths
-from ccswitch.gitrepos import git_env_for_remote
+from . import brand, paths
+from .gitrepos import git_env_for_remote
 
 log = logging.getLogger(__name__)
 

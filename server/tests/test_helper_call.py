@@ -179,6 +179,122 @@ def test_per_attempt_timeout_fails_open_without_retry():
 
 
 # --------------------------------------------------------------------------- #
+# Durable authorization denial (#1820).                                        #
+#                                                                              #
+# Live 2026-09-22: one enabled, ledger-healthy Anthropic account answered every #
+# helper call with HTTP 403 oauth_not_allowed_for_organization. It is the first #
+# account pick_helper_config_dir() returns, so EVERY helper subsystem routed to #
+# it and failed; autopilot logged 713 "PERSISTENT FAILURE" records whose only   #
+# text was the SDK's opaque "returned an error result: success".               #
+# --------------------------------------------------------------------------- #
+
+_ORG_DENIED = ("Your organization has disabled Claude subscription access for Claude "
+               "Code · Use an Anthropic API key instead, or ask your admin to enable "
+               "access")
+
+
+def _api_error_assistant(text, error="oauth_org_not_allowed"):
+    """SDK shape for an API-error assistant message: ``.error`` is set and the
+    text block carries the CLI's own sentence."""
+    return SimpleNamespace(content=[SimpleNamespace(text=text)], error=error)
+
+
+def _org_denied_stream(*, status=403, counter=None):
+    return _stream_factory(
+        yield_msgs=[_api_error_assistant(_ORG_DENIED), _result(status)],
+        raise_exc=RuntimeError("Claude Code returned an error result: success"),
+        counter=counter)
+
+
+@pytest.mark.parametrize("status", [403, None])
+def test_org_denial_is_read_off_the_messages_not_the_opaque_exception(status):
+    # status=None is the shape without the CLI's api_error_status: the denial is
+    # then knowable only from the API-error assistant message.
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    out = asyncio.run(run_helper_call(_org_denied_stream(status=status),
+                                      subsystem="test", account_key="/cfg/denied",
+                                      _now=clock, _sleep=sleep))
+    assert out.failure_kind == "auth_forbidden"
+    assert out.api_error_status == status
+    assert out.error_text is not None and "organization has disabled" in out.error_text
+
+
+def test_a_denied_account_is_blocked_for_every_helper_subsystem():
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    counter = {"n": 0}
+    asyncio.run(run_helper_call(_org_denied_stream(counter=counter), subsystem="decide",
+                                account_key="/cfg/denied", _now=clock, _sleep=sleep))
+    assert counter["n"] == 1                       # never retried
+    assert helper_call.is_helper_account_blocked("/cfg/denied", _now=clock)
+    # A *different* subsystem on the same account is skipped without a spawn — the
+    # denial is account-wide, so a per-lane breaker alone would let every other
+    # helper re-learn it the hard way.
+    ok = _stream_factory(yield_msgs=[_assistant("fine")], counter=counter)
+    out = asyncio.run(run_helper_call(ok, subsystem="title", account_key="/cfg/denied",
+                                      _now=clock, _sleep=sleep))
+    assert out.skipped is True and counter["n"] == 1
+    # Another account is untouched.
+    out2 = asyncio.run(run_helper_call(ok, subsystem="title", account_key="/cfg/good",
+                                       _now=clock, _sleep=sleep))
+    assert out2.skipped is False and out2.error is None
+
+
+def test_a_blocked_account_is_not_helper_ready_so_the_pickers_fail_over(monkeypatch):
+    import contextlib
+
+    from ccswitch import ledger as _ledger
+
+    # A ledger that reports the account perfectly healthy — which is exactly what
+    # the real one said throughout #1820. Readiness must turn on what the calls
+    # learned, not on what the ledger believes.
+    @contextlib.contextmanager
+    def _healthy_ledger():
+        yield {}
+    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr(_ledger, "locked_ledger", _healthy_ledger)
+    monkeypatch.setattr(_ledger, "is_account_enabled", lambda led, name: True)
+    monkeypatch.setattr(_ledger, "get_status", lambda led, name: "ok")
+    assert helper_call.is_account_helper_ready("denied") is True
+
+    # Real monotonic clock here: is_account_helper_ready() is the pickers' door
+    # and takes no clock injection.
+    _, sleep = _sleeps_recorded()
+    asyncio.run(run_helper_call(_org_denied_stream(), subsystem="decide",
+                                account_key="/cfg/denied", _sleep=sleep))
+    assert helper_call.is_account_helper_ready("denied") is False
+    assert helper_call.is_account_helper_ready("other") is True
+
+
+def test_the_account_block_expires_so_a_restored_account_recovers():
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    asyncio.run(run_helper_call(_org_denied_stream(), subsystem="decide",
+                                account_key="/cfg/denied", _now=clock, _sleep=sleep))
+    clock.advance(helper_call._AUTH_BLOCK_S + 1)
+    assert helper_call.is_helper_account_blocked("/cfg/denied", _now=clock) is False
+    ok = _stream_factory(yield_msgs=[_assistant("fine")])
+    out = asyncio.run(run_helper_call(ok, subsystem="decide", account_key="/cfg/denied",
+                                      _now=clock, _sleep=sleep))
+    assert out.skipped is False and out.error is None
+
+
+def test_a_partial_model_reply_is_never_mistaken_for_an_error_detail():
+    # Only error-shaped text feeds the classifier and the log: a normal assistant
+    # reply that happens to mention 401 must not be read as an auth failure, and
+    # must not be echoed into a log line as "the CLI's error".
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    ms = _stream_factory(yield_msgs=[_assistant("the fix is to retry on HTTP 401")],
+                         raise_exc=RuntimeError("boom"))
+    out = asyncio.run(run_helper_call(ms, subsystem="test", account_key="/cfg/acct1",
+                                      _now=clock, _sleep=sleep))
+    assert out.failure_kind == "other"
+    assert out.error_text is None
+
+
+# --------------------------------------------------------------------------- #
 # helper_cwd: where a stateless one-shot helper runs.                          #
 #                                                                              #
 # Live finding 2026-09-11: the decider, composer and PR-intent classifier ran  #
@@ -231,3 +347,20 @@ def test_no_stateless_helper_runs_in_the_daemon_cwd():
         src = (root / rel).read_text(encoding="utf-8")
         assert "os.getcwd()" not in src, f"{rel} still runs in the daemon cwd"
         assert "helper_cwd()" in src, f"{rel} does not route through helper_cwd()"
+
+
+def test_skip_reason_tells_a_cooled_lane_from_a_barred_account():
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    fail = _stream_factory(raise_exc=RuntimeError("Rate limit 429"))
+    asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/limited",
+                                _now=clock, _sleep=sleep))
+    out = asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/limited",
+                                      _now=clock, _sleep=sleep))
+    assert (out.skipped, out.skip_reason) == (True, "circuit-open")
+
+    asyncio.run(run_helper_call(_org_denied_stream(), subsystem="test",
+                                account_key="/cfg/denied", _now=clock, _sleep=sleep))
+    out2 = asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/denied",
+                                       _now=clock, _sleep=sleep))
+    assert (out2.skipped, out2.skip_reason) == (True, "account-blocked")

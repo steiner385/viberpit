@@ -24,6 +24,12 @@ trips only its own lane while healthy accounts keep flowing:
    need to wait for five). After the cool-down the lane goes half-open: one
    trial call is allowed; success closes it, failure re-opens it.
 
+3. **Authorization block** — a 403 organization denial is neither per-lane nor
+   transient, so it bars the *account* from every helper subsystem for 30
+   minutes and the account pickers above fail over to the next live account
+   (#1820: the first-listed account was org-denied, so every helper in the
+   daemon failed on it for a week).
+
 Failure classification is delegated to :func:`server.sessions.failure.classify`
 (the single source of truth for the ``api_429`` / ``api_401`` / ``overloaded`` /
 ``process_crash`` taxonomy) — this module adds no parallel regex.
@@ -71,8 +77,22 @@ def helper_cwd() -> str:
     return str(path)
 
 
+def _account_cfg_dir(name: str) -> str | None:
+    """*name*'s config dir as a string, or None if it cannot be resolved.
+
+    The one place this module maps an account name to a config dir, so the
+    readiness check and the picker below key the authorization block on exactly
+    the same string ``run_helper_call`` receives as ``account_key``.
+    """
+    try:
+        from ccswitch import paths as _paths
+        return str(_paths.account_cfg_dir(name))
+    except Exception:
+        return None
+
+
 def is_account_helper_ready(name: str) -> bool:
-    """True if *name* is enabled and not needs-reauth in the ledger.
+    """True if *name* is enabled, not needs-reauth, and not authorization-blocked.
 
     The single source of truth for "would this account's own credentials answer
     a helper call, or just fail" — used both to filter candidates in
@@ -84,7 +104,15 @@ def is_account_helper_ready(name: str) -> bool:
     returned an error result: success" (#1817). Fails CLOSED (False) on any
     ledger error — an unverifiable account is never assumed ready; callers fall
     back to :func:`pick_helper_config_dir`, which degrades safely on its own.
+
+    The ledger cannot see an organization-level denial (#1820): an account whose
+    org has turned Claude Code off is "enabled / ok" right up to the 403, so
+    :func:`is_helper_account_blocked` — what the calls themselves learned — is
+    consulted first.
     """
+    cfg_dir = _account_cfg_dir(name)
+    if cfg_dir is None or is_helper_account_blocked(cfg_dir):
+        return False
     try:
         from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as led:
@@ -124,13 +152,7 @@ def pick_helper_config_dir() -> str | None:
     returns None when no account is available so callers degrade safely.
     """
     name = _pick_enabled_account("anthropic")
-    if name is None:
-        return None
-    try:
-        from ccswitch import paths as _paths
-        return str(_paths.account_cfg_dir(name))
-    except Exception:
-        return None
+    return None if name is None else _account_cfg_dir(name)
 
 
 def pick_helper_openai_account() -> str | None:
@@ -158,9 +180,48 @@ _COOLDOWN_S = 60.0       # how long an open lane stays open before a half-open t
 # deliberately excluded — see module docstring.
 _TRANSIENT_KINDS = frozenset({"overloaded", "process_crash"})
 # Failure kinds that open the breaker on the FIRST occurrence, without waiting
-# for _FAIL_THRESHOLD: the account is throttled or de-authed, so every further
-# call is certain to fail until it recovers.
-_OPEN_IMMEDIATELY_KINDS = frozenset({"rate_limit", "auth_401"})
+# for _FAIL_THRESHOLD: the account is throttled, de-authed or org-denied, so
+# every further call is certain to fail until it recovers.
+_OPEN_IMMEDIATELY_KINDS = frozenset({"rate_limit", "auth_401", "auth_forbidden"})
+
+# How long an account that answered with a durable authorization denial (403
+# org block — see failure._FORBIDDEN_MARKERS) is kept out of helper duty. A
+# breaker lane is per (subsystem, account) and 60s wide, which is right for a
+# blip but wrong here twice over: the denial is account-WIDE (every other
+# subsystem would have to re-learn it by failing), and it is durable (only a
+# change on the account's side clears it, never a minute's wait). In-memory and
+# TTL'd rather than written to the ledger: a 403 we misread must expire on its
+# own, and a real one re-arms on the next call.
+_AUTH_BLOCK_S = 1800.0
+_auth_blocked: dict[str, float] = {}   # account config dir -> deadline (monotonic)
+
+
+def is_helper_account_blocked(config_dir: str,
+                              *, _now: Callable[[], float] = time.monotonic) -> bool:
+    """True while *config_dir*'s account is barred from helper duty (403 org denial)."""
+    key = config_dir or ""
+    until = _auth_blocked.get(key)
+    if until is None:
+        return False
+    if _now() >= until:
+        _auth_blocked.pop(key, None)
+        return False
+    return True
+
+
+def _note_auth_blocked(config_dir: str, detail: str | None, now: float) -> None:
+    """Bar *config_dir*'s account from helper duty and say why, once per block."""
+    key = config_dir or ""
+    if not key:
+        return  # no account to bar (a caller with no config dir picks nothing)
+    first = _auth_blocked.get(key, 0.0) <= now
+    _auth_blocked[key] = now + _AUTH_BLOCK_S
+    if first:
+        # %r so the volatile text lands inside quotes: the error-sink fingerprint
+        # normalizes a quoted run to <str>, which keeps one condition to one
+        # auto-error issue instead of one per distinct CLI sentence.
+        log.warning("helper account %s refused authorization — barred from helper "
+                    "calls for %.0fs: %r", key, _AUTH_BLOCK_S, detail or "")
 
 
 @dataclass
@@ -174,13 +235,22 @@ class HelperOutcome:
       transient kinds) but ultimately failed; ``failure_kind`` /
       ``api_error_status`` describe it and ``messages`` holds any partial stream
       (a caller may salvage from it, as title generation does).
-    - skipped: ``skipped is True`` — the breaker was open, so no call was made.
+    - skipped: ``skipped is True`` — no call was made; ``skip_reason`` says
+      whether the lane's breaker was open (``circuit-open``, a cooling-off after
+      failures) or the account itself is barred (``account-blocked``, a 403 org
+      denial). A caller that reports the skip to a human should not call the
+      second one transient.
+
+    ``error_text`` is the CLI's own description of a failure when it gave one
+    (see :func:`_error_detail`) — the exception alone is often opaque.
     """
     messages: list = field(default_factory=list)
     error: BaseException | None = None
     failure_kind: str | None = None
     api_error_status: int | None = None
+    error_text: str | None = None
     skipped: bool = False
+    skip_reason: str | None = None
 
 
 @dataclass
@@ -208,8 +278,9 @@ _breakers: dict[tuple[str, str], _BreakerState] = {}
 
 
 def reset_breakers() -> None:
-    """Clear all breaker state (tests only)."""
+    """Clear all breaker and authorization-block state (tests only)."""
     _breakers.clear()
+    _auth_blocked.clear()
 
 
 def _api_error_status(messages: list) -> int | None:
@@ -228,6 +299,48 @@ def _api_error_status(messages: list) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def _error_detail(messages: list) -> str | None:
+    """The CLI's own words for why a call failed, from the messages it yielded.
+
+    When the CLI reports ``is_error`` with an empty ``errors`` array the SDK
+    raises ``RuntimeError("Claude Code returned an error result: success")`` —
+    "success" is the result *subtype* leaking into the text, so the exception
+    describes nothing. What actually happened is in the stream the SDK already
+    yielded: a ResultMessage's ``errors``/``result``, and an API-error
+    AssistantMessage (``.error`` set, e.g. ``oauth_org_not_allowed``) whose text
+    block holds the human sentence. Both feed the classifier and the caller's
+    log; #1820 burned a week of daily ERROR records for want of them.
+
+    Only error-shaped text is collected. A normal assistant reply — a partial
+    answer before a crash — is NOT the CLI's error message, must never sway
+    :func:`failure.classify`, and must never be echoed as one. Duck-typed
+    throughout: this module imports no SDK types.
+    """
+    texts: list[str] = []
+
+    def _add(value: object) -> None:
+        if isinstance(value, str) and value.strip():
+            texts.append(value.strip())
+
+    for m in messages:
+        errors = getattr(m, "errors", None)
+        if isinstance(errors, list):
+            for e in errors:
+                _add(str(e))
+        if getattr(m, "is_error", False):
+            _add(getattr(m, "result", None))
+        err = getattr(m, "error", None)
+        if err:                       # an API-error assistant message
+            _add(str(err))
+            content = getattr(m, "content", None)
+            if isinstance(content, list):
+                for block in content:
+                    _add(getattr(block, "text", None))
+    if not texts:
+        return None
+    return " | ".join(dict.fromkeys(texts))[:500]
 
 
 async def run_helper_call(
@@ -252,9 +365,13 @@ async def run_helper_call(
     key = (subsystem, account_key or "")
     st = _breakers.setdefault(key, _BreakerState())
 
+    if is_helper_account_blocked(account_key, _now=_now):
+        log.debug("helper %s skipped: account authorization-blocked (account=%s)",
+                  subsystem, account_key)
+        return HelperOutcome(skipped=True, skip_reason="account-blocked")
     if not st.allow(_now()):
         log.debug("helper %s skipped: circuit open (account=%s)", subsystem, account_key)
-        return HelperOutcome(skipped=True)
+        return HelperOutcome(skipped=True, skip_reason="circuit-open")
 
     last_exc: BaseException | None = None
     last_kind: str | None = None
@@ -279,14 +396,21 @@ async def run_helper_call(
         except Exception as exc:  # noqa: BLE001 — best-effort; classify then decide
             status = _api_error_status(messages)
             code = f"api_{status}" if status is not None else None
-            kind = failure.classify(code, str(exc)).kind
+            detail = _error_detail(messages)
+            # Classify on the exception AND the CLI's own error text: on its own
+            # the exception is often "returned an error result: success", which
+            # carries neither the status nor the reason.
+            kind = failure.classify(code, " | ".join(filter(None, (str(exc), detail)))).kind
             last_exc, last_kind, last_status = exc, kind, status
             if kind in _TRANSIENT_KINDS and attempt < retries:
                 await _sleep(base_delay * (2 ** attempt))
                 continue
-            st.record_failure(kind, _now())
-            return HelperOutcome(messages=messages, error=exc,
-                                 failure_kind=kind, api_error_status=status)
+            now = _now()
+            st.record_failure(kind, now)
+            if kind == "auth_forbidden":
+                _note_auth_blocked(account_key, detail, now)
+            return HelperOutcome(messages=messages, error=exc, failure_kind=kind,
+                                 api_error_status=status, error_text=detail)
         else:
             st.record_success()
             return HelperOutcome(messages=messages)
