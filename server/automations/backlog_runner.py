@@ -1751,7 +1751,27 @@ class BacklogRunnerLoop:
                         return True  # successor has not started any external effect
             except StaleOwnership:
                 return False
-        if not sid or self._session_work_stopped is None:
+        if not sid:
+            return False
+        # A session whose DB row is terminal (archived/ended) or gone entirely is
+        # proof enough on its own, same evidence bar ``_release_legacy_claim``
+        # already trusts for a token-less row (`_session_gone`) — no native
+        # process can still be attached to a row this daemon itself archived.
+        # Cheaper than, and a backstop for, the managed-tree generation proof
+        # below: that proof can get stuck indefinitely (e.g. a retained
+        # execution the tree-wide aggregate never converges on), wedging a
+        # product's `max_in_flight` behind a session that has been archived for
+        # hours — the shape of #2202 (steiner385/viberpit#2202's own claim
+        # outlived its archived session 24564d1d because the generation math
+        # alone never settled it).
+        if self._session_gone is not None:
+            try:
+                if await self._session_gone(sid):
+                    return True
+            except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+                log.warning("backlog_runner.session_gone_probe_failed sid=%s", sid,
+                            exc_info=True)
+        if self._session_work_stopped is None:
             return False
         try:
             return bool(await self._session_work_stopped(sid))

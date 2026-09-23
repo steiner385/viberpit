@@ -323,6 +323,38 @@ async def test_monitor_ignores_predecessor_stop_proof_for_active_successor(runne
 
 
 @pytest.mark.asyncio
+async def test_work_stopped_trusts_an_archived_session_over_a_stuck_generation_proof(runner):
+    """#2202: a claim whose owning session the daemon itself archived is proof
+    enough on its own — the managed-tree generation proof (``_session_work_stopped``)
+    can get stuck indefinitely (steiner385/viberpit#2202's own claim outlived its
+    archived session 24564d1d this way) and must not be the only path that can
+    release the slot."""
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    loop._session_work_stopped = AsyncMock(return_value=False)
+    loop._session_gone = AsyncMock(return_value=True)
+    assert await loop._work_stopped(state)
+    loop._session_gone.assert_awaited_once_with(state["session_id"])
+    loop._session_work_stopped.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_work_stopped_falls_back_to_native_proof_when_session_not_gone(runner):
+    """A session that is still live (or unknown) gets no shortcut — the sweep
+    keeps relying on the real managed-tree proof, same as before this claim's
+    session ever becomes terminal."""
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    loop._session_work_stopped = AsyncMock(return_value=True)
+    loop._session_gone = AsyncMock(return_value=False)
+    assert await loop._work_stopped(state)
+    loop._session_gone.assert_awaited_once_with(state["session_id"])
+    loop._session_work_stopped.assert_awaited_once_with(state["session_id"])
+
+
+@pytest.mark.asyncio
 async def test_lost_closeout_response_recovers_only_all_verified_closed_targets(runner, monkeypatch):
     from server.sessions.orchestrator import SessionOrchestrator
     loop, ctx = runner
