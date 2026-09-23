@@ -1144,9 +1144,15 @@ class CodexRunnerManager:
             runner.generation = replacement.generation  # minted monotonically per account
             runner.started_at = replacement.started_at
             runner.settled = True
+            # INFO, not WARNING: `_handle_exit` already filed the fault that made
+            # this restart necessary, at the level `classify_runner_ending` gave
+            # it (#1857/#2129). This line only says the supervisor's own recovery
+            # succeeded — reporting it at WARNING minted a second error-sink
+            # fingerprint for the same incident on every restart, exactly the
+            # #1485/#1991 shape (#1858).
             log_event(
                 logger,
-                logging.WARNING,
+                logging.INFO,
                 "codex.manager.runner_restarted",
                 account=runner.account,
                 generation=runner.generation,
