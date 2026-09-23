@@ -11,6 +11,7 @@ links:
     - server/automations/capacity_governor.py
     - server/automations/capacity_store.py
     - server/api/capacity.py
+    - server/automations/product_admission.py
     - web/src/features/delivery/capacity/
 ---
 
@@ -132,6 +133,22 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   token) — a cap that moved under it (a plan re-tick, a pause to 0, a product falling out of the
   plan) can never turn an in-flight claim's next revalidation into a refusal. A brand-new claim is
   still refused by a 0 cap exactly as before.
+- **The pin reaches manual/API `create_session` too (#2229)** — Before this, only the Backlog
+  Runner's own dispatch (`_backlog_admission`) and continued automation work
+  (`_automation_before_execution`) ever read a product's pin; a human or the assistant starting a
+  session directly (`POST /api/sessions`, no `ownership_token`) was invisible to it in both
+  directions — never counted, never gated. `SessionOrchestrator.create_session` now runs a
+  lightweight sibling read, `product_admission.repo_capacity_status` (registration-only repo→product
+  lookup, no GitHub identity round-trip), and queues (`status: "queued"`, same lifecycle the global
+  cap already uses) rather than spawning once the repo's product is already at the runner's own
+  `in_flight_by_product` count. An unregistered/ambiguous repo is never gated — most repos are not
+  onboarded products. Skipped for `ownership_token`-bearing (automation) launches: their claim is
+  already counted, so re-checking here would self-refuse the very slot it just cleared in
+  `_backlog_admission`. `_maybe_start_queued` re-reads the same check before draining an entry
+  queued for this reason, so it does not jump ahead of a pin that is still full once the (unrelated)
+  global cap opens up. `POST /api/sessions`'s response carries `queuePosition` when `status` is
+  `"queued"` so a caller — including the assistant's `create_session` tool — can tell "queued" apart
+  from "started" instead of getting an indistinguishable success shape either way.
 
 **Evidence** — Spec: `docs/superpowers/specs/2026-09-19-capacity-governor-design.md`. Plan:
 `docs/superpowers/plans/2026-09-19-capacity-governor-phase1.md`.

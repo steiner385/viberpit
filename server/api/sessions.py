@@ -893,9 +893,25 @@ async def create_session(
         detail={"session_id": record.id, "account": record.account, "name": name},
     )
 
+    # #2229: a capacity-saturated request comes back with status="queued", not
+    # a misleading "it started" shape — the position tells the caller how far
+    # back it landed, same as list_sessions/get_session already surface.
+    queue_position: int | None = None
+    if record.status == "queued":
+        _positions_fn = getattr(orch, "session_queue_positions", None)
+        if _positions_fn is not None:
+            try:
+                _pos_res = _positions_fn()
+                if inspect.isawaitable(_pos_res):
+                    _pos_res = await _pos_res
+                queue_position = (_pos_res or {}).get(record.id)
+            except Exception:
+                log.warning("create_session: session_queue_positions fetch failed", exc_info=True)
+
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content=_record_to_dict(record, repo=await _resolve_repo(record)),
+        content=_record_to_dict(record, repo=await _resolve_repo(record),
+                                queue_position=queue_position),
     )
 
 
