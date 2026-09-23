@@ -533,6 +533,21 @@ def _install_real_worktree_guard():
         if getattr(_m, "remove_worktree", None) is _orig_remove:
             _m.remove_worktree = _guarded_remove_worktree
 
+    # Same shape for the no-repo scratch-dir teardown path (#2123 — same hazard
+    # as #1014 above, one seam down: SessionOrchestrator._cleanup_session_paths
+    # rmtree's record.cwd whenever it resolves under scratch_base(repo_root),
+    # and that root inherits the exact same repo_root fallback hole.
+    _orig_remove_scratch = worktrees.remove_scratch_dir
+
+    @functools.wraps(_orig_remove_scratch)
+    def _guarded_remove_scratch_dir(scratch_path, *args, **kwargs):
+        if not _is_disposable_path(scratch_path):
+            raise _record_real_worktree_access("remove_scratch_dir", scratch_path)
+        return _orig_remove_scratch(scratch_path, *args, **kwargs)
+
+    _guarded_remove_scratch_dir._is_real_worktree_guard = True
+    worktrees.remove_scratch_dir = _guarded_remove_scratch_dir
+
 
 _install_real_worktree_guard()
 

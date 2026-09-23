@@ -280,6 +280,32 @@ def is_managed_path(path: str, repo_root: str) -> bool:
         return False
 
 
+def scratch_base(repo_root: str) -> Path:
+    """ViberPit-owned root for per-session scratch dirs (no-repo sessions).
+
+    Sibling of ``worktrees_base``, under the same ViberPit-owned parent.
+    Single source of truth for the path both create_session (scratch dir
+    creation) and session teardown (scratch dir removal) must agree on.
+    """
+    return worktrees_base(repo_root).parent / "scratch"
+
+
+def remove_scratch_dir(scratch_path: str) -> bool:
+    """Remove a ViberPit-managed scratch directory. Returns True if removed.
+
+    Unlike ``remove_worktree`` there is no dirty check — a scratch dir is a
+    plain directory, not a git worktree, so there is no uncommitted work to
+    protect. The caller is responsible for confirming *scratch_path* actually
+    falls under ``scratch_base(repo_root)`` before calling this: it performs
+    the delete, it does not scope it.
+    """
+    p = Path(scratch_path)
+    if not p.is_dir():
+        return False
+    shutil.rmtree(str(p))
+    return True
+
+
 def _short(session_id: str) -> str:
     # First UUID segment is plenty to disambiguate concurrent sessions.
     return session_id.split("-")[0] or session_id
