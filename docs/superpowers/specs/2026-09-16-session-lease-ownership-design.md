@@ -57,7 +57,10 @@ renewed the session lease, and every attach the edge routed to rocky was refused
   lease refusal into a warning-and-proceed. `SPAWN_WAIT_S` (default 60 s) is the existing
   ceiling on how long an attach waits for an in-flight build.
 - `primary_lease.release` marks `renewed_at = 1970-01-01`; `acquire` wins on own holder or a
-  lapsed heartbeat and bumps the fence. The module logs every lease name as `primary-lease:`.
+  lapsed heartbeat and bumps the fence. The module logs every lease name under the
+  `primary-lease:` prefix, so each line carries `name=<lease>` to say which one it acted on
+  (#2106 — without it a per-session lease on a worker read as `primary-lease: acquired by
+  'rocky'`, i.e. a worker illegally taking the primary lease).
 
 ## Decisions
 
