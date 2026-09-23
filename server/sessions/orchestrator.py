@@ -15247,6 +15247,14 @@ class SessionOrchestrator:
     def poller(self) -> UsagePoller:
         return self._poller
 
+    async def usage(self, name: str):
+        """Mirrors ``InProcessOrchestratorAdapter.usage`` (facade.py) so callers that
+        hand a bare ``SessionOrchestrator`` to ``account_headroom`` (e.g.
+        ``capacity_wiring.sources_for``, which also needs private attributes the
+        facade does not expose) get the same async, unmarked-callee contract
+        ``call_with_deadline`` expects (#2033)."""
+        return await self._poller.get(name)
+
     def has_live_session(self, account: str) -> bool:
         """Return True if a live AgentDriver anywhere IN THE FLEET is running on *account*.
 
