@@ -19,6 +19,7 @@ control requests against the dead reader, and holds later prompts instead of wri
 them to a process it can no longer hear.
 """
 import asyncio
+import logging
 
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.events import ErrorEvent, TurnFailure
@@ -27,6 +28,7 @@ from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
 
 _DIE = object()   # script marker: the reader dies HERE (the SDK raises its error frame)
+_DRIVER_LOGGER = "server.sessions.claude_driver"
 
 
 class _ReaderDiesClient(FakeSDKClient):
@@ -154,6 +156,44 @@ def test_stream_end_while_idle_signals_stream_lost_once():
         await asyncio.sleep(0.02)
         assert failures == [("s-dead", "stream_lost", None)]
     asyncio.run(run())
+
+
+def test_idle_stream_death_is_reported_once(caplog):
+    """One stream death, one log record — the ``_on_stream_ended`` one.
+
+    Before #1895 an idle EOF could only be complained about, so ``_idle_listen`` logged
+    "SDK stream ended while idle" and returned into the black hole. #1895 gave the
+    condition a real handler — ``_on_stream_ended``, which logs the same end at ERROR
+    with ``mid_turn`` and the recompose it is about to do — but left the old warning
+    behind, so one incident was reported twice. The error-triage pipeline fingerprints
+    the normalized message, so the pair files a duplicate auto-error issue for a single
+    stream death; #1943 is the WARNING half, on a fingerprint whose last occurrence
+    (2026-09-17 13:18 UTC) predates its own fix (#1895, merged 13:36 UTC).
+
+    The mid-turn sibling in ``_drain`` already had this right: it logs nothing of its
+    own and lets ``_on_stream_ended`` own the record. Pinned here so a future second
+    line fails instead of quietly re-filing.
+    """
+    client = FakeSDKClient([])
+    failures: list = []
+
+    async def run():
+        d = _build(client, failures)
+        await d.start()
+        await asyncio.sleep(0.01)
+        client.end_stream()
+        await _wait_until(lambda: failures)
+        await d.aclose()
+
+    with caplog.at_level(logging.DEBUG, logger=_DRIVER_LOGGER):
+        asyncio.run(run())
+
+    deaths = [r for r in caplog.records
+              if r.name == _DRIVER_LOGGER and "stream ended" in r.getMessage().lower()]
+    assert len(deaths) == 1, [r.getMessage() for r in deaths]
+    assert deaths[0].levelname == "ERROR"
+    assert deaths[0].getMessage().startswith("driver.stream_ended:")
+    assert "mid_turn=False" in deaths[0].getMessage()   # i.e. "while idle"
 
 
 def test_clean_close_never_signals_recovery():
