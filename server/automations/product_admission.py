@@ -79,6 +79,46 @@ async def gather_product_coverage(
     return ProductCoverage(ownership, policies, datetime.now(timezone.utc).isoformat())
 
 
+async def repo_capacity_status(
+    repo: str, *, context: AutomationContext, plan: dict | None = _PLAN_UNSET,
+) -> tuple[str | None, int | None, int | None]:
+    """``(product slug, in-flight count, cap)`` for *repo*'s product, capacity-plan
+    overlaid — the read a non-automation ``create_session`` caller (the API, the
+    assistant) uses to decide spawn vs. queue (#2229).
+
+    Registration-only ownership (no GitHub identity network call, unlike
+    ``gather_product_coverage``): *repo* is already the caller's own validated
+    ``owner/name``, so a live verification round-trip on every session create
+    would trade latency/reliability for nothing this lookup needs. A repo with
+    no unique, registered product owner returns ``(None, None, None)`` — there
+    is no product cap to apply, never a refusal.
+
+    The count is the SAME ledger ``in_flight_by_product`` reads (the Backlog
+    Runner's own durable claims) — this cap is defined as the product's
+    concurrent RUNNER sessions (``product_policy.max_in_flight``'s own words),
+    so it only holds back a fresh manual/API request once the runner has
+    already saturated its own pin for that product; an idle or dispatch-off
+    product (zero claims) is never gated. A states read failure answers
+    "not full" (best-effort, matches every other capacity read's posture here)."""
+    async with db_session() as db:
+        ownership = (await resolve_repo_ownership(db, [repo])).get(repo)
+    if ownership is None or ownership.state != "unique" or ownership.owner is None:
+        return None, None, None
+    slug = ownership.owner.slug
+    if plan is _PLAN_UNSET:
+        plan = await live_plan()
+    async with db_session() as db:
+        raw = await db.scalar(select(Project.automation_policy).where(Project.slug == slug))
+    overlaid = apply_product_plan({slug: raw}, plan)[slug]
+    cap = effective_policy(overlaid)["max_in_flight"]
+    try:
+        from .backlog_runner import in_flight_by_product
+        states = await context.list_target_states()
+    except Exception:
+        return slug, None, cap
+    return slug, in_flight_by_product(states).get(slug, 0), cap
+
+
 async def read_dispatch_accounting(
     *, now: datetime | None = None, automation_id: str = "backlog-runner",
 ) -> dict[str, datetime]:

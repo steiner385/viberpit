@@ -933,12 +933,15 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     # (server/sessions/session_actions.py), never here.
 
     @spec_tool("create_session",
-               "Start a NEW coding session on a repo with an initial prompt, and return its id "
-               "and the URL to open it. Use only when the user wants new work started; to add "
-               "to work already running use send_prompt instead. preset and permission_profile "
-               "ids can be discovered via list_presets / list_permission_profiles. Note: "
-               "permission_profile's patterns are recorded on the session but not yet "
-               "enforced — no tool restriction happens today.",
+               "Start a NEW coding session on a repo with an initial prompt, and return its id, "
+               "the URL to open it, and status: 'queued' means capacity (fleet-wide or the "
+               "target product's own cap) was full and the session is durably waiting its turn "
+               "— NOT running yet — any other status means it started immediately. Use only "
+               "when the user wants new work started; to add to work already running use "
+               "send_prompt instead. preset and permission_profile ids can be discovered via "
+               "list_presets / list_permission_profiles. Note: permission_profile's patterns "
+               "are recorded on the session but not yet enforced — no tool restriction happens "
+               "today.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
                        account=str, branch=str, preset=str, permission_profile=str))
     @guarded
@@ -948,7 +951,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             "model": args.get("model"), "permissionMode": args.get("permission_mode"),
             "account": args.get("account"), "branch": args.get("branch"),
             "presetId": args.get("preset"), "permissionProfileId": args.get("permission_profile")})
-        return {"id": rec["id"], "url": f"/sessions/{rec['id']}"}
+        result: dict[str, Any] = {
+            "id": rec["id"], "url": f"/sessions/{rec['id']}", "status": rec.get("status")}
+        if rec.get("status") == "queued" and rec.get("queuePosition") is not None:
+            result["queuePosition"] = rec["queuePosition"]
+        return result
 
     @spec_tool("send_prompt",
                "Send a message to a live session. It is queued behind the turn in flight "

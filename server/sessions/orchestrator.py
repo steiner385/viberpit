@@ -3116,12 +3116,28 @@ class SessionOrchestrator:
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
 
+            # Product capacity cap (#2229): a repo whose product already holds the
+            # Backlog Runner's own concurrent-session pin gets queued rather than
+            # spawned, same as the global cap below. Only for a FRESH request
+            # (ownership_token is None) — an automation dispatch already cleared
+            # this exact cap in _backlog_admission before it ever reserved a
+            # session, and its own claim is what the live count would be
+            # counting: re-checking here would self-refuse the last open slot.
+            # The assistant is exempt for the same reason the global cap is.
+            queue_reason: str | None = None
+            if not is_assistant_kind(kind) and ownership_token is None and repo is not None:
+                from server.automations.product_admission import repo_capacity_status
+                _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
+                if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
+                    queue_reason = "product_capacity"
+
             # Global active-session cap: at/over the cap the session is created as a
             # queued row (real session, no worktree/account/driver yet) and started
             # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
             # to EVERY origin — automations included (their claims simply wait).
             # Exception: the assistant (see the docstring) neither counts nor queues.
-            if (not is_assistant_kind(kind)
+            if queue_reason is not None or (
+                    not is_assistant_kind(kind)
                     and self._active_session_count() >= await self._max_active_sessions()):
                 return await self._enqueue_session(
                     session_id, name=name, account=account,
@@ -3133,7 +3149,8 @@ class SessionOrchestrator:
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
-                    auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                    queue_reason=queue_reason or "global_cap")
             return await self._spawn_session(
                 session_id, name=name, account=account, initial_prompt=initial_prompt,
                 cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -3271,6 +3288,7 @@ class SessionOrchestrator:
                                engine=AgentEngine.CLAUDE_CODE,
                                autopilot_paused: bool = False,
                                auto_archive_opt_out_reason: str | None = None,
+                               queue_reason: str = "global_cap",
                                ) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
@@ -3343,6 +3361,14 @@ class SessionOrchestrator:
             params["auto_archive_opt_out_reason"] = auto_archive_opt_out_reason
         if parent_session_id is not None:
             params["parent_session_id"] = parent_session_id
+        # Not a _spawn_session kwarg — _maybe_start_queued pops it before splatting
+        # params into that call. Only written for the non-default reason so a
+        # "global_cap" entry (the overwhelming majority) leaves the wire format
+        # byte-identical to before this key existed (same mixed-version posture
+        # as kind/owner_identity above); a "product_capacity" entry on an older
+        # daemon degrades to the documented TypeError -> 'ended' path.
+        if queue_reason != "global_cap":
+            params["queue_reason"] = queue_reason
         priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", engine=selected_engine,
@@ -3781,15 +3807,20 @@ class SessionOrchestrator:
         # 2026-09-04: a worker with a free slot deleted every entry the primary had
         # enqueued, leaving 'queued' rows nothing could move, cancel or start).
         foreign: set[str] = set()
+        # Entries the product-capacity gate (#2229) queued: skipped for the rest of
+        # this drain (like `foreign`) whenever their product is STILL at its cap —
+        # never removed, so the next drain (or a cap_changed refresh) re-tries them.
+        capacity_full: set[str] = set()
         enabled_hosts = await self._enabled_host_names()
         async with self._queue_drain_lock:
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():
                     break
-                entry = await sq.next_entry(exclude=foreign)
+                entry = await sq.next_entry(exclude=foreign | capacity_full)
                 if entry is None:
                     break
                 sid, params = entry.session_id, dict(entry.params)
+                queue_reason = params.pop("queue_reason", "global_cap")
                 # The queue entry is deliberately NOT removed yet — it is the ONLY
                 # place the spawn params (cols/rows/identity/attachment_ids) are
                 # persisted, so deleting it before the spawn commits meant a daemon
@@ -3829,6 +3860,15 @@ class SessionOrchestrator:
                     log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
                               sid, row.host)
                     continue
+                if queue_reason == "product_capacity" and params.get("repo"):
+                    from server.automations.product_admission import repo_capacity_status
+                    _slug, _count, _cap = await repo_capacity_status(
+                        params["repo"], context=self._backlog_ctx)
+                    if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
+                        capacity_full.add(sid)
+                        log.debug("session_queue.product_capacity_full id=%s product=%s "
+                                  "%d/%d — left queued", sid, _slug, _count, _cap)
+                        continue
                 self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:
                 # the spawn overwrites it with its pre-seeded active record (and

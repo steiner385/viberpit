@@ -252,3 +252,56 @@ def test_handed_off_claim_is_never_refused_by_its_own_pipeline_slot():
     new_claim, _ = snapshot.decide("org/repo")
     new_codes = {c.code: c.state for c in new_claim.constraints}
     assert new_codes["product_pipeline_full"] == "refused"
+
+
+# -- repo_capacity_status (#2229) ---------------------------------------------
+# The non-automation create_session read: a lighter, registration-only sibling
+# of gather_product_coverage (no GitHub identity network call).
+
+async def _seed_registered_repo(repo: str, *, slug: str = "acme") -> None:
+    from server.db import db_session
+    from server.db.models import Automation, Project, ProjectRepo
+
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(Project(id="proj-1", slug=slug))
+        db.add(ProjectRepo(project_id="proj-1", repo=repo))
+
+
+@pytest.mark.asyncio
+async def test_repo_capacity_status_unregistered_repo_has_no_cap(isolated_db):
+    context = AsyncMock()
+    result = await admission.repo_capacity_status("org/unregistered", context=context)
+    assert result == (None, None, None)
+    context.list_target_states.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repo_capacity_status_counts_the_runners_own_claims(isolated_db):
+    await _seed_registered_repo("acme/widgets")
+    context = AsyncMock()
+    context.list_target_states.return_value = {
+        "acme/widgets#1": {"product": "acme", "claimed": True}}
+    slug, count, cap = await admission.repo_capacity_status("acme/widgets", context=context)
+    assert (slug, count, cap) == ("acme", 1, 1)  # default pin is 1
+
+
+@pytest.mark.asyncio
+async def test_repo_capacity_status_reports_headroom_with_no_claims(isolated_db):
+    await _seed_registered_repo("acme/widgets")
+    context = AsyncMock()
+    context.list_target_states.return_value = {}
+    slug, count, cap = await admission.repo_capacity_status("acme/widgets", context=context)
+    assert (slug, count, cap) == ("acme", 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_repo_capacity_status_states_failure_answers_unknown_count(isolated_db):
+    """Best-effort like every other capacity read here: a states-read failure
+    must not manufacture a false "full" (or a false "not full" a caller could
+    misread as verified headroom) — the count comes back None."""
+    await _seed_registered_repo("acme/widgets")
+    context = AsyncMock()
+    context.list_target_states.side_effect = RuntimeError("db unavailable")
+    slug, count, cap = await admission.repo_capacity_status("acme/widgets", context=context)
+    assert slug == "acme" and count is None and cap == 1

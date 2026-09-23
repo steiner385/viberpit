@@ -397,11 +397,27 @@ async def test_mutation_tool_hits_exactly_one_endpoint(name, args, method, path,
 @pytest.mark.asyncio
 async def test_create_session_returns_id_and_url():
     def handler(req):
-        return httpx.Response(201, json={"id": "sess-9", "name": "x", "cwd": "/secret"})
+        return httpx.Response(
+            201, json={"id": "sess-9", "name": "x", "cwd": "/secret", "status": "idle"})
 
     out = await _tool(build_tools(_api(handler)), "create_session").handler({"prompt": "go"})
     data = json.loads(out["content"][0]["text"])["data"]
-    assert data == {"id": "sess-9", "url": "/sessions/sess-9"}
+    assert data == {"id": "sess-9", "url": "/sessions/sess-9", "status": "idle"}
+
+
+@pytest.mark.asyncio
+async def test_create_session_surfaces_queued_status_and_position():
+    """#2229: a capacity-saturated request comes back queued, not indistinguishable
+    from a started one — the assistant must be able to tell the difference."""
+    def handler(req):
+        return httpx.Response(201, json={
+            "id": "sess-10", "name": "x", "cwd": "/secret",
+            "status": "queued", "queuePosition": 3})
+
+    out = await _tool(build_tools(_api(handler)), "create_session").handler({"prompt": "go"})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == {"id": "sess-10", "url": "/sessions/sess-10",
+                    "status": "queued", "queuePosition": 3}
 
 
 @pytest.mark.asyncio
