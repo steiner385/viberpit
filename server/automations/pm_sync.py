@@ -30,6 +30,7 @@ from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
 from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
 from server.pm.mirror_store import ProductSyncView
+from server.sdlc.constitution_gate import classify_document
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
@@ -132,6 +133,14 @@ ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
 # (issue #2166) onto the project row. None ⇒ no-op — every pre-existing
 # PmSyncLoop caller keeps today's behaviour (feed event + log only).
 SaveUnindexedDocs = Callable[[str, list[tuple[str, str]]], Awaitable[None]]
+# Read `.specify/memory/constitution.md` off the primary repo's default branch
+# (issue #2165). None ⇒ text could not be read (missing file or clone/read
+# failure — the caller distinguishes the two, see _governance_check).
+ReadConstitution = Callable[..., Awaitable[str | None]]
+# Persist this pass's classify_document() status onto the project row. None ⇒
+# no governance pass — every pre-existing PmSyncLoop caller keeps today's
+# behaviour (no constitution check at all).
+SaveConstitutionStatus = Callable[[str, str | None], Awaitable[None]]
 # The product's open map-changes pointer, if any (R8b-4/5). None ⇒ no branch
 # read — every pre-existing PmSyncLoop caller keeps today's default-branch-only
 # behaviour.
@@ -178,6 +187,8 @@ class PmSyncLoop:
         apply_feature_plan: ApplyFeaturePlan,
         now_utc: NowUtc,
         save_unindexed_docs: SaveUnindexedDocs | None = None,
+        read_constitution: ReadConstitution | None = None,
+        save_constitution_status: SaveConstitutionStatus | None = None,
         read_map_changes: ReadMapChanges | None = None,
         refresh_map_changes: RefreshMapChanges | None = None,
         list_products: ListProducts | None = None,
@@ -200,6 +211,10 @@ class PmSyncLoop:
         self._apply_feature_plan = apply_feature_plan
         self._now_utc = now_utc
         self._save_unindexed_docs = save_unindexed_docs
+        # None ⇒ no governance status pass (issue #2165) — pm_sync predates this
+        # check and every test that doesn't care about it should keep working.
+        self._read_constitution = read_constitution
+        self._save_constitution_status = save_constitution_status
         # None ⇒ the feature index only ever reads the default branch (R8b-4).
         self._read_map_changes = read_map_changes
         # None ⇒ no PR-lifecycle pass over the open pointer (R8b-6).
@@ -538,6 +553,7 @@ class PmSyncLoop:
                     backfill_phase="prs", watermark=max_seen or now,
                     last_synced_at=now, sync_requested_at=None)
                 await self._feature_index(view)
+                await self._governance_check(view)
                 await self._ctx.emit("info", f"backfill complete for {view.repo}",
                                      kind="backfill_done", target=view.repo)
                 return True
@@ -584,6 +600,7 @@ class PmSyncLoop:
         # branch abandon has just deleted) for one whole tick.
         await self._map_changes_lifecycle(view)
         await self._feature_index(view)
+        await self._governance_check(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
             sync_requested_at=None)
@@ -734,6 +751,25 @@ class PmSyncLoop:
         plan = plan_feature_index(
             rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)
         await self._apply_feature_plan(view.project_id, plan)
+
+    async def _governance_check(self, view: RepoSyncView) -> None:
+        """Best-effort per-primary-repo constitution status (issue #2165): read
+        `.specify/memory/constitution.md` off the default branch and store its
+        classified status onto the project row so `roadmap_health` can surface a
+        Needs-you item without re-reading the repo. A read failure must never
+        stall the work-item mirror — it just skips this pass, leaving whatever
+        status the last successful pass recorded in place."""
+        if (not view.is_primary or self._read_constitution is None
+                or self._save_constitution_status is None):
+            return
+        try:
+            text = await self._read_constitution(view.repo)
+        except Exception:
+            self._observation_degraded = True
+            log.warning("pm_sync.constitution_read_failed repo=%s",
+                        view.repo, exc_info=True)
+            return
+        await self._save_constitution_status(view.project_id, classify_document(text))
 
     def _stash(self, synced: int, backfilling: int, errors: int,
                gh_projects: int = 0) -> None:

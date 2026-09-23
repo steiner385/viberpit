@@ -973,6 +973,58 @@ async def test_read_feature_docs_raises_on_partial_read(db_env, monkeypatch):
             await orch._pm_sync_read_feature_docs("o/r")
 
 
+def _make_repo_with_constitution(root: str, text: str | None) -> str:
+    """A real git repo, optionally with `.specify/memory/constitution.md` committed,
+    plus `refs/remotes/origin/master` (what `_pm_sync_read_constitution` resolves)."""
+    import os
+    import subprocess
+    clone = os.path.join(root, "clone")
+    os.makedirs(clone)
+    subprocess.run(["git", "init", "-q", clone], check=True, capture_output=True, text=True)
+    _git("config", "user.email", "t@t", cwd=clone)
+    _git("config", "user.name", "t", cwd=clone)
+    if text is not None:
+        os.makedirs(os.path.join(clone, ".specify", "memory"))
+        with open(os.path.join(clone, ".specify", "memory", "constitution.md"), "w") as fh:
+            fh.write(text)
+    else:
+        # An empty repo has no commit at all otherwise — need SOME commit for HEAD
+        # to resolve, so the "missing file" case is a real commit without the file.
+        with open(os.path.join(clone, "README.md"), "w") as fh:
+            fh.write("no constitution here\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "-m", "init", cwd=clone)
+    head = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    _git("update-ref", "refs/remotes/origin/master", head, cwd=clone)
+    return clone
+
+
+@pytest.mark.asyncio
+async def test_read_constitution_returns_text_when_present(db_env):
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_repo_with_constitution(root, "# Real Constitution\n\nbody\n")
+        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+            text = await orch._pm_sync_read_constitution("o/r")
+    assert text == "# Real Constitution\n\nbody\n"
+
+
+@pytest.mark.asyncio
+async def test_read_constitution_returns_none_when_file_absent(db_env):
+    """A repo with no constitution at all is the expected common case (issue
+    #2165), never an error — unlike the feature-doc reader's atomic-or-raise
+    contract, a single missing file here must not raise."""
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_repo_with_constitution(root, None)
+        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+            text = await orch._pm_sync_read_constitution("o/r")
+    assert text is None
+
+
 @pytest.mark.asyncio
 async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
     orch = _bare_orch()

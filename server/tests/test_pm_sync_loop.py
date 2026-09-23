@@ -52,7 +52,8 @@ def _named(page, name):
 
 
 def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
-          read_feature_docs=None, read_map_changes=None, refresh_map_changes=None):
+          read_feature_docs=None, read_map_changes=None, refresh_map_changes=None,
+          read_constitution=None):
     """Wire a loop over canned data. `pages` is a list popped per fetch call.
 
     ``read_feature_docs``/``read_map_changes`` let a test fully replace the
@@ -64,6 +65,7 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     upserted = []
     applied = []
     unindexed_saved = []
+    constitution_saved = []
 
     async def read_config():
         return "on", dict(config or {})
@@ -92,6 +94,9 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def save_unindexed(project_id, pairs):
         unindexed_saved.append((project_id, pairs))
 
+    async def save_constitution(project_id, status):
+        constitution_saved.append((project_id, status))
+
     loop = PmSyncLoop(
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
         upsert_items=upsert, save_sync_state=save,
@@ -100,10 +105,12 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
         now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
         save_unindexed_docs=save_unindexed,
         rename_repo=rename_repo, read_map_changes=read_map_changes,
-        refresh_map_changes=refresh_map_changes)
+        refresh_map_changes=refresh_map_changes,
+        read_constitution=read_constitution, save_constitution_status=save_constitution)
     # Not part of the 4-tuple every existing caller unpacks — tests that care
     # about the persisted unindexed-docs list read it off the loop instance.
     loop.unindexed_saved = unindexed_saved
+    loop.constitution_saved = constitution_saved
     return loop, saved, upserted, applied
 
 
@@ -519,6 +526,66 @@ async def test_a_fixed_doc_clears_the_persisted_unindexed_list():
     docs[0] = ("docs/product/features/bad.md", _fdoc("bad", "Bad"))
     await loop.tick()
     assert loop.unindexed_saved[-1][1] == []
+
+
+@pytest.mark.asyncio
+async def test_incremental_classifies_and_saves_constitution_status():
+    ctx = Ctx()
+    view = _view()
+
+    async def read_constitution(repo, ref=None):
+        return "# Real Constitution\n\n**Version**: 1.0.0 | **Ratified**: 2026-01-01 | **Last Amended**: 2026-01-01"
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        read_constitution=read_constitution)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+    assert loop.constitution_saved == [("p1", None)]  # ratified ⇒ None
+
+
+@pytest.mark.asyncio
+async def test_incremental_classifies_a_missing_constitution():
+    ctx = Ctx()
+    view = _view()
+
+    async def read_constitution(repo, ref=None):
+        return None
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        read_constitution=read_constitution)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+    assert loop.constitution_saved == [("p1", "missing")]
+
+
+@pytest.mark.asyncio
+async def test_governance_check_skipped_for_non_primary_repo():
+    ctx = Ctx()
+    view = _view(is_primary=False)
+
+    async def read_constitution(repo, ref=None):
+        raise AssertionError("must not be called for a non-primary repo")
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        read_constitution=read_constitution)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+    assert loop.constitution_saved == []
+
+
+@pytest.mark.asyncio
+async def test_governance_check_is_best_effort_on_read_failure():
+    ctx = Ctx()
+    view = _view()
+
+    async def read_constitution(repo, ref=None):
+        raise RuntimeError("clone failed")
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        read_constitution=read_constitution)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+    assert loop.constitution_saved == []  # never saved, but the pass must not raise
 
 
 @pytest.mark.asyncio
