@@ -186,3 +186,63 @@ def test_primary_start_runs_every_fleet_global_loop(tmp_path, monkeypatch):
         assert not missing, f"primary did not start: {sorted(missing)}"
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# A failed renew is not automatically a two-host split-brain (#2146, mirrors
+# the #1844 fix for the per-session lease)
+# ---------------------------------------------------------------------------
+
+
+def test_a_same_host_takeover_is_not_reported_as_two_primaries(tmp_path, monkeypatch, caplog):
+    """All production occurrences of the old message named the REPORTING host as
+    the thief ("fenced takeover by 'dobby'" logged on dobby), which is by
+    construction not two primaries — it is another incarnation of this daemon
+    (e.g. an overlapping restart). Say that instead of raising the fleet-wide
+    alarm that trains an operator to "fix" a CCSWITCH_DAEMON_ROLE that was never
+    wrong."""
+    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        orch = _new_orch()
+        await orch.start()
+        stale_fence = orch._lease_fence
+        # Another process on THIS host re-acquires (an overlapping restart).
+        assert await primary_lease.acquire("dobby", ttl_s=300) == stale_fence + 1
+
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._primary_lease_beat()
+        await orch.stop()
+
+        assert not [r for r in caplog.records if r.levelname == "CRITICAL"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("primary-lease" in m and "'dobby'" in m for m in warnings), warnings
+        assert not any("TWO primary" in m for m in warnings), warnings
+
+    asyncio.run(run())
+
+
+def test_a_real_foreign_takeover_still_screams(tmp_path, monkeypatch, caplog):
+    """The alarm #852 exists for. Narrowing it must not silence it: a DIFFERENT
+    host holding the lease is still CRITICAL, unchanged."""
+    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        orch = _new_orch()
+        await orch.start()
+        await _age_lease(600)
+        assert await primary_lease.acquire("rocky", ttl_s=300) is not None
+
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._primary_lease_beat()
+        await orch.stop()
+
+        screams = [r.getMessage() for r in caplog.records if r.levelname == "CRITICAL"]
+        assert len(screams) == 1, screams
+        assert "'rocky'" in screams[0] and "TWO primary" in screams[0]
+
+    asyncio.run(run())
