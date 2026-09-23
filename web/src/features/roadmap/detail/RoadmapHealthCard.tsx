@@ -22,14 +22,22 @@ function SlugLinks({ slugs, path }: { slugs: string[]; path: (slug: string) => s
   )
 }
 
+// pm_sync's classified constitution status for the product's primary repo
+// (issue #2165) — see server/sdlc/constitution_status.classify_document.
+const GOVERNANCE_MESSAGE: Record<string, string> = {
+  missing: 'no ratified constitution — spec sessions have nothing to check governance against',
+  template: 'the constitution is still the unfilled template — spec sessions have nothing real to check against',
+  no_version_footer: "the constitution's Version / Ratified / Last Amended footer doesn't parse, so it can't be confirmed ratified",
+}
+
 export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
   const { data: health } = useProjectHealth(productSlug)
   if (!health) return null
 
-  const { unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs } = health
+  const { unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs, governance } = health
   const nothingToSay =
     unparentedCapabilities.length === 0 && unlinkedInitiatives.length === 0 &&
-    staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0
+    staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0 && !governance
   if (nothingToSay) return null
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
@@ -40,6 +48,9 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
   return (
     <Banner tone="warning" title="Roadmap hygiene">
       <ul className="flex flex-col gap-0.5">
+        {governance && (
+          <li>{GOVERNANCE_MESSAGE[governance] ?? `governance issue: ${governance}`}</li>
+        )}
         {unparentedCapabilities.length > 0 && (
           <li>
             {unparentedCapabilities.length} {unparentedCapabilities.length === 1 ? 'capability' : 'capabilities'} outside the tree: {' '}

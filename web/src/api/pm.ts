@@ -371,6 +371,7 @@ export interface ProjectHealth {
   staleProposed: string[]
   staleInbox: number
   unindexedDocs: UnindexedDoc[]
+  governance: string | null
   generatedAt: string
 }
 

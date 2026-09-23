@@ -19,10 +19,12 @@ session (2σ) or the intake trigger text that becomes ``intent.md`` (3σ).
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from ccswitch.engines import AgentEngine
 
+from server.sdlc.constitution_status import classify_document
 from server.sessions.completion import commit_trailer
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps this module import-light
@@ -34,6 +36,38 @@ from server.sdlc.paths import SDLC_DOCS_DIR, artifact_path  # noqa: F401
 
 # Internal alias kept for the builders below; ``artifact_path`` is the public name.
 _artifact_path = artifact_path
+
+_PRINCIPLE_HEADING_RE = re.compile(r"^###\s+(.+)$", re.MULTILINE)
+
+
+def _constitution_block(constitution: str | None, constitution_path: str) -> str:
+    """The org-skills fallback bullet for ``build_spec_prompt`` (issue #2165):
+    names the real constitution path and its actual principle headings when one
+    is ratified, or an explicit governance-gap instruction — flagged the same
+    way the surrounding prompt already asks policy concerns to be flagged —
+    when it is absent, still the unfilled spec-kit template, or its footer
+    doesn't parse. Never blindly says "apply the repository constitution"
+    without knowing whether that instruction means anything."""
+    if constitution is None:
+        return (f"- (no org skills supplied — no constitution could be read at "
+                f"`{constitution_path}`; flag the absence of governance as a spec constraint)")
+    status = classify_document(constitution)
+    if status == "missing":
+        return (f"- (no org skills supplied — `{constitution_path}` does not exist in this "
+                "repo; there is no ratified constitution to apply. Flag the absence of "
+                "governance as a spec constraint.)")
+    if status == "template":
+        return (f"- (no org skills supplied — `{constitution_path}` is still the unfilled "
+                "spec-kit template, not a ratified constitution. Do not treat its placeholder "
+                "text as binding; flag the missing constitution as a spec constraint.)")
+    if status == "no_version_footer":
+        return (f"- (no org skills supplied — `{constitution_path}` exists but its Version / "
+                "Ratified / Last Amended footer does not parse, so it cannot be confirmed "
+                "ratified. Flag this as a spec constraint.)")
+    headings = _PRINCIPLE_HEADING_RE.findall(constitution)
+    heading_list = "\n".join(f"  - {h.strip()}" for h in headings) or "  - (no principle headings found)"
+    return (f"- apply the repository constitution at `{constitution_path}`, principles:\n"
+            f"{heading_list}")
 
 
 def _common_instructions(slug: str, kind: str, repo: str, default_branch: str,
@@ -93,16 +127,22 @@ def build_spec_prompt(
     repo: str = "",
     default_branch: str = "master",
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+    constitution: str | None = None,
+    constitution_path: str = ".specify/memory/constitution.md",
 ) -> str:
     """Seed prompt for the Synthesizer (Design): ``intent.md`` → ``spec.md``.
 
     The org ``skills`` are injected as binding constraints, and the session must
-    explicitly flag any policy concerns as spec constraints.
+    explicitly flag any policy concerns as spec constraints. When no org skills
+    are supplied, *constitution* — the raw committed text of *constitution_path*,
+    or None when it could not be read — decides the fallback: a ratified
+    constitution's real path and principle headings, or an explicit
+    governance-gap instruction (issue #2165).
     """
     if skills:
         skills_block = "\n".join(f"- {name}" for name in skills)
     else:
-        skills_block = "- (no org skills supplied — apply the repository constitution)"
+        skills_block = _constitution_block(constitution, constitution_path)
     return (
         "You are running the **Design** stage of an AI-native SDLC loop. Turn the "
         "approved intent below into a specification.\n\n"

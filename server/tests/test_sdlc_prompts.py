@@ -106,6 +106,51 @@ def test_spec_with_no_skills_is_still_valid():
 
 
 # --------------------------------------------------------------------------- #
+# spec — constitution-aware fallback (issue #2165, item 3)                     #
+# --------------------------------------------------------------------------- #
+
+def test_spec_prompt_names_the_real_path_and_principles_when_ratified():
+    text = build_spec_prompt(
+        "intent body", [], slug="s", repo="o/r",
+        constitution=(
+            "# Constitution\n\n### I. First Principle\n\n### II. Second Principle\n\n"
+            "**Version**: 1.0.0 | **Ratified**: 2026-01-01 | **Last Amended**: 2026-01-01"
+        ),
+        constitution_path=".specify/memory/constitution.md",
+    )
+    assert ".specify/memory/constitution.md" in text
+    assert "I. First Principle" in text
+    assert "II. Second Principle" in text
+    assert "apply the repository constitution" not in text.lower() or "principles:" in text
+
+
+def test_spec_prompt_flags_a_missing_constitution_instead_of_assuming_one():
+    text = build_spec_prompt("intent body", [], slug="s", repo="o/r", constitution=None)
+    assert "no constitution could be read" in text or "constitution" in text.lower()
+
+
+def test_spec_prompt_flags_a_template_constitution():
+    template = (
+        "# [PROJECT_NAME] Constitution\n\n### [PRINCIPLE_1_NAME]\n\n"
+        "**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | "
+        "**Last Amended**: [LAST_AMENDED_DATE]"
+    )
+    text = build_spec_prompt("intent body", [], slug="s", repo="o/r", constitution=template)
+    assert "unfilled" in text.lower() or "template" in text.lower()
+    assert "flag" in text.lower()
+
+
+def test_spec_prompt_with_skills_ignores_constitution_entirely():
+    """Org skills, when present, are still the binding constraint — the
+    constitution block is only the fallback for when there are none."""
+    text = build_spec_prompt(
+        "intent body", ["skill-a"], slug="s", repo="o/r",
+        constitution="# Constitution\n\n### I. P\n\n**Version**: 1.0.0 | **Ratified**: 2026-01-01 | **Last Amended**: 2026-01-01")
+    assert "skill-a" in text
+    assert "I. P" not in text
+
+
+# --------------------------------------------------------------------------- #
 # plan                                                                         #
 # --------------------------------------------------------------------------- #
 

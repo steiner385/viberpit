@@ -1193,6 +1193,8 @@ class SessionOrchestrator:
             apply_feature_plan=self._pm_sync_apply_feature_plan,
             now_utc=self._pm_sync_now_utc,
             save_unindexed_docs=self._pm_sync_save_unindexed_docs,
+            read_constitution=self._pm_sync_read_constitution,
+            save_constitution_status=self._pm_sync_save_constitution_status,
             read_map_changes=self._pm_sync_read_map_changes,
             refresh_map_changes=self._pm_sync_refresh_map_changes,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
@@ -8632,6 +8634,62 @@ class SessionOrchestrator:
 
         return await _read()
 
+    _PM_SYNC_CONSTITUTION_PATH = ".specify/memory/constitution.md"
+
+    async def _pm_sync_read_constitution(
+        self, repo: str, ref: str | None = None
+    ) -> str | None:
+        """Read `.specify/memory/constitution.md` at *ref* (default: origin's
+        default branch) in the shared clone — same git-plumbing-only approach as
+        `_pm_sync_read_feature_docs`, but single-file and best-effort: unlike that
+        reader's atomic-or-raise contract (a partial feature-doc read would orphan
+        capabilities), a repo with NO constitution at all is the expected common
+        case for issue #2165, not a read failure — this returns None rather than
+        raising."""
+        import subprocess
+
+        async def _read() -> str | None:
+            repo_root = await self._effective_repo_root()
+            url = f"https://github.com/{repo}.git"
+            clone = await asyncio.to_thread(
+                gitrepos.ensure_clone, repo_root, repo, url)
+            await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "fetch", "origin", "--quiet"],
+                check=False, capture_output=True, timeout=120,
+            )
+            if ref is not None:
+                resolved_ref = f"refs/remotes/origin/{ref}"
+            else:
+                head = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "-C", clone, "symbolic-ref", "--quiet",
+                     "refs/remotes/origin/HEAD"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+            show = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "show",
+                 f"{resolved_ref}:{self._PM_SYNC_CONSTITUTION_PATH}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if show.returncode != 0:
+                return None
+            return show.stdout
+
+        return await _read()
+
+    async def _pm_sync_save_constitution_status(
+        self, project_id: str, status: str | None,
+    ) -> None:
+        """Persist this pass's constitution governance status onto the project
+        row (issue #2165) — see server/pm/mirror_store.py:set_project_constitution_status."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            await db.run_sync(
+                lambda s: mirror_store.set_project_constitution_status(s, project_id, status))
+
     async def _pm_sync_read_map_changes(self, project_id: str) -> "Pointer | None":
         """The product's open map-changes pointer, if any (R8b-4/5) — what
         ``_feature_index`` reads the branch head at. The lookup itself lives in
@@ -10548,9 +10606,14 @@ class SessionOrchestrator:
             content = self._sdlc_show_committed_file(
                 cwd, f"origin/{default_branch}", upstream)
             if kind == "spec":
+                const_path = ".specify/memory/constitution.md"
+                raw_const_text = self._sdlc_show_committed_file(
+                    cwd, f"origin/{default_branch}", const_path)
+                const_text = (None if raw_const_text.startswith(_SDLC_UNREADABLE_PREFIX)
+                             else raw_const_text)
                 return build_spec_prompt(
                     content, [], slug=slug, repo=repo, default_branch=default_branch,
-                    engine=engine)
+                    engine=engine, constitution=const_text, constitution_path=const_path)
             return build_plan_prompt(
                 content, slug=slug, repo=repo, default_branch=default_branch,
                 engine=engine)

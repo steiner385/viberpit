@@ -454,6 +454,67 @@ def test_the_synth_account_gate_is_asked_for_the_engine_that_was_resolved(monkey
     assert commit_trailer(AgentEngine.CODEX) in captured["spawn"]["initial_prompt"]
 
 
+def test_the_spec_spawn_reads_the_real_constitution_into_its_prompt(monkeypatch):
+    """``_sdlc_spawn_synth`` must read ``.specify/memory/constitution.md`` off the
+    same committed-file seam it already uses for the upstream intent, and hand
+    it to ``build_spec_prompt`` so the fallback names the real principles
+    instead of blindly saying "apply the repository constitution" (#2165,
+    item 3)."""
+    orch_mod, orch = _bare_orchestrator(monkeypatch)
+    captured: dict = {}
+
+    class Ctx:
+        async def launch_plan_or_refuse(self, _origin_ref):
+            return AgentEngine.CODEX, {}
+
+        async def spawn_session(self, **kwargs):
+            captured["spawn"] = kwargs
+            return type("Rec", (), {"id": "sess-1"})()
+
+    async def probe(_ctx, _origin_ref, *, engine=None):
+        return "openai-acct"
+
+    async def read_config():
+        return "auto", {}
+
+    async def repo_root():
+        return "/tmp"
+
+    async def default_branch(_repo):
+        return "master"
+
+    async def auto_effort(_account, _config, _summary):
+        return None, None
+
+    constitution_text = (
+        "# Constitution\n\n### I. Ratified Principle\n\n"
+        "**Version**: 1.0.0 | **Ratified**: 2026-01-01 | **Last Amended**: 2026-01-01"
+    )
+
+    def show_committed_file(cwd, ref, path):
+        if path == ".specify/memory/constitution.md":
+            return constitution_text
+        return "intent body"
+
+    monkeypatch.setattr(orch, "_sdlc_synth_ctx", Ctx(), raising=False)
+    monkeypatch.setattr(orch, "_automation_account_for", probe, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_synth_read_config", read_config, raising=False)
+    monkeypatch.setattr(orch, "_effective_repo_root", repo_root, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_default_branch", default_branch, raising=False)
+    monkeypatch.setattr(orch, "_resolve_codex_auto_effort", auto_effort, raising=False)
+    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", lambda *a, **k: "/tmp/clone")
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_sdlc_show_committed_file",
+                        staticmethod(show_committed_file))
+
+    ini = {"id": "ini-1", "slug": "widget", "repo": "o/r"}
+    assert asyncio.run(orch._sdlc_spawn_synth(ini, "spec")) is not None
+
+    prompt = captured["spawn"]["initial_prompt"]
+    assert "I. Ratified Principle" in prompt
+    assert ".specify/memory/constitution.md" in prompt
+    assert "apply the repository constitution" not in prompt.lower() or "principles:" in prompt
+
+
 # --------------------------------------------------------------------------- #
 # 4c. Artifact durability: PR association, dedupe and the build handoff.        #
 # --------------------------------------------------------------------------- #

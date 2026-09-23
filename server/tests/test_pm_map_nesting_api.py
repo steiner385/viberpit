@@ -71,6 +71,33 @@ def test_map_initiative_nodes_carry_their_parent():
                 assert health["unindexedDocs"] == []
 
 
+def test_project_health_surfaces_governance_status():
+    """`GET /api/pm/projects/{slug}/health` passes `Project.constitution_status`
+    through as the `governance` field (issue #2165)."""
+    from server.db import db_session, init_db
+    from server.db.models import Project
+
+    async def _seed(db_url):
+        await init_db(db_url)
+        async with db_session() as db:
+            db.add(Project(slug="kindash", name="KinDash", onboarding_state="live",
+                           constitution_status="missing"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+            with TestClient(app, raise_server_exceptions=False) as c:
+                health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+                assert health["governance"] == "missing"
+
+
 def test_leaves_of_a_program_lists_the_phases_leaf_issue_not_the_sub_epic():
     """`/api/pm/leaves?initiative=<program>` must match `epic.total` (the leaf
     roll-up): the direct sub-issues of a program's own epic are its phases'
