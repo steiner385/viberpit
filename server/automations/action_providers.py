@@ -39,6 +39,21 @@ _PR_STATUS_MAP = {
 }
 
 
+def foreign_holder_message(op) -> str:
+    """Human-readable identity of an ``AutomationOperation`` blocking a PR
+    Doctor claim on a foreign target (typically a Backlog Runner close-out
+    still holding a PR's linked issue) — for the actionable-items status row
+    and the ``ownership_wait`` refusal reason alike (#2203), instead of the
+    generic "target already has an operation"."""
+    from server.automations.registry import registry
+    owner_name = registry.get(op.owner).name
+    label = "close-out" if op.source == "terminal-closeout" else op.source
+    runner_target = op.provenance.get("origin_ref") or ", ".join(sorted(op.display_refs.values()))
+    if op.session_id or op.reserved_session_id or op.phase not in ("completed", "released", "transferred"):
+        return f"Held by {owner_name} {label} of {runner_target} — in progress, try again shortly"
+    return f"Held by {owner_name} {label} of {runner_target} (needs human)"
+
+
 class PrDoctorActionProvider:
     valid_kinds = frozenset(_PR_KIND_LABEL)
 
@@ -65,6 +80,17 @@ class PrDoctorActionProvider:
                 by_number[key] = ActionableItem(
                     id=item_id, title=info.title, url=info.url,
                     status=f"Being worked by session {sid}" if sid else "Being worked by a prior session")
+                continue
+            # A foreign operation (e.g. a Backlog Runner close-out) can still
+            # hold a PR's LINKED ISSUE even when pr-doctor's own claim on the
+            # PR itself is free — the busy check above only mirrors pr-doctor's
+            # own ownership token. Without this, the button renders live but
+            # every click is a guaranteed OwnershipConflict bounce (#2203).
+            blocker = await self._orch._pr_doctor_foreign_operation_cached(repo, info.number)
+            if blocker is not None:
+                by_number[key] = ActionableItem(
+                    id=item_id, title=info.title, url=info.url,
+                    status=foreign_holder_message(blocker))
                 continue
             by_number[key] = ActionableItem(
                 id=item_id, title=info.title, url=info.url,

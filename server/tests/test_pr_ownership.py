@@ -237,9 +237,16 @@ async def test_claim_adopts_finished_runner_closeout_holding_the_linked_issue(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["live_runner_session", "partial_batch", "foreign_owner"])
+@pytest.mark.parametrize("case,expected", [
+    # #2203: not adoptable → name the actual holder instead of the generic
+    # "target already has an operation", so the manual button and the feed's
+    # ownership_wait event both say WHO and WHY.
+    ("live_runner_session", "Held by Backlog Runner close-out of o/r#1 — in progress, try again shortly"),
+    ("partial_batch", "Held by Backlog Runner close-out of o/r#1 (needs human)"),
+    ("foreign_owner", "Held by Error Triage close-out of o/r#1 (needs human)"),
+])
 async def test_claim_refuses_runner_work_that_is_live_partial_or_foreign(
-        doctor, ownership_db, monkeypatch, case):
+        doctor, ownership_db, monkeypatch, case, expected):
     from server.automations.ownership import OwnershipConflict
     issue, other, pr = (CanonicalTarget("I_1", "o/r#1"), CanonicalTarget("I_3", "o/r#3"),
                         CanonicalTarget("PR_2", "o/r#2"))
@@ -251,8 +258,9 @@ async def test_claim_refuses_runner_work_that_is_live_partial_or_foreign(
         token, _ = await _finished_runner_closeout(ownership_db, [issue], owner="error-triage")
     monkeypatch.setattr("server.automations.target_identity.resolve_targets",
                         AsyncMock(return_value=(pr, issue)))
-    with pytest.raises(OwnershipConflict, match="target already has an operation"):
+    with pytest.raises(OwnershipConflict) as excinfo:
         await doctor._pr_doctor_claim("o/r", [2], "o/r#2")
+    assert str(excinfo.value) == expected
     async with ownership_db() as db:
         assert (await db.get(AutomationOperation, token)).phase in ("completed", "active")
     assert (await AutomationContext("backlog-runner").get_target_state("o/r#1"))["ownership_token"] == token
