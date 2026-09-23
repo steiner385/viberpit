@@ -7,13 +7,22 @@ from server.github.pr_status import PullRequestInfo
 
 
 class _FakePrOrch:
-    def __init__(self, pr, *, busy_session=None):
+    def __init__(self, pr, *, busy_session=None, foreign_blocker=None):
         self._pr = pr
         self.fix_calls = []
         # None: no live predecessor. Set to a session id to simulate one still
         # holding the claim, mirroring `_pr_doctor_claim`'s "prior PR execution
         # has not stopped" refusal (#16348).
         self._busy_session = busy_session
+        # None: no foreign operation holds a linked issue. Set to a fake
+        # AutomationOperation-shaped object to simulate a Backlog Runner
+        # close-out (or similar) still holding one of this PR's canonical
+        # targets under a DIFFERENT owner — the busy check above only covers
+        # pr-doctor's own claim (#2203).
+        self._foreign_blocker = foreign_blocker
+
+    async def _pr_doctor_foreign_operation_cached(self, repo, number):
+        return self._foreign_blocker
 
     async def _pr_doctor_scope_pairs(self):
         return [(self._pr.repo, self._pr.head_ref)]
@@ -93,6 +102,41 @@ async def test_pr_provider_shows_action_once_predecessor_clears():
     items = await prov.actionable()
     assert items[0].status is None
     assert items[0].actions[0].kind == "merge_conflict"
+
+
+class _FakeOperation:
+    def __init__(self, *, owner="backlog-runner", source="terminal-closeout", phase="completed",
+                session_id=None, reserved_session_id=None, provenance=None, display_refs=None):
+        self.owner = owner
+        self.source = source
+        self.phase = phase
+        self.session_id = session_id
+        self.reserved_session_id = reserved_session_id
+        self.provenance = provenance or {}
+        self.display_refs = display_refs or {}
+
+
+@pytest.mark.asyncio
+async def test_pr_provider_shows_status_for_foreign_holder_on_linked_issue():
+    # #2203: a Backlog Runner terminal-closeout still holds this PR's linked
+    # issue even though pr-doctor's OWN claim on the PR is free — the busy
+    # check above only mirrors pr-doctor's own token, so without this the
+    # list would render a button every click bounces.
+    blocker = _FakeOperation(provenance={"origin_ref": "cairnea/KinDash#15952"})
+    prov = PrDoctorActionProvider(_FakePrOrch(_pr(), foreign_blocker=blocker))
+    items = await prov.actionable()
+    assert len(items) == 1
+    assert items[0].actions == []
+    assert items[0].status == "Held by Backlog Runner close-out of cairnea/KinDash#15952 (needs human)"
+
+
+@pytest.mark.asyncio
+async def test_pr_provider_foreign_holder_with_live_session_says_in_progress():
+    blocker = _FakeOperation(source="implement", phase="active", session_id="sess-runner")
+    prov = PrDoctorActionProvider(_FakePrOrch(_pr(), foreign_blocker=blocker))
+    items = await prov.actionable()
+    assert items[0].actions == []
+    assert "in progress" in items[0].status
 
 
 @pytest.mark.asyncio

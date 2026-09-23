@@ -144,6 +144,9 @@ log = logging.getLogger(__name__)
 # List polling shares one bounded daemon-side provider refresh across clients.
 AUTOMATION_ACTIONABLE_TIMEOUT_S = 2.0
 AUTOMATION_ACTIONABLE_CACHE_S = 30.0
+# One linked-issues GitHub resolution per PR per sweep tick, not per read of
+# the actionable list (#2203) — matches AUTOMATION_ACTIONABLE_CACHE_S's window.
+_PR_DOCTOR_FOREIGN_HOLDER_CACHE_S = 30.0
 
 _DRIVER_CONTROL_TIMEOUT_S = 5.0
 
@@ -12379,9 +12382,17 @@ class SessionOrchestrator:
             return state
         except OwnershipConflict:
             adopted = await self._pr_doctor_adopt_finished_runner_closeout(targets, target, expected)
-            if adopted is None:
-                raise
-            return adopted
+            if adopted is not None:
+                return adopted
+            # Not adoptable (live session elsewhere, or the holder's targets
+            # aren't fully covered by this claim) — name the actual holder
+            # instead of the generic message, so a manual "try again" and the
+            # ``ownership_wait`` feed event both say WHO (#2203).
+            blocker = await self._pr_doctor_foreign_operation(targets)
+            if blocker is not None:
+                from server.automations.action_providers import foreign_holder_message
+                raise OwnershipConflict(foreign_holder_message(blocker)) from None
+            raise
 
     async def _pr_doctor_adopt_finished_runner_closeout(self, targets, target, expected):
         """Take over a Backlog Runner ``terminal-closeout`` operation that still
@@ -12422,10 +12433,7 @@ class SessionOrchestrator:
                 return None
             (token,) = tokens
             operation = await db.get(AutomationOperation, token)
-        if (operation is None or operation.owner != "backlog-runner"
-                or operation.source != "terminal-closeout" or operation.phase != "completed"
-                or operation.session_id or operation.reserved_session_id
-                or not set(operation.targets) <= keys):
+        if not self._pr_doctor_closeout_is_adoptable(operation, keys):
             return None
         runner_target = operation.provenance.get("origin_ref")
         if not runner_target:
@@ -12462,6 +12470,65 @@ class SessionOrchestrator:
             "info", f"{target}: adopted the finished implementation close-out of {runner_target}",
             kind="handoff", target=target)
         return state
+
+    @staticmethod
+    def _pr_doctor_closeout_is_adoptable(operation, keys: set[str]) -> bool:
+        """Whether *operation* is a finished Backlog Runner ``terminal-closeout``
+        that a claim covering *keys* can take over via
+        ``_pr_doctor_adopt_finished_runner_closeout`` — shared so the read-only
+        foreign-holder check below (#2203) never disagrees with what a real
+        claim attempt would actually do."""
+        return (operation is not None and operation.owner == "backlog-runner"
+                and operation.source == "terminal-closeout" and operation.phase == "completed"
+                and not operation.session_id and not operation.reserved_session_id
+                and set(operation.targets) <= keys)
+
+    async def _pr_doctor_foreign_operation(self, targets):
+        """The operation (if any) holding one of *targets*'s canonical keys
+        under an owner other than ``pr-doctor`` that a claim covering *targets*
+        cannot adopt — i.e. attempting the claim is guaranteed to bounce with
+        ``OwnershipConflict``. Read-only: never acquires or transfers anything,
+        so it is safe to call from the actionable-items list as well as from
+        an already-refused claim (#2203)."""
+        from sqlalchemy import select
+        from server.db.models import AutomationOperation, AutomationOwnedTarget
+        keys = {t.key for t in targets}
+        if not keys:
+            return None
+        async with db_session() as db:
+            tokens = set((await db.scalars(select(AutomationOwnedTarget.operation_token).where(
+                AutomationOwnedTarget.key.in_(sorted(keys)),
+                AutomationOwnedTarget.operation_token.is_not(None)))).all())
+            if not tokens:
+                return None
+            operations = (await db.scalars(select(AutomationOperation).where(
+                AutomationOperation.token.in_(tokens)))).all()
+        for op in operations:
+            if op.owner == "pr-doctor" or self._pr_doctor_closeout_is_adoptable(op, keys):
+                continue
+            return op
+        return None
+
+    async def _pr_doctor_foreign_operation_cached(self, repo: str, number: int):
+        """``_pr_doctor_foreign_operation`` for one PR, resolved via GitHub and
+        cached for ``_PR_DOCTOR_FOREIGN_HOLDER_CACHE_S`` — ``actionable()`` is
+        read on every sweep tick as well as by the UI, and each miss costs a
+        linked-issues GraphQL round trip (#2203: "cache the resolve per sweep")."""
+        from server.automations.target_identity import TargetIdentityError, resolve_targets
+        target = f"{repo}#{number}"
+        now = time.monotonic()
+        cache = self.__dict__.setdefault("_pr_doctor_foreign_holder_cache", {})
+        hit = cache.get(target)
+        if hit is not None and now < hit[0]:
+            return hit[1]
+        try:
+            targets = await resolve_targets([target], kind="pr", include_linked_issues=True)
+        except TargetIdentityError:
+            cache[target] = (now + 5.0, None)  # transient GitHub failure — retry soon
+            return None
+        op = await self._pr_doctor_foreign_operation(targets)
+        cache[target] = (now + _PR_DOCTOR_FOREIGN_HOLDER_CACHE_S, op)
+        return op
 
     @staticmethod
     def _pr_doctor_refusal_detail(exc: BaseException, info) -> dict | None:
