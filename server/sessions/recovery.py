@@ -36,6 +36,12 @@ STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300")
 # interrupted past this longer window so a genuine hang is eventually caught. Issue #185.
 STALL_TIMEOUT_THROTTLED: float = float(
     os.environ.get("CCSWITCH_STALL_TIMEOUT_THROTTLED_SEC", "900"))
+# Observability-only threshold, well under STALL_TIMEOUT: a turn silent this long gets
+# ONE diagnostic snapshot logged (driver.diagnostic_snapshot(), if the driver has one)
+# so a turn that eventually times out has real evidence of what it was doing during
+# the silence, not just "no progress for N seconds" after the fact (2026-09-22).
+STALL_DIAG_THRESHOLD_S: float = float(
+    os.environ.get("CCSWITCH_STALL_DIAG_THRESHOLD_SEC", "60"))
 RESEND_CAP: int = 3              # auto-resends of a dropped turn per session within RESEND_WINDOW
 RESEND_WINDOW: float = 120.0     # window (seconds) for tracking dropped-turn resends
 

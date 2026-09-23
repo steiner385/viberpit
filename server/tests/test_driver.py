@@ -48,6 +48,61 @@ def test_drain_exception_emits_error_event_with_detail():
     assert "token expired mid-stream" in err.message
 
 
+class _HangingClient:
+    """A client whose stream never yields another message — the local-side shape of
+    a turn whose underlying model generation hung with no error and no stream-death
+    signature (2026-09-22, session 808f63fc: a single large Write hung for minutes).
+    """
+    async def __aenter__(self): return self
+    async def __aexit__(self, *exc): return False
+    async def query(self, prompt): pass
+    async def receive_messages(self):
+        await asyncio.Future()  # never resolves until the pump task is cancelled
+        yield  # pragma: no cover — unreachable, keeps this an async generator
+    async def interrupt(self): pass
+    async def set_permission_mode(self, mode): pass
+
+
+def test_diagnostic_snapshot_reflects_a_genuinely_pending_turn():
+    """diagnostic_snapshot() must name the live turn and show the pump task's await
+    chain while a turn is truly stuck (not just quiet) — the exact evidence the stall
+    watchdog now logs before STALL_TIMEOUT trips (server/sessions/orchestrator.py)."""
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return _HangingClient()
+
+    async def run():
+        d = ClaudeAgentDriver("sdiag", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("go")
+        await asyncio.sleep(0)  # let the pump task actually start awaiting
+        snap = d.diagnostic_snapshot()
+        await d.aclose()
+        return snap
+    snap = asyncio.run(run())
+    assert "active=True" in snap
+    assert "drain_alive" in snap
+    assert "task 0" in snap
+    assert "pending" in snap
+
+
+def test_diagnostic_snapshot_before_any_turn_has_no_pump():
+    """A fresh driver with no turn ever sent has no pump task — must report that
+    plainly rather than crash."""
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return _HangingClient()
+
+    async def run():
+        d = ClaudeAgentDriver("sdiag2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        snap = d.diagnostic_snapshot()
+        await d.aclose()
+        return snap
+    snap = asyncio.run(run())
+    assert "no pump task" in snap
+
+
 class _ModeRecorder:
     """Minimal SDK client stand-in that records set_permission_mode calls."""
     def __init__(self):

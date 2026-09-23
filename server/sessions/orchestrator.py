@@ -109,7 +109,7 @@ from server.sessions.suggestions import (
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
-    STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
+    STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED, STALL_DIAG_THRESHOLD_S,
 )
 from server.sessions.selection import (  # noqa: F401
     AllAccountsBusy, Picked, has_alternative_account, select_account,
@@ -904,6 +904,10 @@ class SessionOrchestrator:
         # repeat 401 (creds genuinely bad → rotate away).
         self._clock: Callable[[], float] = time.time
         self._recovery = RecoveryState()
+        # Stall-watchdog diagnostics: session_id -> the last_progress_at value we last
+        # logged a diagnostic snapshot for, so each silence episode logs once, not
+        # every 30s tick between the diag threshold and the real stall timeout.
+        self._stall_diag_logged: dict[str, float] = {}
         self._recompose_attempts: dict[str, float] = {}  # session_id → last recompose ts
         self._recompose_ttl: float = 60.0
         # Initial prompts parked for the WS bridge's first live attach. Only TWO
@@ -17335,6 +17339,7 @@ class SessionOrchestrator:
                 # Turn genuinely resolved (not just quiet between resends) — a fresh
                 # wedge later starts its escalation streak over, not mid-cap.
                 self._recovery.clear_stalls(sid)
+                self._stall_diag_logged.pop(sid, None)
                 continue
             # A turn whose silence is attributable to API throttling — the driver is
             # backing off, or its account is in recovery quarantine (recently 429'd) —
@@ -17343,7 +17348,21 @@ class SessionOrchestrator:
             # Issue #185: throttled turns were interrupted as "Turn failed" under load.
             throttled = driver.in_api_backoff or driver.account in quarantined
             timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
-            if now - driver.last_progress_at <= timeout:
+            elapsed = now - driver.last_progress_at
+            if elapsed <= timeout:
+                # Observability only, no action: a turn can go fully silent (no SDK
+                # event at all) well before STALL_TIMEOUT trips, with no local error
+                # and no stream-death signature in the journal (2026-09-22, session
+                # 808f63fc — a single large Write's model generation hung for
+                # minutes). Log the live await chain once per silence episode, well
+                # ahead of the timeout, so the NEXT occurrence has real evidence
+                # instead of just "no progress for N seconds" after the fact.
+                diag = getattr(driver, "diagnostic_snapshot", None)
+                if (elapsed >= STALL_DIAG_THRESHOLD_S and diag is not None
+                        and self._stall_diag_logged.get(sid) != driver.last_progress_at):
+                    self._stall_diag_logged[sid] = driver.last_progress_at
+                    log.info("stall watchdog: silent %.0fs (timeout=%.0fs) session=%s\n%s",
+                             elapsed, timeout, sid, diag())
                 continue
             if driver.awaiting_user_input:
                 # Blocked on a permission / plan / question — waiting on the human,
