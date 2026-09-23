@@ -29,7 +29,7 @@ from server.pm.desired_state import (
 from server.pm.gh_mutations import (UnknownOption, as_written, build_batch, build_create_field,
                                     build_rate_limit_query, build_update_field_options, chunk,
                                     parse_batch, parse_rate_limit)
-from server.pm.gh_projects import parse_created_field
+from server.pm.gh_projects import build_project_fields_query, parse_created_field, parse_project_fields
 from server.pm.journal import TRANSIENT_PREFIX
 from server.pm.mirror_store import ProductSyncView
 from server.pm.reconcile_diff import Mutation, compile_edges, diff_fields, membership
@@ -92,6 +92,18 @@ def _missing_status_options(have: Iterable[str]) -> list[str]:
     if present & HELD_STATUS_SPELLINGS:
         present.add(STATUS_HELD)
     return [o for o in STATUS_OPTIONS if o not in present]
+
+
+def _wanted_options(m: Mutation) -> list[str]:
+    """The option names *m* asks the board to end up carrying (empty for a NUMBER field).
+
+    ``create_field`` states them inside its ``{dataType, options}`` payload; a
+    ``set_field_options`` mutation's ``new_value`` IS the union it wants. Read together so
+    ``_converged_on_board`` can ask one question of either bootstrap mutation."""
+    if m.kind == "create_field":
+        spec = m.new_value if isinstance(m.new_value, dict) else {}
+        return [str(o) for o in (spec.get("options") or [])]
+    return [str(o) for o in m.new_value] if isinstance(m.new_value, (list, tuple)) else []
 
 
 class GhReconcile:
@@ -286,6 +298,47 @@ class GhReconcileLoop:
                                      kind="gh_reconcile_error", target=product.project_id)
         self._stash(**counts)
 
+    async def _converged_on_board(self, facts: ProductFacts, m: Mutation) -> dict | None:
+        """The board's live entry for *m*'s field when the board ALREADY satisfies *m*, else None.
+
+        The lost-response window (#2114): ``_absent`` judges presence from the cached
+        ``field_cache``, not from the board, so a ``createProjectV2Field`` that landed on
+        GitHub but whose response never arrived is re-sent on the next tick and refused by
+        GitHub's uniqueness validator. Two of those park the journal row — and because
+        ``_field_gap`` still reports the field missing, ``_park_incomplete`` then stops the
+        WHOLE product every tick, with an error card, over a board that is already correct.
+
+        Convergence is settled by READING the board rather than by matching GitHub's wording.
+        ``gh_mutations._IDEMPOTENT_REJECTIONS`` (the repo's source of truth for "GitHub says
+        this is already true") only admits messages that have been seen live, and all-time
+        there is not one ``create_field`` row in ``gh_write_journal`` to verify against — so
+        any string added there for it would be a guess, and a guess that matches too widely
+        turns a real failure into a silent success. A fields read answers the only question
+        that matters, for any wording; it also covers ``set_field_options``, whose refusal
+        text is likewise unobserved.
+
+        It must be able to say NO: a board that comes back without the field, or without the
+        options the mutation asked for, is a real failure and keeps the park ladder. Costs one
+        extra GraphQL read per FAILED bootstrap mutation while migrate is on — at most three
+        per product per tick, and none on the happy path.
+        """
+        name = m.field or ""
+        if not name or not facts.project_node_id:
+            return None
+        try:
+            payload = await self._mutate(facts.owner,
+                                         build_project_fields_query(facts.project_node_id))
+            live = parse_project_fields(payload)
+        except Exception:
+            log.debug("gh_reconcile.field_read_back_failed", exc_info=True)
+            return None
+        entry = live.get(name) or {}
+        if not entry.get("field_id"):
+            return None
+        if not set(_wanted_options(m)) <= set(entry.get("options") or {}):
+            return None
+        return entry
+
     async def _ensure_fields(self, facts: ProductFacts, now: datetime, dry_run: bool,
                              counts: dict[str, int]) -> dict:
         """Board field bootstrap (spec 003 §4, Task 9): create the custom ``Score``/``Stage``
@@ -320,7 +373,8 @@ class GhReconcileLoop:
         # "Missing" is judged on field_id, the SAME predicate as ``_field_gap`` — bootstrap
         # must be able to repair exactly what the gate refuses to write against, or a cache
         # entry with no usable id parks the product on every tick with nothing that can fix
-        # it. (A create that then collides on name fails, and parks, after two attempts.)
+        # it. (A create that then collides on name is refused by GitHub; the board read-back
+        # in ``_converged_on_board`` settles whether that refusal is convergence — #2114.)
         def _absent(name: str) -> bool:
             return not ((cache.get(name) or {}).get("field_id"))
 
@@ -356,6 +410,16 @@ class GhReconcileLoop:
             payload = await self._mutate(facts.owner, doc)
             parsed = parse_created_field(payload)
             if parsed is None:
+                # A refusal can mean the board already carries this field — ask the board
+                # before counting it against the park ladder (#2114).
+                converged = await self._converged_on_board(facts, m)
+                if converged is not None:
+                    cache[m.field or ""] = converged
+                    await self._j_applied([rid], now)
+                    counts["applied"] += 1
+                    log.info("gh_reconcile.bootstrap_converged product=%s field=%s",
+                             facts.slug, m.field)
+                    continue
                 err = str((payload.get("errors") or [{}])[0].get("message") or "no field returned")
                 if await self._j_failure_count(m.key()) >= 1:
                     await self._j_park(rid, f"failed twice: {err}", now)

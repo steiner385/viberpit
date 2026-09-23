@@ -118,6 +118,11 @@ spike script. Removing compiled edges: `removeBlockedBy` with the same ids.
   burying the one real failure. Fix the failed `create_field`/`set_field_options` row (see
   `?state=failed` / `?state=parked`), delete the parked journal row, and the next tick retries.
   Latched like the migrate-off form: one push per distinct gap, not one per tick.
+  You should never see this one for a field the board already has: a refused `create_field` /
+  `set_field_options` makes the loop re-read the board's fields, and a board that already carries
+  the field (with every option the mutation asked for) records the row **applied** and adopts the
+  live field id (#2114). The lost-response window — the mutation landed, its reply did not — is
+  therefore self-healing, and a bootstrap row that reaches `failed` is a real defect.
 - `gh_reconcile_cap` — the planned set exceeds the cap; nothing was applied. Raise `migrate_cap`
   only once you have confirmed the planned set is right. Latched per product on the
   `(planned, cap)` overshoot: the same overshoot pushes once, a *different* one (another issue

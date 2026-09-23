@@ -538,6 +538,146 @@ def test_bootstrap_failure_parks_and_is_then_never_replanned():
     assert _docs(calls)[-1].startswith("query { rateLimit")
 
 
+# --- bootstrap convergence: a create that collides on name (#2114) ------------------
+# ``_absent`` judges presence from the CACHED field_cache, so a create whose response was
+# lost is re-sent next tick and rejected by GitHub's uniqueness validator. Two of those
+# park the row, ``_field_gap`` still reports the field missing, and the whole product stops
+# reconciling every tick over a board that is already correct. The loop settles it by
+# READING the board — not by matching GitHub's wording, which no production row has ever
+# carried for this mutation (see ``_converged_on_board``).
+
+COLLISION = {"errors": [{"message": "Name has already been taken"}]}
+
+
+def _fields_payload(cache):
+    """A ``build_project_fields_query`` response for *cache* (name -> field_id/options)."""
+    return {"data": {"node": {"fields": {"nodes": [
+        {"id": spec["field_id"], "name": name,
+         "options": [{"id": oid, "name": n} for n, oid in (spec.get("options") or {}).items()]}
+        for name, spec in cache.items()]}}}}
+
+
+def _bootstrap_loop(ctx, *, board, cached, **over):
+    """A migrate tick whose board already carries *board* but whose cache only has *cached*.
+
+    Every bootstrap mutation is refused with the name-collision message, so what the loop
+    does next is decided entirely by the fields read-back.
+    """
+    sparse = _facts(field_cache=cached, items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        if doc.startswith("query { node"):
+            return _fields_payload(board)
+        return COLLISION
+
+    return _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True}, **over)
+
+
+def test_field_create_that_collides_on_name_converges_from_the_board():
+    """The create is rejected because the field is already there: that is convergence, not
+    a failure. The row is recorded applied, the board's real field id lands in the cache,
+    and the product is NOT parked — the whole-product stall (#2114) needs both halves."""
+    board = {**CACHE, "Score": {"field_id": "F_sc_live", "options": {}}}
+    ctx = Ctx(); loop, calls = _bootstrap_loop(
+        ctx, board=board,
+        cached={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                "Status": {"field_id": "F_s", "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}})
+    asyncio.run(loop.tick())
+    assert calls["applied"] == ["r0"] and calls["failed"] == [] and calls["park"] == []
+    assert ctx.gh_reconcile_counts["applied"] == 1
+    assert ctx.gh_reconcile_counts["failed"] == 0 and ctx.gh_reconcile_counts["parked"] == 0
+    # the id comes from the BOARD, not from the create we never got a response for
+    assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc_live"
+    assert not _parked_events(ctx)
+
+
+def test_status_option_update_converges_when_the_board_already_carries_them():
+    """Same window, other bootstrap mutation: the option update landed but its response was
+    lost, so it is re-sent against a board that already carries the whole union — the
+    human column the update preserved ("Todo") as well as every spec option."""
+    board = {**CACHE, "Status": {"field_id": "F_s",
+                                 "options": {"Todo": "O_t",
+                                             **{n: f"O_{n}" for n in STATUS_OPTIONS}}}}
+    ctx = Ctx(); loop, calls = _bootstrap_loop(
+        ctx, board=board,
+        cached={**CACHE, "Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}})
+    asyncio.run(loop.tick())
+    assert calls["applied"] == ["r0"] and calls["failed"] == [] and calls["park"] == []
+    assert calls["cache"][-1][1]["Status"]["options"]["Held"] == "O_Held"
+    assert not _parked_events(ctx)
+
+
+def test_bootstrap_convergence_needs_the_option_the_mutation_asked_for():
+    """The read-back must be able to say no. A Stage field that exists but does not carry the
+    stage vocabulary is not what the create asked for, so it stays a failure: converging on
+    the field id alone would leave every ``set_field`` for a missing option to park a whole
+    20-row batch instead."""
+    board = {**CACHE, "Stage": {"field_id": "F_st_live", "options": {}}}
+    ctx = Ctx(); loop, calls = _bootstrap_loop(
+        ctx, board=board,
+        cached={"Score": {"field_id": "F_sc", "options": {}},
+                "Status": {"field_id": "F_s", "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}})
+    asyncio.run(loop.tick())
+    assert calls["applied"] == [] and calls["failed"] == [("r0", "Name has already been taken")]
+    assert ctx.gh_reconcile_counts["failed"] == 1
+
+
+def test_bootstrap_failure_the_board_does_not_confirm_still_fails():
+    """The guard proves it can fail: a board read that comes back WITHOUT the field is a
+    real failure and keeps the park ladder. Without this the read-back would whitewash
+    every bootstrap error into a silent success."""
+    ctx = Ctx(); loop, calls = _bootstrap_loop(
+        ctx, board={"Status": {"field_id": "F_s", "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
+        cached={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                "Status": {"field_id": "F_s", "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}})
+    asyncio.run(loop.tick())
+    assert calls["applied"] == [] and calls["failed"] == [("r0", "Name has already been taken")]
+    assert ctx.gh_reconcile_counts["parked"] == 1        # product parked on the gap, as before
+    assert any("bootstrap did not complete" in s for s in _parked_events(ctx))
+
+
+def test_bootstrap_read_back_failure_falls_through_to_the_failure_ladder():
+    """An unreadable board proves nothing. The error the create returned is what gets
+    journaled, so the next tick's failure parks the row exactly as it did before."""
+    sparse = _facts(field_cache={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                                 "Status": {"field_id": "F_s",
+                                            "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
+                    items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        if doc.startswith("query { node"):
+            raise RuntimeError("gh graphql failed: 502")
+        return COLLISION
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True})
+    asyncio.run(loop.tick())
+    assert calls["failed"] == [("r0", "Name has already been taken")]
+    assert ctx.gh_reconcile_counts["failed"] == 1
+
+
+def test_a_successful_bootstrap_never_reads_the_board_back():
+    """The read-back is a failure-path cost only: at most one extra GraphQL read per failed
+    bootstrap mutation, and none at all on the happy path."""
+    sparse = _facts(field_cache={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                                 "Status": {"field_id": "F_s",
+                                            "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
+                    items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"data": {"createProjectV2Field": {"projectV2Field": {"id": "F_sc",
+                                                                     "name": "Score"}}}}
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True})
+    asyncio.run(loop.tick())
+    assert not [d for d in _docs(calls) if d.startswith("query { node")]
+
+
 def test_dry_run_surfaces_vocabulary_drift_without_touching_journal_rows():
     # #5's Stage decision ("deploy") has no option id in CACHE (which only has "build") ->
     # unknown-option drift. Status/Score already match the mirror, so the drifted Stage
