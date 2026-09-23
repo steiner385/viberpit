@@ -168,8 +168,11 @@ _RE_401 = re.compile(r"requires authentication \(http 401\)", re.IGNORECASE)
 
 #: ``API rate limit exceeded for <ip>`` but NOT ``... for user ID <n>``. The
 #: lookahead is the entire discriminator between "no credential" and "busy".
+#: ``already`` is optional: gh emits it when short-circuiting client-side
+#: against its own cached rate-limit state instead of round-tripping to a
+#: server 403 — same condition, one word different (#2169).
 _RE_UNAUTH_RATE_LIMIT = re.compile(
-    r"api rate limit exceeded for (?!user\b)", re.IGNORECASE
+    r"api rate limit (?:already )?exceeded for (?!user\b)", re.IGNORECASE
 )
 
 #: ``gh: To get started with GitHub CLI, please run:  gh auth login`` — gh holds no
@@ -202,7 +205,10 @@ _RE_UNREACHABLE = re.compile(
 
 #: ``API rate limit exceeded for user ID 1234567`` — the mirror of
 #: :data:`_RE_UNAUTH_RATE_LIMIT`. The token worked; the host is merely busy.
-_RE_USER_RATE_LIMIT = re.compile(r"api rate limit exceeded for user\b", re.IGNORECASE)
+#: ``already`` optional for the same client-side-short-circuit reason (#2169).
+_RE_USER_RATE_LIMIT = re.compile(
+    r"api rate limit (?:already )?exceeded for user\b", re.IGNORECASE
+)
 
 #: GitHub's abuse/secondary limit, which has no "for <who>" clause at all.
 _RE_SECONDARY_RATE_LIMIT = re.compile(r"exceeded a secondary rate limit", re.IGNORECASE)
