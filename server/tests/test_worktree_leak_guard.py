@@ -14,6 +14,11 @@ These tests exercise the backstop underneath it: the guard must refuse — and
 record — any sweep or removal outside the system temp dir, while leaving
 legitimate tmp_path work untouched.
 
+Also covers the #2123 sibling: ``SessionOrchestrator._cleanup_session_paths``
+rmtree's a no-repo session's scratch dir through the same fallible
+``self._repo_root`` (see ``ccswitch.worktrees.remove_scratch_dir``), guarded the
+same way as ``remove_worktree`` above.
+
 Hostile paths here are LITERALS, never built from ``Path.home()``: the local test
 runbook runs the suite under ``env -i`` with an isolated HOME, which can itself
 sit under the temp dir and would silently invert every assertion below.
@@ -41,6 +46,8 @@ from server.tests.conftest import (
 LIVE_REPO_ROOT = "/home/dev/GitHub"
 LIVE_WORKTREE = str(
     worktrees.worktrees_base(LIVE_REPO_ROOT) / "KinDash" / "2ccac630")
+LIVE_SCRATCH_DIR = str(
+    worktrees.scratch_base(LIVE_REPO_ROOT) / "37e13a96-0000-0000-0000-000000000000")
 
 
 class TestGuardRefusesTheRealTree:
@@ -98,6 +105,42 @@ class TestGuardRefusesTheRealTree:
             orch._janitor_sweep_once()
         assert _drain_real_worktree_violations()
 
+    def test_remove_of_a_live_scratch_dir_raises_before_touching_disk(self):
+        """#2123 sibling of the worktree case: a no-repo session's scratch dir
+        cleanup is a bare ``shutil.rmtree``, so the guard must refuse before any
+        filesystem call runs."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            with pytest.raises(RuntimeError, match="remove_scratch_dir"):
+                worktrees.remove_scratch_dir(LIVE_SCRATCH_DIR)
+        mock_rmtree.assert_not_called()
+        assert _drain_real_worktree_violations()
+
+    def test_scratch_guard_module_reference_is_guarded(self):
+        assert getattr(
+            worktrees.remove_scratch_dir, "_is_real_worktree_guard", False)
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_cleanup_of_a_live_scratch_dir_is_refused(self):
+        """The #2123 call itself: ``_cleanup_session_paths`` swallows its own
+        cleanup exceptions (``except Exception: log.exception(...)``, the same
+        shape as the janitor loop), so the guard's refusal must be RECORDED —
+        not just raised — for the autouse fixture to catch it. This is the
+        reachability check the issue asked for: repo_root falls back to the
+        real ``~/GitHub`` (the ``get_settings()``-raises path), the session
+        record's cwd sits under that root's scratch tree, and cleanup must
+        refuse rather than rmtree it."""
+        from server.sessions.engine import AgentEngine
+        from server.sessions.orchestrator import SessionOrchestrator
+        from server.sessions.types import SessionRecord
+
+        orch = SessionOrchestrator(repo_root=LIVE_REPO_ROOT)
+        record = SessionRecord(
+            id="37e13a96", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="", cols=80, rows=24, cwd=LIVE_SCRATCH_DIR,
+        )
+        await orch._cleanup_session_paths("37e13a96", record)
+        assert _drain_real_worktree_violations()
+
 
 class TestGuardLeavesLegitimateWorkAlone:
     def test_sweep_under_tmp_path_runs_normally(self, tmp_path):
@@ -130,10 +173,26 @@ class TestGuardLeavesLegitimateWorkAlone:
         assert not wt.exists()
         assert _drain_real_worktree_violations() == []
 
+    def test_removal_of_a_scratch_dir_under_tmp_path_succeeds(self, tmp_path):
+        """Same as above for the scratch-dir seam — the guard is scoped to
+        location, not a blanket stub."""
+        scratch = tmp_path / "scratch-dir"
+        scratch.mkdir()
+        (scratch / "f.txt").write_text("hi")
+
+        assert worktrees.remove_scratch_dir(str(scratch)) is True
+        assert not scratch.exists()
+        assert _drain_real_worktree_violations() == []
+
+    def test_removal_of_a_missing_scratch_dir_is_a_noop(self, tmp_path):
+        assert worktrees.remove_scratch_dir(str(tmp_path / "nonexistent")) is False
+        assert _drain_real_worktree_violations() == []
+
 
 class TestDisposablePathPredicate:
     @pytest.mark.parametrize(
-        "path", [LIVE_REPO_ROOT, LIVE_WORKTREE, "/srv/repos", "/", None, 5])
+        "path",
+        [LIVE_REPO_ROOT, LIVE_WORKTREE, LIVE_SCRATCH_DIR, "/srv/repos", "/", None, 5])
     def test_paths_outside_the_temp_dir_are_not_disposable(self, path):
         assert _is_disposable_path(path) is False
 

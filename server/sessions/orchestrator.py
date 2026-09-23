@@ -4336,7 +4336,7 @@ class SessionOrchestrator:
         # checkout.  This is the safety guarantee stated in the New Session dialog:
         # "your real checkouts are never touched."
         if cwd is None:
-            scratch_dir = Path(worktrees.worktrees_base(repo_root)).parent / "scratch" / session_id
+            scratch_dir = worktrees.scratch_base(repo_root) / session_id
             scratch_dir.mkdir(parents=True, exist_ok=True)
             cwd = str(scratch_dir)
 
@@ -4917,14 +4917,13 @@ class SessionOrchestrator:
                               session_id, wt_path)
 
         if record and record.cwd:
-            scratch_base = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch"
+            scratch_base_resolved = worktrees.scratch_base(self._repo_root).resolve()
             try:
                 cwd_resolved = Path(record.cwd).resolve()
-                scratch_base_resolved = scratch_base.resolve()
                 cwd_resolved.relative_to(scratch_base_resolved)
-                if cwd_resolved.is_dir():
-                    import shutil
-                    await asyncio.to_thread(shutil.rmtree, str(cwd_resolved))
+                removed = await asyncio.to_thread(
+                    worktrees.remove_scratch_dir, str(cwd_resolved))
+                if removed:
                     log.info("session.scratch_cleanup id=%s path=%s", session_id, cwd_resolved)
             except ValueError:
                 pass
