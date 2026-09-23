@@ -15,8 +15,10 @@ repo's object store (cheap — no full clone).
 
 If the selected branch is already checked out somewhere (commonly the user's real
 checkout sitting on `main`), git refuses to check it out twice, so we fall back to
-a per-session child branch ``ccswitch/<branch>-<short>`` based on it — still
-isolated, still writable, and clearly named.
+a per-session child branch ``viberpit/<branch>-<short>`` based on it — still
+isolated, still writable, and clearly named.  Branches created before the rebrand
+carry the ``ccswitch/`` prefix and are matched too (``brand.is_session_branch``);
+that accept side is permanent, because a pushed branch outlives the flip.
 """
 from __future__ import annotations
 
@@ -283,6 +285,16 @@ def _short(session_id: str) -> str:
     return session_id.split("-")[0] or session_id
 
 
+def _child_branch(base: str, session_id: str) -> str:
+    """Name of the per-session child branch created off *base*.
+
+    One function rather than the two identical f-strings create_worktree used to
+    carry: the name it emits must stay inside the set ``brand.is_session_branch``
+    recognises, and remove_worktree's ``git branch -D`` is what enforces that.
+    """
+    return f"{brand.BRANCH_PREFIX}{base}-{_short(session_id)}"
+
+
 def _registered_worktrees(repo_top: str) -> set[str]:
     """Absolute paths of every worktree git currently has an admin record for."""
     r = _run(["git", "-C", repo_top, "worktree", "list", "--porcelain"])
@@ -339,7 +351,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     """Create an isolated per-session worktree and return its info.
 
     When `branch` is given, checks it out directly; if it is already checked out
-    elsewhere, creates a child branch ``ccswitch/<branch>-<short>`` instead. When
+    elsewhere, creates a child branch ``viberpit/<branch>-<short>`` instead. When
     `branch` is None, creates a DETACHED worktree off the repo's current HEAD — used
     for repo sessions that didn't pick a branch, so every session still gets its own
     isolated working directory (never sharing the clone) without needing a branch.
@@ -411,7 +423,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         # remote tip origin/<branch>. This is the normal path (not just a fallback):
         # a fresh, writable, isolated branch without moving the user's local <branch>.
         if use_remote and _branch_on_origin(repo_top, branch):
-            child = f"ccswitch/{branch}-{_short(session_id)}"
+            child = _child_branch(branch, session_id)
             r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                       str(dest), "--", f"origin/{branch}"])
             if r.returncode == 0:
@@ -432,7 +444,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
         # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
-        child = f"ccswitch/{branch}-{_short(session_id)}"
+        child = _child_branch(branch, session_id)
         r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
         if r2.returncode == 0:
             lock_worktree(repo_top, dest)
@@ -454,8 +466,8 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     """Remove a ViberPit worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
-    destroy uncommitted work). Also deletes the per-session ``ccswitch/*`` child
-    branch when one was created, so the repo stays tidy.
+    destroy uncommitted work). Also deletes the per-session child branch when one
+    was created (either brand prefix), so the repo stays tidy.
 
     ``force=True`` bypasses the dirty guard and uses ``git worktree remove
     --force``.  Only the janitor's max-age eviction path should set this —
@@ -504,10 +516,13 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         log.warning("worktree.remove_failed path=%s err=%s", wt, rm.stderr.strip())
         return False
 
-    # Tidy up the session child branch we created (only the ccswitch/* ones).
+    # Tidy up the session child branch we created (only our own prefixes — a user's
+    # own branch is never deleted). BOTH spellings: a worktree created before the
+    # rebrand is torn down by the post-rebrand code, so matching only the emitted
+    # prefix would leak every legacy child branch into the clone permanently.
     # `remove` already deregisters this worktree; no global prune (it could reap a
     # sibling session's live worktree — #177).
-    if branch.startswith("ccswitch/"):
+    if brand.is_session_branch(branch):
         _run(["git", "-C", repo_top, "branch", "-D", branch])
     log.info("worktree.remove path=%s branch=%s force=%s", wt, branch, force)
     return True

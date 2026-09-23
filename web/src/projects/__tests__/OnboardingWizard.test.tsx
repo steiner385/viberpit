@@ -28,8 +28,8 @@ const BASE_COUNTS = {
 }
 
 const MAP_PR = {
-  branch: 'pm/feature-map-ccswitch',
-  url: 'https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-ccswitch',
+  branch: 'pm/feature-map-viberpit',
+  url: 'https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-viberpit',
 }
 
 function renderWizard() {

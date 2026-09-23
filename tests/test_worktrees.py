@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ccswitch import worktrees
+from ccswitch import brand, worktrees
 
 
 def _git(*args: str, cwd: str) -> None:
@@ -112,19 +112,53 @@ class WorktreeTests(unittest.TestCase):
         # `main` is checked out in the real repo, so it cannot be checked out again.
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
         self.assertTrue(info.is_child)
-        self.assertTrue(info.branch.startswith("ccswitch/main-"))
+        self.assertTrue(info.branch.startswith("viberpit/main-"))
         self.assertTrue(os.path.isdir(info.path))
 
     def test_remove_clean_worktree_and_child_branch(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
         self.assertTrue(worktrees.remove_worktree(info.path))
         self.assertFalse(os.path.isdir(info.path))
-        # the ccswitch/* child branch was deleted too
+        # the per-session child branch was deleted too
         branches = subprocess.run(
             ["git", "-C", str(self.repo), "branch", "--format=%(refname:short)"],
             capture_output=True, text=True,
         ).stdout
         self.assertNotIn(info.branch, branches.split())
+
+    def _branches(self) -> list[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True,
+        ).stdout.split()
+
+    def test_remove_deletes_a_legacy_prefixed_child_branch(self) -> None:
+        """#1369 — a worktree created BEFORE the rebrand is torn down by this code.
+
+        Its branch is `ccswitch/<base>-<id>` and no longer matches the emitted
+        prefix, so a single-spelling guard would silently stop tidying up: the
+        worktree goes, the branch stays, forever and in every clone. Nothing else
+        ever deletes it, which is why the accept side here is permanent.
+        """
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        legacy = info.branch.replace("viberpit/", "ccswitch/", 1)
+        _git("branch", "-m", info.branch, legacy, cwd=info.path)
+        self.assertIn(legacy, self._branches())
+
+        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertNotIn(legacy, self._branches())
+
+    def test_remove_keeps_a_branch_that_is_not_ours(self) -> None:
+        """The guard has to be able to REFUSE, or the test above proves nothing.
+
+        A worktree sitting on a branch the user named is never deleted — the
+        prefix is the whole licence to run `git branch -D`.
+        """
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        _git("branch", "-m", info.branch, "my-own-work", cwd=info.path)
+
+        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertIn("my-own-work", self._branches())
 
     def test_remove_ignores_leftover_codex_attachment_staging(self) -> None:
         """#1291 — a Codex session may leave workspace-local staged attachment
@@ -277,7 +311,7 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         """branch on origin → isolated child branch based at origin/<branch> tip."""
         info = worktrees.create_worktree(str(self.repo), "main", "cccccccc-0003", str(self.root))
         self.assertTrue(info.is_child)
-        self.assertTrue(info.branch.startswith("ccswitch/main-"))
+        self.assertTrue(info.branch.startswith("viberpit/main-"))
         self.assertEqual(_rev(Path(info.path), "HEAD"), self.origin_sha)
 
     def test_user_local_refs_unchanged(self) -> None:
@@ -340,7 +374,7 @@ class WorktreeConcurrencyTests(unittest.TestCase):
         n = 8
 
         def make(i: int) -> worktrees.WorktreeInfo:
-            # Distinct session id per call → distinct ccswitch/main-<short> child
+            # Distinct session id per call → distinct viberpit/main-<short> child
             # branch, but ALL write upstream config into the one shared clone.
             return worktrees.create_worktree(
                 str(self.repo), "main", f"conc{i:04d}-{i:04d}", str(self.root))
@@ -583,3 +617,41 @@ class WorktreeFetchCredentialsTests(unittest.TestCase):
             worktrees._try_fetch_origin(str(self.repo))
 
         self.assertEqual(seen, [None])
+
+
+class BranchPrefixTests(unittest.TestCase):
+    """The per-session branch prefix: one emitted spelling, both spellings matched.
+
+    Phase 2c of the rebrand (#1369). These live here rather than in
+    `tests/test_brand.py` because `worktrees` is the only consumer — the prefix
+    exists to license a `git branch -D`, and the end-to-end proof of that is the
+    remove_worktree cases above.
+    """
+
+    def test_emitted_prefix_derives_from_the_slug(self) -> None:
+        self.assertEqual(brand.BRANCH_PREFIX, f"{brand.SLUG}/")
+        self.assertEqual(brand.LEGACY_BRANCH_PREFIX, f"{brand.LEGACY_SLUG}/")
+        # Emitted first: a caller that wants "the" prefix reads [0].
+        self.assertEqual(brand.BRANCH_PREFIXES[0], brand.BRANCH_PREFIX)
+
+    def test_child_branch_is_emitted_in_one_spelling(self) -> None:
+        """Hand-typed on purpose: deriving it from BRANCH_PREFIX asserts nothing."""
+        self.assertEqual(worktrees._child_branch("main", "def67890-1111"),
+                         "viberpit/main-def67890")
+
+    def test_both_spellings_are_recognised(self) -> None:
+        for branch in ("viberpit/main-abcd", "ccswitch/main-abcd"):
+            self.assertTrue(brand.is_session_branch(branch), branch)
+
+    def test_a_branch_that_is_not_ours_is_rejected(self) -> None:
+        # `git branch -D` runs on this answer, so the false cases matter more than
+        # the true ones. `viberpit-ui` in particular must NOT match: it shares the
+        # stem, but the separator is what tells a session branch from a user's.
+        for branch in ("main", "feature/login", "viberpit-ui",
+                       "pm/feature-map-viberpit", "", "not-viberpit/x"):
+            self.assertFalse(brand.is_session_branch(branch), branch)
+
+    def test_a_non_string_is_rejected_rather_than_raising(self) -> None:
+        # rev-parse can fail and remove_worktree passes "" through; a TypeError here
+        # would abort a teardown that has already removed the worktree.
+        self.assertFalse(brand.is_session_branch(None))  # type: ignore[arg-type]

@@ -69,6 +69,34 @@ def is_mcp_tool(name: str) -> bool:
     return mcp_tool_stem(name) is not None
 
 
+#: Prefix of the per-session child branch a worktree is created on
+#: (``viberpit/<base>-<short-id>``). EMITTED form — one spelling, like the markers.
+BRANCH_PREFIX = f"{SLUG}/"
+#: The pre-rebrand branch prefix. Matched permanently, and for a harder reason than
+#: the markers: a branch is not ours to rewrite. Pushed copies live on remotes (and
+#: in other people's clones) indefinitely, a session resumed across the flip is still
+#: sitting on the branch it was created on, and the one consumer that matches this
+#: prefix is a ``git branch -D``. A reader that lost the legacy spelling would simply
+#: stop tidying every pre-flip branch, silently and forever.
+LEGACY_BRANCH_PREFIX = f"{LEGACY_SLUG}/"
+#: Emitted prefix first, so a caller that wants "the" prefix reads ``[0]``.
+BRANCH_PREFIXES = (BRANCH_PREFIX, LEGACY_BRANCH_PREFIX)
+
+
+def is_session_branch(branch: str) -> bool:
+    """Whether *branch* is a per-session child branch we created, either spelling.
+
+    The one place the branch dual-accept is spelled, for the same reason as
+    :func:`mcp_tool_stem`: the caller (``worktrees.remove_worktree``) deletes the
+    branch on this answer, so a second hand-typed ``startswith`` that missed a
+    prefix would leak one brand's branches into the repo forever while looking
+    exactly like the working code next to it.
+    """
+    if not isinstance(branch, str):
+        return False
+    return branch.startswith(BRANCH_PREFIXES)
+
+
 #: Regex fragment matching either brand spelling. For compat PARSERS only —
 #: never for emission. Permanent, for the same reason as the legacy MCP prefix:
 #: markers and context headers live in stored transcripts that are re-parsed on
