@@ -9664,6 +9664,25 @@ class SessionOrchestrator:
     # ...and the subset after which nothing will ever run under this id again.
     _CHAINED_SESSION_TERMINAL = ("ended", "archived")
 
+    async def _session_settle_signal(self, session_id: str) -> tuple[str, bool] | None:
+        """(status, ran) straight off the shared DB row, or None if no such row.
+
+        Deliberately NOT ``self.get_session()``: that reads host-local ``_records``
+        (#1574), which is empty for a session a chain running on the primary spawned
+        onto a non-primary fleet host — every poll read back None and the chain gave
+        up on a session that was alive and working the whole time. The DB row is
+        written by whichever host actually owns the session's driver, so it is the
+        one place this read is host-independent."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(sa_select(
+                DbSession.status, DbSession.last_turn_at).where(
+                    DbSession.id == session_id))).first()
+        if row is None:
+            return None
+        status, last_turn_at = row
+        return status, last_turn_at is not None
+
     async def _await_session_settled(self, session_id: str, *, attempts: int = 60,
                                      interval_s: float = 30.0) -> bool:
         """Poll until *session_id* has finished a turn; False if it never does.
@@ -9682,14 +9701,18 @@ class SessionOrchestrator:
         a turn hands output back (``ACTIVITY_STATUSES``), and
         ``server/sessions/status.py`` documents ``idle`` as "never ran", so it is
         the one field that separates finished from never-started. It is a DB
-        column, so the answer survives the restart that ends the drain."""
+        column, so the answer survives the restart that ends the drain — and,
+        unlike ``get_session`` (host-local ``_records``, #1574), it is also the
+        one place a session spawned onto a non-primary fleet host is actually
+        visible: ``_persist_status`` writes both columns to this shared row from
+        whichever host owns the session's driver, so a chain running on the
+        primary can settle-poll a session it never held in memory."""
         for _ in range(attempts):
-            rec = self.get_session(session_id)
-            if rec is None:
+            signal = await self._session_settle_signal(session_id)
+            if signal is None:
                 log.warning("chain_ingest: session %s vanished — giving up", session_id)
                 return False
-            status = getattr(rec, "status", None)
-            ran = getattr(rec, "last_turn_at", None) is not None
+            status, ran = signal
             if status in self._CHAINED_SESSION_SETTLED and ran:
                 return True
             if status in self._CHAINED_SESSION_TERMINAL and not ran:
