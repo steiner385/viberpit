@@ -489,6 +489,24 @@ class _FakeClient:
         return self._return_value
 
 
+def test_certify_harvested_complete_in_per_session():
+    """A harvested one-shot session is certified `complete` on the host that owns
+    its driver: the primary's chained ingest forwards through the edge, and the
+    fleet must route it by the row's host stamp — routed to the primary it would
+    no-op on an empty `_records` (the 2026-09-23 fridgesheet escalation)."""
+    from server.sessions.fleet_orchestrator import _PER_SESSION
+    assert "certify_harvested_complete" in _PER_SESSION
+
+
+@pytest.mark.asyncio
+async def test_remote_orchestrator_certify_harvested_complete_rpc():
+    from server.sessions.remote import RemoteOrchestrator
+    client = _FakeClient(None)
+    ro = RemoteOrchestrator(client)
+    assert await ro.certify_harvested_complete("s1") is None
+    assert client.last_call == ("certify_harvested_complete", {"session_id": "s1"})
+
+
 @pytest.mark.asyncio
 async def test_remote_orchestrator_resume_interrupted_rpc():
     """RemoteOrchestrator.resume_interrupted must proxy to the daemon and return its result."""

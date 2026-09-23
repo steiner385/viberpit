@@ -35,6 +35,17 @@ def test_simple_returns_wrapped_in_result():
     orch.resolve_permission.assert_called_once_with(session_id="s1", perm_id="p", decision="allow", identity="me")
 
 
+def test_certify_harvested_complete_is_a_simple_rpc():
+    """The owning host's daemon runs the certify locally when the primary's
+    chained ingest forwards it (edge -> FleetOrchestrator -> this RPC)."""
+    app, orch = _app()
+    orch.certify_harvested_complete = mock.AsyncMock(return_value=None)
+    with TestClient(app) as c:
+        assert c.post("/rpc/certify_harvested_complete",
+                      json={"session_id": "s1"}).json()["result"] is None
+    orch.certify_harvested_complete.assert_awaited_once_with(session_id="s1")
+
+
 def test_unarchive_returns_session_shape():
     app, orch = _app()
     orch.unarchive = mock.AsyncMock(return_value=_rec("u1"))

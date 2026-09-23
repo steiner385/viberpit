@@ -18,12 +18,20 @@ _SALT = "viberpit-internal-system-v1"
 # but far short of a window an intercepted token could be replayed within.
 MAX_AGE_S = 30.0
 
-# The ONLY route this token may call — unlike the assistant's ccas1 token (a whole
+# The routes this token may call — unlike the assistant's ccas1 token (a whole
 # allowlist for a human-facing drawer), this token has exactly one caller
-# (server/sessions/internal_dispatch.py) and exactly one job. Single source of truth
-# for both the middleware's enforcement and the router's own path.
+# (server/sessions/internal_dispatch.py) and two jobs: place an automation session
+# on the best-ranked host, and certify a harvested one-shot session `complete` on
+# the host that owns it. ``ALLOWED_ROUTES`` is the single source of truth for the
+# middleware's enforcement; the two path constants are what the router and the
+# client share.
 ALLOWED_METHOD = "POST"
 ALLOWED_PATH = "/api/internal/automation-sessions"
+CERTIFY_PATH = "/api/internal/certify-harvested"
+ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    (ALLOWED_METHOD, ALLOWED_PATH),
+    (ALLOWED_METHOD, CERTIFY_PATH),
+})
 
 
 def _serializer() -> URLSafeTimedSerializer:

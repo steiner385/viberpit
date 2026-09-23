@@ -1199,6 +1199,11 @@ class RemoteOrchestrator:
                                     timeout=SPAWN_RPC_TIMEOUT)
         return int(r) if r is not None else 0
 
+    async def certify_harvested_complete(self, session_id: str) -> None:
+        """Certify a harvested one-shot session `complete` on the daemon that owns it
+        (per-session routed by FleetOrchestrator)."""
+        await self._client.call("certify_harvested_complete", session_id=session_id)
+
     async def pm_advance_map_merged(self, slug: str) -> None:
         """Advance map_proposed → map_merged, via the daemon."""
         await self._client.call("pm_advance_map_merged", slug=slug)

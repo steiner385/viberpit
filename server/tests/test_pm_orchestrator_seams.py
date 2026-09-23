@@ -756,6 +756,117 @@ async def test_certify_harvested_complete_keeps_an_existing_resolution(db_env):
         "cancelled", "classifier")
 
 
+async def _seed_hosted_session(status: str, host: str | None) -> str:
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        row = DbSession(id="sess-remote", name="pm classify fridgesheet",
+                        account_name="acct1", cwd="/tmp/clone",
+                        repo="steiner385/fridgesheet", status=status, host=host)
+        db.add(row)
+        await db.flush()
+        return row.id
+
+
+def _forwarding_orch(monkeypatch, *, raise_exc: Exception | None = None):
+    """An orchestrator with NO local record (the primary's view of a session the
+    edge placed on another fleet host) and the via-edge forward captured."""
+    import server.sessions.internal_dispatch as dispatch
+    orch = _bare_orch()
+    orch._records = {}
+    persisted = []
+    async def fake_persist(session_id, status):
+        persisted.append((session_id, status))
+        return status
+    orch._persist_status = fake_persist
+    forwarded = []
+    async def fake_forward(*, port, session_id, transport=None):
+        forwarded.append(session_id)
+        if raise_exc is not None:
+            raise raise_exc
+    monkeypatch.setattr(dispatch, "certify_harvested_via_edge", fake_forward)
+    return orch, persisted, forwarded
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_forwards_to_the_owning_host(db_env, monkeypatch):
+    """The chain runs on the primary; the session it harvested may live on ANY
+    fleet host (the edge ranks automation spawns across hosts, #1574). The primary's
+    `_records` never held that session, so a host-local read silently no-ops: the
+    harvest wrote 29 proposals and the session still sat at `done` -> "Your turn",
+    escalated to a human (prod 2026-09-23, fridgesheet on rocky). The status
+    change has to happen where the driver is, so it is forwarded through the
+    co-located edge, whose FleetOrchestrator routes by the row's host stamp."""
+    await init_db(db_env)
+    sid = await _seed_hosted_session("done", "rocky")
+    orch, persisted, forwarded = _forwarding_orch(monkeypatch)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert forwarded == [sid]
+    assert persisted == []
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_does_not_forward_a_terminal_row(db_env, monkeypatch):
+    """Same no-resurrection rule as the local path: a session the user archived
+    while the chain polled is left alone, on every host."""
+    await init_db(db_env)
+    sid = await _seed_hosted_session("archived", "rocky")
+    orch, persisted, forwarded = _forwarding_orch(monkeypatch)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert forwarded == []
+    assert persisted == []
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_does_not_forward_a_vanished_row(db_env, monkeypatch):
+    await init_db(db_env)
+    orch, persisted, forwarded = _forwarding_orch(monkeypatch)
+
+    await orch._certify_harvested_complete("never-existed")
+
+    assert forwarded == []
+    assert persisted == []
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_swallows_an_unreachable_edge(db_env, monkeypatch):
+    """The chain is fire-and-forget; a transport failure is logged, never raised —
+    the proposals are already written, and the classify can be re-dispatched."""
+    from server.sessions.internal_dispatch import EdgeUnreachable
+    await init_db(db_env)
+    sid = await _seed_hosted_session("done", "rocky")
+    orch, persisted, forwarded = _forwarding_orch(
+        monkeypatch, raise_exc=EdgeUnreachable("refused"))
+
+    await orch._certify_harvested_complete(sid)
+
+    assert forwarded == [sid]
+    assert persisted == []
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_public_entry_no_ops_without_a_local_record(db_env):
+    """The RPC lands on the host the row is stamped with. If that host does not
+    actually hold the record (stale stamp, session already torn down), it must
+    answer quietly rather than forward again or raise — no ping-pong."""
+    await init_db(db_env)
+    sid = await _seed_hosted_session("done", "rocky")
+    orch = _bare_orch()
+    orch._records = {}
+    persisted = []
+    async def fake_persist(session_id, status):
+        persisted.append((session_id, status))
+        return status
+    orch._persist_status = fake_persist
+
+    await orch.certify_harvested_complete(sid)
+
+    assert persisted == []
+
+
 @pytest.mark.asyncio
 async def test_classify_run_schedules_ingest_chain(db_env):
     """pm_classify_run must schedule the ingest chain for the spawned session —

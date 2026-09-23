@@ -9792,10 +9792,51 @@ class SessionOrchestrator:
         the harness observing the deliverable, so the resolution is latched under
         ``HARVEST_RESOLUTION_SOURCE`` and ``met_bar`` trusts it — same shape as the
         ``queue-drain`` and ``classifier`` latches elsewhere in this file.
+
+        The chain calling this runs on the PRIMARY, but the session it harvested was
+        placed by the edge on whichever fleet host ranked best (#1574 again, one step
+        after the settle-poll fix in #2234): the primary's ``_records`` never held it,
+        so a host-local read here no-oped silently — 29 proposals written, session
+        still ``done`` → "Your turn" → escalated to a human (prod 2026-09-23,
+        fridgesheet on rocky). A record we do not hold is forwarded through the
+        co-located edge, whose ``FleetOrchestrator`` routes ``certify_harvested_complete``
+        by the row's host stamp to the daemon that owns the driver.
         """
+        if session_id in self._records:
+            await self.certify_harvested_complete(session_id)
+            return
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(sa_select(DbSession.status, DbSession.host).where(
+                DbSession.id == session_id))).first()
+        if row is None or row[0] in ("ended", "archived"):
+            # Same no-resurrection rule as the local path, decided off the shared row.
+            return
+        from server.config import get_settings
+        from server.sessions.internal_dispatch import (
+            EdgeUnreachable, certify_harvested_via_edge)
+        try:
+            await certify_harvested_via_edge(port=get_settings().port,
+                                             session_id=session_id)
+        except EdgeUnreachable as exc:
+            # Fire-and-forget chain: the proposals are already durable and the
+            # classify can be re-dispatched, so say so and stop rather than raise.
+            log.warning("pm_classify.certify_forward_failed sid=%s host=%s: %s",
+                        session_id, row[1], exc)
+
+    async def certify_harvested_complete(self, session_id: str) -> None:
+        """Certify *session_id* ``complete`` HERE, where its record and driver live.
+
+        The RPC/facade entry for ``_certify_harvested_complete``'s forward. A host
+        that does not actually hold the record (stale host stamp, torn down since)
+        answers quietly: forwarding again from here would ping-pong."""
         from server.automations.completion_bar import HARVEST_RESOLUTION_SOURCE
         rec = self._records.get(session_id)
-        if rec is None or rec.status in ("ended", "archived"):
+        if rec is None:
+            log.info("pm_classify.certify_no_local_record sid=%s host=%s",
+                     session_id, self_host_name())
+            return
+        if rec.status in ("ended", "archived"):
             # Ended or archived out from under the poll (the chain waits minutes).
             # A late harvest must never resurrect a session the user put away.
             return
