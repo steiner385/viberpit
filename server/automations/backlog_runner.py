@@ -735,6 +735,7 @@ class BacklogRunnerLoop:
         queue_tail: QueueTail | None = None,
         wall_clock: Callable[[], datetime] | None = None,
         session_gone: SessionEnded | None = None,
+        session_terminal_attest: SessionEnded | None = None,
         session_absent: SessionEnded | None = None,
         held_targets: HeldTargets | None = None,
     ) -> None:
@@ -775,6 +776,13 @@ class BacklogRunnerLoop:
         # The evidence bar for discharging a pre-ownership (token-less) claim; an
         # unwired seam leaves those rows untouched (``_release_legacy_claim``).
         self._session_gone = session_gone
+        # (session_id) -> True once a session ``_session_gone`` proved terminal has
+        # had its managed-tree generation proof repaired (best-effort). Without
+        # this, ``_work_stopped`` answers True from DB status alone while the
+        # ownership layer's own ``ReleaseProof.WORK_STOPPED`` check independently
+        # re-derives "stopped" from generation counters that a stuck proof never
+        # converges — the release call itself then raises (#2202, #2232/#2233).
+        self._session_terminal_attest = session_terminal_attest
         # (session_id) -> True only when the session row no longer EXISTS (not merely
         # terminal). The evidence bar for releasing a token-holding claim whose
         # session was permanently deleted (``_release_orphaned_claim``).
@@ -1767,6 +1775,22 @@ class BacklogRunnerLoop:
         if self._session_gone is not None:
             try:
                 if await self._session_gone(sid):
+                    # This answer alone only satisfies the CALLER's own decision.
+                    # ``reserve_target_action``/``_give_up`` still route their
+                    # actual release through ``ReleaseProof.WORK_STOPPED``, which
+                    # independently re-derives "stopped" from the managed-tree
+                    # generation counters (``ownership.py:_validate_release``) —
+                    # unaware of this DB-status shortcut. Repair those counters
+                    # now (best-effort) so that check passes too, instead of
+                    # answering True here while the write a moment later throws
+                    # "native session execution has no current stopped-work
+                    # attestation" every tick forever (#2202, #2232/#2233).
+                    if self._session_terminal_attest is not None:
+                        try:
+                            await self._session_terminal_attest(sid)
+                        except Exception:  # pragma: no cover — best-effort repair
+                            log.warning("backlog_runner.session_terminal_attest_failed sid=%s",
+                                        sid, exc_info=True)
                     return True
             except Exception:  # pragma: no cover — a probe failure must not stall the sweep
                 log.warning("backlog_runner.session_gone_probe_failed sid=%s", sid,

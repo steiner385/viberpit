@@ -1131,6 +1131,7 @@ class SessionOrchestrator:
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
+            session_terminal_attest=self._backlog_session_terminal_attest,
             session_absent=self._backlog_session_absent,
             session_ran=self._backlog_session_ran,
             session_work_stopped=self._automation_session_work_stopped,
@@ -6992,6 +6993,37 @@ class SessionOrchestrator:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
         return status is None or status in INACTIVE_SESSION_STATUSES
+
+    async def _backlog_session_terminal_attest(self, session_id: str) -> bool:
+        """Repair the managed-tree generation proof for a session ``_session_gone``
+        has already proven terminal, so a subsequent ``ReleaseProof.WORK_STOPPED``
+        (``reserve_target_action`` / ``_give_up`` / ``_release_legacy_claim``) does
+        not independently re-derive "stopped" from the same generation math and
+        fail: ``_validate_release`` (server/automations/ownership.py) checks
+        ``stopped_generation == execution_generation`` on its own, unaware of
+        ``_session_gone``'s answer, and #2227 only taught the READ side
+        (``_work_stopped``) to trust archived/ended — the WRITE side kept
+        rejecting every release with "native session execution has no current
+        stopped-work attestation" (steiner385/viberpit#2202, #2232/#2233:
+        three products pinned at ``max_in_flight`` behind a claim that could
+        never actually release).
+
+        Unlike ``_automation_session_work_stopped``, ``attest_terminal_session_stopped``
+        is pure DB CAS with no ``_records``/``_drivers``/host-stamp gate — safe to
+        call for a WORKER-hosted session's row (#2202's own claim: session
+        24564d1d ran on rocky while this sweep runs on the primary), which the
+        gated probe correctly refuses to vouch for on its own. Best-effort: a
+        failure here just leaves the generation proof as it was, for the normal
+        untouched retry next tick."""
+        from server.automations.ownership import StaleOwnership, attest_terminal_session_stopped
+        try:
+            return await attest_terminal_session_stopped(session_id)
+        except StaleOwnership:
+            return False
+        except Exception:
+            log.warning("backlog_runner.session_terminal_attest_failed session_id=%s",
+                        session_id, exc_info=True)
+            return False
 
     async def _backlog_session_absent(self, session_id: str) -> bool:
         """True only when *session_id*'s row no longer exists (permanently
