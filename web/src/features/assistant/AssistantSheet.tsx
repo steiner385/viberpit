@@ -20,6 +20,10 @@ import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
+import {
+  createSessionFailureMessage,
+  describeCreateSessionFailure,
+} from '@/features/sessions/createSessionFailure'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
@@ -55,7 +59,7 @@ export function AssistantSheet() {
 
   if (!status.data.sessionId) {
     return create.isError
-      ? <AssistantCreateError message={create.error?.message} onRetry={() => { void create.mutateAsync({}) }} />
+      ? <AssistantCreateError error={create.error} onRetry={() => { void create.mutateAsync({}) }} />
       : <AssistantSkeleton />
   }
 
@@ -160,11 +164,19 @@ function AssistantDisabled() {
   )
 }
 
-function AssistantCreateError({ message, onRetry }: { message?: string; onRetry: () => void }) {
+/**
+ * Read through the shared create-session triage rather than `Error.message`: an
+ * `ApiRequestError`'s message is the literal `API error <status>`, so a fleet
+ * refusal showed the user "API error 500" and nothing else (#2184). The drawer
+ * creates an ordinary session, so it gets the New Session dialog's reading of
+ * the same failures for free.
+ */
+function AssistantCreateError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const message = createSessionFailureMessage(describeCreateSessionFailure(error))
   return (
     <div className="space-y-3 p-4 text-sm">
       <p className="font-medium text-ink">Couldn&rsquo;t start the assistant</p>
-      <p className="text-ink-muted">{message ?? 'Something went wrong starting the assistant session.'}</p>
+      <p className="text-ink-muted">{message}</p>
       <Button type="button" variant="secondary" onClick={onRetry}>Retry</Button>
     </div>
   )

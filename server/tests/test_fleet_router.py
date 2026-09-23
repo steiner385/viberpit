@@ -72,6 +72,41 @@ def test_pick_raises_when_no_host_is_dispatchable(tmp_path):
         asyncio.run(run())
 
 
+def test_pick_can_exempt_a_full_host_from_the_capacity_leg(tmp_path):
+    """#2184: an assistant launch consumes no capacity slot, so `pick` must be able
+    to offer a host that is merely FULL — while still refusing one that is down."""
+    from server.db.models import Host
+    from server.sessions.fleet_router import NoHostAvailable
+
+    async def run():
+        r = await _router_with(
+            tmp_path, "r5.db",
+            Host(name="full", endpoint="unix:///a", healthy=True,
+                 max_sessions=2, active_sessions=2),
+        )()
+        with pytest.raises(NoHostAvailable):
+            await r.pick()
+        return await r.pick(ignore_capacity=True)
+
+    assert asyncio.run(run()) == ["full"]
+
+
+def test_pick_still_refuses_a_down_host_when_capacity_is_exempt(tmp_path):
+    from server.db.models import Host
+    from server.sessions.fleet_router import NoHostAvailable
+
+    async def run():
+        r = await _router_with(
+            tmp_path, "r6.db",
+            Host(name="down", endpoint="unix:///a", healthy=False,
+                 max_sessions=2, active_sessions=2),
+        )()
+        return await r.pick(ignore_capacity=True)
+
+    with pytest.raises(NoHostAvailable):
+        asyncio.run(run())
+
+
 def test_get_unknown_host_raises(tmp_path):
     from server.db.models import Host
     from server.sessions.fleet_router import UnknownHost

@@ -33,6 +33,26 @@ def test_host_at_capacity_is_excluded():
     assert rank_hosts([_c("room", max_sessions=2, active_sessions=1)]) == ["room"]
 
 
+def test_ignore_capacity_admits_a_full_host():
+    """#2184: the assistant consumes no capacity slot anywhere else — the daemon's
+    global-cap gate and `_consumes_capacity_slot` both exempt it — so refusing its
+    launch *for lack of a slot* made the drawer unopenable whenever the primary was
+    full (dobby's maxSessions is 4 and it sits at 3-4 routinely)."""
+    full = [_c("full", max_sessions=2, active_sessions=2)]
+    assert rank_hosts(full) == []
+    assert rank_hosts(full, ignore_capacity=True) == ["full"]
+
+
+def test_ignore_capacity_relaxes_only_the_capacity_leg():
+    """A down, disabled or never-probed host must still be refused — an assistant
+    launch onto a dead daemon is not a launch, it is a 500 later. Only the slot
+    count is exempt."""
+    assert rank_hosts([_c("down", healthy=False, max_sessions=2, active_sessions=2),
+                       _c("off", enabled=False, max_sessions=2, active_sessions=2),
+                       _c("unprobed", healthy=None, max_sessions=2, active_sessions=2)],
+                      ignore_capacity=True) == []
+
+
 def test_more_free_memory_ranks_higher():
     assert rank_hosts([_c("small", mem_available_mb=1024),
                        _c("big", mem_available_mb=16384)])[0] == "big"

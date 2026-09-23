@@ -335,7 +335,8 @@ class FleetOrchestrator:
         # The assistant is pinned to the primary: its tools call the edge's own loopback
         # API and its in-process MCP server lives in the primary daemon, so a worker
         # placement would have neither. Overrides any caller preference.
-        if is_assistant_kind(kwargs.get("kind")):
+        assistant = is_assistant_kind(kwargs.get("kind"))
+        if assistant:
             prefer = self._primary
         # A client sitting at a fleet host's own desktop should land there, or "route
         # to the native display" can never hold. An explicit host still wins, and an
@@ -355,9 +356,15 @@ class FleetOrchestrator:
         # Codex launch is only ever offered runners that advertised a usable Codex
         # boundary. Raises NoEngineHostAvailable (a NoHostAvailable) when every healthy
         # host is incompatible, carrying the per-host reason.
+        # `ignore_capacity` only for the assistant: it neither counts against nor
+        # queues behind the session cap anywhere else (the daemon's global-cap gate,
+        # `_consumes_capacity_slot`, `owned_active_session_count`), so ranking it
+        # against `active_sessions >= max_sessions` refused a slotless session for
+        # lack of a slot and left the drawer unopenable on a full primary (#2184).
         order = await self._router.pick(
             prefer=prefer, engine=engine,
-            expected_contract_sha256=expected_contract_sha256(engine))
+            expected_contract_sha256=expected_contract_sha256(engine),
+            ignore_capacity=assistant)
         last_exc: Exception | None = None
         for host in order:
             try:
