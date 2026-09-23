@@ -131,6 +131,48 @@ _redirect_state_off_production()
 
 
 # --------------------------------------------------------------------------- #
+# A real sessiond endpoint on the dev/deploy box must not leak into tests.    #
+#                                                                              #
+# create_app() (server/app.py) treats CCSWITCH_SESSIOND_ENDPOINT or _SOCKET   #
+# as an explicit request for remote mode and reads it BEFORE ever probing     #
+# DEFAULT_SOCKET_PATH — the _no_ambient_session_daemon fixture below patches  #
+# only that probe, so it can't help once an explicit endpoint is set. A host  #
+# actually running the daemon (e.g. the deploy box) exports the real value —  #
+# https://<host>:9443 plus its mTLS client cert paths — so importing this     #
+# package there makes create_app() try to build a real client TLS context.    #
+# Missing/mismatched cert vars raise TLSConfigError; present ones would just  #
+# as wrongly point the whole suite at a live production daemon. Either way,   #
+# every module that builds an app (most do, many at call time inside a test)  #
+# fails or misbehaves — this is what turned into ~700 failures across        #
+# unrelated files the one time it went unnoticed (2026-09-23).               #
+#                                                                              #
+# env_compat.mirror_legacy_env() (server/__init__.py, run before this module  #
+# body) has already copied CCSWITCH_* <-> VIBERPIT_* once per process, so     #
+# clearing only one prefix leaves the mirror's copy behind under the other    #
+# name — pop both. A test that wants real remote mode sets these itself       #
+# (monkeypatch/patch.dict, scoped to that test), same as isolated_db does for #
+# CCSWITCH_DB_URL, so this eager pop never needs a module-prefix exemption    #
+# list the way _no_ambient_session_daemon does.                               #
+# --------------------------------------------------------------------------- #
+_SESSIOND_VAR_SUFFIXES = (
+    "SESSIOND_ENDPOINT", "SESSIOND_SOCKET", "SESSIOND_HOST", "SESSIOND_PORT",
+    "SESSIOND_CLIENT_CERT", "SESSIOND_CLIENT_KEY", "SESSIOND_CLIENT_CA",
+    "SESSIOND_CLIENT_ALLOWLIST",
+    "SESSIOND_TLS_CERT", "SESSIOND_TLS_KEY", "SESSIOND_TLS_CA",
+    "DAEMON_ROLE",
+)
+
+
+def _no_ambient_remote_daemon_config():
+    for prefix in ("CCSWITCH_", "VIBERPIT_"):
+        for suffix in _SESSIOND_VAR_SUFFIXES:
+            os.environ.pop(prefix + suffix, None)
+
+
+_no_ambient_remote_daemon_config()
+
+
+# --------------------------------------------------------------------------- #
 # Helper scratch config dirs must not land in the developer's real ~/.cache.  #
 #                                                                             #
 # account_auth.helper_env() mirrors an account config dir into                #

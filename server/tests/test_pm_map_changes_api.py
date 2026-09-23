@@ -268,13 +268,10 @@ def _client(db_url: str, gh):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    _clear = [
-        "CCSWITCH_SESSIOND_ENDPOINT", "CCSWITCH_SESSIOND_SOCKET",
-        "CCSWITCH_SESSIOND_HOST", "CCSWITCH_SESSIOND_PORT",
-        "CCSWITCH_SESSIOND_CLIENT_CERT", "CCSWITCH_SESSIOND_CLIENT_KEY",
-        "CCSWITCH_SESSIOND_CA", "CCSWITCH_DAEMON_ROLE",
-        "CCSWITCH_GH_PROJECT_TOKEN", "VIBERPIT_GH_PROJECT_TOKEN",
-    ]
+    # Remote-sessiond vars (and CCSWITCH_DAEMON_ROLE) are cleared globally in
+    # conftest.py (_no_ambient_remote_daemon_config) so create_app() stays
+    # in-process; only the GH token vars need this test's own save/clear/restore.
+    _clear = ["CCSWITCH_GH_PROJECT_TOKEN", "VIBERPIT_GH_PROJECT_TOKEN"]
     with contextlib.ExitStack() as stack:
         saved = {k: os.environ.pop(k, None) for k in _clear}
         try:

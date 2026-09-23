@@ -19,21 +19,14 @@ def _orch():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    _clear = ["CCSWITCH_SESSIOND_ENDPOINT", "CCSWITCH_SESSIOND_SOCKET", "CCSWITCH_SESSIOND_HOST",
-              "CCSWITCH_SESSIOND_PORT", "CCSWITCH_SESSIOND_CLIENT_CERT",
-              "CCSWITCH_SESSIOND_CLIENT_KEY", "CCSWITCH_SESSIOND_CA"]
+    # Remote-sessiond vars are cleared globally in conftest.py
+    # (_no_ambient_remote_daemon_config).
     with tempfile.TemporaryDirectory() as tmp:
-        saved = {k: os.environ.pop(k, None) for k in _clear}
-        try:
-            db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                         "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
-                asyncio.run(init_db(db_url))
-                yield SessionOrchestrator(sdk_factory=fake_sdk_factory())
-        finally:
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            asyncio.run(init_db(db_url))
+            yield SessionOrchestrator(sdk_factory=fake_sdk_factory())
 
 
 def test_apply_writes_parents_and_links_and_rewrites_stale_links():

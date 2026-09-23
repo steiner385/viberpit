@@ -34,31 +34,17 @@ def _client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    # Unset remote-sessiond vars so create_app() stays in-process (no TLS needed).
-    _clear = [
-        "CCSWITCH_SESSIOND_ENDPOINT",
-        "CCSWITCH_SESSIOND_SOCKET",
-        "CCSWITCH_SESSIOND_HOST",
-        "CCSWITCH_SESSIOND_PORT",
-        "CCSWITCH_SESSIOND_CLIENT_CERT",
-        "CCSWITCH_SESSIOND_CLIENT_KEY",
-        "CCSWITCH_SESSIOND_CA",
-    ]
+    # Remote-sessiond vars are cleared globally in conftest.py
+    # (_no_ambient_remote_daemon_config) so create_app() stays in-process.
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        saved = {k: os.environ.pop(k, None) for k in _clear}
-        try:
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                         "CCSWITCH_DEV": "1",
-                                         "CCSWITCH_TAILNET_ALLOWLIST": ""}):
-                orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-                app = create_app(orchestrator=orch)
-                with TestClient(app, raise_server_exceptions=False) as c:
-                    yield c
-        finally:
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                yield c
 
 
 def test_project_lifecycle():
