@@ -173,6 +173,13 @@ async def test_ws_upgrade_without_identity_is_rejected():
 
 # ---------------------------------------------------------------------------
 # X-Real-IP fallback (nginx reverse-proxy path)
+#
+# The fakes below stand in for `subprocess.run`, which server.auth.identity uses
+# for TWO commands, not one: `tailscale whois` and — since #2134 — `tailscale
+# status --json`, to learn this node's own tailnet addresses. So each fake records
+# whois invocations specifically; recording every call made `whois_calls` mean
+# "every subprocess this request happened to spawn", which is not what any
+# assertion here is about.
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +190,8 @@ async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[-1])  # IP argument (after --)
+        if cmd[:2] == ["tailscale", "whois"]:
+            whois_calls.append(cmd[-1])  # IP argument (after --)
         mock = MagicMock()
         mock.returncode = 0
         mock.stdout = json.dumps({"UserProfile": {"LoginName": "alice@example.com"}})
@@ -219,7 +227,8 @@ async def test_whois_falls_back_to_client_host_without_x_real_ip(monkeypatch):
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[-1])
+        if cmd[:2] == ["tailscale", "whois"]:
+            whois_calls.append(cmd[-1])  # IP argument (after --)
         mock = MagicMock()
         mock.returncode = 1  # whois fails → 401
         mock.stdout = ""
@@ -243,7 +252,8 @@ async def test_x_real_ip_ignored_when_direct_peer_not_trusted(monkeypatch):
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[-1])  # IP argument (after --)
+        if cmd[:2] == ["tailscale", "whois"]:
+            whois_calls.append(cmd[-1])  # IP argument (after --)
         mock = MagicMock()
         mock.returncode = 1
         mock.stdout = ""
@@ -270,7 +280,8 @@ async def test_invalid_x_real_ip_does_not_invoke_whois(monkeypatch):
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[-1])
+        if cmd[:2] == ["tailscale", "whois"]:
+            whois_calls.append(cmd[-1])  # IP argument (after --)
         mock = MagicMock()
         mock.returncode = 0
         mock.stdout = json.dumps({"UserProfile": {"LoginName": "attacker@evil.com"}})
@@ -286,3 +297,35 @@ async def test_invalid_x_real_ip_does_not_invoke_whois(monkeypatch):
         )
     assert response.status_code == 401
     assert len(whois_calls) == 0, "whois must not be called with an invalid IP"
+
+
+@pytest.mark.asyncio
+async def test_no_x_real_ip_does_not_probe_this_nodes_own_tailscale_ips(monkeypatch):
+    """With no X-Real-IP there is nothing for peer-trust to gate, so the trust check
+    — which since #2134 can spawn `tailscale status --json` — must not run at all.
+
+    This is the tailscale-serve path (no nginx, no forwarded header) and therefore
+    the common one: #2134 is about a subprocess spawn per request, so leaving an
+    ungated one here would just move the cost rather than remove it. The TTL cache
+    hides this from a soak test, which is why it is pinned by inspection instead.
+    """
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(list(cmd))
+        mock = MagicMock()
+        mock.returncode = 1
+        mock.stdout = ""
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_run)
+    app = create_app()
+    # A non-loopback peer: loopback short-circuits peer-trust before the probe, so it
+    # could not tell an evaluated check from a skipped one.
+    transport = ASGITransport(app=app, client=("100.64.0.50", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/health")
+    assert response.status_code == 401
+    assert commands == [["tailscale", "whois", "--json", "--", "100.64.0.50"]], (
+        "the only subprocess for an unforwarded request is the whois fallback itself"
+    )

@@ -328,6 +328,19 @@ def _reset_gh_credential_health():
     gh_credential.host_health().reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_self_tailscale_ips_cache():
+    # Third instance of the same hazard: server.auth.identity memoises this node's
+    # own tailnet addresses (#2134) for minutes to keep a `tailscale status` spawn
+    # off the per-request path. Any test that stubs subprocess.run would otherwise
+    # leave its fake verdict latched for every LATER test on the worker — which is
+    # exactly how two auth tests came to pass or fail purely on ordering.
+    from server.auth import identity
+    identity.reset_self_ips_cache()
+    yield
+    identity.reset_self_ips_cache()
+
+
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).

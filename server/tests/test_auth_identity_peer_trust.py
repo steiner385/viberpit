@@ -52,6 +52,10 @@ def _ws(client: tuple[str, int] | None, **headers: str) -> WebSocket:
     }, receive=None, send=None)  # type: ignore[arg-type]
 
 
+def _no_tailscale_binary(cmd, **kwargs):
+    raise FileNotFoundError("no such file: tailscale")
+
+
 @pytest.fixture(autouse=True)
 def _locked_down(monkeypatch):
     """Deployed posture: an allowlist is set and LAN-open mode is off."""
@@ -61,6 +65,14 @@ def _locked_down(monkeypatch):
     # `tailscale whois` shells out to the host daemon; stub it so these tests exercise
     # the header-trust decision rather than the machine's real tailnet membership.
     monkeypatch.setattr("server.auth.identity._whois_identity", lambda request: None)
+    # Same reasoning for the other shell-out in this module: `_self_tailscale_ips`
+    # runs `tailscale status --json`. Default these tests to "this host has no
+    # tailscale" so a peer is trusted only for the reason under test; the cases that
+    # care re-stub it below. (The cache it fills is reset per-test by conftest.)
+    monkeypatch.setattr(
+        "server.auth.identity.subprocess.run",
+        _no_tailscale_binary,
+    )
 
 
 def test_header_from_loopback_peer_is_accepted():
@@ -175,12 +187,10 @@ class _FakeCompletedProcess:
         self.stdout = stdout
 
 
-@pytest.fixture(autouse=True)
-def _reset_self_ips_cache(monkeypatch):
-    """The cache is a module global; each test starts cold and leaves it cold."""
-    monkeypatch.setattr("server.auth.identity._self_ips_cache", None)
-    yield
-    monkeypatch.setattr("server.auth.identity._self_ips_cache", None)
+# Each of these starts against a cold cache: `server/tests/conftest.py` resets the
+# module global around every test in the suite, so no local fixture is needed here
+# — and, more to the point, no OTHER test file inherits a fake verdict latched by
+# one of these.
 
 
 def test_self_tailscale_ips_parses_status_json(monkeypatch):

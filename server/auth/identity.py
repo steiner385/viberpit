@@ -166,6 +166,20 @@ def _self_tailscale_ips() -> frozenset[_AnyAddress]:
     return resolved_ips
 
 
+def reset_self_ips_cache() -> None:
+    """Drop the memoised self-IP set.
+
+    This is process-global state, so the suite resets it around every test (autouse
+    fixture in ``server/tests/conftest.py``, alongside the helper-call breakers and
+    the gh-credential latch). A test that stubs ``subprocess.run`` would otherwise
+    freeze its fake answer here for the whole TTL and silently change what every
+    LATER test on that xdist worker sees — an order-dependent failure that looks
+    nothing like its cause.
+    """
+    global _self_ips_cache
+    _self_ips_cache = None
+
+
 def _peer_is_trusted(request: Request | WebSocket) -> bool:
     """True when this peer may assert an identity header.
 
@@ -209,12 +223,17 @@ def _whois(request: Request | WebSocket) -> dict | None:
     try:
         direct_peer = request.client.host if request.client else None
         peer_ip: str | None = direct_peer
-        if _peer_is_trusted(request):
-            # Only honour X-Real-IP when something entitled to set it sits in front:
-            # loopback, or an address in CCSWITCH_TRUSTED_PROXY_IPS. This is the same
-            # predicate the identity-header gate uses — one peer-trust rule in this
-            # module, not two that can drift apart.
-            peer_ip = request.headers.get("X-Real-IP") or direct_peer
+        forwarded = request.headers.get("X-Real-IP")
+        # Only honour X-Real-IP when something entitled to set it sits in front:
+        # loopback, one of this node's own tailnet addresses, or an address in
+        # CCSWITCH_TRUSTED_PROXY_IPS. This is the same predicate the identity-header
+        # gate uses — one peer-trust rule in this module, not two that can drift
+        # apart. Evaluated only when there IS a forwarded address for it to gate:
+        # with no X-Real-IP the verdict cannot change peer_ip, and since #2134 the
+        # check can cost a `tailscale status` spawn — the exact per-request cost
+        # this whole path exists to stop paying.
+        if forwarded and _peer_is_trusted(request):
+            peer_ip = forwarded
         if not peer_ip:
             return None
         # Validate peer_ip is a real IP address to prevent argv flag injection
