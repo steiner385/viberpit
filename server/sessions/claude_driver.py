@@ -1539,8 +1539,14 @@ class ClaudeAgentDriver:
                 if msg is _EOF:
                     if self._closing:
                         return
-                    log.warning("driver.idle_listen: SDK stream ended while idle session=%s",
-                                self.session_id)
+                    # No log of our own: _on_stream_ended owns the record for a stream
+                    # death, and reports this same end at ERROR with mid_turn=False and
+                    # the recompose it is about to do. The warning that used to sit here
+                    # was all the pre-#1895 code could do about an idle EOF; left in
+                    # alongside the handler it reported one incident twice, and error
+                    # triage — which fingerprints the normalized message — filed the
+                    # pair as two auto-error issues (#1943). The mid-turn EOF in _drain
+                    # already delegates the same way.
                     await self._on_stream_ended(mid_turn=False)
                     return
                 # Only a turn's own frames open a turn. Bookkeeping frames (SessionStart
