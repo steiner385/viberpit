@@ -1957,8 +1957,16 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     if action_error is not None:
                         # Same silent-drop shape as answerQuestion below: an
                         # unresolvable decision must surface, not 200-and-vanish.
-                        log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
-                                    session_id, perm_id, identity)
+                        # 403 PERMISSION_NOT_OWNED is a real defect (still pending,
+                        # refused under the wrong identity — #2200/#2205); 404
+                        # PERMISSION_NOT_PENDING is an ordinary stale-card click.
+                        # Without the code these two were byte-identical WARNING
+                        # lines, so the benign one dominated auto-error triage
+                        # (#2210). The code is logged either way so the
+                        # fingerprint separates them on its own.
+                        _log = log.warning if action_error.http != 404 else log.info
+                        _log("ws.resolve_permission rejected session=%s perm=%s identity=%s code=%s",
+                             session_id, perm_id, identity, action_error.code)
                         # The helper's message, not a copy: it distinguishes "gone"
                         # from "still pending, owned by another identity".
                         await _send({"type": "error", "code": action_error.code,
@@ -1981,8 +1989,11 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # Never a silent no-op: an unresolvable answer (no such pending
                         # question, identity mismatch, no driver) used to return 200
                         # and leave the user staring at a card that never reacts.
-                        log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
-                                    session_id, question_id, identity)
+                        # Same NOT_OWNED-vs-NOT_PENDING split as resolve_permission
+                        # above (#2210).
+                        _log = log.warning if action_error.http != 404 else log.info
+                        _log("ws.answer_question rejected session=%s qid=%s identity=%s code=%s",
+                             session_id, question_id, identity, action_error.code)
                         await _send({"type": "error", "code": action_error.code,
                                      "message": action_error.message,
                                      "sessionId": session_id})
