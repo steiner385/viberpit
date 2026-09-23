@@ -27,6 +27,7 @@ __all__ = [
     "ACKNOWLEDGMENT_MARKER",
     "check_amendment",
     "check_guardrail_change",
+    "classify_document",
     "parse_footer",
 ]
 
@@ -47,6 +48,34 @@ def parse_footer(text: str) -> dict[str, str] | None:
     """The ``Version`` / ``Ratified`` / ``Last Amended`` footer, or None."""
     match = _VERSION_RE.search(text)
     return match.groupdict() if match else None
+
+
+# spec-kit's generated template uses `[UPPER_CASE_WITH_UNDERSCORES]` placeholders throughout
+# (`[PROJECT_NAME]`, `[PRINCIPLE_1_NAME]`, `[CONSTITUTION_VERSION]`, …) — a document that still
+# carries one was never filled in, whatever its footer claims.
+_TEMPLATE_TOKEN_RE = re.compile(r"\[[A-Z][A-Z0-9_ ]*\]")
+
+
+def classify_document(text: str | None) -> str | None:
+    """Governance status of a constitution document's raw text (issue #2165).
+
+    ``None`` means the document looks ratified: present, not the unfilled spec-kit
+    template, and its Version/Ratified/Last Amended footer parses. Otherwise one of:
+
+    * ``"missing"`` — no file (``text`` is ``None`` or blank).
+    * ``"template"`` — still carries a spec-kit placeholder token like
+      ``[PROJECT_NAME]``; whatever else it says is not binding.
+    * ``"no_version_footer"`` — present, not a template, but the footer this gate's
+      own ``check_amendment`` requires for every amendment does not parse, so the
+      document cannot be confirmed ratified.
+    """
+    if text is None or not text.strip():
+        return "missing"
+    if _TEMPLATE_TOKEN_RE.search(text):
+        return "template"
+    if parse_footer(text) is None:
+        return "no_version_footer"
+    return None
 
 
 def _as_tuple(version: str) -> tuple[int, int, int]:
