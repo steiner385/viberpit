@@ -100,6 +100,18 @@ def set_project_unindexed_docs(
         row.unindexed_docs = [{"path": p, "error": e} for p, e in pairs] or None
 
 
+def set_project_constitution_status(
+    db: Session, project_id: str, status: str | None,
+) -> None:
+    """Persist pm-sync's current constitution governance status onto the project
+    row (issue #2165), so ``roadmap_health`` can surface it without re-reading the
+    repo. Rewritten every pass — a fixed constitution clears a previously-flagged
+    status the same way a fixed feature doc clears ``unindexed_docs``."""
+    row = db.get(Project, project_id)
+    if row is not None:
+        row.constitution_status = status
+
+
 def _work_item_id(db: Session, repo: str | None, number: int | None,
                   kind: str | None) -> str | None:
     if not repo or number is None or not kind:

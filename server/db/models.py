@@ -1633,6 +1633,13 @@ class Project(Base):
     # before this, a skipped doc was invisible anywhere but the automation feed
     # and the process log. Nullable so reconcile ALTER-ADDs it on both dialects.
     unindexed_docs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # pm_sync's current constitution governance status for this product's primary
+    # repo (issue #2165): None ⇒ ratified (present, not a template, footer parses);
+    # "missing" / "template" / "no_version_footer" ⇒ a Needs-you item, see
+    # server/sdlc/constitution_gate.classify_document. Rewritten every
+    # `_governance_check` pass so a fixed constitution clears itself. Nullable so
+    # reconcile ALTER-ADDs it on both dialects.
+    constitution_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ProjectRepo(Base):
