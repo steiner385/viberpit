@@ -5,12 +5,18 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import select
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
+
+
+async def _no_synth_tick(_self) -> None:
+    """Stand-in for the synthesizer's startup tick — see ``_client``."""
 
 
 @contextmanager
@@ -28,6 +34,18 @@ def _client(db_url: str | None = None):
         if url is None:
             tmp = stack.enter_context(tempfile.TemporaryDirectory())
             url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        # Every control loop fires ONE tick the moment the lifespan starts
+        # (``while True: tick(); sleep(interval)``). The SDLC synthesizer's tick
+        # advances an initiative whose product tolerance auto-resolves
+        # `stage.advance` — it rewrites the very rows these read-surface tests
+        # assert on, so a GET races the tick and returns the post-advance stage
+        # under CI load (design→plan turns `await_approval/spec` into
+        # `propose/plan`). The loop reads the kill switch off settings, so a test
+        # patching the router's `_autoresolve_enabled` seam does not stop it.
+        # The synthesizer is driven directly in test_sdlc_synthesizer_loop.py;
+        # here it must never mutate under the request.
+        stack.enter_context(patch.object(
+            SessionOrchestrator, "_sdlc_synth_tick_once", _no_synth_tick))
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
                                      "CCSWITCH_DEV": "1",
                                      "CCSWITCH_TAILNET_ALLOWLIST": ""}):
@@ -1623,6 +1641,27 @@ def test_detail_guidance_names_the_kill_switch(monkeypatch):
             assert "switched off" in g["machine"]["because"]
             gates = c.get("/api/sdlc/gates", headers=IDENTITY_HEADERS).json()
             assert gates["autoresolveEnabled"] is False
+
+
+@pytest.mark.slow
+def test_no_control_loop_advances_the_initiative_under_the_test_client():
+    """Every control loop fires one tick as the lifespan starts, and the SDLC
+    synthesizer's tick advances an initiative whose tolerance auto-resolves
+    `stage.advance`. That rewrote `dark-mode` design→plan underneath the
+    guidance tests above, turning `await_approval/spec` into `propose/plan`
+    whenever the tick beat the request — green locally, red under CI load.
+
+    The real wait is the assertion: the tick has to be given its chance to fire
+    and still leave the row alone.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, tolerance="balanced")
+        with _client(db_url) as c:
+            time.sleep(2.0)
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert body["stage"] == "design"
+            assert body["nextAction"] == {"type": "advance", "toStage": "plan"}
 
 
 def test_detail_guidance_when_the_synthesizer_is_off():
