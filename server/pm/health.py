@@ -17,7 +17,7 @@ class RoadmapHealth:
     # pm_sync's classified constitution status for the product's primary repo
     # (issue #2165) — None/"missing"/"template"/"no_version_footer", passed
     # through unchanged from Project.constitution_status; see
-    # server/sdlc/constitution_gate.classify_document for what each value means.
+    # server/sdlc/constitution_status.classify_document for what each value means.
     governance: str | None = None
 
 

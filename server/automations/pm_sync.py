@@ -30,7 +30,7 @@ from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
 from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
 from server.pm.mirror_store import ProductSyncView
-from server.sdlc.constitution_gate import classify_document
+from server.sdlc.constitution_status import classify_document
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy

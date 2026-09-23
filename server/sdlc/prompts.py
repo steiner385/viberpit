@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from ccswitch.engines import AgentEngine
 
-from server.sdlc.constitution_gate import classify_document
+from server.sdlc.constitution_status import classify_document
 from server.sessions.completion import commit_trailer
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps this module import-light

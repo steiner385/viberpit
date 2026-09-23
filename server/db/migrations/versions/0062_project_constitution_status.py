@@ -1,7 +1,7 @@
 """Persist pm-sync's per-pass constitution governance status onto the project row.
 
-Revision ID: 0061_project_constitution_status
-Revises: 0060_backlog_groups_degraded
+Revision ID: 0062_project_constitution_status
+Revises: 0061_brand_automation_keys
 
 Nullable string: init_db reconcile adds this on SQLite and Postgres. Existing
 rows stay NULL until the next pm-sync pass classifies them.
@@ -9,8 +9,8 @@ rows stay NULL until the next pm-sync pass classifies them.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0061_project_constitution_status"
-down_revision = "0060_backlog_groups_degraded"
+revision = "0062_project_constitution_status"
+down_revision = "0061_brand_automation_keys"
 branch_labels = None
 depends_on = None
 

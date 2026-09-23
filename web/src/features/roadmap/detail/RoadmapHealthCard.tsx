@@ -23,7 +23,7 @@ function SlugLinks({ slugs, path }: { slugs: string[]; path: (slug: string) => s
 }
 
 // pm_sync's classified constitution status for the product's primary repo
-// (issue #2165) — see server/sdlc/constitution_gate.classify_document.
+// (issue #2165) — see server/sdlc/constitution_status.classify_document.
 const GOVERNANCE_MESSAGE: Record<string, string> = {
   missing: 'no ratified constitution — spec sessions have nothing to check governance against',
   template: 'the constitution is still the unfilled template — spec sessions have nothing real to check against',

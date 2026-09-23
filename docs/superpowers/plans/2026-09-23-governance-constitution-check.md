@@ -7,6 +7,15 @@ still be the unfilled spec-kit template — surface the gap on the product overv
 item) and stop telling spec sessions to blindly "apply the repository constitution" when there is
 nothing real to apply.
 
+> **Amendment (as built):** the classifier ships as `server/sdlc/constitution_status.py`, not as a
+> function inside `constitution_gate.py`. `constitution_gate.py` is a `GUARDRAIL_PATHS` entry, so
+> *any* edit to it fails the `amendment` required check until the owner acknowledges the PR — and a
+> read-only hygiene classifier is not a governance-enforcement change worth spending that on. The
+> footer grammar stays single-sourced: the new module imports `constitution_gate.parse_footer`.
+> Below, read every `constitution_gate.classify_document` as `constitution_status.classify_document`
+> and every "add to `constitution_gate.py`" as "add to `constitution_status.py`"; its tests live in
+> `server/tests/test_constitution_status.py`.
+
 **Architecture:** A new pure classifier (`constitution_gate.classify_document`) turns raw
 constitution text into one of `None` (looks ratified) / `"missing"` / `"template"` /
 `"no_version_footer"`. `pm_sync`'s existing per-primary-repo pass reads
