@@ -356,11 +356,13 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
     h = roadmap_health(capabilities=caps,
                        initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
                                     i.stage == "done" or i.status == "done") for i in inits],
-                       proposals=props, now=now, unindexed_docs=unindexed)
+                       proposals=props, now=now, unindexed_docs=unindexed,
+                       governance=p.constitution_status)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
             "unindexedDocs": [{"path": path, "error": error} for path, error in h.unindexed_docs],
+            "governance": h.governance,
             "generatedAt": now.isoformat()}
 
 

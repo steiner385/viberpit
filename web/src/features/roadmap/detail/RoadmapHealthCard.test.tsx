@@ -86,4 +86,37 @@ describe('RoadmapHealthCard', () => {
     expect(screen.getByText(/1 feature doc could not be parsed/)).toBeInTheDocument()
     expect(screen.getByText('docs/product/features/bad.md')).toBeInTheDocument()
   })
+
+  it('surfaces a missing constitution as a governance bullet', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [],
+        governance: 'missing',
+        generatedAt: 'x',
+      },
+    })
+    mount()
+    expect(screen.getByText('Roadmap hygiene')).toBeInTheDocument()
+    expect(screen.getByText(/no ratified constitution/i)).toBeInTheDocument()
+  })
+
+  it('stays hidden when governance is null and everything else is empty', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [],
+        governance: null,
+        generatedAt: 'x',
+      },
+    })
+    const { container } = mount()
+    expect(container.firstChild).toBeNull()
+  })
 })

@@ -45,6 +45,17 @@ def test_health_unindexed_docs_defaults_to_empty():
     assert h.unindexed_docs == ()
 
 
+def test_health_passes_through_governance_status():
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW,
+                       governance="template")
+    assert h.governance == "template"
+
+
+def test_health_governance_defaults_to_none():
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW)
+    assert h.governance is None
+
+
 def test_health_accepts_naive_utc_timestamps():
     # Every DB column is `DateTime(timezone=True)`, naive UTC on SQLite (the
     # dialect has no native timezone type and hands the value back
