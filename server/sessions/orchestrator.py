@@ -2355,37 +2355,59 @@ class SessionOrchestrator:
                 name="recurring-session-scheduler",
             )
 
-    async def _primary_lease_heartbeat(self) -> None:
-        """Renew the primary lease every TTL/5; scream on a fenced takeover (#852).
+    async def _primary_lease_beat(self) -> None:
+        """One primary-lease renew pass, split out so a test can drive it directly
+        instead of racing a wall clock (mirrors ``_session_lease_tick``, #2146).
 
-        A failed renew means another daemon took the lease — i.e. TWO primaries
-        are (or were) configured. This loop does not self-demote (stopping live
-        automation loops mid-flight has its own failure modes); it makes the
-        split-brain impossible to miss: a CRITICAL log every beat until an
-        operator fixes the roles. A transient DB error is retried silently — the
-        fence means a delayed renew can never resurrect a lease someone took.
+        A failed renew means only that THIS fence no longer matches the row —
+        that is as true of a same-host re-acquire (another incarnation of this
+        daemon, e.g. an overlapping restart) as of a genuine foreign takeover
+        (#1844's lesson, applied here). Unlike the session lease there is no
+        in-process fence race to rule out first: ``self._lease_fence`` is read
+        fresh each beat and only ever set at boot. So the row's holder decides
+        everything: our own host name means one daemon, not two, so a WARNING;
+        any other host is the #852 split-brain the CRITICAL exists for, logged
+        every beat until an operator fixes ``CCSWITCH_DAEMON_ROLE`` — this loop
+        does not self-demote (stopping live automation loops mid-flight has its
+        own failure modes).
         """
+        fence = self._lease_fence
+        if fence is None:  # defensive: heartbeat only starts after acquire
+            return
+        me = self_host_name()
+        try:
+            ok = await primary_lease.renew(me, fence)
+        except Exception:
+            log.warning("primary-lease: renew failed (DB error) — retrying "
+                        "next beat", exc_info=True)
+            return
+        if ok:
+            return
+        state = await primary_lease.current()
+        holder = state.holder if state else None
+        if holder == me:
+            log.warning(
+                "primary-lease: re-acquired by another incarnation of this "
+                "daemon on %r (e.g. an overlapping restart) — one host, not "
+                "the #852 two-primary split-brain. This process's fence is "
+                "stale; it stops driving as primary.",
+                holder,
+            )
+            return
+        log.critical(
+            "primary-lease: LOST (fenced takeover by %r) — TWO primary "
+            "daemons are configured. This daemon keeps running but the "
+            "fleet is double-driven until CCSWITCH_DAEMON_ROLE is fixed "
+            "on one host and that daemon restarts.",
+            holder if holder is not None else "<released>",
+        )
+
+    async def _primary_lease_heartbeat(self) -> None:
+        """Beat :meth:`_primary_lease_beat` every TTL/5 (#852)."""
         interval = max(PRIMARY_LEASE_TTL_S / 5.0, 2.0)
         while True:
             await asyncio.sleep(interval)
-            fence = self._lease_fence
-            if fence is None:  # defensive: heartbeat only starts after acquire
-                continue
-            try:
-                ok = await primary_lease.renew(self_host_name(), fence)
-            except Exception:
-                log.warning("primary-lease: renew failed (DB error) — retrying "
-                            "next beat", exc_info=True)
-                continue
-            if not ok:
-                state = await primary_lease.current()
-                log.critical(
-                    "primary-lease: LOST (fenced takeover by %r) — TWO primary "
-                    "daemons are configured. This daemon keeps running but the "
-                    "fleet is double-driven until CCSWITCH_DAEMON_ROLE is fixed "
-                    "on one host and that daemon restarts.",
-                    state.holder if state else "<released>",
-                )
+            await self._primary_lease_beat()
 
     # ------------------------------------------------------------------
     # Per-session ownership lease (#1379)
