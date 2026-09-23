@@ -451,6 +451,33 @@ def test_a_crash_restarts_reinitializes_and_relogs_in():
     asyncio.run(go())
 
 
+def test_a_crash_and_its_restart_file_as_one_warning_not_two(caplog):
+    """#1858: the exit already files the fault at `classify_runner_ending`'s
+    level; the recovery that follows must not mint a second one. Before the
+    fix, `codex.manager.runner_restarted` logged at WARNING unconditionally,
+    so every crash+restart cycle filed two error-sink fingerprints for one
+    incident — the #1485/#1991 shape."""
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.INFO, logger="server.codex.manager"):
+            spawned[0].crash()
+            await manager.wait_settled("a", timeout=2.0)
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, (
+        f"one incident filed as {len(warnings)}: {[r.getMessage() for r in warnings]}"
+    )
+    assert getattr(warnings[0], "event", None) == "codex.manager.runner_crashed"
+    restarted = [r for r in caplog.records
+                 if getattr(r, "event", None) == "codex.manager.runner_restarted"]
+    assert restarted, "the restart itself must still be logged, just not as a fault"
+    assert restarted[0].levelno == logging.INFO
+
+
 def test_an_in_flight_turn_is_never_reported_completed_after_a_crash():
     async def go():
         manager, spawned = _manager()

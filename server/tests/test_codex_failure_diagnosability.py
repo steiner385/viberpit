@@ -582,6 +582,30 @@ def test_one_ending_is_still_one_issue_however_it_is_numbered(caplog):
 
 
 # ---------------------------------------------------------------------------
+# #1858 — a restart is not a second report of the crash that caused it
+# ---------------------------------------------------------------------------
+#
+# `_handle_exit` already files the fault `classify_runner_ending` named, at the
+# level it gave it. The retry loop then logged `codex.manager.runner_restarted`
+# unconditionally at WARNING on every successful recovery — the #1485/#1991
+# shape once more, this time inside one function: one incident (the exit),
+# reported twice (the exit's own record, then the recovery that followed it),
+# each a distinct error-sink fingerprint. 34 occurrences, 2026-09-11 → 09-19,
+# dobby, account chatgpt-tonystein85_gmail.com.
+
+
+def test_a_successful_restart_no_longer_mints_its_own_fingerprint(caplog):
+    """The record itself, in isolation: below WARNING, so the sink drops it."""
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="server.codex.manager"):
+        log_event(_MGR_LOGGER, logging.INFO, "codex.manager.runner_restarted",
+                  account="chatgpt-tonystein85_gmail.com", generation=2, attempt=1)
+    record = caplog.records[-1]
+    assert record.levelno < logging.WARNING
+    assert signature_of(record, source="daemon", host="dobby") is None
+
+
+# ---------------------------------------------------------------------------
 # #1485 / #1991 — a request nobody owns is a routing outcome, reported twice
 # ---------------------------------------------------------------------------
 #
