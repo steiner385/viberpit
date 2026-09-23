@@ -66,6 +66,9 @@ def test_every_registered_origin_declares_its_audited_policy():
         # deploy-monitor files issues from its own loop and never spawns an agent
         # session; it declares no policy and inherits the fail-closed default.
         "deploy-monitor": EnginePolicy.CLAUDE_ONLY,
+        # session-feedback files issues from its own loop and never spawns an agent
+        # session; it declares no policy and inherits the fail-closed default.
+        "session-feedback": EnginePolicy.CLAUDE_ONLY,
         # capacity-governor spawns nothing; fail closed.
         "capacity-governor": EnginePolicy.CLAUDE_ONLY,
     }

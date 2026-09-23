@@ -8,11 +8,28 @@ from ccswitch import brand
 from .types import Finding, GateThresholds
 
 
-def issue_body(title: str, detail: dict) -> str:
+def issue_body(title: str, detail: dict, *, regression_of: int | None = None) -> str:
     """The ci-doctor GitHub issue body for a finding — the single source of truth
-    shared by the loop's auto-filing and the manual "File issue" action (#465)."""
-    return (f"{title}\n\n```json\n{_json.dumps(detail or {}, indent=2)}\n```\n\n"
+    shared by the loop's auto-filing and the manual "File issue" action (#465).
+
+    ``regression_of`` is the number of the issue this finding was filed and closed
+    under before it came back (#1433): a recurrence files a fresh issue linking its
+    predecessor rather than reopening it, so the link is the only thing carrying
+    that history."""
+    back = f"Recurrence of #{regression_of}, which was closed when this finding last resolved.\n\n" \
+        if regression_of is not None else ""
+    return (f"{title}\n\n{back}```json\n{_json.dumps(detail or {}, indent=2)}\n```\n\n"
             f"Filed by the {brand.NAME} CI/CD Doctor (propose mode).")
+
+def recurrence_comment(title: str, detail: dict) -> str:
+    """The comment posted when a finding recurs while its issue is STILL open —
+    the narrow case where the doctor resolved the finding but the close never
+    confirmed (#1433). A recurrence after a confirmed close files a fresh issue
+    instead; see ``issue_body(regression_of=…)``."""
+    return (f"Recurred before this issue was closed: {title}\n\n"
+            f"```json\n{_json.dumps(detail or {}, indent=2)}\n```\n\n"
+            f"Re-detected by the {brand.NAME} CI/CD Doctor.")
+
 
 _MIN_SHAS_FOR_FLAKE = 3  # fewer distinct shas is too little evidence to accuse a test
 

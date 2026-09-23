@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from ccswitch import brand
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
@@ -129,6 +130,7 @@ from .pm_onboard import PmOnboard  # noqa: E402
 from .pm_classify import PmClassify  # noqa: E402
 from .gh_reconcile import GhReconcile  # noqa: E402
 from .error_triage import ErrorTriage  # noqa: E402
+from .session_feedback import SessionFeedbackFiler  # noqa: E402
 from .deploy_monitor import DeployMonitor  # noqa: E402
 from .capacity_governor import CapacityGovernor  # noqa: E402
 
@@ -265,6 +267,18 @@ registry.register(ErrorTriage(), oversight=AutomationOversight(
         'file': 'Automatically file qualifying runtime errors and warnings as GitHub issues within deduplication '
                 'and filing limits; do not launch repair sessions.',
     },
+))
+registry.register(SessionFeedbackFiler(), oversight=AutomationOversight(
+    Responsibility.IMPROVEMENT,
+    f'What {brand.NAME} coding sessions report about {brand.NAME} itself, across every host; global maintenance.',
+    {
+        'off': 'Disable filing; reports keep accumulating as a visible pending inbox.',
+        'file': 'Automatically file qualifying session reports as GitHub issues within impact, '
+                'deduplication and daily-cap limits; a repeat of an open report becomes a comment. '
+                'Never launches a session, and never labels an issue for unattended implementation.',
+    },
+    (Relationship('shares_work_with', 'error-triage',
+                  'Files what sessions report; Error Triage files what the runtime logs.'),),
 ))
 registry.register(DeployMonitor(), oversight=AutomationOversight(
     Responsibility.IMPROVEMENT, 'GitHub deployment environments in configured repositories.',
