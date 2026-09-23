@@ -16,6 +16,7 @@ import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
 import { NoticeCard } from './NoticeCard'
 import { BlockRow } from './BlockRow'
+import { TurnFeedback } from './TurnFeedback'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
 
 interface Props {
@@ -146,6 +147,10 @@ export const Turn = memo(function Turn({
             return null
         }
       })}
+      {/* Thumbs feedback on an assistant reply — the AI drawer only (variant
+          'assistant'); other transcript readers (the session page, the archived
+          reader) never show it. */}
+      {variant === 'assistant' && !isUser && <TurnFeedback turnId={turn.id} />}
       {/* A prompt the user has sent that no server echo has confirmed yet. The `user`
           echo adopts the turn and clears `pending`, so this note disappears the moment
           the real turn exists — no separate teardown. */}
