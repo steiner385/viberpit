@@ -33,6 +33,14 @@ export interface AssistantSessionInput {
   model?: string
 }
 
+/** Body for POST /assistant/feedback — a thumbs up/down on one assistant turn. */
+export interface AssistantFeedbackInput {
+  sessionId: string
+  turnId: string
+  vote: 'up' | 'down'
+  note?: string
+}
+
 export interface AssistantSession {
   id: string
   model: string
@@ -135,5 +143,17 @@ export function useResumeAssistantSession() {
       void qc.invalidateQueries({ queryKey: ASSISTANT_STATUS_KEY })
       void qc.invalidateQueries({ queryKey: ASSISTANT_HISTORY_KEY })
     },
+  })
+}
+
+/**
+ * Record a thumbs up/down on one assistant turn (TurnFeedback, in the transcript).
+ * Fire-and-forget: the response carries nothing the caller needs and no cached
+ * query depends on this data, so there is no result type to capture and nothing
+ * to invalidate on success.
+ */
+export function useAssistantFeedback() {
+  return useMutation<void, ApiRequestError, AssistantFeedbackInput>({
+    mutationFn: (input) => api.post<void>('/assistant/feedback', input),
   })
 }

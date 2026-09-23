@@ -1,5 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+
+const feedbackMutate = vi.fn()
+vi.mock('@/api/assistant', () => ({
+  useAssistantFeedback: vi.fn(() => ({ mutate: feedbackMutate })),
+}))
+vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
+  useSessionRuntimeContext: vi.fn(() => ({ sessionId: 'sess-1' })),
+}))
+
 import { Turn } from './Turn'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { Turn as TurnType, Block, TranscriptState } from '@/session/reducer'
@@ -208,5 +217,40 @@ describe('Turn question rendering', () => {
     expect(screen.getByText('Two-pane?')).toBeInTheDocument()
     // Read-only: no interactive radio inputs
     expect(screen.queryByRole('radio')).toBeNull()
+  })
+})
+
+describe('Turn feedback (assistant drawer only)', () => {
+  it('renders TurnFeedback for an assistant-role turn in the assistant variant', () => {
+    render(
+      <Turn
+        turn={makeTurn([{ kind: 'text', id: 'b', text: 'Here you go.' }])}
+        isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
+        variant="assistant"
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Helpful' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Not helpful' })).toBeInTheDocument()
+  })
+
+  it('does not render TurnFeedback for a USER turn even in the assistant variant', () => {
+    render(
+      <Turn
+        turn={{ id: 't', role: 'user', blocks: [{ kind: 'text', id: 'b', text: 'hi' }] }}
+        isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
+        variant="assistant"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Helpful' })).toBeNull()
+  })
+
+  it('does not render TurnFeedback outside the assistant variant', () => {
+    render(
+      <Turn
+        turn={makeTurn([{ kind: 'text', id: 'b', text: 'Here you go.' }])}
+        isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Helpful' })).toBeNull()
   })
 })

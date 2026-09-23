@@ -6,7 +6,8 @@ import type { ReactNode } from 'react'
 vi.mock('@/api/client', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
 import { api } from '@/api/client'
 import {
-  useAssistantHistory, useAssistantSession, useAssistantStatus, useResumeAssistantSession,
+  useAssistantFeedback, useAssistantHistory, useAssistantSession, useAssistantStatus,
+  useResumeAssistantSession,
 } from './assistant'
 
 const wrap = () => {
@@ -57,5 +58,13 @@ describe('assistant api', () => {
       expect(qc.getQueryState(['assistant', 'status'])?.isInvalidated).toBe(true)
       expect(qc.getQueryState(['assistant', 'history'])?.isInvalidated).toBe(true)
     })
+  })
+
+  it('posts turn feedback with the exact body', async () => {
+    vi.mocked(api.post).mockResolvedValue(undefined)
+    const wrapper = wrap()
+    const { result } = renderHook(() => useAssistantFeedback(), { wrapper })
+    await result.current.mutateAsync({ sessionId: 'a1', turnId: 't1', vote: 'up' })
+    expect(api.post).toHaveBeenCalledWith('/assistant/feedback', { sessionId: 'a1', turnId: 't1', vote: 'up' })
   })
 })
