@@ -15,11 +15,15 @@ from .transcript_entries import is_harness_user_entry
 log = logging.getLogger("server.sessions.replay")
 
 
-# Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet has ~1,696
-# project dirs on an sshfs mount at ~54ms RTT, so an unbounded scan hangs the
+# Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet is an sshfs
+# mount at ~54ms RTT holding ~3,900 project dirs, so an unbounded scan hangs the
 # transcript RPC for 30s+ (RC2). Sub-agent reconstruction is an enhancement to
 # the Task card; opening the session is not optional — so we cap the search and
 # return what we found.
+#
+# NOTE (#2178): a full sweep of that mount measures ~2.0s, so this budget is not
+# reachable there and never will be — do NOT treat "raise the budget" as the fix for
+# a truncation log line. The sweep is avoided instead (see _find_subagent_meta_files).
 #
 # Bound at IMPORT time: an env override must be set before this module is imported.
 # In-process (tests) the only way to change it is to patch the constant, or pass
@@ -30,13 +34,19 @@ _SUBAGENT_SCAN_BUDGET_S = env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0, mini
 # short TTL removes the repeat cost of reattach / scrollback paging without going stale.
 _SUBAGENT_CACHE_TTL_S = env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0, minimum=0.0)
 
-# INVARIANT — the cache key is (projects_root, sid) and deliberately OMITS `preferred`.
-# That is only sound because a result is cached ONLY when the scan ran to completion
-# (`complete is True`), and a complete scan has visited EVERY directory under
-# projects_root — so its result is identical for any `preferred`, i.e. preferred-
-# independent. If partial/truncated results are ever cached, `preferred` MUST become
-# part of the key (a truncated scan seeded from a different preferred dir returns a
-# different subset) — otherwise one caller's short answer is served to all the others.
+# INVARIANT — the cache key INCLUDES `preferred`, and must keep including it.
+#
+# It originally omitted `preferred`, which was sound only because a result was cached
+# ONLY after a scan that had visited EVERY directory under projects_root — such a
+# result is identical for any `preferred`. #2178 made a fast-path-only result
+# cacheable (the fast path answers from `preferred` alone and skips the sweep), and
+# that result describes ONE directory rather than the whole tree. Serving it to a
+# caller with a different `preferred` would hand them another session dir's answer,
+# so `preferred` is part of the key.
+#
+# Still true: a genuinely PARTIAL result (`complete is False` — a truncated or
+# error-hit sweep) is never cached, so a transient slow mount cannot freeze a short
+# answer in for the TTL.
 #
 # THREADING: this dict is read and written from asyncio.to_thread() worker threads
 # with no lock. That is safe: dict __getitem__/__setitem__/get are individually
@@ -45,7 +55,7 @@ _SUBAGENT_CACHE_TTL_S = env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0, minimum
 # just writes the same value twice. Don't "fix" this with a lock, and don't turn
 # the set into a compound update (e.g. mutating the cached list in place) — that
 # would break the atomicity this relies on.
-_subagent_cache: dict[tuple[str, str], tuple[float, list[Path]]] = {}
+_subagent_cache: dict[tuple[str, str, str], tuple[float, list[Path]]] = {}
 
 
 def _subagent_cache_clear() -> None:
@@ -293,25 +303,50 @@ def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | N
                               *, budget_s: float | None = None) -> tuple[list[Path], bool]:
     """Locate `<projects>/<any-cwd>/<sid>/subagents/*.meta.json`, bounded.
 
-    Returns (sorted meta paths, complete). ``complete`` is False when the scan
-    ran out of budget, so the caller knows the list may be short.
+    Returns (sorted meta paths, complete). ``complete`` is False when the result may
+    be SILENTLY short — the sweep ran out of budget or hit a filesystem error — so the
+    caller knows not to trust it and this function knows not to cache it.
 
-    The sidecar usually sits under the SAME encoded-cwd as the main transcript,
-    so `preferred` is probed first and costs one filesystem op. The remaining
-    directories are still scanned — the sidecar can live under a different cwd
-    (main checkout vs. worktree) and that join is load-bearing — but under a
-    wall-clock budget so a slow mount degrades instead of hanging.
+    Two-stage lookup:
+
+    1. FAST PATH — probe `preferred` (the encoded-cwd dir holding the session's own
+       transcript). One filesystem op. **If it yields sidecars, that is the answer**
+       and the sweep is skipped (#2178). The census that justifies this, taken on the
+       real store (rocky, 2026-09-23, 3,933 encoded-cwd dirs): all 410 `subagents/`
+       dirs sit under the same encoded-cwd as their own `<sid>.jsonl` — 0 cross-cwd —
+       and no session id has `subagents/` under more than one cwd. The CLI writes
+       `subagents/` next to the transcript it is already writing, so a fast-path hit
+       is the complete set in practice.
+    2. SWEEP — only when the fast path came up empty. The sidecar *can* in principle
+       live under a different cwd (main checkout vs. worktree) and that join is
+       covered by `test_replay_window_subagent_cross_cwd_join`, so we still look — but
+       under a wall-clock budget, so a slow mount degrades instead of hanging (RC2).
+
+    Skipping the sweep after a hit is the whole point: it is ~3,900 sshfs directory
+    probes (measured ~2.0s, over the 1.0s budget) that has never contributed a file, re-paid on
+    every WS attach and every scrollback page because a never-`complete` scan was never
+    cacheable. The trade is real but narrow — a session with sidecars under BOTH its
+    own cwd and another one would lose the second set. That layout has never been
+    observed, and the sweep did not reliably deliver it anyway: it truncated around
+    half the dirs in arbitrary `os.scandir` order, making cross-cwd discovery a coin
+    flip rather than a guarantee.
     """
     budget = _SUBAGENT_SCAN_BUDGET_S if budget_s is None else budget_s
-    deadline = time.monotonic() + budget
+    started = time.monotonic()
+    deadline = started + budget
     found: list[Path] = []
     seen_dirs: set[str] = set()
-    complete = True
+    # Why the result may be short, for the log. Empty == nothing went wrong.
+    reasons: list[str] = []
 
-    key = (str(projects_root), sid)
+    key = (str(projects_root), sid, str(preferred) if preferred is not None else "")
     hit = _subagent_cache.get(key)
     if hit is not None and time.monotonic() < hit[0]:
         return list(hit[1]), True
+
+    def _note(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
 
     def _collect(cwd_dir: Path) -> bool:
         """Probe one <cwd>/<sid>/subagents dir. Returns False on OSError so the
@@ -330,65 +365,82 @@ def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | N
     if preferred is not None:
         seen_dirs.add(preferred.name)
         if not _collect(preferred):
-            complete = False
+            _note("filesystem error")
+
+    # A clean fast-path hit is authoritative — see the docstring. Return before the
+    # sweep. `not reasons` is load-bearing: `_collect` extends `found` from a lazy
+    # `iterdir()`, so an OSError partway through leaves a SHORT `found` behind — and a
+    # short list must never short-circuit, let alone be cached.
+    if found and not reasons:
+        result = sorted(found)
+        _subagent_cache[key] = (time.monotonic() + _SUBAGENT_CACHE_TTL_S, list(result))
+        return result, True
 
     try:
         it = os.scandir(projects_root)
     except OSError:
-        # Couldn't even open the root — we scanned nothing beyond the fast path.
-        return sorted(found), False
+        # Couldn't even open the root — a renamed or removed account dir, not a slow
+        # mount. Reported distinctly so triage isn't sent chasing an sshfs stall.
+        _note("projects_root unreadable")
+        it = None
 
-    try:
-        with it:
-            while True:
-                if time.monotonic() >= deadline:
-                    complete = False
-                    break
-                try:
-                    entry = next(it)
-                except StopIteration:
-                    break
-                except OSError:
-                    # A flaky/stale handle on one entry (plausible on sshfs)
-                    # must not abort the sweep, but it does mean the sweep
-                    # can no longer be trusted as exhaustive.
-                    complete = False
-                    continue
-                try:
-                    if entry.name in seen_dirs or not entry.is_dir():
+    if it is not None:
+        try:
+            with it:
+                while True:
+                    if time.monotonic() >= deadline:
+                        _note("scan deadline reached")
+                        break
+                    try:
+                        entry = next(it)
+                    except StopIteration:
+                        break
+                    except OSError:
+                        # A flaky/stale handle on one entry (plausible on sshfs)
+                        # must not abort the sweep, but it does mean the sweep
+                        # can no longer be trusted as exhaustive.
+                        _note("filesystem error")
                         continue
-                    seen_dirs.add(entry.name)
-                    if not _collect(Path(entry.path)):
-                        complete = False
-                except OSError:
-                    complete = False
-                    continue
-    except OSError:
-        complete = False
+                    try:
+                        if entry.name in seen_dirs or not entry.is_dir():
+                            continue
+                        seen_dirs.add(entry.name)
+                        if not _collect(Path(entry.path)):
+                            _note("filesystem error")
+                    except OSError:
+                        _note("filesystem error")
+                        continue
+        except OSError:
+            _note("filesystem error")
 
+    complete = not reasons
     if not complete:
-        # The scan truncates on essentially every open on the live fleet (1,696 dirs
-        # against a 1.0s default budget), so an unconditional warning floods the log on
-        # every session open. Severity therefore keys off whether we have any EVIDENCE
-        # that sub-agent data exists:
-        #   found + truncated  → WARNING. Sidecars demonstrably exist for this session,
-        #     so the directories we never reached may hold more of them under a
-        #     different encoded cwd (main checkout vs. worktree). Actionable: the Task
-        #     card can render an incomplete set of sub-agent threads.
-        #   nothing found + truncated → DEBUG. We have no evidence sub-agents exist at
-        #     all, and on this fleet (zero `subagents/` dirs across all 8 accounts)
-        #     that is the normal steady state on every single request.
+        # The sweep truncates on essentially every call that reaches it on the live
+        # fleet (~3,900 dirs against a 1.0s budget), so an unconditional warning floods
+        # the log. Severity keys off whether we have any EVIDENCE that sub-agent data
+        # exists:
+        #   found + incomplete → WARNING. The SWEEP turned up sidecars under some other
+        #     encoded cwd and was then cut short, so the dirs we never reached may hold
+        #     more. Actionable: the Task card can render an incomplete set of threads.
+        #     (Sidecars in the session's OWN cwd never reach here — the fast path
+        #     returns above. That case produced every false alarm in #2178.)
+        #   nothing found + incomplete → DEBUG. No evidence sub-agents exist at all,
+        #     which is the steady state for most sessions on this fleet.
+        # `%.2fs` is MEASURED elapsed time, not the budget constant, and the reason is
+        # spelled out: an OSError aborts in milliseconds and is not a budget overrun.
+        detail = ", ".join(reasons)
+        elapsed = time.monotonic() - started
         if found:
             log.warning(
-                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "subagent scan incomplete (%s) after %.2fs (projects_root=%s sid=%s) — "
                 "found %d sidecar(s); sub-agent threads may be incomplete",
-                budget, projects_root, sid, len(found),
+                detail, elapsed, projects_root, sid, len(found),
             )
         else:
             log.debug(
-                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "subagent scan incomplete (%s) after %.2fs (projects_root=%s sid=%s) — "
                 "no sidecars found; no evidence this session has sub-agents",
-                budget, projects_root, sid,
+                detail, elapsed, projects_root, sid,
             )
     result = sorted(found)
     if complete:
@@ -550,7 +602,15 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
         # (scoping to the window naturally excludes sub-agents of trimmed turns).
         # Appended after the main slice: the reducer routes by parentToolUseId, so
         # position is irrelevant — the Task card renders wherever its call sits.
-        task_ids = {e.tool_id for e in window if isinstance(e, ev.ToolCall)}
+        #
+        # Filter to ToolKind.TASK, not every ToolCall (#2178). A sidecar's `toolUseId`
+        # is always a Task call's id, and the reducer routes sub-agent turns into the
+        # Task CARD — a non-Task id has nothing to match and nothing to render into.
+        # Collecting every tool id made `task_ids` non-empty on essentially every
+        # window, so sidecar discovery ran on every WS attach and scrollback page even
+        # for sessions that never spawned a sub-agent — ~1s of sshfs probes each time.
+        task_ids = {e.tool_id for e in window
+                    if isinstance(e, ev.ToolCall) and e.kind is ev.ToolKind.TASK}
         window = window + _subagent_events(path, task_ids)
     if meta_event is not None:
         window = [meta_event] + window

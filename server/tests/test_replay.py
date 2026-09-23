@@ -106,6 +106,31 @@ def test_replay_window_scopes_subagents_to_task_in_window(tmp_path):
     evs = asyncio.run(replay_window(main)).events
     assert not any(getattr(e, "parent_tool_use_id", None) for e in evs)
 
+
+def test_replay_window_without_a_task_call_does_no_sidecar_discovery(tmp_path, monkeypatch):
+    """#2178: discovery is only meaningful for Task calls, but ``task_ids`` was built
+    from EVERY ``ToolCall`` id in the window — so a window of nothing but Reads still
+    ran a full sidecar scan. On the live fleet that is ~1s of sshfs directory probes
+    per WS attach and per scrollback page, on sessions that have no sub-agents at all.
+    """
+    from server.sessions import replay
+
+    calls = {"n": 0}
+    real_find = replay._find_subagent_meta_files
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real_find(*a, **kw)
+
+    monkeypatch.setattr(replay, "_find_subagent_meta_files", counting)
+
+    asyncio.run(replay_window(str(FIX)))  # a Read tool call and nothing else
+    assert calls["n"] == 0, "a window with no Task call has nothing to attach sidecars to"
+
+    asyncio.run(replay_window(_write_layout_b(tmp_path, "sess5", main_cwd="-cwd-a")))
+    assert calls["n"] == 1, "a window WITH a Task call must still discover its sidecars"
+
+
 def test_replay_emits_summary_events():
     out = asyncio.run(replay_events(str(FIX)))
     wires = [e.to_wire()["type"] for e in out]
