@@ -470,15 +470,13 @@ def _mk_async(value):
     return _f
 
 
-def _rec(sid: str, status: str = "done", *, ran: bool = True):
-    """Session-record stub for the settle poll.
+def _rec(status: str = "done", *, ran: bool = True) -> tuple[str, bool]:
+    """``_session_settle_signal`` stub value: (status, ran).
 
-    ``ran`` is ``last_turn_at``: the poll accepts a settled status only once a
-    turn has handed output back, so every stub has to say which it is (#1572).
-    A stub without the field reads as never-run, which is the safe direction."""
-    from datetime import datetime
-    return SimpleNamespace(id=sid, status=status,
-                           last_turn_at=datetime(2026, 1, 1) if ran else None)
+    ``ran`` is whether ``last_turn_at`` is set: the poll accepts a settled
+    status only once a turn has handed output back, so every stub has to say
+    which it is (#1572). ``ran=False`` reads as never-run, the safe direction."""
+    return status, ran
 
 
 @pytest.mark.asyncio
@@ -490,9 +488,9 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
     orch = _bare_orch()
     orch._records = {}   # no record → _certify_harvested_complete no-ops; see its own tests
     statuses = ["running", "running", "complete"]
-    def fake_get_session(sid):
-        return _rec(sid, statuses.pop(0) if statuses else "complete")
-    orch.get_session = fake_get_session
+    async def fake_settle_signal(sid):
+        return _rec(statuses.pop(0) if statuses else "complete")
+    orch._session_settle_signal = fake_settle_signal
     orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
     ingested = []
     async def fake_ingest(session_id, project_slug, output_text):
@@ -517,7 +515,7 @@ async def test_classify_chain_ingest_never_harvests_a_session_that_never_ran(
     session runs after the restart, so the only output of that early harvest was
     a WARNING with a traceback."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: _rec(sid, "idle", ran=False)
+    orch._session_settle_signal = _mk_async(_rec("idle", ran=False))
     orch._chained_session_output_text = _mk_async("")
     ingested = []
 
@@ -546,7 +544,7 @@ async def test_materialize_chain_ingest_never_harvests_a_session_that_never_ran(
     await _seed_initiative(db_env)
     orch = _bare_orch()
     orch._sdlc_synth_ctx = FakeAutomationContext()
-    orch.get_session = lambda sid: _rec(sid, "idle", ran=False)
+    orch._session_settle_signal = _mk_async(_rec("idle", ran=False))
     ingested = []
 
     async def fake_ingest(*a):
@@ -564,7 +562,7 @@ async def test_materialize_chain_ingest_never_harvests_a_session_that_never_ran(
 @pytest.mark.asyncio
 async def test_classify_chain_ingest_stops_when_session_vanishes(db_env, monkeypatch):
     orch = _bare_orch()
-    orch.get_session = lambda sid: None
+    orch._session_settle_signal = _mk_async(None)
     ingested = []
     async def fake_ingest(*a):
         ingested.append(a); return 1
@@ -588,7 +586,7 @@ async def test_classify_chain_ingest_certifies_completion_after_harvest(db_env, 
     landing in TriageProposal rows is the real completion signal, so certify it
     here — where the harness, not the session, is the one that verified it."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: _rec(sid, "done")
+    orch._session_settle_signal = _mk_async(_rec("done"))
     orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
     orch._pm_classify_ingest = _mk_async(1)
     certified = []
@@ -609,7 +607,7 @@ async def test_classify_chain_ingest_leaves_unharvested_session_for_a_human(db_e
     lifting into Active is how they find it. Certifying on a 0-row ingest would
     archive the one session that needed attention."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: _rec(sid, "done")
+    orch._session_settle_signal = _mk_async(_rec("done"))
     orch._chained_session_output_text = _mk_async("sorry, I could not classify these")
     orch._pm_classify_ingest = _mk_async(0)
     certified = []
@@ -1743,8 +1741,9 @@ def _materialize_orch(text: str = _DECOMP):
 async def test_await_session_settled_returns_true_once_settled(monkeypatch):
     orch = _bare_orch()
     statuses = ["running", "running", "complete"]
-    orch.get_session = lambda sid: _rec(
-        sid, statuses.pop(0) if statuses else "complete")
+    async def _next_signal(sid):
+        return _rec(statuses.pop(0) if statuses else "complete")
+    orch._session_settle_signal = _next_signal
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=10, interval_s=0.0) is True
@@ -1753,7 +1752,7 @@ async def test_await_session_settled_returns_true_once_settled(monkeypatch):
 @pytest.mark.asyncio
 async def test_await_session_settled_gives_up_after_attempts(monkeypatch):
     orch = _bare_orch()
-    orch.get_session = lambda sid: _rec(sid, "running")
+    orch._session_settle_signal = _mk_async(_rec("running"))
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=3, interval_s=0.0) is False
@@ -1773,12 +1772,12 @@ async def test_await_session_settled_does_not_accept_a_session_that_never_ran(mo
     orch = _bare_orch()
     polls = 0
 
-    def _idle_never_prompted(sid):
+    async def _idle_never_prompted(sid):
         nonlocal polls
         polls += 1
-        return _rec(sid, "idle", ran=False)
+        return _rec("idle", ran=False)
 
-    orch.get_session = _idle_never_prompted
+    orch._session_settle_signal = _idle_never_prompted
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=3, interval_s=0.0) is False
@@ -1792,11 +1791,11 @@ async def test_await_session_settled_accepts_the_turn_the_moment_it_lands(monkey
     orch = _bare_orch()
     seq = [("idle", False), ("in_progress", False), ("done", True)]
 
-    def _next(sid):
+    async def _next(sid):
         status, ran = seq.pop(0)
-        return _rec(sid, status, ran=ran)
+        return _rec(status, ran=ran)
 
-    orch.get_session = _next
+    orch._session_settle_signal = _next
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=10, interval_s=0.0) is True
@@ -1811,12 +1810,12 @@ async def test_await_session_settled_gives_up_at_once_on_a_terminal_no_turn(monk
     orch = _bare_orch()
     polls = 0
 
-    def _archived(sid):
+    async def _archived(sid):
         nonlocal polls
         polls += 1
-        return _rec(sid, "archived", ran=False)
+        return _rec("archived", ran=False)
 
-    orch.get_session = _archived
+    orch._session_settle_signal = _archived
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._await_session_settled("s1", attempts=30, interval_s=0.0) is False
@@ -1882,7 +1881,7 @@ async def test_materialize_chain_ingest_swallows_ingest_failures(db_env, monkeyp
     """An exception inside the chained task must never escape — the task is
     fire-and-forget, so an escape is an unretrievable 'never retrieved' log."""
     orch = _bare_orch()
-    orch.get_session = lambda sid: _rec(sid, "complete")
+    orch._session_settle_signal = _mk_async(_rec("complete"))
     orch._sdlc_synth_ctx = FakeAutomationContext()
 
     async def boom(*a, **k):
@@ -1906,7 +1905,7 @@ async def test_materialize_chain_ingest_certifies_only_a_real_proposal(db_env, m
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     for written, expected in ((1, ["s1"]), (0, [])):
         orch = _bare_orch()
-        orch.get_session = lambda sid: _rec(sid, "done")
+        orch._session_settle_signal = _mk_async(_rec("done"))
         orch._sdlc_synth_ctx = FakeAutomationContext()
         orch._sdlc_materialize_ingest = _mk_async(written)
         certified = []
@@ -2348,12 +2347,12 @@ async def test_materialize_chain_ingest_spends_the_settle_budget(db_env, monkeyp
     orch._sdlc_synth_ctx = FakeAutomationContext()
     polls = 0
 
-    def _never_settles(sid):
+    async def _never_settles(sid):
         nonlocal polls
         polls += 1
-        return _rec(sid, "running")
+        return _rec("running")
 
-    orch.get_session = _never_settles
+    orch._session_settle_signal = _never_settles
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._sdlc_materialize_chain_ingest("s1", "dark-mode",
