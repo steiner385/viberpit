@@ -5,8 +5,10 @@ Primary source: Tailscale-User-Login (set by `tailscale serve` proxy).
 Fallback: X-Tailscale-User-Login (alternate header name some setups use).
 
 Header trust is conditional on the PEER, not on the header's presence. `tailscale
-serve` proxies to the edge's loopback bind, so a genuinely stamped header always
-arrives from loopback (or from an address listed in CCSWITCH_TRUSTED_PROXY_IPS).
+serve` reaches the edge from this host, but its backend hop is sourced from the
+host's OWN tailnet address rather than 127.0.0.1 (#2134), so a genuinely stamped
+header arrives from loopback, from one of this node's own tailscale addresses, or
+from an address listed in CCSWITCH_TRUSTED_PROXY_IPS.
 Presented by anyone else it is an unverified claim and is discarded — the request
 then falls through to `tailscale whois`, which verifies the peer against the local
 tailscaled rather than believing what the caller wrote.
@@ -17,8 +19,10 @@ list or None is returned (deny). If empty (dev default), any identity is accepte
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import subprocess
+import time
 from typing import Union
 from starlette.requests import Request
 from starlette.websockets import WebSocket
@@ -28,6 +32,13 @@ from server.config import get_settings
 logger = logging.getLogger(__name__)
 
 _AnyAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+# This node's own tailnet addresses are stable, so a hit is cached for minutes. A
+# miss (tailscale absent / daemon down) is cached briefly so a host without
+# tailscale does not pay a subprocess spawn per request, yet recovers quickly.
+_SELF_IPS_TTL_S = 300.0
+_SELF_IPS_MISS_TTL_S = 30.0
+_self_ips_cache: tuple[float, frozenset[_AnyAddress]] | None = None
 
 
 def host_is_loopback(host: str | None) -> bool:
@@ -86,7 +97,7 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         peer = request.client.host if request.client else "<unknown>"
         logger.warning(
             "ignoring Tailscale identity header asserted by untrusted peer %s "
-            "(trusted: loopback + CCSWITCH_TRUSTED_PROXY_IPS)",
+            "(trusted: loopback + this node's own tailnet IPs + CCSWITCH_TRUSTED_PROXY_IPS)",
             peer,
         )
         identity = None
@@ -112,6 +123,63 @@ def verify_identity(request: Request | WebSocket) -> str | None:
     return identity
 
 
+def _self_tailscale_ips() -> frozenset[_AnyAddress]:
+    """This machine's own tailnet addresses, per ``tailscale status --json``.
+
+    ``tailscale serve``'s backend hop is sourced from the host's own tailnet
+    interface address, not loopback (#2134) — so a request genuinely proxied by
+    ``tailscale serve`` on this box arrives with the peer set to one of these. A
+    miss (binary absent, daemon down, non-tailscale host) yields an empty set,
+    which trusts nothing extra; it never raises. Cached (see ``_SELF_IPS_TTL_S``)
+    since this rarely changes and a subprocess spawn per request is the exact cost
+    this fix removes from the ``whois`` fallback path.
+    """
+    global _self_ips_cache
+    now = time.monotonic()
+    if _self_ips_cache is not None:
+        expires_at, cached_ips = _self_ips_cache
+        if now < expires_at:
+            return cached_ips
+    resolved_ips: frozenset[_AnyAddress] = frozenset()
+    ttl = _SELF_IPS_MISS_TTL_S
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            raw = (data.get("Self") or {}).get("TailscaleIPs") or []
+            parsed = set()
+            for value in raw:
+                try:
+                    parsed.add(ipaddress.ip_address(value))
+                except ValueError:
+                    continue
+            resolved_ips = frozenset(parsed)
+            ttl = _SELF_IPS_TTL_S
+    except Exception:
+        pass
+    _self_ips_cache = (now + ttl, resolved_ips)
+    return resolved_ips
+
+
+def reset_self_ips_cache() -> None:
+    """Drop the memoised self-IP set.
+
+    This is process-global state, so the suite resets it around every test (autouse
+    fixture in ``server/tests/conftest.py``, alongside the helper-call breakers and
+    the gh-credential latch). A test that stubs ``subprocess.run`` would otherwise
+    freeze its fake answer here for the whole TTL and silently change what every
+    LATER test on that xdist worker sees — an order-dependent failure that looks
+    nothing like its cause.
+    """
+    global _self_ips_cache
+    _self_ips_cache = None
+
+
 def _peer_is_trusted(request: Request | WebSocket) -> bool:
     """True when this peer may assert an identity header.
 
@@ -127,6 +195,8 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
         addr = ipaddress.ip_address(peer)
     except ValueError:
         return False
+    if addr in _self_tailscale_ips():
+        return True
     for entry in get_settings().trusted_proxy_ips_items:
         try:
             # strict=False so a host address ("10.4.4.4") is accepted alongside a
@@ -153,12 +223,17 @@ def _whois(request: Request | WebSocket) -> dict | None:
     try:
         direct_peer = request.client.host if request.client else None
         peer_ip: str | None = direct_peer
-        if _peer_is_trusted(request):
-            # Only honour X-Real-IP when something entitled to set it sits in front:
-            # loopback, or an address in CCSWITCH_TRUSTED_PROXY_IPS. This is the same
-            # predicate the identity-header gate uses — one peer-trust rule in this
-            # module, not two that can drift apart.
-            peer_ip = request.headers.get("X-Real-IP") or direct_peer
+        forwarded = request.headers.get("X-Real-IP")
+        # Only honour X-Real-IP when something entitled to set it sits in front:
+        # loopback, one of this node's own tailnet addresses, or an address in
+        # CCSWITCH_TRUSTED_PROXY_IPS. This is the same predicate the identity-header
+        # gate uses — one peer-trust rule in this module, not two that can drift
+        # apart. Evaluated only when there IS a forwarded address for it to gate:
+        # with no X-Real-IP the verdict cannot change peer_ip, and since #2134 the
+        # check can cost a `tailscale status` spawn — the exact per-request cost
+        # this whole path exists to stop paying.
+        if forwarded and _peer_is_trusted(request):
+            peer_ip = forwarded
         if not peer_ip:
             return None
         # Validate peer_ip is a real IP address to prevent argv flag injection

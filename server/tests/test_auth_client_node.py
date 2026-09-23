@@ -24,8 +24,15 @@ def _http(client, **headers: str) -> Request:
 
 
 def _whois_ok(node_name="dobby"):
+    """Stand-in for `subprocess.run`, recording the whois invocations only.
+
+    identity.py drives two commands through this one seam: `tailscale whois` and,
+    since #2134, `tailscale status --json` for this node's own tailnet addresses.
+    `fake.calls` is asserted on as "the whois calls", so only those are recorded.
+    """
     def fake(cmd, **kw):
-        fake.calls.append(cmd)
+        if cmd[:2] == ["tailscale", "whois"]:
+            fake.calls.append(cmd)
         m = MagicMock()
         m.returncode = 0
         m.stdout = json.dumps({
