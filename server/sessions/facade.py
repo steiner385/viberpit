@@ -194,7 +194,7 @@ class InProcessOrchestratorAdapter:
     async def unsubscribe_events(self, *a, **k): return await _maybe_await(self._orch.unsubscribe_events(*a, **k))
 
     # --- edge-boundary helpers that hide orchestrator internals ---
-    async def usage(self, name): return await _maybe_await(self._orch.poller.get(name))
+    async def usage(self, name): return await _maybe_await(self._orch.usage(name))
     async def pending_permissions(self, session_id): return await _maybe_await(self._orch._registry.pending(session_id))
     async def active_session_count(self): return await _maybe_await(self._orch.active_session_count())
     async def live_session_load(self): return await _maybe_await(self._orch.live_session_load())
