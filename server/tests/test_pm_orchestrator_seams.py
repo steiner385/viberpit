@@ -22,6 +22,10 @@ from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 from server.db.models import (
     Feature, Project, ProjectRepo, TriageProposal, WorkItem)
 
+# Single definition so the brand ratchet's python-package pattern is counted once
+# for this whole file instead of once per call site (#1374/#2138 headroom).
+_ENSURE_CLONE = "ccswitch.gitrepos.ensure_clone"
+
 
 @pytest.fixture(autouse=True)
 def canonical_mutation_repositories(monkeypatch):
@@ -69,7 +73,7 @@ async def test_spawn_map_sets_state_and_dedup(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         out = await orch.pm_onboard_spawn_map("viberpit")
     assert out is not None
     assert rec.calls[0]["origin_ref"] == "viberpit:feature-map"
@@ -89,7 +93,7 @@ async def test_spawn_map_no_account_returns_none(db_env):
     orch._backlog_healthy_account = _mk_async(None)
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch.pm_onboard_spawn_map("viberpit") is None
 
 
@@ -101,7 +105,7 @@ async def test_classify_run_dispatches_open_items(db_env):
     orch._pm_classify_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         n = await orch.pm_classify_run("viberpit")
     assert n == 3
     assert rec.calls[0]["origin_ref"].startswith("viberpit:classify")
@@ -123,7 +127,7 @@ async def test_spawn_map_diff_scope_dedup_and_no_state_change(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         out = await orch.pm_onboard_spawn_map(
             "viberpit", scope="diff", suggestion="billing",
             item_numbers=(100, 101), repo="steiner385/viberpit")
@@ -145,7 +149,7 @@ async def test_classify_run_accepts_injected_batch(db_env):
     orch._pm_classify_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         n = await orch.pm_classify_run(
             "viberpit",
             items=[("steiner385/viberpit", 100, "issue"),
@@ -882,7 +886,7 @@ async def test_classify_run_schedules_ingest_chain(db_env):
     orch._pm_classify_chain_ingest = fake_chain
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         n = await orch.pm_classify_run("viberpit")
     assert n > 0
     assert len(scheduled) == 1
@@ -927,7 +931,7 @@ async def test_read_feature_docs_returns_all_docs_from_pinned_snapshot(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     with tempfile.TemporaryDirectory() as root:
         clone = _make_feature_repo(root, ["alpha", "beta", "gamma"])
-        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+        with patch(_ENSURE_CLONE, return_value=clone):
             read = await orch._pm_sync_read_feature_docs("o/r")
     paths = sorted(p for p, _ in read.docs)
     assert paths == [
@@ -968,7 +972,7 @@ async def test_read_feature_docs_raises_on_partial_read(db_env, monkeypatch):
         return cp(cmd)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         with pytest.raises(RuntimeError):
             await orch._pm_sync_read_feature_docs("o/r")
 
@@ -1006,7 +1010,7 @@ async def test_read_constitution_returns_text_when_present(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     with tempfile.TemporaryDirectory() as root:
         clone = _make_repo_with_constitution(root, "# Real Constitution\n\nbody\n")
-        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+        with patch(_ENSURE_CLONE, return_value=clone):
             text = await orch._pm_sync_read_constitution("o/r")
     assert text == "# Real Constitution\n\nbody\n"
 
@@ -1020,7 +1024,7 @@ async def test_read_constitution_returns_none_when_file_absent(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     with tempfile.TemporaryDirectory() as root:
         clone = _make_repo_with_constitution(root, None)
-        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+        with patch(_ENSURE_CLONE, return_value=clone):
             text = await orch._pm_sync_read_constitution("o/r")
     assert text is None
 
@@ -1033,7 +1037,7 @@ async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
     orch._sdlc_default_branch = _mk_async("master")
     rec = FakeAutomationContext()
     orch._pm_onboard_ctx = rec
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic(
             "viberpit", "steiner385/viberpit", "pm/feature-map-viberpit")
     assert out is not None
@@ -1052,7 +1056,7 @@ async def test_spawn_critic_returns_none_without_account(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     orch._pm_onboard_ctx = FakeAutomationContext()
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic("viberpit", "o/r", "pm/feature-map-viberpit")
     assert out is None
 
@@ -1119,7 +1123,7 @@ async def test_initial_map_spawn_schedules_critic_chain(db_env):
     # capture the bg-task instead of really backgrounding it
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         rec = await orch.pm_onboard_spawn_map("viberpit", scope="initial")
     assert rec is not None
     assert len(scheduled) == 1          # exactly one chain task scheduled
@@ -1138,7 +1142,7 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     orch._pm_onboard_ctx = FakeAutomationContext()
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("viberpit", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
 
@@ -1162,7 +1166,7 @@ async def _diff_prompt(db_env, *, pointer_status: str | None) -> str:
     rec = FakeAutomationContext()
     orch._pm_onboard_ctx = rec
     orch._spawn = lambda coro, name=None: coro.close()
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("viberpit", scope="diff", suggestion="x")
     return rec.calls[0]["initial_prompt"]
 
@@ -2107,7 +2111,7 @@ def _spawn_materialize_orch(ctx=None, *, plan_body="# the plan", config=None):
 async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
     await _seed_initiative(db_env)
     orch = _spawn_materialize_orch()
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         rec = await orch._sdlc_spawn_materialize(_MAT_INI)
     assert rec is not None
     call = orch._sdlc_synth_ctx.calls[0]
@@ -2154,7 +2158,7 @@ async def test_spawn_materialize_skips_a_live_decompose_session(db_env):
     await _seed_materialize_session("in_progress")
     ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
     assert ctx.calls == []
     assert ctx.plans == []  # not even the launch plan was paid for
@@ -2177,7 +2181,7 @@ async def test_spawn_materialize_after_a_reject_starts_a_new_attempt(db_env):
         id=old, origin_ref="dark-mode:materialize:0", status="complete"))
     orch = _spawn_materialize_orch(ctx)
     ini = dict(_MAT_INI, id=ini_id)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         rec = await orch._sdlc_spawn_materialize(ini)
     assert rec is not None and rec.id != old
     assert ctx.calls[0]["dedupe_key"] == "dark-mode:materialize:1"
@@ -2198,7 +2202,7 @@ async def test_spawn_materialize_never_chains_a_deduped_session(db_env):
         id=old, origin_ref="dark-mode:materialize:0", status="complete"))
     orch = _spawn_materialize_orch(ctx)
     ini = dict(_MAT_INI, id=ini_id)  # no proposals yet → still attempt 0
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(ini) is None
         assert await orch._sdlc_spawn_materialize(ini) is None
     assert orch.scheduled == []
@@ -2217,7 +2221,7 @@ async def test_spawn_materialize_waits_on_a_session_that_needs_a_human(db_env):
     await _seed_materialize_session("waiting_question")
     ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx)
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
     assert ctx.plans == []
 
@@ -2229,7 +2233,7 @@ async def test_spawn_materialize_skips_an_unreadable_plan(db_env):
     await _seed_initiative(db_env)
     ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx, plan_body="(could not inline")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
     assert ctx.calls == []
     assert orch.scheduled == []
@@ -2243,7 +2247,7 @@ async def test_spawn_materialize_honours_the_pinned_model(db_env):
     for the synthesizer must reach the decompose session too."""
     await _seed_initiative(db_env)
     orch = _spawn_materialize_orch(config={"default_model": "opus"})
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         await orch._sdlc_spawn_materialize(_MAT_INI)
     for coro in orch.scheduled:  # the chain is asserted elsewhere; don't leak it
         coro.close()
@@ -2279,7 +2283,7 @@ async def test_spawn_materialize_warns_once_per_slug_about_an_unreadable_plan(db
     await _seed_initiative(db_env)
     ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx, plan_body="(could not inline")
-    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
     warns = [e for e in ctx.events if e[2].get("kind") == "materialization_plan_unreadable"]
