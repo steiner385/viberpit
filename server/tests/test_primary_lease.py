@@ -73,6 +73,27 @@ def test_stale_lease_is_taken_over_fenced(tmp_path):
     asyncio.run(run())
 
 
+def test_every_lease_log_line_names_the_lease(tmp_path, caplog):
+    """``session_lease.py`` reuses these functions with a PER-SESSION name, so a
+    line that only says "primary-lease: acquired by 'rocky'" reads as a worker
+    illegally taking the primary lease. Every line must name its lease (#2106)."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        with caplog.at_level("INFO", logger="server.sessions.primary_lease"):
+            fence = await primary_lease.acquire("rocky", ttl_s=300, name="session:abc")
+            assert fence is not None
+            await primary_lease.release("rocky", fence, name="session:abc")
+
+        lines = [r.getMessage() for r in caplog.records]
+        assert len(lines) == 2, lines
+        for line in lines:
+            assert "session:abc" in line, line
+            # The misleading half: never a bare "primary-lease: <verb> by".
+            assert "name=" in line, line
+
+    asyncio.run(run())
+
+
 def test_release_wrong_fence_is_noop(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")

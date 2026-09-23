@@ -681,6 +681,24 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_deploy_monitor_task", "_capacity_governor_task",
 })
 
+
+def drives_fleet_automations() -> bool:
+    """True iff this daemon may DRIVE a fleet-global automation (#919, #2106).
+
+    The task-attribute gate above only covers automations that own a loop task.
+    PR Doctor owns none: it rides the PR-status poller, which every daemon runs
+    for its own sessions, via the ``on_change``/``on_cycle`` hooks. That made it
+    invisible to ``_PRIMARY_ONLY_LOOP_ATTRS`` and to the completeness test that
+    pins it, so a worker drove it against the one shared DB — visible in
+    production as ``automation_create_session: edge unreachable``, the worker
+    discovering it has no co-located edge to place the session through (#2106).
+
+    Call this wherever fleet-global automation work hangs off machinery that is
+    legitimately per-host, so the guard travels with the WORK rather than with
+    the loop that happens to carry it.
+    """
+    return daemon_role() == "primary"
+
 # How many raw rows a control-band metric reader pulls per repo (#804). Generous
 # enough to cover the longest configurable baseline several times over (a band
 # reads at most `baseline_points + 8` DAILY samples, and a busy repo merges a
@@ -997,6 +1015,11 @@ class SessionOrchestrator:
         self._api_gate = PriorityGate()
         self._pr_poller: PrStatusPoller = PrStatusPoller(api_gate=self._api_gate)
         self._pr_poller.set_pairs_provider(self._pr_pairs)
+        # Both hooks are wired on EVERY daemon and role-gate internally on
+        # drives_fleet_automations() (#2106). The poller itself must keep running
+        # on a worker (its cache feeds pr_for(), _pr_branch_monitor and the
+        # worker's own session rows) and _on_pr_change still raises that worker's
+        # "PR broke" push — only the fleet-global PR Doctor work is primary-only.
         self._pr_poller.set_on_change(self._on_pr_change)
         # Per-poll-cycle SWEEP: after every refresh the sweep re-classifies the
         # whole fresh cache so non-CI failure modes (out_of_date/merge_conflict)
@@ -2270,6 +2293,9 @@ class SessionOrchestrator:
         # never passed the dispatcher, so gating here concentrates automation on the
         # primary by design. Kept as one guarded block; _PRIMARY_ONLY_LOOP_ATTRS is
         # the single source of truth (test_primary_lease pins the two agree).
+        # NOT the whole story: an automation with no loop task of its own escapes
+        # both — PR Doctor rides the per-host PR poller started above and is gated
+        # at its hooks by drives_fleet_automations() instead (#2106).
         if daemon_role() == "primary":
             # Backlog Runner control loop: one tick per interval (refill + handoff/
             # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
@@ -12238,8 +12264,15 @@ class SessionOrchestrator:
         failing/transition handling delegates to ``_pr_doctor_step`` which runs
         the pure engine (classify → plan_recovery → dispatch). A transition for a
         (repo, branch) with no live session is a no-op (M2b.2 / AUT-02).
+
+        Runs on EVERY daemon, but only the primary does the PR Doctor half
+        (``doctor`` below, #2106). The push notification is deliberately not
+        gated: it is keyed off ``self._records``, which on a worker holds that
+        worker's own sessions and on the primary does not — so the host running
+        the session is the only one that can raise its "PR broke" alert.
         """
         key = (repo, branch)
+        doctor = drives_fleet_automations()
         if new_checks != "failing":
             self._pushed_pr.discard(key)
             # Re-arm the auto-fix guard ONLY on a genuine green, never on a
@@ -12249,7 +12282,7 @@ class SessionOrchestrator:
             # and loop forever on a PR the agent can't fix. The guard lives in the
             # durable pr-doctor target state (automation_target_state), keyed by
             # ``f"{repo}#{number}"`` — clearing == setting it back to ``{}``.
-            if new_checks == "passing":
+            if new_checks == "passing" and doctor:
                 info = self.pr_for(repo, branch)
                 if info is not None:
                     target = f"{repo}#{info.number}"
@@ -12279,13 +12312,13 @@ class SessionOrchestrator:
         info = self.pr_for(repo, branch)
         # Surface the failure on the activity feed once, on the transition INTO
         # failing (not on every failing→failing re-poll).
-        if old_checks != "failing":
+        if old_checks != "failing" and doctor:
             target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
             await self._pr_doctor_ctx.emit(
                 "warn", f"{repo} CI failing on {target}", kind="detected", target=target)
 
         injected = False
-        if info is not None:
+        if info is not None and doctor:
             injected = await self._pr_doctor_step(repo, branch, info, rec=rec)
         if injected:
             return  # a recovery action fired; skip the redundant break notification
@@ -12317,7 +12350,14 @@ class SessionOrchestrator:
         prevent any double-action across repeated sweeps, so this re-affirms a
         failing PR harmlessly and never double-injects. Best-effort: a per-PR error
         is swallowed so one bad PR can't abort the sweep.
+
+        Primary-only (#2106): every line below writes fleet-global state — durable
+        per-target ownership, spawned repair sessions, the automation's published
+        observation — against the one shared DB, so a worker running it alongside
+        the primary is the exact double-drive #919 forbids.
         """
+        if not drives_fleet_automations():
+            return
         # Reconcile retained work even after a PR leaves the open population or
         # its policy/schedule stops authorizing NEW effects. Observation never submits.
         for target, state in (await self._pr_doctor_ctx.list_target_states()).items():

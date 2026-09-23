@@ -19,6 +19,12 @@ automation with no detection. This module enforces the invariant through a singl
   lifetime — a re-insert restarting at fence=1 could collide with a fence some
   stale writer still remembers.
 
+``name`` is a parameter, not a constant: ``server/sessions/session_lease.py`` reuses
+these same functions with a PER-SESSION lease name. Every log line here therefore
+names the lease it acted on — without it, ordinary per-session lease traffic on a
+worker printed as ``primary-lease: acquired by 'rocky'``, which reads as a worker
+illegally taking the primary lease and cost real triage time (#2106).
+
 Every mutation is a single conditional UPDATE/DELETE (rowcount-checked) or a
 PK-guarded INSERT, so two racing acquirers serialize on the database — the loser's
 WHERE clause no longer matches — with no dialect-specific locking (SQLite + Postgres,
@@ -86,7 +92,7 @@ async def acquire(holder: str, *, ttl_s: float,
             fence = (await db.execute(
                 sa_select(DaemonLease.fence).where(DaemonLease.name == name)
             )).scalar_one()  # same transaction — reads our own uncommitted bump
-            log.info("primary-lease: acquired by %r (fence=%d)", holder, fence)
+            log.info("primary-lease: name=%r acquired by %r (fence=%d)", name, holder, fence)
             return fence
         # No row matched: either the lease has never existed, or a live foreign
         # holder has it. Distinguish by trying the PK-guarded INSERT — a racing
@@ -97,7 +103,7 @@ async def acquire(holder: str, *, ttl_s: float,
         except Exception:
             await db.rollback()  # clear the failed statement; exit commit is a no-op
             return None
-        log.info("primary-lease: acquired by %r (fence=1, first holder)", holder)
+        log.info("primary-lease: name=%r acquired by %r (fence=1, first holder)", name, holder)
         return 1
 
 
@@ -131,4 +137,4 @@ async def release(holder: str, fence: int, *, name: str = PRIMARY_LEASE_NAME) ->
             .values(renewed_at=datetime(1970, 1, 1))
         )
         if result.rowcount == 1:  # type: ignore[attr-defined]  # CursorResult at runtime
-            log.info("primary-lease: released by %r (fence=%d)", holder, fence)
+            log.info("primary-lease: name=%r released by %r (fence=%d)", name, holder, fence)
