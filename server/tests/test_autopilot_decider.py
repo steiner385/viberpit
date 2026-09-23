@@ -189,3 +189,40 @@ async def test_no_helper_account_escalates_without_opening_the_model_door(monkey
         d = await decide(_ctx(), _config_dir=cfg, _cwd="/tmp")
         assert d.action == "escalate"
         assert d.reason == "decider-skipped:no-helper-account"
+
+
+# A decider failure used to be logged as the bare SDK exception — for the whole of
+# #1820 that read "Claude Code returned an error result: success", which is the
+# result *subtype* leaking into the message and says nothing about the failure.
+# Finding the real cause (HTTP 403 oauth_not_allowed_for_organization on one
+# account) took a transcript dig; the log must carry it.
+@pytest.mark.asyncio
+async def test_failure_log_and_reason_name_the_classified_kind(caplog):
+    import logging
+
+    from server.automations import autopilot_decider as decider_mod
+
+    denial = ("Your organization has disabled Claude subscription access for Claude "
+              "Code · Use an Anthropic API key instead, or ask your admin to enable access")
+
+    async def denied(*, prompt, options):
+        class _Block:
+            text = denial
+
+        class _Msg:
+            content = [_Block()]
+            error = "oauth_org_not_allowed"
+        yield _Msg()
+        raise RuntimeError("Claude Code returned an error result: success")
+
+    decider_mod._consecutive_decide_failures = 0
+    try:
+        with caplog.at_level(logging.WARNING, logger="server.automations.autopilot_decider"):
+            d = await decide(_ctx(), _query_fn=denied, _config_dir="", _cwd="/tmp")
+        assert d.action == "escalate"
+        assert d.reason == "decider-failed:auth_forbidden"
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert "auth_forbidden" in logged
+        assert "organization has disabled" in logged
+    finally:
+        decider_mod._consecutive_decide_failures = 0

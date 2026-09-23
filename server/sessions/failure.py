@@ -28,10 +28,28 @@ _RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash", "turn_dropp
 _OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
 _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 
+# ``auth_forbidden`` — HTTP 403: the credential is valid but its *organization*
+# has turned Claude Code access off. Deliberately not in _RECOVERABLE: unlike a
+# 401 there is nothing to recompose and no retry that helps, so live-turn
+# handling stays exactly what "other" already did (surface it, fail the turn).
+# The point of naming it is that helper calls CAN act on it — they pick their
+# account, so they fail over to another one (helper_call._note_auth_blocked).
+# Markers are the CLI's own spellings, seen in a helper transcript on 2026-09-22
+# (#1820): apiErrorCode ``oauth_not_allowed_for_organization``, the assistant
+# message's ``error`` field ``oauth_org_not_allowed``, and the sentence shown to
+# the user. A bare "403" in prose is NOT a marker — an unrelated number must
+# never cost an account its helper duty.
+_FORBIDDEN_MARKERS = (
+    "oauth_not_allowed_for_organization",
+    "oauth_org_not_allowed",
+    "organization has disabled claude",
+    "ask your admin to enable access",
+)
+
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "other"
     retry_after: float | None = None
 
     @property
@@ -96,8 +114,15 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return rate_limit()
     if code == "api_401":
         return TurnFailure(kind="auth_401")
+    if code == "api_403":
+        return TurnFailure(kind="auth_forbidden")
     if code in _OVERLOAD_CODES:
         return TurnFailure(kind="overloaded")
+
+    # An organization-level denial, which the CLI may report with no status code
+    # at all (the SDK's ProcessError replacement carries only the result subtype).
+    if any(m in low for m in _FORBIDDEN_MARKERS):
+        return TurnFailure(kind="auth_forbidden")
 
     # A turn that dropped before the model committed any continuation — the CLI tags it
     # "[ede_diagnostic] ... stop_reason=null". Distinct from the orphaned-tool_use variant

@@ -31,18 +31,30 @@ _ESCALATE_FAILURE_THRESHOLD = 5
 _consecutive_decide_failures = 0
 
 
-def _note_decide_failure(error: BaseException) -> None:
-    """Count one decider-call failure and log louder once it looks persistent."""
+def _note_decide_failure(error: BaseException, kind: str | None = None,
+                         detail: str | None = None) -> None:
+    """Count one decider-call failure and log louder once it looks persistent.
+
+    ``kind`` is the classified failure (``failure.classify``) and ``detail`` the
+    CLI's own error text. Both are logged because the exception alone is often
+    useless: for the whole of #1820 it read "Claude Code returned an error
+    result: success" — the result *subtype* leaking into the message — and the
+    real cause (one account's org had disabled Claude Code) was only findable by
+    digging out a helper transcript. ``detail`` goes through ``%r`` so the error
+    sink normalizes the quoted run to ``<str>`` and one condition stays one
+    auto-error issue however the CLI words it.
+    """
     global _consecutive_decide_failures
     _consecutive_decide_failures += 1
     if _consecutive_decide_failures >= _ESCALATE_FAILURE_THRESHOLD:
         log.error(
             "autopilot.decide PERSISTENT FAILURE: %d consecutive decider failures "
-            "(threshold=%d) — likely an outage, not a blip: %s",
-            _consecutive_decide_failures, _ESCALATE_FAILURE_THRESHOLD, error)
+            "(threshold=%d) — likely an outage, not a blip: kind=%s %s detail=%r",
+            _consecutive_decide_failures, _ESCALATE_FAILURE_THRESHOLD,
+            kind or "unknown", error, detail or "")
     else:
-        log.warning("autopilot.decide failed (%d consecutive): %s",
-                    _consecutive_decide_failures, error)
+        log.warning("autopilot.decide failed (%d consecutive): kind=%s %s detail=%r",
+                    _consecutive_decide_failures, kind or "unknown", error, detail or "")
 
 
 def _note_decide_success() -> None:
@@ -146,13 +158,20 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
         lambda: query_fn(prompt=_build_prompt(ctx), options=options),
         subsystem="autopilot.decide", account_key=config_dir)
     if outcome.skipped:
-        # Account's decider lane is cooled-down (rate-limited/de-authed). Escalate
+        # The account cannot answer right now — its decider lane is cooled down
+        # (rate-limited/de-authed) or the account is org-denied outright. Escalate
         # to a human rather than fire a call certain to fail — the safe default.
-        return Decision(action="escalate", reason="decider-skipped:circuit-open")
-    if outcome.error is not None:  # model down / parse error
-        _note_decide_failure(outcome.error)
+        # The two read very differently to whoever picks the escalation up, so the
+        # reason carries which one it was.
         return Decision(action="escalate",
-                        reason=f"decider-failed:{type(outcome.error).__name__}")
+                        reason=f"decider-skipped:{outcome.skip_reason or 'circuit-open'}")
+    if outcome.error is not None:  # model down / parse error
+        _note_decide_failure(outcome.error, outcome.failure_kind, outcome.error_text)
+        # The classified kind, not the exception class: every SDK failure is a
+        # RuntimeError, so "decider-failed:RuntimeError" said nothing about which.
+        return Decision(
+            action="escalate",
+            reason=f"decider-failed:{outcome.failure_kind or type(outcome.error).__name__}")
     _note_decide_success()
     parts: list[str] = []
     for msg in outcome.messages:

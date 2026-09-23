@@ -120,3 +120,33 @@ def test_plain_execution_error_is_not_turn_dropped():
     f = classify("execution_error", "The agent stopped on an execution error.")
     assert f.kind == "other"
     assert not f.is_recoverable
+
+
+# Live 2026-09-22 (#1820): an enabled, ledger-healthy account answered every
+# helper call with HTTP 403 oauth_not_allowed_for_organization. The SDK reports
+# that as the opaque "Claude Code returned an error result: success", so the text
+# alone classified "other" and nothing upstream could tell a durable authorization
+# denial from a passing blip.
+def test_api_403_code_is_auth_forbidden_and_not_recoverable():
+    f = classify("api_403", "Claude Code returned an error result: success")
+    assert f.kind == "auth_forbidden"
+    # Deliberately NOT recoverable: recomposing credentials or rotating cannot
+    # undo an organization-level denial, and "other" (today's verdict) is the
+    # same no-op — this only names the condition.
+    assert not f.is_recoverable
+
+
+@pytest.mark.parametrize("message", [
+    "Your organization has disabled Claude subscription access for Claude Code · "
+    "Use an Anthropic API key instead, or ask your admin to enable access",
+    "oauth_not_allowed_for_organization",   # CLI apiErrorCode
+    "oauth_org_not_allowed",                # CLI assistant-message error field
+])
+def test_org_denial_text_is_auth_forbidden_without_a_status_code(message):
+    assert classify(None, message).kind == "auth_forbidden"
+
+
+def test_a_403_in_prose_alone_is_not_an_org_denial():
+    # Only the explicit code or an org-denial marker counts; a stray "403" in a
+    # tool result must not block an account from helper duty.
+    assert classify("driver_error", "the fixture returned 403 rows").kind == "other"
