@@ -2060,65 +2060,70 @@ class ClaudeAgentDriver:
             await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
 
     async def aclose(self):
-        # No more listening: an idle driver's listener is parked on the cursor and
-        # must not be counted as a live turn to flush (the grace below is for those).
-        self._closing = True
-        await self._stop_listener()
-        self._cancel_suggest()
-        self._reg.deny_all(self.session_id)
-        self._qreg.deny_all(self.session_id)
-        grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
-        if self._pump is not None and not self._pump.done():
-            # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
-            # drain kills the subprocess before the CLI writes its synthetic
-            # "[Request interrupted by user for tool use]" result, orphaning the
-            # tool_use and dead-ending the next resume (see transcript_repair).
-            # Interrupt and give the CLI a bounded chance to flush; only cancel if it
-            # doesn't finish in time. Drop queued prompts first so the drain's finally
-            # can't launch a fresh turn while we're closing.
-            self._queue.clear()
-            if self._turn_active and self._client is not None:
-                # interrupt() awaits a control-channel reply from the CLI — a wedged
-                # subprocess left it blocked forever, hanging every close (#846).
-                await bounded_wait(self._client.interrupt(), timeout=grace,
-                                   phase=f"driver.interrupt:{self.session_id}",
-                                   cancel_grace=grace)
-            # asyncio.wait, not wait_for(shield(...)): both leave the pump running on
-            # overrun, but wait_for's CancelledError is indistinguishable from OUR own
-            # (this close runs inside the drain), and swallowing that stalls the stop
-            # budget (#1164).
-            await asyncio.wait({self._pump}, timeout=grace)
-            if not self._pump.done():
-                self._pump.cancel()
-                # The reap must be bounded too: a pump wedged in an uncancellable
-                # region (mid-to_thread, or a stream that swallows the cancel)
-                # otherwise blocks close forever (#846).
-                await bounded_wait(self._pump, timeout=grace,
-                                   phase=f"driver.pump:{self.session_id}",
-                                   cancel_grace=grace)
-        if self._source is not None:
-            await self._source.aclose(grace, phase=f"driver.source:{self.session_id}")
-        # LAST thing before terminate: the CLI is still running here, so it still has
-        # a chance to finish writing the reply it just streamed (#1012).
-        await self._await_transcript_flush()
-        if self._client:
-            closing = asyncio.ensure_future(self._client.__aexit__(None, None, None))
-            completed = await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
-                                           phase=f"driver.aexit:{self.session_id}")
-            self._automation_close_ok = (completed and closing.done()
-                                         and not closing.cancelled()
-                                         and closing.exception() is None)
-        # Final sync_back: capture any token rotation that occurred during the
-        # session (e.g. a long-running session where the SDK refreshed but the
-        # drain's finally sync_back already ran before the close was requested).
-        await self._call_sync_back()
-        if self._assistant_api is not None:
-            try:
-                await self._assistant_api.aclose()
-            finally:
-                assistant_sessions_live.dec()
-        for q in self._subscribers:
-            q.put_nowait(_STREAM_DONE)
+        try:
+            # No more listening: an idle driver's listener is parked on the cursor and
+            # must not be counted as a live turn to flush (the grace below is for those).
+            self._closing = True
+            await self._stop_listener()
+            self._cancel_suggest()
+            self._reg.deny_all(self.session_id)
+            self._qreg.deny_all(self.session_id)
+            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
+            if self._pump is not None and not self._pump.done():
+                # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
+                # drain kills the subprocess before the CLI writes its synthetic
+                # "[Request interrupted by user for tool use]" result, orphaning the
+                # tool_use and dead-ending the next resume (see transcript_repair).
+                # Interrupt and give the CLI a bounded chance to flush; only cancel if it
+                # doesn't finish in time. Drop queued prompts first so the drain's finally
+                # can't launch a fresh turn while we're closing.
+                self._queue.clear()
+                if self._turn_active and self._client is not None:
+                    # interrupt() awaits a control-channel reply from the CLI — a wedged
+                    # subprocess left it blocked forever, hanging every close (#846).
+                    await bounded_wait(self._client.interrupt(), timeout=grace,
+                                       phase=f"driver.interrupt:{self.session_id}",
+                                       cancel_grace=grace)
+                # asyncio.wait, not wait_for(shield(...)): both leave the pump running on
+                # overrun, but wait_for's CancelledError is indistinguishable from OUR own
+                # (this close runs inside the drain), and swallowing that stalls the stop
+                # budget (#1164).
+                await asyncio.wait({self._pump}, timeout=grace)
+                if not self._pump.done():
+                    self._pump.cancel()
+                    # The reap must be bounded too: a pump wedged in an uncancellable
+                    # region (mid-to_thread, or a stream that swallows the cancel)
+                    # otherwise blocks close forever (#846).
+                    await bounded_wait(self._pump, timeout=grace,
+                                       phase=f"driver.pump:{self.session_id}",
+                                       cancel_grace=grace)
+            if self._source is not None:
+                await self._source.aclose(grace, phase=f"driver.source:{self.session_id}")
+            # LAST thing before terminate: the CLI is still running here, so it still has
+            # a chance to finish writing the reply it just streamed (#1012).
+            await self._await_transcript_flush()
+            if self._client:
+                closing = asyncio.ensure_future(self._client.__aexit__(None, None, None))
+                completed = await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                                               phase=f"driver.aexit:{self.session_id}")
+                self._automation_close_ok = (completed and closing.done()
+                                             and not closing.cancelled()
+                                             and closing.exception() is None)
+            # Final sync_back: capture any token rotation that occurred during the
+            # session (e.g. a long-running session where the SDK refreshed but the
+            # drain's finally sync_back already ran before the close was requested).
+            await self._call_sync_back()
+            if self._assistant_api is not None:
+                try:
+                    await self._assistant_api.aclose()
+                finally:
+                    assistant_sessions_live.dec()
+        finally:
+            # End every subscriber's stream even when a close step raised: a pump
+            # parked on a queue nobody will ever feed again otherwise lives forever
+            # (supervise() keeps it alive — #1690).
+            for q in self._subscribers:
+                q.put_nowait(_STREAM_DONE)
         await self._automation_fence.closed(self)
 
 

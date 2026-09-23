@@ -9,6 +9,13 @@ frozen live tail — no log, no restart, no client signal (audit W2.6).
 observed), logs it loudly with a traceback naming the task, and — for a task that
 FAILED rather than was cancelled — invokes an optional recovery hook. Clean returns
 and cancellations pass through untouched, so it never changes shutdown behaviour.
+
+It also holds a strong reference to the task until it finishes. asyncio keeps only
+weak references to tasks, so a task parked on a queue whose owner (a torn-down
+driver, a closed socket handler) was dropped is itself garbage: the GC logs "Task
+was destroyed but it is pending!", closes the coroutine, and the step that close
+schedules raises a frame-less ``RuntimeError: cannot reuse already awaited
+coroutine`` — reported here as a spurious task failure (#1690).
 """
 from __future__ import annotations
 
@@ -17,6 +24,9 @@ import logging
 from collections.abc import Callable
 
 log = logging.getLogger(__name__)
+
+#: Strong references to every supervised task still running (see module docstring).
+_live: set[asyncio.Task] = set()
 
 
 def supervise(
@@ -34,6 +44,7 @@ def supervise(
       and swallowed — a recovery hook must never crash the callback.
     """
     def _done(t: asyncio.Task) -> None:
+        _live.discard(t)
         if t.cancelled():
             return
         exc = t.exception()
@@ -46,5 +57,6 @@ def supervise(
             except Exception:
                 log.exception("supervised task %s on_failure hook raised", name)
 
+    _live.add(task)
     task.add_done_callback(_done)
     return task
