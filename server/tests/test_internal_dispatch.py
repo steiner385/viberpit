@@ -4,13 +4,15 @@ and business logic are covered by test_internal_sessions_api.py.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import httpx
 import pytest
 
 from server.sessions.selection import AllAccountsBusy
-from server.sessions.internal_dispatch import EdgeUnreachable, create_via_edge
+from server.sessions.internal_dispatch import (
+    EdgeUnreachable, certify_harvested_via_edge, create_via_edge)
 
 
 def _transport(handler) -> httpx.MockTransport:
@@ -64,3 +66,40 @@ async def test_domain_refusal_reconstructs_all_accounts_busy():
         await create_via_edge(port=8787, transport=_transport(handler), name="x")
     assert ei.value.kind == "at_ceiling"
     assert ei.value.earliest_reset == reset
+
+
+@pytest.mark.asyncio
+async def test_certify_posts_session_id_with_internal_token():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    await certify_harvested_via_edge(port=8787, session_id="s1",
+                                     transport=_transport(handler))
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/api/internal/certify-harvested"
+    assert seen[0].headers["authorization"].startswith("Bearer ccsys1:")
+    assert json.loads(seen[0].content) == {"session_id": "s1"}
+
+
+@pytest.mark.asyncio
+async def test_certify_connection_failure_raises_edge_unreachable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(EdgeUnreachable):
+        await certify_harvested_via_edge(port=8787, session_id="s1",
+                                         transport=_transport(handler))
+
+
+@pytest.mark.asyncio
+async def test_certify_non_2xx_raises_edge_unreachable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {"code": "INTERNAL_ROUTE_FORBIDDEN"}})
+
+    with pytest.raises(EdgeUnreachable):
+        await certify_harvested_via_edge(port=8787, session_id="s1",
+                                         transport=_transport(handler))

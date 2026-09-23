@@ -48,12 +48,41 @@ class _FakeOrch:
         self._rec = rec
         self._exc = exc
         self.calls: list[dict] = []
+        self.certified: list[str] = []
 
     async def create_session(self, **kwargs):
         self.calls.append(kwargs)
         if self._exc is not None:
             raise self._exc
         return self._rec
+
+    async def certify_harvested_complete(self, session_id):
+        self.certified.append(session_id)
+
+
+def test_certify_route_forwards_to_the_sessions_facade():
+    """The second internal route: the primary daemon's chained-ingest asking its
+    co-located edge to certify a harvested one-shot session `complete` on the host
+    that owns it (FleetOrchestrator routes by the row's host stamp)."""
+    with patch.dict(os.environ, _ENV):
+        tok = mint_token()
+        c = _client()
+        fake = _FakeOrch()
+        c.app.state.sessions = fake
+        r = c.post("/api/internal/certify-harvested", json={"session_id": "s1"},
+                   headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 200, r.text
+        assert fake.certified == ["s1"]
+
+
+def test_certify_route_refuses_non_loopback_peer():
+    with patch.dict(os.environ, _ENV):
+        tok = mint_token()
+        c = _client()
+        far = _far_client(c.app)
+        r = far.post("/api/internal/certify-harvested", json={"session_id": "s1"},
+                     headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 401
 
 
 def test_non_loopback_peer_refused():

@@ -14,7 +14,7 @@ import logging
 
 import httpx
 
-from server.auth.internal_token import ALLOWED_PATH, mint_token
+from server.auth.internal_token import ALLOWED_PATH, CERTIFY_PATH, mint_token
 from server.ipc.client import DaemonError, reconstruct_create_session_error
 from server.sessions.types import SessionRecord
 
@@ -60,3 +60,32 @@ async def create_via_edge(
         # problem, not a refusal the caller should see: fall back instead.
         raise EdgeUnreachable(f"unexpected status {r.status_code}: {r.text[:200]}")
     return SessionRecord.from_dict(r.json()["session"])
+
+
+# One loopback hop + one mTLS RPC hop + a `_persist_status("complete")` on the owning
+# host (which runs the completion guard). Well under the create pipeline's budget.
+_CERTIFY_TIMEOUT_S = 60.0
+
+
+async def certify_harvested_via_edge(
+    *, port: int, session_id: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Ask the co-located edge to certify *session_id* ``complete`` on the host that
+    owns it (server/api/internal_sessions.py ``certify_harvested_session``).
+
+    The chained ingest that calls this runs on the primary and has already observed
+    the deliverable (proposal rows written), but the session it harvested may live
+    on any fleet host — the create above ranked it there — and its status can only
+    be driven where its record and driver are. Any transport failure or non-2xx is
+    ``EdgeUnreachable``: there is no domain refusal on this route, and the caller
+    logs and moves on (the harvest is already durable)."""
+    url = f"http://127.0.0.1:{port}{CERTIFY_PATH}"
+    headers = {"Authorization": f"Bearer {mint_token()}"}
+    try:
+        async with httpx.AsyncClient(timeout=_CERTIFY_TIMEOUT_S, transport=transport) as client:
+            r = await client.post(url, json={"session_id": session_id}, headers=headers)
+    except httpx.HTTPError as exc:
+        raise EdgeUnreachable(f"{exc.__class__.__name__}: {exc}") from exc
+    if r.status_code >= 400:
+        raise EdgeUnreachable(f"unexpected status {r.status_code}: {r.text[:200]}")

@@ -26,11 +26,33 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from server.auth.internal_token import ALLOWED_PATH
+from server.auth.internal_token import ALLOWED_PATH, CERTIFY_PATH
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["internal"])
+
+
+class InternalCertifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+
+
+@router.post(CERTIFY_PATH)
+async def certify_harvested_session(body: InternalCertifyRequest, request: Request):
+    """Certify a harvested one-shot (classify / materialize) session ``complete``
+    on the host that owns its driver.
+
+    The chained ingest that harvests such a session runs inside the primary daemon,
+    but the session itself was placed by the route above — on whichever host ranked
+    best. The certify has to run where the live record and driver are, so the primary
+    asks its co-located edge, and ``FleetOrchestrator`` routes by the row's host stamp
+    (``certify_harvested_complete`` is in its ``_PER_SESSION`` set). Single-host: the
+    facade runs it in-process. Same caller, same token, same posture as the create.
+    """
+    await request.app.state.sessions.certify_harvested_complete(body.session_id)
+    return {"ok": True}
 
 
 class InternalCreateSessionRequest(BaseModel):
