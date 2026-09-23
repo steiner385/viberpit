@@ -15,8 +15,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi.testclient import TestClient
 
+from server.deploy import app as deploy_app
 from server.deploy.client import DeployControllerUnavailable
+from server.deploy.detect import DetectLoop, PendingState
+from server.deploy.types import DeployStatus
 from server.sessions import host_upgrade
 
 
@@ -27,9 +31,30 @@ def _fresh_state():
     host_upgrade._reset_state_for_tests()
 
 
+class _Controller:
+    def __init__(self, hosts: dict[str, dict]):
+        self.status = DeployStatus(target_sha="abc", running=bool(hosts), hosts=hosts)
+
+
+def _controller_payload(**hosts) -> dict:
+    """What the deploy controller's real ``/status`` route serves for these host states.
+
+    Built through the route rather than written by hand: the hand-written fake this
+    replaces put ``hosts`` at the top level, the real payload nests it under
+    ``deploy``, and every test here passed while production never once saw a
+    controller-driven restart (#2181)."""
+    loop = DetectLoop("/r", compute=lambda r: PendingState())
+    app, _, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
+        detect_loop=loop, controller=_Controller({n: {"state": s} for n, s in hosts.items()}))
+    return TestClient(app).get("/status").json()
+
+
 def _status(**hosts):
+    payload = _controller_payload(**hosts)
+
     async def fetch():
-        return {"hosts": {n: {"state": s} for n, s in hosts.items()}}
+        return payload
     return fetch
 
 
@@ -63,11 +88,12 @@ def test_controller_status_is_cached_across_a_burst_of_failures():
     """A restart window produces a burst of failed polls (two RPCs every 5 s plus the
     probe). One status read per burst, not one per failure."""
     calls = 0
+    payload = _controller_payload(rocky="running")
 
     async def counting():
         nonlocal calls
         calls += 1
-        return {"hosts": {"rocky": {"state": "running"}}}
+        return payload
 
     async def go():
         return [await host_upgrade.restart_expected("rocky", controller_status=counting)

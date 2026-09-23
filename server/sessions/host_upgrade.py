@@ -68,7 +68,10 @@ async def _controller_hosts(fetch: Callable[[], Awaitable[dict]]) -> dict[str, d
     if now - _controller_cache["at"] < _CONTROLLER_STATUS_TTL_S:
         return _controller_cache["hosts"]
     try:
-        hosts = (await fetch()).get("hosts") or {}
+        # The controller's /status is {"repo", "pending", "deploy": DeployStatus}; the
+        # per-host fan-out lives under "deploy". Reading a top-level "hosts" key made every
+        # controller-driven restart look like "no deploy" and re-filed #1614 as #2181.
+        hosts = ((await fetch()).get("deploy") or {}).get("hosts") or {}
     except Exception:  # noqa: BLE001 — a logging decision must never raise
         # No controller, or one that could not answer: no evidence of a deploy. Cached
         # like a real answer so an absent controller is not re-dialled per failure.
