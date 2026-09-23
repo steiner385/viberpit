@@ -59,6 +59,7 @@ async def test_adopt_dead_pid_skips_termination(tmp_path, monkeypatch):
     monkeypatch.setattr("server.sessions.orchestrator.compose", lambda a: tmp_path / "cfg")
     monkeypatch.setattr("server.sessions.orchestrator.configdir.trust_project",
                         lambda *a, **k: None)
+    monkeypatch.setattr("server.sessions.orchestrator._adopt._pid_alive", lambda _p: False)
 
     def _no_kill(pid, signum):  # pragma: no cover - must never be called
         raise AssertionError("dead pid must not be signalled")
