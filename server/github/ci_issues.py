@@ -134,8 +134,8 @@ def comment_on_issue(repo: str, number: int, body: str, *,
 
     Same endpoint as ``comment_on_pr`` (GitHub shares one comment API across
     issues and PRs) — kept as its own name so call sites in the filers read as
-    what they are. Used by the error-triage recurrence path and, later, the
-    session-feedback filer (#1434) and the CI/CD Doctor (#1433).
+    what they are. Reached through ``issue_filing.apply`` by all three filers:
+    error triage, the session-feedback filer (#1434) and the CI/CD Doctor (#1433).
     """
     try:
         proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}"])
@@ -194,14 +194,6 @@ def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
         return False
 
 
-def reopen_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
-    """Reopen a previously-filed ci-doctor issue when its finding recurs, instead
-    of filing a brand-new duplicate each flap. Best-effort — False on failure so
-    the caller can fall back to filing fresh."""
-    try:
-        proc = run(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
-                    "-f", "state=open"])
-        return proc.returncode == 0
-    except Exception:
-        log.warning("cicd.issue_reopen_failed repo=%s #%s", repo, number, exc_info=True)
-        return False
+# No reopen_issue: every filer now files a linked "[regression]" issue when a
+# closed fingerprint comes back, and none of them reopens (issue_filing.decide,
+# #1433). The doctor's reopen path (#448) was this module's only caller.

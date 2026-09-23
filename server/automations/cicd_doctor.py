@@ -8,12 +8,16 @@ from .context import observation_failed, publish_observation
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from itertools import islice
 from typing import Any, Awaitable, Callable
+
+from ccswitch import gitrepos
 
 from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
+from .issue_filing import Decision, Linked, apply, decide
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
@@ -28,6 +32,17 @@ _ROLLUP_BATCH = 10_000
 # Bound Python/SQLAlchemy parameter preparation per event-loop turn, independently
 # of artifact size. Inserts stay in the run ingestion transaction.
 _INGEST_BATCH = 500
+
+
+def _decide(linked: Linked | None, now: datetime) -> Decision:
+    """``issue_filing.decide`` with the two knobs the doctor does not have.
+
+    It has no daily cap — `file_issues` is its only filing gate, and its findings are
+    already rate-limited by the analyzers' evidence thresholds — so every decision is
+    offered a free slot. `comment_every` is inert: the doctor never passes a
+    `last_commented_at`, which decide() short-circuits on before it reads the gap.
+    """
+    return decide(linked, cap_remaining=1, comment_every=timedelta(0), now=now)
 
 
 def _junit_last_attempts(
@@ -406,10 +421,8 @@ class CicdDoctorLoop:
                  fetch_junit: Callable[[str, int], Awaitable[list[tuple[str, bytes]]]],
                  fetch_repo_meta: Callable[[str], Awaitable[tuple[str, set[str]]]],
                  fetch_workflows: Callable[[str, str], Awaitable[dict[str, str]]],
-                 file_issue: Callable[[str, str, str], Awaitable[int | None]],
-                 close_issue: Callable[[str, int], Awaitable[bool]],
                  clock: Callable[[], float],
-                 reopen_issue: Callable[[str, int], Awaitable[bool]] | None = None) -> None:
+                 run: Callable[..., Any] = gitrepos._run_gh) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_repos = list_repos
@@ -418,9 +431,12 @@ class CicdDoctorLoop:
         self._fetch_junit = fetch_junit
         self._fetch_repo_meta = fetch_repo_meta
         self._fetch_workflows = fetch_workflows
-        self._file_issue = file_issue
-        self._close_issue = close_issue
-        self._reopen_issue = reopen_issue
+        # ONE gh seam for every issue write, as in error_triage: the file/comment
+        # side effects go through issue_filing.apply(run=…) and the close sweep
+        # through ci_issues.close_issue(run=…). Three separate injected callables
+        # (file_issue / close_issue / reopen_issue) were a second way to reach gh
+        # from this loop and could not be handed to the shared helper at all (#1433).
+        self._gh = run
         self._clock = clock
         self._lock = asyncio.Lock()
         # A run with malformed junit artifacts is an expected degrade path (see
@@ -628,18 +644,19 @@ class CicdDoctorLoop:
         from server.db import db_session
         from server.db.models import CiFinding
         from server.db.models import _utcnow  # single source for tz-aware now
-        from .cicd.findings import issue_body
+        from server.github import ci_issues
+        from .cicd.findings import issue_body, recurrence_comment
 
         fresh_by_fp = {f.fingerprint: f for f in fresh}
         file_on = bool(config.get("file_issues"))
-
-        def _body(f) -> str:
-            return issue_body(f.title, f.detail)
+        now = _utcnow()
 
         # Pass 1: compute all DB upserts/resolves; collect side effects for after commit.
         to_emit: list[tuple] = []          # (level, summary, kind, target, detail)
-        to_file: list[tuple] = []          # (fingerprint, title, body) -> file new issue
-        to_reopen: list[int] = []          # issue numbers to reopen on recurrence
+        # (fingerprint, Decision, title, body, Linked|None) -> issue_filing.apply.
+        # The shared helper owns the file / comment / regress rule; this loop only
+        # owns its CiFinding rows (#1433).
+        to_apply: list[tuple] = []
         open_n = candidates = 0
 
         async with db_session() as db:
@@ -660,27 +677,59 @@ class CicdDoctorLoop:
             for fp, f in fresh_by_fp.items():
                 row = open_by_fp.get(fp)
                 if row is not None:
-                    row.title, row.detail, row.last_seen_at = f.title, f.detail, _utcnow()
+                    row.title, row.detail, row.last_seen_at = f.title, f.detail, now
                     # An open row with no issue number means a prior filing attempt
-                    # failed (e.g. transient gh error) — retry it this tick.
+                    # failed (e.g. transient gh error). That is exactly decide()'s
+                    # "no linked issue -> file" case, so the retry needs no branch
+                    # of its own here.
                     if row.issue_number is None and file_on and f.actionable:
-                        to_file.append((fp, f.title, _body(f)))
+                        to_apply.append((fp, _decide(None, now), f.title,
+                                         issue_body(f.title, f.detail), None))
                     continue
                 prior = resolved_by_fp.get(fp)
+                linked: Linked | None = None
+                decision: Decision | None = None
                 if prior is not None and file_on and f.actionable:
-                    # Recurrence of a previously-filed finding: revive the resolved
-                    # row and reopen its issue instead of filing a duplicate (#448).
+                    # The doctor closes its own issues with a bare state=closed,
+                    # which GitHub records as "completed", and it never reads
+                    # stateReason back — so a confirmed close is the only closure
+                    # it can claim, and it can never see an operator's not_planned.
+                    linked = Linked(number=prior.issue_number,
+                                    closed=bool(prior.issue_closed),
+                                    closed_reason="completed" if prior.issue_closed else None)
+                    decision = _decide(linked, now)
+                if prior is not None and decision is not None and decision.kind == "comment":
+                    # The finding resolved but its close never confirmed, so the
+                    # issue is still open: say so on it and revive the row, rather
+                    # than filing a second issue for one that is already open.
+                    # Fires at most once per flap — the row is open from here, so
+                    # the next tick takes the open_by_fp branch above.
                     prior.status, prior.resolved_at, prior.issue_closed = "open", None, None
-                    prior.title, prior.detail, prior.last_seen_at = f.title, f.detail, _utcnow()
-                    to_reopen.append(prior.issue_number)  # type: ignore[arg-type]
+                    prior.title, prior.detail, prior.last_seen_at = f.title, f.detail, now
+                    to_apply.append((fp, decision, f.title,
+                                     recurrence_comment(f.title, f.detail), linked))
                     to_emit.append(("info", f"{repo}: recurred — {f.title}",
                                     "detected", fp, f.detail))
                 else:
+                    # Everything else — first sighting, and a recurrence after a
+                    # confirmed close — opens a NEW row. A recurrence files a fresh
+                    # issue linking the closed one instead of reopening it (#1433):
+                    # the shared rule across all three filers, and a finding that
+                    # comes back after its fix is news, not a continuation.
                     db.add(CiFinding(repo=repo, kind=f.kind, fingerprint=fp,
                                      status="open", title=f.title, detail=f.detail))
-                    to_emit.append(("info", f"{repo}: {f.title}", "detected", fp, f.detail))
+                    regressed = (linked is not None and decision is not None
+                                 and decision.kind == "regress")
+                    to_emit.append(("info",
+                                    f"{repo}: {'recurred — ' if regressed else ''}{f.title}",
+                                    "detected", fp, f.detail))
                     if file_on and f.actionable:
-                        to_file.append((fp, f.title, _body(f)))
+                        to_apply.append((
+                            fp, decision or _decide(None, now), f.title,
+                            issue_body(f.title, f.detail,
+                                       regression_of=linked.number
+                                       if regressed and linked is not None else None),
+                            None))
             for fp, row in open_by_fp.items():
                 if fp not in fresh_by_fp:
                     # Mark resolved; the close-pending sweep below closes the issue
@@ -695,19 +744,21 @@ class CicdDoctorLoop:
         # Pass 2: run side effects now that the DB write lock is free.
         for level, summary, kind, target, detail in to_emit:
             await self._ctx.emit(level, summary, kind=kind, target=target, detail=detail)
-        for reopen_number in to_reopen:
-            if self._reopen_issue is not None:
-                await self._reopen_issue(repo, reopen_number)
-        for fp, title, body in to_file:
-            issue_number = await self._file_issue(repo, title, body)
-            if issue_number is not None:
-                # Write issue_number back in a short second session (match on fingerprint).
-                async with db_session() as db:
-                    await db.execute(
-                        sa_update(CiFinding)
-                        .where(CiFinding.repo == repo, CiFinding.fingerprint == fp,
-                               CiFinding.status == "open")
-                        .values(issue_number=issue_number))
+        for fp, decision, title, body, linked in to_apply:
+            applied = await apply(decision, repo=repo, title=title, body=body,
+                                  labels=[ci_issues.LABEL], linked=linked, run=self._gh)
+            # A comment lands on the number the row already carries; only a create
+            # has something new to write back. A failed create is issue_number None,
+            # which leaves the open row retryable on the next tick.
+            if decision.kind == "comment" or applied.issue_number is None:
+                continue
+            # Write issue_number back in a short second session (match on fingerprint).
+            async with db_session() as db:
+                await db.execute(
+                    sa_update(CiFinding)
+                    .where(CiFinding.repo == repo, CiFinding.fingerprint == fp,
+                           CiFinding.status == "open")
+                    .values(issue_number=applied.issue_number))
         # Close-pending sweep: every resolved finding whose linked issue is still
         # (believed) open. A first close and a retry of a previously-failed close
         # are the same operation here — a failed close leaves issue_closed NULL and
@@ -719,7 +770,7 @@ class CicdDoctorLoop:
                 or_(CiFinding.issue_closed.is_(None),
                     CiFinding.issue_closed == false())))).all()
         for row_id, number in pending:
-            if await self._close_issue(repo, number):
+            if await asyncio.to_thread(ci_issues.close_issue, repo, number, run=self._gh):
                 async with db_session() as db:
                     await db.execute(sa_update(CiFinding)
                                      .where(CiFinding.id == row_id)
