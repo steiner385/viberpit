@@ -24,33 +24,20 @@ def _client(db_url: str | None = None):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    _clear = [
-        "CCSWITCH_SESSIOND_ENDPOINT",
-        "CCSWITCH_SESSIOND_SOCKET",
-        "CCSWITCH_SESSIOND_HOST",
-        "CCSWITCH_SESSIOND_PORT",
-        "CCSWITCH_SESSIOND_CLIENT_CERT",
-        "CCSWITCH_SESSIOND_CLIENT_KEY",
-        "CCSWITCH_SESSIOND_CA",
-    ]
-    saved = {k: os.environ.pop(k, None) for k in _clear}
-    try:
-        with contextlib.ExitStack() as stack:
-            url = db_url
-            if url is None:
-                tmp = stack.enter_context(tempfile.TemporaryDirectory())
-                url = f"sqlite+aiosqlite:///{tmp}/test.db"
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
-                                         "CCSWITCH_DEV": "1",
-                                         "CCSWITCH_TAILNET_ALLOWLIST": ""}):
-                orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-                app = create_app(orchestrator=orch)
-                with TestClient(app, raise_server_exceptions=False) as c:
-                    yield c
-    finally:
-        for k, v in saved.items():
-            if v is not None:
-                os.environ[k] = v
+    # Remote-sessiond vars are cleared globally in conftest.py
+    # (_no_ambient_remote_daemon_config) so create_app() stays in-process.
+    with contextlib.ExitStack() as stack:
+        url = db_url
+        if url is None:
+            tmp = stack.enter_context(tempfile.TemporaryDirectory())
+            url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                yield c
 
 
 def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
