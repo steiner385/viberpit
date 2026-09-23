@@ -149,6 +149,11 @@ _EDGE_ALREADY_EXISTS = "has already been taken"
 #: has been seen live, and inventing the wording for the others would turn a real
 #: failure into a silent success. ``remove_blocked_by`` is NOT here — GitHub's reply
 #: when the edge is already gone has never been observed.
+#:
+#: The field-bootstrap mutations (``create_field``, ``set_field_options``) never reach
+#: here — they are sent singly, outside ``build_batch``/``parse_batch`` — and must not be
+#: given a guessed entry either: ``gh_reconcile._converged_on_board`` settles their
+#: "already true" by READING the board back, which needs no wording at all (#2114).
 _IDEMPOTENT_REJECTIONS: Mapping[str, str] = {"add_blocked_by": _EDGE_ALREADY_EXISTS}
 
 
