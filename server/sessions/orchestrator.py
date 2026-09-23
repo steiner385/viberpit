@@ -10606,9 +10606,14 @@ class SessionOrchestrator:
             content = self._sdlc_show_committed_file(
                 cwd, f"origin/{default_branch}", upstream)
             if kind == "spec":
+                const_path = ".specify/memory/constitution.md"
+                raw_const_text = self._sdlc_show_committed_file(
+                    cwd, f"origin/{default_branch}", const_path)
+                const_text = (None if raw_const_text.startswith(_SDLC_UNREADABLE_PREFIX)
+                             else raw_const_text)
                 return build_spec_prompt(
                     content, [], slug=slug, repo=repo, default_branch=default_branch,
-                    engine=engine)
+                    engine=engine, constitution=const_text, constitution_path=const_path)
             return build_plan_prompt(
                 content, slug=slug, repo=repo, default_branch=default_branch,
                 engine=engine)
