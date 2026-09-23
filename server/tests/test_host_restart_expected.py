@@ -32,8 +32,14 @@ def _fresh_state():
 
 
 class _Controller:
+    """Minimal `server.deploy.app._ControllerLike`: a status to serve, nothing to run."""
+
     def __init__(self, hosts: dict[str, dict]):
         self.status = DeployStatus(target_sha="abc", running=bool(hosts), hosts=hosts)
+
+    async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
+        # Part of the protocol, never part of this test: /status only reads `.status`.
+        raise AssertionError("the /status route must not start a deploy")
 
 
 def _controller_payload(**hosts) -> dict:
