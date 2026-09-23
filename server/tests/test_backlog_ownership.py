@@ -355,6 +355,68 @@ async def test_work_stopped_falls_back_to_native_proof_when_session_not_gone(run
 
 
 @pytest.mark.asyncio
+async def test_work_stopped_repairs_the_generation_proof_when_session_gone(runner):
+    """#2202's own claim outliving its archived session was only half the story
+    (steiner385/viberpit#2202, re-opened as #2232/#2233): trusting
+    ``_session_gone`` makes ``_work_stopped`` answer True, but the sweep's
+    actual release (``reserve_target_action`` -> ``tx.transfer(WORK_STOPPED)``)
+    independently re-derives "stopped" from ``stopped_generation ==
+    execution_generation`` in ``ownership.py:_validate_release`` — unaware of
+    the DB-status shortcut. A stuck native proof never converges, so the
+    release itself kept raising "native session execution has no current
+    stopped-work attestation" every sweep tick forever. ``_session_terminal_attest``
+    must be given the chance to repair that proof before ``_work_stopped``
+    returns."""
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    loop._session_gone = AsyncMock(return_value=True)
+    loop._session_terminal_attest = AsyncMock(return_value=True)
+    assert await loop._work_stopped(state)
+    loop._session_terminal_attest.assert_awaited_once_with(state["session_id"])
+
+
+@pytest.mark.asyncio
+async def test_terminal_attest_repairs_a_stuck_proof_so_release_actually_succeeds(runner):
+    """End-to-end reproduction of production's exact failure and its fix: a
+    session whose one turn started (generation bumped to 1) but whose close was
+    never individually attested — the shape a WORKER-hosted session's archived
+    row leaves behind, since the primary sweep cannot vouch for a driver it never
+    ran (``_automation_session_work_stopped``'s host-stamp gate correctly
+    refuses). Before the repair, the real fenced release raises the production
+    ValueError verbatim. ``attest_terminal_session_stopped`` is pure DB CAS with
+    no host gate, so wiring it as ``_session_terminal_attest`` lets the same
+    release succeed afterwards."""
+    from server.automations.ownership import attest_terminal_session_stopped
+    from server.db.models import Session as DbSession
+
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    sid = state["session_id"]
+    async with owned(state["ownership_token"]) as tx:
+        tx.operation.execution_generation = 1
+        tx.operation.execution_sessions = {
+            sid: {"current": "exec-1", "executions": {
+                "exec-1": {"generation": 1, "stopped": None}}}}
+        tx.db.add(DbSession(id=sid, name="archived", cwd="/tmp", account_name="a",
+                            origin="backlog-runner", origin_ref="o/r#1", status="archived"))
+
+    with pytest.raises(ValueError, match="stopped-work attestation"):
+        async with owned(state["ownership_token"]) as tx:
+            await tx.transfer(owner="backlog-runner", source="terminal-closeout",
+                              proof=ReleaseProof.WORK_STOPPED, reason="merged PR close-out")
+
+    loop._session_gone = AsyncMock(return_value=True)
+    loop._session_terminal_attest = attest_terminal_session_stopped
+    assert await loop._work_stopped(state)
+
+    async with owned(state["ownership_token"]) as tx:
+        await tx.transfer(owner="backlog-runner", source="terminal-closeout",
+                          proof=ReleaseProof.WORK_STOPPED, reason="merged PR close-out")
+
+
+@pytest.mark.asyncio
 async def test_lost_closeout_response_recovers_only_all_verified_closed_targets(runner, monkeypatch):
     from server.sessions.orchestrator import SessionOrchestrator
     loop, ctx = runner
