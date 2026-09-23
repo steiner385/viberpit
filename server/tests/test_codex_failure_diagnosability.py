@@ -236,6 +236,37 @@ async def test_a_different_session_is_not_silenced_by_another_sessions_window(
 
 
 # ---------------------------------------------------------------------------
+# #1530 — a peer-rejected thread/read, not just a closed transport
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["transcript_events", "transcript_window",
+                                     "engine_replay_window"])
+async def test_a_peer_rejected_thread_read_is_logged_without_a_traceback(
+        monkeypatch, caplog, surface):
+    """#1530: the app-server's own JSON-RPC refusal of ``thread/read``
+    (``-32600``, "thread not loaded") reaches these same three replay
+    surfaces via ``CodexRequestFailed`` rather than the ``CodexTransportClosed``
+    the surface-parametrized test above exercises. Both are ``CodexProtocolError``
+    subclasses so ``_log_replay_failure`` classifies them identically, but #1530's
+    own traceback names this exception specifically — pinned separately so a
+    future change narrowed to ``CodexTransportClosed`` cannot silently regress it."""
+    o = _orch_with_failing_replay(
+        monkeypatch, codex_protocol.CodexRequestFailed(-32600, method="thread/read"))
+
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        result = await getattr(o, surface)("37e13a96")
+
+    assert result in ([], None)
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.exc_info is None, "peer rejection logged with a traceback"
+    assert "peer_error:-32600" in record.getMessage(), record.getMessage()
+    assert surface in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
 # #1702 — pausing is idempotent, so its record must be paced
 # ---------------------------------------------------------------------------
 
