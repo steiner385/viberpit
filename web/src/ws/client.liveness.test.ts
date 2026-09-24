@@ -15,6 +15,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { SessionSocket, LIVENESS_CHECK_MS } from './client'
 import { QK } from '@/api/hooks'
 import type { Session } from '@/api/types'
+import { clientLogger } from '@/obs/logger'
 
 const T1 = '2026-08-29T12:00:00+00:00'
 const T2 = '2026-08-29T12:00:30+00:00'
@@ -135,6 +136,36 @@ describe('SessionSocket rev-watermark liveness probe', () => {
     vi.advanceTimersByTime(3_000)
     s._livenessCheck()                   // same rev again → no second heal
     expect(sent.length).toBe(2)
+  })
+
+  // ── #1488: the probe's own recovery log must not auto-file a ticket ─────────
+
+  it('logs the heal at info, not warn/error — this is expected self-healing, not a defect', () => {
+    // `/api/client-logs` (web/src/obs/logger.ts) auto-files an error-triage issue for
+    // every warn+ fingerprint. The probe firing and healing is by design (see the class
+    // doc above), so it must never log at a level that opens a ticket — #1488 was this
+    // exact line bumping the same issue dozens of times a day.
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const warnSpy = vi.spyOn(clientLogger, 'warn')
+    const errorSpy = vi.spyOn(clientLogger, 'error')
+    const { s } = makeSocket({ revAt: T2 })
+    s._syncedRevAt = T1
+    s._lastSessionFrameAt = Date.now() - 60_000
+    s._livenessCheck()
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('transcript.liveness.stale'),
+      expect.objectContaining({ sessionId: 's1' }),
+    )
+    // _healActiveSession() reuses the existing gap-heal warn ("ws gap detected…") for the
+    // detach+attach it issues — out of scope here. Only the probe's OWN message must never
+    // land at warn/error.
+    const livenessCalls = (spy: typeof warnSpy) =>
+      spy.mock.calls.filter(([msg]) => String(msg).includes('transcript.liveness.stale'))
+    expect(livenessCalls(warnSpy)).toEqual([])
+    expect(livenessCalls(errorSpy)).toEqual([])
+    infoSpy.mockRestore()
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 
   it('is inert with no active session or a disconnected socket', () => {
