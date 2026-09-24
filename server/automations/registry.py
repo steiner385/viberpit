@@ -127,6 +127,7 @@ from .control_band_monitor import ControlBandMonitor  # noqa: E402
 from .pm_sync import PmSync  # noqa: E402
 from .pm_triage import PmTriage  # noqa: E402
 from .pm_onboard import PmOnboard  # noqa: E402
+from .pm_onboard_constitution import PmOnboardConstitution  # noqa: E402
 from .pm_classify import PmClassify  # noqa: E402
 from .gh_reconcile import GhReconcile  # noqa: E402
 from .error_triage import ErrorTriage  # noqa: E402
@@ -245,6 +246,10 @@ registry.register(PmTriage(), oversight=AutomationOversight(
 registry.register(PmOnboard(), oversight=AutomationOversight(
     Responsibility.ORGANIZATION,
     'Selected product: invoked by setup or map refresh to launch capability-map synthesis sessions.', {},
+))
+registry.register(PmOnboardConstitution(), oversight=AutomationOversight(
+    Responsibility.ORGANIZATION,
+    'Selected product: invoked from the onboarding wizard to launch a constitution-proposal session.', {},
 ))
 registry.register(PmClassify(), oversight=AutomationOversight(
     Responsibility.ORGANIZATION,

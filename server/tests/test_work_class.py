@@ -34,6 +34,7 @@ def test_every_registered_automation_declares_its_work_class():
         "sdlc-synthesizer": "development",
         "pr-doctor": "maintenance",
         "pm-onboard": "maintenance",
+        "pm-onboard-constitution": "maintenance",
         "pm-classify": "maintenance",
         "control-band-monitor": "maintenance",
         "autopilot": "maintenance",

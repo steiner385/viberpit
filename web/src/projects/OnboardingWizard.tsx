@@ -7,7 +7,7 @@
 import { Link } from 'react-router-dom'
 
 import {
-  useAdvanceLive, useAdvanceMap, useClassify, useOnboarding, useProposeMap,
+  useAdvanceLive, useAdvanceMap, useClassify, useOnboarding, useProposeConstitution, useProposeMap,
 } from '@/api/hooks'
 import type { OnboardingAction, OnboardingCounts, OnboardingMapPr } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
@@ -125,10 +125,40 @@ function ActionButton(
   }
 }
 
+// issue #2259 (item 2 of #2165): offered independently of the required
+// onboarding ladder above — once the map is merged and the repo's governance
+// document has an actual gap (`OnboardingView.offerConstitution`).
+function ConstitutionOffer({ slug }: { slug: string }) {
+  const propose = useProposeConstitution()
+  return (
+    <>
+      <span className="text-sm text-ink-muted">
+        This repository has no ratified constitution yet.
+      </span>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" disabled={propose.isPending}
+                onClick={() => propose.mutate(slug)}>
+          {propose.isPending ? 'Proposing…' : 'Propose constitution'}
+        </Button>
+      </div>
+      {propose.isError && (
+        <InlineError error={propose.error} fallback="Could not propose a constitution" />
+      )}
+    </>
+  )
+}
+
 export function OnboardingWizard({ slug }: { slug: string }) {
   const { data, isLoading } = useOnboarding(slug)
   if (isLoading || !data) return null
-  if (data.state === 'live') return null
+  if (data.state === 'live') {
+    if (!data.offerConstitution) return null
+    return (
+      <div className="mt-2 flex flex-col gap-2 rounded-md border border-edge bg-surface p-3">
+        <ConstitutionOffer slug={slug} />
+      </div>
+    )
+  }
   return (
     <div className="mt-2 flex flex-col gap-2 rounded-md border border-edge bg-surface p-3">
       <div className="flex flex-col gap-1">
@@ -139,6 +169,7 @@ export function OnboardingWizard({ slug }: { slug: string }) {
         </span>
       </div>
       <ActionButton action={data.action} slug={slug} counts={data.counts} mapPr={data.mapPr} />
+      {data.offerConstitution && <ConstitutionOffer slug={slug} />}
     </div>
   )
 }

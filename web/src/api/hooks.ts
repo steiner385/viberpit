@@ -34,7 +34,7 @@ import {
 } from './sdlc'
 import {
   createProject, updateProject, requestProjectSync,
-  fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
+  fetchOnboarding, proposeMap, proposeConstitution, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges, retireCapability, mergeCapabilities,
   fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
@@ -2274,6 +2274,18 @@ export function useProposeMap() {
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** issue #2259: spawn the constitution-proposal session. */
+export function useProposeConstitution() {
+  const qc = useQueryClient()
+  return useMutation<{ sessionId: string | null }, ApiRequestError, string>({
+    mutationFn: (slug) => proposeConstitution(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
     },
     meta: PM_MUTATION_META,
   })

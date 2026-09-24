@@ -1281,6 +1281,12 @@ class SessionOrchestrator:
         # invoke these seams directly (phase 3 adds the pm-triage cadence).
         self._pm_onboard_ctx = AutomationContext(
             "pm-onboard", create_session=self._automation_create_session)
+        # Constitution-proposal seam (issue #2259, item 2 of #2165): a separate
+        # origin/dedupe-key namespace from `pm-onboard` even though both are
+        # triggered from the same onboarding wizard — see
+        # `server.automations.pm_onboard_constitution` for why.
+        self._pm_onboard_constitution_ctx = AutomationContext(
+            "pm-onboard-constitution", create_session=self._automation_create_session)
         self._pm_classify_ctx = AutomationContext(
             "pm-classify", create_session=self._automation_create_session)
         # PM Triage control loop (design §6): the continuous curation loop —
@@ -9756,6 +9762,69 @@ class SessionOrchestrator:
                 self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
                 name=f"pm-critic-chain-{slug}")
         return rec
+
+    async def pm_onboard_spawn_constitution(self, slug: str):
+        """Spawn the constitution-proposal session (issue #2259, item 2 of
+        #2165) — a separate spawn seam from ``pm_onboard_spawn_map`` with its
+        own origin, dedupe key, and account resolution, mirroring its shape.
+
+        Deduped on ``<slug>:constitution`` so a re-tap does not double-spawn.
+        Unlike the map-synthesis seam, this NEVER touches ``onboarding_state``:
+        offering a constitution proposal is independent of the required
+        onboarding ladder — the caller (``/propose-constitution``) gates on
+        ``Project.constitution_status`` instead.
+
+        Returns the SessionRecord, or None when no repo / no healthy account.
+        Propose-only: the spawned session opens ONE non-draft PR and NEVER
+        arms auto-merge — the merge is the human governance-review gate."""
+        from sqlalchemy import select
+        from server.db.models import Project, ProjectRepo
+        from server.pm.classification import build_constitution_proposal_prompt
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is None:
+                return None
+            repo_row = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.project_id == proj.id,
+                ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
+            if repo_row is None or not repo_row.repo:
+                return None
+            repo = repo_row.repo
+            constitution_status = proj.constitution_status
+        origin_ref = f"{slug}:constitution"
+        name = f"pm constitution {slug}"
+        detail: dict = {"slug": slug, "kind": "constitution-proposal"}
+        # Engine FIRST, before any account, network or disk work — see
+        # `pm_onboard_spawn_map` for why.
+        plan = await self._pm_onboard_constitution_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        engine, config = plan
+        account = await self._automation_account_for(
+            self._pm_onboard_constitution_ctx, origin_ref, engine=engine)
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_constitution_proposal_prompt(
+            slug=slug, repo=repo, default_branch=default_branch,
+            constitution_status=constitution_status, engine=engine)
+        detail["engine"] = engine.value
+        choice = await self._resolve_spawn_model(
+            engine, account, config,
+            f"draft a repository constitution for {slug} from {repo}'s ADRs, "
+            f"AGENTS.md, and spec-kit templates")
+        detail.update(choice.detail)
+        return await self._pm_onboard_constitution_ctx.spawn_session(
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=repo, cwd=cwd, account=account, engine=engine,
+            name=name, initial_prompt=prompt,
+            model=choice.model, reasoning_effort=choice.reasoning_effort,
+            detail=detail)
 
     async def _pm_onboard_spawn_critic(self, slug: str, repo: str,
                                        branch: str):

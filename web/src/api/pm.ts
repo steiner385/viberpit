@@ -173,6 +173,8 @@ export interface OnboardingAction {
   reason?: string
 }
 
+// issue #2259 (item 2 of #2165): "propose constitution" onboarding session.
+
 export interface OnboardingCounts {
   repoCount: number
   backfillDoneCount: number
@@ -193,6 +195,12 @@ export interface OnboardingView {
   action: OnboardingAction
   counts: OnboardingCounts
   mapPr: OnboardingMapPr | null
+  /** Offer a "propose constitution" session (issue #2259): true once the map
+   * is merged AND the repo's governance document has an actual gap. Optional
+   * on the type (not the wire — the API always sends it) so call sites that
+   * mock a narrower `OnboardingView` shape need not carry a field they don't
+   * exercise; the UI treats a missing value the same as `false`. */
+  offerConstitution?: boolean
 }
 
 export function fetchOnboarding(slug: string): Promise<OnboardingView> {
@@ -203,6 +211,11 @@ export function fetchOnboarding(slug: string): Promise<OnboardingView> {
 export function proposeMap(slug: string): Promise<{ sessionId: string | null }> {
   return api.post<{ sessionId: string | null }>(
     `/pm/projects/${encodeURIComponent(slug)}/propose-map`)
+}
+
+export function proposeConstitution(slug: string): Promise<{ sessionId: string | null }> {
+  return api.post<{ sessionId: string | null }>(
+    `/pm/projects/${encodeURIComponent(slug)}/propose-constitution`)
 }
 
 // Also exported as `classify` from the triage module (single spawn fetcher).

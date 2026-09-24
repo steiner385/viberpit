@@ -98,6 +98,53 @@ async def test_spawn_map_no_account_returns_none(db_env):
 
 
 @pytest.mark.asyncio
+async def test_spawn_constitution_dedupes_and_never_touches_onboarding_state(db_env):
+    # issue #2259: a SEPARATE spawn seam/origin from pm_onboard_spawn_map, and
+    # unlike it, must never advance onboarding_state — offering the proposal
+    # is independent of the required onboarding ladder.
+    await _seed(db_env)
+    orch = _bare_orch()
+    rec = FakeAutomationContext()
+    orch._pm_onboard_constitution_ctx = rec
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        out = await orch.pm_onboard_spawn_constitution("viberpit")
+    assert out is not None
+    assert rec.calls[0]["origin_ref"] == "viberpit:constitution"
+    assert rec.calls[0]["dedupe_key"] == "viberpit:constitution"
+    async with db_session() as db:
+        from sqlalchemy import select
+        p = (await db.execute(select(Project).where(
+            Project.slug == "viberpit"))).scalar_one()
+        assert p.onboarding_state == "map_merged"  # unchanged by this seam
+
+
+@pytest.mark.asyncio
+async def test_spawn_constitution_no_account_returns_none(db_env):
+    await _seed(db_env)
+    orch = _bare_orch()
+    orch._pm_onboard_constitution_ctx = FakeAutomationContext()
+    orch._backlog_healthy_account = _mk_async(None)
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        assert await orch.pm_onboard_spawn_constitution("viberpit") is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_constitution_no_primary_repo_returns_none(db_env):
+    await init_db(db_env)
+    async with db_session() as db:
+        db.add(Project(slug="bare", name="bare", onboarding_state="map_merged"))
+    orch = _bare_orch()
+    orch._pm_onboard_constitution_ctx = FakeAutomationContext()
+    assert await orch.pm_onboard_spawn_constitution("bare") is None
+    assert await orch.pm_onboard_spawn_constitution("does-not-exist") is None
+
+
+@pytest.mark.asyncio
 async def test_classify_run_dispatches_open_items(db_env):
     await _seed(db_env)
     orch = _bare_orch()

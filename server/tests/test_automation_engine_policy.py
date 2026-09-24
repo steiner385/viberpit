@@ -55,6 +55,9 @@ def test_every_registered_origin_declares_its_audited_policy():
         "pm-sync": EnginePolicy.CLAUDE_ONLY,
         "pm-triage": EnginePolicy.CLAUDE_ONLY,
         "pm-onboard": EnginePolicy.CODEX_ALLOWED,
+        # pm-onboard-constitution has no Codex acceptance suite yet (issue
+        # #2259) — fails closed until one exists, same as pm-sync/pm-triage.
+        "pm-onboard-constitution": EnginePolicy.CLAUDE_ONLY,
         "pm-classify": EnginePolicy.CODEX_ALLOWED,
         "gh-reconcile": EnginePolicy.CLAUDE_ONLY,
         # #804: no Codex acceptance suite exists for the control-band diagnosis

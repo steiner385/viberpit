@@ -502,10 +502,14 @@ def _client_with_stubbed_seams():
                 async def _fake_spawn_map(slug, **_kwargs):
                     return type("R", (), {"id": "sess-map"})()
 
+                async def _fake_spawn_constitution(slug, **_kwargs):
+                    return type("R", (), {"id": "sess-constitution"})()
+
                 async def _fake_classify_run(slug, **_kwargs):
                     return 3
 
                 orch.pm_onboard_spawn_map = _fake_spawn_map   # type: ignore[method-assign]
+                orch.pm_onboard_spawn_constitution = _fake_spawn_constitution  # type: ignore[method-assign]
                 orch.pm_classify_run = _fake_classify_run     # type: ignore[method-assign]
                 app = create_app(orchestrator=orch)
                 with TestClient(app, raise_server_exceptions=False) as c:
@@ -566,6 +570,83 @@ def test_propose_map_conflicts_when_backfill_incomplete():
         r = c.post("/api/pm/projects/viberpit/propose-map", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "backfill_incomplete"
+
+
+# ---------------------------------------------------------------------------
+# issue #2259 (item 2 of #2165): "propose constitution" onboarding session
+# ---------------------------------------------------------------------------
+
+def _set_constitution_status(c, slug, status):
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import Project
+
+    async def _run():
+        async with db_session() as db:
+            p = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one()
+            p.constitution_status = status
+    c.portal.call(_run)
+
+
+def test_onboarding_never_offers_constitution_before_a_gap_is_known():
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["offerConstitution"] is False
+
+
+def test_onboarding_never_offers_constitution_before_the_map_is_merged():
+    """A gap exists, but the project is still on the required ladder's earlier
+    steps (registered) — the map is the prerequisite, not the constitution."""
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _set_constitution_status(c, "viberpit", "missing")
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] == "registered"
+        assert r.json()["offerConstitution"] is False
+
+
+def test_onboarding_offers_constitution_once_map_merged_and_gap_exists():
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _seed_map_merged(c, "viberpit")
+        _set_constitution_status(c, "viberpit", "template")
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] == "map_merged"
+        assert r.json()["offerConstitution"] is True
+
+
+def test_onboarding_never_offers_constitution_once_ratified():
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _seed_map_merged(c, "viberpit")
+        # constitution_status stays None: pm-sync classified it as ratified.
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["offerConstitution"] is False
+
+
+def test_propose_constitution_409_when_no_governance_gap():
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _seed_map_merged(c, "viberpit")
+        r = c.post("/api/pm/projects/viberpit/propose-constitution", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_governance_gap"
+
+
+def test_propose_constitution_spawns_and_audits():
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _seed_map_merged(c, "viberpit")
+        _set_constitution_status(c, "viberpit", "no_version_footer")
+        r = c.post("/api/pm/projects/viberpit/propose-constitution", headers=IDENTITY_HEADERS)
+        assert r.status_code == 202, r.text
+        assert r.json()["sessionId"] == "sess-constitution"
 
 
 def test_classify_409_when_not_eligible():

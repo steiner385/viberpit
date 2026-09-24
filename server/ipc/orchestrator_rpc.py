@@ -382,8 +382,17 @@ def register_orchestrator_rpc(app, orch) -> None:
             return None
         return {"id": getattr(rec, "id", None)}
 
+    async def pm_onboard_spawn_constitution(params: dict) -> dict | None:
+        # Same wire shape as pm_onboard_spawn_map — strip the session record to
+        # {"id": ...}, the only field the API layer needs.
+        rec = await _maybe_await(orch.pm_onboard_spawn_constitution(**params))
+        if rec is None:
+            return None
+        return {"id": getattr(rec, "id", None)}
+
     register_rpc(app, "pm_onboarding_counts", pm_onboarding_counts)
     register_rpc(app, "pm_onboard_spawn_map", pm_onboard_spawn_map)
+    register_rpc(app, "pm_onboard_spawn_constitution", pm_onboard_spawn_constitution)
 
     async def sdlc_materialize_apply(params: dict) -> dict:
         # Not in _SIMPLE: the orchestrator method is private (it is a seam, not
