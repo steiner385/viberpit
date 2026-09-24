@@ -31,6 +31,9 @@ Safety invariants
   while a worktree in the set is still being worked in; a set nobody has
   touched for ``min_age`` is a standing cleanup backlog and gets the same
   WARNING every other non-settling chore in this module gets (#2143).
+* A dirty backlog below the critical threshold is INFO: those worktrees are
+  stash-evicted at ``max_dirty_age`` and the count clears itself, so only the
+  inode-exhaustion tier is CRITICAL (#1651).
 * Every eviction outcome is reported *after* the removal is attempted, so a
   discard is only ever claimed once it happened (#1664).  A removal git
   refuses is ``evict_failed`` — the one keep reason that never settles, since
@@ -61,7 +64,9 @@ log = logging.getLogger(__name__)
 # a legitimately long-running session won't be caught.
 _MAX_DIRTY_AGE_DEFAULT: float = 7 * 86400.0
 
-# Operator alert thresholds for accumulated dirty worktrees.
+# Dirty-worktree backlog thresholds.  Above the first the sweep journals at
+# INFO (the backlog settles by itself at ``max_dirty_age``); above the second
+# it is CRITICAL (inode-exhaustion risk).
 _DIRTY_WARN_THRESHOLD = 30
 _DIRTY_CRITICAL_THRESHOLD = 50
 
@@ -572,6 +577,15 @@ def _emit_evict_failed_alert(evict_failed: int) -> None:
 
 
 def _emit_dirty_alerts(kept_dirty: int) -> None:
+    """Report the dirty-worktree backlog at the severity its explanation earns.
+
+    ``kept_dirty`` counts worktrees younger than ``max_dirty_age`` with no
+    owning session; each one is stash-evicted by a later sweep, so the count
+    settles without anyone acting on it.  A WARNING for a self-clearing chore
+    re-filed the same auto-error issue on every busy week (#1651) — a stuck
+    eviction has its own ``evict_failed`` WARNING.  Only the inode-exhaustion
+    tier escalates.
+    """
     if kept_dirty > _DIRTY_CRITICAL_THRESHOLD:
         log.critical(
             "worktree-janitor: kept_dirty=%d exceeds critical threshold %d — "
@@ -579,7 +593,7 @@ def _emit_dirty_alerts(kept_dirty: int) -> None:
             kept_dirty, _DIRTY_CRITICAL_THRESHOLD,
         )
     elif kept_dirty > _DIRTY_WARN_THRESHOLD:
-        log.warning(
+        log.info(
             "worktree-janitor: kept_dirty=%d exceeds warning threshold %d — "
             "dirty worktrees accumulating",
             kept_dirty, _DIRTY_WARN_THRESHOLD,
