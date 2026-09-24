@@ -14,6 +14,7 @@ import websockets
 from server.aio import cancel_and_reap
 from server.ipc import protocol as proto
 from server.ipc.paths import Endpoint, parse_endpoint
+from server.obs.logdedupe import LogThrottle, log_throttled
 
 log = logging.getLogger("server.ipc.client")
 
@@ -255,6 +256,16 @@ def daemon_ws_connect(endpoint: Endpoint, path: str, ssl_ctx=None):
     if endpoint.is_unix:
         return websockets.unix_connect(endpoint.path, f"ws://daemon{path}")
     return websockets.connect(f"wss://{endpoint.host}:{endpoint.port}{path}", ssl=ssl_ctx)
+
+
+# `_reader` re-enters the same except branch on every failed reconnect attempt.
+# A daemon that stays unreachable for a day turns one real condition into
+# thousands of identical WARNINGs (#1506: 1805 in ~30h) — errsink files one
+# auto-error issue per fingerprint, so the flood buries itself. Keyed on the
+# endpoint (bounded: one entry per daemon this process talks to), not the
+# exception text, so a still-down daemon keeps reporting on schedule instead
+# of latching silent — see server/obs/logdedupe.py.
+_WS_RECONNECT_LOG = LogThrottle()
 
 
 class DaemonClient:
@@ -973,7 +984,10 @@ class DaemonClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry
-                log.warning("ipc: events WS error (%s) — reconnecting in %.2fs", exc, backoff)
+                log_throttled(
+                    log, _WS_RECONNECT_LOG, str(self.endpoint), logging.WARNING,
+                    "ipc: events WS error (%s) — reconnecting in %.2fs", exc, backoff,
+                )
             self._ws = None
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 2.0)
