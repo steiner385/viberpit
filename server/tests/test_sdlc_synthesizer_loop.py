@@ -154,6 +154,27 @@ async def test_design_stage_proposes_spec():
 
 
 @pytest.mark.asyncio
+async def test_design_stage_records_no_upstream_ref_by_default():
+    """The common case (a real committed intent.md) — the spawn result carries
+    no ``upstream_ref``, and the recorded artifact reflects that (#2159)."""
+    rec = Recorder([_ini("design")])
+    await _loop(rec).tick()
+    assert rec.recorded[0]["upstream_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_design_stage_forwards_an_epic_adoption_upstream_ref():
+    """When ``spawn`` seeded the prompt from an epic (no intent.md existed —
+    #2159), it marks the returned session with ``upstream_ref``; the loop must
+    carry that onto the recorded artifact row so the initiative page can show
+    where the spec actually came from."""
+    rec = Recorder([_ini("design", origin="epic-adoption")])
+    rec.spawn_result = SimpleNamespace(id="sess-2", upstream_ref="o/r#42")
+    await _loop(rec).tick()
+    assert rec.recorded[0]["upstream_ref"] == "o/r#42"
+
+
+@pytest.mark.asyncio
 async def test_plan_stage_proposes_plan():
     rec = Recorder([_ini("plan")])
     rec.artifacts["i1"] = [

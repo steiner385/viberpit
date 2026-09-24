@@ -29,6 +29,10 @@ export interface InitiativeArtifact {
   prUrl: string | null
   sessionId: string | null
   model: string | null
+  /** Set only when the prompt was seeded from something other than the normal
+   *  committed upstream file — e.g. `"owner/repo#42"` for an epic-adoption
+   *  initiative's spec stage, which has no `intent.md` to read. */
+  upstreamRef: string | null
   createdAt: string | null
 }
 

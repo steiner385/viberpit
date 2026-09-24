@@ -278,6 +278,7 @@ def _artifact_to_dict(a: InitiativeArtifact) -> dict:
         "prUrl": a.pr_url,
         "sessionId": a.session_id,
         "model": a.model,
+        "upstreamRef": a.upstream_ref,
         "createdAt": a.created_at.isoformat() if a.created_at else None,
     }
 

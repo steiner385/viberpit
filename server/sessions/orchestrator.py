@@ -10480,13 +10480,19 @@ class SessionOrchestrator:
 
     async def _sdlc_record_artifact(self, *, initiative_id: str, kind: str,
                                     repo_path: str, session_id: str | None,
-                                    model: str | None) -> None:
-        """Insert an InitiativeArtifact index row for a freshly-spawned session."""
+                                    model: str | None,
+                                    upstream_ref: str | None = None) -> None:
+        """Insert an InitiativeArtifact index row for a freshly-spawned session.
+
+        ``upstream_ref`` records what actually seeded the prompt when it was
+        not the normal committed file — e.g. ``"owner/repo#42"`` for an
+        epic-adoption spec stage (#2159) — so the initiative page can show
+        where the spec came from."""
         from server.db.models import InitiativeArtifact
         async with db_session() as db:
             db.add(InitiativeArtifact(
                 initiative_id=initiative_id, kind=kind, repo_path=repo_path,
-                session_id=session_id, model=model))
+                session_id=session_id, model=model, upstream_ref=upstream_ref))
             await db.commit()
 
     async def _sdlc_set_status(self, initiative_id: str, status: str) -> None:
@@ -10639,10 +10645,21 @@ class SessionOrchestrator:
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
         default_branch = await self._sdlc_default_branch(repo)
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
+        # Epic-adopted initiatives (#2159) enter the chain directly at Design —
+        # the intake stage that would have written intent.md never ran, so
+        # there is nothing on disk to read. The plan stage needs no equivalent
+        # branch: by then the design-stage session has committed a real spec.md.
+        epic_upstream: tuple[str, str] | None = None
+        if kind == "spec" and ini.get("origin") == "epic-adoption":
+            epic_upstream = await self._sdlc_epic_upstream_text(
+                ini.get("epic_repo"), ini.get("epic_number"))
 
         def build(cwd: str, default_branch: str) -> str:
-            content = self._sdlc_show_committed_file(
-                cwd, f"origin/{default_branch}", upstream)
+            if epic_upstream is not None:
+                content = epic_upstream[0]
+            else:
+                content = self._sdlc_show_committed_file(
+                    cwd, f"origin/{default_branch}", upstream)
             if kind == "spec":
                 const_path = ".specify/memory/constitution.md"
                 raw_const_text = self._sdlc_show_committed_file(
@@ -10662,7 +10679,7 @@ class SessionOrchestrator:
         choice = await self._resolve_spawn_model(engine, account, config, summary)
         model, reasoning_effort = choice.model, choice.reasoning_effort
         detail.update(choice.detail)
-        return await self._sdlc_synth_ctx.spawn_session(
+        rec = await self._sdlc_synth_ctx.spawn_session(
             origin_ref=f"{slug}:{kind}",
             dedupe_key=f"{slug}:{kind}",
             repo=repo,
@@ -10675,6 +10692,47 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort,
             detail=detail,
         )
+        if rec is not None and epic_upstream is not None:
+            # Dynamic attribute, not a SessionRecord field: it never needs to
+            # persist on the session itself, only to reach the artifact-index
+            # write immediately below it in the synthesizer loop (see
+            # ``_sdlc_record_artifact``'s ``upstream_ref`` kwarg).
+            rec.upstream_ref = epic_upstream[1]
+        return rec
+
+    async def _sdlc_epic_upstream_text(
+            self, epic_repo: str | None, epic_number: int | None,
+    ) -> tuple[str, str] | None:
+        """Epic body + its direct sub-issues' bodies, off the GitHub mirror —
+        the substitute upstream for an epic-adopted initiative's spec stage
+        (#2159), which has no committed ``intent.md`` to read. Returns
+        ``(markdown, "owner/repo#N")``, or ``None`` when there is no pointer or
+        the epic is not (yet) mirrored — the caller then falls back to the
+        normal committed-file read."""
+        if not epic_repo or epic_number is None:
+            return None
+        from sqlalchemy import select as sa_select
+        from server.db.models import WorkItem
+        async with db_session() as db:
+            epic = (await db.execute(sa_select(WorkItem).where(
+                WorkItem.repo == epic_repo, WorkItem.number == epic_number,
+            ))).scalar_one_or_none()
+            if epic is None:
+                return None
+            children = (await db.execute(sa_select(WorkItem).where(
+                WorkItem.parent_work_item_id == epic.id,
+            ).order_by(WorkItem.number))).scalars().all()
+        ref = f"{epic_repo}#{epic_number}"
+        parts = [
+            f"(upstream: epic {ref}; no intent.md exists — this initiative was "
+            "adopted directly from the epic, so the spec is seeded from the "
+            "mirrored epic and its sub-issues instead)",
+            "", f"# {epic.title or ref}", "", epic.body or "_(no body)_",
+        ]
+        for child in children:
+            parts += ["", f"## #{child.number} {child.title or ''}".rstrip(),
+                     child.body or "_(no body)_"]
+        return "\n".join(parts), ref
 
     async def _sdlc_spawn_materialize(self, ini: dict):
         """Spawn a de-duped decompose session for a merged plan (spec 003 §7b).
