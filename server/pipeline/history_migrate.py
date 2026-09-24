@@ -9,6 +9,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from server.localstate import assert_local_sqlite
+
 SOURCE_DEFAULT = "/mnt/ssk-ssd/tony/GitHub/pr-dashboard/data/history.db"
 
 # Column order preserved verbatim from the source schema (history.ts).
@@ -29,6 +31,7 @@ def default_dest() -> str:
 
 def migrate_history(source_path: str = SOURCE_DEFAULT, dest_path: str | None = None) -> dict[str, int]:
     dest_path = dest_path or default_dest()
+    assert_local_sqlite(dest_path)  # refuse before writing anything (#2016)
     src = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
     dest = sqlite3.connect(dest_path)
     counts: dict[str, int] = {}

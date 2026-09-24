@@ -42,6 +42,11 @@ _DISPOSE_GRACE_TIMEOUT_S = 5.0
 def _make_engine(db_url: str, *, poolclass=None):
     connect_args: dict[str, object] = {}
     if db_url.startswith("sqlite"):
+        # The dev default lives in ~/.claude-accounts, an sshfs mount on every
+        # session runner: refuse a SQLite file there before opening it (#2016).
+        from server.localstate import assert_local_sqlite, sqlite_file_from_url
+        if (sqlite_file := sqlite_file_from_url(db_url)) is not None:
+            assert_local_sqlite(sqlite_file)
         # Before the first aiosqlite connection exists: upstream's worker thread
         # dies with an unhandled "Event loop is closed" when it delivers a result
         # to a loop that closed under an abandoned borrower (bounded_wait does
