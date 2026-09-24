@@ -1770,7 +1770,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # + fresh open_stream), and retry the send exactly once.
                 # A failed rebuild falls through to promptRejected below —
                 # recovery must never turn into a retry loop.
-                log.warning(
+                # INFO: this announces the retry, not its outcome. If the rebuild or the
+                # retried send fails, "ws.prompt rejected" below stays WARNING.
+                log.info(
                     "ws.prompt: no_driver with a live stream entry — "
                     "rebuilding driver and retrying once session=%s",
                     session_id)
