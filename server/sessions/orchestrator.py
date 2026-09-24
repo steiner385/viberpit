@@ -16515,10 +16515,25 @@ class SessionOrchestrator:
                 driver = await _build(resume)
                 try:
                     await driver.start()
-                except Exception:
+                except Exception as start_exc:
                     if resume is None:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
                         # truly dead account token / system problem). Surface it.
+                        raise
+                    from server.automations.ownership import StaleOwnership
+                    if isinstance(start_exc, StaleOwnership):
+                        # The automation fence refused: this session's target was
+                        # transferred to a successor operation, so no rebuild can ever
+                        # succeed. That is a known terminal state (ws.py maps it to
+                        # SESSION_OWNERSHIP_STALE, _reassign to automation_ownership_stale),
+                        # not a resume-handle or CLI fault — skip the transcript probe and
+                        # the fresh-start fallback, and log at INFO: a WARNING auto-files an
+                        # issue on every attach of such a session (#2174).
+                        with contextlib.suppress(Exception):
+                            await driver.aclose()
+                        log.info(
+                            "session.resume id=%s refused by the automation fence "
+                            "(ownership stale: %s); surfacing it", session_id, start_exc)
                         raise
                     if resume_engine is not AgentEngine.CLAUDE_CODE:
                         # The fresh-start fallback below is discriminated by the
