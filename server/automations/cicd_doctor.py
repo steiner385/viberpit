@@ -456,6 +456,12 @@ class CicdDoctorLoop:
         # error-sink occurrences (#1704: 145 in under a day). Keyed on repo,
         # not run id, since the run id is unbounded like a timestamp.
         self._junit_malformed_log = LogThrottle()
+        # The rollup running behind is likewise an anticipated, self-healing
+        # state during a CI ingest burst (#2221) — every tick that spends the
+        # full budget used to file another occurrence. One global key: the
+        # condition is one CiTestResult table, not per repo. A backlog that
+        # persists still re-reports each window.
+        self._rollup_behind_log = LogThrottle()
 
     async def tick(self) -> None:
         async with self._lock:
@@ -821,8 +827,9 @@ class CicdDoctorLoop:
         So: keep folding batches until the backlog is empty or *rollup_budget_s*
         (config, default 20s) is spent. One session per batch, so progress
         commits incrementally and a crash or budget stop never double-counts.
-        Stopping early logs a WARNING with the exact backlog left — a losing
-        race must be visible long before the table is 4x oversized.
+        Stopping early logs a throttled WARNING (first per window, repeats at
+        DEBUG) with the exact backlog left — a losing race must be visible long
+        before the table is 4x oversized.
 
         The fold itself runs IN SQL (#833): one grouped INSERT..SELECT upsert
         per batch instead of a Python Counter plus a bucket prefetch — 10k rows
@@ -889,10 +896,10 @@ class CicdDoctorLoop:
                     remaining = (await db.execute(
                         select(func.count()).select_from(CiTestResult)
                         .where(*stale))).scalar_one()
-                log.warning(
-                    "cicd rollup behind: budget %.1fs spent after %d batch(es) "
-                    "(%d rows folded), %d stale rows still pending — will "
-                    "continue next tick", budget_s, batches, folded, remaining)
+                log_event_throttled(
+                    log, self._rollup_behind_log, "rollup", logging.WARNING,
+                    "cicd_doctor.rollup_behind", budget_s=budget_s,
+                    batches=batches, folded=folded, remaining=remaining)
                 return
 
     async def _resolve_orphans(self, repos: list[str]) -> None:
