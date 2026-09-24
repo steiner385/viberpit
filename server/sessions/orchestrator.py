@@ -12340,12 +12340,26 @@ class SessionOrchestrator:
                 if act == "approve" and matches_denylist(
                         stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
                     return False
-                if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                driver = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+                if driver is None:
+                    return False
+                if getattr(driver, "identity", SYSTEM_IDENTITY) not in _UNOWNED_IDENTITIES:
+                    # A real human has attached to this driver (identity upgrades are
+                    # one-way, never downgraded — see `_rethread_identity`), so
+                    # PermissionRegistry.resolve's identity gate will refuse SYSTEM_IDENTITY
+                    # every time: a guaranteed-failing call logged as a WARNING each tick
+                    # forever (#2225). Skip instead of retrying; pre_decide's loop
+                    # detection escalates once this no-mutation result repeats.
                     return False
                 ok = bool(self.resolve_permission(
                     session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
             elif act == "answer" and stuck.get("question_id") is not None:
-                if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                driver = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+                if driver is None:
+                    return False
+                if getattr(driver, "identity", SYSTEM_IDENTITY) not in _UNOWNED_IDENTITIES:
+                    # Same guard as the approve/deny branch above: QuestionRegistry.resolve
+                    # refuses SYSTEM_IDENTITY against a question a real user owns (#2225).
                     return False
                 opts = stuck.get("options") or []
                 idx = decision.answer_index or 0

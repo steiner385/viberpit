@@ -278,6 +278,57 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
     asyncio.run(run())
 
 
+def _question_ctx(question_id, options):
+    from server.automations.autopilot_policy import DecisionContext
+    return DecisionContext(
+        session_id="s1", status="waiting_question", account="a", repo=None, branch=None,
+        effective_goal="g", goal_source="explicit",
+        stuck={"kind": "question", "question_id": question_id,
+               "question": "which?", "options": options, "multi_select": False},
+        transcript_tail=[], ledger={})
+
+
+def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
+    """A driver's identity only ever upgrades from the unowned sentinel to a real
+    user (never downgrades), so once someone has attached, PermissionRegistry /
+    QuestionRegistry.resolve refuse SYSTEM_IDENTITY on every subsequent attempt —
+    a guaranteed-failing call the old code kept retrying every tick, logged as a
+    WARNING each time forever (#2225). apply must skip (return False) without
+    even calling resolve_permission/answer_question, so nothing is logged and
+    pre_decide's loop detection can escalate instead."""
+    async def run():
+        from server.sessions.types import SessionRecord
+
+        class _FakeDriver:
+            identity = "tonystein85@gmail.com"  # a real, already-attached human
+
+        orch = _bare_orch()
+        orch._records["s1"] = SessionRecord(
+            id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        calls: list = []
+
+        async def _ensure(sid, ident=None):
+            return _FakeDriver()
+
+        orch.ensure_driver = _ensure
+        orch.resolve_permission = lambda sid, pid, decision, ident: calls.append("perm") or True
+
+        async def _answer(sid, qid, selected, ident, mode):
+            calls.append("answer")
+            return True
+
+        orch.answer_question = _answer
+
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="approve"), _perm_ctx("P1", "pytest")) is False
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="answer", answer_index=0),
+            _question_ctx("Q1", ["Option A"])) is False
+        assert calls == []  # neither registry seam was ever called
+    asyncio.run(run())
+
+
 def test_get_context_populates_transcript_tail(tmp_path):
     """The decider is only as good as its input: get_context must carry a compact
     transcript tail (the deployed empty-tail starved the model into prose/escalate)."""
