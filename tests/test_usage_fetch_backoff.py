@@ -193,6 +193,34 @@ class TestUsageFetchBackoff(unittest.TestCase):
                       if r.getMessage().startswith("usage_for(alpha): setup-token usage fetch failed")]
             self.assertEqual(levels, ["INFO"])
 
+    def test_setup_token_scope_gap_warns_once_then_logs_info(self):
+        """The scope gap is permanent until a re-auth, and the UNSUPPORTED snapshot
+        only caches for the usage TTL, so every TTL lapse re-detects it. WARNING
+        (the auto-error filing floor) fires on the first detection only; repeats
+        are INFO — the same gap once logged 167 WARNINGs in six hours (#1575).
+        A re-authentication re-arms the WARNING.
+        """
+        def scope_gap_levels():
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=False), \
+                 mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")), \
+                 self.assertLogs(accounts.__name__, level="INFO") as cm:
+                accounts.usage_for("alpha")
+            with ledger.locked_ledger() as led:
+                ledger.clear_cached_usage(led, "alpha")   # the TTL lapses
+            return [r.levelname for r in cm.records
+                    if "lacks the user:profile scope" in r.getMessage()]
+
+        with temp_env():
+            _seed_account("alpha", expires_in_ms=-1)
+            self.assertEqual(scope_gap_levels(), ["WARNING"])
+            self.assertEqual(scope_gap_levels(), ["INFO"])
+            accounts.mark_reauthenticated("alpha")
+            self.assertEqual(scope_gap_levels(), ["WARNING"])
+
     def test_setup_token_scope_probe_failure_is_transient_not_unsupported(self):
         """If the scope oracle itself cannot answer (network, 5xx), we do not know —
         and 'do not know' is a backoff, never a permanent UNSUPPORTED verdict."""
