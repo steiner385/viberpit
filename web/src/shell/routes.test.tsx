@@ -274,9 +274,10 @@ describe('route table — redirects', () => {
     expect(screen.getByTestId('page-subagent')).toHaveTextContent('abc/x')
   })
 
-  it('lands ?dialog=settings on Settings with the param dropped', () => {
+  it('lands ?dialog=settings on Settings with the param dropped', async () => {
     renderAt('/pipeline?dialog=settings')
-    expect(screen.getByTestId('page-settings')).toHaveTextContent('general')
+    // Settings is a code-split route (#1411) — it lands one microtask later.
+    expect(await screen.findByTestId('page-settings')).toHaveTextContent('general')
     expect(url()).not.toContain('dialog')
   })
 
@@ -304,7 +305,7 @@ describe('route table — redirects', () => {
     // on it and be redirected forward to /sessions/abc again — the loop the
     // user cannot escape. Replaced, Back reaches the page before it.
     expect(url()).toBe('/pipeline')
-    expect(screen.getByTestId('page-pipeline')).toBeInTheDocument()
+    expect(await screen.findByTestId('page-pipeline')).toBeInTheDocument()
   })
 })
 
@@ -331,10 +332,14 @@ describe('route table — pages', () => {
     ['/sessions/background/abc/agents/x', 'page-subagent'],
     ['/settings/general', 'page-settings'],
     ['/settings', 'page-settings'],
-  ])('%s renders %s without redirecting', (path, testid) => {
+    // `findBy` rather than `getBy`: Pipeline, Roadmap, Initiative, Delivery and
+    // Settings are code-split routes (#1411), so their page element arrives a
+    // microtask after the router resolves. The eager pages resolve on the first
+    // poll, so one spelling covers the whole table.
+  ])('%s renders %s without redirecting', async (path, testid) => {
     renderAt(path)
     expect(url()).toBe(path)
-    expect(screen.getByTestId(testid)).toBeInTheDocument()
+    expect(await screen.findByTestId(testid)).toBeInTheDocument()
   })
 
   it('renders the layout around the page, once', () => {
@@ -342,9 +347,9 @@ describe('route table — pages', () => {
     expect(screen.getAllByTestId('url')).toHaveLength(1)
   })
 
-  it('hands the path section to Settings (DEC-14)', () => {
+  it('hands the path section to Settings (DEC-14)', async () => {
     renderAt('/settings/accounts')
-    expect(screen.getByTestId('page-settings')).toHaveTextContent('accounts')
+    expect(await screen.findByTestId('page-settings')).toHaveTextContent('accounts')
   })
 
   it('carries :id into the open session', () => {

@@ -1,5 +1,14 @@
 // web/src/vnc/vncClient.ts
-import RFB from '@novnc/novnc'
+/**
+ * `@novnc/novnc` is loaded on `connect()`, not at module scope (#1411).
+ *
+ * It is ~560kB of source — the single largest third-party module in the app —
+ * and it is reachable from exactly two surfaces: a session's Browser tab and the
+ * account reauth panel. A static import put all of it in the entry chunk, so
+ * every page load in every layout paid for a viewer that most sessions never
+ * open. The type import below is erased at build time and costs nothing.
+ */
+import type RFB from '@novnc/novnc'
 import { jitter, BACKOFF_BASE_MS, BACKOFF_MAX_MS } from '@/ws/client'
 
 export type VncState = 'connecting' | 'connected' | 'reconnecting' | 'disabled' | 'nodisplay' | 'disconnected'
@@ -21,9 +30,16 @@ export class VncClient {
   constructor(url: string) { this.url = url }
   on(ev: string, cb: (s: VncState) => void) { (this.listeners[ev] ||= []).push(cb) }
   private emit(ev: string, s: VncState) { (this.listeners[ev] || []).forEach(cb => cb(s)) }
-  connect(canvas: HTMLElement) {
+  /** Resolves once the viewer is attached. Awaitable so a caller (and a test)
+   *  can act on the live RFB; callers that do not care may ignore it. */
+  async connect(canvas: HTMLElement) {
     this.canvas = canvas
-    this.rfb = new RFB(canvas, this.url, {})
+    const { default: RFBImpl } = await import('@novnc/novnc')
+    // The chunk fetch is a real await, so the tab may have been torn down (or
+    // reconnected onto a different canvas) while it was in flight. Attaching
+    // here anyway would leak an RFB nothing holds a reference to.
+    if (this.destroyed || this.canvas !== canvas) return
+    this.rfb = new RFBImpl(canvas, this.url, {})
     this.rfb.scaleViewport = true            // mobile-first: fit to viewport
     this.rfb.addEventListener('connect', () => {
       this.reconnectAttempt = 0
@@ -49,7 +65,7 @@ export class VncClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       if (this.destroyed || !this.canvas) return
-      this.connect(this.canvas)
+      void this.connect(this.canvas)
     }, delay)
   }
   /** Re-apply base fit so noVNC recomputes its scale against the current mount size.

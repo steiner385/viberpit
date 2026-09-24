@@ -68,3 +68,24 @@ def test_stt_settings_defaults_and_env(monkeypatch):
     monkeypatch.setenv("VIBERPIT_STT_TICK_S", "0.5")
     s = get_settings()
     assert (s.enable_stt, s.stt_model, s.stt_tick_s) == (True, "small.en", 0.5)
+
+
+def test_config_web_vitals_enabled_by_default():
+    """#1411: the field collector is on unless it is deliberately turned off.
+
+    The targets in the issue are stated as FIELD p75s, and a collector nobody
+    remembers to switch on measures nothing — so the default has to be `true`."""
+    client = _client()
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("VIBERPIT_WEB_VITALS_ENABLED", None)
+        r = client.get("/api/config", headers=H)
+    assert r.status_code == 200
+    assert r.json()["webVitalsEnabled"] is True
+
+
+def test_config_web_vitals_kill_switch():
+    """The browser reads this before installing any PerformanceObserver, so the
+    flag stops the MEASUREMENT, not just the ingest."""
+    client = _client()
+    with patch.dict(os.environ, {"VIBERPIT_WEB_VITALS_ENABLED": "false"}):
+        assert client.get("/api/config", headers=H).json()["webVitalsEnabled"] is False

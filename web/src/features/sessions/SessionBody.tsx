@@ -26,7 +26,7 @@ import { PendingModelApprovalPanel } from '@/features/sessions/panels/PendingMod
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
-import { BrowserTab } from '@/features/sessions/browser/BrowserTab'
+import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
 import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { ExportMenu } from './ExportMenu'
@@ -272,8 +272,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         if (browserEnabled && view === 'browser') {
           return (
             <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
-              <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
-                          displayMode={sessionRecord?.displayMode} host={sessionRecord?.host} />
+              <DeferredBrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
+                                  displayMode={sessionRecord?.displayMode} host={sessionRecord?.host} />
             </div>
           )
         }

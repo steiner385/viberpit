@@ -25,7 +25,10 @@ describe('IssueDispositionDialog', () => {
     fetchMock.mockResolvedValue(reply(detail))
     mount()
     expect(await screen.findByText('Account warning')).toBeInTheDocument()
-    expect(screen.getByText('Check credentials')).toBeInTheDocument()
+    // The body renders through `<Markdown>`, whose renderer is code-split
+    // (#1411): until the chunk lands the body is its own source text, so the
+    // sanitiser assertion below has to wait for the rendered form.
+    expect(await screen.findByText('Check credentials')).toBeInTheDocument()
     expect(document.querySelector('script')).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][1].method).toBe('GET')

@@ -271,6 +271,13 @@ jobs:
       - name: Build
         if: needs.changes.outputs.web == 'true'
         run: npm run build
+      # The lab half of #1411. Runs straight after the build, against the dist it
+      # just produced, so putting 40kB back on the critical path fails on the PR
+      # that did it rather than surfacing months later as "the app feels slow".
+      # Ceilings live in web/bundle-budget.json and only ever go down.
+      - name: Bundle budget
+        if: needs.changes.outputs.web == 'true'
+        run: npm run budget
       - name: No web changes
         if: needs.changes.outputs.web != 'true'
         # web/ was never checked out in this branch, so the job's default

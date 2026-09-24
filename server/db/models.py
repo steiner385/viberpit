@@ -2133,3 +2133,59 @@ class InitiativeFeature(Base):
     is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class WebVitalSample(Base):
+    """One field Core Web Vitals measurement from one real page load (#1411).
+
+    Written by `POST /api/web-vitals`, read by `GET /api/web-vitals/summary`,
+    which turns rows into the p75s the issue's targets are stated in
+    (`server/obs/web_vitals.py` owns the thresholds and the arithmetic).
+
+    ## What is deliberately not a column
+
+    No URL, no identity, no session id, no account name, no User-Agent. #1411
+    requires it, and the table shape is where that promise is actually kept: a
+    field nobody added cannot be filled in by a later careless writer. `route` is
+    a route SHAPE (`/sessions/:id`) computed in the browser by `obs/routeTemplate`
+    and re-scrubbed on arrival; `browser` is a family (`safari`) derived from the
+    request's UA header and discarded; `client_id` is a random per-page-load
+    value that lets the five samples of one load be told apart from five loads,
+    and outlives neither.
+
+    Every column is nullable so `_reconcile_columns` can ALTER-ADD the table on
+    both dialects; every timestamp is naive UTC (server/db/clock.py)."""
+
+    __tablename__ = "web_vital_samples"
+    __table_args__ = (
+        # The summary is always "this metric, over this window", so the window
+        # bound leads and the metric follows.
+        Index("ix_web_vital_samples_created_metric", "created_at", "metric"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # LCP | INP | CLS | TTFB | FCP — validated against WEB_VITAL_METRICS at ingest.
+    metric: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Milliseconds for every metric except CLS, which is unitless.
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Route SHAPE, never a URL: '/sessions/:id', not '/sessions/<uuid>'.
+    route: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # phone | tablet | desktop | wide — the app's own width tiers (shell/useViewport).
+    device: Mapped[str | None] = mapped_column(String, nullable=True)
+    # safari | chrome | firefox | edge | opera | other | unknown.
+    browser: Mapped[str | None] = mapped_column(String, nullable=True)
+    # navigate | reload | back-forward | prerender | restore, from the Navigation
+    # Timing API. A warm back-forward load is a different experience from a cold
+    # one and pooling them hides both.
+    nav_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The build sha the sample was taken on, so a regression can be attributed.
+    app_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    client_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #1411's "record optional chunk loads": JS fetched after load, i.e. the code
+    # route splitting moved off the critical path. Counted so that "no lazy
+    # chunks" and "lazy chunks of zero bytes" stay distinguishable.
+    lazy_chunks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lazy_chunk_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

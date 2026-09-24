@@ -37,6 +37,7 @@ from server.api.settings import router as settings_router
 from server.api import models as api_models
 from server.api.deploy import router as deploy_router
 from server.api.client_logs import router as client_logs_router
+from server.api.web_vitals import router as web_vitals_router
 from server.api.push import router as push_router
 from server.api.pipeline import router as pipeline_router, repos_router as pipeline_repos_router
 from server.api.automations import router as automations_router
@@ -898,6 +899,7 @@ def create_app(
     app.include_router(api_models.router)
     app.include_router(deploy_router)
     app.include_router(client_logs_router)
+    app.include_router(web_vitals_router)
     app.include_router(push_router)
     app.include_router(pipeline_router)
     app.include_router(pipeline_repos_router)

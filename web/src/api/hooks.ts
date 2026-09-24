@@ -236,6 +236,12 @@ export interface ConfigInfo {
   /** Edge runs the server-side dictation engine (`VIBERPIT_ENABLE_STT` + `stt` extra). */
   sttEnabled?: boolean
   /**
+   * Edge accepts field Core Web Vitals (`VIBERPIT_WEB_VITALS_ENABLED`, #1411).
+   * Absent on an edge that predates the endpoint — treated as OFF, so an old
+   * server never receives a POST it would 404 on every page load.
+   */
+  webVitalsEnabled?: boolean
+  /**
    * Per-engine offerability + capabilities. Absent on an edge that predates the
    * engine registry — treat that as "Claude Code only", which is what
    * `useEngineOffers()` degrades to.

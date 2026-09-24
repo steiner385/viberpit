@@ -53,7 +53,7 @@
    factory over the redirect components declared beside it. Splitting them apart
    would put the table and its own redirect targets in two files, which is the
    drift this file exists to prevent. */
-import type { ReactElement } from 'react'
+import { Suspense, lazy, type ReactElement } from 'react'
 import {
   Navigate, Outlet, useLocation, useNavigate, useParams, useSearchParams, type RouteObject,
 } from 'react-router-dom'
@@ -72,19 +72,65 @@ import { BackgroundWelcome } from '@/features/sessions/BackgroundWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubAgentReaderPage } from '@/features/sessions/SubAgentPage'
 import { ArchivedReviewPage } from '@/features/sessions/ReviewPage'
-import { PipelinePage } from '@/features/pipeline/PipelinePage'
-import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
-import { InitiativePage } from '@/features/roadmap/InitiativePage'
 import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, PRODUCT_ROUTE,
   inboxPath, productPath, roadmapPath,
 } from '@/features/roadmap/roadmapNavState'
-import { DeliveryPage } from '@/features/delivery/DeliveryPage'
 import {
   AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH, deliveryPath,
 } from '@/features/delivery/deliveryNavState'
-import { SettingsPage } from '@/features/settings/SettingsPage'
-import { SettingsIndexPage } from '@/features/settings/SettingsIndexPage'
+import { Skeleton } from '@/ui/Skeleton'
+import { PageContent } from '@/ui/PageContent'
+
+/**
+ * ## Which pages are code-split, and why not all of them (#1411)
+ *
+ * The entry chunk used to carry every page in the app, so a phone opening a
+ * session downloaded and parsed the Roadmap, Delivery, Pipeline and Settings
+ * trees before it could paint — 750kB of source for four sections most loads
+ * never visit. Each is `lazy()` here instead, which is the whole mechanism: a
+ * route element is the one place a page is named, so splitting it here splits
+ * it everywhere, with no `import()` sprinkled through the feature folders.
+ *
+ * The Sessions pages are deliberately NOT split. `/sessions` is where the app
+ * opens and where it spends its time; deferring it would swap a smaller entry
+ * chunk for a second round trip on the critical path — a worse LCP measured as
+ * a better bundle, which is exactly the trade the field collector
+ * (`obs/vitals.ts`) exists to keep anyone from making blind. The nav-state
+ * modules above stay eager for the same reason: `navDefForPath` and the path
+ * builders run on the FIRST render of any route, so lazily loading them would
+ * defer the router itself.
+ */
+const PipelinePage = lazy(() => import('@/features/pipeline/PipelinePage')
+  .then((m) => ({ default: m.PipelinePage })))
+const RoadmapPage = lazy(() => import('@/features/roadmap/RoadmapPage')
+  .then((m) => ({ default: m.RoadmapPage })))
+const InitiativePage = lazy(() => import('@/features/roadmap/InitiativePage')
+  .then((m) => ({ default: m.InitiativePage })))
+const DeliveryPage = lazy(() => import('@/features/delivery/DeliveryPage')
+  .then((m) => ({ default: m.DeliveryPage })))
+const SettingsPage = lazy(() => import('@/features/settings/SettingsPage')
+  .then((m) => ({ default: m.SettingsPage })))
+const SettingsIndexPage = lazy(() => import('@/features/settings/SettingsIndexPage')
+  .then((m) => ({ default: m.SettingsIndexPage })))
+
+/**
+ * The boundary every split page renders behind.
+ *
+ * One wrapper rather than a `<Suspense>` per row: the fallback is a property of
+ * "a page is still arriving", not of which page, and six copies of it is six
+ * chances for one of them to be shaped differently. It reuses `PageContent` +
+ * `Skeleton` so the placeholder occupies the page's real content box — a
+ * fallback that collapses to nothing and then expands is a layout shift, and
+ * CLS is one of the three numbers #1411 is trying to hold down.
+ */
+function DeferredPage({ children }: { children: ReactElement }) {
+  return (
+    <Suspense fallback={<PageContent busy><Skeleton lines={5} /></PageContent>}>
+      {children}
+    </Suspense>
+  )
+}
 
 const SETTINGS_PATH = NAV_BY_ID.settings.path
 
@@ -285,31 +331,31 @@ const PAGES: RouteObject[] = [
   { path: BACKGROUND_SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: SESSION_ROUTE, element: <SessionsPage /> },
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
-  { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
+  { path: NAV_BY_ID.pipeline.path, element: <DeferredPage><PipelinePage /></DeferredPage> },
   // One page at three levels — the section welcome (whose scope `?scope=`
   // chooses), one automation, one CI repo — chosen from the params by
   // `deliveryOpenItem`, never from the path.
-  { path: DELIVERY_PATH, element: <DeliveryPage /> },
-  { path: AUTOMATION_ROUTE, element: <DeliveryPage /> },
-  { path: CI_REPO_ROUTE, element: <DeliveryPage /> },
+  { path: DELIVERY_PATH, element: <DeferredPage><DeliveryPage /></DeferredPage> },
+  { path: AUTOMATION_ROUTE, element: <DeferredPage><DeliveryPage /></DeferredPage> },
+  { path: CI_REPO_ROUTE, element: <DeferredPage><DeliveryPage /></DeferredPage> },
   // One page at three detail levels — portfolio, product, capability — chosen
   // from the params by `roadmapOpenItem`, never from the path.
-  { path: NAV_BY_ID.roadmap.path, element: <RoadmapPage /> },
-  { path: PRODUCT_ROUTE, element: <RoadmapPage /> },
-  { path: CAPABILITY_ROUTE, element: <RoadmapPage /> },
+  { path: NAV_BY_ID.roadmap.path, element: <DeferredPage><RoadmapPage /></DeferredPage> },
+  { path: PRODUCT_ROUTE, element: <DeferredPage><RoadmapPage /></DeferredPage> },
+  { path: CAPABILITY_ROUTE, element: <DeferredPage><RoadmapPage /></DeferredPage> },
   // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
   // section alias is what puts it in the Roadmap section anyway.
-  { path: INITIATIVE_ROUTE, element: <InitiativePage /> },
+  { path: INITIATIVE_ROUTE, element: <DeferredPage><InitiativePage /></DeferredPage> },
   // Finish-line row 4, task 6: the Automations Settings section is retired
   // (R1) — its controls moved to the Delivery detail, so the settings-scoped
   // legacy spelling redirects there too, above the dynamic `:section` route.
   { path: '/settings/automation', element: <Navigate to={deliveryPath()} replace /> },
-  { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
+  { path: `${SETTINGS_PATH}/:section`, element: <DeferredPage><SettingsPage /></DeferredPage> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
   // is the grouped section list (the list half of list-then-detail). It still
   // redirects in the other modes, and it is where the legacy `?section=` deep
   // link is resolved — see `SettingsIndexPage`.
-  { path: SETTINGS_PATH, element: <SettingsIndexPage /> },
+  { path: SETTINGS_PATH, element: <DeferredPage><SettingsIndexPage /></DeferredPage> },
 
   // Legacy paths — bookmarks only. Nothing in the app links here any more.
   { path: '/session/:sessionId', element: <RedirectSession /> },

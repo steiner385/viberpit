@@ -19,6 +19,13 @@ from server.auth.middleware import current_identity
 CLIENT_LOGS_CAPACITY = 60.0
 CLIENT_LOGS_REFILL_PER_SEC = 1.0
 
+# Policy for the web-vitals endpoint (#1411): a page load flushes a handful of
+# batches, and a kiosk tab flushes on a timer, so the steady state is far below
+# client-logs'. The cap is deliberately tighter because every accepted batch is a
+# DB write rather than a log line.
+WEB_VITALS_CAPACITY = 30.0
+WEB_VITALS_REFILL_PER_SEC = 0.5
+
 
 class TokenBucketRateLimiter:
     """Per-key token bucket. O(1) per check; one (tokens, last_refill) pair per key.
@@ -79,12 +86,25 @@ _client_logs_limiter = TokenBucketRateLimiter(
 )
 
 
-def client_logs_rate_limit(identity: str = Depends(current_identity)) -> None:
-    """FastAPI dependency: 429 + Retry-After when this identity exceeds the limit."""
-    retry = _client_logs_limiter.check(identity)
+_web_vitals_limiter = TokenBucketRateLimiter(
+    WEB_VITALS_CAPACITY, WEB_VITALS_REFILL_PER_SEC
+)
+
+
+def _limited(retry: float | None) -> None:
     if retry is not None:
         raise HTTPException(
             status_code=429,
             detail="rate limit exceeded",
             headers={"Retry-After": str(max(1, math.ceil(retry)))},
         )
+
+
+def client_logs_rate_limit(identity: str = Depends(current_identity)) -> None:
+    """FastAPI dependency: 429 + Retry-After when this identity exceeds the limit."""
+    _limited(_client_logs_limiter.check(identity))
+
+
+def web_vitals_rate_limit(identity: str = Depends(current_identity)) -> None:
+    """FastAPI dependency for POST /api/web-vitals — same shape, own bucket."""
+    _limited(_web_vitals_limiter.check(identity))

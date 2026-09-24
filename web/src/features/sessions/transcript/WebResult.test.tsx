@@ -1,9 +1,19 @@
-import { describe, it, expect } from 'vitest'
+import { beforeAll, describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { WebResult } from './WebResult'
+import { prefetchMarkdown } from './markdownChunk'
+
+
+// The markdown renderer is loaded lazily (#1411). In the browser that is a chunk
+// fetch; in vitest it is a module TRANSFORM of react-markdown + highlight.js +
+// KaTeX, which under a loaded worker can take longer than findBy's default
+// timeout. Warming it once here means these tests assert on rendering, not on
+// how busy the machine is — the same call the transcript makes on mount.
+beforeAll(() => prefetchMarkdown())
 
 describe('WebResult', () => {
-  it('shows the fetched URL and renders the body as markdown', () => {
+  // `<Markdown>` defers its renderer (#1411) — await the rendered form.
+  it('shows the fetched URL and renders the body as markdown', async () => {
     render(
       <WebResult
         name="WebFetch"
@@ -12,7 +22,7 @@ describe('WebResult', () => {
       />,
     )
     expect(screen.getByText('https://example.com/docs')).toBeInTheDocument()
-    expect(screen.getByText('guide').tagName).toBe('STRONG')
+    expect((await screen.findByText('guide')).tagName).toBe('STRONG')
   })
 
   it('shows the search query for WebSearch', () => {

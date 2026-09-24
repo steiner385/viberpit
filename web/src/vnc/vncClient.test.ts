@@ -32,18 +32,29 @@ describe('classifyClose', () => {
   })
 })
 
+// `connect()` awaits a dynamic import of @novnc/novnc (it is the app's largest
+// module and no longer sits in the entry chunk — see vncClient.ts), so every
+// assertion about the RFB it builds has to await the connect first.
 describe('VncClient fit', () => {
-  it('enables scaleViewport (base fit) on connect', () => {
+  it('enables scaleViewport (base fit) on connect', async () => {
     const c = new VncClient('ws://x')
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     expect(lastRfb.scaleViewport).toBe(true)
   })
-  it('refit() leaves base fit enabled so noVNC recomputes scale', () => {
+  it('refit() leaves base fit enabled so noVNC recomputes scale', async () => {
     const c = new VncClient('ws://x')
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     lastRfb.scaleViewport = true
     c.refit()
     expect(lastRfb.scaleViewport).toBe(true)
+  })
+  it('never attaches a viewer after disconnect() raced the chunk load', async () => {
+    const c = new VncClient('ws://x')
+    const before = lastRfb
+    const pending = c.connect(document.createElement('div'))
+    c.disconnect()
+    await pending
+    expect(lastRfb).toBe(before) // no RFB was constructed for a torn-down client
   })
 })
 
@@ -68,50 +79,50 @@ describe('VncClient reconnect', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('actually reconnects (builds a new RFB) after a reconnectable close, not just a label', () => {
+  it('actually reconnects (builds a new RFB) after a reconnectable close, not just a label', async () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
     firstRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
 
-    vi.runAllTimers()
+    await vi.runAllTimersAsync()
 
     expect(lastRfb).not.toBe(firstRfb) // a fresh RFB was constructed — this is the actual reconnect
   })
 
-  it('emits reconnecting immediately, then connect once the retry lands', () => {
+  it('emits reconnecting immediately, then connect once the retry lands', async () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
     const states: string[] = []
     c.on('reconnecting', (s) => states.push(s))
     c.on('connect', (s) => states.push(s))
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     lastRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
     expect(states).toEqual(['reconnecting'])
 
-    vi.runAllTimers()
+    await vi.runAllTimersAsync()
     lastRfb.handlers.connect()
     expect(states).toEqual(['reconnecting', 'connected'])
   })
 
-  it('does not schedule a reconnect for terminal disabled/nodisplay closes', () => {
+  it('does not schedule a reconnect for terminal disabled/nodisplay closes', async () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
     firstRfb.handlers.disconnect({ detail: { clean: true, code: 4404 } })
 
-    vi.runAllTimers()
+    await vi.runAllTimersAsync()
 
     expect(lastRfb).toBe(firstRfb) // no new RFB was built
   })
 
-  it('cancels a pending reconnect on disconnect() so an unmounted tab never reconnects', () => {
+  it('cancels a pending reconnect on disconnect() so an unmounted tab never reconnects', async () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
-    c.connect(document.createElement('div'))
+    await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
     firstRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
     c.disconnect()
 
-    vi.runAllTimers()
+    await vi.runAllTimersAsync()
 
     expect(lastRfb).toBe(firstRfb) // no reconnect fired after teardown
   })

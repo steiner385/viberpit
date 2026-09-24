@@ -7,6 +7,7 @@ import { RotationDivider } from './RotationDivider'
 import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { modelName } from '@/session/modelName'
 import { buildRenderRows, type RenderRow } from './transcriptRows'
+import { prefetchMarkdown } from './markdownChunk'
 
 const TOP_THRESHOLD = 64
 
@@ -56,6 +57,12 @@ interface Props {
 export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  // Warm the markdown renderer the moment a transcript exists, rather than
+  // letting the first `<Markdown>` request it while the user waits to read that
+  // very message (#1411). Every transcript surface — live session, sub-agent
+  // reader, archived review — mounts this view, so this is the one place it is
+  // needed. Idempotent: the module registry dedupes repeat imports.
+  useEffect(() => { void prefetchMarkdown() }, [])
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
   // Drives the scroll-to-bottom button — separate from the ref so React re-renders when it flips.

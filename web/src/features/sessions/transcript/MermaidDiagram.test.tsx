@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MermaidDiagram } from './MermaidDiagram'
-import { Markdown } from './Markdown'
+// The renderer directly — see MarkdownDoc.test.tsx's note.
+import { MarkdownDoc as Markdown } from './MarkdownDoc'
 
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }))
 vi.mock('mermaid', () => ({ default: mermaid }))

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { beforeAll, describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 const feedbackMutate = vi.fn()
@@ -12,6 +12,7 @@ vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
 import { Turn } from './Turn'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { Turn as TurnType, Block, TranscriptState } from '@/session/reducer'
+import { prefetchMarkdown } from './markdownChunk'
 
 function tool(id: string): Block {
   return {
@@ -25,6 +26,14 @@ function makeTurn(blocks: Block[]): TurnType {
 }
 
 const noop = () => {}
+
+
+// The markdown renderer is loaded lazily (#1411). In the browser that is a chunk
+// fetch; in vitest it is a module TRANSFORM of react-markdown + highlight.js +
+// KaTeX, which under a loaded worker can take longer than findBy's default
+// timeout. Warming it once here means these tests assert on rendering, not on
+// how busy the machine is — the same call the transcript makes on mount.
+beforeAll(() => prefetchMarkdown())
 
 describe('Turn tool grouping', () => {
   it('renders one line per completed tool — no rollup — when NOT the last turn', () => {
@@ -87,7 +96,7 @@ describe('Turn rendering edge cases', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('renders the open assistant block as Markdown while it is streaming', () => {
+  it('renders the open assistant block as Markdown while it is streaming', async () => {
     const blocks: Block[] = [{ kind: 'text', id: 't1', text: '**bold**' }]
     render(
       <Turn
@@ -99,11 +108,11 @@ describe('Turn rendering edge cases', () => {
         onAnswer={noop}
       />,
     )
-    expect(screen.getByText('bold')).toBeInTheDocument()
+    expect(await screen.findByText('bold')).toBeInTheDocument()
     expect(document.querySelector('strong')).not.toBeNull()
   })
 
-  it('renders a finalized (non-streaming) assistant block as markdown', () => {
+  it('renders a finalized (non-streaming) assistant block as markdown', async () => {
     const blocks: Block[] = [{ kind: 'text', id: 't1', text: '**bold**' }]
     render(
       <Turn
@@ -115,6 +124,7 @@ describe('Turn rendering edge cases', () => {
         onAnswer={noop}
       />,
     )
+    await screen.findByText('bold')
     expect(document.querySelector('strong')).not.toBeNull()
   })
 })
@@ -135,14 +145,16 @@ describe('Turn user-vs-agent styling', () => {
     expect(bubbleAround(screen.getByText('are we done?'))).not.toBeNull()
   })
 
-  it('renders an AGENT turn text block as markdown with no bubble', () => {
+  // `<Markdown>` defers its renderer (#1411): the `.markdown` wrapper only exists
+  // once the chunk lands, so this awaits the rendered form.
+  it('renders an AGENT turn text block as markdown with no bubble', async () => {
     render(
       <Turn
         turn={makeTurn([{ kind: 'text', id: 'b', text: 'Not yet.' }])}
         isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
       />,
     )
-    const text = screen.getByText('Not yet.')
+    const text = await screen.findByText('Not yet.')
     expect(bubbleAround(text)).toBeNull()
     expect(text.closest('.markdown')).not.toBeNull()
   })
