@@ -519,9 +519,8 @@ export class SessionSocket {
    *     every persist (orchestrator.py) — auto-naming, sub-agent persistence, archive
    *     and usage-stall bookkeeping, queue updates — most of which emit no transcript
    *     event at all. On a finished session that background write is indistinguishable
-   *     from a stalled stream by rev alone, and the false heal is expensive twice over:
-   *     `attach()` invalidated the catch-up cursor, so it is a FULL replay, and it logs
-   *     a warn that pollutes the very heal signal that is supposed to mean something.
+   *     from a stalled stream by rev alone, and the false heal is expensive: `attach()`
+   *     invalidated the catch-up cursor, so it is a FULL replay for nothing.
    *     Status is the right discriminator, not a patch: this probe exists for a wedged
    *     daemon reader starving the stream of a session that is ACTUALLY RUNNING, and in
    *     that failure mode the independent poll shows it working. Resting + silent is the
@@ -544,7 +543,13 @@ export class SessionSocket {
     if (!revIsNewer(revAt, this._syncedRevAt)) return                 // (2)
     if (!row || RESTING_BEFORE_TURN.has(row.status)) return           // (3)
     if (Date.now() - this._lastSessionFrameAt < LIVENESS_STALE_MS) return
-    clientLogger.warn('transcript.liveness.stale — rev advanced with a silent stream, healing', {
+    // INFO, not warn/error: this is the probe doing its job — an expected, fully
+    // self-healing recovery (the heal below always runs regardless of level). A
+    // WARNING+ auto-files an error-triage issue on `/api/client-logs`
+    // (web/src/obs/logger.ts), and this probe fires routinely enough (25+/day per
+    // #1488) that every occurrence was bumping the same ticket forever. Keep the
+    // line for whoever lowers the floor to debug a real wedged-reader storm.
+    clientLogger.info('transcript.liveness.stale — rev advanced with a silent stream, healing', {
       sessionId: sid,
     })
     this._syncedRevAt = revAt
