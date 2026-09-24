@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from server.localstate import assert_local_sqlite
+
 # Verbatim from history.ts.
 DURATION_FRESH_DAYS = 14
 DURATION_FRESH_MIN = 5
@@ -125,6 +127,7 @@ class HistoryStore:
         # worker thread by pr_population's ETA enrichment so the event loop is
         # not blocked (RC1). sqlite3 connections are not safe for *concurrent*
         # use, so every query serialises on _lock.
+        assert_local_sqlite(db_path)  # default_dest() is on the account store (#2016)
         self._conn = sqlite3.connect(
             f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
         )
