@@ -445,18 +445,22 @@ class TestUnstashedEvictionAlert:
 class TestDirtyAlerts:
     """kept_dirty count triggers WARN / CRITICAL log messages."""
 
-    def test_warn_threshold(self, tmp_path, caplog):
+    def test_warn_threshold_is_info(self, tmp_path, caplog):
         import logging
         # Create 31 dirty worktrees within grace period → kept_dirty=31 → WARN
         for i in range(31):
             _make_wt(tmp_path, f"d{i}", OLD, NOW)
         dirty = {"git -C": _cp(0, " M f.py")}
         with patch(_RUN, side_effect=_fake_run(dirty)):
-            with caplog.at_level(logging.WARNING, logger=_MOD):
+            with caplog.at_level(logging.INFO, logger=_MOD):
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["kept_dirty"] == 31
-        assert any("kept_dirty" in r.message and "warning threshold" in r.message
-                   for r in caplog.records)
+        hits = [r for r in caplog.records
+                if "kept_dirty" in r.message and "warning threshold" in r.message]
+        assert hits
+        # A backlog that clears itself at max_dirty_age must not file an
+        # auto-error issue (#1651): INFO, never WARNING+.
+        assert all(r.levelno == logging.INFO for r in hits)
 
     def test_critical_threshold(self, tmp_path, caplog):
         import logging
