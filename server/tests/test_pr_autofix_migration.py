@@ -337,6 +337,48 @@ def test_the_terminal_clear_carries_the_lifetime_counts_too(tmp_path):
     asyncio.run(run())
 
 
+def test_clear_observed_swallows_concurrent_stale_ownership(tmp_path, monkeypatch, caplog):
+    """A concurrent write to the same target between ``_pr_doctor_claim``'s
+    initial read of ``expected`` and the ``acquire()`` transaction's re-read
+    raises StaleOwnership — the state already moved on, so there is nothing
+    stale left to clear, and the next ``_on_pr_change``/sweep tick reconciles
+    fresh state regardless. Before the fix this propagated out of ``_on_pr_change``
+    to ``pr_poller.refresh_once``, which logged it as an auto-error WARNING with a
+    full traceback on every recurrence (#1853)."""
+    import logging
+
+    async def run():
+        await _init_db(tmp_path, "stale_race.db")
+        await _set_mode("off")   # watched, never acted on — token-less clear path
+        orch, sent, _pushed, restore = _build_orch(_pr())
+
+        await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+        assert sent == []
+        await orch._pr_doctor_ctx.set_target_state("o/r#7", {"attempted": True})
+
+        from server.automations import ownership_reconciliation
+        _orig_reconcile = ownership_reconciliation.reconcile_legacy_targets
+
+        async def racing_reconcile(targets):
+            # Runs after _pr_doctor_claim captured `expected` but before the
+            # acquire() transaction re-reads the row — the exact race window.
+            await orch._pr_doctor_ctx.set_target_state(
+                "o/r#7", {"attempted": True, "attempts": 1})
+            return await _orig_reconcile(targets)
+
+        monkeypatch.setattr(ownership_reconciliation, "reconcile_legacy_targets",
+                            racing_reconcile)
+
+        with caplog.at_level(logging.WARNING):
+            await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+        restore()
+
+    asyncio.run(run())
+
+
 def test_a_terminal_pr_the_doctor_never_acted_on_still_clears_to_nothing(tmp_path):
     """The terminal clear stays byte-for-byte what it was for an UNDOCTORED PR:
     nothing to carry writes no keys, so the seam still answers UNKNOWN rather
