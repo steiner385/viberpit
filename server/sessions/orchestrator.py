@@ -14169,7 +14169,10 @@ class SessionOrchestrator:
                 # session starts working — batched below, off the startup path.
                 to_send.append((row.id, prompt))
             recovered += 1
-            log_event(log, logging.WARNING, "session.initial_prompt_recovered",
+            # INFO, not WARNING: a re-stage that worked is the system healing itself
+            # (errsink files every WARNING+ record). The failure rungs live in
+            # _deliver_initial_prompt and stay WARNING.
+            log_event(log, logging.INFO, "session.initial_prompt_recovered",
                       session_id=row.id,
                       **{"from": row.status, "to": rec.status,
                          "reason": "undelivered_across_restart"})
@@ -14180,7 +14183,7 @@ class SessionOrchestrator:
             self._spawn(self._deliver_initial_prompts(to_send),
                         name="initial-prompt-recovery")
         if recovered:
-            log.warning("rehydrate: recovered %d undelivered initial prompt(s)", recovered)
+            log.info("rehydrate: recovered %d undelivered initial prompt(s)", recovered)
         self._startup_note("prompts_recovered", recovered)
         return recovered
 
