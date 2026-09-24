@@ -31,7 +31,7 @@ DEMOTE_WINDOW = 7.0
 _AGG_FIELDS = (
     "check", "runs_total", "min_ts", "max_ts", "p95_duration_s", "shas_total",
     "flaky_shas", "recent_total", "recent_flaky", "default_branch_failures",
-    "first_total", "first_flaky", "second_total", "second_flaky",
+    "first_total", "first_flaky", "second_total", "second_flaky", "pr_runs_total",
 )
 
 
@@ -96,21 +96,40 @@ _FIXTURES = {
         ("deploy", "s1", "feat", None, 8.0, NOW - 3 * DAY),
         ("deploy", "s2", "feat", "success", 8.0, NOW - 2 * DAY),
     ],
+    "pr_runs_by_event": [
+        # pr_runs_total counts jobs whose RUN was a pull_request / merge_group
+        # event; schedule / workflow_run / push runs are stability evidence but
+        # never evidence that a check gates PRs (a `nightly` job can't graduate).
+        ("e2e", "s1", "feat", "success", 60.0, NOW - 10 * DAY, "pull_request"),
+        ("e2e", "s2", "feat", "success", 60.0, NOW - 9 * DAY, "merge_group"),
+        ("e2e", "s3", "master", "success", 60.0, NOW - 8 * DAY, "schedule"),
+        ("e2e", "s4", "master", "success", 60.0, NOW - 7 * DAY, "push"),
+        ("e2e", "s5", "feat", "cancelled", 60.0, NOW - 6 * DAY, "pull_request"),  # dropped
+        ("nightly", "s3", "master", "success", 60.0, NOW - 8 * DAY, "schedule"),
+        ("nightly", "s6", "master", "success", 60.0, NOW - 1 * DAY, "workflow_dispatch"),
+    ],
 }
 
 
 def _jobs(fixture) -> list[JobObs]:
-    return [JobObs(check=n, head_sha=s, head_branch=b, conclusion=c or "",
-                   duration_s=d, created_ts=t) for n, s, b, c, d, t in fixture]
+    # A 7th element is the run's trigger event; the 6-tuple fixtures predate it and
+    # stand for a job whose run row is unknown (event "" in memory, no ci_run row).
+    return [JobObs(check=r[0], head_sha=r[1], head_branch=r[2], conclusion=r[3] or "",
+                   duration_s=r[4], created_ts=r[5], event=r[6] if len(r) > 6 else "")
+            for r in fixture]
 
 
 async def _sql_stats(db, repo: str, fixture, *, id_base: int = 0):
     # id_base keeps ci_job.id unique when a single test inserts two fixtures into
     # the same in-memory DB (the engine pool persists rows across db_session blocks).
-    from server.db.models import CiJob
+    from server.db.models import CiJob, CiRun
     from server.automations.cicd_doctor import check_stats_stmt
 
-    for i, (n, s, b, c, d, t) in enumerate(fixture, start=id_base + 1):
+    for i, r in enumerate(fixture, start=id_base + 1):
+        n, s, b, c, d, t = r[:6]
+        if len(r) > 6:  # the event lives on the run, not the job
+            db.add(CiRun(id=i, repo=repo, event=r[6], head_sha=s, head_branch=b,
+                         conclusion=c, created_ts=t))
         db.add(CiJob(id=i, run_id=i, repo=repo, name=n, conclusion=c,
                      duration_s=d, head_sha=s, head_branch=b, created_ts=t))
     await db.flush()
@@ -133,6 +152,20 @@ async def test_check_stats_stmt_matches_the_in_memory_form(name):
     async with db_session() as db:
         from_sql = await _sql_stats(db, "o/r", fixture)
     assert from_sql == in_memory
+
+
+@pytest.mark.asyncio
+async def test_check_stats_stmt_pins_pr_runs_total():
+    """Explicit values for the PR-event count, so the SQL join to ci_run can't
+    silently count every job (or none) while still matching a wrong oracle."""
+    from server.db import db_session, init_db
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    async with db_session() as db:
+        stats = await _sql_stats(db, "o/r", _FIXTURES["pr_runs_by_event"])
+    assert stats["e2e"].runs_total == 4          # the cancelled PR job is dropped
+    assert stats["e2e"].pr_runs_total == 2       # pull_request + merge_group
+    assert stats["nightly"].runs_total == 2
+    assert stats["nightly"].pr_runs_total == 0
 
 
 @pytest.mark.asyncio

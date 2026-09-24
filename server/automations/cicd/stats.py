@@ -17,6 +17,12 @@ PASS_OUTCOMES: frozenset[str] = frozenset({"passed", "success"})
 # "skipped") is not evidence in either direction and must be filtered out
 # identically wherever the aggregate is computed.
 FLAKE_OUTCOMES: frozenset[str] = PASS_OUTCOMES | FAIL_OUTCOMES
+# Run trigger events that exercise a check ON a pull request. A check whose runs
+# are all schedule / workflow_run / push (`nightly`, `probe`, `rerun` …) can never
+# be a required PR check, however stable — so graduation evidence counts only
+# these. PUBLIC for the same reason as the outcome sets: ``check_stats_stmt``
+# re-expresses the predicate in SQL and must not re-list the strings.
+PR_EVENTS: frozenset[str] = frozenset({"pull_request", "pull_request_target", "merge_group"})
 
 _FAIL = FAIL_OUTCOMES
 _PASS = PASS_OUTCOMES
@@ -88,6 +94,7 @@ def check_stats_from_agg(rows: Iterable[CheckAgg]) -> dict[str, CheckStats]:
         out[a.check] = CheckStats(
             check=a.check,
             runs_total=a.runs_total,
+            pr_runs_total=a.pr_runs_total,
             window_days=(a.max_ts - a.min_ts) / _DAY if a.runs_total > 1 else 0.0,
             flake_pct=_pct(a.flaky_shas, a.shas_total),
             recent_flake_pct=_pct(a.recent_flaky, a.recent_total),
@@ -135,6 +142,7 @@ def check_stats(jobs: list[JobObs], *, default_branch: str, now_ts: float,
         out[check] = CheckStats(
             check=check,
             runs_total=len(js),
+            pr_runs_total=sum(1 for j in js if j.event in PR_EVENTS),
             window_days=(ts[-1] - ts[0]) / _DAY if len(ts) > 1 else 0.0,
             flake_pct=_flake_pct(shas),
             recent_flake_pct=_flake_pct(recent),
