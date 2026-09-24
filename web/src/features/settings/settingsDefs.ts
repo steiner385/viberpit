@@ -2,7 +2,7 @@ import type * as React from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
-  Rocket, Gauge,
+  Rocket, Gauge, Send, Route,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -14,6 +14,8 @@ import { AboutSection } from './sections/AboutSection'
 import { DeploySection } from './sections/DeploySection'
 import { AccountsManager } from '@/features/accounts/AccountsManager'
 import { NotificationsSection } from './sections/NotificationsSection'
+import { NotificationChannelsSection } from './sections/NotificationChannelsSection'
+import { NotificationRulesSection } from './sections/NotificationRulesSection'
 import { HooksSection } from './sections/HooksSection'
 import { SnapshotsSection } from './sections/SnapshotsSection'
 import { FleetSection } from './sections/FleetSection'
@@ -72,8 +74,15 @@ const DEFS = [
     description: 'Where repos are cloned and archives are stored, and how many archived sessions are kept.' },
   { id: 'appearance',    group: 'workspace', label: 'Appearance',          icon: Palette,           scope: 'browser', component: AppearanceSection, ownsChassis: true,
     description: 'Theme, navigation and layout for this browser only.', keywords: ['theme', 'dark', 'light'] },
-  { id: 'notifications', group: 'workspace', label: 'Notifications',       icon: Bell,              scope: 'device',  component: NotificationsSection,
-    description: 'Push to this device, quiet hours, webhook channels and routing rules.' },
+  // Notifications, Channels and Routing rules were one section until #2077: two
+  // CRUD lists under two forms is sibling sections, not one column (PAGE-TABS §2).
+  // Only push is per-device; channels and rules are server state.
+  { id: 'notifications', group: 'workspace', label: 'Notifications',       icon: Bell,              scope: 'device',  component: NotificationsSection, ownsChassis: true,
+    description: 'Push to this device, and the quiet hours when only critical notifications get through.', keywords: ['push', 'quiet hours'] },
+  { id: 'channels',      group: 'workspace', label: 'Channels',            icon: Send,              scope: 'server',  component: NotificationChannelsSection, ownsChassis: true,
+    description: 'Webhook endpoints a routing rule can send a notification to.', keywords: ['webhook', 'slack', 'notifications'] },
+  { id: 'rules',         group: 'workspace', label: 'Routing rules',       icon: Route,             scope: 'server',  component: NotificationRulesSection, ownsChassis: true,
+    description: 'Which events notify, and whether they push, go to a channel or are ignored.', keywords: ['notifications', 'routing', 'critical'] },
   { id: 'sessions',      group: 'sessions',  label: 'Defaults',            icon: Play,              scope: 'server',  component: SessionDefaultsSection, ownsChassis: true,
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.

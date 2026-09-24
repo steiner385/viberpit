@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -25,6 +26,8 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { NotificationsSection } from './NotificationsSection'
+import { NotificationChannelsSection } from './NotificationChannelsSection'
+import { NotificationRulesSection } from './NotificationRulesSection'
 import { api } from '@/api/client'
 
 const channels = [
@@ -38,11 +41,11 @@ const rules = [
 ]
 const quiet = { start: '22:00', end: '07:00' }
 
-function renderSection() {
+function renderSection(Section: React.ComponentType = NotificationsSection) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <NotificationsSection />
+      <Section />
     </QueryClientProvider>,
   )
 }
@@ -60,23 +63,39 @@ beforeEach(() => {
   vi.mocked(api.del).mockResolvedValue({ ok: true })
 })
 
-describe('NotificationsSection', () => {
-  it('renders quiet-hours, channels, and rules from the mocked GETs', async () => {
+describe('Notifications, Channels and Routing rules sections', () => {
+  it('Notifications renders push and quiet hours as groups, and nothing of channels or rules (#2077)', async () => {
     renderSection()
-    // quiet hours prefilled
     await waitFor(() => {
       expect((screen.getByLabelText('Start') as HTMLInputElement).value).toBe('22:00')
     })
     expect((screen.getByLabelText('End') as HTMLInputElement).value).toBe('07:00')
-    // channel row
+    expect(screen.getByRole('heading', { level: 2, name: 'Notifications' })).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Phone notifications' })).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Quiet hours' })).toBeTruthy()
+    // The CRUD lists are sibling sections now; this one must not fetch them.
+    expect(api.get).not.toHaveBeenCalledWith('/notifications/channels')
+    expect(api.get).not.toHaveBeenCalledWith('/notifications/rules')
+  })
+
+  it('Channels lists channels under its own chassis heading', async () => {
+    renderSection(NotificationChannelsSection)
     expect(await screen.findByText('Slack #alerts')).toBeTruthy()
-    // rule row (event label appears in the row span and the Event select option)
-    expect((await screen.findAllByText('PR broke')).length).toBeGreaterThan(0)
-    expect(screen.getByText('critical')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Channels' })).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Add channel' })).toBeTruthy()
+  })
+
+  it('Routing rules lists rules and names a channel target', async () => {
+    renderSection(NotificationRulesSection)
+    // Waited on the row's badge: 'PR broke' is also an Event <option>, so it
+    // resolves before the rules GET does.
+    expect(await screen.findByText('critical')).toBeTruthy()
+    expect(await screen.findByText('(Slack #alerts)')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Routing rules' })).toBeTruthy()
   })
 
   it('adding a channel calls api.post("/notifications/channels", ...)', async () => {
-    renderSection()
+    renderSection(NotificationChannelsSection)
     await screen.findByText('Slack #alerts')
 
     await userEvent.type(screen.getByLabelText('Name'), 'Webhook')
@@ -92,7 +111,7 @@ describe('NotificationsSection', () => {
   })
 
   it('shows an inline error and does not submit on bad headers JSON', async () => {
-    renderSection()
+    renderSection(NotificationChannelsSection)
     await screen.findByText('Slack #alerts')
 
     await userEvent.type(screen.getByLabelText('Name'), 'Webhook')
@@ -105,7 +124,7 @@ describe('NotificationsSection', () => {
   })
 
   it('adding a rule with action "channel" includes channelId', async () => {
-    renderSection()
+    renderSection(NotificationRulesSection)
     await screen.findAllByText('PR broke')
 
     await userEvent.selectOptions(screen.getByLabelText('Action'), 'channel')
@@ -125,7 +144,7 @@ describe('NotificationsSection', () => {
     vi.mocked(api.post).mockResolvedValue({
       action: 'channel', channelId: 'ch1', deliver: true, suppressedByQuiet: false, matchedRuleId: 'r1',
     })
-    renderSection()
+    renderSection(NotificationRulesSection)
     await screen.findAllByText('PR broke')
 
     await userEvent.selectOptions(screen.getByLabelText('Event'), 'pr_broke')
@@ -148,7 +167,6 @@ describe('NotificationsSection', () => {
       expect((screen.getByLabelText('Start') as HTMLInputElement).value).toBe('22:00')
     })
 
-    // Get all Save buttons; the quiet-hours Save is the first one
     await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
     await waitFor(() => {
