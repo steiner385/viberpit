@@ -276,8 +276,22 @@ _WS_RECONNECT_LOG = LogThrottle()
 #: real outage in the error sink).
 _EXPECTED_RECONNECT_CODES = frozenset({websockets.CloseCode.SERVICE_RESTART})
 
+#: The other half of the same restart window (#1743): the SERVICE_RESTART close
+#: above fires on the connection that was open when the daemon began shutting
+#: down, but the *next* reconnect attempt can land while the new process is
+#: still coming up — the socket/port accepts the connection before the app is
+#: far enough into startup to finish the WS handshake, so `websockets` raises
+#: this bare `TimeoutError` instead of a clean close. Matched by message, not
+#: just type: `websockets.asyncio.connection` raises the same bare
+#: `TimeoutError` with a different message ("timed out while closing
+#: connection") for a hang on an already-established connection, which is a
+#: real-problem shape and must keep warning.
+_EXPECTED_RECONNECT_TIMEOUT_MESSAGE = "timed out during opening handshake"
+
 
 def _is_expected_reconnect(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return str(exc) == _EXPECTED_RECONNECT_TIMEOUT_MESSAGE
     if not isinstance(exc, websockets.ConnectionClosed):
         return False
     return any(
