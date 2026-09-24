@@ -173,6 +173,19 @@ def test_malformed_junit_warnings_are_throttled_per_repo(tmp_path, caplog):
     assert warnings[0].fields == {"repo": "o/r", "run": 1, "count": 1}
 
 
+def test_empty_junit_artifact_is_not_reported_malformed(tmp_path, caplog):
+    """#1768: a cancelled run uploads the 0-byte report its reporter opened
+    before being killed. That is no results, not malformed junit."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(1), junit_by_run={1: [("junit-vitest", b"")]})
+        with caplog.at_level(logging.DEBUG, logger="server.automations.cicd_doctor"):
+            await loop.tick()
+    asyncio.run(run())
+    assert not [r for r in caplog.records if "junit_malformed" in r.getMessage()]
+
+
 def test_flaky_test_becomes_finding_and_issue(tmp_path):
     async def run():
         await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")

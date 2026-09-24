@@ -24,7 +24,14 @@ _OUTCOME_TAGS = (("failure", "failed"), ("error", "error"), ("skipped", "skipped
 
 def parse_junit_xml(data: bytes) -> list[JUnitCase]:
     """Parse one JUnit document into cases. Raises ValueError on malformed XML —
-    the caller (Plan C ingest) decides how to degrade."""
+    the caller (Plan C ingest) decides how to degrade.
+
+    An empty document is no results, not malformed: a cancelled job leaves the
+    0-byte file its reporter opened before being killed, and an `always()`
+    upload step ships it (#1768)."""
+    body = data.strip()  # callers pass str as well as bytes
+    if not body or body in (b"\xef\xbb\xbf", "﻿"):
+        return []
     try:
         root = ElementTree.fromstring(data)
     except ElementTree.ParseError as e:
