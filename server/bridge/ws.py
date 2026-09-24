@@ -823,7 +823,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         return None
                     # Only looked up for the banner's account hint, so it is skipped
                     # entirely on the silent auto path (one fewer RPC in remote mode).
-                    rec = await orchestrator.get_session(session_id)
+                    # Best-effort: a daemon blip here (e.g. ConnectTimeout while it's
+                    # restarting) must not escalate past this handler into ws.work's
+                    # catch-all ERROR log — the hint is cosmetic, not required to
+                    # report the original failure below.
+                    try:
+                        rec = await orchestrator.get_session(session_id)
+                    except DaemonUnavailable:
+                        rec = None
                     acct = rec.account if rec else None
                     hint = (f" Its account '{acct}' may need re-authentication — check the Accounts tab."
                             if acct else "")

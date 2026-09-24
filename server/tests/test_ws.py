@@ -305,6 +305,53 @@ def test_attach_stale_ownership_reports_accurate_error_not_reauth_hint(ws_env):
     client.portal.call(orch.close_session, session_id)
 
 
+def test_attach_resume_failure_survives_hint_lookup_daemon_blip(ws_env):
+    """The reauth-hint lookup in the resume-failure handler is best-effort only —
+    a daemon blip (ConnectTimeout while it's restarting) during that lookup must
+    not escalate past the handler into ws.work's catch-all ERROR log (#1948). The
+    original SESSION_START_FAILED error must still be reported and the socket
+    must stay alive, just without the account hint."""
+    from server.ipc.client import DaemonUnavailable
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-resume-fail-hint-blip")
+    session_id = session.id
+
+    async def _boom(_sid):
+        raise RuntimeError("Command failed with exit code 1")
+    orch.ensure_driver = _boom
+
+    # _handle_attach's own pre-check (server/bridge/ws.py:1279) calls get_session
+    # first, so it must keep succeeding — only the SECOND call, made inside the
+    # resume-failure handler purely for the reauth hint, should hit the blip.
+    real_get_session = orch.get_session
+    calls = 0
+
+    async def _get_session_blip_after_first(_sid):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise DaemonUnavailable("connect timeout")
+        return real_get_session(_sid)
+    orch.get_session = _get_session_blip_after_first
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+        errs = [e for e in events if e.get("type") == "error"]
+        assert any(e.get("code") == "SESSION_START_FAILED" for e in errs), (
+            f"no SESSION_START_FAILED in {[e.get('type') for e in events]}"
+        )
+        assert not any("re-authentication" in e.get("message", "") for e in errs), (
+            f"hint lookup blip should omit the account hint, not fail the handler: {errs}"
+        )
+        assert any(e.get("type") == "replayComplete" for e in events)
+        # WS must still be alive — a follow-up frame must not raise/close.
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    client.portal.call(orch.close_session, session_id)
+
+
 # ---------------------------------------------------------------------------
 # A dead outbound forwarding task closes the socket (1011) so the client reconnects
 # ---------------------------------------------------------------------------
