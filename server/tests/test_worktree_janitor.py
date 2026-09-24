@@ -247,6 +247,112 @@ class TestMaxAgeDirtyEviction:
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["evicted_dirty"] == 0
         assert counts["kept_error"] == 1
+        assert counts["evict_failed"] == 1
+
+
+class TestFailedEvictionIsNotReportedAsDiscarded:
+    """A failed stash followed by a failed removal discards nothing (#1664).
+
+    The sweep used to log ``stash failed, discarding path=…`` and count
+    ``evicted_dirty_unstashed`` *before* attempting the removal, so a worktree
+    git refused to remove was reported as discarded on every pass while its
+    changes sat untouched on disk.  Nothing escalated — ``kept_error`` rides an
+    INFO summary line — so ten stuck worktrees on one host re-announced the
+    same imaginary discard hourly for two weeks: 916 journal lines, and one
+    condition filed as six auto-error issues (#1643, #1652, #1664, #1665,
+    #2131, #2133).
+    """
+
+    STASH_FAILS = {
+        "status --porcelain": _cp(0, " M file.py"),
+        "stash push": _cp(1, "", "error: stash failed"),
+        "rev-parse refs/stash": _cp(1, "", ""),
+    }
+
+    def _stuck_sweep(self, tmp_path, names, caplog=None):
+        import contextlib
+        import logging
+        for n in names:
+            _make_wt(tmp_path, n, VERY_OLD, NOW)
+        ctx = (caplog.at_level(logging.INFO, logger=_MOD) if caplog
+               else contextlib.nullcontext())
+        with patch(_RUN, side_effect=_fake_run(self.STASH_FAILS)):
+            with patch(_REMOVE, return_value=False):
+                with ctx:
+                    return sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+
+    def test_unremovable_worktree_is_not_counted_as_discarded(self, tmp_path):
+        counts = self._stuck_sweep(tmp_path, ["stuck"])
+        assert counts["evicted_dirty_unstashed"] == 0
+        assert counts["evicted_dirty"] == 0
+        assert counts["removed"] == 0
+        assert counts["evict_failed"] == 1
+        assert counts["kept_error"] == 1
+
+    def test_unremovable_worktree_is_not_journalled_as_discarded(self, tmp_path, caplog):
+        counts = self._stuck_sweep(tmp_path, ["stuck"], caplog)
+        assert counts["evict_failed"] == 1
+        # "discarding path=" was the exact text that recurred 916 times for
+        # work that never left the disk; "discarded path=" is its successor.
+        assert not any("discarding path=" in r.getMessage()
+                       or "discarded path=" in r.getMessage()
+                       for r in caplog.records)
+        assert any("evict_failed path=" in r.getMessage() and r.levelno == 20
+                   for r in caplog.records)
+
+    def test_stuck_eviction_raises_one_aggregated_warning(self, tmp_path, caplog):
+        """The loop has to be visible somewhere — kept_error never escalated."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger=_MOD):
+            counts = self._stuck_sweep(tmp_path, ["s0", "s1", "s2"])
+        assert counts["evict_failed"] == 3
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "evict_failed=3" in warnings[0].getMessage()
+
+    def test_stuck_eviction_warning_carries_no_path(self, tmp_path, caplog):
+        """Same #1652 rule: a path in a WARNING+ record mints a fingerprint per
+        host and path, which is how one condition became six issues."""
+        import logging
+        from server.obs.error_signature import normalize
+
+        def _warning_for(sub, names):
+            base = tmp_path / sub
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger=_MOD):
+                self._stuck_sweep(base, names)
+            return next(r.getMessage() for r in caplog.records
+                        if r.levelno == logging.WARNING)
+
+        a = _warning_for("kindash", ["00737b3e", "1f39f056"])
+        b = _warning_for("viberpit", ["b0433855", "c257153a", "25aa9b4f"])
+        assert normalize(a) == normalize(b)
+
+    def test_successful_stash_sha_is_journalled_even_when_removal_fails(self, tmp_path, caplog):
+        """The stash happened; the SHA is the only way back to the changes."""
+        import logging
+        _make_wt(tmp_path, "stashed-but-stuck", VERY_OLD, NOW)
+        responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(0, "Saved working directory"),
+            "rev-parse refs/stash": _cp(0, "deadbeef"),
+        }
+        with patch(_RUN, side_effect=_fake_run(responses)):
+            with patch(_REMOVE, return_value=False):
+                with caplog.at_level(logging.INFO, logger=_MOD):
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evict_failed"] == 1
+        assert any("stash=deadbeef" in r.getMessage() for r in caplog.records)
+
+    def test_no_alert_when_every_eviction_succeeds(self, tmp_path, caplog):
+        import logging
+        _make_wt(tmp_path, "evictable", VERY_OLD, NOW)
+        with patch(_RUN, side_effect=_fake_run(self.STASH_FAILS)):
+            with patch(_REMOVE, return_value=True):
+                with caplog.at_level(logging.WARNING, logger=_MOD):
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evict_failed"] == 0
+        assert not any("evict_failed" in r.getMessage() for r in caplog.records)
 
 
 class TestUnstashedEvictionAlert:
