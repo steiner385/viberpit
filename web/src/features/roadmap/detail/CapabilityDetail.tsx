@@ -1,6 +1,6 @@
 // `/roadmap/:productSlug/capabilities/:capSlug` — one capability, answered the
 // way the levels above it are: the tiles say how much work is on it, and the
-// tabs answer what it is, what is under it, what is moving, what issues are
+// tabs answer what it is, what is under it and linked to it, what is moving, what issues are
 // open, and what needs a human (finish-line spec §7).
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -27,7 +27,7 @@ import { EditCapabilityDialog } from './EditCapabilityDialog'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
 import { CapabilityLinksEditor } from './CapabilityLinksEditor'
 
-const TABS = ['overview', 'children', 'in-flight', 'issues', 'needs-you'] as const
+const TABS = ['overview', 'children', 'dependencies', 'in-flight', 'issues', 'needs-you'] as const
 
 const panelId = (id: string) => `capability-panel-${id}`
 
@@ -121,6 +121,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
         items={[
           { id: 'overview', label: TAB_LABEL.overview },
           { id: 'children', label: `Sub-${CAPABILITY.plural.toLowerCase()}`, count: capability.children.length },
+          { id: 'dependencies', label: TAB_LABEL.dependencies, count: capability.links.length },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'issues', label: ISSUE.plural, count: openIssues },
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
@@ -193,7 +194,6 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
                   : `PR #${pending.prNumber}`}
               </p>
             )}
-            <CapabilityLinksEditor product={product} capability={capability} />
             {/* The capability is the home an initiative wants: starting one here
                 pre-fills it rather than asking the user to pick it again. */}
             <div className="flex flex-wrap gap-2">
@@ -223,6 +223,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
               ))}
             </ul>
           ))}
+        {tab === 'dependencies' && <CapabilityLinksEditor product={product} capability={capability} />}
         {tab === 'in-flight' && <InitiativeList initiatives={inFlightWithProgramContext} />}
         {tab === 'issues' && <LeafList scope={{ capability: capability.id }} product={product} />}
         {/* `repos={[]}` is a real, empty scope: incidents are filed against a

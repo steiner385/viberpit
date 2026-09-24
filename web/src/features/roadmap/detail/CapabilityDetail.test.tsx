@@ -41,8 +41,8 @@ vi.mock('@/api/hooks', () => ({
   useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
-  // The Overview's capability edits: the links chip editor, plus the Edit and
-  // + Sub-capability dialogs (the editor also reads the map for link targets).
+  // The capability edits: the Dependencies tab's links chip editor, plus the
+  // Edit and + Sub-capability dialogs (the editor also reads the map for link targets).
   useEditMapChanges: () => ({ mutateAsync: editMapChanges, isPending: false, isError: false, error: null }),
   useRoadmapMap: () => ({ data: MAP }),
   mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
@@ -153,10 +153,6 @@ describe('CapabilityDetail', () => {
     expect(screen.getByText(/PR #12/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /feature doc/ }))
       .toHaveAttribute('href', 'https://github.com/cairnea/KinDash/blob/abc123/docs/product/features/tasks.md')
-    // Linked capabilities are how a capability points at the one that powers
-    // it — named by the target's title, not its slug path.
-    expect(screen.getByRole('link', { name: 'powered by · Sessions (ViberPit)' }))
-      .toHaveAttribute('href', '/roadmap/viberpit/capabilities/sessions')
   })
 
   it('Overview: no doc link without a repo to resolve it against', () => {
@@ -199,12 +195,23 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
   })
 
-  it('Overview: the links are an editor, and say where the change is waiting', () => {
+  it('Overview: says where a change is waiting, and mounts no editor (PAGE-TABS §5)', () => {
     // `prNumber` alone is history once the PR merged; the pending note needs the
     // product's map-changes pointer to still be open.
     mount({ product: { ...busyProduct, mapChanges: OPEN_PR } })
-    expect(screen.getByRole('button', { name: 'Remove link: powered by · Sessions (ViberPit)' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'PR #31' })).toHaveAttribute('href', 'https://github.com/o/r/pull/31')
+    expect(screen.queryByRole('button', { name: /Remove link/ })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Links' })).toBeNull()
+  })
+
+  it('Dependencies: what it is linked to is an editor on its own tab', () => {
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=dependencies')
+    expect(screen.getByRole('tab', { name: 'Dependencies (1)' })).toHaveAttribute('aria-selected', 'true')
+    // Linked capabilities are how a capability points at the one that powers
+    // it — named by the target's title, not its slug path.
+    expect(screen.getByRole('link', { name: 'powered by · Sessions (ViberPit)' }))
+      .toHaveAttribute('href', '/roadmap/viberpit/capabilities/sessions')
+    expect(screen.getByRole('button', { name: 'Remove link: powered by · Sessions (ViberPit)' })).toBeInTheDocument()
   })
 
   it('Overview: no pending note while the product has no open map-changes PR', () => {

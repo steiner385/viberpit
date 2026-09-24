@@ -29,7 +29,7 @@ Every route page and every detail pane was inventoried (sections, existing tabs,
 | Delivery → Capacity (`CapacityDetail.tsx`) | no | 4 concerns on one scroll — but pinned single-scroll by the capacity settings spec §5.2 (owner decision, same day) | **exception on record** |
 | Settings › Notifications | n/a (Split) | 4 concerns separated by `border-t`, two CRUD lists; Split pages never get a strip | **follow-up issue** (settings-group idiom / sibling sections) (#2077) |
 | Roadmap portfolio, initiative page | yes | on the standard already (3–5 tabs, URL state, tiles → tabs) | fine |
-| Roadmap → capability (`CapabilityDetail.tsx`) | yes, 5 | Overview mounts `CapabilityLinksEditor`, a chip editor (§5 keeps editors off the Overview) | **follow-up #2078** |
+| Roadmap → capability (`CapabilityDetail.tsx`) | yes, 5 | Overview mounts `CapabilityLinksEditor`, a chip editor (§5 keeps editors off the Overview) | **fixed in #2078** — links editor moved to a Dependencies tab |
 | Delivery → CI repo | no | four homogeneous report tables under one window | fine (one question: "how healthy is CI?") |
 | Settings sections (General, Sessions, Appearance, …) | n/a | 1–4 `SettingsGroup`s each | fine |
 | Inbox proposal detail | no | one decision task | fine (exception on record) |
