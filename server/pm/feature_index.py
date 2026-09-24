@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
+from server.pm.evidence import PathResolution
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
 _SUMMARY_MAX = 200
@@ -32,6 +34,18 @@ class FeatureDocsRead:
 
 
 @dataclass(frozen=True)
+class EvidenceUpsert:
+    """One cited path (#2162). ``missing``/``last_commit_at`` are ``None`` when
+    this pass could not resolve it — the apply keeps the last resolved value
+    rather than forgetting it."""
+
+    kind: str
+    path: str
+    missing: bool | None = None
+    last_commit_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class FeatureUpsert:
     slug: str
     title: str
@@ -48,6 +62,8 @@ class FeatureUpsert:
     commit_sha: str | None = None
     pr_number: int | None = None
     pr_url: str | None = None
+    evidence: tuple[EvidenceUpsert, ...] = ()
+    doc_committed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +110,15 @@ def _resolve_parents(docs: list[tuple[str, FeatureDoc]]) -> tuple[dict[str, str 
             seen.add(cur)
             cur = parent.get(cur)
     return parent, warnings
+
+
+def _evidence_upsert(kind: str, path: str,
+                     res: Mapping[str, PathResolution]) -> EvidenceUpsert:
+    r = res.get(path)
+    if r is None:
+        return EvidenceUpsert(kind=kind, path=path)
+    return EvidenceUpsert(kind=kind, path=path, missing=not r.exists,
+                          last_commit_at=r.last_commit_at)
 
 
 def merge_branch_over_main(
@@ -152,16 +177,22 @@ def plan_feature_index(
     *,
     read_sha: str | None = None,
     proposed: Mapping[str, tuple[int | None, str | None]] | None = None,
+    resolution: Mapping[str, PathResolution] | None = None,
 ) -> FeatureIndexPlan:
     """*read_sha* is the commit *docs* were read at (default branch); *proposed*
     maps a slug to ``(pr_number, pr_url)`` for every doc that is only proposed
     on a map-changes branch (R8b-4). A doc in *proposed* is stamped with those
     PR fields and ``commit_sha=None``; every other doc is stamped with
     ``commit_sha=read_sha`` and no PR fields. Both kwargs default to ``None``
-    so an omitted call keeps today's behaviour (no PR fields, no commit_sha)."""
+    so an omitted call keeps today's behaviour (no PR fields, no commit_sha).
+
+    *resolution* maps a cited evidence path — and each doc's own repo path — to
+    how it resolved against the default-branch tree (#2162). A path it does not
+    cover is left unresolved (``missing=None``), never assumed present."""
     seen = {doc.slug for _, doc in docs}
     parent_of, warnings = _resolve_parents(docs)
     proposed_map = proposed or {}
+    res = resolution or {}
     upserts = tuple(
         FeatureUpsert(
             slug=doc.slug, title=doc.title, state=doc.state,
@@ -170,6 +201,8 @@ def plan_feature_index(
             commit_sha=None if doc.slug in proposed_map else read_sha,
             pr_number=proposed_map[doc.slug][0] if doc.slug in proposed_map else None,
             pr_url=proposed_map[doc.slug][1] if doc.slug in proposed_map else None,
+            evidence=tuple(_evidence_upsert(e.kind, e.path, res) for e in doc.evidence),
+            doc_committed_at=res[path].last_commit_at if path in res else None,
         )
         for path, doc in docs)
     orphan_slugs = tuple(

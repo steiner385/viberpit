@@ -256,6 +256,9 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "project_edges": {"src_project_id": "projects", "dst_project_id": "projects"},
     "features": {"project_id": "projects"},
     "feature_links": {"src_feature_id": "features", "dst_feature_id": "features"},
+    # #2162 capability evidence: last_commit_at puts it in the datetime sweep;
+    # id/created_at are its only NOT NULL columns and both are defaulted.
+    "feature_evidence": {"feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
     # hold ladder spec 2026-09-18 §6: one decision proposal per parked work item.

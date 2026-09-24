@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -261,7 +261,12 @@ and is never advanced, stepped back, or GitHub-Stage-back-synced directly — on
 is. `GET /api/pm/projects/{slug}/health` (`server/pm/health.py`) is the roadmap-drift readout: loose
 capabilities outside the tree, initiatives linked to no capability (a program is judged by its
 phases, and a `done` initiative is finished rather than drifting, so neither counts), stale
-`proposed` leaves, and the inbox's oldest untouched proposal.
+`proposed` leaves, and the inbox's oldest untouched proposal. Capability evidence (#2162): a doc's
+`code:`/`tests:`/`specs:`/`adrs:` frontmatter lists (also read out of the older
+`links: {code: [...]}` dict) index into `feature_evidence`; pm-sync resolves each path — file,
+`dir/`, or glob (`server/pm/evidence.py`) — against the default-branch tree every pass, and the
+readout adds dangling cited paths, `live`/`delivering` capabilities with no `tests:`, `code:` with
+no `specs:`, and a doc (so its `state`) last committed before its newest linked spec.
 
 **Map-changes PRs (spec §9) — backend and UI landed (row 8c).** A capability edit made through
 `POST /api/pm/projects/{slug}/map-changes` (`create` | `rename` | `reparent` | `summary` | `links`)

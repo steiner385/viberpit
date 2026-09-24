@@ -29,6 +29,7 @@ from server.audit import record_audit
 from server.db.models import (
     FEATURE_MAP_CHANGE_STATUSES,
     Feature,
+    FeatureEvidence,
     FeatureLink,
     FeatureMapChange,
     InitiativeFeature,
@@ -1013,6 +1014,8 @@ class MapChangesService:
             await db.execute(delete(FeatureLink).where(
                 or_(FeatureLink.src_feature_id.in_(dead),
                     FeatureLink.dst_feature_id.in_(dead))))
+            await db.execute(delete(FeatureEvidence).where(
+                FeatureEvidence.feature_id.in_(dead)))
             await db.execute(update(TriageProposal).where(
                 TriageProposal.proposed_feature_id.in_(dead)).values(
                     proposed_feature_id=None))

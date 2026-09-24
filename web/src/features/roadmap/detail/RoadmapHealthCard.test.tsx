@@ -119,4 +119,29 @@ describe('RoadmapHealthCard', () => {
     const { container } = mount()
     expect(container.firstChild).toBeNull()
   })
+
+  it('lists capability evidence gaps, linking each back to its capability (#2162)', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [],
+        governance: null,
+        danglingEvidence: [{ capability: 'task-views', kind: 'code', path: 'server/old.ts' }],
+        untestedCapabilities: ['task-views', 'calendar'],
+        codeWithoutSpecs: ['calendar'],
+        stateBehindSpec: ['task-views'],
+        generatedAt: 'x',
+      },
+    })
+    mount()
+    expect(screen.getByText(/1 cited evidence path no longer on the default branch/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'server/old.ts' }))
+      .toHaveAttribute('href', '/roadmap/kindash/capabilities/task-views')
+    expect(screen.getByText(/2 live capabilities cite no tests/)).toBeInTheDocument()
+    expect(screen.getByText(/1 capability cites code but no spec/)).toBeInTheDocument()
+    expect(screen.getByText(/1 capability has a state older than its newest spec/)).toBeInTheDocument()
+  })
 })

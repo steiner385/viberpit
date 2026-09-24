@@ -1,7 +1,9 @@
 // The product overview's hygiene notice (spec Sustain: health readout — server
 // contract `GET /pm/projects/{slug}/health`, merged in #1597): capabilities and
 // initiatives the map nesting doesn't reach, capabilities still `proposed` after
-// their map-changes PR merged, and inbox items no one triaged. Renders nothing
+// their map-changes PR merged, inbox items no one triaged, and capability
+// evidence gaps (#2162: dangling cited paths, untested live capabilities, code
+// with no spec, a state older than its spec). Renders nothing
 // when there is nothing to say — this is a notice, not a permanent fixture.
 import { Fragment } from 'react'
 import { Link } from 'react-router-dom'
@@ -34,10 +36,16 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
   const { data: health } = useProjectHealth(productSlug)
   if (!health) return null
 
-  const { unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs, governance } = health
+  const {
+    unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs, governance,
+    // Defaulted: an edge predating #2162 omits them.
+    danglingEvidence = [], untestedCapabilities = [], codeWithoutSpecs = [], stateBehindSpec = [],
+  } = health
   const nothingToSay =
     unparentedCapabilities.length === 0 && unlinkedInitiatives.length === 0 &&
-    staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0 && !governance
+    staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0 && !governance &&
+    danglingEvidence.length === 0 && untestedCapabilities.length === 0 &&
+    codeWithoutSpecs.length === 0 && stateBehindSpec.length === 0
   if (nothingToSay) return null
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
@@ -81,6 +89,35 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
                 <span title={d.error}>{d.path}</span>
               </Fragment>
             ))}
+          </li>
+        )}
+        {danglingEvidence.length > 0 && (
+          <li>
+            {danglingEvidence.length} cited evidence {danglingEvidence.length === 1 ? 'path' : 'paths'} no longer on the default branch: {' '}
+            {danglingEvidence.map((d, i) => (
+              <Fragment key={`${d.capability}:${d.kind}:${d.path}`}>
+                {i > 0 && ', '}
+                <Link to={capPath(d.capability)} className="underline" title={`${d.capability} · ${d.kind}`}>{d.path}</Link>
+              </Fragment>
+            ))}
+          </li>
+        )}
+        {untestedCapabilities.length > 0 && (
+          <li>
+            {untestedCapabilities.length} live {untestedCapabilities.length === 1 ? 'capability cites' : 'capabilities cite'} no tests: {' '}
+            <SlugLinks slugs={untestedCapabilities} path={capPath} />
+          </li>
+        )}
+        {codeWithoutSpecs.length > 0 && (
+          <li>
+            {codeWithoutSpecs.length} {codeWithoutSpecs.length === 1 ? 'capability cites' : 'capabilities cite'} code but no spec: {' '}
+            <SlugLinks slugs={codeWithoutSpecs} path={capPath} />
+          </li>
+        )}
+        {stateBehindSpec.length > 0 && (
+          <li>
+            {stateBehindSpec.length} {stateBehindSpec.length === 1 ? 'capability has' : 'capabilities have'} a state older than {stateBehindSpec.length === 1 ? 'its' : 'their'} newest spec: {' '}
+            <SlugLinks slugs={stateBehindSpec} path={capPath} />
           </li>
         )}
       </ul>

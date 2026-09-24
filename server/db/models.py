@@ -1709,6 +1709,11 @@ FEATURE_LIFECYCLE_STATES: tuple[str, ...] = (
 # Feature→feature relationship kinds (cross-project allowed).
 FEATURE_LINK_KINDS: tuple[str, ...] = ("powered_by", "integrates_with")
 
+# Feature→repo-path evidence kinds (#2162): the doc's `code:`/`tests:`/`specs:`/
+# `adrs:` frontmatter lists, indexed into FeatureEvidence. Distinct from
+# FEATURE_LINK_KINDS on purpose — `links:` keeps its feature-to-feature meaning.
+FEATURE_EVIDENCE_KINDS: tuple[str, ...] = ("code", "tests", "specs", "adrs")
+
 WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
 
 # Approved-overlay triage states on WorkItem (proposals live in TriageProposal).
@@ -1764,10 +1769,38 @@ class Feature(Base):
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     pr_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     orphaned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # When the doc itself last changed on the default branch (#2162) — the
+    # proxy for "when was `state` last asserted", compared against the newest
+    # linked spec by roadmap health. NULL = unknown (no clone-backed read yet).
+    doc_committed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class FeatureEvidence(Base):
+    """One repo path a capability cites as evidence (#2162), from the doc's
+    `code:`/`tests:`/`specs:`/`adrs:` frontmatter. REWRITTEN on every index
+    apply — the doc is truth. ``missing`` / ``last_commit_at`` are resolved by
+    pm-sync against the default-branch tree; NULL means "not resolved" (a read
+    with no local clone), never "exists"."""
+
+    __tablename__ = "feature_evidence"
+    __table_args__ = (
+        UniqueConstraint("feature_id", "kind", "path", name="uq_feature_evidence"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    feature_id: Mapped[str] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_EVIDENCE_KINDS
+    path: Mapped[str | None] = mapped_column(String, nullable=True)
+    missing: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    last_commit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class FeatureLink(Base):

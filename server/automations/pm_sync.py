@@ -19,6 +19,7 @@ from server.obs.context import log_event
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.pm.feature_index import (
     FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
+from server.pm.evidence import PathResolution
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
 from server.pm.gh_projects import (
     GhProjectItemView, GhProjectView, IssueRelView,
@@ -133,6 +134,12 @@ ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
 # (issue #2166) onto the project row. None ⇒ no-op — every pre-existing
 # PmSyncLoop caller keeps today's behaviour (feed event + log only).
 SaveUnindexedDocs = Callable[[str, list[tuple[str, str]]], Awaitable[None]]
+# Resolve cited evidence paths against the default-branch tree (#2162):
+# (repo, sha, paths, timed) -> {path: PathResolution}. ``timed`` names the
+# paths whose last-commit time a health check needs (specs + the docs
+# themselves). None ⇒ evidence is indexed unresolved (missing=None).
+ResolveEvidencePaths = Callable[
+    [str, str, list[str], set[str]], Awaitable[dict[str, PathResolution]]]
 # Read `.specify/memory/constitution.md` off the primary repo's default branch
 # (issue #2165). None ⇒ text could not be read (missing file or clone/read
 # failure — the caller distinguishes the two, see _governance_check).
@@ -199,6 +206,7 @@ class PmSyncLoop:
         save_relations: SaveRelations | None = None,
         rename_repo: RenameRepo | None = None,
         adopt_epics: AdoptEpics | None = None,
+        resolve_evidence_paths: ResolveEvidencePaths | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -211,6 +219,7 @@ class PmSyncLoop:
         self._apply_feature_plan = apply_feature_plan
         self._now_utc = now_utc
         self._save_unindexed_docs = save_unindexed_docs
+        self._resolve_evidence_paths = resolve_evidence_paths
         # None ⇒ no governance status pass (issue #2165) — pm_sync predates this
         # check and every test that doesn't care about it should keep working.
         self._read_constitution = read_constitution
@@ -747,10 +756,38 @@ class PmSyncLoop:
             # Unconditional — an empty list clears a previously-broken doc the
             # same pass it gets fixed, not just on the next tick's warning.
             await self._save_unindexed_docs(view.project_id, skipped_pairs)
+        resolution = await self._resolve_evidence(view.repo, main.sha, docs_by_slug)
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(
-            rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)
+            rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed,
+            resolution=resolution)
         await self._apply_feature_plan(view.project_id, plan)
+
+    async def _resolve_evidence(
+        self, repo: str, sha: str, docs_by_slug: dict[str, tuple[str, FeatureDoc]],
+    ) -> dict[str, PathResolution]:
+        """Resolve every cited evidence path, and each doc's own path, against
+        the default-branch tree at *sha* (#2162) — branch-proposed docs too:
+        evidence names what is merged, not what a PR might add. Best-effort: a
+        failure indexes the evidence unresolved, which the apply turns into
+        "keep the last answer", so it never blanks health or stalls the pass."""
+        if self._resolve_evidence_paths is None or not sha:
+            return {}
+        paths: dict[str, None] = {}
+        timed: set[str] = set()
+        for path, doc in docs_by_slug.values():
+            paths.setdefault(path, None)
+            timed.add(path)
+            for ev in doc.evidence:
+                paths.setdefault(ev.path, None)
+                if ev.kind == "specs":
+                    timed.add(ev.path)
+        try:
+            return await self._resolve_evidence_paths(repo, sha, list(paths), timed)
+        except Exception:
+            self._observation_degraded = True
+            log.warning("pm_sync.evidence_resolve_failed repo=%s", repo, exc_info=True)
+            return {}
 
     async def _governance_check(self, view: RepoSyncView) -> None:
         """Best-effort per-primary-repo constitution status (issue #2165): read
