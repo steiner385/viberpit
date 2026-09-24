@@ -207,16 +207,11 @@ async def daemon_lifespan(app, orchestrator):
     # exists to catch. `app.state` is guaranteed by build_daemon(); a broken import or
     # a bad refactor here should crash startup loudly, the same as orchestrator.start()
     # above, so deploy/health checks catch it.
-    from server.obs.loop_lag import LoopLagWatchdog
+    from server.obs.loop_lag import watchdog_from_env
     from server.obs.tasks import supervise
-    from server.config import env_float
-    app.state.loop_lag = LoopLagWatchdog(
-        # Opt-in until the ThreadStallTracer proves itself under load (#792): the
-        # old faulthandler dumper segfaulted the daemon and had to be disabled in
-        # prod. Set VIBERPIT_LOOP_STALL_DUMP_S to a positive value to enable.
-        dump_after=env_float("VIBERPIT_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
-        dump_path=os.environ.get("VIBERPIT_LOOP_STALL_DUMP_PATH") or None,
-    )
+    # Stack dump on a >5s stall is on by default (#1913); VIBERPIT_LOOP_STALL_DUMP_S=0
+    # turns it off. See server.obs.loop_lag.watchdog_from_env.
+    app.state.loop_lag = watchdog_from_env()
     app.state.loop_lag_task = supervise(
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
         name="loop-lag-watchdog",
