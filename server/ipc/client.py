@@ -226,10 +226,11 @@ class DaemonError(Exception):
 def reconstruct_create_session_error(exc: DaemonError) -> Exception:
     """The one place a ``create_session`` error envelope is turned back into the
     real exception type a caller might be catching (``AllAccountsBusy``,
-    ``gitrepos.CloneError``/``GhError``) — shared by every transport that carries a
-    create_session call over this envelope shape (the mTLS RPC client in
-    :class:`server.sessions.remote.RemoteOrchestrator`, and the primary daemon's own
-    loopback call into its co-located edge, :mod:`server.sessions.internal_dispatch`).
+    ``NoHostAvailable``/``NoEngineHostAvailable``, ``gitrepos.CloneError``/``GhError``)
+    — shared by every transport that carries a create_session call over this envelope
+    shape (the mTLS RPC client in :class:`server.sessions.remote.RemoteOrchestrator`,
+    and the primary daemon's own loopback call into its co-located edge,
+    :mod:`server.sessions.internal_dispatch`).
     An unrecognized ``err_type`` is returned as-is: the caller still has *a* typed
     exception (``DaemonError``) to raise, just not one it can pattern-match on.
     """
@@ -241,6 +242,14 @@ def reconstruct_create_session_error(exc: DaemonError) -> Exception:
         reset = data.get("earliest_reset")
         earliest = datetime.fromisoformat(reset) if reset else None
         return AllAccountsBusy(earliest, data.get("kind", "at_ceiling"))
+    if exc.err_type in ("NoHostAvailable", "NoEngineHostAvailable"):
+        from server.sessions.fleet_router import NoHostAvailable
+        # NoEngineHostAvailable folds to its base type rather than round-tripping
+        # `engine`/`reasons`: every existing `except NoHostAvailable` already
+        # catches it, the refusal message (rebuilt server-side) already names the
+        # engine and per-host reasons, and no caller distinguishes further today —
+        # see AllAccountsBusy above for the pattern once a caller actually needs to.
+        return NoHostAvailable(exc.message)
     if exc.err_type in ("CloneError", "GhError"):
         from ccswitch import gitrepos
         exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
