@@ -497,9 +497,14 @@ class CicdDoctorLoop:
         if not runs:
             return
         max_ts = since or 0.0
+        # Keyed on the run id alone, never the slug: ci_run/ci_job ids are global
+        # GitHub PKs, and a renamed repo's old slug is a redirect alias that lists
+        # the SAME runs. A repo-scoped seen-set re-inserted every run the alias had
+        # stored — a UniqueViolation that failed this repo on every tick (#1710).
+        run_ids = [r["id"] for r in runs]
         async with db_session() as db:
             seen = set((await db.execute(select(CiRun.id).where(
-                CiRun.repo == repo))).scalars().all())
+                CiRun.id.in_(run_ids)))).scalars().all())
         # Fetch/parse every unseen run before the first bulk insert takes a
         # SQLite writer lock. Keep remote waits outside the atomic write phase.
         prepared: list[tuple[dict, list[dict], dict[tuple[str, str], JUnitCase]]] = []
@@ -519,7 +524,7 @@ class CicdDoctorLoop:
         async with db_session() as db:
             # A different writer may have ingested runs while artifacts fetched.
             seen = set((await db.execute(select(CiRun.id).where(
-                CiRun.repo == repo))).scalars().all())
+                CiRun.id.in_(run_ids)))).scalars().all())
             for r, jobs, last_attempt in prepared:
                 if r["id"] in seen:
                     continue
