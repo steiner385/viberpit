@@ -74,6 +74,24 @@ describe('SessionSocket gap healing', () => {
     expect(sent.filter((m) => (m as { type: string }).type === 'attach')).toHaveLength(0)
   })
 
+  it('logs a single heal at INFO, not WARNING (#1487 — expected, self-healing, not a defect)', () => {
+    // WARNING auto-files an error-triage issue on every occurrence; a single heal is
+    // the rate-limited self-healing mechanism working as designed (the heal-loop
+    // test below covers the real escalation signal, at ERROR).
+    const info = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const { s } = makeSocket()
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'a', seq: 0, sessionId: 's1' }] })
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'c', seq: 2, sessionId: 's1' }] })
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('ws gap detected'),
+      expect.objectContaining({ sessionId: 's1' }),
+    )
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('ws gap detected'))).toHaveLength(0)
+    info.mockRestore()
+    warn.mockRestore()
+  })
+
   it('records a srcSeq gap via the client logger WITHOUT healing (telemetry only)', () => {
     // srcSeq (the daemon's end-to-end source seq, audit W2.3) is diagnostic: a hole
     // must be logged to the frontend obs sink but must NOT trigger detach/attach.

@@ -478,7 +478,10 @@ export class SessionSocket {
         `transcript.heal.loop count=${this._healTimes.length} windowMs=${SessionSocket.HEAL_LOOP_WINDOW_MS}`,
         { sessionId: sid })
     }
-    clientLogger.warn('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
+    // A single heal is the mechanism working as designed — self-healing, rate-limited,
+    // and escalated to ERROR above when it loops. It is NOT a defect: at WARNING it
+    // auto-filed an error-triage issue on every gap, hundreds of times over (#1487).
+    clientLogger.info('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
     this._send({ type: 'detach', sessionId: sid })
     // Catch-up cursor when contiguous → server resumes from the ring (resumeOk); a gap
     // that broke contiguity (the usual heal trigger) yields null → full replay.
