@@ -5,7 +5,14 @@
  * as backend logs. Bounded ring buffer (drop-oldest); batched delivery on a
  * timer, on buffer pressure, and via sendBeacon on pagehide. Never throws.
  */
-export type ClientLogLevel = 'error' | 'warn'
+/**
+ * The level is a filing decision, not just a severity label: `/api/client-logs`
+ * drops anything below `VIBERPIT_CLIENT_LOG_LEVEL` (default `warn`), and Error
+ * Triage opens a GitHub issue for every WARNING+ fingerprint it sees. So `error`
+ * and `warn` mean "this is a defect worth a ticket", while `info` means "keep this
+ * for whoever lowers the floor to debug" — use it for expected outcomes.
+ */
+export type ClientLogLevel = 'error' | 'warn' | 'info'
 
 export interface ClientLogEntry {
   level: ClientLogLevel
@@ -52,6 +59,7 @@ export class ClientLogger {
 
   error(msg: string, extra: Partial<ClientLogEntry> = {}): void { this.push('error', msg, extra) }
   warn(msg: string, extra: Partial<ClientLogEntry> = {}): void { this.push('warn', msg, extra) }
+  info(msg: string, extra: Partial<ClientLogEntry> = {}): void { this.push('info', msg, extra) }
 
   private push(level: ClientLogLevel, msg: string, extra: Partial<ClientLogEntry>): void {
     const entry: ClientLogEntry = {

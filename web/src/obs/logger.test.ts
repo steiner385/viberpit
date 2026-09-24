@@ -48,6 +48,17 @@ describe('ClientLogger', () => {
     expect(beacon).toHaveBeenCalledOnce()
   })
 
+  it('emits info entries at level info so the ingest floor drops them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+    const logger = new ClientLogger({ flushMs: 5000, maxBuffer: 200 })
+    logger.info('expected refusal')
+    await logger.flush()
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.entries[0].level).toBe('info')
+    expect(body.entries[0].msg).toBe('expected refusal')
+  })
+
   it('never throws if fetch rejects', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('net')))
     const logger = new ClientLogger({ flushMs: 5000, maxBuffer: 200 })
