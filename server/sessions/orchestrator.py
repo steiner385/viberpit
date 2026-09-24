@@ -61,6 +61,9 @@ from ccswitch.quota import QuotaSnapshot
 from ccswitch.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
+from server.assistant.suggest_prompt import (
+    ASSISTANT_SUGGEST_LIMIT, ASSISTANT_SUGGEST_SYSTEM_PROMPT, build_assistant_suggest_prompt,
+)
 from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
 from server.db import db_session
@@ -797,10 +800,7 @@ class SessionOrchestrator:
         # what keeps the feature fail-closed: the two lifecycle hooks below become
         # no-ops and no other engine's behaviour changes.
         self._codex = codex
-        if os.environ.get("VIBERPIT_SUGGESTIONS", "1") == "0":
-            self._suggester = None
-        else:
-            self._suggester = SuggestionService(suggestion_factory or real_suggestion_factory)
+        self._init_suggesters(suggestion_factory)
         if os.environ.get("VIBERPIT_SUMMARIES", "1") == "0":
             self._summarizer = None
         else:
@@ -1599,14 +1599,32 @@ class SessionOrchestrator:
             return Path(helper_config_dir(str(cfg_dir), isolated=True))
         return cfg_dir
 
+    def _init_suggesters(self, suggestion_factory) -> None:
+        """Build the coding and assistant suggestion services (``VIBERPIT_SUGGESTIONS=0``
+        disables both).
+
+        The assistant's differs only in wording (spec v2 §10.3): follow-up QUESTIONS
+        about the fleet, capped at 3, instead of imperative coding prompts. An injected
+        test factory is used as-is; the real one is bound to the assistant system prompt.
+        """
+        if os.environ.get("VIBERPIT_SUGGESTIONS", "1") == "0":
+            self._suggester = None
+            self._assistant_suggester = None
+            return
+        self._suggester = SuggestionService(suggestion_factory or real_suggestion_factory)
+        self._assistant_suggester = SuggestionService(
+            suggestion_factory or functools.partial(
+                real_suggestion_factory, system_prompt=ASSISTANT_SUGGEST_SYSTEM_PROMPT),
+            build=build_assistant_suggest_prompt, limit=ASSISTANT_SUGGEST_LIMIT)
+
     def _suggester_for(self, kind: str | None):
-        """The suggestion service a session's driver gets, or None for the assistant.
+        """The suggestion service a session's driver gets.
 
         Same reasoning as ``_isolated_dir_for``: set at all three driver-building
-        sites, so it lives in one place. Next-prompt suggestions are written FOR a
-        coding session ("run the tests", "open a PR") and the drawer has no UI for them.
+        sites, so it lives in one place. The assistant gets its own follow-up-question
+        suggester rather than the coding one ("run the tests", "open a PR").
         """
-        return None if is_assistant_kind(kind) else self._suggester
+        return self._assistant_suggester if is_assistant_kind(kind) else self._suggester
 
     def register_overlay(self, session_id: str, overlay: Any) -> None:
         """Register the options overlay a session spawns with.

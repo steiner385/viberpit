@@ -87,6 +87,7 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     orch._clock = time.time
     orch._registry = None
     orch._suggester = None
+    orch._assistant_suggester = None
     orch._session_factory = lambda sid: None
     orch._persist_engine_session_id = lambda *a, **k: None
     orch._persist_status = lambda *a, **k: None

@@ -90,8 +90,14 @@ class SuggestionService:
     effort: returns [] on empty context or any failure.
     """
 
-    def __init__(self, sdk_factory):
+    def __init__(self, sdk_factory, *, build=build_prompt, limit: int = 4):
+        # `build` renders the turn text from the transcript context and `limit` caps
+        # the parsed items; the defaults are the coding-session wording. The assistant
+        # kind passes its own (server.assistant.suggest_prompt) together with a factory
+        # bound to the matching system prompt.
         self._factory = sdk_factory
+        self._build = build
+        self._limit = limit
 
     async def generate(self, cwd: str, config_dir: str, context: str, account: str | None = None) -> list[str]:
         if not context.strip():
@@ -103,12 +109,12 @@ class SuggestionService:
             tr = Translator()
             parts: list[str] = []
             async with client:
-                await client.query(build_prompt(context))
+                await client.query(self._build(context))
                 async for msg in one_turn(client):
                     for e in tr.feed(msg):
                         if isinstance(e, ev.TextDelta):
                             parts.append(e.text)
-            return parse_suggestions("".join(parts))
+            return parse_suggestions("".join(parts), limit=self._limit)
         except Exception:
             log.warning("suggestion generation failed cwd=%s", cwd, exc_info=True)
             return []
