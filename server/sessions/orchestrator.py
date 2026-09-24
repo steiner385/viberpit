@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, replace as dataclass_replace
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
@@ -4400,125 +4400,139 @@ class SessionOrchestrator:
             cwd = worktree_info.path
             self._worktrees[session_id] = worktree_info
 
-        # Resolve final cwd: an explicit cwd was already validated above; a
-        # branch-selected session already has cwd=worktree path.  For a no-repo
-        # session (no explicit cwd, no worktree) we create an isolated scratch dir
-        # under the ViberPit base so the agent never runs in the server's own
-        # checkout.  This is the safety guarantee stated in the New Session dialog:
-        # "your real checkouts are never touched."
-        if cwd is None:
-            scratch_dir = worktrees.scratch_base(repo_root) / session_id
-            scratch_dir.mkdir(parents=True, exist_ok=True)
-            cwd = str(scratch_dir)
+        # Everything from here to the rollback-owning `try:` below can raise
+        # (AllAccountsBusy from select_account, a Copilot/Codex start failure,
+        # compose() on a missing credential, ...) AFTER the worktree above exists.
+        # That rollback never sees it, so release what this window allocated here:
+        # a leaked worktree keeps its deterministic child branch, and every retry of
+        # the same session id then dies on "a branch named ... already exists" —
+        # which turned one transient AllAccountsBusy on a model approval into a
+        # permanent 409 (#2255).
+        try:
+            # Resolve final cwd: an explicit cwd was already validated above; a
+            # branch-selected session already has cwd=worktree path.  For a no-repo
+            # session (no explicit cwd, no worktree) we create an isolated scratch dir
+            # under the ViberPit base so the agent never runs in the server's own
+            # checkout.  This is the safety guarantee stated in the New Session dialog:
+            # "your real checkouts are never touched."
+            if cwd is None:
+                scratch_dir = worktrees.scratch_base(repo_root) / session_id
+                scratch_dir.mkdir(parents=True, exist_ok=True)
+                cwd = str(scratch_dir)
 
-        # Branch this session's worktree is on (None for detached/scratch) — the
-        # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
-        branch_name = worktree_info.branch if worktree_info is not None else None
+            # Branch this session's worktree is on (None for detached/scratch) — the
+            # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
+            branch_name = worktree_info.branch if worktree_info is not None else None
 
-        usage_unverified = False
-        if account is None:
-            # Skip accounts currently quarantined for a 429/401 so a fresh session
-            # doesn't land on an account we already know is struggling.
-            picked = select_account(
-                exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load(), engine=selected_engine,
-                model=quota_model(model, engine=selected_engine))
-            account = picked.name
-            usage_unverified = picked.optimistic
-        else:
-            # Verify the given account exists (will raise if cred file missing — acceptable)
-            pass
+            usage_unverified = False
+            if account is None:
+                # Skip accounts currently quarantined for a 429/401 so a fresh session
+                # doesn't land on an account we already know is struggling.
+                picked = select_account(
+                    exclude=self._recovery.quarantined(now=self._clock()),
+                    load=self.live_session_load(), engine=selected_engine,
+                    model=quota_model(model, engine=selected_engine))
+                account = picked.name
+                usage_unverified = picked.optimistic
+            else:
+                # Verify the given account exists (will raise if cred file missing — acceptable)
+                pass
 
-        driver_config_dir = self._driver_config_dir(
-            selected_engine, account, cwd, kind
-        )
+            driver_config_dir = self._driver_config_dir(
+                selected_engine, account, cwd, kind
+            )
 
-        # Ensure the Copilot proxy is running for copilot-backed accounts.
-        if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
-            await self._copilot.ensure(account)
+            # Ensure the Copilot proxy is running for copilot-backed accounts.
+            if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
+                await self._copilot.ensure(account)
 
-        # …and the per-account Codex app-server for codex-engine sessions.
-        await self._ensure_codex_runner(selected_engine, account)
+            # …and the per-account Codex app-server for codex-engine sessions.
+            await self._ensure_codex_runner(selected_engine, account)
 
-        # Pre-seed the in-memory record so _session_factory's _oat_env closure can
-        # look up the account (needed for copilot env injection during driver.start()).
-        # The model field is patched below once the driver resolves the actual alias.
-        from datetime import datetime
-        _now = datetime.utcnow()
-        # A session promoted from the queue keeps its queue-time created_at (and
-        # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
-        _prior = self._records.get(session_id)
-        # Decide where this session's GUI renders — ONCE, here — then either lease a
-        # virtual Xvfb display or leave the host's real one to _display_env. A
-        # previously-queued/resumed row keeps its persisted decision.
-        display_mode = (getattr(_prior, "display_mode", None)
-                        or self._resolve_display_mode_for(display, client_node))
-        if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
-            try:
-                await self._x11.start_display(session_id)
-            except Exception:
-                log.exception("session.display_start_failed id=%s", session_id)
-        elif display_mode == DISPLAY_NATIVE:
-            # self._native can still be None here: a queued/resumed row's persisted
-            # decision (via _prior) wins even if this host no longer has native
-            # display wired up. _display_env degrades that case to {} at inject time.
-            log.info("session.display_native id=%s client_node=%s display=%s",
-                     session_id, client_node,
-                     self._native.display if self._native is not None else None)
-        _host = getattr(_prior, "host", None) or local_host_stamp()
-        # Belt-and-suspenders for #1107: the queue-drain call site threads the
-        # row's engine_session_id through `resume` explicitly, but if some future
-        # caller passes preexisting_row=True without it, a prior in-memory record
-        # (rebuilt from the row via _record_from_row) still carries the real id —
-        # fall back to resuming it rather than silently starting a fresh
-        # conversation over an existing one. A non-empty prior id that we are
-        # about to abandon anyway is logged so the orphaned transcript can still
-        # be found.
-        _prior_csid = (getattr(_prior, "engine_session_id", None) or None)
-        if resume is None and _prior_csid:
-            log.warning(
-                "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
-                "fresh spawn requested with no resume handle over a row that "
-                "already has one; resuming instead of discarding it",
-                session_id, _prior_csid)
-            resume = _prior_csid
-        # Per-session opt-outs survive the queue/hold → spawn hand-off the same way
-        # created_at and lineage do: explicit kwargs win (fresh spawn, queue replay,
-        # approve), else the prior queued/held record's values. The fallback is what
-        # keeps a card-menu pause applied WHILE QUEUED from vanishing off the live
-        # record when the slot frees (the row already has it; the record would not).
-        autopilot_paused = autopilot_paused or bool(getattr(_prior, "autopilot_paused", False))
-        auto_archive_opt_out_reason = (
-            auto_archive_opt_out_reason
-            or getattr(_prior, "auto_archive_opt_out_reason", None))
-        _pre_record = SessionRecord(
-            id=session_id, name=name, account=account,
-            autopilot_paused=autopilot_paused,
-            auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-            engine=selected_engine,
-            engine_session_id=resume or "",
-            cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
-            status="idle", name_is_auto=name_is_auto,
-            created_at=getattr(_prior, "created_at", None) or _now,
-            # Lineage survives the queue → spawn hand-off (child-session spec §4.1): a
-            # child dispatched at capacity is stamped on the queued record, and this
-            # fresh record would otherwise drop it until the next restart rehydrates.
-            parent_session_id=parent_session_id or getattr(_prior, "parent_session_id", None),
-            parent_notified_status=getattr(_prior, "parent_notified_status", None),
-            updated_at=_now, usage_unverified=usage_unverified,
-            origin=origin, origin_ref=origin_ref, model=None,
-            reasoning_effort=reasoning_effort, host=_host,
-            kind=kind, owner_identity=owner_identity,
-            last_activity_at=time.monotonic(),
-            display_mode=display_mode,
-            # The in-memory record is what every later driver REBUILD reads its mode
-            # from (ensure_driver after a completion release / idle reap / detach,
-            # _reassign's driverless path). Seeding it without the mode left the
-            # dataclass default — "interactive" — while the row said "full-auto", so
-            # a full-auto session prompted on its first Bash call after mark_complete
-            # until a daemon restart rebuilt the record from the row (2026-09-07).
-            permission_mode=permission_mode,
-        )
+            # Pre-seed the in-memory record so _session_factory's _oat_env closure can
+            # look up the account (needed for copilot env injection during driver.start()).
+            # The model field is patched below once the driver resolves the actual alias.
+            from datetime import datetime
+            _now = datetime.utcnow()
+            # A session promoted from the queue keeps its queue-time created_at (and
+            # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
+            _prior = self._records.get(session_id)
+            # Decide where this session's GUI renders — ONCE, here — then either lease a
+            # virtual Xvfb display or leave the host's real one to _display_env. A
+            # previously-queued/resumed row keeps its persisted decision.
+            display_mode = (getattr(_prior, "display_mode", None)
+                            or self._resolve_display_mode_for(display, client_node))
+            if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
+                try:
+                    await self._x11.start_display(session_id)
+                except Exception:
+                    log.exception("session.display_start_failed id=%s", session_id)
+            elif display_mode == DISPLAY_NATIVE:
+                # self._native can still be None here: a queued/resumed row's persisted
+                # decision (via _prior) wins even if this host no longer has native
+                # display wired up. _display_env degrades that case to {} at inject time.
+                log.info("session.display_native id=%s client_node=%s display=%s",
+                         session_id, client_node,
+                         self._native.display if self._native is not None else None)
+            _host = getattr(_prior, "host", None) or local_host_stamp()
+            # Belt-and-suspenders for #1107: the queue-drain call site threads the
+            # row's engine_session_id through `resume` explicitly, but if some future
+            # caller passes preexisting_row=True without it, a prior in-memory record
+            # (rebuilt from the row via _record_from_row) still carries the real id —
+            # fall back to resuming it rather than silently starting a fresh
+            # conversation over an existing one. A non-empty prior id that we are
+            # about to abandon anyway is logged so the orphaned transcript can still
+            # be found.
+            _prior_csid = (getattr(_prior, "engine_session_id", None) or None)
+            if resume is None and _prior_csid:
+                log.warning(
+                    "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
+                    "fresh spawn requested with no resume handle over a row that "
+                    "already has one; resuming instead of discarding it",
+                    session_id, _prior_csid)
+                resume = _prior_csid
+            # Per-session opt-outs survive the queue/hold → spawn hand-off the same way
+            # created_at and lineage do: explicit kwargs win (fresh spawn, queue replay,
+            # approve), else the prior queued/held record's values. The fallback is what
+            # keeps a card-menu pause applied WHILE QUEUED from vanishing off the live
+            # record when the slot frees (the row already has it; the record would not).
+            autopilot_paused = autopilot_paused or bool(getattr(_prior, "autopilot_paused", False))
+            auto_archive_opt_out_reason = (
+                auto_archive_opt_out_reason
+                or getattr(_prior, "auto_archive_opt_out_reason", None))
+            _pre_record = SessionRecord(
+                id=session_id, name=name, account=account,
+                autopilot_paused=autopilot_paused,
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                engine=selected_engine,
+                engine_session_id=resume or "",
+                cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
+                status="idle", name_is_auto=name_is_auto,
+                created_at=getattr(_prior, "created_at", None) or _now,
+                # Lineage survives the queue → spawn hand-off (child-session spec §4.1): a
+                # child dispatched at capacity is stamped on the queued record, and this
+                # fresh record would otherwise drop it until the next restart rehydrates.
+                parent_session_id=parent_session_id or getattr(_prior, "parent_session_id", None),
+                parent_notified_status=getattr(_prior, "parent_notified_status", None),
+                updated_at=_now, usage_unverified=usage_unverified,
+                origin=origin, origin_ref=origin_ref, model=None,
+                reasoning_effort=reasoning_effort, host=_host,
+                kind=kind, owner_identity=owner_identity,
+                last_activity_at=time.monotonic(),
+                display_mode=display_mode,
+                # The in-memory record is what every later driver REBUILD reads its mode
+                # from (ensure_driver after a completion release / idle reap / detach,
+                # _reassign's driverless path). Seeding it without the mode left the
+                # dataclass default — "interactive" — while the row said "full-auto", so
+                # a full-auto session prompted on its first Bash call after mark_complete
+                # until a daemon restart rebuilt the record from the row (2026-09-07).
+                permission_mode=permission_mode,
+            )
+        except BaseException:
+            await self._run_rollback_shielded(
+                self._release_prespawn_resources(session_id, worktree_info),
+                name=f"session-prespawn-rollback-{session_id}")
+            raise
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
         # spawn raises) — see `_spawning` in __init__: during this window the record
@@ -4679,26 +4693,52 @@ class SessionOrchestrator:
                                        if session_id in self._records else None)
                     await self._cleanup_session_paths(session_id, rollback_record)
 
-                # Cleanup has independent ownership. A second cancellation while
-                # driver.aclose() is flushing must not strand the remaining state;
-                # shield until teardown completes, then propagate cancellation.
-                cleanup = asyncio.create_task(
+                await self._run_rollback_shielded(
                     _rollback(), name=f"session-spawn-rollback-{session_id}")
-                cancelled_during_cleanup = False
-                while not cleanup.done():
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        cancelled_during_cleanup = True
-                await cleanup
-                if cancelled_during_cleanup:
-                    raise asyncio.CancelledError
             raise
         finally:
             if self._spawning.get(session_id) is spawn_done:
                 del self._spawning[session_id]
             if not spawn_done.done():
                 spawn_done.set_result(None)
+
+    @staticmethod
+    async def _run_rollback_shielded(coro: Coroutine[Any, Any, None], *, name: str) -> None:
+        """Run a spawn-failure rollback to completion, then propagate any cancellation.
+
+        Cleanup has independent ownership. A second cancellation while it is
+        flushing (driver.aclose(), a `git worktree remove`) must not strand the
+        remaining state; shield until teardown completes, then re-raise.
+        """
+        cleanup = asyncio.create_task(coro, name=name)
+        cancelled_during_cleanup = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled_during_cleanup = True
+        await cleanup
+        if cancelled_during_cleanup:
+            raise asyncio.CancelledError
+
+    async def _release_prespawn_resources(
+        self, session_id: str, worktree_info: worktrees.WorktreeInfo | None,
+    ) -> None:
+        """Undo what `_spawn_session` allocates before its driver rollback owns the spawn.
+
+        That window creates the session worktree and may lease a virtual display;
+        nothing else in it holds state. The record is NOT touched: a held or queued
+        session's prior record must survive for the caller to re-park it. Only the
+        worktree THIS spawn registered is removed (a fresh one is clean, so the
+        dirty guard never keeps it); remove_worktree also deletes its child branch.
+        """
+        if worktree_info is not None and self._worktrees.get(session_id) is worktree_info:
+            await self._cleanup_session_paths(session_id, None)
+        if self._x11 is not None:
+            try:
+                await self._x11.stop_display(session_id)
+            except Exception:
+                log.exception("session.display_cleanup_failed id=%s", session_id)
 
     async def _ensure_codex_runner(self, engine: AgentEngine, account: str) -> None:
         """Start the account's `codex app-server` — for codex-engine sessions only.
