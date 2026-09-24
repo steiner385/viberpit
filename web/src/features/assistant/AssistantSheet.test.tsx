@@ -15,6 +15,7 @@ vi.mock('@/api/assistant', () => ({
   })),
   useAssistantHistory: vi.fn(() => ({ data: [], isLoading: false })),
   useResumeAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
+  useAssistantFeedback: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
 }))
 
 // The real SessionRuntimeProvider owns a live WebSocket attach/detach cycle
@@ -166,6 +167,36 @@ describe('AssistantSheet', () => {
     renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
     const dlg = screen.getByRole('dialog', { name: /assistant/i })
     expect(within(dlg).getByRole('region', { name: /pending question/i })).toBeInTheDocument()
+  })
+
+  it('renders follow-up suggestion chips after an answer and sends one on tap (spec v2 §10.3)', () => {
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = fakeRuntime()
+    rt.state.turns = [{ id: 't1', role: 'assistant', blocks: [{ kind: 'text', id: 'b1', text: 'Two sessions need you.' }] }] as never
+    rt.state.latestSuggestions = ['Which one is oldest?', 'Open the first one'] as never
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    // Starters are gone once the thread has content; the follow-ups take their place.
+    expect(within(dlg).queryByText('What needs my attention?')).toBeNull()
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Which one is oldest?' }))
+    expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [])
+  })
+
+  it('shows no follow-up chips while a turn is running', () => {
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = fakeRuntime()
+    rt.state.turns = [{ id: 't1', role: 'assistant', blocks: [{ kind: 'text', id: 'b1', text: 'Checking…' }] }] as never
+    rt.state.latestSuggestions = ['Which one is oldest?'] as never
+    rt.state.status = { state: 'working', count: 0 } as never
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    expect(within(dlg).queryByRole('button', { name: 'Which one is oldest?' })).toBeNull()
   })
 
   it('@ opens a mention menu over the sessions list and inserts a link on Enter (spec v2 §10.2)', async () => {

@@ -34,7 +34,7 @@ import { useOpenSessionId } from '@/shell/openSessionId'
 import { statusTier } from '@/session/statusTier'
 import { Button } from '@/ui/Button'
 import { AssistantHeader } from './AssistantHeader'
-import { StarterChips } from './StarterChips'
+import { FollowUpChips, StarterChips } from './StarterChips'
 import { startersFor } from './starters'
 import { useAssistantGestures } from './assistantGestures'
 
@@ -121,6 +121,7 @@ function AssistantSheetBody() {
           onLoadOlder={rt.onLoadOlder}
           onAsk={(text) => setDraftSeed({ text })}
         />
+        <FollowUpChips />
       </div>
       {/* Pinned permission / question panels, exactly as SessionBody mounts them. Turn
           filters open permissions and live questions OUT of the transcript on the

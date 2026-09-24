@@ -602,7 +602,9 @@ def test_assistant_spawn_gets_an_isolated_config_dir(tmp_path):
                                           owner_identity="u@x")
             cfg = Path(orch._drivers[a.id].config_dir)
             assert str(tmp_path / "scratch") in str(cfg)
-            assert orch._drivers[a.id]._suggester is None
+            # Follow-up chips (spec v2 §10.3): its own suggester, never the coding one.
+            assert orch._drivers[a.id]._suggester is orch._assistant_suggester
+            assert orch._assistant_suggester is not orch._suggester
             b = await orch.create_session(name="Coder", cwd=str(tmp_path))
             assert Path(orch._drivers[b.id].config_dir) == tmp_path / "cfg" / "alpha"
         finally:
@@ -619,6 +621,7 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
 
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._suggester = object()
+    orch._assistant_suggester = object()
 
     src = _seed_account_dir(tmp_path)
     with patch.dict(os.environ, {"VIBERPIT_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
@@ -628,7 +631,7 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
     assert asst != src and (asst / "projects").is_symlink()
     assert not (asst / "plugins").exists()
     assert orch._suggester_for(None) is orch._suggester
-    assert orch._suggester_for(ASSISTANT_KIND) is None
+    assert orch._suggester_for(ASSISTANT_KIND) is orch._assistant_suggester
 
     # Every driver-building site must call the engine-specific config helper,
     # not re-derive the setup sequence.

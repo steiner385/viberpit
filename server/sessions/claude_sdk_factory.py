@@ -123,8 +123,11 @@ async def _deny_all_tools(tool_name, tool_input, ctx=None):
     return PermissionResultDeny(message="tools are disabled during suggestion generation")
 
 
-async def real_suggestion_factory(cwd, config_dir, account=None):
+async def real_suggestion_factory(cwd, config_dir, account=None, *, system_prompt=None):
     """One-shot, resume-less client for generating next-prompt suggestions.
+
+    *system_prompt* defaults to the coding-session ``SUGGEST_SYSTEM_PROMPT``; the
+    assistant kind binds its own (``server.assistant.suggest_prompt``).
 
     Bound to the session's own account config dir (Max subscription only). Tools denied;
     model defaults to Haiku but can be overridden (or cleared to the account default) via
@@ -146,8 +149,8 @@ async def real_suggestion_factory(cwd, config_dir, account=None):
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
-        max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
-        **(await asyncio.to_thread(_cli_path_kwargs)),
+        max_turns=1, system_prompt=system_prompt or SUGGEST_SYSTEM_PROMPT, model=model,
+        resume=None, **(await asyncio.to_thread(_cli_path_kwargs)),
     )
     return ClaudeSDKClient(options=opts)
 
