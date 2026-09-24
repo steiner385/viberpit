@@ -646,6 +646,8 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
         events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
         err = next((e for e in events if e.get("type") == "error"), None)
         assert err is not None and err.get("code") == "PERMISSION_NOT_PENDING"
+        # permId rides along (#2206) so a client can target this exact card.
+        assert err.get("permId") == "does-not-exist"
         # interrupt is accepted.
         ws.send_text(json.dumps({"type": "interrupt", "sessionId": session_id}))
 

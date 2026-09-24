@@ -50,7 +50,11 @@ export interface EvTitle         { type: 'title';         title: string; source:
 export interface EvStatus        { type: 'status';        state: string; count: number; permissionMode?: string }
 export interface EvReplayReset   { type: 'replayReset'; sessionId?: string }
 export interface EvReplayComplete { type: 'replayComplete'; sessionId?: string; earliestTurn?: number; totalTurns?: number }
-export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number }
+// `questionId` / `permId` are set only for a refused answerQuestion / permissionResponse
+// (QUESTION_NOT_OWNED, PERMISSION_NOT_OWNED, ...NOT_PENDING — #2206): the id the bridge
+// rejected, so the client can undo its optimistic resolve of that specific card instead
+// of leaving it stranded looking answered under the error banner.
+export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number; questionId?: string; permId?: string }
 export interface QueuedItem      { text: string; images: { url: string; mime: string; name: string }[] }
 export interface EvQueueUpdate   { type: 'queueUpdate';   items: QueuedItem[] }
 export interface EvSuggestions   { type: 'suggestions';   sessionId: string; turnId: string; items: string[] }

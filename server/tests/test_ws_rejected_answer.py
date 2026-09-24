@@ -35,6 +35,10 @@ def test_rejected_answer_surfaces_an_error_frame(ws_env, caplog):  # noqa: F811 
             assert err is not None, f"no error frame in {[e.get('type') for e in events]}"
             assert err.get("code") == "QUESTION_NOT_PENDING"
             assert err.get("sessionId") == session_id
+            # questionId rides along (#2206) so the client can undo the optimistic
+            # local resolve for this exact card instead of the whole error being
+            # untargeted.
+            assert err.get("questionId") == "no-such-question"
 
     client.portal.call(orch.close_session, session_id)
 
@@ -76,6 +80,7 @@ def test_owned_elsewhere_answer_logs_at_warning(ws_env, caplog):  # noqa: F811
                 err = next((e for e in events if e.get("type") == "error"), None)
                 assert err is not None, f"no error frame in {[e.get('type') for e in events]}"
                 assert err.get("code") == "QUESTION_NOT_OWNED"
+                assert err.get("questionId") == "owned-elsewhere"
 
     client.portal.call(orch.close_session, session_id)
 

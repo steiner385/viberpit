@@ -369,6 +369,39 @@ describe('useSessionRuntime — error frames are session-scoped', () => {
 
     expect(result.current.state.error?.code).toBe('boom')
   })
+
+  it('a refused-answer error frame restores the optimistically-resolved question (#2206)', () => {
+    mockAnswerQuestion.mockReset()
+    mockAnswerQuestion.mockReturnValue(true) // socket open: send succeeds
+    const { result } = renderHook(() => useSessionRuntime('esess4'), { wrapper })
+
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'question', questionId: 'q-refused', turnId: 'turn-1',
+        header: 'Q', question: 'Q?', options: [{ label: 'Yes' }], multiSelect: false,
+      })
+    })
+
+    // Send fires and the card resolves optimistically, same as any other answer.
+    act(() => { result.current.onAnswer('q-refused', ['Yes']) })
+    let q = result.current.state.turns.flatMap((t) => t.blocks)
+      .find((b) => b.kind === 'question' && b.questionId === 'q-refused')
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+
+    // The server refuses it — the error frame names the questionId it rejected.
+    act(() => {
+      capturedErrorHandler?.(errorFrame({
+        sessionId: 'esess4', code: 'QUESTION_NOT_OWNED', questionId: 'q-refused',
+      }))
+    })
+
+    expect(result.current.state.error?.code).toBe('QUESTION_NOT_OWNED')
+    q = result.current.state.turns.flatMap((t) => t.blocks)
+      .find((b) => b.kind === 'question' && b.questionId === 'q-refused')
+    expect(q && q.kind === 'question' && q.live).toBe(true)
+    expect(q && q.kind === 'question' && q.answered).toBeUndefined()
+  })
 })
 
 describe('useSessionRuntime.onInterruptAndPrompt', () => {
