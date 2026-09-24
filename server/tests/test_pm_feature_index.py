@@ -3,7 +3,12 @@ import pathlib
 
 import yaml
 
-from server.pm.feature_index import FeatureRowView, merge_branch_over_main, plan_feature_index
+from server.pm.feature_index import (
+    FeatureRowView,
+    PlanWarning,
+    merge_branch_over_main,
+    plan_feature_index,
+)
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
 
 FEATURE_DOCS_DIR = pathlib.Path(__file__).parents[2] / "docs" / "product" / "features"
@@ -95,7 +100,8 @@ def test_parent_and_links_are_carried_onto_the_upsert():
 def test_unknown_parent_indexes_at_root_with_a_warning():
     plan = plan_feature_index([], [("d/a.md", _pdoc("a", "nope"))])
     assert plan.upserts[0].parent_slug is None
-    assert plan.warnings == ("a: parent 'nope' not found; indexed at root",)
+    assert plan.warnings == (PlanWarning("parent_unresolved", "a", "nope"),)
+    assert str(plan.warnings[0]) == "a: parent 'nope' not found; indexed at root"
 
 
 def test_parent_cycle_breaks_at_the_closing_doc():
@@ -109,7 +115,8 @@ def test_parent_cycle_breaks_at_the_closing_doc():
     # Exactly one doc is cut loose, and the other two keep their parents.
     assert len(roots) == 1
     assert len(plan.warnings) == 1
-    assert plan.warnings[0].endswith("parent chain is a cycle; indexed at root")
+    assert plan.warnings[0].kind == "parent_cycle"
+    assert str(plan.warnings[0]).endswith("parent chain is a cycle; indexed at root")
 
 
 # -- R8b-4: commit_sha / pr_number stamping ------------------------------------
