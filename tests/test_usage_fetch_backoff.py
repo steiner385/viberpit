@@ -8,8 +8,10 @@ shows no usage/rank forever (kindash incident 2026-07-08). The backoff lives
 in the ledger so every process/caller shares one cooldown.
 """
 import json
+import socket
 import time
 import unittest
+import urllib.error
 from unittest import mock
 
 from ccswitch import accounts, crypto, ledger, oauth, paths, selector
@@ -344,6 +346,27 @@ class TestTransientUsageLogLevel(unittest.TestCase):
             with mock.patch.object(oauth, "refresh_access_token",
                                    side_effect=oauth.TransientError("token endpoint returned 429")):
                 self.assertEqual(self._levels(), ["INFO"])
+
+    def test_dns_failure_on_usage_fetch_logs_info(self):
+        # The real transport path (#1925, #1938): a DNS blip becomes a URLError, is
+        # retried, then surfaces as TransientError("network error after N attempt(s)").
+        with temp_env():
+            _seed_account("alpha")
+            dns = urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+            with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=dns), \
+                 mock.patch.object(oauth, "_retry_delay", return_value=0):
+                self.assertEqual(self._levels(), ["INFO"])
+            self.assertEqual(_cooldown("alpha")[0], 1)  # backed off, status untouched
+
+    def test_dns_failure_on_token_refresh_logs_info(self):
+        # The refresh POST is non-idempotent, so it fails after exactly 1 attempt
+        # (#1939, #1940).
+        with temp_env():
+            _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
+            dns = urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+            with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=dns):
+                self.assertEqual(self._levels(), ["INFO"])
+            self.assertEqual(_cooldown("alpha")[0], 1)
 
     def test_live_session_429_logs_info_but_401_stays_warning(self):
         with temp_env():
