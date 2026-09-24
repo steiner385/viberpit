@@ -229,6 +229,9 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
         "          number url title state isDraft headRefName\n"
         "          autoMergeRequest { enabledAt }\n"
         "          repository { nameWithOwner }\n"
+        "          closingIssuesReferences(first: 50) {\n"
+        "            nodes { number repository { nameWithOwner } }\n"
+        "          }\n"
         "        } } } }\n"
         "      }\n"
         "    }\n"
@@ -259,6 +262,17 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
     return out
 
 
+def _pr_closes_ref(src: dict, repo: str, number: int) -> bool:
+    """True when *src* (a cross-referencing PR node) names ``repo#number`` in
+    its own ``closingIssuesReferences`` — i.e. it is linked, not a mere mention."""
+    nodes = ((src.get("closingIssuesReferences") or {}).get("nodes")) or []
+    return any(
+        node and node.get("number") == number
+        and ((node.get("repository") or {}).get("nameWithOwner")) == repo
+        for node in nodes
+    )
+
+
 def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
     """The best same-repo PR cross-referencing issue *ref*, or ``None``.
 
@@ -268,24 +282,39 @@ def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
     asks GitHub directly which PRs mention the issue (a PR titled ``… (#N)``
     creates the cross-reference even without a closing keyword).
 
-    Preference: MERGED beats OPEN (the work landed); a later reference beats an
+    Preference: a PR whose own ``closingIssuesReferences`` names this issue
+    (linked) beats one that merely mentions it in passing — a drive-by mention
+    from an unrelated merged PR (e.g. a batch docs PR) must never outrank the
+    open-but-failing PR that actually implements the fix (#2201). Within a
+    tier, MERGED beats OPEN (the work landed); a later reference beats an
     earlier one. CLOSED-unmerged and cross-repo references are ignored — a
     drive-by mention from a closed PR must never read as "PR closed unmerged →
     give up". Any gh failure or unparseable payload returns ``None``.
     """
     from server.github.pr_status import PullRequestInfo
 
+    repo, number_s = _split_ref(ref)
     srcs = _issue_crossref_pr_nodes(ref, gh_run=gh_run)
     if not srcs:
         return None
-    merged_pr = open_pr = None
-    for src in srcs:
-        state = src.get("state")
-        if state == "MERGED":
-            merged_pr = src        # last reference wins within a priority tier
-        elif state == "OPEN":
-            open_pr = src
-    best = merged_pr or open_pr
+
+    def _best(candidates: list[dict]):
+        merged_pr = open_pr = None
+        for src in candidates:
+            state = src.get("state")
+            if state == "MERGED":
+                merged_pr = src        # last reference wins within a priority tier
+            elif state == "OPEN":
+                open_pr = src
+        return merged_pr or open_pr
+
+    if number_s.isdigit():
+        number = int(number_s)
+        linked = [s for s in srcs if _pr_closes_ref(s, repo, number)]
+        mentioned = [s for s in srcs if not _pr_closes_ref(s, repo, number)]
+    else:
+        linked, mentioned = [], srcs
+    best = _best(linked) or _best(mentioned)
     if best is None:
         return None
     merged = best.get("state") == "MERGED"

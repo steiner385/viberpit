@@ -217,12 +217,15 @@ def _timeline_stdout(sources: list[dict]) -> str:
 
 
 def _pr_node(number: int, state: str, repo: str = "o/r", *, is_draft: bool = False,
-             auto_merge: bool = False, branch: str = "b") -> dict:
+             auto_merge: bool = False, branch: str = "b",
+             closes: tuple[int, ...] = ()) -> dict:
     return {"number": number, "url": f"https://github.com/{repo}/pull/{number}",
             "title": f"pr {number}", "state": state, "isDraft": is_draft,
             "headRefName": branch,
             "autoMergeRequest": {"enabledAt": "x"} if auto_merge else None,
-            "repository": {"nameWithOwner": repo}}
+            "repository": {"nameWithOwner": repo},
+            "closingIssuesReferences": {"nodes": [
+                {"number": n, "repository": {"nameWithOwner": repo}} for n in closes]}}
 
 
 def test_find_referencing_pr_prefers_merged_and_filters_repo():
@@ -269,6 +272,52 @@ def test_find_referencing_pr_ignores_closed_only_and_failures():
 
     unparseable = FakeGh({("api", "graphql"): _proc(stdout="not json")})
     assert find_referencing_pr("o/r#3", gh_run=unparseable) is None
+
+
+def test_find_referencing_pr_prefers_linked_over_merged_mention():
+    """Regression for #2201: a merged PR that only *mentions* the issue (no
+    ``closingIssuesReferences`` entry — e.g. a batch docs/re-review PR) must
+    never outrank an OPEN PR that is actually linked to close it, even though
+    MERGED normally beats OPEN."""
+    from server.automations.backlog_github import find_referencing_pr
+    sources = [
+        _pr_node(16109, "MERGED", branch="docs/batch"),      # mentions only
+        _pr_node(16440, "OPEN", branch="fix/it", closes=(15952,)),  # linked
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout(sources))})
+
+    info = find_referencing_pr("o/r#15952", gh_run=fake)
+
+    assert info is not None
+    assert (info.number, info.state, info.merged) == (16440, "open", False)
+
+
+def test_find_referencing_pr_merged_wins_within_the_linked_tier():
+    """When more than one PR is linked, MERGED still beats OPEN within that tier."""
+    from server.automations.backlog_github import find_referencing_pr
+    sources = [
+        _pr_node(1, "OPEN", closes=(3,)),
+        _pr_node(2, "MERGED", closes=(3,)),
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout(sources))})
+
+    info = find_referencing_pr("o/r#3", gh_run=fake)
+
+    assert info is not None
+    assert (info.number, info.state) == (2, "merged")
+
+
+def test_find_referencing_pr_falls_back_to_mentions_when_nothing_is_linked():
+    """No cross-referencing PR is linked (the common case pre-#2201): the old
+    MERGED-beats-OPEN-beats-nothing ranking still applies to mentions."""
+    from server.automations.backlog_github import find_referencing_pr
+    sources = [_pr_node(1, "OPEN"), _pr_node(2, "MERGED")]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout(sources))})
+
+    info = find_referencing_pr("o/r#3", gh_run=fake)
+
+    assert info is not None
+    assert (info.number, info.state) == (2, "merged")
 
 
 def test_find_referencing_pr_passes_repo_app_token():
