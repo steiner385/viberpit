@@ -121,7 +121,7 @@ async def infer_goal(
     if outcome.skipped:
         return None  # account's inference lane cooled-down — keep the prior goal
     if outcome.error is not None:
-        log.warning("infer_goal failed: %s", outcome.error)
+        log.warning("infer_goal failed: %s", outcome.describe())
         return None
     parts: list[str] = []
     for msg in outcome.messages:

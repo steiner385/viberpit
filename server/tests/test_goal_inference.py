@@ -125,12 +125,17 @@ def test_infer_goal_for_codex_session_never_touches_claude_compose(monkeypatch):
     assert calls["args"][1] == "Fix login bug"
 
 
-def test_infer_goal_for_claude_session_keeps_existing_behavior(monkeypatch):
+def test_infer_goal_for_claude_session_uses_verified_helper_config_dir(monkeypatch):
     """A Claude-engine session (including Copilot, which also runs CLAUDE_CODE) must
-    keep composing the Anthropic config dir and calling infer_goal exactly as before."""
+    take its config dir from the engine-safe, readiness-checked helper picker — not
+    compose the session's own account unconditionally. Composing a disabled,
+    de-authed or org-denied account spawned a call certain to fail as the opaque
+    "Claude Code returned an error result: success" (#1841, sibling of #1817)."""
     import server.sessions.orchestrator as orch_mod
 
-    monkeypatch.setattr(orch_mod, "compose", lambda name: f"/cfg/{name}")
+    def _boom(name):
+        raise AssertionError("compose() must go through _autopilot_helper_config_dir")
+    monkeypatch.setattr(orch_mod, "compose", _boom)
 
     calls = {}
     async def fake_infer_goal(name, tail, *, config_dir, cwd):
@@ -141,6 +146,7 @@ def test_infer_goal_for_claude_session_keeps_existing_behavior(monkeypatch):
 
     orch = _bare_orch()
     orch._records = {"s1": _rec(engine=AgentEngine.CLAUDE_CODE, account="a", cwd="/work")}
+    orch._autopilot_helper_config_dir = lambda account: f"/helper/{account}"
 
     async def fake_tail(sid, **kw):
         return [{"role": "user", "text": "fix it"}]
@@ -151,7 +157,56 @@ def test_infer_goal_for_claude_session_keeps_existing_behavior(monkeypatch):
     result = asyncio.run(run())
 
     assert result == "Ship the fix"
-    assert calls["args"] == ("Fix login bug", "/cfg/a", "/work")
+    assert calls["args"] == ("Fix login bug", "/helper/a", "/work")
+
+
+def test_infer_goal_for_skips_when_no_helper_account_is_ready(monkeypatch):
+    """No live Anthropic account → no call at all (keep the prior goal), rather than
+    a call against a dead identity that fails and files an auto-error (#1841)."""
+    async def fake_infer_goal(*a, **kw):
+        raise AssertionError("infer_goal must not run without a ready helper account")
+    monkeypatch.setattr(
+        "server.sessions.goal_inference.infer_goal", fake_infer_goal)
+
+    orch = _bare_orch()
+    orch._records = {"s1": _rec(engine=AgentEngine.CLAUDE_CODE, account="a", cwd="/work")}
+    orch._autopilot_helper_config_dir = lambda account: None
+
+    async def fake_tail(sid, **kw):
+        return [{"role": "user", "text": "fix it"}]
+    orch._autopilot_transcript_tail = fake_tail
+
+    assert asyncio.run(orch._infer_goal_for("s1")) is None
+
+
+@pytest.mark.asyncio
+async def test_infer_goal_failure_log_carries_kind_and_cli_detail(caplog):
+    """The SDK's "error result: success" says nothing; the log must carry the
+    classified kind and the CLI's own words (read off the yielded messages) so the
+    auto-error is diagnosable without digging out a helper transcript (#1841)."""
+    from server.sessions import helper_call
+
+    helper_call.reset_breakers()
+
+    async def denied(*, prompt, options):
+        class _Result:
+            is_error = True
+            errors: list = []
+            result = "Your organization has disabled Claude subscription access"
+            api_error_status = 403
+        yield _Result()
+        raise RuntimeError("Claude Code returned an error result: success")
+
+    try:
+        with caplog.at_level("WARNING", logger="server.sessions.goal_inference"):
+            g = await infer_goal("n", [], config_dir="/cfg/x", cwd="/tmp", query_fn=denied)
+    finally:
+        helper_call.reset_breakers()
+    assert g is None
+    [rec] = [r for r in caplog.records if r.name == "server.sessions.goal_inference"]
+    msg = rec.getMessage()
+    assert "kind=auth_forbidden" in msg
+    assert "'Your organization has disabled Claude subscription access'" in msg
 
 
 # ---- orchestrator sweep -------------------------------------------------- #

@@ -214,7 +214,7 @@ async def suggest_repo(
         if outcome.failure_kind == "timeout":
             log.warning("suggest_repo: exceeded %.0fs — no suggestion", timeout)
         else:
-            log.warning("suggest_repo: model call failed: %s", outcome.error)
+            log.warning("suggest_repo: model call failed: %s", outcome.describe())
         return None
 
     text_parts: list[str] = []

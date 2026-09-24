@@ -255,6 +255,18 @@ class HelperOutcome:
     skipped: bool = False
     skip_reason: str | None = None
 
+    def describe(self) -> str:
+        """One log-ready line for a failure: classified kind, exception, CLI detail.
+
+        The single format every helper call site logs a failure with. The exception
+        alone is often "Claude Code returned an error result: success" — the result
+        subtype, not a cause (#1841) — so the kind and the CLI's own words ride
+        along. The detail is ``%r``-quoted so the error sink normalizes it to
+        ``<str>`` and one condition stays one auto-error fingerprint.
+        """
+        return (f"kind={self.failure_kind or 'unknown'} {self.error} "
+                f"detail={self.error_text or ''!r}")
+
 
 @dataclass
 class _BreakerState:
