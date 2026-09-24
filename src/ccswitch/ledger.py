@@ -1,10 +1,12 @@
 """Flock-guarded JSON state: a usage cache + soft reservations. No secrets."""
 import contextlib
+import errno
 import fcntl
 import json
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime
 
 from . import paths
@@ -12,6 +14,33 @@ from .quota import (WINDOW_SESSION, WINDOW_WEEKLY, QuotaSnapshot,
                     anthropic_snapshot, copilot_snapshot)
 
 log = logging.getLogger(__name__)
+
+#: errnos a flapping network mount (the sshfs account store on a worker host) returns
+#: from ``open()`` on a perfectly healthy, owner-writable file. EPERM in particular is
+#: how the FUSE/SFTP layer reports a connection blip (#2291) — not a real permission
+#: problem — so these are worth a moment's retry; EACCES/ENOENT/EROFS are not.
+_TRANSIENT_OPEN_ERRNOS = frozenset(
+    {errno.EPERM, errno.EIO, errno.ESTALE, errno.ENOTCONN})
+#: Sleeps between attempts, so ``len + 1`` tries in total (~0.7s worst case).
+_OPEN_RETRY_DELAYS_S = (0.2, 0.5)
+
+
+def _open_lock(lock_path):
+    """Open the lock file, riding out a momentary mount error.
+
+    Bounded: after the last attempt the error is re-raised, so a persistent failure
+    still surfaces to the caller's loop as an ERROR. Callers already run this under
+    ``asyncio.to_thread`` or in a CLI, so the short blocking sleep is safe.
+    """
+    for delay in _OPEN_RETRY_DELAYS_S:
+        try:
+            return open(lock_path, "a+", encoding="utf-8")
+        except OSError as e:
+            if e.errno not in _TRANSIENT_OPEN_ERRNOS:
+                raise
+            log.debug("ledger lock open failed transiently (%s) — retrying", e)
+            time.sleep(delay)
+    return open(lock_path, "a+", encoding="utf-8")
 
 
 def _decode_documents(raw: str) -> list[dict]:
@@ -90,7 +119,7 @@ def locked_ledger():
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lock_path = path.with_name(path.name + ".lock")
-    lf = open(lock_path, "a+", encoding="utf-8")
+    lf = _open_lock(lock_path)
     try:
         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
         try:
