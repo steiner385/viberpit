@@ -4,6 +4,7 @@
 // hardcoded "primary". The focused repo's name is the guardrail that any
 // authoring action targets the intended pipeline, so it stays pinned and visible.
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 const STORE_KEY = storageKey('pipeline.focused')
@@ -22,23 +23,33 @@ function readStore(): string | null {
   } catch { return null }
 }
 
-/** #191: the focused pipeline is shareable via ?pipeline=org/repo. */
-function readPipelineParam(): string | null {
-  try { return new URLSearchParams(location.search).get(URL_PARAM) } catch { return null }
-}
-function writePipelineParam(repo: string): void {
-  try {
-    const u = new URL(location.href)
-    u.searchParams.set(URL_PARAM, repo)
-    history.replaceState(history.state, '', u) // focus is not a back-button step
-  } catch { /* ignore */ }
-}
-
-/** Sticky focused-pipeline state. Resolution order: ?pipeline= URL param (#191,
- *  when `useUrl`) → localStorage → first repo. */
-export function useFocusedPipeline(repos: readonly string[], enabled = true, useUrl = true): [string | null, (repo: string) => void] {
+/**
+ * Sticky focused-pipeline state, read/written through react-router's
+ * `useSearchParams` rather than a raw `history.replaceState` (row 5 review
+ * residual #1555): a plain `history.replaceState` call bypasses the router's
+ * own history listener, so `useLocation()` elsewhere on the page (e.g.
+ * `shell/useAttractCycle`'s kiosk `search` capture, or the nav link matching
+ * the current URL) kept reading the PREVIOUS search string until some other
+ * navigation happened to resync it.
+ *
+ * Resolution order: `?pipeline=` URL param (#191) → localStorage → first repo.
+ * The URL param is always READ, even when `persist` is false (kiosk) — a wall
+ * display's own `?pipeline=org/repo` deep link must still seed its starting
+ * repo (#1555; previously `useUrl=false` disabled the read too, so a kiosk
+ * deep link silently fell back to `repos[0]`). Only the WRITE side — mirroring
+ * a focus change back into localStorage and the URL — is gated on `persist`:
+ * kiosk's repo auto-cycle (`useRepoCycle`) calls the same `focus()` every tick,
+ * and must not stomp a desk session's sticky localStorage choice or rewrite
+ * the display's own URL, which IS its configuration (#1555).
+ */
+export function useFocusedPipeline(repos: readonly string[], enabled = true, persist = true): [string | null, (repo: string) => void] {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const readPipelineParam = useCallback(
+    () => searchParams.get(URL_PARAM),
+    [searchParams],
+  )
   const [focused, setFocused] = useState<string | null>(() => {
-    if (useUrl) { const p = readPipelineParam(); if (p && repos.includes(p)) return p }
+    const p = readPipelineParam(); if (p && repos.includes(p)) return p
     const s = readStore(); if (s && repos.includes(s)) return s
     return repos[0] ?? null
   })
@@ -53,7 +64,7 @@ export function useFocusedPipeline(repos: readonly string[], enabled = true, use
     if (!enabled) return
     if (repos.length === 0) return
     if (!focused || !repos.includes(focused)) {
-      const fromUrl = useUrl ? readPipelineParam() : null
+      const fromUrl = readPipelineParam()
       const stored = readStore()
       // eslint-disable-next-line react-hooks/set-state-in-effect -- async repo adoption: repos arrive after mount; setState is the intended outcome (verbatim from source)
       setFocused(
@@ -61,11 +72,16 @@ export function useFocusedPipeline(repos: readonly string[], enabled = true, use
           : stored && repos.includes(stored) ? stored
             : repos[0]!)
     }
-  }, [repos, focused, enabled, useUrl])
+  }, [repos, focused, enabled, readPipelineParam])
   const focus = useCallback((repo: string) => {
     setFocused(repo)
+    if (!persist) return
     try { localStorage.setItem(STORE_KEY, repo) } catch { /* ignore */ }
-    if (useUrl) writePipelineParam(repo)
-  }, [useUrl]) // setFocused is stable; storage/URL are globals
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set(URL_PARAM, repo)
+      return next
+    }, { replace: true }) // focus is not a back-button step
+  }, [persist, setSearchParams]) // setFocused is stable; storage is a global
   return [focused, focus]
 }

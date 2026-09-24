@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { ViewportProvider, type ViewportKiosk } from '@/shell/useViewport'
 import { InteractionProvider } from '@/shell/InteractionContext'
@@ -38,17 +38,31 @@ const frame = (): DashboardState => ({
   ],
 } as unknown as DashboardState)
 
+// `useFocusedPipeline` now writes `?pipeline=` through react-router's
+// useSearchParams (#1555), not raw history.replaceState — a MemoryRouter
+// never touches the real `window.location`, so a write is only observable
+// through the router's own `useLocation()`. This probe surfaces it.
+function LocationSearchProbe() {
+  const { search } = useLocation()
+  return <span data-testid="loc-search">{search}</span>
+}
+
 function mount({ kiosk = null, entry = '/pipeline' }: { kiosk?: ViewportKiosk | null; entry?: string } = {}) {
   stubMatchMedia(LAYOUT_MODE_QUERIES[kiosk ? 'kiosk' : 'desktop'])
   const Wrap = ({ children }: { children: ReactNode }) => (
     <ViewportProvider kiosk={kiosk}>
       <InteractionProvider interactive={!kiosk}>
-        <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[entry]}>
+          {children}
+          <LocationSearchProbe />
+        </MemoryRouter>
       </InteractionProvider>
     </ViewportProvider>
   )
   return render(<PipelinePage />, { wrapper: Wrap })
 }
+
+const focusedPipelineParam = () => new URLSearchParams(screen.getByTestId('loc-search').textContent ?? '').get('pipeline')
 
 const deliver = () => act(() => { FakeEventSource.instances.at(-1)!.emit(frame()) })
 
@@ -58,7 +72,6 @@ describe('PipelinePage (Workspace variant)', () => {
     vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource)
     vi.stubGlobal('Notification', undefined)
     localStorage.clear()
-    history.replaceState(null, '', '/pipeline')
   })
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -94,7 +107,7 @@ describe('PipelinePage (Workspace variant)', () => {
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(tabs[1]!)
     expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
-    expect(new URLSearchParams(location.search).get('pipeline')).toBe('o/b')
+    expect(focusedPipelineParam()).toBe('o/b')
     // The board now leads with the focused repo.
     expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
     // The health band sits in the header, not the board.
@@ -129,7 +142,13 @@ describe('PipelinePage (Workspace variant)', () => {
     act(() => { vi.advanceTimersByTime(10_000) })
     expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
     // and the URL was never written: the kiosk URL is its configuration
-    expect(new URLSearchParams(location.search).get('pipeline')).toBeNull()
+    expect(focusedPipelineParam()).toBeNull()
+  })
+
+  it('kiosk: a ?pipeline= deep link still seeds the starting repo (#1555)', () => {
+    mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] }, entry: '/pipeline?pipeline=o%2Fb' })
+    deliver()
+    expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
   })
 
   it('a stalled feed shows a warning banner as the first thing in the content region', () => {

@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/ui/Badge';
 import { Button } from '@/ui/Button';
+import { useInteractive } from '@/shell/InteractionContext';
 import type { DashboardState, LaneStatus } from './types';
 import { buildLaneHealth } from './spine/laneHealth';
 import { rollup, attentionPhrase, LANE_GLYPH, LANE_TONE, LANE_WORD } from './spine/laneStatus';
@@ -24,6 +25,14 @@ export function HealthHeader({ state, onJumpToLane }: {
   const allGreen = roll.state === 'green';
   const firstAttentionStatus =
     lanes.find((l) => l.id === roll.firstAttentionId)?.status ?? null;
+  // Kiosk (shell spec §5): a wall display has no one to click these — unlike
+  // `PageHeader`'s `actions` cluster (omitted outright) these chips carry the
+  // health signal itself, so they stay visible and render `aria-disabled`
+  // rather than disappearing. `Button` does not read InteractionContext
+  // itself (every caller decides what "kiosk" means for its own surface —
+  // `StatusStrip`'s tiles become plain divs instead), so the header gates the
+  // click here (#1555).
+  const interactive = useInteractive();
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label="Overall CI health">
@@ -39,7 +48,8 @@ export function HealthHeader({ state, onJumpToLane }: {
         aria-label={allGreen
           ? 'All lanes healthy'
           : `${attentionPhrase(roll.count)} — jump to the first`}
-        onClick={() => onJumpToLane(roll.firstAttentionId, firstAttentionStatus)}
+        aria-disabled={!interactive || undefined}
+        onClick={() => interactive && onJumpToLane(roll.firstAttentionId, firstAttentionStatus)}
       >
         <Badge dot tone={LANE_TONE[roll.state]} />
         {allGreen ? 'All systems green' : attentionPhrase(roll.count)}
@@ -56,17 +66,21 @@ export function HealthHeader({ state, onJumpToLane }: {
               data-testid={`health-lane-${l.id}`}
               aria-label={`${l.title}: ${LANE_WORD[l.status]} — ${l.summary}`}
               title={`${l.title} — ${l.summary}`}
-              onClick={() => onJumpToLane(l.id, l.status)}
+              aria-disabled={!interactive || undefined}
+              onClick={() => interactive && onJumpToLane(l.id, l.status)}
             >
               <Badge dot tone={LANE_TONE[l.status]} />
               {/* The glyph is what tells blind (◌) from idle (·) — they share
                   the neutral tone, so shape carries the difference. */}
               <span aria-hidden="true">{LANE_GLYPH[l.status]}</span>
-              <span>{l.title}</span>
+              {/* Below md the chip is dot + glyph only (the title lives in
+                  aria-label / title): seven titled chips wrapped the phone
+                  header to ~4 rows at 390 px, the plan asked for <= 2 (#1555). */}
+              <span className="hidden md:inline">{l.title}</span>
               {/* #189: surface the already-computed lane summary inline on
                   non-green chips (was hover-only); the full text stays in aria-label. */}
               {l.status !== 'green' && l.summary && (
-                <span className="max-w-48 truncate text-xs text-ink-muted" aria-hidden="true">{l.summary}</span>
+                <span className="hidden max-w-48 truncate text-xs text-ink-muted md:inline" aria-hidden="true">{l.summary}</span>
               )}
             </Button>
           </li>

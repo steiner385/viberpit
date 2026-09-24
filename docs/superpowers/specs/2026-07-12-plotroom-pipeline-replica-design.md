@@ -41,7 +41,7 @@ Port from plotroom `frontend/src` into `web/src/pipeline/`, verbatim-as-possible
 | `StatusStrip` (pipeline tiles) | `StatusStrip.tsx` | 5 bucket tiles (running/queued/deploy/failed/idle), failed ▲/▼ delta vs 5-min baseline, kiosk read-only mode, `bucketPr`/`isFailedPr`/`isActivePr`/`TILE_DEFINITIONS` |
 | `LegendPanel` | `LegendPanel.tsx` | Visual vocabulary modal (sourced from the same definitions as the components — no drift) |
 | `HealthHeader` + lane derivations | `HealthHeader.tsx`, lane health utils | Rollup pill + 7 lane chips routing to richest detail |
-| `PipelineSwitcher` + `useFocusedPipeline` | `shell/PipelineSwitcher.tsx` | Focused repo: localStorage + `?pipeline=` URL param, keyboard-operable |
+| `useFocusedPipeline` (+ the page's `Tabs` subnav, which replaced the `PipelineSwitcher` picker in finish-line row 5) | `shell/PipelineSwitcher.tsx` | Focused repo: localStorage + `?pipeline=` URL param (via `useSearchParams`), keyboard-operable |
 | `useDashboard` | `useDashboard.ts` | SSE consumption, 90 s staleness, notification frames, bell persistence |
 | `format` / `motion` utils, `types.ts` | `format.ts`, `motion.ts`, `types.ts` | ETA formatting (`~Xs/~Xm/~Xh`), reduced-motion scroll, the full plotroom state vocabulary (`DashboardState`, `PrView`, `StageResult`, `CheckView`, `RepoQueueView`, `MergeEtaSimulation`, `PrTimeline`, …) |
 | `styles.css` (scoped) | `styles.css` | The pipeline visual language |
@@ -121,7 +121,7 @@ plotroom oracle via new harness phases:
 - **Kiosk mode** — `?kiosk=true&cycle=N` scoped to the Pipeline tab: auto-cycles the
   focused repo (paused when tab hidden), read-only tiles (divs, not buttons), no row
   expansion.
-- **PipelineSwitcher** — focused repo sticky via localStorage + `?pipeline=` deep link;
+- **Focused repo** (`useFocusedPipeline` + the `Tabs` subnav; the `PipelineSwitcher` component no longer exists) — sticky via localStorage + `?pipeline=` deep link;
   URL wins over localStorage; adopts `repos[0]` when repos stream in late.
 - **Persistence** — repo-collapse set in localStorage.
 - **Config** — plotroom's knobs live in ccswitch's existing settings store (no parallel
@@ -143,7 +143,7 @@ plotroom oracle via new harness phases:
 
 - **Frontend:** port plotroom's tests — PipelineView (sections, collapse, cohort,
   merges-next, deploy lines), StatusStrip (bucketing, delta, kiosk, disabled tiles),
-  perf/memoization, PipelineSwitcher (stickiness, URL, keyboard), ordering/queueFront
+  perf/memoization, useFocusedPipeline (stickiness, URL, keyboard), ordering/queueFront
   units — plus new tests for the blended session extras. jsdom offset stub applies to
   any virtualized content.
 - **Backend:** unit tests per new module (dashboard_state, merge sim, timeline capture,
@@ -162,7 +162,7 @@ Each phase lands as one or more green PRs with auto-merge armed:
 1. **Core port** — SSE endpoint + `DashboardState` from existing data; frontend core
    (StatusStrip, PipelineView + ordering/cohort, PrRow, MetroTrack, QueueTrain,
    CheckGantt); ready+auto-merge action; session extras; old components deleted.
-2. **Chrome** — HealthHeader, LegendPanel, PipelineSwitcher, kiosk, collapse
+2. **Chrome** — HealthHeader, LegendPanel, repo Tabs subnav, kiosk, collapse
    persistence; notification bell UI backed by a minimal emitter covering events
    derivable from existing data (ci-failed, ready, overdue).
 3. **Data gap-fill** — mergeEtaSim, PrTimeline + Waterfall, deploy environments +
