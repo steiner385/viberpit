@@ -7,7 +7,9 @@ poller whose ETA compute yields a real value on success.
 from __future__ import annotations
 
 import asyncio
+import logging
 
+from ccswitch import gitrepos
 from server.github.api_budget import PriorityGate
 from server.github.pr_poller import PrStatusPoller
 from server.github.pr_population import PrPopulationPoller
@@ -63,6 +65,35 @@ def test_stale_while_revalidate_reserves_last_good(tmp_path):
     assert stale.eta_seconds == good_eta
     assert stale.eta_stale is True
     assert stale.eta_updated_at == NOW.isoformat()
+
+
+def test_eta_5xx_logs_info_not_a_warning(tmp_path, caplog):
+    """Same read as the other two gh boundaries in this loop (#1681): a GitHub
+    5xx on the ETA query is GitHub's outage, not ours, and #671's retry already
+    covers "try again" — filing it at WARNING too just re-mints an auto-error
+    issue on every tick GitHub is having a bad moment."""
+    store = _build_db(tmp_path / "ph.db")
+
+    def eta_qfn(prs):
+        raise gitrepos.GhError("gh: HTTP 502")
+
+    p = PrPopulationPoller(
+        query_fn=lambda repo: _pop_resp(42),
+        eta_query_fn=eta_qfn,
+        history_store=store,
+        now_fn=lambda: NOW,
+        sleep_fn=_noop_sleep,
+    )
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once([REPO]))
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], f"a 5xx must not warn: {[r.getMessage() for r in warned]}"
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("pr_population.eta_fetch_unavailable" in r.getMessage() for r in info)
+    # Still degrades the same way a non-5xx failure would (no cache yet).
+    pr = p.cached(REPO)[0]
+    assert pr.eta_seconds is None
 
 
 def test_no_cache_failure_leaves_defaults(tmp_path):
