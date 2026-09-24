@@ -5,6 +5,10 @@ orchestrator (Plan B) executes; plus per-target retry/re-arm/terminate helpers.
 v1 handles failing CI, out-of-date branch, and merge conflict (stuck/queued
 checks are deferred to v2).
 
+``ci_red_is_unproven`` (issue #2218) is the freshness half of ``failing_ci``: a
+rollup can read FAILURE because its checks were CANCELLED (a push superseded the
+run) or have not reported yet, and neither is evidence the branch is broken.
+
 v2 (issue #806) adds ``comment_command`` — an ``@claude`` review comment on an
 otherwise-healthy Initiative PR spawns a targeted fix session. It is lowest
 priority: a PR with failing CI or a merge conflict gets the real fix first, and
@@ -34,10 +38,59 @@ FAILURE_PRIORITY = ("blocked", "stuck_enqueue", "merge_conflict", "out_of_date",
                     "failing_ci", "comment_command")
 
 
+# Check-run conclusions that carry NO verdict about the branch: the check either
+# has not reported yet ("pending" — a null GraphQL conclusion, i.e. QUEUED or
+# IN_PROGRESS) or was killed before it could ("cancelled").
+_NO_VERDICT = frozenset({"pending", "cancelled"})
+
+
+def ci_red_is_unproven(info: PullRequestInfo) -> bool:
+    """True when *info*'s red rollup is not evidence that the branch is broken (#2218).
+
+    ``checks == "failing"`` comes from ``statusCheckRollup.state``, which goes
+    FAILURE as soon as ANY context is non-green — including a context that never
+    produced a verdict. Two shapes make that red a lie, and both are readable off
+    the ``checks_detail`` the poller already fetches:
+
+    * **Still in flight.** A check with conclusion ``pending`` has not reported.
+      Acting now dispatches a repair session against a partial result that
+      usually resolves itself a few minutes later (seen repeatedly on PRs whose
+      slowest ``server-tests`` shard was simply still running).
+    * **Superseded.** ``.github/workflows/ci.yml`` sets ``cancel-in-progress:
+      true`` for non-``master`` refs, so a second push inside a CI cycle cancels
+      the first run's jobs. GitHub's rollup counts CANCELLED as FAILURE, and the
+      ``if: always()`` ``lint-and-test`` aggregator converts those cancellations
+      into a hard ``failure`` on a *required* context — so the superseded sha
+      reads ``BLOCKED`` + failing even though nothing about the diff is wrong.
+      PR #2213 (2026-09-22) burned a dispatched session exactly this way: its
+      sha ``42b60b37`` carried five ``cancelled`` jobs and one aggregator
+      ``failure`` while the run on the real head went fully green.
+
+    Deliberately NOT fixed in the workflow: an aggregator reporting ``success``
+    for a required shard that never finished would let branch protection merge an
+    unverified sha. The guard belongs here.
+
+    Known trade-off: a repo whose matrix uses ``fail-fast: true`` cancels the
+    surviving shards when one genuinely fails, which reads the same way and
+    defers a real ``failing_ci``. This repo's matrix is ``fail-fast: false``
+    (``.github/workflows/ci.yml``), and deferring a real red costs a poll cycle
+    while acting on a fake one costs a session and risks a junk commit pushed to
+    a healthy branch — so the guard errs toward deferring.
+
+    Fails CLOSED: with no per-check data at all (a GitHub App without
+    ``checks:read``, or a daemon→edge payload that carries none) this returns
+    False and ``classify`` keeps its previous behaviour.
+    """
+    return any(c.conclusion in _NO_VERDICT for c in info.checks_detail)
+
+
 def classify(info: PullRequestInfo) -> str | None:
     """Return the v1 failure mode for *info*, or None (terminal/draft/healthy).
     Pure + total. Checks are evaluated in FAILURE_PRIORITY order (blocked →
-    merge_conflict → out_of_date → failing_ci) — keep in sync with that constant."""
+    merge_conflict → out_of_date → failing_ci) — keep in sync with that constant.
+
+    ``failing_ci`` additionally requires that some check-run actually EARNED the
+    red — see ``ci_red_is_unproven`` (#2218)."""
     if info.state in ("merged", "closed"):
         return None
     if info.merge_state_status == "DRAFT" or info.is_draft:
@@ -52,7 +105,11 @@ def classify(info: PullRequestInfo) -> str | None:
         #    often unsticks it. This is NOT a human review gate.
         # 3. Everything else (review/approval required) → blocked: notify only.
         if info.checks == "failing":
-            return "failing_ci"
+            # A red no check-run earned is not a repair job — and must not drop
+            # through to the stuck_enqueue arm below either, or an armed PR whose
+            # run was merely superseded gets a mechanical update-branch pushed at
+            # it (PR #2213 was armed and not in a queue). Wait for the next poll.
+            return None if ci_red_is_unproven(info) else "failing_ci"
         if info.auto_merge_enabled and not info.in_merge_queue:
             return "stuck_enqueue"
         return "blocked"  # review/approval gate — notify only (non-goal to approve)
@@ -68,7 +125,7 @@ def classify(info: PullRequestInfo) -> str | None:
     # red on a mergeable branch → not actionable. (merge_state_status is the
     # required-ness discriminator the poller always has.)
     if info.checks == "failing" and info.merge_state_status != "UNSTABLE":
-        return "failing_ci"
+        return None if ci_red_is_unproven(info) else "failing_ci"
     return None
 
 

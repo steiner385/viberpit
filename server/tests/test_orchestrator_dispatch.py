@@ -102,6 +102,23 @@ def test_dispatch_proposal_non_failing_pr_falls_through_to_issue():
     assert orch._dispatch_proposal(rec) == "Work on issue #5: x"
 
 
+def test_dispatch_proposal_ignores_a_red_no_check_earned():
+    """#2218: a rollup red only because `cancel-in-progress` cancelled the run is
+    not a broken PR — proposing "fix the failing CI" would send the session after
+    a branch that was never broken."""
+    from server.github.pr_status import CheckDetail, PullRequestInfo
+    import time
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    superseded = (CheckDetail(name="server-tests (1)", conclusion="cancelled"),
+                  CheckDetail(name="lint-and-test", conclusion="failure"))
+    orch.pr_for = lambda repo, branch: PullRequestInfo(
+        218, "u", "open", "failing", "fix the thing", checks_detail=superseded)
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+    orch._review_proposals[("o/r", 218)] = (time.monotonic(), None)
+    assert orch._dispatch_proposal(rec) == "Work on issue #5: x"
+
+
 # ---------------------------------------------------------------------------
 # Test: After refreshing, _dispatch_proposal returns the proposal string
 # ---------------------------------------------------------------------------

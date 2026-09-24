@@ -1,8 +1,8 @@
 """Pure PR Doctor engine: classify + plan_recovery + state machine."""
 from __future__ import annotations
 
-from server.github.pr_status import PullRequestInfo
-from server.automations.pr_doctor_engine import classify
+from server.github.pr_status import CheckDetail, PullRequestInfo
+from server.automations.pr_doctor_engine import ci_red_is_unproven, classify
 
 
 def _pr(**kw) -> PullRequestInfo:
@@ -76,6 +76,96 @@ def test_classify_unstable_nonrequired_is_not_failing_ci():
 
 def test_classify_healthy_is_none():
     assert classify(_pr(checks="passing", merge_state_status="CLEAN")) is None
+
+
+# ---------------------------------------------------------------------------
+# #2218: a red that no check-run actually earned is not failing_ci
+# ---------------------------------------------------------------------------
+
+def _detail(*pairs) -> tuple[CheckDetail, ...]:
+    return tuple(CheckDetail(name=n, conclusion=c) for n, c in pairs)
+
+
+# The literal rollup of PR #2213's superseded sha 42b60b37 at 18:11:43Z, the
+# minute PR Doctor dispatched a failing_ci recovery session against it:
+# `cancel-in-progress` killed every substantive job and the `if: always()`
+# aggregator turned that into one hard `failure` on a required context.
+_SUPERSEDED_SHA_CHECKS = _detail(
+    ("amendment", "success"), ("changes", "success"),
+    ("e2e", "skipped"), ("frontend", "success"), ("lighthouse", "skipped"),
+    ("lint-and-test-core", "cancelled"),
+    ("server-tests (1)", "cancelled"), ("server-tests (2)", "cancelled"),
+    ("server-tests (3)", "cancelled"), ("server-tests (4)", "cancelled"),
+    ("lint-and-test", "failure"),
+)
+
+
+def test_classify_superseded_sha_is_not_failing_ci():
+    # BLOCKED (the required `lint-and-test` is red) + checks=failing is exactly
+    # what used to classify failing_ci and burn a dispatched session.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=_SUPERSEDED_SHA_CHECKS)) is None
+    # Same shape on a branch GitHub still calls CLEAN (the rollup counts
+    # CANCELLED as FAILURE on its own).
+    assert classify(_pr(merge_state_status="CLEAN", checks="failing",
+                        checks_detail=_SUPERSEDED_SHA_CHECKS)) is None
+
+
+def test_classify_superseded_sha_does_not_fall_through_to_stuck_enqueue():
+    # PR #2213 had auto-merge armed and no merge queue, so a plain `return None`
+    # for the failing_ci arm is not enough: dropping through the BLOCKED branch
+    # would classify stuck_enqueue and mechanically push an update-branch onto a
+    # PR whose CI was never broken.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        auto_merge_enabled=True, in_merge_queue=False,
+                        checks_detail=_SUPERSEDED_SHA_CHECKS)) is None
+
+
+def test_classify_defers_while_ci_is_still_in_flight():
+    # A null CheckRun conclusion parses as "pending" — the run has not reported.
+    still_running = _detail(("lint-and-test-core", "failure"),
+                            ("server-tests (4)", "pending"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=still_running)) is None
+
+
+def test_classify_completed_red_is_still_failing_ci():
+    # The guard must not blunt the normal case: every check reported, one of
+    # them genuinely failed.
+    real_red = _detail(("changes", "success"), ("frontend", "success"),
+                       ("lint-and-test-core", "failure"),
+                       ("server-tests (1)", "success"), ("lint-and-test", "failure"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=real_red)) == "failing_ci"
+    assert classify(_pr(merge_state_status="CLEAN", checks="failing",
+                        checks_detail=real_red)) == "failing_ci"
+
+
+def test_classify_without_check_detail_keeps_old_behaviour():
+    # No per-check data (the GitHub App lacks checks:read, or a daemon→edge
+    # payload predating this field) → fail CLOSED to the existing behaviour
+    # rather than silently switching PR Doctor off.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=())) == "failing_ci"
+
+
+def test_unproven_guard_only_gates_failing_ci():
+    # A conflict or a behind branch is a property of the BRANCH, not of any
+    # check-run verdict, so a cancelled/pending rollup must not defer it.
+    assert classify(_pr(mergeable="CONFLICTING", checks="failing",
+                        checks_detail=_SUPERSEDED_SHA_CHECKS)) == "merge_conflict"
+    assert classify(_pr(merge_state_status="BEHIND", checks="failing",
+                        checks_detail=_SUPERSEDED_SHA_CHECKS)) == "out_of_date"
+
+
+def test_ci_red_is_unproven_predicate():
+    assert ci_red_is_unproven(_pr(checks="failing",
+                                  checks_detail=_SUPERSEDED_SHA_CHECKS)) is True
+    assert ci_red_is_unproven(_pr(checks="failing",
+                                  checks_detail=_detail(("a", "pending")))) is True
+    assert ci_red_is_unproven(_pr(checks="failing",
+                                  checks_detail=_detail(("a", "failure")))) is False
+    assert ci_red_is_unproven(_pr(checks="failing", checks_detail=())) is False
 
 
 # ---------------------------------------------------------------------------
