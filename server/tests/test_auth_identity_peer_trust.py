@@ -237,3 +237,46 @@ def test_self_tailscale_ips_result_is_cached_across_calls(monkeypatch):
     second = identity._self_tailscale_ips()
     assert first == second == frozenset({ipaddress.ip_address("100.102.11.121")})
     assert len(calls) == 1, "second call within the TTL must not re-spawn the subprocess"
+
+
+# --- untrusted-header WARNING throttling (#1483): one misconfigured/untrusted peer
+# re-enters this branch on every request, turning a standing condition into tens of
+# thousands of identical WARNINGs that flood the auto-error sink. Repeats within the
+# window must demote to DEBUG — see server/obs/logdedupe.py. -----------------------
+
+
+def test_repeated_untrusted_header_from_same_peer_is_throttled(caplog):
+    from server.auth import identity
+
+    identity._UNTRUSTED_IDENTITY_HEADER_LOG.clear()
+
+    with caplog.at_level(logging.DEBUG, logger="server.auth.identity"):
+        for _ in range(3):
+            assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) is None
+
+    records = [
+        r for r in caplog.records
+        if "ignoring Tailscale identity header" in r.getMessage()
+    ]
+    assert [r.levelno for r in records] == [
+        logging.WARNING, logging.DEBUG, logging.DEBUG,
+    ]
+
+
+def test_untrusted_header_from_a_different_peer_is_not_suppressed_by_the_first(caplog):
+    """Throttling is per-peer: a newly-untrusted peer is news even while another
+    peer's window is open, so its first occurrence must still warn."""
+    from server.auth import identity
+
+    identity._UNTRUSTED_IDENTITY_HEADER_LOG.clear()
+    other_peer = ("203.0.113.99", 51000)
+
+    with caplog.at_level(logging.DEBUG, logger="server.auth.identity"):
+        assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) is None
+        assert verify_identity(_http(other_peer, Tailscale_User_Login=IDENTITY)) is None
+
+    records = [
+        r for r in caplog.records
+        if "ignoring Tailscale identity header" in r.getMessage()
+    ]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
