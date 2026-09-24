@@ -197,7 +197,7 @@ class TestUsageFetchBackoff(unittest.TestCase):
                  mock.patch.object(oauth, "has_usage_scope", return_value=True), \
                  mock.patch.object(oauth, "fetch_usage",
                                    side_effect=oauth.UsageError("usage endpoint returned 429")), \
-                 self.assertLogs("ccswitch.accounts", level="INFO") as cm:
+                 self.assertLogs(accounts.__name__, level="INFO") as cm:
                 self.assertIsNone(accounts.usage_for("alpha"))
             levels = [r.levelname for r in cm.records
                       if r.getMessage().startswith("usage_for(alpha): setup-token usage fetch failed")]
