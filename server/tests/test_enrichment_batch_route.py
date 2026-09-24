@@ -119,3 +119,31 @@ async def test_a_repeated_batch_failure_is_throttled_not_flooded(caplog):
 
     records = [r for r in caplog.records if r.getMessage() == "list_sessions.enrich_batch_failed"]
     assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+
+
+@pytest.mark.asyncio
+async def test_a_daemon_connectivity_blip_is_not_a_warning(caplog):
+    """A refused/timed-out connect to the daemon is transient and already surfaces as a
+    503 on the routes that need the daemon; the enrichment fields just degrade to empty.
+    Filing it as a WARNING made the error sink open #1668 (155+ occurrences of one
+    ConnectError). It must log below WARNING, every time — not just after the throttle
+    window — while a non-connectivity failure still reports."""
+    from server.ipc.client import DaemonTimeout, DaemonUnavailable
+
+    _ENRICH_BATCH_FAIL_LOG.clear()
+
+    class _Blip(_BatchOrch):
+        async def prs_for_many(self, session_ids, *, timeout=None):
+            raise DaemonUnavailable("All connection attempts failed")
+
+        async def latest_suggestions_many(self, session_ids, *, timeout=None):
+            raise DaemonTimeout("latest_suggestions_many timed out")
+
+    with caplog.at_level(logging.DEBUG, logger="server.api.sessions"):
+        _repos, suggs, prs, _summaries = await _enrich_batch(
+            _Blip(), [_rec("a")], viewing=False, timeout=3.0)
+
+    assert list(suggs) == [[]] and list(prs) == [[]]
+    records = [r for r in caplog.records if r.getMessage() == "list_sessions.enrich_batch_failed"]
+    assert len(records) == 2
+    assert all(r.levelno < logging.WARNING for r in records)
