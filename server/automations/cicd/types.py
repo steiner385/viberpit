@@ -23,6 +23,10 @@ class JobObs:
     conclusion: str  # success | failure | cancelled | skipped | ...
     duration_s: float
     created_ts: float
+    # The RUN's trigger event (ci_run.event: pull_request | merge_group | schedule |
+    # workflow_run | push | ...). "" when the run row is unknown. Only PR-class
+    # events are evidence that a check gates pull requests — see stats.PR_EVENTS.
+    event: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class CheckStats:
     """Rolling stability stats for one status-check context."""
     check: str
     runs_total: int = 0
+    pr_runs_total: int = 0            # of runs_total, jobs whose run was a PR-class event
     window_days: float = 0.0
     flake_pct: float = 0.0            # % of shas with BOTH success and failure
     recent_flake_pct: float = 0.0     # same, restricted to demote_window_days
@@ -94,6 +99,7 @@ class CheckAgg:
     first_flaky: int
     second_total: int        # shas whose earliest job is at/after the median ts
     second_flaky: int
+    pr_runs_total: int = 0   # of runs_total, jobs whose ci_run.event is PR-class
 
 
 @dataclass(frozen=True)

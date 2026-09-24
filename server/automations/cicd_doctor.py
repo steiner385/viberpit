@@ -257,8 +257,8 @@ def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
     """
     from sqlalchemy import and_, case, func, select
 
-    from server.db.models import CiJob
-    from .cicd.stats import FAIL_OUTCOMES, PASS_OUTCOMES
+    from server.db.models import CiJob, CiRun
+    from .cicd.stats import FAIL_OUTCOMES, PASS_OUTCOMES, PR_EVENTS
 
     recent_cut = now_ts - demote_window_days * 86400.0
     # Coalesce exactly as JobObs does (check=r.name or "", created_ts=r.created_ts
@@ -267,6 +267,10 @@ def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
     conclusion = func.coalesce(CiJob.conclusion, "")
     is_pass = case((conclusion.in_(sorted(PASS_OUTCOMES)), 1), else_=0)
     is_fail = case((conclusion.in_(sorted(FAIL_OUTCOMES)), 1), else_=0)
+    # The trigger event lives on the run. LEFT join: a job whose run row is gone
+    # (retention races, legacy rows) still counts as a run, just not a PR run —
+    # exactly JobObs's ``event=""`` default.
+    is_pr = case((func.coalesce(CiRun.event, "").in_(sorted(PR_EVENTS)), 1), else_=0)
     jobs = (
         select(
             func.coalesce(CiJob.name, "").label("name"),
@@ -276,7 +280,10 @@ def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
             func.coalesce(CiJob.created_ts, 0.0).label("created_ts"),
             is_pass.label("is_pass"),
             is_fail.label("is_fail"),
+            is_pr.label("is_pr"),
         )
+        .select_from(CiJob)
+        .outerjoin(CiRun, CiRun.id == CiJob.run_id)
         .where(CiJob.repo == repo, CiJob.created_ts >= since_ts,
                conclusion.notin_(("cancelled", "skipped")))
         .cte("jobs")
@@ -341,6 +348,7 @@ def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
             func.count().label("runs_total"),
             func.min(j.created_ts).label("min_ts"),
             func.max(j.created_ts).label("max_ts"),
+            func.sum(j.is_pr).label("pr_runs_total"),
         )
         .group_by(j.name)
         .cte("base")
@@ -366,12 +374,14 @@ def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
             func.sum(case((and_(before_mid, both), 1), else_=0)).label("first_flaky"),
             func.sum(case((~before_mid, 1), else_=0)).label("second_total"),
             func.sum(case((and_(~before_mid, both), 1), else_=0)).label("second_flaky"),
+            base.c.pr_runs_total.label("pr_runs_total"),
         )
         .select_from(base)
         .join(per_sha, ps.name == base.c.name)
         .join(mid, mid.c.name == base.c.name)
         .join(p95, p95.c.name == base.c.name)
-        .group_by(base.c.name, base.c.runs_total, base.c.min_ts, base.c.max_ts, p95.c.p95)
+        .group_by(base.c.name, base.c.runs_total, base.c.min_ts, base.c.max_ts, p95.c.p95,
+                  base.c.pr_runs_total)
     )
 
 
@@ -460,7 +470,8 @@ class CicdDoctorLoop:
         if mode == "off":
             return
         open_total = candidates = errors = 0
-        for repo in await self._list_repos(config):
+        repos = await self._list_repos(config)
+        for repo in repos:
             try:
                 await self._ingest(repo)
                 fresh = await self._analyze(repo, config)
@@ -470,6 +481,8 @@ class CicdDoctorLoop:
             except Exception:  # one repo must never stall the tick
                 errors += 1
                 log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
+        if repos:  # an empty list is a transient failure, not "every repo is gone"
+            await self._resolve_orphans(repos)
         await self._prune(config)
         publish_observation(self._ctx, "cicd_doctor_counts", {"open": open_total, "candidates": candidates, "errors": errors}, degraded=bool(errors))
 
@@ -544,6 +557,7 @@ class CicdDoctorLoop:
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
                                     missing_junit_finding)
         from .cicd.gates import check_verdict
+        from .cicd.needs import is_folded, needed_job_names
         from .cicd.types import CheckAgg, GateThresholds
         from .cicd.waste import workflow_waste_findings
 
@@ -596,6 +610,9 @@ class CicdDoctorLoop:
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
+        # Fetched before the fold: the verdicts need the `needs:` graph (which
+        # checks are folded into an aggregator), the waste pass needs the texts.
+        workflows = await self._fetch_workflows(repo, default_branch)
 
         # The remaining pure-Python work runs in ONE worker thread, not on the loop.
         # Both heavy folds are now SQL aggregates (check_stats -> check_stats_stmt,
@@ -626,14 +643,17 @@ class CicdDoctorLoop:
                          second_total=int(r.second_total or 0),
                          second_flaky=int(r.second_flaky or 0))
                 for r in check_rows)
+            # YAML-parsing ~100 workflow files belongs off the loop too.
+            needed = needed_job_names(workflows)
             verdicts = {c: v for c, s in stats.items()
-                        if (v := check_verdict(s, is_required=c in required, th=th))}
+                        if (v := check_verdict(s, is_required=c in required, th=th,
+                                               folded=is_folded(c, needed)))}
             out = flaky_test_findings(repo, flake_pcts, th=th, messages=msg_by_test)
             out += check_transition_findings(repo, verdicts)
             return out
 
         fresh = await asyncio.to_thread(_fold)
-        for path, text in (await self._fetch_workflows(repo, default_branch)).items():
+        for path, text in workflows.items():
             fresh += workflow_waste_findings(repo, path, text)
         if run_count and not any_test_row:
             fresh.append(missing_junit_finding(repo))
@@ -869,6 +889,27 @@ class CicdDoctorLoop:
                     "(%d rows folded), %d stale rows still pending — will "
                     "continue next tick", budget_s, batches, folded, remaining)
                 return
+
+    async def _resolve_orphans(self, repos: list[str]) -> None:
+        """Resolve open findings for repos the doctor no longer watches.
+
+        ``_reconcile`` runs per watched repo and ``_prune`` drops only resolved
+        rows, so a finding for a repo removed from ``enabled_repos`` — or one
+        that never was real (23 ``o/r`` fixture rows reached prod while the suite
+        ran against live Postgres, 2026-08-25..31) — sat open forever and counted
+        on the card. No GitHub side effect: a linked issue belongs to a repo we
+        are no longer entitled to touch."""
+        from sqlalchemy import update as sa_update
+        from server.db import db_session
+        from server.db.models import CiFinding, _utcnow
+
+        async with db_session() as db:
+            res = await db.execute(sa_update(CiFinding).where(
+                CiFinding.status == "open", CiFinding.repo.notin_(repos))
+                .values(status="resolved", resolved_at=_utcnow()))
+        n = res.rowcount or 0  # type: ignore[attr-defined]  # CursorResult at runtime
+        if n:
+            log.info("cicd_doctor.orphans_resolved count=%d", n)
 
     async def _prune(self, config: dict) -> None:
         """Bounded tables: drop history rows older than retention_days, and prune

@@ -11664,12 +11664,16 @@ class SessionOrchestrator:
 
     async def cicd_actionable_findings(self) -> list[dict]:
         """Open findings that still need a GitHub issue filed — the only
-        finding-level action the card exposes (#465)."""
+        finding-level action the card exposes (#465). Kinds the loop itself
+        never files (a graduation candidate has nothing for a human to fix) are
+        not offered either — the flag lives on the Finding, not the row."""
         from sqlalchemy import select
+        from server.automations.cicd.findings import NON_ACTIONABLE_KINDS
         from server.db.models import CiFinding
         async with db_session() as db:
             rows = (await db.execute(select(CiFinding).where(
-                CiFinding.status == "open", CiFinding.issue_number.is_(None))
+                CiFinding.status == "open", CiFinding.issue_number.is_(None),
+                CiFinding.kind.notin_(sorted(NON_ACTIONABLE_KINDS)))
                 .order_by(CiFinding.last_seen_at.desc()))).scalars().all()
             return [{"id": r.id, "repo": r.repo, "title": r.title, "kind": r.kind}
                     for r in rows]

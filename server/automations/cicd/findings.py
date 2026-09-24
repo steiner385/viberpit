@@ -61,6 +61,12 @@ def flaky_test_findings(repo: str, flake_by_test: dict[str, tuple[float, int]],
 # there is nothing for a human to "fix", so it must not spawn a ci-doctor issue.
 # Demote/retire are actionable (a required check went flaky / an advisory is noise).
 _NON_ACTIONABLE_VERDICTS = frozenset({"graduate"})
+# The finding KINDS that carry actionable=False. ``Finding.actionable`` is not
+# persisted on the ci_finding row, so the card's "File issue" query
+# (``orchestrator.cicd_actionable_findings``) excludes by kind — derived here,
+# from the same table, so the two can't disagree.
+NON_ACTIONABLE_KINDS: frozenset[str] = frozenset(
+    f"{v}_check" for v in _NON_ACTIONABLE_VERDICTS)
 
 
 def check_transition_findings(repo: str, verdicts: dict[str, str]) -> list[Finding]:

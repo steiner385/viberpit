@@ -71,8 +71,10 @@ class FakeGh:
                 if "-X" in a and "PATCH" in a]
 
 
-def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, gh=None):
+def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, gh=None,
+          repos=("o/r",)):
     gh = gh if gh is not None else FakeGh()
+    repos = list(repos)
     async def read_config():
         return mode, {"enabled_repos": [], "file_issues": True, "min_window_days": 21,
                       "min_runs": 30, "max_flake_pct": 2, "max_p95_minutes": 10,
@@ -83,7 +85,7 @@ def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, gh=None):
     return CicdDoctorLoop(
         ctx,
         read_config=read_config,
-        list_repos=lambda config: _async(["o/r"]),
+        list_repos=lambda config: _async(repos),
         fetch_runs=lambda repo, since: _async([r for r in runs
                                                if not since or r["created_ts"] > since]),
         fetch_jobs=lambda repo, rid: _async([{"id": rid * 10, "name": "e2e",
@@ -419,6 +421,60 @@ def test_prune_drops_old_resolved_findings_keeps_open(tmp_path):
             fps = {r.fingerprint for r in (await db.execute(
                 select(CiFinding))).scalars().all()}
         assert fps == {"b", "c"}
+    asyncio.run(run())
+
+
+def test_orphan_repo_findings_resolve_on_tick(tmp_path):
+    """A finding for a repo the doctor no longer watches (removed from
+    enabled_repos — or never real: 23 `o/r` fixture rows leaked into prod while
+    the suite ran against live Postgres, 2026-08-25..31) is reconciled by no
+    per-repo pass and pruned by nothing, so it sits open forever and counts on
+    the card. The tick resolves it; the linked issue, if any, is left alone."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        gh = FakeGh()
+        loop = _loop(ctx, runs=[], junit_by_run={}, gh=gh, repos=["o/r"])
+        async with db_session() as db:
+            db.add(CiFinding(repo="gone/repo", kind="flaky_test", fingerprint="a",
+                             status="open", title="flaky test", issue_number=5))
+            db.add(CiFinding(repo="o/r", kind="flaky_test", fingerprint="b",
+                             status="open", title="flaky test"))
+        # The sweep alone: the watched repo's row is not its business.
+        await loop._resolve_orphans(["o/r"])
+        async with db_session() as db:
+            rows = {r.fingerprint: r for r in (await db.execute(
+                select(CiFinding))).scalars().all()}
+        assert rows["a"].status == "resolved" and rows["a"].resolved_at is not None
+        assert rows["b"].status == "open"
+        # And it runs as part of a tick (a tick with no runs also resolves `b`
+        # through the ordinary per-repo reconcile — that path is covered above).
+        async with db_session() as db:
+            db.add(CiFinding(repo="gone/repo", kind="flaky_test", fingerprint="c",
+                             status="open", title="flaky test"))
+        await loop.tick()
+        async with db_session() as db:
+            c = (await db.execute(select(CiFinding).where(
+                CiFinding.fingerprint == "c"))).scalar_one()
+        assert c.status == "resolved"
+        assert gh.closed == []                 # no GitHub side effect for an orphan
+    asyncio.run(run())
+
+
+def test_empty_repo_list_resolves_nothing(tmp_path):
+    """An empty repo list (transient config/list failure) must not be read as
+    'every repo is gone' and resolve the whole table."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=[], junit_by_run={}, repos=[])
+        async with db_session() as db:
+            db.add(CiFinding(repo="o/r", kind="flaky_test", fingerprint="a",
+                             status="open", title="flaky test"))
+        await loop.tick()
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding))).scalar_one()
+        assert row.status == "open"
     asyncio.run(run())
 
 
