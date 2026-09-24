@@ -474,6 +474,13 @@ PAUSE_REASONS: frozenset[str] = frozenset({
     _REASSIGN_FAILED_PAUSE_REASON,
 })
 
+# Pause reasons that are an expected, self-healing capacity wait rather than an anomaly:
+# every account is at its limit and time passing clears it (the stuck-session sweep
+# retries). `_pause_session` journals these at INFO — the error sink files every
+# WARNING as an issue, and a human has nothing to investigate (#2330). The state write
+# and the `paused` event, which the dashboard reads, are unaffected.
+_EXPECTED_PAUSE_REASONS: frozenset[str] = frozenset({"all_accounts_busy"})
+
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
 # debounce a fleet of healthy accounts would re-run the sweep every few seconds.
@@ -18796,8 +18803,11 @@ class SessionOrchestrator:
         # 161 records in 2.8 h against a window that caps one key at four a day
         # (#1780). `earliest_reset` stays out of the key for the same reason a
         # shifting reset time is not news (#1702).
+        # An expected capacity wait is INFO so the sink does not file it (#2330); every
+        # other reason is an anomaly a human should see, so it stays WARNING.
+        level = logging.INFO if reason in _EXPECTED_PAUSE_REASONS else logging.WARNING
         log_event_throttled(
-            log, _PAUSE_LOG, f"{record.id}:{reason}", logging.WARNING,
+            log, _PAUSE_LOG, f"{record.id}:{reason}", level,
             "session.paused", session_id=record.id, reason=reason)
 
     def _mark_needs_reauth(self, account: str) -> None:
