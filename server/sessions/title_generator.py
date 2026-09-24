@@ -141,11 +141,11 @@ async def generate_title(
         # partial assistant text may still be a useful title.
         if outcome.api_error_status is not None:
             log.warning("generate_title HTTP %s config_dir=%s: %s",
-                        outcome.api_error_status, config_dir, outcome.error)
+                        outcome.api_error_status, config_dir, outcome.describe())
             return None
         salvaged = sanitize_title(_extract_text(outcome.messages))
         if salvaged is None:
-            log.warning("generate_title failed for config_dir=%s: %s", config_dir, outcome.error)
+            log.warning("generate_title failed for config_dir=%s: %s", config_dir, outcome.describe())
         return salvaged
 
     return sanitize_title(_extract_text(outcome.messages))

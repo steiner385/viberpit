@@ -152,7 +152,7 @@ async def assess_model(
         if outcome.failure_kind == "timeout":
             log.warning("assess_model: assessment exceeded %.0fs — falling back to default", timeout)
         else:
-            log.warning("assess_model: model call failed: %s", outcome.error)
+            log.warning("assess_model: model call failed: %s", outcome.describe())
         return None
     text_parts: list[str] = []
     for msg in outcome.messages:

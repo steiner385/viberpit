@@ -13787,9 +13787,16 @@ class SessionOrchestrator:
         if rec.engine is AgentEngine.CODEX:
             return await self.infer_goal_codex(rec.account, rec.name, tail)
         if rec.engine is AgentEngine.CLAUDE_CODE:
+            # The readiness-checked, engine-safe helper identity — never the session's
+            # own account composed unconditionally: a disabled, de-authed or
+            # org-denied one fails every call as the opaque "error result: success"
+            # (#1841, sibling of #1817). None = no live Anthropic account; keep the
+            # prior goal rather than fire a call certain to fail.
+            cfg_dir = self._autopilot_helper_config_dir(rec.account)
+            if cfg_dir is None:
+                return None
             from server.sessions.goal_inference import infer_goal
-            return await infer_goal(rec.name, tail,
-                                    config_dir=str(compose(rec.account)), cwd=rec.cwd)
+            return await infer_goal(rec.name, tail, config_dir=cfg_dir, cwd=rec.cwd)
         return None
 
     async def infer_goal_codex(

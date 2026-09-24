@@ -143,7 +143,7 @@ async def completion_awaits_user(
     if outcome.skipped:
         return True  # lane cooled-down — degrade, no call made
     if outcome.error is not None:
-        log.warning("open_question.classify failed: %s", outcome.error)
+        log.warning("open_question.classify failed: %s", outcome.describe())
         return True
     parts: list[str] = []
     for msg in outcome.messages:
