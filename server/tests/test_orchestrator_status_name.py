@@ -135,10 +135,14 @@ def _parked_asking_transcript(tmp_path):
     return p
 
 
-def test_persist_status_done_parked_but_asking_user_is_answer_needed(
+def test_persist_status_done_parked_but_asking_user_is_handed_back(
         tmp_path, monkeypatch):
     """A parked turn whose final message hands a prose question/decision back to the
-    user must read "Answer needed" (needs-you), not be masked as "Waiting…"."""
+    user must land in the needs-you tier, not be masked as "Waiting…".
+
+    Since #2321 that is `handed_back`, not `waiting_question`: the ask lives in the
+    closing prose and there is no card to tap, which is exactly the distinction the
+    two statuses draw."""
     _stub_classifier(monkeypatch, True)
 
     async def run():
@@ -146,7 +150,7 @@ def test_persist_status_done_parked_but_asking_user_is_answer_needed(
         orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
         await orch._persist_status("s1", "done")
         return orch.record("s1").status
-    assert asyncio.run(run()) == "waiting_question"
+    assert asyncio.run(run()) == "handed_back"
 
 
 def _parked_asking_with_marker_transcript(tmp_path):
@@ -186,7 +190,7 @@ def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(
             _parked_asking_with_marker_transcript(tmp_path))
         await orch._persist_status("s1", "done")
         return orch.record("s1").status
-    assert asyncio.run(run()) == "waiting_question"
+    assert asyncio.run(run()) == "handed_back"
     # The strip happens BEFORE the judge, so the marker never reaches it and the
     # closing "?" is the last character it sees.
     assert seen and f"{brand.SLUG}:model=" not in seen[0]
@@ -346,12 +350,12 @@ def test_persist_status_waiting_external_broadcasts_overlaid_status(tmp_path):
 def test_persist_status_returns_overlaid_status(tmp_path):
     """_persist_status returns the FINAL effective status so the driver's emitter can
     broadcast the same value to the live in-session stream — the fix for the session
-    list saying "Answer needed" while the open session says "Your turn"."""
+    list saying "Handed back" while the open session says "Your turn"."""
     async def run():
         orch = await _build_orch(tmp_path, name_is_auto=False)
         orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
         return await orch._persist_status("s1", "done")
-    assert asyncio.run(run()) == "waiting_question"
+    assert asyncio.run(run()) == "handed_back"
 
 
 def test_persist_status_returns_raw_status_when_no_overlay(tmp_path):

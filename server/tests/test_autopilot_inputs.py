@@ -92,22 +92,22 @@ def test_tool_entries_are_cut_with_the_same_marker():
 # --------------------------------------------------------------------------- #
 
 def test_get_context_carries_the_hand_back_reason_from_the_live_driver():
-    orch = _bare_orch([], status="waiting_question")
+    orch = _bare_orch([], status="handed_back")
     orch._drivers = {"s1": SimpleNamespace(
         last_hand_back_reason="Need your decision on the 4GB memory limit")}
     ctx = asyncio.run(orch._autopilot_get_context("s1"))
     assert ctx is not None
-    assert ctx.stuck["kind"] == "waiting_question"
+    assert ctx.stuck["kind"] == "handed_back"
     assert ctx.stuck["hand_back_reason"] == "Need your decision on the 4GB memory limit"
 
 
 def test_get_context_hand_back_without_driver_has_empty_reason():
     """After a restart there is no driver; the status still marks the hand-back."""
-    orch = _bare_orch([], status="waiting_question")
+    orch = _bare_orch([], status="handed_back")
     orch._drivers = {}
     ctx = asyncio.run(orch._autopilot_get_context("s1"))
     assert ctx is not None
-    assert ctx.stuck == {"kind": "waiting_question", "hand_back_reason": ""}
+    assert ctx.stuck == {"kind": "handed_back", "hand_back_reason": ""}
 
 
 def test_get_context_other_statuses_carry_no_hand_back_key():

@@ -32,7 +32,8 @@ STATUS_OPTIONS: tuple[str, ...] = (
 
 ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
 # A person's turn: a question, a permission prompt, a plan awaiting review.
-HUMAN_WAIT_SESSION_STATUSES = frozenset({"waiting_question", "waiting_input", "ready_review"})
+HUMAN_WAIT_SESSION_STATUSES = frozenset(
+    {"waiting_question", "waiting_input", "ready_review", "handed_back"})
 # A failed turn (spec 2026-09-18 §7): a bounce the runner's sweep handles, never a
 # parked card — it left the human-wait set so the ladder, not a person, sees it.
 FAILED_TURN_SESSION_STATUSES = frozenset({"needs_attention"})

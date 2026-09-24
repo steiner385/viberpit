@@ -232,7 +232,7 @@ TURN_RESTART_DEFER_S: float = 60.0
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
 # Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
 PUSH_STATUSES: frozenset[str] = frozenset(
-    {"waiting_input", "waiting_question", "ready_review", "needs_attention"}
+    {"waiting_input", "waiting_question", "ready_review", "needs_attention", "handed_back"}
 )
 
 # Statuses that count as "this session finished" for a kind="session" assistant watch
@@ -5250,7 +5250,10 @@ class SessionOrchestrator:
                 # missing while _completion_open_question had it all along.
                 prose = strip_markers(self._last_assistant_prose(session_id))
                 awaits = await completion_awaits_user(prose)
-                status = "waiting_question" if awaits else "waiting_external"
+                # handed_back, not waiting_question (#2321): this ask lives in the
+                # closing prose and has no card to tap, which is the whole distinction
+                # the two statuses now draw.
+                status = "handed_back" if awaits else "waiting_external"
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
         # (in_progress) or incidental row write is the bug that pinned every card to
@@ -5274,11 +5277,13 @@ class SessionOrchestrator:
         # never made. Written with the resolution below, never on its own.
         resolution_note = getattr(driver, "last_pr_resolution_note", None)
         # The session's own hand_back reason (tool or marker), read only when the status
-        # being written IS the hand-back status: a structured AskUserQuestion lands at
-        # waiting_question too, and carries no reason. getattr, like the resolution reads
-        # above — a partial driver stub must not break status persist.
+        # being written IS the hand-back status. Since #2321 that status is `handed_back`
+        # and nothing else lands there, so this no longer has to tell a hand-back apart
+        # from a structured AskUserQuestion that happened to share `waiting_question`.
+        # getattr, like the resolution reads above — a partial driver stub must not
+        # break status persist.
         hand_back_reason = (getattr(driver, "last_hand_back_reason", None)
-                            if status == "waiting_question" else None)
+                            if status == "handed_back" else None)
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
@@ -5300,11 +5305,20 @@ class SessionOrchestrator:
             if status not in _STALLED_STATUSES:
                 rec.paused_reason = None
                 rec.paused_until = None
+            # The hand-back ask (#2321). Assigned UNCONDITIONALLY, which is the whole
+            # point: `hand_back_reason` is already None for every status but
+            # `handed_back`, so one assignment both records the current ask and clears
+            # the previous one the moment the session moves on. A resumed session must
+            # never keep showing what it wanted two turns ago.
+            rec.hand_back_reason = hand_back_reason
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            # Mirrors the in-memory assignment above, and unconditional for the same
+            # reason: the row must clear the old ask, not just gain a new one.
+            values["hand_back_reason"] = hand_back_reason
             if status in _STALLED_STATUSES:
                 if rec is not None:
                     values["paused_reason"] = rec.paused_reason
@@ -5808,7 +5822,9 @@ class SessionOrchestrator:
         if not text:
             return None
         if await completion_awaits_user(text):
-            return "waiting_question"
+            # A prose ask, not a card — handed_back (#2321). The structured branch above
+            # still returns the real card status when one is actually open.
+            return "handed_back"
         return None
 
     def _last_assistant_prose(self, session_id: str) -> str:
@@ -11794,11 +11810,11 @@ class SessionOrchestrator:
                 stuck = {"kind": "question", "question_id": q["question_id"],
                          "question": q.get("question", ""), "options": q.get("options", []),
                          "multi_select": q.get("multi_select", False)}
-            elif rec.status == "waiting_question":
-                # "Answer needed" with no card: the session handed itself back
-                # (`hand_back`, or a closing question for the user — status.py). The
-                # reason rides along for the guardrail's feed line; it is gone after a
-                # restart (no driver), and the status alone still means the same thing.
+            elif rec.status == "handed_back":
+                # The session handed itself back (`hand_back`, or a closing question for
+                # the user — status.py). No card to attach; the reason rides along for
+                # the guardrail's feed line. It is gone after a restart (no driver), and
+                # the status alone still means the same thing.
                 driver = getattr(self, "_drivers", {}).get(session_id)
                 stuck["hand_back_reason"] = (
                     getattr(driver, "last_hand_back_reason", None) or "")

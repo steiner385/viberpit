@@ -11,7 +11,14 @@ from __future__ import annotations
 #: archive_session / close_session, which write their status directly rather than
 #: through the driver's status callback.
 CHILD_NOTIFY_STATUSES: frozenset[str] = frozenset(
-    {"complete", "done", "waiting_question", "ended", "archived"})
+    {"complete", "done", "waiting_question", "handed_back", "ended", "archived"})
+
+#: The stops the user ANSWERS, after which the child continues from where it stopped —
+#: so the guard clears and the child's next stop is reported again. Both spellings of
+#: "this child is waiting on a human": a structured AskUserQuestion card
+#: (``waiting_question``) and a bare hand-back (``handed_back``, #2321). Before the
+#: split these were one status and this was an equality check against it.
+CHILD_ANSWERABLE_STOPS: frozenset[str] = frozenset({"waiting_question", "handed_back"})
 
 #: A child in one of these no longer counts against the live-children cap.
 LIVE_CHILD_EXCLUDED: frozenset[str] = frozenset({"complete", "done", "ended", "archived"})
@@ -43,13 +50,14 @@ def notify_decision(status: str, notified: str | None) -> tuple[bool, str | None
     ``done`` is what every ended turn produces, not a finished-work signal: once the
     user starts steering the child, each of its turns ends in ``done``. So ``done``
     notifies only while nothing has been reported yet (the child's FIRST stop), and it
-    latches. ``complete``, ``waiting_question``, ``ended`` and ``archived`` notify on
-    every change of status. A non-stop status (the child running again) clears the
-    guard only after a hand-back — the one stop the user answers and the child
-    continues from — so the child's next stop is reported again.
+    latches. ``complete``, ``waiting_question``, ``handed_back``, ``ended`` and
+    ``archived`` notify on every change of status. A non-stop status (the child running
+    again) clears the guard only after one of ``CHILD_ANSWERABLE_STOPS`` — the stops the
+    user answers and the child continues from — so the child's next stop is reported
+    again.
     """
     if status not in CHILD_NOTIFY_STATUSES:
-        return False, (None if notified == "waiting_question" else notified)
+        return False, (None if notified in CHILD_ANSWERABLE_STOPS else notified)
     if status == "done":
         return (notified is None), (notified or "done")
     return (notified != status), status
