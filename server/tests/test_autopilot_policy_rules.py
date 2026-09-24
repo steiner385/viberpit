@@ -291,8 +291,8 @@ def test_near_duplicate_outside_window_is_fresh():
 # --------------------------------------------------------------------------- #
 # Handed-back sessions are the human's, not autopilot's.                       #
 #                                                                              #
-# `hand_back` (tool or marker) derives to `waiting_question` WITHOUT a          #
-# structured question card (status.py). Live 2026-09-10/11: autopilot governed #
+# `hand_back` (tool or marker) derives to its own `handed_back` status, which   #
+# carries no structured card (status.py). Live 2026-09-10/11: autopilot governed#
 # those and the composer nudged them on ("no operator reply is coming in this  #
 # async channel, so don't wait on it"), which (a) contradicts the tool's       #
 # contract, (b) erases the "Answer needed" state the user was meant to see and #
@@ -301,18 +301,18 @@ def test_near_duplicate_outside_window_is_fresh():
 # --------------------------------------------------------------------------- #
 
 def test_handed_back_session_is_escalated_never_nudged():
-    ctx = _ctx(status="waiting_question",
-               stuck={"kind": "waiting_question",
+    ctx = _ctx(status="handed_back",
+               stuck={"kind": "handed_back",
                       "hand_back_reason": "Need your call on the 4GB memory limit"})
     d = pre_decide(ctx, CONFIG, now=1000.0)
     assert d is not None and d.action == "escalate"
     assert "handed back" in d.reason and "4GB memory limit" in d.reason
 
 
-def test_waiting_question_without_a_card_is_escalated_even_without_a_reason():
+def test_handed_back_is_escalated_even_without_a_reason():
     """After a daemon restart the driver (and its reason) is gone, but the status
     alone still means 'the user is needed'."""
-    ctx = _ctx(status="waiting_question", stuck={"kind": "waiting_question"})
+    ctx = _ctx(status="handed_back", stuck={"kind": "handed_back"})
     d = pre_decide(ctx, CONFIG, now=1000.0)
     assert d is not None and d.action == "escalate"
 
@@ -369,9 +369,9 @@ def test_complete_without_an_open_card_is_unaffected():
 def test_hand_back_fingerprint_keys_on_the_reason():
     """A NEW hand-back reason is new information: it must re-surface in the feed,
     so it needs a fresh fingerprint (the escalate de-spam keys on it)."""
-    first = _ctx(status="waiting_question",
-                 stuck={"kind": "waiting_question", "hand_back_reason": "first ask"})
-    second = _ctx(status="waiting_question",
-                  stuck={"kind": "waiting_question", "hand_back_reason": "second ask"})
+    first = _ctx(status="handed_back",
+                 stuck={"kind": "handed_back", "hand_back_reason": "first ask"})
+    second = _ctx(status="handed_back",
+                  stuck={"kind": "handed_back", "hand_back_reason": "second ask"})
     assert fingerprint(first) != fingerprint(second)
     assert fingerprint(first) == fingerprint(first)

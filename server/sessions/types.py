@@ -121,6 +121,10 @@ class SessionRecord:
     # marker from the probabilistic classifier. None until explicitly set.
     pr_resolution: str | None = None
     pr_resolution_source: str | None = None
+    # The session's own one-line `hand_back(reason)` (#2321), mirroring DB
+    # Session.hand_back_reason. Only meaningful alongside status == "handed_back":
+    # _persist_status writes the pair together and clears this on any other status.
+    hand_back_reason: str | None = None
     # Fleet host that runs this session, mirroring DB Session.host (stamped at
     # creation by the dispatcher; None for pre-fleet rows and primary-local spawns).
     # Ownership input for host-partitioned recovery (#852): a daemon must not
@@ -230,6 +234,7 @@ class SessionRecord:
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
+            "handBackReason": self.hand_back_reason,
             "host": self.host,
             "displayMode": self.display_mode,
             "usageUnverified": self.usage_unverified,
@@ -295,6 +300,7 @@ class SessionRecord:
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
+            hand_back_reason=d.get("handBackReason"),
             host=d.get("host"),
             display_mode=d.get("displayMode"),
             usage_unverified=d.get("usageUnverified", False),

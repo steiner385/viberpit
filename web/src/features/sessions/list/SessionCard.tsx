@@ -114,6 +114,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const presentation = sessionTriage(session, promptStage)
   const accent = TIER_ACCENT[presentation.tier]
   const isBusy = presentation.tier === 'busy'
+  // The session's own one-line ask, shown only while it IS handed back (#2321).
+  // Status-gated rather than field-gated for the same reason prResolution is: the
+  // column survives a resume, so the field alone would strand a stale ask on a
+  // session that has since moved on.
+  const handBackReason = session.status === 'handed_back' ? session.handBackReason : null
 
   // "Guided by autopilot": the robot has acted on this session (assistedBy) AND it
   // isn't pinned to manual. The pause veto matters — a session can carry the
@@ -563,7 +568,24 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {' '}— last seen {relTime(session.lastConfirmedAliveAt, now || undefined)}
           </span>
         )}
-        {session.summary && (
+        {/* What a handed-back session actually wants (#2321). "Handed back" says
+            something is needed but not what, and there is no card to open for the
+            answer — the session already said it in one sentence via hand_back(reason),
+            so show that instead of making the user read the transcript for it. Gated
+            on the live status, not the field: a resumed session keeps the old row
+            value, and a stale ask beside "Working…" is a claim it is not making. */}
+        {handBackReason && (
+          <span
+            data-testid="card-hand-back-reason"
+            className="min-w-0 flex-1 truncate text-ink-muted"
+            title={handBackReason}
+          >
+            {' '}— {handBackReason}
+          </span>
+        )}
+        {/* Suppressed while a hand-back reason shows: two "— …" clauses on one line
+            compete, and the specific ask beats the generic auto-summary. */}
+        {session.summary && !handBackReason && (
           <span
             data-testid="card-summary"
             className="min-w-0 flex-1 truncate text-ink-muted"

@@ -156,6 +156,10 @@ export type SessionStatus =
   | 'retrying'
   | 'waiting_input'
   | 'waiting_question'
+  // The session's own hand_back (or a closing prose question) — it wants the user, but
+  // there is NO card to tap. Distinct from waiting_question since #2321: sharing that
+  // status put "Answer needed" on sessions with nothing to answer.
+  | 'handed_back'
   | 'ready_review'
   | 'done'
   | 'complete'
@@ -396,6 +400,11 @@ export interface Session {
   prResolution?: string | null
   /** Where prResolution came from: "tool" | "marker" | "queue-drain". */
   prResolutionSource?: string | null
+  /** The one sentence the session passed to `hand_back(reason)` — WHAT it needs from
+   *  the user (#2321). Only meaningful while `status === 'handed_back'`: the server
+   *  writes it with that status and clears it on any other, but a card must still gate
+   *  on the status, exactly as prResolution does. Null/absent = handed back silently. */
+  handBackReason?: string | null
   /** Why a needs_attention/limited session is parked (server pause reason token,
    *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
   pausedReason?: string | null

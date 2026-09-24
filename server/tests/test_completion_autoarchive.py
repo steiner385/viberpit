@@ -340,9 +340,10 @@ def _orch_question(records, pr_info, *, awaits, monkeypatch):
     return orch, archived, nudged, statuses
 
 
-def test_complete_with_open_question_holds_as_waiting_question(monkeypatch):
-    """Armed PR (bar met, would archive) + open prose question → no archive, no
-    nudge; the session is handed back to the user as waiting_question."""
+def test_complete_with_open_prose_question_holds_as_handed_back(monkeypatch):
+    """Armed PR (bar met, would archive) + open PROSE question → no archive, no
+    nudge; the session is handed back to the user as `handed_back` (#2321 — the ask
+    is in the closing prose, so there is no card and it is not waiting_question)."""
     async def run():
         rec = _rec("s1", origin=None)
         orch, archived, nudged, statuses = _orch_question(
@@ -351,7 +352,7 @@ def test_complete_with_open_question_holds_as_waiting_question(monkeypatch):
         await _drain()
         assert archived == [], "an open question must block the archive"
         assert nudged == [], "a question hold is not a not-ready nudge"
-        assert statuses == [("s1", "waiting_question")]
+        assert statuses == [("s1", "handed_back")]
         assert "s1" not in orch._auto_archiving, "a later complete must be able to retry"
     asyncio.run(run())
 
@@ -499,7 +500,7 @@ def test_codex_prose_question_holds_via_turn_buffer(monkeypatch):
         orch._maybe_autoarchive_completed("s1", "complete", rec)
         await _drain()
         assert archived == [], "an open Codex question must block the archive"
-        assert statuses == [("s1", "waiting_question")]
+        assert statuses == [("s1", "handed_back")]
     asyncio.run(run())
 
 
@@ -630,7 +631,7 @@ def test_global_disable_still_nudges_unmet_bar():
 
 def test_global_disable_still_holds_open_question(monkeypatch):
     """Auto-archive OFF must not bury a hand-back: a completion message that still
-    awaits the user flips to waiting_question exactly as it does with archive on."""
+    awaits the user flips to handed_back exactly as it does with archive on."""
     async def run():
         rec = _rec("s1", origin=None)
         orch, archived, nudged, statuses = _orch_question(
@@ -643,7 +644,7 @@ def test_global_disable_still_holds_open_question(monkeypatch):
         orch._maybe_autoarchive_completed("s1", "complete", rec)
         await _drain()
         assert archived == [] and nudged == []
-        assert statuses == [("s1", "waiting_question")]
+        assert statuses == [("s1", "handed_back")]
     asyncio.run(run())
 
 

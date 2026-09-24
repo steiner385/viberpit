@@ -191,6 +191,14 @@ class Session(Base):
     # Runner settles an ended investigation from it (spec 2026-09-18 §5). Nullable so
     # init_db backfills without a migration.
     pr_resolution_note: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The one sentence the session passed to `hand_back(reason)` — WHAT it needs from
+    # the user (#2321). Written by _persist_status with the `handed_back` status and
+    # cleared on every other status, so it always describes the CURRENT hand-back
+    # rather than stranding a stale ask on a session that has since resumed. Lets the
+    # card show the ask without the user opening the session; before this, the reason
+    # existed only in an audit row and a log line. Nullable so init_db backfills it on
+    # existing rows without a migration.
+    hand_back_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Provenance of the LAST archive: "user" | "autopilot" | "backlog-runner". Lets
     # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
     # Cleared on unarchive. Nullable so init_db backfills without a migration.

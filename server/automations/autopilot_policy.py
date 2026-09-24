@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 # signals completion strands in `complete` forever, archived by no one.
 ACTIONABLE_STATUSES = frozenset({
     "done", "idle", "waiting_input", "waiting_question", "ready_review", "needs_attention",
-    "complete",
+    "complete", "handed_back",
 })
 
 # Hard-coded destructive-command deny-list (regex, matched against a Bash command
@@ -211,13 +211,19 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
     if ctx.seconds_since_human is not None and ctx.seconds_since_human < int(config.get("human_defer_seconds", 120)):
         return Decision(action="skip", reason="human steering — deferring")
 
-    # 1b. Handed back — "Answer needed" with no structured question card is the
-    # session's own `hand_back` (or a closing question for the user; status.py). That
-    # turn belongs to the human: surface it, never nudge it onward. Until 2026-09-11
-    # the decider governed these and the composer told sessions "no operator reply is
-    # coming in this async channel" — erasing the very state the user was meant to
-    # see, and looping hand_back → nudge → hand_back (session 0898bcd5, 3 cycles/2 min).
-    if stuck.get("kind") == "waiting_question" and not stuck.get("question"):
+    # 1b. Handed back — the session's own `hand_back` (or a closing question for the
+    # user; status.py). That turn belongs to the human: surface it, never nudge it
+    # onward. Until 2026-09-11 the decider governed these and the composer told sessions
+    # "no operator reply is coming in this async channel" — erasing the very state the
+    # user was meant to see, and looping hand_back → nudge → hand_back (session
+    # 0898bcd5, 3 cycles/2 min).
+    #
+    # Reads the status directly since #2321. It used to infer the state from
+    # "waiting_question with no question attached", because hand-backs and real
+    # AskUserQuestion cards shared one status; `handed_back` says it outright, and a
+    # session that has BOTH is re-keyed to kind="question" upstream
+    # (_autopilot_get_context), so the absence guard is no longer load-bearing.
+    if stuck.get("kind") == "handed_back":
         reason = (stuck.get("hand_back_reason") or "").strip()
         return Decision(action="escalate",
                         reason="handed back to the user" + (f": {reason[:200]}" if reason else ""))

@@ -48,9 +48,11 @@ def test_limits_refuse_when_disabled():
     assert "disabled" in str(exc.value)
 
 
-def test_notify_statuses_are_the_five_stops():
+def test_notify_statuses_are_the_stop_vocabulary():
+    # Both spellings of "waiting on a human" notify: a structured AskUserQuestion
+    # card (waiting_question) and a bare hand-back (handed_back, #2321).
     assert cs.CHILD_NOTIFY_STATUSES == frozenset(
-        {"complete", "done", "waiting_question", "ended", "archived"})
+        {"complete", "done", "waiting_question", "handed_back", "ended", "archived"})
     assert "busy" not in cs.CHILD_NOTIFY_STATUSES and "in_progress" not in cs.CHILD_NOTIFY_STATUSES
 
 
@@ -62,10 +64,17 @@ def test_done_notifies_once_then_latches():
 
 
 def test_hand_back_cycle_rearms_the_next_stop():
+    assert cs.notify_decision("handed_back", "done") == (True, "handed_back")
+    assert cs.notify_decision("in_progress", "handed_back") == (False, None)
+    assert cs.notify_decision("done", None) == (True, "done")
+    assert cs.notify_decision("handed_back", "handed_back") == (False, "handed_back")
+
+
+def test_a_question_card_cycle_rearms_the_next_stop_too():
+    """The other answerable stop behaves identically — it was the only one before
+    the #2321 split, and must not have regressed into a non-clearing guard."""
     assert cs.notify_decision("waiting_question", "done") == (True, "waiting_question")
     assert cs.notify_decision("in_progress", "waiting_question") == (False, None)
-    assert cs.notify_decision("done", None) == (True, "done")
-    assert cs.notify_decision("waiting_question", "waiting_question") == (False, "waiting_question")
 
 
 def test_terminal_stops_notify_on_change():

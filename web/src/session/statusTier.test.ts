@@ -127,6 +127,7 @@ describe('statusTier mapping table', () => {
     ['in_progress', 'busy'],
     ['waiting_input', 'needs-you'],
     ['waiting_question', 'needs-you'],
+    ['handed_back', 'needs-you'],
     ['ready_review', 'needs-you'],
     ['done', 'your-turn'],
     ['complete', 'complete'],
@@ -177,6 +178,7 @@ describe('statusPresentation label table', () => {
     ['ready_review', 'Approve plan'],
     ['waiting_input', 'Permission needed'],
     ['waiting_question', 'Answer needed'],
+    ['handed_back', 'Handed back'],
     ['done', 'Your turn'],
     ['complete', 'Complete'],
     ['idle', 'Ready'],
@@ -272,5 +274,30 @@ describe('usage-stalled presentation', () => {
   })
   it('restart interruption wins over the stall relabel', () => {
     expect(statusPresentation('needs_attention', { usageStalled: true, interruptedByRestart: true }).label).toMatch(/re-send/i)
+  })
+})
+
+// #2321: "Answer needed" is a promise that there is a card to tap. A bare hand_back
+// has none, so the two statuses must not render identically — a user who reads
+// "Answer needed", opens the session and finds no prompt learns to distrust the badge,
+// and the true ones are the ones that actually block a session.
+describe('handed_back is visually distinct from a real question card', () => {
+  it('does not label a hand-back "Answer needed"', () => {
+    expect(statusPresentation('handed_back').label).not.toBe('Answer needed')
+  })
+
+  it('gives the two states different labels and icons', () => {
+    const handedBack = statusPresentation('handed_back')
+    const realQuestion = statusPresentation('waiting_question')
+    expect(handedBack.label).not.toBe(realQuestion.label)
+    expect(handedBack.Icon).not.toBe(realQuestion.Icon)
+  })
+
+  it('still ranks it needs-you — it does want the user, just not via a card', () => {
+    expect(statusPresentation('handed_back').tier).toBe('needs-you')
+  })
+
+  it('never falls through to the "Unknown" pill', () => {
+    expect(statusPresentation('handed_back').label).not.toBe('Unknown')
   })
 })

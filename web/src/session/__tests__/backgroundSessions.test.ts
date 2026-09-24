@@ -43,10 +43,10 @@ describe('isBackgroundSession', () => {
     expect(isBackgroundSession(maint('m', { status }))).toBe(true)
   })
 
-  // needs-you: waiting_input / waiting_question / ready_review / pending_approval ·
-  // error: needs_attention / limited · your-turn: done / idle
+  // needs-you: waiting_input / waiting_question / handed_back / ready_review /
+  // pending_approval · error: needs_attention / limited · your-turn: done / idle
   const LOUD: SessionStatus[] = [
-    'waiting_input', 'waiting_question', 'ready_review', 'pending_approval',
+    'waiting_input', 'waiting_question', 'handed_back', 'ready_review', 'pending_approval',
     'needs_attention', 'limited', 'done', 'idle',
   ]
   it.each(LOUD)('a maintenance session that is %s lifts into the foreground', (status) => {

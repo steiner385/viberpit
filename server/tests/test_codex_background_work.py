@@ -373,7 +373,7 @@ def test_a_slow_app_server_cannot_hold_the_turn_boundary_open(tmp_path):
     assert status == "done"  # ...and gave up rather than parking or hanging
 
 
-def test_a_parked_codex_turn_that_asks_the_user_says_answer_needed(tmp_path):
+def test_a_parked_codex_turn_that_asks_the_user_is_handed_back(tmp_path):
     """The prose safeguard is engine-neutral now: a Codex turn holding a terminal open
     AND handing a decision back must not be masked as "Waiting…". Its prose comes from
     the driver's turn buffer, since Codex has no transcript to read."""
@@ -388,7 +388,7 @@ def test_a_parked_codex_turn_that_asks_the_user_says_answer_needed(tmp_path):
         ]
         await orch._persist_status("s1", "done")
         return orch.record("s1").status
-    assert asyncio.run(run()) == "waiting_question"
+    assert asyncio.run(run()) == "handed_back"
 
 
 def test_a_codex_row_unparks_across_a_daemon_restart(tmp_path):

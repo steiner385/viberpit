@@ -5,7 +5,7 @@ Precedence (highest first): a pending plan-approval, then a pending question
 (``waiting_question``), then a pending permission (``waiting_input``), then
 context condensing (``condensing``), then an active turn that is backing off on a
 529/5xx overload (``retrying``), then any other active turn, then a completed turn
-(failed → needs_attention, hand_back → waiting_question, complete → complete, else done),
+(failed → needs_attention, hand_back → handed_back, complete → complete, else done),
 else never-ran. ``limited``/``ended`` are orchestrator overlays and intentionally
 NOT modelled here.
 """
@@ -37,7 +37,7 @@ class StatusSignals:
 # turn) instead of resetting on every /loop re-arm.
 ACTIVITY_STATUSES: frozenset[str] = frozenset({
     "done", "complete", "needs_attention",
-    "waiting_input", "waiting_question", "ready_review",
+    "waiting_input", "waiting_question", "ready_review", "handed_back",
 })
 
 # Statuses derived while the SDK still owns the turn (`sig.turn_active`, or condensing
@@ -54,6 +54,7 @@ MID_TURN_STATUSES: frozenset[str] = frozenset({"in_progress", "condensing", "ret
 # cannot drift between them.
 SEEDABLE_STATUSES: frozenset[str] = frozenset({
     "done", "complete", "needs_attention", "waiting_question", "waiting_external",
+    "handed_back",
 })
 
 # The statuses derive_status() produces from a STRUCTURED pending card — a plan
@@ -84,12 +85,14 @@ def derive_status(sig: StatusSignals) -> str:
     if sig.turns_completed >= 1:
         if sig.last_turn_outcome == "failed":
             return "needs_attention"
-        # The agent's own hand_back signal (tool or marker): it needs the user. Reuses
-        # waiting_question — "Answer needed" — which the harness already persists
-        # without a structured question card (the parked-done overlay and the
-        # completion hold both do), so every consumer keyed to it already copes.
+        # The agent's own hand_back signal (tool or marker): it needs the user. Its OWN
+        # status, NOT waiting_question (#2321). The two are different promises — "there
+        # is a card here to tap" vs "I wrote you a question, come read it" — and
+        # collapsing them put "Answer needed" on sessions with nothing to answer twice
+        # over (2026-09-08, 2026-09-11). Consumers must branch on the status, never on
+        # "waiting_question with no card".
         if sig.last_turn_outcome == "hand_back":
-            return "waiting_question"
+            return "handed_back"
         if sig.last_turn_outcome == "complete":
             return "complete"
         return "done"

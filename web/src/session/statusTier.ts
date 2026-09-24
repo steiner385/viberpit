@@ -1,7 +1,7 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
   AlertTriangle, X, Clock, Minimize2, Hourglass, RotateCcw,
-  ListOrdered, UserCheck, WifiOff,
+  ListOrdered, UserCheck, WifiOff, HandHelping,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
@@ -71,6 +71,10 @@ const PRESENTATION: Record<SessionStatus | 'working', StatusPresentation> = {
   ready_review:     { tier: 'needs-you', label: 'Approve plan',      Icon: Eye,           textClass: NEEDS_YOU },
   waiting_input:    { tier: 'needs-you', label: 'Permission needed', Icon: CircleAlert,   textClass: NEEDS_YOU },
   waiting_question: { tier: 'needs-you', label: 'Answer needed',     Icon: HelpCircle,    textClass: NEEDS_YOU },
+  // "Answer needed" promises a card to tap; a hand-back has none, so it gets its own
+  // pill (#2321). Same needs-you tier — it genuinely wants the user — but the label no
+  // longer sends them hunting for a prompt that was never rendered.
+  handed_back:      { tier: 'needs-you', label: 'Handed back',       Icon: HandHelping,   textClass: NEEDS_YOU },
   done:             { tier: 'your-turn', label: 'Your turn',         Icon: Check,         textClass: CALM },
   complete:         { tier: 'complete',  label: 'Complete',          Icon: CheckCircle2,  textClass: CALM },
   idle:             { tier: 'your-turn', label: 'Ready',             Icon: Clock,         textClass: CALM },
