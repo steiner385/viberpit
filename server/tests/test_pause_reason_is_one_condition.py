@@ -116,6 +116,44 @@ async def test_the_reason_still_rides_the_record_the_sink_files(caplog, tmp_path
 
 
 # ---------------------------------------------------------------------------
+# Severity: an expected capacity wait is not an anomaly (#2330)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_all_accounts_busy_is_journaled_below_warning(caplog, tmp_path):
+    """Every account at its limit is self-healing capacity exhaustion: the sink files
+    every WARNING as an issue, so it must not reach WARNING — but the reason still
+    rides the INFO record, and the dashboard's `paused` event is unaffected."""
+    o = _pause_orch()
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await o._pause_session(_rec(tmp_path), reason="all_accounts_busy")
+
+    assert _warnings(caplog) == []
+    info = [r for r in caplog.records if r.getMessage().startswith("session.paused")]
+    assert len(info) == 1 and info[0].levelno == logging.INFO
+    assert info[0].fields["reason"] == "all_accounts_busy"
+    assert [e["reason"] for e in o.events if e["type"] == "paused"] == ["all_accounts_busy"]
+
+
+@pytest.mark.asyncio
+async def test_anomaly_pause_reasons_still_warn(caplog, tmp_path):
+    o = _pause_orch()
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await o._pause_session(_rec(tmp_path), reason="crash_cap")
+
+    records = _warnings(caplog)
+    assert len(records) == 1 and records[0].getMessage().startswith("session.paused")
+
+
+def test_expected_pause_reasons_are_a_subset_of_the_vocabulary():
+    assert orch_mod._EXPECTED_PAUSE_REASONS
+    assert orch_mod._EXPECTED_PAUSE_REASONS <= orch_mod.PAUSE_REASONS
+
+
+# ---------------------------------------------------------------------------
 # Pacing: two retry loops must not forget each other's window
 # ---------------------------------------------------------------------------
 

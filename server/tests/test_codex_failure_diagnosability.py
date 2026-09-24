@@ -300,11 +300,11 @@ async def test_re_pausing_an_already_paused_session_reports_once(
 
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
         for _ in range(2455):
-            await o._pause_session(rec, reason="all_accounts_busy")
+            await o._pause_session(rec, reason="crash_cap")
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1, f"{len(warnings)} records for one parked session"
-    assert warnings[0].fields["reason"] == "all_accounts_busy"
+    assert warnings[0].fields["reason"] == "crash_cap"
 
 
 @pytest.mark.asyncio
@@ -337,7 +337,7 @@ async def test_a_shifting_reset_time_does_not_re_open_the_window(
 
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
         for tick in range(50):
-            await o._pause_session(rec, reason="all_accounts_busy",
+            await o._pause_session(rec, reason="crash_cap",
                                    earliest_reset=base + timedelta(seconds=tick))
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -358,13 +358,13 @@ async def test_a_newly_seen_reason_reports_however_recent_the_last_one(
     rec = _paused_rec(tmp_path)
 
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
-        await o._pause_session(rec, reason="all_accounts_busy")
-        await o._pause_session(rec, reason="all_accounts_busy")
         await o._pause_session(rec, reason="crash_cap")
+        await o._pause_session(rec, reason="crash_cap")
+        await o._pause_session(rec, reason="rotation_cap")
 
     reasons = [r.fields["reason"] for r in caplog.records
                if r.levelno >= logging.WARNING]
-    assert reasons == ["all_accounts_busy", "crash_cap"], reasons
+    assert reasons == ["crash_cap", "rotation_cap"], reasons
 
 
 # ---------------------------------------------------------------------------
