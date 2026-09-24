@@ -34,9 +34,9 @@ _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 def _make_env(db_url: str) -> dict:
     return {
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "",
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "",
     }
 
 

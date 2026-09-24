@@ -91,8 +91,8 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
     if sub == "status":
         # Determine key source without printing the key.
         import os
-        if os.environ.get("CCSWITCH_MASTER_KEY"):
-            source = "env (CCSWITCH_MASTER_KEY)"
+        if os.environ.get("VIBERPIT_MASTER_KEY"):
+            source = "env (VIBERPIT_MASTER_KEY)"
         elif master_key() is not None:
             source = "keyring (secret-tool)"
         else:
@@ -183,12 +183,12 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
 def _repo_root() -> str:
     """The repo root whose ``.ccswitch/`` namespace the clone commands act on.
 
-    Mirrors the server's ``CCSWITCH_REPO_ROOT`` setting (server/config.py) so the
+    Mirrors the server's ``VIBERPIT_REPO_ROOT`` setting (server/config.py) so the
     CLI operates on exactly the clones and worktrees the daemon does — the CLI is
     the recovery tool for a daemon-owned tree, not a separate namespace."""
     import os
 
-    return os.environ.get("CCSWITCH_REPO_ROOT", os.path.expanduser("~/GitHub"))
+    return os.environ.get("VIBERPIT_REPO_ROOT", os.path.expanduser("~/GitHub"))
 
 
 def _cmd_lint(args: argparse.Namespace) -> int:
@@ -366,7 +366,7 @@ def _cmd_reauth(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     parser = argparse.ArgumentParser(prog=_P)
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_list = sub.add_parser("list")

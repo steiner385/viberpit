@@ -73,7 +73,7 @@ def test_prepare_carries_no_credentials_by_default(tmp_path, monkeypatch):
     passwords — a leaked temp profile must not be a copy of the source's
     credentials.
     """
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     temp = auth_login.prepare_reauth_profile(src)
     assert auth_login._under_reauth_tmp(temp)
@@ -90,7 +90,7 @@ def test_prepare_carries_no_credentials_by_default(tmp_path, monkeypatch):
 def test_prepare_cookie_allowlist_keeps_only_listed_hosts(tmp_path, monkeypatch):
     """#1105: cookie_hosts is an allowlist — unlisted hosts are dropped, and
     Claude/Anthropic stay stripped so the login starts signed out."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
     temp = auth_login.prepare_reauth_profile(
         src, cookie_hosts=("google.com", "claude.com")
@@ -106,7 +106,7 @@ def test_prepare_cookie_allowlist_keeps_only_listed_hosts(tmp_path, monkeypatch)
 
 def test_prepare_cookie_allowlist_does_not_match_lookalike_domain(tmp_path, monkeypatch):
     """A suffix match must be dot-anchored: "google.com" must not keep "evilgoogle.com"."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
     temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     ck = Path(temp) / "Default" / "Cookies"
@@ -118,7 +118,7 @@ def test_prepare_cookie_allowlist_does_not_match_lookalike_domain(tmp_path, monk
 def test_prepare_filtered_cookies_are_not_recoverable_from_the_file(tmp_path, monkeypatch):
     """A plain DELETE leaves the row bytes in SQLite freelist pages, so a "stripped"
     copy would still hand over the cookies it dropped. _filter_cookies VACUUMs."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
     temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     blob = (Path(temp) / "Default" / "Cookies").read_bytes()
@@ -129,7 +129,7 @@ def test_prepare_filtered_cookies_are_not_recoverable_from_the_file(tmp_path, mo
 
 def test_prepare_missing_source_raises_when_cookies_requested(tmp_path, monkeypatch):
     """Verify prepare_reauth_profile raises FileNotFoundError if source Cookies DB is missing."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     with pytest.raises(FileNotFoundError):
         auth_login.prepare_reauth_profile(
             str(tmp_path / "nope"), cookie_hosts=("google.com",)
@@ -139,7 +139,7 @@ def test_prepare_missing_source_raises_when_cookies_requested(tmp_path, monkeypa
 def test_prepare_missing_source_is_fine_when_no_cookies_requested(tmp_path, monkeypatch):
     """The dedicated ViberPit profile does not exist until Chrome first writes it;
     with nothing to copy out of it that is not an error, just an empty profile."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     temp = auth_login.prepare_reauth_profile(str(tmp_path / "nope"))
     assert (Path(temp) / "Default").is_dir()
     assert not (Path(temp) / "Default" / "Cookies").exists()
@@ -149,7 +149,7 @@ def test_prepare_missing_source_is_fine_when_no_cookies_requested(tmp_path, monk
 def test_prepare_removes_its_temp_dir_when_a_later_step_raises(tmp_path, monkeypatch):
     """#1106: prepare_reauth_profile owns the directory it created — a failure after
     mkdtemp must not leave a partial profile the caller has no path to."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
 
     def boom(*a, **kw):
@@ -163,7 +163,7 @@ def test_prepare_removes_its_temp_dir_when_a_later_step_raises(tmp_path, monkeyp
 
 def test_cleanup_refuses_outside_reauth_tmp(tmp_path, monkeypatch):
     """Verify cleanup_reauth_profile refuses to delete paths outside reauth-tmp."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     victim = tmp_path / "victim"
     victim.mkdir()
     auth_login.cleanup_reauth_profile(str(victim))  # must be a no-op, NOT delete
@@ -172,7 +172,7 @@ def test_cleanup_refuses_outside_reauth_tmp(tmp_path, monkeypatch):
 
 def test_cleanup_does_not_create_reauth_tmp(tmp_path, monkeypatch):
     """Verify cleanup_reauth_profile guard has no mkdir side effect."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     auth_login.cleanup_reauth_profile(str(tmp_path / "whatever"))  # outside path
     assert not paths.reauth_tmp_dir().exists()   # guard must not have created it
 
@@ -185,7 +185,7 @@ def test_prepare_copies_registered_extension_and_login_data(tmp_path, monkeypatc
     for it explicitly; the default is covered by
     test_prepare_carries_no_credentials_by_default.
     """
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     temp = auth_login.prepare_reauth_profile(src, copy_login_data=True)
     d = Path(temp) / "Default"
@@ -208,7 +208,7 @@ def test_prepare_copies_registered_extension_and_login_data(tmp_path, monkeypatc
 def test_prepare_without_extension_footprint_is_unchanged(tmp_path, monkeypatch):
     """Spec D4: a profile with no Extensions dir / Preferences still prepares fine and
     writes no Preferences at all (Chrome then starts as it does today)."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
     temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     d = Path(temp) / "Default"
@@ -220,9 +220,9 @@ def test_prepare_without_extension_footprint_is_unchanged(tmp_path, monkeypatch)
 
 
 def test_prepare_extension_ids_empty_disables_copy(tmp_path, monkeypatch):
-    """CCSWITCH_REAUTH_EXTENSIONS="" → extension_ids=() → nothing extension-related is
+    """VIBERPIT_REAUTH_EXTENSIONS="" → extension_ids=() → nothing extension-related is
     copied, while Login Data still follows its own opt-in flag."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     temp = auth_login.prepare_reauth_profile(src, extension_ids=(), copy_login_data=True)
     d = Path(temp) / "Default"
@@ -235,7 +235,7 @@ def test_prepare_extension_ids_empty_disables_copy(tmp_path, monkeypatch):
 
 def test_prepare_skips_id_registered_but_not_installed(tmp_path, monkeypatch):
     """An id in Preferences with no Extensions/<id> dir is skipped, never registered."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     temp = auth_login.prepare_reauth_profile(src, extension_ids=("notinstalledxxxxxxxxxxxxxxxxxxxx",))
     d = Path(temp) / "Default"
@@ -246,7 +246,7 @@ def test_prepare_skips_id_registered_but_not_installed(tmp_path, monkeypatch):
 
 def test_prepare_unreadable_preferences_skips_extensions(tmp_path, monkeypatch):
     """Spec D4: a torn/invalid source Preferences must not fail the login."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     (Path(src) / "Preferences").write_text("{not json")
     temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
@@ -259,7 +259,7 @@ def test_prepare_unreadable_preferences_skips_extensions(tmp_path, monkeypatch):
 
 def test_prepare_malformed_preferences_structure_skips_extensions(tmp_path, monkeypatch):
     """Valid JSON but a non-dict extensions/settings value must not raise (AttributeError)."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     (Path(src) / "Preferences").write_text(json.dumps({"extensions": None}))
     temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
@@ -275,7 +275,7 @@ def test_prepare_extensions_dir_copy_failure_excludes_id_from_preferences(tmp_pa
     (e.g. a crx file vanishing between scandir and copy2). This must not raise —
     and since a half-copied Extensions/<id> is worse than no extension at all, the
     id must NOT be registered in the written Preferences."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     real_copytree = shutil.copytree
     target = str(Path(src) / "Extensions" / ONEP)
@@ -299,7 +299,7 @@ def test_prepare_local_extension_settings_copy_failure_keeps_id_registered(tmp_p
     running Chrome compacts continuously; a failing copy here is not fatal to the
     extension (it still loads, just without saved state) so the id must stay
     registered and Extensions/<id> must still be present."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     real_copytree = shutil.copytree
     target = str(Path(src) / "Local Extension Settings" / ONEP)

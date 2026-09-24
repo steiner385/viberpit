@@ -46,9 +46,9 @@ def _client(db_url: str | None = None):
         # here it must never mutate under the request.
         stack.enter_context(patch.object(
             SessionOrchestrator, "_sdlc_synth_tick_once", _no_synth_tick))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=orch)
             with TestClient(app, raise_server_exceptions=False) as c:
@@ -105,9 +105,9 @@ def test_list_includes_artifact_chain():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -169,9 +169,9 @@ def test_get_detail_includes_chain_and_action():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -245,9 +245,9 @@ def test_build_stage_surfaces_backlog_sessions():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -322,9 +322,9 @@ def test_get_detail_includes_epic_progress():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -422,9 +422,9 @@ def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -486,9 +486,9 @@ def test_detail_next_action_materialize_depends_on_the_epic_pointer():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -560,9 +560,9 @@ def test_create_with_capabilities_links_and_derives_product():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         _, root_id, child_id = asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -621,9 +621,9 @@ def test_create_with_capabilities_spanning_products_is_422():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         f1_id, f2_id = asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app
@@ -946,9 +946,9 @@ def _materialization_client(*, proposals=(("pending", None),),
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from fastapi.testclient import TestClient
             from server.app import create_app
             from server.sessions.orchestrator import SessionOrchestrator
@@ -1499,8 +1499,8 @@ def test_program_detail_derives_stage_rolls_up_leaves_and_refuses_advance():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.tests.fakes.fake_factory import fake_sdk_factory
             from server.app import create_app

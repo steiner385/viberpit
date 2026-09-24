@@ -14,7 +14,7 @@ service running: changing its name must not execute `ExecStop` or remount the
 account store. Keep `Requires=`/`After=` on its surviving service identity until
 a later cold boot can adopt the canonical mount unit.
 
-Configuration uses `/etc/viberpit/viberpit.env`; `CCSWITCH_*` environment keys
+Configuration uses `/etc/viberpit/viberpit.env`; `VIBERPIT_*` environment keys
 remain supported. The credential authority keeps the `ccswitch-auth` Unix user
 and private `/var/lib/ccswitch-codex-auth` state until credential rotation.
 Database identities and existing session/worktree namespaces also stay intact.
@@ -46,8 +46,8 @@ changed) then the edge, health-gates on the deployed SHA, and rolls back on fail
 
 ## Runtime env (`/etc/viberpit/viberpit.env`, root-only, NOT committed)
 
-Holds the secrets/config the server needs — `CCSWITCH_DB_URL`, `CCSWITCH_MASTER_KEY`,
-`CCSWITCH_SESSION_SECRET`, `CCSWITCH_TAILNET_ALLOWLIST`, `CCSWITCH_HOST`, `CCSWITCH_PORT`
+Holds the secrets/config the server needs — `VIBERPIT_DB_URL`, `VIBERPIT_MASTER_KEY`,
+`VIBERPIT_SESSION_SECRET`, `VIBERPIT_TAILNET_ALLOWLIST`, `VIBERPIT_HOST`, `VIBERPIT_PORT`
 — plus `PATH`/`HOME` so the service can find `git`/`node`/`claude`. `chmod 600`, `root:root`.
 
 A host may point the **daemon** at a different env file via a local
@@ -56,7 +56,7 @@ as on dobby). Whatever file the daemon actually loads is the one that matters fo
 with `systemctl cat viberpit-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
 `PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
 locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on
-`PATH`, and logs a WARNING if none exist. `CCSWITCH_CLAUDE_BIN` still overrides everything.
+`PATH`, and logs a WARNING if none exist. `VIBERPIT_CLAUDE_BIN` still overrides everything.
 
 `VIBERPIT_GH_CONFIG_DIR` belongs here too on any host whose `gh` token lives in a desktop keyring —
 **and in the daemon's own env file if it loads a different one** (on dobby it does, so the var must be
@@ -104,7 +104,7 @@ systemctl status viberpit-cert-renew.timer
 
 ## Server-side dictation (optional)
 
-Set `CCSWITCH_ENABLE_STT=true` in `/etc/viberpit/viberpit.env` and restart the edge
+Set `VIBERPIT_ENABLE_STT=true` in `/etc/viberpit/viberpit.env` and restart the edge
 (`viberpit.service` only — the daemon is untouched). The venv needs the `stt` extra
 (`pip install -e '.[server,stt]'`, ~440 MB; the deploy controller does this automatically
 when `pyproject.toml` changes). The `base.en` model (~150 MB) is downloaded into
@@ -121,21 +121,21 @@ it reuses the normal session stack, so there is no extra venv extra and no model
 
 | Var | Default | What it does |
 |---|---|---|
-| `CCSWITCH_ASSISTANT_ENABLED` | `true` | Kill switch. `false` → `POST /api/assistant/session` returns 404 `ASSISTANT_DISABLED`, `/api/assistant/status` reports `enabled: false`, and the drawer falls back to its placeholder. Note it stops *new* sessions: an already-running assistant keeps its driver until the normal idle sweep closes it (below), so disable then wait out `CCSWITCH_ASSISTANT_IDLE_S` if you need the drivers gone. |
-| `CCSWITCH_ASSISTANT_MODEL` | `sonnet` | Model new assistant sessions spawn on. A tier that needs approval is refused with 400 `MODEL_GATED` rather than silently downgraded. |
-| `CCSWITCH_ASSISTANT_IDLE_S` | `900` | Idle grace before an assistant's driver is closed. **Also sets the assistant bearer token's max age (`idle_s × 4`, `server/auth/middleware.py`)** — raising it lengthens a credential's lifetime, so treat it as a security knob, not just a timeout. |
-| `CCSWITCH_ASSISTANT_MAX_TURNS` | `30` | SDK turn cap per assistant session. |
-| `CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
-| `CCSWITCH_ASSISTANT_ENGINE` | `claude_code` | Which agent engine the drawer runs on. `codex` mounts the Codex overlay (`server/assistant/options_codex.py`): the ViberPit tools become client-declared `dynamicTools` that the edge itself executes, the thread runs `read-only` + `untrusted` in a repo-free `cwd`, and every built-in approval is declined. Default Claude because the boundary is unit-tested but has no end-to-end acceptance run yet (#1321/#1290). Needs `CCSWITCH_CODEX_ENABLED=true` and an OpenAI account on the host, or `POST /api/assistant/session` answers 409 `ASSISTANT_ENGINE_UNAVAILABLE` rather than falling back to Claude. Env only — deliberately not a Settings toggle, because the engine picks the security overlay. **A Codex drawer does not resume**: `thread/resume` cannot re-declare the tool surface, so each reopen after the idle reap starts a fresh thread and the model loses prior context (the ViberPit transcript is unaffected). |
-| `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` | `false` | Opt-in operator tier: deploy start, host upgrade, account refresh/enable and re-auth kick-off. Off by default because of the blast radius. `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools) overrides it with the same precedence as the kill switch below. Takes effect for a thread on its **next** spawn — the tools are registered at session start, so an assistant already running keeps the surface it started with until the idle reap. |
+| `VIBERPIT_ASSISTANT_ENABLED` | `true` | Kill switch. `false` → `POST /api/assistant/session` returns 404 `ASSISTANT_DISABLED`, `/api/assistant/status` reports `enabled: false`, and the drawer falls back to its placeholder. Note it stops *new* sessions: an already-running assistant keeps its driver until the normal idle sweep closes it (below), so disable then wait out `VIBERPIT_ASSISTANT_IDLE_S` if you need the drivers gone. |
+| `VIBERPIT_ASSISTANT_MODEL` | `sonnet` | Model new assistant sessions spawn on. A tier that needs approval is refused with 400 `MODEL_GATED` rather than silently downgraded. |
+| `VIBERPIT_ASSISTANT_IDLE_S` | `900` | Idle grace before an assistant's driver is closed. **Also sets the assistant bearer token's max age (`idle_s × 4`, `server/auth/middleware.py`)** — raising it lengthens a credential's lifetime, so treat it as a security knob, not just a timeout. |
+| `VIBERPIT_ASSISTANT_MAX_TURNS` | `30` | SDK turn cap per assistant session. |
+| `VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
+| `VIBERPIT_ASSISTANT_ENGINE` | `claude_code` | Which agent engine the drawer runs on. `codex` mounts the Codex overlay (`server/assistant/options_codex.py`): the ViberPit tools become client-declared `dynamicTools` that the edge itself executes, the thread runs `read-only` + `untrusted` in a repo-free `cwd`, and every built-in approval is declined. Default Claude because the boundary is unit-tested but has no end-to-end acceptance run yet (#1321/#1290). Needs `VIBERPIT_CODEX_ENABLED=true` and an OpenAI account on the host, or `POST /api/assistant/session` answers 409 `ASSISTANT_ENGINE_UNAVAILABLE` rather than falling back to Claude. Env only — deliberately not a Settings toggle, because the engine picks the security overlay. **A Codex drawer does not resume**: `thread/resume` cannot re-declare the tool surface, so each reopen after the idle reap starts a fresh thread and the model loses prior context (the ViberPit transcript is unaffected). |
+| `VIBERPIT_ASSISTANT_OPERATOR_TOOLS` | `false` | Opt-in operator tier: deploy start, host upgrade, account refresh/enable and re-auth kick-off. Off by default because of the blast radius. `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools) overrides it with the same precedence as the kill switch below. Takes effect for a thread on its **next** spawn — the tools are registered at session start, so an assistant already running keeps the surface it started with until the idle reap. |
 
 **The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
 `server/assistant/policy.py` reads `app_settings.assistant_enabled` first and only falls back to
 the env when that column is NULL. So once anyone has flipped Settings → General → AI assistant,
-editing `CCSWITCH_ASSISTANT_ENABLED` in `viberpit.env` has **no effect** — to disable a deployment
+editing `VIBERPIT_ASSISTANT_ENABLED` in `viberpit.env` has **no effect** — to disable a deployment
 for good, turn the switch off in Settings (or `UPDATE app_settings SET assistant_enabled = false
 WHERE id = 'singleton';`). Set it back to NULL to hand control to the env var again.
-`CCSWITCH_ASSISTANT_MODEL` / `assistant_model` and `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` /
+`VIBERPIT_ASSISTANT_MODEL` / `assistant_model` and `VIBERPIT_ASSISTANT_OPERATOR_TOOLS` /
 `assistant_operator_tools` follow the same precedence.
 
 Check what a running edge actually resolved — this is the assistant's analogue of `sttEnabled`,
@@ -277,8 +277,8 @@ each left "Interrupted — re-send to resume").
 The daemon now drains itself on SIGTERM (`server/ipc/drain_on_signal.py`): it refuses
 new turns, snapshots pending work, tells the UI "update pending", keeps serving while
 in-flight turns finish, and only then runs the ordinary shutdown. The wait is bounded by
-the same caps as the deploy drain — `CCSWITCH_DRAIN_TURN_CAP_SEC` (180 s) per ordinary
-turn, `CCSWITCH_DRAIN_CONDENSE_CAP_SEC` (570 s) while a session is mid-compaction — so an
+the same caps as the deploy drain — `VIBERPIT_DRAIN_TURN_CAP_SEC` (180 s) per ordinary
+turn, `VIBERPIT_DRAIN_CONDENSE_CAP_SEC` (570 s) while a session is mid-compaction — so an
 idle daemon still stops in seconds and a busy one makes `systemctl restart` block for
 up to a few minutes. That is the feature. Two unit settings make it work and are pinned
 by `test_restart_turn_interruption.py`:
@@ -334,9 +334,9 @@ Knobs (both default to the safe behaviour; set them only to debug an incident):
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `CCSWITCH_SESSION_LEASE_TTL_S` | `120` | How stale a holder's heartbeat may get before another host may claim its sessions. Renewal is TTL/5. |
-| `CCSWITCH_SESSION_LEASE_ENFORCE` | on | `false` still takes and logs the lease but stops a LOSS from blocking a build — an operator's forced takeover before the TTL. |
-| `CCSWITCH_REAP_ORPHAN_CLIS` | on | `false` leaves surviving CLIs alone (e.g. to inspect one). |
+| `VIBERPIT_SESSION_LEASE_TTL_S` | `120` | How stale a holder's heartbeat may get before another host may claim its sessions. Renewal is TTL/5. |
+| `VIBERPIT_SESSION_LEASE_ENFORCE` | on | `false` still takes and logs the lease but stops a LOSS from blocking a build — an operator's forced takeover before the TTL. |
+| `VIBERPIT_REAP_ORPHAN_CLIS` | on | `false` leaves surviving CLIs alone (e.g. to inspect one). |
 
 Triage — live CLIs per conversation id, on each host:
 
@@ -359,7 +359,7 @@ whole point:
 * it runs as its own OS user (`ccswitch-auth`), so the user that runs `claude` and
   `codex app-server` cannot read the credential store;
 * it has its own key material and its own env file — reusing a
-  `CCSWITCH_SESSIOND_*` key is refused at startup, not merely discouraged;
+  `VIBERPIT_SESSIOND_*` key is refused at startup, not merely discouraged;
 * it is **not** `PartOf=` the daemon. A daemon restart (which touches every live
   session) must not restart the process holding every ChatGPT credential.
 
@@ -391,13 +391,13 @@ business inheriting the edge's database URL, GitHub credentials, or session-daem
 client key.
 
 ```bash
-CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT=https://0.0.0.0:8442
-CCSWITCH_CODEX_AUTHORITY_TLS_CERT=/etc/viberpit/codex-auth/server.pem
-CCSWITCH_CODEX_AUTHORITY_TLS_KEY=/etc/viberpit/codex-auth/server.key
-CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA=/etc/viberpit/codex-auth/client-ca.pem
+VIBERPIT_CODEX_AUTHORITY_LISTEN_ENDPOINT=https://0.0.0.0:8442
+VIBERPIT_CODEX_AUTHORITY_TLS_CERT=/etc/viberpit/codex-auth/server.pem
+VIBERPIT_CODEX_AUTHORITY_TLS_KEY=/etc/viberpit/codex-auth/server.key
+VIBERPIT_CODEX_AUTHORITY_TLS_CLIENT_CA=/etc/viberpit/codex-auth/client-ca.pem
 # Deny-by-default. Unlike the session daemon's allowlist, an EMPTY value is a
 # startup error, not "permissive".
-CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST=codex-edge,codex-runner:dobby,codex-runner:rocky
+VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST=codex-edge,codex-runner:dobby,codex-runner:rocky
 ```
 
 Client certificate common names carry the role, and the per-route ACL is built on
@@ -410,20 +410,20 @@ presenting both identities is rejected outright.
 Every host that talks to the authority (the edge, and each runner) needs:
 
 ```bash
-CCSWITCH_CODEX_AUTHORITY_ENDPOINT=https://dobby:8442
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/<role>.pem
-CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/<role>.key
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
+VIBERPIT_CODEX_AUTHORITY_ENDPOINT=https://dobby:8442
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/<role>.pem
+VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/<role>.key
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
 ```
 
-With `CCSWITCH_CODEX_ENABLED=true` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=true`
+With `VIBERPIT_CODEX_ENABLED=true` and `VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED=true`
 but no authority reachable, `build_codex_manager` returns `None` and Codex is simply
 off on that host. It does **not** fall back to managed runner credentials — that
 fallback would put a refresh token back on a session host, which is the property
 this service exists to remove.
 
-**`CCSWITCH_CODEX_AUTOMATIONS_ENABLED` is a third, separate flag** (default `false`),
-set on the host that runs the automation loops. `CCSWITCH_CODEX_ENABLED` governs
+**`VIBERPIT_CODEX_AUTOMATIONS_ENABLED` is a third, separate flag** (default `false`),
+set on the host that runs the automation loops. `VIBERPIT_CODEX_ENABLED` governs
 sessions a human dispatched and is watching; this one governs sessions an automation
 dispatches into `full-auto` with git/gh/pytest and nobody watching, so the two are
 not the same decision. Turning it off forces every automation origin back to Claude
@@ -471,7 +471,7 @@ Until a digest is recorded the script fails closed rather than installing
 unverified bytes — see the header of `scripts/codex-cli.sha256` for why a
 placeholder digest would be worse than none.
 
-Point the daemon at it with `CCSWITCH_CODEX_BIN`. A host without Codex is not a
+Point the daemon at it with `VIBERPIT_CODEX_BIN`. A host without Codex is not a
 broken host: `probe_availability` reports `binary_not_found` and the daemon keeps
 serving Claude sessions.
 
@@ -501,12 +501,12 @@ authority **and** some enabled, healthy runner advertises a usable Codex boundar
 Fleet settings table and `GET /api/config` render it. Work down in this order:
 
 1. **`/api/config` → `engines[codex].blockedReason`.** `authority_unconfigured` means
-   the *edge* has no `CCSWITCH_CODEX_AUTHORITY_*` settings; no runner can help, because
+   the *edge* has no `VIBERPIT_CODEX_AUTHORITY_*` settings; no runner can help, because
    runners authenticate only with authority-minted envelopes. Fix the edge and stop here.
 2. **Fleet settings → the per-host Codex column** (or `engines[codex].unavailableReasons`).
-   The reason is the runner's own typed verdict: `disabled` (`CCSWITCH_CODEX_ENABLED`
-   unset), `external_auth_disabled` (`CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` unset),
-   `binary_not_found` (install `codex`, or set `CCSWITCH_CODEX_BIN`),
+   The reason is the runner's own typed verdict: `disabled` (`VIBERPIT_CODEX_ENABLED`
+   unset), `external_auth_disabled` (`VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED` unset),
+   `binary_not_found` (install `codex`, or set `VIBERPIT_CODEX_BIN`),
    `version_probe_failed`, `unsupported_version`, or `runtime_home_refused`.
 3. **`engine_not_advertised`** means that daemon predates `/info.engines` — it is a
    legacy runner mid-upgrade, read as Claude-only. Deploy it.
@@ -531,7 +531,7 @@ rebuild `web/dist`) → `report` → `runners` (fan out to every fleet host — 
 deploy panel and `GET /api/deploy/status` mirror this phase list.
 
 Poll cadence defaults to **30s** (how quickly the "changes pending" banner appears after a
-merge). Tune it with `CCSWITCH_DEPLOY_POLL_INTERVAL=<seconds>` in `viberpit.env`, then
+merge). Tune it with `VIBERPIT_DEPLOY_POLL_INTERVAL=<seconds>` in `viberpit.env`, then
 `sudo systemctl restart viberpit-deploy-controller.service`. Each tick is one `git fetch` +
 one `gh api` CI check, so even small values stay well under the GitHub rate limit.
 
@@ -563,7 +563,7 @@ stack cannot:
    startup grace (won't fight a booting/deploying daemon) and a 300s cooldown (a genuine
    crash-loop is left to `Restart=on-failure`).
 2. **Early warning.** Alerts on disk `>=85%`, any account `status=needs-reauth`, or daemon
-   memory near the 12G `MemoryMax`. Alerts go to the journal; set `CCSWITCH_ALERT_WEBHOOK`
+   memory near the 12G `MemoryMax`. Alerts go to the journal; set `VIBERPIT_ALERT_WEBHOOK`
    (e.g. an ntfy topic URL) in `/etc/viberpit/viberpit.env` to also get push notifications.
 
 Install (rewrite `ExecStart` to this host's deploy checkout first, like the daemon unit):
@@ -705,8 +705,8 @@ settling, the first sshfs attempt for `.claude-accounts` died with
 `read: Connection reset by peer`, and the daemon sat dead until
 `viberpit-daemon-ensure.timer` fired ~60s later. Two layers now cover it, in order:
 
-1. **`bin-viberpit-mounts.sh` retries internally** (`CCSWITCH_MOUNT_ATTEMPTS`, default 5,
-   `CCSWITCH_MOUNT_RETRY_DELAY`, default 3s) so a tailnet still settling at boot never
+1. **`bin-viberpit-mounts.sh` retries internally** (`VIBERPIT_MOUNT_ATTEMPTS`, default 5,
+   `VIBERPIT_MOUNT_RETRY_DELAY`, default 3s) so a tailnet still settling at boot never
    fails the unit in the first place. Retries are bounded, so a genuinely-down dobby
    still fails loudly. `TimeoutStartSec=300` on the unit must stay above the worst-case
    retry budget, or systemd SIGKILLs the script mid-retry and reopens the race.
@@ -732,7 +732,7 @@ Install on the remote session host:
 | profile | paths | options |
 |---|---|---|
 | cached (read-mostly) | `~/.claude`, `/mnt/hdd-storage`, `~/avd-golden` | `dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600` |
-| coherent | `~/.claude-accounts` (`CCSWITCH_MOUNT_COHERENT_PATHS`) | `dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_timeout=0` |
+| coherent | `~/.claude-accounts` (`VIBERPIT_MOUNT_COHERENT_PATHS`) | `dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_timeout=0` |
 
 The 600s cache (#779, tuned by #826/#851) is a latency win and stays for everything dobby
 does not rewrite underneath us. It is **wrong for the account store**. Claude Code writes
@@ -753,7 +753,7 @@ logged zero such events. The file was never corrupt; the *view* was stale.
 purpose — unmounting drops every in-flight read. After deploying, remount the account store
 when the Sessions page shows nothing mid-turn:
 
-    CCSWITCH_MOUNT_FORCE_REMOUNT=1 CCSWITCH_MOUNT_PATHS=/home/tony/.claude-accounts \
+    VIBERPIT_MOUNT_FORCE_REMOUNT=1 VIBERPIT_MOUNT_PATHS=/home/tony/.claude-accounts \
       /home/tony/bin-viberpit-mounts.sh
     grep .claude-accounts /proc/mounts    # expect attr_timeout=0, no dir_cache=yes
 
@@ -765,11 +765,11 @@ Two further layers make this safe even where a host's mount profile is still wro
   shared assets are symlinks, and a torn read reuses the last-known-good copy instead of
   resetting anything. Live sessions still use the real account dir — they must, since their
   history and token refreshes belong there. Kill switch:
-  `CCSWITCH_HELPER_SCRATCH_CONFIG=false`.
+  `VIBERPIT_HELPER_SCRATCH_CONFIG=false`.
 - **The evidence survives.** `configdir.compose()` used to `rmtree` `backups/` on every call,
   destroying each `.claude.json.corrupted.*` within seconds of its creation — which is why
   three days of resets left nothing to diagnose. It now prunes only entries older than
-  `CCSWITCH_CONFIG_BACKUP_RETENTION_S` (default 24h).
+  `VIBERPIT_CONFIG_BACKUP_RETENTION_S` (default 24h).
 
 **Verifying the fix.** `scripts/viberpit-health-check.sh` section 6 alerts on either counter
 being non-zero over the last hour:

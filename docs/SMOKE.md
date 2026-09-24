@@ -19,7 +19,7 @@ A quick end-to-end check of the ViberPit web UI. Full scenario coverage is in
 
 ### Prerequisites
 - At least two accounts registered (`ccswitch add alpha`, `ccswitch add beta`).
-- Backend running: `CCSWITCH_MASTER_KEY=... uvicorn server.app:app --host 127.0.0.1 --port 8787`
+- Backend running: `VIBERPIT_MASTER_KEY=... uvicorn server.app:app --host 127.0.0.1 --port 8787`
 - Web assets built: `cd web && npm run build` (or dev server: `npm run dev`).
 - Optionally: set up the nginx vhost via `deploy/ccswitch-tailnet.nginx` (see `deploy/README.md`) to reach from a phone over HTTPS.
 

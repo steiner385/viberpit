@@ -22,8 +22,8 @@ def deploy_socket() -> str:
 
 def deploy_status_path() -> str:
     """Where the controller persists its DeployStatus across its own self-restart, from
-    CCSWITCH_DEPLOY_STATUS_PATH env or the default under hostpaths.RUN_DIR."""
-    return os.environ.get("CCSWITCH_DEPLOY_STATUS_PATH", DEFAULT_DEPLOY_STATUS_PATH)
+    VIBERPIT_DEPLOY_STATUS_PATH env or the default under hostpaths.RUN_DIR."""
+    return os.environ.get("VIBERPIT_DEPLOY_STATUS_PATH", DEFAULT_DEPLOY_STATUS_PATH)
 
 
 def serve(socket_path: str | None = None) -> None:
@@ -35,15 +35,15 @@ def serve(socket_path: str | None = None) -> None:
     from server.github import app_auth as _app_auth
     _app_auth.register_git_providers()
     sock = socket_path or deploy_socket()
-    repo = os.environ.get("CCSWITCH_DEPLOY_REPO", os.getcwd())
-    host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")
-    port = os.environ.get("CCSWITCH_PORT", "8787")
-    venv_python = os.environ.get("CCSWITCH_DEPLOY_VENV_PYTHON", os.path.join(repo, ".venv", "bin", "python"))
+    repo = os.environ.get("VIBERPIT_DEPLOY_REPO", os.getcwd())
+    host = os.environ.get("VIBERPIT_HOST", "127.0.0.1")
+    port = os.environ.get("VIBERPIT_PORT", "8787")
+    venv_python = os.environ.get("VIBERPIT_DEPLOY_VENV_PYTHON", os.path.join(repo, ".venv", "bin", "python"))
     daemon_enabled = _daemon_enabled()
     app, _, _ = build_controller_app(repo=repo, health_url=f"http://{host}:{port}/healthz",
                                      venv_python=venv_python, daemon_enabled=daemon_enabled,
                                      status_path=deploy_status_path(),
-                                     init_db_url=os.environ.get("CCSWITCH_DB_URL", ""))
+                                     init_db_url=os.environ.get("VIBERPIT_DB_URL", ""))
     log.info("deploy controller serving on %s", sock)
     # timeout_keep_alive must outlive the edge's client-pool expiry — server/http_keepalive.py.
     uvicorn.run(app, uds=sock, log_level="info", timeout_keep_alive=SERVER_KEEPALIVE_TIMEOUT_S)

@@ -214,7 +214,7 @@ def prune_backups(cfg_dir: Path, retain_s: float | None = None) -> None:
     a host reading a torn view of the shared ``.claude.json`` and resetting it to defaults —
     and compose() ran often enough to destroy each one within seconds of its creation, which
     is why ~1,100 resets/day went unnoticed for three days. Keep a retention window
-    (``CCSWITCH_CONFIG_BACKUP_RETENTION_S``, default 24h) so a sample survives long enough for
+    (``VIBERPIT_CONFIG_BACKUP_RETENTION_S``, default 24h) so a sample survives long enough for
     ``count_recent_corruptions`` and the watchdog to see it, and drop only what has aged out
     so the directory still cannot grow without bound.
 
@@ -227,7 +227,7 @@ def prune_backups(cfg_dir: Path, retain_s: float | None = None) -> None:
     """
     if retain_s is None:
         try:
-            retain_s = float(os.environ.get("CCSWITCH_CONFIG_BACKUP_RETENTION_S", "86400"))
+            retain_s = float(os.environ.get("VIBERPIT_CONFIG_BACKUP_RETENTION_S", "86400"))
         except ValueError:
             retain_s = 86400.0
     backups = cfg_dir / "backups"

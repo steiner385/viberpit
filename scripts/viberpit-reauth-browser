@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 url="${1:?url required}"
-prof="${CCSWITCH_REAUTH_PROFILE:?CCSWITCH_REAUTH_PROFILE required}"
+prof="${VIBERPIT_REAUTH_PROFILE:?VIBERPIT_REAUTH_PROFILE required}"
 # the profile MUST be under the ViberPit reauth-tmp dir.
-# Derive the root identically to paths.root(): CCSWITCH_HOME or ~/.claude-accounts.
-reauth_root="${CCSWITCH_HOME:-$HOME/.claude-accounts}/reauth-tmp/"
+# Derive the root identically to paths.root(): VIBERPIT_HOME or ~/.claude-accounts.
+reauth_root="${VIBERPIT_HOME:-$HOME/.claude-accounts}/reauth-tmp/"
 case "$prof" in
   "$reauth_root"*) : ;;
   *) echo "viberpit-reauth-browser: refusing profile outside reauth-tmp: $prof (allowed: $reauth_root)" >&2; exit 2 ;;
 esac
-bin="${CCSWITCH_REAUTH_BROWSER_BIN:-}"
+bin="${VIBERPIT_REAUTH_BROWSER_BIN:-}"
 if [ -z "$bin" ]; then
   for c in google-chrome google-chrome-stable chromium chromium-browser; do
     if command -v "$c" >/dev/null 2>&1; then bin="$c"; break; fi

@@ -57,8 +57,8 @@ registered `Host`, and nothing else).
   via `asyncio.to_thread` so the loop keeps serving `/status` and `/healthz`.
 - **Draining in-flight turns** (`server/deploy/drain.py`): `drain_and_wait` asks the daemon to
   `begin_drain`, polls `drain_status`, and waits until safe. Ordinary turns are capped at
-  `CCSWITCH_DRAIN_TURN_CAP_SEC` (default 180s); a session mid-compaction (`condensing`) is
-  uninterruptible and protected up to `CCSWITCH_DRAIN_CONDENSE_CAP_SEC` (default 570s). Returns
+  `VIBERPIT_DRAIN_TURN_CAP_SEC` (default 180s); a session mid-compaction (`condensing`) is
+  uninterruptible and protected up to `VIBERPIT_DRAIN_CONDENSE_CAP_SEC` (default 570s). Returns
   `ready`/`cap`/`unavailable`. Backed by the daemon's SIGTERM drain (PR #853) so even a bare
   `systemctl restart` no longer kills sessions.
 - **Newest-green targeting** (PR #885): when `origin/master`'s tip is red, `POST /api/deploy/start`
@@ -88,7 +88,7 @@ registered `Host`, and nothing else).
   runners run at once and one runner's failure never stops another; the local daemon reuses the
   controller's own checkout and restarts without SSH. A host the probe could not reach is reported
   `offline`, but one merely *fenced* by the version-skew or protocol gate is still deployed to —
-  the deploy is what un-fences it. `CCSWITCH_DAEMON_SSH_HOST`/`_SSH_REPO` are no longer a deploy
+  the deploy is what un-fences it. `VIBERPIT_DAEMON_SSH_HOST`/`_SSH_REPO` are no longer a deploy
   path: they only seed the matching host row's `ssh_host`/`repo_path` once at edge startup. The
   `sync` is load-bearing: ext4 delayed allocation once left a git-rewritten `orchestrator.py` as
   zero bytes after an unclean reboot (PR #815). A runner also self-reconciles at boot via

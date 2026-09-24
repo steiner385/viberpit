@@ -225,21 +225,21 @@ def _request(reg, tool, file_path, mode):
 
 
 def test_account_memory_write_auto_allowed_in_allowlist_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     reg = PermissionRegistry()
     pid = _request(reg, "Write", _mem_path(tmp_path), "allowlist")
     assert pid is None, "Write to account memory dir must auto-allow (no prompt) in allowlist mode"
 
 
 def test_account_memory_edit_auto_allowed_in_auto_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     reg = PermissionRegistry()
     pid = _request(reg, "Edit", _mem_path(tmp_path, name="viberpit-x.md"), "auto")
     assert pid is None, "Edit to account memory dir must auto-allow in auto mode"
 
 
 def test_account_memory_write_auto_allowed_in_interactive(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     reg = PermissionRegistry()
     # The agent's own auto-memory writes are sandboxed to cfg_root() and can never
     # reach a real repo, so they are pure bookkeeping noise — auto-allowed even in
@@ -249,7 +249,7 @@ def test_account_memory_write_auto_allowed_in_interactive(tmp_path, monkeypatch)
 
 
 def test_non_memory_write_under_cfg_still_prompts(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     reg = PermissionRegistry()
     # Under the account projects dir but NOT in a memory/ subdir → must prompt.
     other = str(tmp_path / "cfg" / "secondary" / "projects" / "-enc-cwd" / "settings.json")
@@ -258,7 +258,7 @@ def test_non_memory_write_under_cfg_still_prompts(tmp_path, monkeypatch):
 
 
 def test_repo_memory_dir_not_auto_allowed(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     reg = PermissionRegistry()
     # A real repo that happens to have projects/x/memory/ must NOT be auto-allowed:
     # the rule is anchored on cfg_root(), which this path is outside of.

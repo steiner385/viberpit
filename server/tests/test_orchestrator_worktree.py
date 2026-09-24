@@ -67,9 +67,9 @@ def wt_setup(tmp_path):
     _make_repo(repo)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     })
     usage_patch = patch("ccswitch.accounts.usage_for", side_effect=_fake_usage)
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)

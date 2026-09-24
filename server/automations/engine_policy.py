@@ -188,7 +188,7 @@ def resolve_engine(policy: EnginePolicy, config: dict, *,
                    automations_enabled: bool) -> AgentEngine:
     """The engine an origin with *policy* and *config* launches, clamped.
 
-    *automations_enabled* is ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``: the global
+    *automations_enabled* is ``VIBERPIT_CODEX_AUTOMATIONS_ENABLED``: the global
     kill switch, so an operator can stop every Codex automation without unwinding
     each origin's config. For ``codex_only`` the switch cannot downgrade — it
     raises, and the spawn is refused (see :class:`EnginePolicyViolation`).
@@ -218,7 +218,7 @@ def resolve_engine(policy: EnginePolicy, config: dict, *,
     if engine is AgentEngine.CODEX and not automations_enabled:
         if policy is EnginePolicy.CODEX_ONLY:
             raise EnginePolicyViolation(
-                policy, "CCSWITCH_CODEX_AUTOMATIONS_ENABLED is false and this "
+                policy, "VIBERPIT_CODEX_AUTOMATIONS_ENABLED is false and this "
                         "origin has no Claude acceptance evidence to fall back on")
         return AgentEngine.CLAUDE_CODE
     return engine

@@ -1,7 +1,7 @@
 """PM reconcile-journal API tests — GET /api/pm/reconcile/journal.
 
 Mirrors test_pm_deps_api.py fixture pattern: _client() context manager, async ORM
-seeding via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
+seeding via db_session(), VIBERPIT_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ def _client():
     # (_no_ambient_remote_daemon_config) so create_app() stays in-process.
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=orch)
             with TestClient(app, raise_server_exceptions=False) as c:

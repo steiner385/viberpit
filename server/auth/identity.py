@@ -8,7 +8,7 @@ Header trust is conditional on the PEER, not on the header's presence. `tailscal
 serve` reaches the edge from this host, but its backend hop is sourced from the
 host's OWN tailnet address rather than 127.0.0.1 (#2134), so a genuinely stamped
 header arrives from loopback, from one of this node's own tailscale addresses, or
-from an address listed in CCSWITCH_TRUSTED_PROXY_IPS.
+from an address listed in VIBERPIT_TRUSTED_PROXY_IPS.
 Presented by anyone else it is an unverified claim and is discarded — the request
 then falls through to `tailscale whois`, which verifies the peer against the local
 tailscaled rather than believing what the caller wrote.
@@ -68,7 +68,7 @@ def host_is_loopback(host: str | None) -> bool:
 
 
 # Synthetic identity handed to unidentified clients when LAN-open mode is enabled
-# (CCSWITCH_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
+# (VIBERPIT_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
 # non-Tailscale, deliberately-unauthenticated caller.
 OPEN_LAN_IDENTITY = "lan@local"
 
@@ -97,7 +97,7 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         peer = request.client.host if request.client else "<unknown>"
         logger.warning(
             "ignoring Tailscale identity header asserted by untrusted peer %s "
-            "(trusted: loopback + this node's own tailnet IPs + CCSWITCH_TRUSTED_PROXY_IPS)",
+            "(trusted: loopback + this node's own tailnet IPs + VIBERPIT_TRUSTED_PROXY_IPS)",
             peer,
         )
         identity = None
@@ -204,7 +204,7 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
             # one typo in the list must not take the whole gate down.
             network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
-            logger.warning("ignoring malformed CCSWITCH_TRUSTED_PROXY_IPS entry %r", entry)
+            logger.warning("ignoring malformed VIBERPIT_TRUSTED_PROXY_IPS entry %r", entry)
             continue
         if addr in network:
             return True
@@ -226,7 +226,7 @@ def _whois(request: Request | WebSocket) -> dict | None:
         forwarded = request.headers.get("X-Real-IP")
         # Only honour X-Real-IP when something entitled to set it sits in front:
         # loopback, one of this node's own tailnet addresses, or an address in
-        # CCSWITCH_TRUSTED_PROXY_IPS. This is the same predicate the identity-header
+        # VIBERPIT_TRUSTED_PROXY_IPS. This is the same predicate the identity-header
         # gate uses — one peer-trust rule in this module, not two that can drift
         # apart. Evaluated only when there IS a forwarded address for it to gate:
         # with no X-Real-IP the verdict cannot change peer_ip, and since #2134 the

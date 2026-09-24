@@ -21,12 +21,12 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 # One spelling of the DB-URL override for the whole file (brand ratchet
 # env-prefix, #1591): every test below patches the same in-memory DB via this
 # constant instead of repeating the literal.
-_MEMORY_DB_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
+_MEMORY_DB_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}
 
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""

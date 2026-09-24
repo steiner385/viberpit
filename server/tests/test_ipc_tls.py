@@ -17,9 +17,9 @@ def test_daemon_tls_files_missing_raises():
 
 def test_client_tls_files_unreadable_raises(tmp_path):
     env = {
-        "CCSWITCH_SESSIOND_CLIENT_CERT": str(tmp_path / "nope.pem"),
-        "CCSWITCH_SESSIOND_CLIENT_KEY": str(tmp_path / "nope.key"),
-        "CCSWITCH_SESSIOND_CLIENT_CA": str(tmp_path / "nope.ca"),
+        "VIBERPIT_SESSIOND_CLIENT_CERT": str(tmp_path / "nope.pem"),
+        "VIBERPIT_SESSIOND_CLIENT_KEY": str(tmp_path / "nope.key"),
+        "VIBERPIT_SESSIOND_CLIENT_CA": str(tmp_path / "nope.ca"),
     }
     with mock.patch.dict(os.environ, env, clear=True):
         with pytest.raises(TLSConfigError):
@@ -28,9 +28,9 @@ def test_client_tls_files_unreadable_raises(tmp_path):
 
 def test_daemon_tls_files_reads_env(mtls_certs):
     env = {
-        "CCSWITCH_SESSIOND_TLS_CERT": mtls_certs.server_cert,
-        "CCSWITCH_SESSIOND_TLS_KEY": mtls_certs.server_key,
-        "CCSWITCH_SESSIOND_TLS_CA": mtls_certs.ca,
+        "VIBERPIT_SESSIOND_TLS_CERT": mtls_certs.server_cert,
+        "VIBERPIT_SESSIOND_TLS_KEY": mtls_certs.server_key,
+        "VIBERPIT_SESSIOND_TLS_CA": mtls_certs.ca,
     }
     with mock.patch.dict(os.environ, env, clear=True):
         files = daemon_tls_files()

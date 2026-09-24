@@ -1,7 +1,7 @@
 """Regression tests for the conftest production-isolation guard.
 
 The guard in ``conftest._redirect_state_off_production`` must recognise the
-PRODUCTION database so an inherited ``CCSWITCH_DB_URL`` can never point the
+PRODUCTION database so an inherited ``VIBERPIT_DB_URL`` can never point the
 suite at it. Its original detection (``str(_REAL_HOME) in db``) only matched
 the legacy SQLite store at ``~/.claude-accounts/ccswitch.db``; after production
 migrated to Postgres, a URL like ``postgresql://user@host/ccswitch`` was silently
@@ -59,7 +59,7 @@ def test_ambient_archive_home_is_production():
 
 
 def test_unset_archive_home_is_not_production():
-    # Unset → archive_dir() falls back to $CCSWITCH_HOME/archive (isolated).
+    # Unset → archive_dir() falls back to $VIBERPIT_HOME/archive (isolated).
     assert _archive_home_is_production(None) is False
 
 
@@ -70,26 +70,26 @@ def test_temp_archive_home_is_not_production():
 
 
 def test_guard_unsets_inherited_archive_home(monkeypatch):
-    """End-to-end: an inherited production CCSWITCH_ARCHIVE_HOME must be unset
-    so archive_dir() falls back to each test's own $CCSWITCH_HOME/archive."""
-    monkeypatch.setenv("CCSWITCH_ARCHIVE_HOME", "/mnt/hdd-storage/ccswitch-archives")
-    monkeypatch.setenv("CCSWITCH_HOME", str(_REAL_HOME))
+    """End-to-end: an inherited production VIBERPIT_ARCHIVE_HOME must be unset
+    so archive_dir() falls back to each test's own $VIBERPIT_HOME/archive."""
+    monkeypatch.setenv("VIBERPIT_ARCHIVE_HOME", "/mnt/hdd-storage/ccswitch-archives")
+    monkeypatch.setenv("VIBERPIT_HOME", str(_REAL_HOME))
 
     _redirect_state_off_production()
 
-    assert "CCSWITCH_ARCHIVE_HOME" not in os.environ
+    assert "VIBERPIT_ARCHIVE_HOME" not in os.environ
 
 
 def test_guard_redirects_inherited_postgres_prod_url(monkeypatch):
-    """End-to-end: an inherited prod Postgres CCSWITCH_DB_URL must be rewritten
+    """End-to-end: an inherited prod Postgres VIBERPIT_DB_URL must be rewritten
     to a throwaway SQLite DB, never left pointing at production."""
     prod = "postgresql+asyncpg://ccswitch:pw@127.0.0.1:5432/ccswitch"
-    monkeypatch.setenv("CCSWITCH_DB_URL", prod)
-    monkeypatch.setenv("CCSWITCH_HOME", str(_REAL_HOME))
+    monkeypatch.setenv("VIBERPIT_DB_URL", prod)
+    monkeypatch.setenv("VIBERPIT_HOME", str(_REAL_HOME))
 
     _redirect_state_off_production()
 
-    result = os.environ["CCSWITCH_DB_URL"]
+    result = os.environ["VIBERPIT_DB_URL"]
     assert result != prod
     assert result.startswith("sqlite")
 
@@ -98,8 +98,8 @@ def test_guard_redirects_inherited_postgres_prod_url(monkeypatch):
 def test_guard_isolates_repo_root_even_when_store_and_db_are_isolated(
     tmp_path, monkeypatch, repo_root,
 ):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "store"))
-    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "store"))
+    monkeypatch.setenv("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     monkeypatch.delenv("CCSWITCH_ARCHIVE_HOME", raising=False)
     monkeypatch.delenv("VIBERPIT_REPO_ROOT", raising=False)
     if repo_root is None:
@@ -118,9 +118,9 @@ def test_guard_isolates_repo_root_even_when_store_and_db_are_isolated(
 
 
 def test_guard_preserves_explicit_temporary_repo_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_REPO_ROOT", str(tmp_path))
     _redirect_state_off_production()
-    assert os.environ["CCSWITCH_REPO_ROOT"] == str(tmp_path)
+    assert os.environ["VIBERPIT_REPO_ROOT"] == str(tmp_path)
 
 
 def test_guard_preserves_new_prefix_temporary_repo_root(tmp_path, monkeypatch):

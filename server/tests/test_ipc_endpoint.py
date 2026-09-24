@@ -36,14 +36,14 @@ def test_parse_rejects_unknown_scheme():
 def test_sessiond_endpoint_precedence():
     # ENDPOINT wins over legacy SOCKET.
     with mock.patch.dict(os.environ, {
-        "CCSWITCH_SESSIOND_ENDPOINT": "https://h:1",
-        "CCSWITCH_SESSIOND_SOCKET": "/tmp/legacy.sock",
+        "VIBERPIT_SESSIOND_ENDPOINT": "https://h:1",
+        "VIBERPIT_SESSIOND_SOCKET": "/tmp/legacy.sock",
     }):
         assert sessiond_endpoint() == Endpoint("https", host="h", port=1)
     # legacy SOCKET (bare path) maps to unix://.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("CCSWITCH_SESSIOND_ENDPOINT", "CCSWITCH_SESSIOND_SOCKET")}
-    with mock.patch.dict(os.environ, {**env, "CCSWITCH_SESSIOND_SOCKET": "/tmp/legacy.sock"}, clear=True):
+           if k not in ("VIBERPIT_SESSIOND_ENDPOINT", "VIBERPIT_SESSIOND_SOCKET")}
+    with mock.patch.dict(os.environ, {**env, "VIBERPIT_SESSIOND_SOCKET": "/tmp/legacy.sock"}, clear=True):
         assert sessiond_endpoint() == Endpoint("unix", path="/tmp/legacy.sock")
     # nothing set → default unix socket.
     with mock.patch.dict(os.environ, env, clear=True):

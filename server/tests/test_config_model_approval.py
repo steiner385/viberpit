@@ -9,8 +9,8 @@ def test_defaults():
 
 
 def test_env_override(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_MODEL_APPROVAL_ACTION", "block")
-    monkeypatch.setenv("CCSWITCH_MODEL_APPROVAL_DENYLIST", "fable,haiku")
+    monkeypatch.setenv("VIBERPIT_MODEL_APPROVAL_ACTION", "block")
+    monkeypatch.setenv("VIBERPIT_MODEL_APPROVAL_DENYLIST", "fable,haiku")
     s = Settings()
     assert s.model_approval_action == "block"
     assert s.model_approval_denylist == "fable,haiku"

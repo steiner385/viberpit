@@ -20,7 +20,7 @@ A stale ``GITHUB_TOKEN``/``GH_TOKEN`` env var shadows the account ``gh`` would
 otherwise use, and the daemon shares one global gh config with every session — a
 KinDash bot login into that config hijacks the active identity and makes the
 user's own private repos vanish (``NOT_FOUND``).  EVERY ``gh`` subprocess therefore
-runs with those tokens stripped and, when ``CCSWITCH_GH_CONFIG_DIR`` is set, pinned
+runs with those tokens stripped and, when ``VIBERPIT_GH_CONFIG_DIR`` is set, pinned
 to a dedicated config dir authed only as the ViberPit identity (see :func:`_gh_env`).
 
 The cost of that discipline is that a host with no dedicated gh config dir has no
@@ -406,7 +406,7 @@ def _gh_env() -> dict[str, str]:
 
     * Strip both ``GITHUB_TOKEN`` and ``GH_TOKEN`` — either env var overrides the
       pinned account (a per-owner App token is re-set explicitly by :func:`_run_gh`).
-    * When ``CCSWITCH_GH_CONFIG_DIR`` is set, point gh at a dedicated config dir authed
+    * When ``VIBERPIT_GH_CONFIG_DIR`` is set, point gh at a dedicated config dir authed
       only as the ViberPit identity, so mutations to the default ``~/.config/gh`` can
       never leak in.
     """
@@ -415,7 +415,7 @@ def _gh_env() -> dict[str, str]:
         for k, v in os.environ.items()
         if k not in ("GITHUB_TOKEN", "GH_TOKEN")
     }
-    config_dir = os.environ.get("CCSWITCH_GH_CONFIG_DIR")
+    config_dir = os.environ.get("VIBERPIT_GH_CONFIG_DIR")
     if config_dir:
         env["GH_CONFIG_DIR"] = os.path.expanduser(config_dir)
     return env
@@ -470,10 +470,10 @@ def _run_gh(
 
 
 # A git credential helper that answers from the environment. The token is read
-# from $CCSWITCH_GIT_TOKEN at call time and is deliberately NOT baked into the
+# from $VIBERPIT_GIT_TOKEN at call time and is deliberately NOT baked into the
 # config value, which git echoes back in traces and `git config --list`.
 _CRED_HELPER = (
-    '!f() { echo username=x-access-token; echo "password=$CCSWITCH_GIT_TOKEN"; }; f'
+    '!f() { echo username=x-access-token; echo "password=$VIBERPIT_GIT_TOKEN"; }; f'
 )
 
 
@@ -512,7 +512,7 @@ def _git_env(owner: str | None) -> dict[str, str] | None:
     env["GIT_CONFIG_VALUE_0"] = ""
     env["GIT_CONFIG_KEY_1"] = "credential.helper"
     env["GIT_CONFIG_VALUE_1"] = _CRED_HELPER
-    env["CCSWITCH_GIT_TOKEN"] = token
+    env["VIBERPIT_GIT_TOKEN"] = token
     return env
 
 

@@ -23,8 +23,8 @@ from server.sessions.types import SessionRecord
 def _make_orch(monkeypatch, *, present_ids, inactive_ids=()):
     # Deterministic identity so host!="dobby-test" records read as foreign on this
     # primary regardless of the test machine's hostname.
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby-test")
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)  # default: primary
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby-test")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)  # default: primary
 
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
 

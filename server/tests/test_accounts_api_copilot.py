@@ -26,7 +26,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -63,7 +63,7 @@ def test_get_accounts_copilot_provider_field():
     """GET /api/accounts returns provider == 'copilot' for a copilot-seeded account."""
     with temp_env():
         _seed_copilot_account("copilot-work")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
@@ -99,7 +99,7 @@ def test_refresh_forces_a_process_backed_quota_read():
     (starting it when no session has one up) — the list read never forces."""
     with temp_env():
         _seed_copilot_account("copilot-work")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         fake = _FakeSessions()
         client.app.state.sessions = fake
@@ -120,7 +120,7 @@ def test_delete_copilot_account_returns_204():
     """DELETE /api/accounts/{name} returns 204 for a copilot account (token-dir only)."""
     with temp_env():
         _seed_copilot_account("copilot-delete-me")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.delete(

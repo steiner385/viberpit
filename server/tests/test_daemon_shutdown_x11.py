@@ -38,7 +38,7 @@ class _App:  # minimal stand-in for the daemon's FastAPI/Starlette app; real app
 
 @pytest.mark.asyncio
 async def test_daemon_shutdown_tears_down_displays(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     x11 = _X11()
     orch = _Orch(x11)
     cm = daemon_lifespan(_App(), orch)
@@ -53,7 +53,7 @@ async def test_daemon_startup_reaps_orphan_displays(monkeypatch):
     """Issue #206 (startup half): the daemon swept nothing at boot, so orphaned
     Xvfb/x11vnc/chrome from a prior SIGKILLed run accumulated. Startup must now both
     unlink stale files and reap orphan processes."""
-    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     x11 = _X11()
     orch = _Orch(x11)
     cm = daemon_lifespan(_App(), orch)
@@ -68,7 +68,7 @@ async def test_daemon_startup_reaps_orphan_displays(monkeypatch):
 @pytest.mark.asyncio
 async def test_daemon_shutdown_ok_without_x11(monkeypatch):
     # A daemon with x11 disabled (no manager) must still shut down cleanly.
-    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     orch = _Orch(None)
     cm = daemon_lifespan(_App(), orch)
     await cm.__aenter__()

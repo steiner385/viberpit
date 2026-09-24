@@ -19,7 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from tests.helpers import temp_env  # noqa: E402
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1"}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1"}
 
 _CODEX_MODELS = [
     {

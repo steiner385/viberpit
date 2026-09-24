@@ -13,11 +13,11 @@ def test_daemon_present_tcp_false_when_unreachable():
 def test_create_app_remote_mode_with_https_endpoint(mtls_certs, monkeypatch):
     """An explicit https endpoint → remote mode + DaemonClient pointed at it."""
     env = {
-        "CCSWITCH_SESSIOND_ENDPOINT": "https://127.0.0.1:9443",
-        "CCSWITCH_SESSIOND_CLIENT_CERT": mtls_certs.client_cert,
-        "CCSWITCH_SESSIOND_CLIENT_KEY": mtls_certs.client_key,
-        "CCSWITCH_SESSIOND_CLIENT_CA": mtls_certs.ca,
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_SESSIOND_ENDPOINT": "https://127.0.0.1:9443",
+        "VIBERPIT_SESSIOND_CLIENT_CERT": mtls_certs.client_cert,
+        "VIBERPIT_SESSIOND_CLIENT_KEY": mtls_certs.client_key,
+        "VIBERPIT_SESSIOND_CLIENT_CA": mtls_certs.ca,
+        "VIBERPIT_DEV": "1",
     }
     with mock.patch.dict(os.environ, env, clear=False):
         from server.app import create_app

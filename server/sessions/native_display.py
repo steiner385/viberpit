@@ -124,14 +124,14 @@ def build_native_display(settings) -> NativeDisplay | None:
     ``available()`` is always False, with one warning: X11Manager's orphan sweep
     reaps every Chromium in that range, so honouring it would kill the operator's
     windows on the next daemon boot (the collision spec 002 documents for
-    CCSWITCH_REAUTH_DISPLAY).
+    VIBERPIT_REAUTH_DISPLAY).
     """
     if not getattr(settings, "native_display_enabled", True):
         return None
     display = str(getattr(settings, "native_display", ":0") or "").strip()
     number = _display_number(display)
     if number is None:
-        log.warning("native display: CCSWITCH_NATIVE_DISPLAY=%r is not a local ':N' display; disabled", display)
+        log.warning("native display: VIBERPIT_NATIVE_DISPLAY=%r is not a local ':N' display; disabled", display)
         return None
     blocked: range | None = None
     if getattr(settings, "enable_xvfb", False):
@@ -141,7 +141,7 @@ def build_native_display(settings) -> NativeDisplay | None:
         if number in blocked:
             log.warning(
                 "native display: %s is inside the Xvfb pool [%d, %d); native routing disabled "
-                "on this host — move CCSWITCH_NATIVE_DISPLAY or CCSWITCH_DISPLAY_START",
+                "on this host — move VIBERPIT_NATIVE_DISPLAY or VIBERPIT_DISPLAY_START",
                 display, start, start + count)
     chromium = resolve_chromium()
     if chromium is None:

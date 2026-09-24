@@ -5,7 +5,7 @@ Covers:
   are buffered, never dropped, when the subscriber queue is full.
 - Transcript events ARE dropped and a single GAP sentinel is emitted per burst.
 - Queue size auto-scales with the number of active subscriber streams.
-- CCSWITCH_IPC_QUEUE_SIZE env var overrides the base queue size.
+- VIBERPIT_IPC_QUEUE_SIZE env var overrides the base queue size.
 """
 import asyncio
 

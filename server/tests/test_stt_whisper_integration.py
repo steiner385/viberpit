@@ -1,5 +1,5 @@
 """Real faster-whisper through DictationSession. Skipped unless the `stt` extra is
-installed AND CCSWITCH_TEST_STT=1 (downloads the base.en model on first run)."""
+installed AND VIBERPIT_TEST_STT=1 (downloads the base.en model on first run)."""
 from __future__ import annotations
 
 import os
@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("faster_whisper")
-pytestmark = pytest.mark.skipif(os.environ.get("CCSWITCH_TEST_STT") != "1",
-                                reason="set CCSWITCH_TEST_STT=1 to run the real whisper engine")
+pytestmark = pytest.mark.skipif(os.environ.get("VIBERPIT_TEST_STT") != "1",
+                                reason="set VIBERPIT_TEST_STT=1 to run the real whisper engine")
 
 CLIP = Path(__file__).parent / "fixtures" / "jfk.flac"
 

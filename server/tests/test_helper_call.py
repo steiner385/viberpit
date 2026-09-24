@@ -326,7 +326,7 @@ def test_a_partial_model_reply_is_never_mistaken_for_an_error_detail():
 
 def test_helper_cwd_honours_env_override_and_creates_it(tmp_path, monkeypatch):
     target = tmp_path / "scratch" / "cwd"
-    monkeypatch.setenv("CCSWITCH_HELPER_CWD", str(target))
+    monkeypatch.setenv("VIBERPIT_HELPER_CWD", str(target))
     got = helper_call.helper_cwd()
     assert got == str(target)
     assert target.is_dir()
@@ -334,7 +334,7 @@ def test_helper_cwd_honours_env_override_and_creates_it(tmp_path, monkeypatch):
 
 def test_helper_cwd_default_lives_under_the_cache_not_a_checkout(tmp_path, monkeypatch):
     from pathlib import Path
-    monkeypatch.delenv("CCSWITCH_HELPER_CWD", raising=False)
+    monkeypatch.delenv("VIBERPIT_HELPER_CWD", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     got = Path(helper_call.helper_cwd())
     assert got == tmp_path / ".cache/ccswitch/helper-cwd"

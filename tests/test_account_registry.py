@@ -231,7 +231,7 @@ def test_health_write_never_breaks_the_auth_path_on_a_runner(monkeypatch):
     with temp_env():
         _mk_anthropic("work")
         account_registry.import_filesystem_accounts()
-        monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+        monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
 
         def boom(_name):
             raise oauth.AuthError("dead", status=400, body="{}")
@@ -249,7 +249,7 @@ def test_runner_host_cannot_write_the_manifest(monkeypatch):
     with temp_env():
         _mk_anthropic("work")
         account_registry.import_filesystem_accounts()
-        monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+        monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
         assert account_registry.is_manifest_writer() is False
         with pytest.raises(ManifestNotWritable):
             account_registry.register_account("new", "anthropic")
@@ -261,7 +261,7 @@ def test_runner_reads_the_snapshot_and_reconciles_only_in_memory(monkeypatch):
         account_registry.import_filesystem_accounts()
         before = paths.accounts_manifest_path().read_text()
 
-        monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+        monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
         _mk_anthropic("appeared-late")
         # The read still SEES it (degrades gracefully) …
         assert accounts.provider_of("appeared-late") == "anthropic"

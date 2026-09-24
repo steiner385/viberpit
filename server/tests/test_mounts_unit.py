@@ -90,9 +90,9 @@ def _run(tmp_path: Path, fail_times: int, attempts: int, paths: list[str], **ext
     bindir = _make_shims(tmp_path, fail_times)
     env = dict(os.environ)
     env["PATH"] = f"{bindir}:{env['PATH']}"
-    env["CCSWITCH_MOUNT_PATHS"] = " ".join(paths)
-    env["CCSWITCH_MOUNT_ATTEMPTS"] = str(attempts)
-    env["CCSWITCH_MOUNT_RETRY_DELAY"] = "0"
+    env["VIBERPIT_MOUNT_PATHS"] = " ".join(paths)
+    env["VIBERPIT_MOUNT_ATTEMPTS"] = str(attempts)
+    env["VIBERPIT_MOUNT_RETRY_DELAY"] = "0"
     env.update(extra_env)
     return subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
@@ -138,9 +138,9 @@ def test_already_healthy_mount_is_left_alone(tmp_path):
     (tmp_path / "state" / f"mounted_{str(p).replace('/', '_')}").touch()
     env = dict(os.environ)
     env["PATH"] = f"{bindir}:{env['PATH']}"
-    env["CCSWITCH_MOUNT_PATHS"] = str(p)
-    env["CCSWITCH_MOUNT_ATTEMPTS"] = "5"
-    env["CCSWITCH_MOUNT_RETRY_DELAY"] = "0"
+    env["VIBERPIT_MOUNT_PATHS"] = str(p)
+    env["VIBERPIT_MOUNT_ATTEMPTS"] = "5"
+    env["VIBERPIT_MOUNT_RETRY_DELAY"] = "0"
     res = subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
     )
@@ -194,7 +194,7 @@ def test_account_store_is_mounted_without_attribute_caching(tmp_path):
     """THE regression: a file another host rewrites must not be attribute-cached."""
     store = tmp_path / "claude-accounts"
     res = _run(tmp_path, fail_times=0, attempts=1, paths=[str(store)],
-               CCSWITCH_MOUNT_COHERENT_PATHS=str(store))
+               VIBERPIT_MOUNT_COHERENT_PATHS=str(store))
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
     opts = _opts_for(tmp_path, str(store))
     assert "attr_timeout=0" in opts, opts
@@ -210,7 +210,7 @@ def test_read_mostly_mounts_keep_the_long_cache(tmp_path):
     """#826/#851's latency win must survive: only the account store pays for coherence."""
     store, archive = tmp_path / "claude-accounts", tmp_path / "hdd-storage"
     res = _run(tmp_path, fail_times=0, attempts=1, paths=[str(store), str(archive)],
-               CCSWITCH_MOUNT_COHERENT_PATHS=str(store))
+               VIBERPIT_MOUNT_COHERENT_PATHS=str(store))
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
     archive_opts = _opts_for(tmp_path, str(archive))
     assert "attr_timeout=600" in archive_opts, archive_opts
@@ -219,10 +219,10 @@ def test_read_mostly_mounts_keep_the_long_cache(tmp_path):
 
 
 def test_the_shipped_default_puts_the_account_store_in_the_coherent_profile(tmp_path):
-    """Defaults matter — rocky runs this with no CCSWITCH_MOUNT_* overrides at all.
+    """Defaults matter — rocky runs this with no VIBERPIT_MOUNT_* overrides at all.
 
     Drives the script's real DEFAULT_COHERENT_PATHS by naming the production account
-    store path in CCSWITCH_MOUNT_PATHS while leaving the coherent list unset.
+    store path in VIBERPIT_MOUNT_PATHS while leaving the coherent list unset.
     """
     res = _run(tmp_path, fail_times=0, attempts=1,
                paths=["/home/tony/.claude-accounts", "/mnt/hdd-storage"])
@@ -243,16 +243,16 @@ def test_live_mount_is_still_left_alone_unless_a_remount_is_forced(tmp_path):
     marker.touch()
     base = dict(os.environ)
     base["PATH"] = f"{bindir}:{base['PATH']}"
-    base["CCSWITCH_MOUNT_PATHS"] = str(store)
-    base["CCSWITCH_MOUNT_ATTEMPTS"] = "1"
-    base["CCSWITCH_MOUNT_RETRY_DELAY"] = "0"
+    base["VIBERPIT_MOUNT_PATHS"] = str(store)
+    base["VIBERPIT_MOUNT_ATTEMPTS"] = "1"
+    base["VIBERPIT_MOUNT_RETRY_DELAY"] = "0"
 
     res = subprocess.run(["bash", str(SCRIPT)], env=base, capture_output=True,
                          text=True, timeout=60)
     assert res.returncode == 0
     assert not (tmp_path / "state" / "calls").exists(), "must not re-sshfs a healthy mount"
 
-    forced = dict(base, CCSWITCH_MOUNT_FORCE_REMOUNT="1")
+    forced = dict(base, VIBERPIT_MOUNT_FORCE_REMOUNT="1")
     res = subprocess.run(["bash", str(SCRIPT)], env=forced, capture_output=True,
                          text=True, timeout=60)
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"

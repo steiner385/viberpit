@@ -1,7 +1,7 @@
 """Well-known host paths — the ONE place the /etc, /run, /var/lib, /var/log stems are
 spelled. They mirror the systemd units in deploy/ (RuntimeDirectory=, StateDirectory=,
 EnvironmentFile=), preferring canonical roots while accepting legacy installations.
-Env overrides (``CCSWITCH_DEPLOY_SOCKET`` …) stay at the call sites; these are defaults."""
+Env overrides (``VIBERPIT_DEPLOY_SOCKET`` …) stay at the call sites; these are defaults."""
 from __future__ import annotations
 
 from pathlib import Path

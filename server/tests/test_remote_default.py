@@ -11,7 +11,7 @@ from server.tests.ipc_harness import serve_daemon_uds
 
 def _clean_env():
     e = {k: v for k, v in os.environ.items()
-         if k not in ("CCSWITCH_SESSIOND_SOCKET", "CCSWITCH_SESSIOND_ENDPOINT")}
+         if k not in ("VIBERPIT_SESSIOND_SOCKET", "VIBERPIT_SESSIOND_ENDPOINT")}
     return e
 
 
@@ -51,7 +51,7 @@ def test_default_remote_when_compatible_daemon_present():
 
 def test_explicit_env_forces_remote_without_probe():
     # Explicit flag → remote unconditionally, even with NO daemon (probe not consulted).
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_SOCKET": "/tmp/dead.sock"}), \
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_SOCKET": "/tmp/dead.sock"}), \
          mock.patch("server.app._daemon_compatible", return_value=False) as probe:
         app = create_app()
     assert app.state.remote_mode is True

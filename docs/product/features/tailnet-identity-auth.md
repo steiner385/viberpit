@@ -51,13 +51,13 @@ fronted by `tailscale serve` / an nginx tailnet vhost, PR #811).
   `X-Tailscale-User-Login` alternate), falling back to a best-effort `tailscale whois` on the peer
   IP. If `Settings.tailnet_allowlist` is non-empty the identity must be on it or the request is
   denied; an empty allowlist (dev default) admits any identity.
-- **LAN-open mode** (PR #632): opt-in `CCSWITCH_ALLOW_UNAUTHENTICATED` admits unidentified callers
+- **LAN-open mode** (PR #632): opt-in `VIBERPIT_ALLOW_UNAUTHENTICATED` admits unidentified callers
   as a synthetic `lan@local` guest — deliberately the "no auth" branch, recognizable in logs and
   session authorship. Off by default. A `SECURITY 0.0.0.0` warning is gated to once per process
   (PR #673).
 - **Session cookie** (`server/auth/middleware.py`): `IdentityMiddleware` get-or-creates a
   server-side `AppSession` and issues an `itsdangerous`-signed cookie (24h absolute expiry). The
-  signing secret comes from `CCSWITCH_SESSION_SECRET` → `MASTER_KEY` → envelope key, with a warned
+  signing secret comes from `VIBERPIT_SESSION_SECRET` → `MASTER_KEY` → envelope key, with a warned
   ephemeral per-process fallback (cookies simply reset on restart — identity is re-verified from the
   header every request, so the cookie is bookkeeping only). Cookie-less callers reuse the identity's
   newest live session instead of minting a row per request (PR #830 — prod was minting ~45k rows/day

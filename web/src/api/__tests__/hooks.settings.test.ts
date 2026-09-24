@@ -74,7 +74,7 @@ describe('useSettings', () => {
         modelApprovalDenylist: 'fable',
         globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
       },
-      managed: [{ key: 'CCSWITCH_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
+      managed: [{ key: 'VIBERPIT_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
       about: { gitSha: 'abc1234', hostName: 'dobby' },
     })
     vi.mocked(api.get).mockResolvedValueOnce(payload)

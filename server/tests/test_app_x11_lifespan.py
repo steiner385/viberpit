@@ -50,7 +50,7 @@ def test_edge_startup_reaps_orphan_display_processes(tmp_path):
     fake = _FakeX11()
     app.state.x11 = fake  # set synchronously in create_app; safe to override pre-lifespan
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/api/health", headers=_IDENT).status_code == 200
     assert fake.sweep_orphan_calls == 1
@@ -58,8 +58,8 @@ def test_edge_startup_reaps_orphan_display_processes(tmp_path):
 
 
 def test_native_display_is_built_in_process(monkeypatch, tmp_path):
-    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", "true")
-    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY", ":0")
+    monkeypatch.setenv("VIBERPIT_NATIVE_DISPLAY_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_NATIVE_DISPLAY", ":0")
     import importlib
     import server.config as cfg
     importlib.reload(cfg)
@@ -71,7 +71,7 @@ def test_native_display_is_built_in_process(monkeypatch, tmp_path):
 
 
 def test_native_display_is_none_when_disabled(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_NATIVE_DISPLAY_ENABLED", "false")
     import importlib
     import server.config as cfg
     importlib.reload(cfg)

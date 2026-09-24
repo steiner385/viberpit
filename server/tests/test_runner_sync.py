@@ -185,9 +185,9 @@ def test_read_deployed_sha_sqlite_and_missing_table(tmp_path):
 
 
 def test_main_always_exits_zero(monkeypatch, tmp_path):
-    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///" + str(tmp_path / "none.db"))
+    monkeypatch.setenv("VIBERPIT_DB_URL", "sqlite+aiosqlite:///" + str(tmp_path / "none.db"))
     assert RS.main(["--repo", str(tmp_path)]) == 0
-    monkeypatch.setenv("CCSWITCH_DB_URL", "postgresql+asyncpg://nobody@127.0.0.1:1/none")
+    monkeypatch.setenv("VIBERPIT_DB_URL", "postgresql+asyncpg://nobody@127.0.0.1:1/none")
     assert RS.main(["--repo", str(tmp_path)]) == 0
-    monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
+    monkeypatch.delenv("VIBERPIT_DB_URL", raising=False)
     assert RS.main(["--repo", str(tmp_path)]) == 0

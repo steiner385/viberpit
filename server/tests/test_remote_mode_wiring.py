@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 
 def test_flag_set_selects_remote_facade():
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_SOCKET": "/tmp/ccsd-test.sock"}):
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_SOCKET": "/tmp/ccsd-test.sock"}):
         app = create_app()
     assert app.state.remote_mode is True
     assert app.state.orchestrator is None
@@ -21,7 +21,7 @@ def test_flag_unset_is_in_process():
     # No flag AND no daemon socket on the host → in-process. Mock socket-absent so the
     # test is deterministic regardless of whether a real daemon happens to run here.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("CCSWITCH_SESSIOND_SOCKET", "CCSWITCH_SESSIOND_ENDPOINT")}
+           if k not in ("VIBERPIT_SESSIOND_SOCKET", "VIBERPIT_SESSIOND_ENDPOINT")}
     with mock.patch.dict(os.environ, env, clear=True), \
          mock.patch("server.app._daemon_present", return_value=False):
         app = create_app()
@@ -33,7 +33,7 @@ def test_flag_unset_is_in_process():
 def test_injected_orchestrator_wins_over_flag():
     from server.sessions.orchestrator import SessionOrchestrator
     orch = SessionOrchestrator()
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_SOCKET": "/tmp/ccsd-test.sock"}):
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_SOCKET": "/tmp/ccsd-test.sock"}):
         app = create_app(orchestrator=orch)
     assert app.state.remote_mode is False
     assert app.state.orchestrator is orch
@@ -44,9 +44,9 @@ def test_injected_orchestrator_wins_over_flag():
 async def test_remote_lifespan_skips_orchestrator_and_closes_facade(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}"
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_DEV": "1",  # allow empty allowlist on the default bind
+        "VIBERPIT_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_DEV": "1",  # allow empty allowlist on the default bind
     }
     with mock.patch.dict(os.environ, env):
         app = create_app()
@@ -75,9 +75,9 @@ async def test_lifespan_does_not_install_signal_handlers(tmp_path):
     (session close + X11 sweep) never runs. Any running reauth is cancelled by the
     shutdown branch's reauth.shutdown(), so no signal handler is needed here."""
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
-        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
+        "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
+        "VIBERPIT_DEV": "1",
     }
     loop = asyncio.get_running_loop()
     added: list[int] = []

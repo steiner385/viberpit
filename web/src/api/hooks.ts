@@ -233,7 +233,7 @@ export interface GithubRepo {
 export interface ConfigInfo {
   repoRoot: string
   adoptionEnabled: boolean
-  /** Edge runs the server-side dictation engine (`CCSWITCH_ENABLE_STT` + `stt` extra). */
+  /** Edge runs the server-side dictation engine (`VIBERPIT_ENABLE_STT` + `stt` extra). */
   sttEnabled?: boolean
   /**
    * Per-engine offerability + capabilities. Absent on an edge that predates the
@@ -360,12 +360,12 @@ export interface AppSettings {
   modelApprovalAction: string | null
   // Comma-separated model ids/tiers that require approval; null = server default (fable).
   modelApprovalDenylist: string | null
-  // AI assistant (spec §4.11). null = server env default (CCSWITCH_ASSISTANT_ENABLED /
-  // CCSWITCH_ASSISTANT_MODEL) for both.
+  // AI assistant (spec §4.11). null = server env default (VIBERPIT_ASSISTANT_ENABLED /
+  // VIBERPIT_ASSISTANT_MODEL) for both.
   assistantEnabled?: boolean | null
   assistantModel?: string | null
   // Operator tier (v2 spec B1): deploy start, host upgrade, account refresh/enable/reauth.
-  // null = server env default (CCSWITCH_ASSISTANT_OPERATOR_TOOLS), which is OFF.
+  // null = server env default (VIBERPIT_ASSISTANT_OPERATOR_TOOLS), which is OFF.
   assistantOperatorTools?: boolean | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]

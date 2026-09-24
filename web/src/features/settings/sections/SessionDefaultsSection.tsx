@@ -187,7 +187,7 @@ export function SessionDefaultsSection() {
         <SettingRow
           htmlFor="defaults-model-action"
           wide
-          description={<>Server default is <code>{eff.modelApprovalAction}</code> from <code>CCSWITCH_MODEL_APPROVAL_ACTION</code>.</>}
+          description={<>Server default is <code>{eff.modelApprovalAction}</code> from <code>VIBERPIT_MODEL_APPROVAL_ACTION</code>.</>}
           selfLabelled
         >
           <RadioGroup

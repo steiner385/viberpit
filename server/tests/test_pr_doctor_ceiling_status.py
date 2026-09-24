@@ -14,8 +14,8 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 async def test_session_fix_returns_ceiling_when_all_accounts_busy(isolated_db):
     from server.automations.registry import registry
     await registry.ensure_rows()
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-                                 "CCSWITCH_DEV": "1"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+                                 "VIBERPIT_DEV": "1"}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     info = PullRequestInfo(number=11143, url="https://x/11143", state="open",
                            checks="failing", title="red", repo="cairnea/KinDash",

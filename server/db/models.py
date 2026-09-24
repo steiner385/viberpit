@@ -202,7 +202,7 @@ class Session(Base):
     # Absolute archive ROOT the cwd was moved into, captured at archive time. unarchive()
     # must resolve through this and never through the *current* archive home: archive_home
     # is a placement setting (which disk), while being archived is a lifecycle fact about
-    # the session. Fusing the two meant that moving CCSWITCH_ARCHIVE_HOME to another disk
+    # the session. Fusing the two meant that moving VIBERPIT_ARCHIVE_HOME to another disk
     # retroactively pointed every past archive at a path it had never been written to, and
     # unarchive silently restored an empty tree. NULL = archived before this column existed
     # (resolve via the legacy fallback) or never archived. Nullable so init_db backfills
@@ -453,7 +453,7 @@ class AppSettings(Base):
     # (the default). Nullable so init_db backfills it without a migration.
     max_archived_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     # Override directory for archived session working directories.
-    # None = use CCSWITCH_ARCHIVE_HOME env var or $CCSWITCH_HOME/archive.
+    # None = use VIBERPIT_ARCHIVE_HOME env var or $VIBERPIT_HOME/archive.
     # Nullable so init_db backfills it without a migration.
     archive_home: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Global cap on concurrently active sessions; overflow spawns queue.
@@ -466,17 +466,17 @@ class AppSettings(Base):
     # NULL means "unset → default enabled") so init_db backfills it without a migration.
     auto_archive_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # Per-install model-approval action: "require_approval" | "block" | "allow" | NULL
-    # (NULL = fall back to CCSWITCH_MODEL_APPROVAL_ACTION). See
+    # (NULL = fall back to VIBERPIT_MODEL_APPROVAL_ACTION). See
     # server/sessions/model_policy.VALID_ACTIONS — the one definition of the set.
     # Both nullable so init_db backfills them without a migration on both dialects.
     model_approval_action: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model_approval_denylist: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # AI assistant (spec 2026-09-04-ai-assistant-design §4.11). NULL = fall through to
-    # CCSWITCH_ASSISTANT_ENABLED / CCSWITCH_ASSISTANT_MODEL. Nullable for backfill.
+    # VIBERPIT_ASSISTANT_ENABLED / VIBERPIT_ASSISTANT_MODEL. Nullable for backfill.
     assistant_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     assistant_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Operator-tier assistant tools (v2 spec §5/§7, decision B1). NULL = fall through to
-    # CCSWITCH_ASSISTANT_OPERATOR_TOOLS, which defaults false. Nullable for backfill.
+    # VIBERPIT_ASSISTANT_OPERATOR_TOOLS, which defaults false. Nullable for backfill.
     assistant_operator_tools: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
 
@@ -1239,7 +1239,7 @@ class Host(Base):
     # ssh destination ([user@]host, validated against server.deploy.steps.SSH_HOST_RE)
     # and the absolute checkout path on that host (SSH_REPO_RE). Both feed argv of a
     # sudo-capable ssh command, so the API validates them with the SAME patterns the
-    # deploy controller uses for CCSWITCH_DAEMON_SSH_HOST/_REPO.
+    # deploy controller uses for VIBERPIT_DAEMON_SSH_HOST/_REPO.
     ssh_host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     repo_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
@@ -1289,7 +1289,7 @@ class DeployStateRow(Base):
 class DaemonLease(Base):
     """Fleet-wide single-holder leases; today only ``name='primary'`` (#852).
 
-    ``CCSWITCH_DAEMON_ROLE`` is per-host env config — nothing structural stops two
+    ``VIBERPIT_DAEMON_ROLE`` is per-host env config — nothing structural stops two
     hosts both being configured ``primary``, and two primaries double-drive every
     fleet-global automation with no detection (the 2026-08-30 incident shape). This
     row turns that runbook invariant into a checked one: a primary daemon must hold

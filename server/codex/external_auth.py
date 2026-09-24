@@ -398,7 +398,7 @@ def build_external_auth_provider(settings: Any) -> ExternalAuthProvider:
 
     Three separate refusals, in the order they can be detected:
 
-    1. ``CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED`` is off — the experimental
+    1. ``VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED`` is off — the experimental
        app-server surface this depends on has not been opted into.
     2. No authority endpoint is configured on this host.
     3. The mTLS material is missing, unreadable, or shares a key with the session
@@ -406,13 +406,13 @@ def build_external_auth_provider(settings: Any) -> ExternalAuthProvider:
     """
     if not bool(getattr(settings, "codex_external_auth_enabled", False)):
         raise ExternalAuthUnavailable(
-            "CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED is false; native Codex requires "
+            "VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED is false; native Codex requires "
             "the experimental external-token surface and will not fall back to "
             "managed runner credentials"
         )
     if not authority_configured():
         raise ExternalAuthUnavailable(
-            "CCSWITCH_CODEX_AUTHORITY_ENDPOINT is unset; a runner cannot "
+            "VIBERPIT_CODEX_AUTHORITY_ENDPOINT is unset; a runner cannot "
             "authenticate without a credential authority"
         )
     try:

@@ -24,8 +24,8 @@ ExecStop=/bin/bash -c "for p in /mnt/hdd-storage /home/tony/.claude /home/tony/.
 # job outright. This Restart= is the outer net for the case the inner retries exhaust.
 Restart=on-failure
 RestartSec=10
-# Must exceed the script's worst case: 4 paths x CCSWITCH_MOUNT_ATTEMPTS (5) x
-# CCSWITCH_MOUNT_RETRY_DELAY (3s) plus sshfs connect time. Without this systemd's
+# Must exceed the script's worst case: 4 paths x VIBERPIT_MOUNT_ATTEMPTS (5) x
+# VIBERPIT_MOUNT_RETRY_DELAY (3s) plus sshfs connect time. Without this systemd's
 # 90s default would SIGKILL the script mid-retry and re-introduce the very race the
 # retry loop exists to close.
 TimeoutStartSec=300

@@ -131,10 +131,33 @@ issue = 1373
 ceiling = 43
 
 [[allow]]
-id = "env-prefix"
+# #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b
+# mirror infrastructure itself (env_compat.py + its tests) and the handful of
+# call sites that legitimately run BEFORE that mirror can fill the other
+# prefix in: the shell fallback idiom (`${VIBERPIT_X:-${CCSWITCH_X:-default}}`,
+# scripts/deploy read env directly, no Python mirror in the loop) and
+# server/tests/conftest.py's production-isolation guard (runs at collection,
+# before `import server` has ever run the mirror). These must keep both
+# spellings until Phase 7 retires the mirror (design §3).
+id = "env-prefix-mirror"
 pattern = '\bCCSWITCH_[A-Z0-9_]*'
-issue = 1591
-ceiling = 2502
+paths = [
+  "src/ccswitch/env_compat.py",
+  "tests/test_env_compat.py",
+  "server/tests/test_env_mirror_entrypoints.py",
+  "server/tests/conftest.py",
+  "scripts/viberpit-health-check.sh", "scripts/ccswitch-health-check.sh",
+  "scripts/viberpit-mint-mtls.sh", "scripts/ccswitch-mint-mtls.sh",
+  "scripts/viberpit-pg-provision.sh", "scripts/ccswitch-pg-provision.sh",
+  "deploy/bin-viberpit-mounts.sh", "deploy/bin-ccswitch-mounts.sh",
+  ".env.example",
+  "server/tests/test_pm_map_changes_api.py",
+  "server/tests/test_production_db_isolation.py",
+  "scripts/smoke_codex_interactive.py",
+  "server/tests/test_smoke_codex_safety.py",
+]
+permanent = "Phase 0b env-prefix mirror must reference both spellings until Phase 7 retires it (design §3)."
+ceiling = 132
 
 [[allow]]
 id = "host-legacy-aliases"

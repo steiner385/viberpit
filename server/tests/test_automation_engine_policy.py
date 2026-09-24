@@ -189,7 +189,7 @@ def test_codex_allowed_origin_runs_claude_until_the_config_opts_in():
 
 
 def test_the_kill_switch_forces_an_opted_in_origin_back_to_claude():
-    """`CCSWITCH_CODEX_AUTOMATIONS_ENABLED=false` must disable Codex automation
+    """`VIBERPIT_CODEX_AUTOMATIONS_ENABLED=false` must disable Codex automation
     globally without an operator having to unwind every per-origin config."""
     assert resolve_engine(
         EnginePolicy.CODEX_ALLOWED, {ENGINE_CONFIG_KEY: "codex"},

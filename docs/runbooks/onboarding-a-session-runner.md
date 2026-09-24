@@ -16,7 +16,7 @@ Placeholders: `<host>` = the new runner's short hostname (e.g. `rocky`), `<cap>`
 > one the edge does not trust, so minting one for a second (or third) host would break every
 > existing host's server cert and the edge's client cert immediately. The script now guards this
 > itself: it refuses to run when a CA already exists in `/etc/viberpit/tls/` (override dir via
-> `CCSWITCH_TLS_DIR`), and it installs `ca.pem` + `ca.key` (0600) there durably on a first mint
+> `VIBERPIT_TLS_DIR`), and it installs `ca.pem` + `ca.key` (0600) there durably on a first mint
 > instead of leaving the key behind in the outdir (issue #841).
 >
 > **For an additional host you must mint only a new server cert signed by the existing fleet CA.**
@@ -77,7 +77,7 @@ believed lost mid-onboarding, so a second durable CA was minted and bridged in v
 | Material | Location | Role |
 |---|---|---|
 | `ca2.pem` + `ca2.key` | `/etc/viberpit/tls/` on dobby (key 0600, root) | **The signing CA for all new server certs — use this one.** |
-| `ca-bundle.pem` | `/etc/viberpit/tls/` on dobby | `ca.pem` + `ca2.pem` concatenated; what the edge verifies daemon server certs against (`CCSWITCH_SESSIOND_CLIENT_CA`). |
+| `ca-bundle.pem` | `/etc/viberpit/tls/` on dobby | `ca.pem` + `ca2.pem` concatenated; what the edge verifies daemon server certs against (`VIBERPIT_SESSIOND_CLIENT_CA`). |
 | `ca.pem` (original CA cert) | `/etc/viberpit/tls/` on dobby and every runner | Verifies the edge's client cert (`client.pem` is original-CA-signed); still backs rocky's server cert via the bundle. |
 | `ca.key` (original CA key) | `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby — **root-only directory** | Kept offline. Not used for new mints — sign with ca2. |
 
@@ -159,9 +159,9 @@ CA instead (this is exactly how ca2 was introduced on 2026-08-30):
 1. Mint a new durable CA on dobby: `caN.pem` + `caN.key` (0600) in `/etc/viberpit/tls/`.
 2. Sign all NEW hosts' server certs with `caN`. Existing hosts keep their certs untouched.
 3. Concatenate what the edge trusts: `cat ca.pem caN.pem | sudo tee /etc/viberpit/tls/ca-bundle.pem`
-   and point `CCSWITCH_SESSIOND_CLIENT_CA` at the bundle in the edge's `viberpit.env`, then restart
+   and point `VIBERPIT_SESSIOND_CLIENT_CA` at the bundle in the edge's `viberpit.env`, then restart
    the edge.
-4. Leave each daemon's `CCSWITCH_SESSIOND_TLS_CA` pointing at the CA that signed the edge's
+4. Leave each daemon's `VIBERPIT_SESSIOND_TLS_CA` pointing at the CA that signed the edge's
    *client* cert (the original `ca.pem` today) — daemons verify the edge, not each other, so they
    only need the client cert's CA.
 
@@ -179,56 +179,56 @@ sudo tee /etc/viberpit/daemon.env > /dev/null <<'EOF'
 # DO NOT share this file with the edge process (viberpit.env).
 
 # Shared Postgres on dobby (tailnet address — cleartext wire; WireGuard encrypts)
-CCSWITCH_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
+VIBERPIT_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
 
-# Must match the CCSWITCH_MASTER_KEY on the edge and all other daemons. This is ALSO
+# Must match the VIBERPIT_MASTER_KEY on the edge and all other daemons. This is ALSO
 # the key the daemon signs cross-process bearer tokens with (the assistant drawer's
 # ccas1 token, the internal ccsys1 token) and the edge verifies them with — the
 # edge's session secret is cookie-only and must NOT be needed here.
-CCSWITCH_MASTER_KEY=<master-key>
+VIBERPIT_MASTER_KEY=<master-key>
 
 # This daemon's own bind endpoint (tailnet DNS + port 9443)
-CCSWITCH_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443
+VIBERPIT_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443
 
 # mTLS — server identity
-CCSWITCH_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
-CCSWITCH_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
+VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
+VIBERPIT_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
 # TLS_CA verifies the EDGE'S CLIENT CERT — keep it on the ORIGINAL ca.pem (which signed
 # client.pem), even though the server cert above is ca2-signed. See Step 3's CA table.
-CCSWITCH_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
+VIBERPIT_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
 
 # Only the edge (CN=edge) may connect
-CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge
+VIBERPIT_SESSIOND_CLIENT_ALLOWLIST=edge
 
 # Fleet identity (#852): the hosts.name the dispatcher stamps onto sessions sent
 # here. The default (kernel hostname's first label) matches auto-registered
 # tailnet hosts; REQUIRED explicitly whenever the registry row uses another
 # name — a mismatched identity rehydrates ZERO sessions after a restart.
-CCSWITCH_HOST_NAME=<host>
+VIBERPIT_HOST_NAME=<host>
 
 # Daemon role: every runner beyond the fleet's ONE primary must be a worker.
 # Any other value fails the daemon boot loudly (by design).
-CCSWITCH_DAEMON_ROLE=worker
+VIBERPIT_DAEMON_ROLE=worker
 
 # Xvfb for browser-based reauth
-CCSWITCH_ENABLE_XVFB=true
+VIBERPIT_ENABLE_XVFB=true
 EOF
 
 sudo chmod 640 /etc/viberpit/daemon.env
 ```
 
 - [ ] All placeholder values (`<password>`, `<master-key>`, `<host>`) replaced with real values.
-- [ ] `CCSWITCH_MASTER_KEY` matches the value on the edge and all other daemons exactly.
-- [ ] `CCSWITCH_HOST_NAME` matches this host's row in the fleet registry (Fleet UI / `hosts` table)
+- [ ] `VIBERPIT_MASTER_KEY` matches the value on the edge and all other daemons exactly.
+- [ ] `VIBERPIT_HOST_NAME` matches this host's row in the fleet registry (Fleet UI / `hosts` table)
   exactly — it partitions session ownership (#852): a worker rehydrates only rows stamped with
   its own name, and every daemon's recovery loops (stuck-session sweep, rotation monitor,
   disabled-account sweep) act only on sessions it owns. Rows with `host = NULL` (pre-fleet
   legacy + the primary's own automation spawns) belong to the primary, which also adopts rows
   whose host has been removed/disabled from the registry.
-- [ ] `CCSWITCH_DAEMON_ROLE=worker` is set — exactly one daemon in the fleet (the primary) omits
+- [ ] `VIBERPIT_DAEMON_ROLE=worker` is set — exactly one daemon in the fleet (the primary) omits
   it or sets `primary`. The primary additionally holds the DB-side **primary lease** (#852,
   `daemon_leases` row): a second daemon booting as primary fails `start()` loudly while the
-  real primary's heartbeat is fresh (renewed every `CCSWITCH_PRIMARY_LEASE_TTL_S`/5, default
+  real primary's heartbeat is fresh (renewed every `VIBERPIT_PRIMARY_LEASE_TTL_S`/5, default
   TTL 300 s). A clean shutdown releases the lease immediately; after a primary crash, a
   replacement primary on another host waits out at most one TTL. A worker's usage poller runs
   READ-ONLY (`allow_refresh=False`): it feeds proactive ceiling rotation and dead-account
@@ -288,9 +288,9 @@ Add the new host to the fleet registry. Choose one method:
 
 **Environment seed (alternative):**
 ```bash
-# Add to the edge's viberpit.env alongside the existing CCSWITCH_FLEET_HOSTS entry,
+# Add to the edge's viberpit.env alongside the existing VIBERPIT_FLEET_HOSTS entry,
 # then restart the edge. Format is a comma-separated list of name=endpoint pairs.
-CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<host>.tail0dd570.ts.net:9443
+VIBERPIT_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<host>.tail0dd570.ts.net:9443
 ```
 
 > **NOTE — edge restart required for newly added hosts (current behaviour).**
@@ -346,7 +346,7 @@ client CN this host must present, and the six-check preflight — is
 ```bash
 bash scripts/fetch-codex.sh                       # pinned + digest-verified
 # install codex-runner:<host>.pem/.key (0600) + server-ca.pem, add the CN to the
-# authority's CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST, restart the authority
+# authority's VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST, restart the authority
 python -m server.codex.doctor                     # exits 0 when nothing failed
 ```
 
@@ -535,9 +535,9 @@ collision must be avoided:
 ### What is already satisfied on dobby
 
 - [x] Postgres is local (dobby hosts the shared PG instance — no `/32` rule needed for self).
-- [x] `CCSWITCH_MASTER_KEY` is present in the edge's `viberpit.env`.
+- [x] `VIBERPIT_MASTER_KEY` is present in the edge's `viberpit.env`.
 - [x] Account store is canonical on dobby — **no mount needed** (dobby is the source).
-- [ ] Verify Xvfb is available: `which Xvfb` — it should be present; ensure `CCSWITCH_ENABLE_XVFB=true` is in `daemon.env`.
+- [ ] Verify Xvfb is available: `which Xvfb` — it should be present; ensure `VIBERPIT_ENABLE_XVFB=true` is in `daemon.env`.
 
 ### What is missing on dobby
 
@@ -553,7 +553,7 @@ sudo install -m 600 "$OUTDIR/server.key" /etc/viberpit/tls/server.key
 ### Env collision — dedicated `daemon.env` is mandatory on dobby
 
 dobby's `viberpit-daemon.service` must NOT inherit the edge's `/etc/viberpit/viberpit.env`. That
-file contains `CCSWITCH_SESSIOND_ENDPOINT=https://rocky:9443` — the edge's *target* daemon. If the
+file contains `VIBERPIT_SESSIOND_ENDPOINT=https://rocky:9443` — the edge's *target* daemon. If the
 dobby daemon reads that as its own *bind* address, it will try to bind `rocky:9443` instead of its
 own tailnet address, and the service will fail or silently misconfigure.
 
@@ -565,7 +565,7 @@ sudo mkdir -p /etc/systemd/system/viberpit-daemon.service.d
 sudo tee /etc/systemd/system/viberpit-daemon.service.d/env-file.conf > /dev/null <<'EOF'
 [Service]
 # Replace the default EnvironmentFile with the daemon-specific one
-# so it does not inherit the edge's CCSWITCH_SESSIOND_ENDPOINT.
+# so it does not inherit the edge's VIBERPIT_SESSIOND_ENDPOINT.
 EnvironmentFile=
 EnvironmentFile=/etc/viberpit/daemon.env
 EOF
@@ -576,14 +576,14 @@ sudo systemctl daemon-reload
 Then create `/etc/viberpit/daemon.env` for dobby:
 
 ```
-CCSWITCH_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
-CCSWITCH_MASTER_KEY=<master-key>
-CCSWITCH_SESSIOND_ENDPOINT=https://dobby.tail0dd570.ts.net:9443
-CCSWITCH_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
-CCSWITCH_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
-CCSWITCH_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
-CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge
-CCSWITCH_ENABLE_XVFB=true
+VIBERPIT_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
+VIBERPIT_MASTER_KEY=<master-key>
+VIBERPIT_SESSIOND_ENDPOINT=https://dobby.tail0dd570.ts.net:9443
+VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
+VIBERPIT_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
+VIBERPIT_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
+VIBERPIT_SESSIOND_CLIENT_ALLOWLIST=edge
+VIBERPIT_ENABLE_XVFB=true
 ```
 
 ### dobby registration

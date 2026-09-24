@@ -66,13 +66,13 @@ Restart=always
 RestartSec=3
 # Shutdown budget. SIGTERM first DRAINS in-flight turns (server/ipc/drain_on_signal.py,
 # 2026-08-30: a bare `systemctl restart` killed five sessions mid-turn) — up to
-# CCSWITCH_DRAIN_TURN_CAP_SEC (180s) for an ordinary turn, or
-# CCSWITCH_DRAIN_CONDENSE_CAP_SEC (570s) while a session is mid-compaction — and only
+# VIBERPIT_DRAIN_TURN_CAP_SEC (180s) for an ordinary turn, or
+# VIBERPIT_DRAIN_CONDENSE_CAP_SEC (570s) while a session is mid-compaction — and only
 # then begins the ordinary shutdown: 10s (uvicorn graceful) + up to 15s (x11.stop_all
 # sweep, _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + reauth shutdown/orchestrator
 # stop. 570 + 90 = 660. An idle daemon still stops in seconds; a WEDGED one (loop not
 # running, so the drain never starts) is what the health watchdog escalates with
-# SIGKILL after CCSWITCH_DRAIN_WAIT rather than waiting this out.
+# SIGKILL after VIBERPIT_DRAIN_WAIT rather than waiting this out.
 TimeoutStopSec=660
 # mixed, NOT control-group: control-group SIGTERMs every live claude child in
 # parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
@@ -83,7 +83,7 @@ TimeoutStopSec=660
 KillMode=mixed
 # Shared with every `codex app-server` this daemon supervises (one per ACCOUNT,
 # not per session — server/codex/manager.py ref-counts them and reaps after
-# CCSWITCH_CODEX_IDLE_GRACE_S). Watch codex_threads_active / codex_turns_active
+# VIBERPIT_CODEX_IDLE_GRACE_S). Watch codex_threads_active / codex_turns_active
 # before raising this: a climbing app-server count with no turns means the idle
 # reaper is not firing, which is a bug to fix rather than headroom to buy.
 MemoryMax=12G

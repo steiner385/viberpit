@@ -19,12 +19,12 @@ from pathlib import Path
 def running_git_sha() -> str:
     """Short git SHA of the running code, for deploy verification via /healthz.
 
-    Resolved once: ``CCSWITCH_GIT_SHA`` (the deployer can inject it) wins; else
+    Resolved once: ``VIBERPIT_GIT_SHA`` (the deployer can inject it) wins; else
     ``git rev-parse --short HEAD`` against this checkout; else ``"unknown"`` (e.g.
     a source tarball with no .git). Lets a deploy assert THIS commit is live, not
     just that some process answered.
     """
-    env_sha = os.environ.get("CCSWITCH_GIT_SHA")
+    env_sha = os.environ.get("VIBERPIT_GIT_SHA")
     if env_sha:
         return env_sha.strip()
     try:

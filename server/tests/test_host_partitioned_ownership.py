@@ -61,19 +61,19 @@ def _record(sid, host, status="needs_attention"):
 
 
 def test_daemon_role_default_and_validation(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
     assert daemon_role() == "primary"
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "Worker ")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "Worker ")
     assert daemon_role() == "worker"
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "standby")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "standby")
     with pytest.raises(ValueError):
         daemon_role()
 
 
 def test_self_host_name_env_wins_over_hostname(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     assert self_host_name() == "rocky"
-    monkeypatch.delenv("CCSWITCH_HOST_NAME", raising=False)
+    monkeypatch.delenv("VIBERPIT_HOST_NAME", raising=False)
     # Fallback: the kernel hostname's first label — never empty.
     assert self_host_name()
     assert "." not in self_host_name()
@@ -85,8 +85,8 @@ def test_self_host_name_env_wins_over_hostname(monkeypatch):
 
 
 def test_worker_rehydrate_loads_only_own_host_rows(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -108,8 +108,8 @@ def test_worker_rehydrate_loads_only_own_host_rows(tmp_path, monkeypatch):
 def test_primary_rehydrate_still_loads_every_row(tmp_path, monkeypatch):
     """The fleet dashboard is served from the primary's _records — partitioning
     the primary at load time would blank worker sessions from the UI."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -133,8 +133,8 @@ def test_primary_rehydrate_still_loads_every_row(tmp_path, monkeypatch):
 
 
 def test_owns_record_worker_owns_exactly_its_stamp(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     orch = _new_orch()
     enabled = frozenset({"rocky", "dobby"})
     assert orch._owns_record(_record("s1", "rocky"), enabled) is True
@@ -143,8 +143,8 @@ def test_owns_record_worker_owns_exactly_its_stamp(monkeypatch):
 
 
 def test_owns_record_primary_owns_null_self_local_and_orphans(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     orch = _new_orch()
     enabled = frozenset({"dobby", "rocky"})
     assert orch._owns_record(_record("s1", None), enabled) is True      # legacy/own spawn
@@ -157,16 +157,16 @@ def test_owns_record_primary_owns_null_self_local_and_orphans(monkeypatch):
 def test_owns_record_unknown_registry_skips_foreign_stamps(monkeypatch):
     """Registry unreadable (None): delayed recovery of an orphan beats racing a
     live worker — foreign stamps are skipped, own/NULL rows still owned."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     orch = _new_orch()
     assert orch._owns_record(_record("s1", "rocky"), None) is False
     assert orch._owns_record(_record("s2", None), None) is True
 
 
 def test_owns_record_live_local_driver_always_owned(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     orch = _new_orch()
     rec = _record("s1", "dobby")
     orch._drivers[rec.id] = object()  # the driver lives HERE, whatever the stamp says
@@ -179,8 +179,8 @@ def test_owns_record_live_local_driver_always_owned(monkeypatch):
 
 
 def test_stuck_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -215,8 +215,8 @@ def test_stuck_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
 
 
 def test_disabled_account_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -253,8 +253,8 @@ def test_titling_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
     worker session every pass hit the vanished-cwd branch, logging
     `session.titling_skipped … cwd missing` on a session that is perfectly healthy
     where it actually runs (and whose own daemon titles it)."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -285,8 +285,8 @@ def test_goal_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
     """Same shape as the titling sweep (#1033): infer_goal runs a Claude query in the
     session's cwd, so on a foreign mirror it can only fail with "Working directory
     does not exist" — repeatedly, on a 2-minute timer."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
 
     async def run():
@@ -335,7 +335,7 @@ def _captured_usage_calls(monkeypatch):
 
 
 def test_worker_poller_never_refreshes_tokens(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
     calls = _captured_usage_calls(monkeypatch)
     orch = _new_orch()
     orch._poller._usage_fn("acct-idle")   # no live session either way
@@ -344,7 +344,7 @@ def test_worker_poller_never_refreshes_tokens(monkeypatch):
 
 
 def test_primary_poller_keeps_refreshing_idle_accounts(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
     calls = _captured_usage_calls(monkeypatch)
     orch = _new_orch()
     orch._poller._usage_fn("acct-idle")

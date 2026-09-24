@@ -111,8 +111,8 @@ def test_release_wrong_fence_is_noop(tmp_path):
 
 
 def test_second_primary_fails_boot_loudly(tmp_path, monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -127,8 +127,8 @@ def test_second_primary_fails_boot_loudly(tmp_path, monkeypatch):
 
 
 def test_primary_start_acquires_and_stop_releases(tmp_path, monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -149,8 +149,8 @@ def test_primary_start_acquires_and_stop_releases(tmp_path, monkeypatch):
 
 
 def test_worker_start_never_touches_the_lease(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -173,8 +173,8 @@ def test_worker_start_skips_fleet_global_loops(tmp_path, monkeypatch):
     """#919: a worker serves dispatched sessions only — it must NOT start the
     fleet-global automation loops, or two daemons double-drive the shared DB."""
     from server.sessions.orchestrator import _PRIMARY_ONLY_LOOP_ATTRS
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -194,8 +194,8 @@ def test_primary_start_runs_every_fleet_global_loop(tmp_path, monkeypatch):
     """The mirror of the worker case: a primary starts ALL of them, so
     _PRIMARY_ONLY_LOOP_ATTRS stays in lockstep with start()."""
     from server.sessions.orchestrator import _PRIMARY_ONLY_LOOP_ATTRS
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -220,10 +220,10 @@ def test_a_same_host_takeover_is_not_reported_as_two_primaries(tmp_path, monkeyp
     the thief ("fenced takeover by 'dobby'" logged on dobby), which is by
     construction not two primaries — it is another incarnation of this daemon
     (e.g. an overlapping restart). Say that instead of raising the fleet-wide
-    alarm that trains an operator to "fix" a CCSWITCH_DAEMON_ROLE that was never
+    alarm that trains an operator to "fix" a VIBERPIT_DAEMON_ROLE that was never
     wrong."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
@@ -248,8 +248,8 @@ def test_a_same_host_takeover_is_not_reported_as_two_primaries(tmp_path, monkeyp
 def test_a_real_foreign_takeover_still_screams(tmp_path, monkeypatch, caplog):
     """The alarm #852 exists for. Narrowing it must not silence it: a DIFFERENT
     host holding the lease is still CRITICAL, unchanged."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")

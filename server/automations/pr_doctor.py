@@ -37,7 +37,7 @@ class PrDoctor:
     # it to widen this ceiling now rather than block on it (#1267), the same
     # decision already made for backlog-runner (#1264) and the SDLC/PM origins.
     # Two independent gates still stand between this and a live Codex launch:
-    # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch), this
+    # VIBERPIT_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch), this
     # automation's own `engine` config opt-in (default "claude").
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [

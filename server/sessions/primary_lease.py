@@ -1,6 +1,6 @@
 """DB-side primary-daemon lease — "exactly one primary" as a checked invariant (#852).
 
-``CCSWITCH_DAEMON_ROLE`` is per-host env config: nothing structural stops two hosts
+``VIBERPIT_DAEMON_ROLE`` is per-host env config: nothing structural stops two hosts
 both being configured ``primary``, and two primaries double-drive every fleet-global
 automation with no detection. This module enforces the invariant through a single
 ``daemon_leases`` row (``name='primary'``):

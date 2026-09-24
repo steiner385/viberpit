@@ -14,8 +14,8 @@ def test_log_defaults():
 
 
 def test_log_env_override(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_LOG_LEVEL", "DEBUG")
-    monkeypatch.setenv("CCSWITCH_LOG_DIR", "/tmp/viberpit-logs")
+    monkeypatch.setenv("VIBERPIT_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("VIBERPIT_LOG_DIR", "/tmp/viberpit-logs")
     s = get_settings()
     assert s.log_level == "DEBUG"
     assert s.log_dir == "/tmp/viberpit-logs"

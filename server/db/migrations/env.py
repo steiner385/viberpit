@@ -3,7 +3,7 @@
 Offline mode: generates SQL without connecting.
 Online mode: connects to the target DB and runs migrations.
 
-The DB URL is read from CCSWITCH_DB_URL env var (falls back to Settings.db_url).
+The DB URL is read from VIBERPIT_DB_URL env var (falls back to Settings.db_url).
 For SQLite dev, init_db() create_all is the runtime path; Alembic targets Postgres prod.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from ccswitch.env_compat import mirror_legacy_env
 from server.db.models import Base
 from server.config import get_settings
 
-mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before CCSWITCH_DB_URL is read below
+mirror_legacy_env()  # mirrors the legacy env prefix, before VIBERPIT_DB_URL is read below
 
 config = context.config
 
@@ -32,7 +32,7 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    return os.environ.get("CCSWITCH_DB_URL", get_settings().db_url)
+    return os.environ.get("VIBERPIT_DB_URL", get_settings().db_url)
 
 
 def run_migrations_offline() -> None:

@@ -584,7 +584,7 @@ toggle. Each spawn site resolves the engine ONCE, ahead of the account probe and
 threads it into the seed prompt's commit-attribution trailer, the engine-scoped account gate and the
 session — a refused launch costs nothing and advances no onboarding state. Live evidence for the
 bounded classification batch and for synthesis/critic review separation on the real `codex` binary:
-`server/tests/test_pm_codex_live.py` (opt-in, `CCSWITCH_TEST_CODEX_LIVE=1`).
+`server/tests/test_pm_codex_live.py` (opt-in, `VIBERPIT_TEST_CODEX_LIVE=1`).
 
 Both origins also carry the fleet-wide `default_model` setting every spawning automation has: one
 enum per origin (`default` — the account's own model — through `auto` and each catalog alias), so

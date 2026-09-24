@@ -57,7 +57,7 @@ def test_startup_report_captures_boot_step_failure():
 
 
 def test_daemon_health_exposes_startup_report(tmp_path):
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         with TestClient(app, raise_server_exceptions=False) as client:

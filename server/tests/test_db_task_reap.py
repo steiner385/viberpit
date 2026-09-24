@@ -207,7 +207,7 @@ def test_lifespan_shutdown_runs_the_reap(tmp_path, monkeypatch):
     # at RUNTIME, so patching the module attribute is what it will resolve.
     monkeypatch.setattr(aio_mod, "reap_lingering_db_tasks", spy)
     monkeypatch.setenv(
-        "CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+        "VIBERPIT_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     )
 
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

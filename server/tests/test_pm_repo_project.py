@@ -19,8 +19,8 @@ OTHER_REPO = "steiner385/kindash"
 def db_env():
     with tempfile.TemporaryDirectory() as tmp:
         url = f"sqlite+aiosqlite:///{tmp}/t.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             yield url
 
 

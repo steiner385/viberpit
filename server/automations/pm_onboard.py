@@ -44,7 +44,7 @@ class PmOnboard:
     # `server/tests/test_pm_codex_live.py` (the live boundary, opt-in).
     #
     # `codex_allowed` grants the option, not the traffic: `default_engine` still
-    # answers Claude, and both `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` and #1263's
+    # answers Claude, and both `VIBERPIT_CODEX_AUTOMATIONS_ENABLED` and #1263's
     # network-egress opt-in ship off.
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     #: One setting for both sessions this origin spawns (synthesis and its

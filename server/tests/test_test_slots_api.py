@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DEV", "1")
+    monkeypatch.setenv("VIBERPIT_DEV", "1")
     from server.db import init_db
     asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'api.db'}"))
 
@@ -29,7 +29,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_acquire_grants_when_under_cap(client, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_SLOT_CAP", "1")
+    monkeypatch.setenv("VIBERPIT_TEST_SLOT_CAP", "1")
     r = client.post("/api/test-slots/acquire", json={"sessionId": "s1", "host": "rocky"})
     assert r.status_code == 200
     body = r.json()
@@ -40,7 +40,7 @@ def test_acquire_grants_when_under_cap(client, monkeypatch):
 
 
 def test_acquire_queues_over_cap(client, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_SLOT_CAP", "1")
+    monkeypatch.setenv("VIBERPIT_TEST_SLOT_CAP", "1")
     client.post("/api/test-slots/acquire", json={"sessionId": "s1", "host": "rocky"})
     r = client.post("/api/test-slots/acquire", json={"sessionId": "s2", "host": "rocky"})
     body = r.json()
@@ -49,7 +49,7 @@ def test_acquire_queues_over_cap(client, monkeypatch):
 
 
 def test_status_reflects_waiting_position(client, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_SLOT_CAP", "1")
+    monkeypatch.setenv("VIBERPIT_TEST_SLOT_CAP", "1")
     client.post("/api/test-slots/acquire", json={"sessionId": "s1", "host": "rocky"})
     client.post("/api/test-slots/acquire", json={"sessionId": "s2", "host": "rocky"})
     r = client.get("/api/test-slots/status", params={"sessionId": "s2", "host": "rocky"})
@@ -58,7 +58,7 @@ def test_status_reflects_waiting_position(client, monkeypatch):
 
 
 def test_release_promotes_next_waiter(client, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_SLOT_CAP", "1")
+    monkeypatch.setenv("VIBERPIT_TEST_SLOT_CAP", "1")
     client.post("/api/test-slots/acquire", json={"sessionId": "s1", "host": "rocky"})
     client.post("/api/test-slots/acquire", json={"sessionId": "s2", "host": "rocky"})
 

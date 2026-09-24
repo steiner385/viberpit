@@ -23,7 +23,7 @@ export interface AssistantStatus {
    * whether an assistant session exists yet. */
   operatorTools: boolean
   /** Which agent engine answers this drawer — `claude_code` or `codex`
-   * (CCSWITCH_ASSISTANT_ENGINE). A running thread reports its OWN engine, which can
+   * (VIBERPIT_ASSISTANT_ENGINE). A running thread reports its OWN engine, which can
    * differ from the deployment default after the setting is changed. */
   engine: string
 }

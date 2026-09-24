@@ -26,7 +26,7 @@ def _sqlite_env(tmp: str | None = None) -> dict[str, str]:
     """The one DB-URL override every wiring test patches into the environment:
     a file DB under *tmp*, or in-memory when *tmp* is None."""
     url = f"sqlite+aiosqlite:///{tmp}/wiring.db" if tmp else "sqlite+aiosqlite:///:memory:"
-    return {"CCSWITCH_DB_URL": url}
+    return {"VIBERPIT_DB_URL": url}
 
 
 def _make_orch():
@@ -227,7 +227,7 @@ def test_sdlc_list_initiatives_sorts_by_priority_then_age_and_carries_progress()
         return await orch._sdlc_list_initiatives()
 
     with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+        os.environ, {"VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
     ):
         orch = _make_orch()
         app = create_app(orchestrator=orch)

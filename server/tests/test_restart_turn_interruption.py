@@ -167,7 +167,7 @@ def test_daemon_units_use_killmode_mixed():
 # the daemon mid-drain and the turns die anyway
 # ---------------------------------------------------------------------------
 
-# Defaults from server/deploy/drain.py (CCSWITCH_DRAIN_CONDENSE_CAP_SEC) plus the
+# Defaults from server/deploy/drain.py (VIBERPIT_DRAIN_CONDENSE_CAP_SEC) plus the
 # pre-existing ≤90s shutdown budget the unit comment itemises.
 _DRAIN_CONDENSE_CAP_S = 570
 _SHUTDOWN_BUDGET_S = 90

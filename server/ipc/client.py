@@ -140,8 +140,8 @@ def _call_timeout(timeout: float) -> httpx.Timeout:
                          write=timeout, pool=min(timeout, _POOL_ACQUIRE_S))
 
 # Base subscriber queue size. Scales up automatically with active stream count;
-# override with CCSWITCH_IPC_QUEUE_SIZE to tune without code changes.
-_BASE_Q_SIZE = int(os.environ.get("CCSWITCH_IPC_QUEUE_SIZE", "1024"))
+# override with VIBERPIT_IPC_QUEUE_SIZE to tune without code changes.
+_BASE_Q_SIZE = int(os.environ.get("VIBERPIT_IPC_QUEUE_SIZE", "1024"))
 
 # Event types that must reach the browser to preserve session UX: a dropped
 # permissionRequest leaves the model permanently blocked waiting for a decision

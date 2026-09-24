@@ -24,7 +24,7 @@ def _client(tmp_path, monkeypatch):
     """TestClient on a file-backed SQLite DB so out-of-request db_session() checks
     (audit row, dedup) see the same persisted state the request wrote.
 
-    CCSWITCH_HOME stays set for the whole test (not just construction) because
+    VIBERPIT_HOME stays set for the whole test (not just construction) because
     attachments_dir() reads it lazily on every request that writes a file.
     """
     from fastapi.testclient import TestClient
@@ -32,8 +32,8 @@ def _client(tmp_path, monkeypatch):
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    monkeypatch.setenv("CCSWITCH_DB_URL", db_url)
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_DB_URL", db_url)
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
     app = create_app(orchestrator=orch)
     return TestClient(app, raise_server_exceptions=False)

@@ -6,7 +6,7 @@ map-synthesis + critic pair through the real ``codex`` binary, using the real
 prompts ``server/pm/classification.py`` builds, and check that what comes back
 still satisfies the contracts the orchestrator seams depend on.
 
-Opt-in (``CCSWITCH_TEST_CODEX_LIVE=1``) because it spends OpenAI quota and takes
+Opt-in (``VIBERPIT_TEST_CODEX_LIVE=1``) because it spends OpenAI quota and takes
 minutes. CI never runs it; the recorded evidence lives in
 ``docs/product/features/product-management-layer.md``.
 
@@ -55,8 +55,8 @@ from server.pm.classification import (
 from server.sessions.completion import commit_trailer
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("CCSWITCH_TEST_CODEX_LIVE") != "1" or shutil.which("codex") is None,
-    reason="live Codex boundary test: set CCSWITCH_TEST_CODEX_LIVE=1 with a codex binary on PATH",
+    os.environ.get("VIBERPIT_TEST_CODEX_LIVE") != "1" or shutil.which("codex") is None,
+    reason="live Codex boundary test: set VIBERPIT_TEST_CODEX_LIVE=1 with a codex binary on PATH",
 )
 
 SLUG = "codex-live-pm"

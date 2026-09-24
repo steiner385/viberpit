@@ -15,10 +15,10 @@ def _app(**env):
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
-    base = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
-            "CCSWITCH_TAILNET_ALLOWLIST": ""}
+    base = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
+            "VIBERPIT_TAILNET_ALLOWLIST": ""}
     with patch.dict(os.environ, {**base, **env}):
-        os.environ.pop("CCSWITCH_ENABLE_STT", None) if "CCSWITCH_ENABLE_STT" not in env else None
+        os.environ.pop("VIBERPIT_ENABLE_STT", None) if "VIBERPIT_ENABLE_STT" not in env else None
         return create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
 
 
@@ -43,7 +43,7 @@ def test_route_mounted_and_engine_absent_by_default():
 
 def test_engine_built_when_enabled_and_available():
     with patch("server.app.stt_available", return_value=True):
-        app = _app(CCSWITCH_ENABLE_STT="1", CCSWITCH_STT_MODEL="tiny.en", CCSWITCH_STT_CPU_THREADS="2")
+        app = _app(VIBERPIT_ENABLE_STT="1", VIBERPIT_STT_MODEL="tiny.en", VIBERPIT_STT_CPU_THREADS="2")
     eng = app.state.stt_engine
     assert eng is not None and eng.model_name == "tiny.en" and eng.cpu_threads == 2
     assert eng.loaded is False       # create_app never loads; the lifespan warms in a thread
@@ -51,5 +51,5 @@ def test_engine_built_when_enabled_and_available():
 
 def test_engine_absent_when_enabled_but_not_installed():
     with patch("server.app.stt_available", return_value=False):
-        app = _app(CCSWITCH_ENABLE_STT="1")
+        app = _app(VIBERPIT_ENABLE_STT="1")
     assert app.state.stt_engine is None

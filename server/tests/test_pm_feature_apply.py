@@ -23,8 +23,8 @@ def _orch():
     # (_no_ambient_remote_daemon_config).
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1", "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             asyncio.run(init_db(db_url))
             yield SessionOrchestrator(sdk_factory=fake_sdk_factory())
 

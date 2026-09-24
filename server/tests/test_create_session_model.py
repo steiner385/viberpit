@@ -64,9 +64,9 @@ def _spawn_env(tmp_path, *, db_name: str = "model_test.db", picked: dict | None 
 
     patches = [
         patch.dict(os.environ, {
-            "CCSWITCH_HOME": str(store_home),
+            "VIBERPIT_HOME": str(store_home),
             "CLAUDE_CONFIG_DIR": str(shared_base),
-            "CCSWITCH_DB_URL": db_url,
+            "VIBERPIT_DB_URL": db_url,
         }),
         patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
         patch("server.sessions.orchestrator.configdir.trust_project"),

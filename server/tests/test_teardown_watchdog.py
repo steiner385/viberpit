@@ -108,7 +108,7 @@ def test_testclient_exit_is_watched_end_to_end(monkeypatch, capfd):
     tuned to 0.3s via the env knob, so the dump fires — to the REAL stderr,
     which capfd sees — and teardown still completes (bounded test, no hang).
     """
-    monkeypatch.setenv("CCSWITCH_TEARDOWN_WATCHDOG_S", "0.3")
+    monkeypatch.setenv("VIBERPIT_TEARDOWN_WATCHDOG_S", "0.3")
 
     @asynccontextmanager
     async def lifespan(app):

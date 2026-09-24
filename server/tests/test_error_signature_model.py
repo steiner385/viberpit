@@ -53,9 +53,9 @@ def test_migration_0034_chains_off_the_current_head():
 
 def test_error_sink_flag_default_and_env(monkeypatch):
     from server.config import Settings
-    monkeypatch.delenv("CCSWITCH_ERROR_SINK_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_ERROR_SINK_ENABLED", raising=False)
     assert Settings().error_sink_enabled is True
-    monkeypatch.setenv("CCSWITCH_ERROR_SINK_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_ERROR_SINK_ENABLED", "false")
     assert Settings().error_sink_enabled is False
 
 

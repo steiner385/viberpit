@@ -7,7 +7,7 @@ against the real binary, not asserted from the schema, so this drives
 ``codex exec`` — the same binary the daemon runs — over the **real** prompts
 ``server/sdlc/prompts.py`` builds.
 
-It is opt-in (``CCSWITCH_TEST_CODEX_LIVE=1``) because it costs an OpenAI account
+It is opt-in (``VIBERPIT_TEST_CODEX_LIVE=1``) because it costs an OpenAI account
 real quota and takes minutes. CI never runs it; the recorded evidence lives in
 ``docs/product/features/openai-codex-integration.md``.
 
@@ -42,8 +42,8 @@ from server.sdlc.prompts import artifact_path, build_intent_prompt, build_plan_p
 from server.sessions.completion import commit_trailer
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("CCSWITCH_TEST_CODEX_LIVE") != "1" or shutil.which("codex") is None,
-    reason="live Codex boundary test: set CCSWITCH_TEST_CODEX_LIVE=1 with a codex binary on PATH",
+    os.environ.get("VIBERPIT_TEST_CODEX_LIVE") != "1" or shutil.which("codex") is None,
+    reason="live Codex boundary test: set VIBERPIT_TEST_CODEX_LIVE=1 with a codex binary on PATH",
 )
 
 SLUG = "codex-live-acceptance"

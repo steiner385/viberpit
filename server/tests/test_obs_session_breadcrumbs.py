@@ -69,7 +69,7 @@ def test_create_session_emits_session_start(tmp_path, caplog):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=_fake_usage)
         with (
             patch.dict(os.environ, {
-                "CCSWITCH_HOME": str(tmp_path / "store"),
+                "VIBERPIT_HOME": str(tmp_path / "store"),
                 "CLAUDE_CONFIG_DIR": str(shared_base),
             }),
             patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
@@ -208,7 +208,7 @@ def test_archive_session_emits_session_terminal(tmp_path, caplog):
     cwd.mkdir()
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             async with db_session() as db:
                 db.add(DbSession(

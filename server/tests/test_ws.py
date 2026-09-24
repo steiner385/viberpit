@@ -180,9 +180,9 @@ def ws_env(tmp_path):
     cfg_dir.mkdir(parents=True)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     })
     usage_patch = patch("ccswitch.accounts.usage_for", side_effect=_fake_usage)
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
@@ -1137,16 +1137,16 @@ def _rehydrated_detached_client(tmp_path, msgs, *, engine_session_id="resume-me"
     cfg_dir.mkdir(parents=True)
 
     env = {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     }
     with patch.dict(os.environ, env), \
          patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
          patch("server.sessions.orchestrator.configdir"), \
          patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
-        # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
+        # Seed INSIDE the VIBERPIT_HOME patch so paths.slot_path() resolves to the
         # temp store — otherwise it leaks an "alpha" account into the real store
         # (the conftest guard now fails the test if this regresses).
         _seed_account("alpha")

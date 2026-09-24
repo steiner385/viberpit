@@ -295,7 +295,7 @@ def _codex_app(tmp_path: Path, turns: list[dict], *, session_id: str = "codex-1"
 @pytest.fixture()
 def _db_env(tmp_path):
     url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": url}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": url}):
         yield url
 
 

@@ -29,20 +29,20 @@ def _make_exe(path):
 
 
 def test_resolve_uses_path_claude_by_default(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: "/opt/claude" if c == "claude" else None)
     assert resolve_claude_bin() == "/opt/claude"
 
 
 def test_resolve_honors_env_override_first_token_only(monkeypatch):
-    # CCSWITCH_CLAUDE_BIN may carry flags; only the executable is the cli_path.
-    monkeypatch.setenv("CCSWITCH_CLAUDE_BIN", "/custom/claude --dangerously-skip-permissions")
+    # VIBERPIT_CLAUDE_BIN may carry flags; only the executable is the cli_path.
+    monkeypatch.setenv("VIBERPIT_CLAUDE_BIN", "/custom/claude --dangerously-skip-permissions")
     monkeypatch.setattr(shutil, "which", lambda c: c if c == "/custom/claude" else None)
     assert resolve_claude_bin() == "/custom/claude"
 
 
 def test_resolve_returns_none_when_nothing_found(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     assert resolve_claude_bin() is None
 
@@ -52,7 +52,7 @@ def test_resolve_finds_existing_abs_path_not_on_path(monkeypatch, tmp_path):
     binary = tmp_path / "claude"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
-    monkeypatch.setenv("CCSWITCH_CLAUDE_BIN", str(binary))
+    monkeypatch.setenv("VIBERPIT_CLAUDE_BIN", str(binary))
     monkeypatch.setattr(shutil, "which", lambda c: None)
     assert resolve_claude_bin() == str(binary)
 
@@ -66,7 +66,7 @@ def test_resolve_finds_existing_abs_path_not_on_path(monkeypatch, tmp_path):
 
 
 def test_resolve_falls_back_to_local_bin_when_not_on_path(monkeypatch, isolated_home):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     binary = _make_exe(isolated_home / ".local" / "bin" / "claude")
     assert resolve_claude_bin() == str(binary)
@@ -76,7 +76,7 @@ def test_resolve_falls_back_to_newest_installed_version(monkeypatch, isolated_ho
     # No ~/.local/bin/claude symlink at all → pick the highest SEMANTIC version
     # under the native installer's versions store. "2.1.9" sorts lexically after
     # "2.1.259"; numeric ordering must win.
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     versions = isolated_home / ".local" / "share" / "claude" / "versions"
     _make_exe(versions / "2.1.9")
@@ -88,7 +88,7 @@ def test_resolve_falls_back_to_newest_installed_version(monkeypatch, isolated_ho
 def test_resolve_skips_dangling_local_bin_symlink(monkeypatch, isolated_home):
     # A half-finished `claude update` can leave ~/.local/bin/claude pointing at a
     # version dir that no longer exists; skip it rather than pin a dead path.
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     local_bin = isolated_home / ".local" / "bin"
     local_bin.mkdir(parents=True)
@@ -98,16 +98,16 @@ def test_resolve_skips_dangling_local_bin_symlink(monkeypatch, isolated_home):
 
 
 def test_path_claude_wins_over_well_known_locations(monkeypatch, isolated_home):
-    # PATH (or CCSWITCH_CLAUDE_BIN) stays authoritative; the well-known scan is
+    # PATH (or VIBERPIT_CLAUDE_BIN) stays authoritative; the well-known scan is
     # only a fallback so an operator override is never silently shadowed.
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: "/opt/claude" if c == "claude" else None)
     _make_exe(isolated_home / ".local" / "bin" / "claude")
     assert resolve_claude_bin() == "/opt/claude"
 
 
 def test_well_known_fallback_still_subject_to_floor(monkeypatch, isolated_home, caplog):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     _make_exe(isolated_home / ".local" / "bin" / "claude")
     monkeypatch.setattr(claude_bin, "_probe_version", lambda p: (2, 1, 162))
@@ -118,7 +118,7 @@ def test_well_known_fallback_still_subject_to_floor(monkeypatch, isolated_home, 
 
 
 def test_well_known_fallback_ignores_non_executable(monkeypatch, isolated_home):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     stub = isolated_home / ".local" / "bin" / "claude"
     stub.parent.mkdir(parents=True)
@@ -133,7 +133,7 @@ def test_well_known_fallback_ignores_non_executable(monkeypatch, isolated_home):
 def test_resolve_rejects_binary_below_floor(monkeypatch, caplog):
     # A resolvable but stale system claude (older than the bundled fallback) must
     # NOT be pinned — returning None lets the SDK use its newer bundled CLI.
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: "/opt/claude" if c == "claude" else None)
     monkeypatch.setattr(claude_bin, "_probe_version", lambda p: (2, 1, 162))
     monkeypatch.setattr(claude_bin, "_min_version", lambda: (2, 1, 183))
@@ -143,7 +143,7 @@ def test_resolve_rejects_binary_below_floor(monkeypatch, caplog):
 
 
 def test_resolve_keeps_binary_at_or_above_floor(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: "/opt/claude" if c == "claude" else None)
     monkeypatch.setattr(claude_bin, "_probe_version", lambda p: (2, 1, 251))
     monkeypatch.setattr(claude_bin, "_min_version", lambda: (2, 1, 183))
@@ -153,14 +153,14 @@ def test_resolve_keeps_binary_at_or_above_floor(monkeypatch):
 def test_resolve_keeps_binary_when_version_unprobeable(monkeypatch):
     # An unknowable version must NOT be rejected — that would regress today's
     # behavior (trust whatever resolves) for a binary that may well be current.
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: "/opt/claude" if c == "claude" else None)
     monkeypatch.setattr(claude_bin, "_probe_version", lambda p: None)
     assert resolve_claude_bin() == "/opt/claude"
 
 
 def test_resolve_warns_when_nothing_found(monkeypatch, caplog):
-    monkeypatch.delenv("CCSWITCH_CLAUDE_BIN", raising=False)
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda c: None)
     claude_bin._warned.clear()
     with caplog.at_level(logging.WARNING):
@@ -169,5 +169,5 @@ def test_resolve_warns_when_nothing_found(monkeypatch, caplog):
 
 
 def test_min_version_env_override(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CLAUDE_MIN_VERSION", "9.9.9")
+    monkeypatch.setenv("VIBERPIT_CLAUDE_MIN_VERSION", "9.9.9")
     assert claude_bin._min_version() == (9, 9, 9)

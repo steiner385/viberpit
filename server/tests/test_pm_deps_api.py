@@ -1,7 +1,7 @@
 """PM deps/drift API tests — GET /api/pm/projects/{slug}/deps.
 
 Mirrors test_pm_api.py fixture pattern: _client() context manager, async ORM seeding
-via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
+via db_session(), VIBERPIT_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ def _client(db_url: str | None = None):
         if url is None:
             tmp = stack.enter_context(tempfile.TemporaryDirectory())
             url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=orch)
             with TestClient(app, raise_server_exceptions=False) as c:

@@ -2,7 +2,7 @@
 
 Record only — the column is nullable, so `_reconcile_columns` ALTER-ADDs it on both
 dialects at startup; nothing runs `alembic upgrade` at deploy time. NULL means "unset →
-fall through to CCSWITCH_ASSISTANT_OPERATOR_TOOLS", which defaults false.
+fall through to VIBERPIT_ASSISTANT_OPERATOR_TOOLS", which defaults false.
 
 Chained off `0026_assistant_watches` (PR #1259), which was opened first and claims 0026
 while this branch was in flight. Both would otherwise chain off 0025 and fork the chain

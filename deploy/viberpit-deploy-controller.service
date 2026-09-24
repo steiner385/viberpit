@@ -9,10 +9,10 @@ User=tony
 EnvironmentFile=/etc/viberpit/viberpit.env
 # Paths match the sibling units (viberpit.service / viberpit-daemon.service). Adjust
 # the checkout path at install time if this host's deploy checkout differs (e.g. the
-# live host uses .../viberpit-deploy). serve.py defaults CCSWITCH_DEPLOY_REPO
+# live host uses .../viberpit-deploy). serve.py defaults VIBERPIT_DEPLOY_REPO
 # to WorkingDirectory, so keep the two in sync.
 WorkingDirectory=/home/tony/GitHub/viberpit-deploy
-Environment=CCSWITCH_DEPLOY_REPO=/home/tony/GitHub/viberpit-deploy
+Environment=VIBERPIT_DEPLOY_REPO=/home/tony/GitHub/viberpit-deploy
 RuntimeDirectory=viberpit
 RuntimeDirectoryPreserve=yes
 ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m server.deploy serve

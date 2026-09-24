@@ -19,9 +19,9 @@ import { useSettingsForm } from '../useSettingsForm'
 /** Env-managed ceilings that sit OUTSIDE the five-layer stack (spec 2026-09-20 D9). */
 // eslint-disable-next-line react-refresh/only-export-components
 export const CAPACITY_MANAGED_KEYS = [
-  'CCSWITCH_TEST_SLOT_CAP',
-  'CCSWITCH_CHILD_SESSION_CAP',
-  'CCSWITCH_STT_MAX_CONCURRENT',
+  'VIBERPIT_TEST_SLOT_CAP',
+  'VIBERPIT_CHILD_SESSION_CAP',
+  'VIBERPIT_STT_MAX_CONCURRENT',
   'VIBERPIT_CAPACITY_GOVERNOR_ENABLED',
 ] as const
 

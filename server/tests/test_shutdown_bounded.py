@@ -201,9 +201,9 @@ def test_lifespan_shutdown_bounded_when_orchestrator_stop_wedges(tmp_path, monke
     (shared_base / "projects").mkdir()
 
     env = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     })
     usage = patch("ccswitch.accounts.usage_for", side_effect=_fake_usage)
     select = patch("server.sessions.orchestrator.select_account",

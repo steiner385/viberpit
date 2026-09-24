@@ -11,8 +11,8 @@ links:
 ---
 
 > **State.** Phases 1–6 and Phase 7 Tasks 7.1–7.3 have landed behind fail-closed flags:
-> `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
-> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false. The two
+> `VIBERPIT_CODEX_ENABLED` and `VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED` are both
+> `false` everywhere, and `VIBERPIT_CODEX_AUTOMATIONS_ENABLED` stays false. The two
 > SDLC origins and the two PM session origins are `codex_allowed` on live-boundary
 > evidence (#1265/#1266, #1268/#1269). `backlog-runner` and `pr-doctor` are also
 > `codex_allowed` (#1264, #1267) on their offline acceptance suites alone — a
@@ -116,9 +116,9 @@ compatibility audit; API-key authentication in v1.
   API rejects `{"engine": "codex"}` as an unknown key, and the one automation spawn helper clamps
   again at launch. The reason unattended sessions get a stricter gate than interactive ones: they
   run in `full-auto` with git/gh/pytest and nobody watching, so an unverified prompt contract or
-  completion-marker mismatch is not a degraded experience. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
+  completion-marker mismatch is not a degraded experience. `VIBERPIT_CODEX_AUTOMATIONS_ENABLED`
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
-  Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
+  Claude without an operator unwinding each config, and it is separate from `VIBERPIT_CODEX_ENABLED`
   so enabling Codex for humans does not enable it for control loops. **`backlog-runner` (#1264), the
   two SDLC origins (`sdlc-intake`, `sdlc-synthesizer`, #1265/#1266), the two PM session origins
   (`pm-onboard`, `pm-classify`, #1268/#1269), and `pr-doctor` (#1267) are `codex_allowed`; every
@@ -139,7 +139,7 @@ compatibility audit; API-key authentication in v1.
   enforced independently. Full-auto is an explicit grant of filesystem and network
   authority, not workspace confinement.
 - **Automation permissions use the same profile.** The obsolete
-  `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` workaround is removed; remove it from
+  `VIBERPIT_CODEX_UNATTENDED_NETWORK_OPT_IN` workaround is removed; remove it from
   runner configuration. Full-auto no longer needs promotion to `bypassPermissions`
   or a separate escalation event. Explicit restrictive modes are still refused by
   `unattended_launch_blocker`, and no disabled automation is enabled by this change.
@@ -152,7 +152,7 @@ compatibility audit; API-key authentication in v1.
   `codex_allowed`, on the evidence of an opt-in initiative driven intent → design → plan on the real
   `codex` binary (`codex-cli 0.153.2` — the same version the app-server contract is pinned to). The
   harness is committed as `server/tests/test_sdlc_codex_live_artifact.py` and is opt-in
-  (`CCSWITCH_TEST_CODEX_LIVE=1`), so CI never spends OpenAI quota on it. It runs each stage's **real**
+  (`VIBERPIT_TEST_CODEX_LIVE=1`), so CI never spends OpenAI quota on it. It runs each stage's **real**
   prompt from `server/sdlc/prompts.py` in a throwaway repository whose `origin` is a local *bare*
   repo, in the `danger-full-access` profile now shared by `full-auto` and
   `bypassPermissions`. Each stage was verified to produce exactly its own artifact at
@@ -165,7 +165,7 @@ compatibility audit; API-key authentication in v1.
   `gh pr create` (needs GitHub) and therefore the non-draft/no-auto-merge PR attributes, which stay
   prompt-level guarantees checked in `server/tests/test_sdlc_codex_acceptance.py`.
   **`codex_allowed` grants the option, not the traffic.** The default engine remains
-  Claude and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED=false` clamps an opted-in origin
+  Claude and `VIBERPIT_CODEX_AUTOMATIONS_ENABLED=false` clamps an opted-in origin
   back to Claude. Both remain covered in `server/tests/test_sdlc_codex_acceptance.py`.
 - **PM origins enabled (#1268 onboarding/critic, #1269 classification).** `pm-onboard` and
   `pm-classify` spawn unattended sessions but are *operator-triggered* — the Projects workspace and
@@ -186,7 +186,7 @@ compatibility audit; API-key authentication in v1.
   account probe and a full `ensure_clone`, so a refused launch paid for a git clone on every tap.
   The critic prompt carried no attribution trailer at all even though it commits and pushes.
 
-  Live evidence: `server/tests/test_pm_codex_live.py`, opt-in via `CCSWITCH_TEST_CODEX_LIVE=1`. It
+  Live evidence: `server/tests/test_pm_codex_live.py`, opt-in via `VIBERPIT_TEST_CODEX_LIVE=1`. It
   runs a bounded classification batch through the real `codex` binary in `read-only` (a classify
   session has no write to do) and checks the ingest parser `_pm_classify_ingest` uses yields exactly
   one row per listed item, no invented features, and a usable `no_fit` escape hatch; then it runs

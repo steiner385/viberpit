@@ -25,7 +25,7 @@ def _client():
 
     with temp_env(), tempfile.TemporaryDirectory() as d:
         db_url = f"sqlite+aiosqlite:///{Path(d) / 'settings.db'}"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}):
             orch = SessionOrchestrator(poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)

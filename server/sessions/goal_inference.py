@@ -23,7 +23,7 @@ _MAX_GOAL_CHARS = 200
 # Mirrors prompt_refiner.REFINE_TIMEOUT_S — bounds the native-Codex one-shot turn
 # (SessionOrchestrator.infer_goal_codex) so a wedged thread cannot hold the goal
 # sweep open forever.
-GOAL_INFER_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_GOAL_INFER_TIMEOUT_S", "20"))
+GOAL_INFER_TIMEOUT_S: float = float(os.environ.get("VIBERPIT_GOAL_INFER_TIMEOUT_S", "20"))
 
 _SYSTEM_PROMPT = (
     "You distill coding sessions into goal statements. Given a session's title and a "

@@ -128,7 +128,7 @@ async def real_suggestion_factory(cwd, config_dir, account=None):
 
     Bound to the session's own account config dir (Max subscription only). Tools denied;
     model defaults to Haiku but can be overridden (or cleared to the account default) via
-    CCSWITCH_SUGGEST_MODEL.
+    VIBERPIT_SUGGEST_MODEL.
 
     *account*, when given, also injects CLAUDE_CODE_OAUTH_TOKEN via
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
@@ -142,7 +142,7 @@ async def real_suggestion_factory(cwd, config_dir, account=None):
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .suggestions import SUGGEST_SYSTEM_PROMPT
     env = helper_env(config_dir, account)
-    model = os.environ.get("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5") or None
+    model = os.environ.get("VIBERPIT_SUGGEST_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
@@ -156,7 +156,7 @@ async def real_summary_factory(cwd, config_dir, account=None):
     """One-shot, resume-less client for generating a session status summary.
 
     Bound to the session's own account config dir (Max subscription only). Tools denied;
-    model defaults to Haiku, overridable via CCSWITCH_SUMMARY_MODEL.
+    model defaults to Haiku, overridable via VIBERPIT_SUMMARY_MODEL.
 
     *account*, when given, also injects CLAUDE_CODE_OAUTH_TOKEN via
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
@@ -169,7 +169,7 @@ async def real_summary_factory(cwd, config_dir, account=None):
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .summaries import SUMMARY_SYSTEM_PROMPT
     env = helper_env(config_dir, account)
-    model = os.environ.get("CCSWITCH_SUMMARY_MODEL", "claude-haiku-4-5") or None
+    model = os.environ.get("VIBERPIT_SUMMARY_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,

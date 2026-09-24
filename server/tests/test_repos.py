@@ -19,7 +19,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 def _make_app_and_client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         from fastapi.testclient import TestClient
@@ -60,7 +60,7 @@ def test_list_github_repos_annotates_cloned(tmp_path):
     clone_git.mkdir(parents=True)
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
                 _, client = _make_app_and_client()
                 with client:
@@ -79,7 +79,7 @@ def test_list_github_repos_gh_error_502(tmp_path):
     """GhError with no cached list (cold) surfaces as HTTP 502."""
     from ccswitch.gitrepos import GhError
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_accessible_repos", side_effect=GhError("not logged in")):
                 _, client = _make_app_and_client()
                 with client:
@@ -93,7 +93,7 @@ def test_list_github_repos_serves_cached_on_gh_error(tmp_path):
     Regression for the GraphQL-rate-limit "UI freaking out" incident."""
     from ccswitch.gitrepos import GhError
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
                 # 1. prime the per-app cache with a good response
@@ -123,7 +123,7 @@ def test_list_github_repos_daemon_down_still_serves_list(tmp_path):
         raise DaemonUnavailable("connection refused")
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
                 app, client = _make_app_and_client()
                 with client:
@@ -148,7 +148,7 @@ def test_list_github_repos_daemon_down_serves_last_good_cloned_set(tmp_path):
         raise DaemonUnavailable("connection refused")
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
                 app, client = _make_app_and_client()
                 with client:
@@ -172,7 +172,7 @@ def test_list_github_repos_daemon_down_serves_last_good_cloned_set(tmp_path):
 def test_list_github_branches(tmp_path):
     """GET /api/github/branches?repo=<o>/<n> returns default + branches."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch(
                 "ccswitch.gitrepos.list_remote_branches",
                 return_value={"default": "main", "branches": ["main", "feature-x"]},
@@ -190,7 +190,7 @@ def test_list_github_branches(tmp_path):
 def test_list_github_branches_bad_name_400(tmp_path):
     """A malformed repo name (no slash) → 400."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
                 resp = client.get("/api/github/branches?repo=noslash", headers=IDENTITY_HEADERS)
@@ -200,7 +200,7 @@ def test_list_github_branches_bad_name_400(tmp_path):
 def test_list_github_branches_gh_error_502(tmp_path):
     from ccswitch.gitrepos import GhError
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_remote_branches", side_effect=GhError("404")):
                 _, client = _make_app_and_client()
                 with client:
@@ -224,7 +224,7 @@ def test_credential_alerts_lists_and_dismisses(tmp_path):
                "Password authentication is not supported")
     try:
         with temp_env():
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
                 _, client = _make_app_and_client()
                 with client:
                     resp = client.get("/api/github/credential-alerts", headers=IDENTITY_HEADERS)
@@ -250,7 +250,7 @@ def test_credential_alerts_empty_when_clean(tmp_path):
     from ccswitch import gitrepos
     gitrepos._stale_credentials.clear()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
                 resp = client.get("/api/github/credential-alerts", headers=IDENTITY_HEADERS)
@@ -272,7 +272,7 @@ def test_get_config_returns_repo_root(tmp_path):
     """
     repo_root = str(tmp_path / "GitHub")
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": repo_root, "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": repo_root, "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
                 resp = client.get("/api/config", headers=IDENTITY_HEADERS)
@@ -324,7 +324,7 @@ def test_create_session_with_repo_clones(tmp_path):
         with patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
              patch("ccswitch.gitrepos.ensure_clone", side_effect=fake_ensure_clone), \
-             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
@@ -368,8 +368,8 @@ def test_create_session_accepts_attachment_ids(tmp_path):
 
         with patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path),
-                                     "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path),
+                                     "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
@@ -398,7 +398,7 @@ def test_create_session_clone_error_502(tmp_path):
     from ccswitch.gitrepos import CloneError
     with temp_env():
         with patch("ccswitch.gitrepos.ensure_clone", side_effect=CloneError("boom")), \
-             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient

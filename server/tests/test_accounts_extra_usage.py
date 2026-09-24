@@ -54,7 +54,7 @@ def _make_client(usage_fn=None):
 def test_patch_toggles_allow_extra_usage():
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             on = client.patch("/api/accounts/alice", json={"allowExtraUsage": True},
@@ -71,7 +71,7 @@ def test_get_accounts_defaults_allow_extra_usage_false():
     """An account nobody has touched must never be opted into spending."""
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=lambda name: make_usage(session=10.0))
         with client:
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
@@ -84,7 +84,7 @@ def test_patch_leaves_other_fields_untouched():
     """Fields absent from the body must not be clobbered (partial-update contract)."""
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             client.patch("/api/accounts/carol",
@@ -110,7 +110,7 @@ def test_get_accounts_exposes_upstream_extra_usage_enabled():
     with temp_env():
         _seed_slot("paid")
         _seed_slot("free")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=usage_fn)
         with client:
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
@@ -129,7 +129,7 @@ def test_get_accounts_ranks_extra_usage_account_last():
     with temp_env():
         _seed_slot("maxed")
         _seed_slot("cool")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=usage_fn)
         with client:
             client.patch("/api/accounts/maxed", json={"allowExtraUsage": True},
@@ -151,7 +151,7 @@ def test_get_accounts_at_ceiling_unranked_without_opt_in():
     with temp_env():
         _seed_slot("maxed")
         _seed_slot("cool")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=usage_fn)
         with client:
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
@@ -162,7 +162,7 @@ def test_get_accounts_at_ceiling_unranked_without_opt_in():
 
 def test_patch_unknown_account_is_404():
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch("/api/accounts/ghost", json={"allowExtraUsage": True},

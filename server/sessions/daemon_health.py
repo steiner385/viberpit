@@ -64,7 +64,7 @@ def _watchdog_last_restart() -> float | None:
     edge restarts, so it backstops ``lastRestartAt`` when the in-memory history is empty.
     Best-effort: a missing/garbage file just yields None.
     """
-    state_dir = os.environ.get("CCSWITCH_HEALTH_STATE_DIR", _DEFAULT_HEALTH_STATE_DIR)
+    state_dir = os.environ.get("VIBERPIT_HEALTH_STATE_DIR", _DEFAULT_HEALTH_STATE_DIR)
     path = os.path.join(state_dir, "last-restart")
     try:
         with open(path) as fh:

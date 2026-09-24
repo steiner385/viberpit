@@ -63,7 +63,7 @@ async def test_missing_identity_returns_401():
 @pytest.mark.asyncio
 async def test_allowlisted_identity_passes(monkeypatch):
     """An identity present in the allowlist is allowed through."""
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com,bob@example.com")
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "alice@example.com,bob@example.com")
     # Need a fresh app so the settings reload
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -72,13 +72,13 @@ async def test_allowlisted_identity_passes(monkeypatch):
             headers={"Tailscale-User-Login": "alice@example.com"},
         )
     assert response.status_code == 200
-    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
+    monkeypatch.delenv("VIBERPIT_TAILNET_ALLOWLIST", raising=False)
 
 
 @pytest.mark.asyncio
 async def test_non_allowlisted_identity_returns_401(monkeypatch):
     """An identity NOT in the allowlist is rejected with 401."""
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com")
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "alice@example.com")
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(
@@ -86,30 +86,30 @@ async def test_non_allowlisted_identity_returns_401(monkeypatch):
             headers={"Tailscale-User-Login": "eve@evil.com"},
         )
     assert response.status_code == 401
-    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
+    monkeypatch.delenv("VIBERPIT_TAILNET_ALLOWLIST", raising=False)
 
 
 # ---------------------------------------------------------------------------
-# Open-LAN mode (CCSWITCH_ALLOW_UNAUTHENTICATED) — opt-in, fail-closed by default
+# Open-LAN mode (VIBERPIT_ALLOW_UNAUTHENTICATED) — opt-in, fail-closed by default
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_no_identity_admitted_when_open_lan_enabled(monkeypatch):
-    """With CCSWITCH_ALLOW_UNAUTHENTICATED=1, a request with no Tailscale identity
+    """With VIBERPIT_ALLOW_UNAUTHENTICATED=1, a request with no Tailscale identity
     is admitted (as the synthetic LAN guest) instead of 401'd."""
-    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "1")
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/health")
     assert response.status_code == 200
-    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
 
 
 @pytest.mark.asyncio
 async def test_open_lan_default_off_still_401(monkeypatch):
     """The flag is fail-closed: unset (the default) keeps the missing-identity 401."""
-    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/health")
@@ -120,8 +120,8 @@ async def test_open_lan_default_off_still_401(monkeypatch):
 async def test_open_lan_does_not_bypass_allowlist_for_real_identity(monkeypatch):
     """Open-LAN mode only admits *unidentified* clients as guests; a real presented
     identity is still subject to the allowlist (prod stays protected)."""
-    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "1")
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com")
+    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "alice@example.com")
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(
@@ -129,8 +129,8 @@ async def test_open_lan_does_not_bypass_allowlist_for_real_identity(monkeypatch)
             headers={"Tailscale-User-Login": "eve@evil.com"},
         )
     assert response.status_code == 401
-    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
-    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
+    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.delenv("VIBERPIT_TAILNET_ALLOWLIST", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
     # `_signing_secret()`, which falls back to `ccswitch.crypto.master_key()`'s
     # `secret-tool` lookup when no secret is configured — that call would otherwise
     # also land in `whois_calls`. Configure a session secret so it short-circuits.
-    monkeypatch.setenv("CCSWITCH_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("VIBERPIT_SESSION_SECRET", "test-secret")
     app = create_app()
     # Simulate nginx on loopback forwarding the real Tailscale peer IP via X-Real-IP
     transport = ASGITransport(app=app, client=("127.0.0.1", 12345))

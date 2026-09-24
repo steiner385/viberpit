@@ -17,7 +17,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home" / "store").mkdir(parents=True)
     (base / "settings.json").write_text(json.dumps({"enabledPlugins": {"a@m": True}}))
     app = create_app()
@@ -110,7 +110,7 @@ def test_mcp_crud(client: TestClient):
 
 
 def test_requires_identity(client: TestClient, monkeypatch: pytest.MonkeyPatch):
-    # conftest runs with an empty allowlist + CCSWITCH_DEV=1, which admits any
+    # conftest runs with an empty allowlist + VIBERPIT_DEV=1, which admits any
     # identity header. A request with no header at all must still 401.
     r = client.get("/api/library/plugins")
     assert r.status_code == 401
@@ -122,7 +122,7 @@ def test_toggle_plugin_corrupt_settings_returns_409(
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home" / "store").mkdir(parents=True)
     # Write a corrupt settings.json — note: plugin must also appear in settings
     # so it passes the "known" check; but corrupt parse fires before the key lookup.
@@ -148,7 +148,7 @@ def test_put_mcp_corrupt_shared_returns_409(
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home" / "store").mkdir(parents=True)
     (base / "settings.json").write_text("{}")
     shared_path = cpaths.shared_claude_json_path()
@@ -174,7 +174,7 @@ def test_delete_mcp_corrupt_shared_returns_409(
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home" / "store").mkdir(parents=True)
     (base / "settings.json").write_text("{}")
     shared_path = cpaths.shared_claude_json_path()

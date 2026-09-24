@@ -16,12 +16,12 @@ def temp_env():
         (shared / "settings.json").write_text("{}")
         (shared / "projects").mkdir()
         old = {k: os.environ.get(k) for k in (
-            "CCSWITCH_HOME", "CLAUDE_CONFIG_DIR", "CCSWITCH_CLAUDE_BIN",
-            "CCSWITCH_ARCHIVE_HOME",
+            "VIBERPIT_HOME", "CLAUDE_CONFIG_DIR", "VIBERPIT_CLAUDE_BIN",
+            "VIBERPIT_ARCHIVE_HOME",
         )}
-        os.environ["CCSWITCH_HOME"] = str(home)
+        os.environ["VIBERPIT_HOME"] = str(home)
         os.environ["CLAUDE_CONFIG_DIR"] = str(shared)
-        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
+        os.environ.pop("VIBERPIT_ARCHIVE_HOME", None)
         try:
             # Clear module-level singletons that would otherwise leak between tests.
             import sys

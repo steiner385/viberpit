@@ -2,7 +2,7 @@
 # fetch-codex.sh — Download, verify, and install the Codex CLI version ViberPit pins.
 #
 # Install destination: ~/.local/lib/ccswitch/codex
-# Point the daemon at it with CCSWITCH_CODEX_BIN (server/codex/process.py resolves an
+# Point the daemon at it with VIBERPIT_CODEX_BIN (server/codex/process.py resolves an
 # explicit path directly, and a bare name through $PATH).
 #
 # Usage:
@@ -173,7 +173,7 @@ if [[ "${INSTALLED_VERSION}" != "${PINNED_VERSION_STRING}" ]]; then
     echo "  ViberPit pins: ${PINNED_VERSION_STRING}  (server/codex/schema.py)" >&2
     echo "  this binary:   ${INSTALLED_VERSION}" >&2
     echo "  Admitting another version is an explicit operator decision:" >&2
-    echo "  set CCSWITCH_CODEX_SUPPORTED_VERSIONS — but note it can never waive a" >&2
+    echo "  set VIBERPIT_CODEX_SUPPORTED_VERSIONS — but note it can never waive a" >&2
     echo "  schema-contract change, only a version label." >&2
     exit 1
 fi
@@ -188,7 +188,7 @@ cat <<EOF
 ==> Done. Codex CLI ${PINNED_VERSION} installed at: ${INSTALL_PATH}
 
 Next:
-  1. Point the daemon at it:   CCSWITCH_CODEX_BIN=${INSTALL_PATH}
+  1. Point the daemon at it:   VIBERPIT_CODEX_BIN=${INSTALL_PATH}
   2. Check the whole boundary: python -m server.codex.doctor
      (binary/schema, runtime home, authority reachability, mTLS identity,
       account manifest, and the two launch flags)

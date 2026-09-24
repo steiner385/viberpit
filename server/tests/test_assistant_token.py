@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from server.app import create_app
 from server.assistant.token import AssistantClaims, mint_token, verify_token
 
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "", "CCSWITCH_SESSION_SECRET": "x" * 32}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_SESSION_SECRET": "x" * 32}
 
 
 def test_mint_verify_roundtrip():

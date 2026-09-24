@@ -1,12 +1,12 @@
 def test_env_wins(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", " rocky ")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", " rocky ")
     from server.hostname import self_host_name
     assert self_host_name() == "rocky"
 
 
 def test_falls_back_to_first_hostname_label(monkeypatch):
     import socket
-    monkeypatch.delenv("CCSWITCH_HOST_NAME", raising=False)
+    monkeypatch.delenv("VIBERPIT_HOST_NAME", raising=False)
     monkeypatch.setattr(socket, "gethostname", lambda: "dobby.tail0dd570.ts.net")
     from server.hostname import self_host_name
     assert self_host_name() == "dobby"

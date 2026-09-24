@@ -3,7 +3,7 @@ written to, not through the *current* archive home.
 
 ``archive_home`` is a PLACEMENT setting (which disk archives live on), while being
 archived is a LIFECYCLE fact about a session. Fusing the two meant that pointing
-CCSWITCH_ARCHIVE_HOME at a different disk retroactively changed where every past
+VIBERPIT_ARCHIVE_HOME at a different disk retroactively changed where every past
 archive was believed to live: unarchive looked in the new root, missed, and silently
 recreated an empty cwd — reporting success while handing the user an empty worktree.
 
@@ -55,8 +55,8 @@ def test_archive_session_stamps_null_root_and_leaves_cwd(tmp_path):
     cwd.mkdir()
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
-                                     "CCSWITCH_ARCHIVE_HOME": str(home)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path),
+                                     "VIBERPIT_ARCHIVE_HOME": str(home)}):
             await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ar.db'}")
             async with db_session() as db:
                 # A stale root from a legacy archive→unarchive round trip must be
@@ -94,8 +94,8 @@ def test_unarchive_resolves_through_stored_root_not_current_home(tmp_path):
     cwd = tmp_path / "wt" / "s1"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
-                                     "CCSWITCH_ARCHIVE_HOME": str(new_root)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path),
+                                     "VIBERPIT_ARCHIVE_HOME": str(new_root)}):
             await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'res.db'}")
             await _add_archived(cwd=cwd, archive_root=old_root)
             await _orch().unarchive("s1")
@@ -115,8 +115,8 @@ def test_unarchive_raises_when_archive_missing_and_leaves_no_empty_cwd(tmp_path)
     cwd = tmp_path / "wt" / "s1"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
-                                     "CCSWITCH_ARCHIVE_HOME": str(root)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path),
+                                     "VIBERPIT_ARCHIVE_HOME": str(root)}):
             await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'miss.db'}")
             await _add_archived(cwd=cwd, archive_root=root)
             await _orch().unarchive("s1")
@@ -137,8 +137,8 @@ def test_unarchive_legacy_null_root_falls_back_to_current_home(tmp_path):
     cwd = tmp_path / "wt" / "s1"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
-                                     "CCSWITCH_ARCHIVE_HOME": str(root)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path),
+                                     "VIBERPIT_ARCHIVE_HOME": str(root)}):
             await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}")
             await _add_archived(cwd=cwd, archive_root=None)
             await _orch().unarchive("s1")

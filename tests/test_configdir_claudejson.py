@@ -192,12 +192,12 @@ class TestComposeClaudioJson(unittest.TestCase):
             f.write_text("{}")
             os.utime(f, (now - age, now - age))
         if retention is not None:
-            os.environ["CCSWITCH_CONFIG_BACKUP_RETENTION_S"] = str(retention)
+            os.environ["VIBERPIT_CONFIG_BACKUP_RETENTION_S"] = str(retention)
         try:
             configdir.compose("alpha")
         finally:
             if retention is not None:
-                os.environ.pop("CCSWITCH_CONFIG_BACKUP_RETENTION_S", None)
+                os.environ.pop("VIBERPIT_CONFIG_BACKUP_RETENTION_S", None)
         return backups
 
     def test_compose_keeps_recent_corruption_evidence(self):

@@ -110,9 +110,9 @@ class _Harness:
 
         self._patches = [
             patch.dict(os.environ, {
-                "CCSWITCH_HOME": str(store_home),
+                "VIBERPIT_HOME": str(store_home),
                 "CLAUDE_CONFIG_DIR": str(shared_base),
-                "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+                "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
             }),
             patch("ccswitch.accounts.usage_for", side_effect=_fake_usage),
             patch("server.sessions.orchestrator.compose", return_value=cfg_dir),

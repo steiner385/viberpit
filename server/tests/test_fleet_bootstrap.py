@@ -205,7 +205,7 @@ def test_renames_local_row_to_match_https_endpoint(tmp_path):
     assert rows[0].name == "rocky", "row must be renamed from 'local' to 'rocky'"
 
 
-# ── CCSWITCH_FLEET_HOSTS env-var seeding ───────────────────────────────────
+# ── VIBERPIT_FLEET_HOSTS env-var seeding ───────────────────────────────────
 
 
 def test_fleet_hosts_map_parses_name_endpoint_pairs():
@@ -213,16 +213,16 @@ def test_fleet_hosts_map_parses_name_endpoint_pairs():
     from server.config import get_settings
 
     import os
-    old = os.environ.get("CCSWITCH_FLEET_HOSTS")
+    old = os.environ.get("VIBERPIT_FLEET_HOSTS")
     try:
-        os.environ["CCSWITCH_FLEET_HOSTS"] = "rocky=https://rocky:9443,dobby=https://dobby:9443"
+        os.environ["VIBERPIT_FLEET_HOSTS"] = "rocky=https://rocky:9443,dobby=https://dobby:9443"
         s = get_settings()
         m = s.fleet_hosts_map
     finally:
         if old is None:
-            os.environ.pop("CCSWITCH_FLEET_HOSTS", None)
+            os.environ.pop("VIBERPIT_FLEET_HOSTS", None)
         else:
-            os.environ["CCSWITCH_FLEET_HOSTS"] = old
+            os.environ["VIBERPIT_FLEET_HOSTS"] = old
     assert m == {"rocky": "https://rocky:9443", "dobby": "https://dobby:9443"}
 
 
@@ -230,13 +230,13 @@ def test_fleet_hosts_map_empty_when_unset():
     import os
     from server.config import get_settings
 
-    old = os.environ.pop("CCSWITCH_FLEET_HOSTS", None)
+    old = os.environ.pop("VIBERPIT_FLEET_HOSTS", None)
     try:
         s = get_settings()
         assert s.fleet_hosts_map == {}
     finally:
         if old is not None:
-            os.environ["CCSWITCH_FLEET_HOSTS"] = old
+            os.environ["VIBERPIT_FLEET_HOSTS"] = old
 
 
 def test_fleet_hosts_map_ignores_malformed_entries():
@@ -244,16 +244,16 @@ def test_fleet_hosts_map_ignores_malformed_entries():
     import os
     from server.config import get_settings
 
-    old = os.environ.get("CCSWITCH_FLEET_HOSTS")
+    old = os.environ.get("VIBERPIT_FLEET_HOSTS")
     try:
-        os.environ["CCSWITCH_FLEET_HOSTS"] = "rocky=https://rocky:9443,badentry,"
+        os.environ["VIBERPIT_FLEET_HOSTS"] = "rocky=https://rocky:9443,badentry,"
         s = get_settings()
         m = s.fleet_hosts_map
     finally:
         if old is None:
-            os.environ.pop("CCSWITCH_FLEET_HOSTS", None)
+            os.environ.pop("VIBERPIT_FLEET_HOSTS", None)
         else:
-            os.environ["CCSWITCH_FLEET_HOSTS"] = old
+            os.environ["VIBERPIT_FLEET_HOSTS"] = old
     assert m == {"rocky": "https://rocky:9443"}
 
 

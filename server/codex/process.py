@@ -31,7 +31,7 @@ Three rules are enforced here rather than left to callers:
   :mod:`server.codex.redaction`, the one scrubber). Tokens go over JSON-RPC stdin,
   which is what :mod:`server.codex.protocol` does.
 
-Like the rest of ``server/codex/``, nothing here reads ``CCSWITCH_*``: settings are
+Like the rest of ``server/codex/``, nothing here reads ``VIBERPIT_*``: settings are
 passed in by the caller.
 """
 from __future__ import annotations
@@ -90,7 +90,7 @@ APP_SERVER_STREAM_LIMIT: Final = 16 * 1024 * 1024
 MAX_CLI_VERSION_CHARS: Final = 120
 
 #: Environment variables forwarded to the child. Everything else is dropped, so a
-#: daemon environment holding `CCSWITCH_MASTER_KEY`, an Anthropic OAuth token, or
+#: daemon environment holding `VIBERPIT_MASTER_KEY`, an Anthropic OAuth token, or
 #: an OpenAI key cannot leak into a process we did not write.
 CHILD_ENV_ALLOWLIST: Final[tuple[str, ...]] = (
     "PATH",
@@ -396,7 +396,7 @@ async def probe_availability(
     """
     if not enabled:
         return CodexAvailability.unavailable(
-            CodexUnavailableReason.DISABLED, "CCSWITCH_CODEX_ENABLED is false"
+            CodexUnavailableReason.DISABLED, "VIBERPIT_CODEX_ENABLED is false"
         )
     if not external_auth_enabled:
         # Runners authenticate app-server only with host-supplied ChatGPT tokens
@@ -405,7 +405,7 @@ async def probe_availability(
         # authenticate.
         return CodexAvailability.unavailable(
             CodexUnavailableReason.EXTERNAL_AUTH_DISABLED,
-            "CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED is false",
+            "VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED is false",
             external_auth=False,
         )
     resolve = resolver or resolve_codex_bin

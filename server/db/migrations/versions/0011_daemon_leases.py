@@ -4,7 +4,7 @@ Revision ID: 0011_daemon_leases
 Revises: 0010_app_sessions_composite_index
 Create Date: 2026-08-30
 
-``CCSWITCH_DAEMON_ROLE`` is per-host env config: nothing structural stops two
+``VIBERPIT_DAEMON_ROLE`` is per-host env config: nothing structural stops two
 hosts both being configured ``primary``, and two primaries double-drive every
 fleet-global automation with no detection (the 2026-08-30 incident shape).
 The ``daemon_leases`` table turns that runbook invariant into a checked one: a

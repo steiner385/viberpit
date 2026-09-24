@@ -92,10 +92,10 @@ def orch_setup(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_TAILNET_ALLOWLIST": IDENTITY_HEADERS["Tailscale-User-Login"],
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_TAILNET_ALLOWLIST": IDENTITY_HEADERS["Tailscale-User-Login"],
     })
     with env_patch, \
             patch("ccswitch.accounts.usage_for", side_effect=_fake_usage), \
@@ -246,8 +246,8 @@ def test_api_create_session_clone_error_still_502(tmp_path):
         with patch("ccswitch.gitrepos.ensure_clone",
                    side_effect=gitrepos.CloneError("boom")), \
              patch.dict(os.environ, {
-                 "CCSWITCH_REPO_ROOT": str(tmp_path),
-                 "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+                 "VIBERPIT_REPO_ROOT": str(tmp_path),
+                 "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
              }):
             from server.app import create_app
             from fastapi.testclient import TestClient
@@ -319,8 +319,8 @@ def test_api_create_session_never_calls_ensure_clone_itself(tmp_path):
              patch("ccswitch.gitrepos.ensure_clone", side_effect=working_fake_ensure_clone), \
              patch("server.api.sessions.gitrepos", edge_gitrepos_stub), \
              patch.dict(os.environ, {
-                 "CCSWITCH_REPO_ROOT": str(tmp_path),
-                 "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+                 "VIBERPIT_REPO_ROOT": str(tmp_path),
+                 "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
              }):
             from server.sessions.orchestrator import SessionOrchestrator as _SO
             from server.app import create_app

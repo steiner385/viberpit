@@ -53,7 +53,7 @@ accounts (usage is billed per account, so a view inherits one account by design 
   (`creds.split_credentials`); files are written atomically at mode 0600
   (`creds.write_json_secure`). `crypto.py` adds AES-256-GCM envelope encryption of the
   `refreshToken` field only (`accessToken` stays plaintext); the master key comes from
-  `CCSWITCH_MASTER_KEY` or the GNOME keyring, and import never raises if crypto is unavailable
+  `VIBERPIT_MASTER_KEY` or the GNOME keyring, and import never raises if crypto is unavailable
   (falls back to plaintext with a one-time warning).
 - Account names are validated (`account_names.py`) so a stray/empty name can't collapse a
   per-account path onto the shared store root — the fix for the "phantom empty-named account"

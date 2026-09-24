@@ -7,7 +7,7 @@ Covers:
 - worktree branch arg-injection guard (branch starting with '-')
 - bogus repo → 400
 - bogus account → 400
-- cookie secure flag defaults True; overridden by CCSWITCH_DEV_INSECURE_COOKIE=1
+- cookie secure flag defaults True; overridden by VIBERPIT_DEV_INSECURE_COOKIE=1
 """
 from __future__ import annotations
 
@@ -143,8 +143,8 @@ def api_client(tmp_path):
         return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
     with patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(tmp_path),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_HOME": str(tmp_path),
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     }):
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
@@ -248,32 +248,32 @@ def test_known_account_passes_validation(api_client):
 
 
 def test_cookie_secure_defaults_true():
-    """With no CCSWITCH_DEV_INSECURE_COOKIE env var, secure flag is True."""
-    env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_DEV_INSECURE_COOKIE"}
-    env["CCSWITCH_DEV_INSECURE_COOKIE"] = ""  # not "1"
+    """With no VIBERPIT_DEV_INSECURE_COOKIE env var, secure flag is True."""
+    env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV_INSECURE_COOKIE"}
+    env["VIBERPIT_DEV_INSECURE_COOKIE"] = ""  # not "1"
     with patch.dict(os.environ, env, clear=True):
         # Re-evaluate the expression the middleware uses at cookie-set time.
-        _secure = os.environ.get("CCSWITCH_DEV_INSECURE_COOKIE") != "1"
+        _secure = os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1"
         assert _secure is True
 
 
 def test_cookie_secure_false_when_dev_insecure_set():
-    """With CCSWITCH_DEV_INSECURE_COOKIE=1, secure flag is False."""
-    with patch.dict(os.environ, {"CCSWITCH_DEV_INSECURE_COOKIE": "1"}):
-        _secure = os.environ.get("CCSWITCH_DEV_INSECURE_COOKIE") != "1"
+    """With VIBERPIT_DEV_INSECURE_COOKIE=1, secure flag is False."""
+    with patch.dict(os.environ, {"VIBERPIT_DEV_INSECURE_COOKIE": "1"}):
+        _secure = os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1"
         assert _secure is False
 
 
 def test_cookie_secure_true_when_var_absent():
-    """With CCSWITCH_DEV_INSECURE_COOKIE absent entirely, secure flag is True."""
-    env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_DEV_INSECURE_COOKIE"}
+    """With VIBERPIT_DEV_INSECURE_COOKIE absent entirely, secure flag is True."""
+    env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV_INSECURE_COOKIE"}
     with patch.dict(os.environ, env, clear=True):
-        _secure = os.environ.get("CCSWITCH_DEV_INSECURE_COOKIE") != "1"
+        _secure = os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1"
         assert _secure is True
 
 
 # ---------------------------------------------------------------------------
-# Part E — boot gate: non-loopback bind + empty allowlist + no CCSWITCH_DEV
+# Part E — boot gate: non-loopback bind + empty allowlist + no VIBERPIT_DEV
 # ---------------------------------------------------------------------------
 
 
@@ -288,17 +288,17 @@ def _run_async(coro):
 
 
 def test_boot_gate_raises_on_non_loopback_empty_allowlist():
-    """_lifespan raises RuntimeError when binding non-loopback without allowlist or CCSWITCH_DEV."""
+    """_lifespan raises RuntimeError when binding non-loopback without allowlist or VIBERPIT_DEV."""
     from server.app import _lifespan
     from fastapi import FastAPI
 
     env = {
-        "CCSWITCH_HOST": "0.0.0.0",
-        "CCSWITCH_TAILNET_ALLOWLIST": "",
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_HOST": "0.0.0.0",
+        "VIBERPIT_TAILNET_ALLOWLIST": "",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     }
-    # Remove CCSWITCH_DEV if set
-    clean_env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_DEV"}
+    # Remove VIBERPIT_DEV if set
+    clean_env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV"}
     clean_env.update(env)
 
     with patch.dict(os.environ, clean_env, clear=True):
@@ -323,11 +323,11 @@ def test_boot_gate_allows_non_loopback_with_allowlist():
     from fastapi import FastAPI
 
     env = {
-        "CCSWITCH_HOST": "0.0.0.0",
-        "CCSWITCH_TAILNET_ALLOWLIST": "user@example.com",
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_HOST": "0.0.0.0",
+        "VIBERPIT_TAILNET_ALLOWLIST": "user@example.com",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     }
-    clean_env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_DEV"}
+    clean_env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV"}
     clean_env.update(env)
 
     with patch.dict(os.environ, clean_env, clear=True):
@@ -347,15 +347,15 @@ def test_boot_gate_allows_non_loopback_with_allowlist():
 
 
 def test_boot_gate_allows_non_loopback_with_dev_flag():
-    """Non-loopback bind + empty allowlist is allowed when CCSWITCH_DEV=1."""
+    """Non-loopback bind + empty allowlist is allowed when VIBERPIT_DEV=1."""
     from server.app import _lifespan
     from fastapi import FastAPI
 
     env = {
-        "CCSWITCH_HOST": "0.0.0.0",
-        "CCSWITCH_TAILNET_ALLOWLIST": "",
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_HOST": "0.0.0.0",
+        "VIBERPIT_TAILNET_ALLOWLIST": "",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DEV": "1",
     }
     with patch.dict(os.environ, env):
         from server.sessions.orchestrator import SessionOrchestrator
@@ -387,10 +387,10 @@ def test_security_warning_fires_at_most_once_per_process(tmp_path):
     from unittest.mock import patch as _patch
 
     env = {
-        "CCSWITCH_HOST": "0.0.0.0",
-        "CCSWITCH_TAILNET_ALLOWLIST": "",
-        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'warn_test.db'}",
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_HOST": "0.0.0.0",
+        "VIBERPIT_TAILNET_ALLOWLIST": "",
+        "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'warn_test.db'}",
+        "VIBERPIT_DEV": "1",
     }
 
     captured: list[str] = []

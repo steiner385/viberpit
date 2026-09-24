@@ -2,8 +2,8 @@
 
 Priority:
   1. DB AppSettings.archive_home (highest — runtime-configurable via UI)
-  2. CCSWITCH_ARCHIVE_HOME env var  (deployment-time override)
-  3. $CCSWITCH_HOME/archive symlink / default (lowest)
+  2. VIBERPIT_ARCHIVE_HOME env var  (deployment-time override)
+  3. $VIBERPIT_HOME/archive symlink / default (lowest)
 """
 from __future__ import annotations
 
@@ -50,8 +50,8 @@ def test_effective_archive_home_uses_db_value(tmp_path):
     with temp_env():
         env_archive = str(tmp_path / "env_archive")
         with patch.dict(os.environ, {
-            "CCSWITCH_DB_URL": db_url,
-            "CCSWITCH_ARCHIVE_HOME": env_archive,
+            "VIBERPIT_DB_URL": db_url,
+            "VIBERPIT_ARCHIVE_HOME": env_archive,
         }):
             result = asyncio.run(_run())
 
@@ -60,7 +60,7 @@ def test_effective_archive_home_uses_db_value(tmp_path):
 
 
 def test_effective_archive_home_falls_back_to_env(tmp_path):
-    """When DB archive_home is null, CCSWITCH_ARCHIVE_HOME is used."""
+    """When DB archive_home is null, VIBERPIT_ARCHIVE_HOME is used."""
     db_path = str(tmp_path / "test.db")
     db_url = f"sqlite+aiosqlite:///{db_path}"
     env_archive = tmp_path / "env_archive"
@@ -74,8 +74,8 @@ def test_effective_archive_home_falls_back_to_env(tmp_path):
 
     with temp_env():
         with patch.dict(os.environ, {
-            "CCSWITCH_DB_URL": db_url,
-            "CCSWITCH_ARCHIVE_HOME": str(env_archive),
+            "VIBERPIT_DB_URL": db_url,
+            "VIBERPIT_ARCHIVE_HOME": str(env_archive),
         }):
             result = asyncio.run(_run())
 
@@ -83,7 +83,7 @@ def test_effective_archive_home_falls_back_to_env(tmp_path):
 
 
 def test_effective_archive_home_falls_back_to_default(tmp_path):
-    """When neither DB nor env is set, the default ($CCSWITCH_HOME/archive) is used."""
+    """When neither DB nor env is set, the default ($VIBERPIT_HOME/archive) is used."""
     db_path = str(tmp_path / "test.db")
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
@@ -94,10 +94,10 @@ def test_effective_archive_home_falls_back_to_default(tmp_path):
         return await orch._effective_archive_home()
 
     with temp_env():
-        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}, clear=False):
+        os.environ.pop("VIBERPIT_ARCHIVE_HOME", None)
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}, clear=False):
             result = asyncio.run(_run())
-            # Capture expected inside the same env context so CCSWITCH_HOME matches
+            # Capture expected inside the same env context so VIBERPIT_HOME matches
             from ccswitch import paths
             import importlib
             importlib.reload(paths)
@@ -128,8 +128,8 @@ def test_effective_archive_home_db_wins_over_env(tmp_path):
 
     with temp_env():
         with patch.dict(os.environ, {
-            "CCSWITCH_DB_URL": db_url,
-            "CCSWITCH_ARCHIVE_HOME": str(env_archive),
+            "VIBERPIT_DB_URL": db_url,
+            "VIBERPIT_ARCHIVE_HOME": str(env_archive),
         }):
             result = asyncio.run(_run())
 

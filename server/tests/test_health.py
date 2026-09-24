@@ -31,11 +31,11 @@ async def test_health_returns_401_without_identity():
 
 
 def test_running_git_sha_prefers_env_override():
-    """CCSWITCH_GIT_SHA wins, so the deployer can inject the exact deployed commit
+    """VIBERPIT_GIT_SHA wins, so the deployer can inject the exact deployed commit
     and assert it via /healthz. (Cache cleared since the value is resolved once.)"""
     running_git_sha.cache_clear()
     try:
-        with mock.patch.dict(os.environ, {"CCSWITCH_GIT_SHA": "deadbeef"}):
+        with mock.patch.dict(os.environ, {"VIBERPIT_GIT_SHA": "deadbeef"}):
             assert running_git_sha() == "deadbeef"
     finally:
         running_git_sha.cache_clear()
@@ -47,7 +47,7 @@ def test_running_git_sha_default_is_nonempty():
     running_git_sha.cache_clear()
     try:
         with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CCSWITCH_GIT_SHA", None)
+            os.environ.pop("VIBERPIT_GIT_SHA", None)
             sha = running_git_sha()
         assert isinstance(sha, str) and sha
     finally:

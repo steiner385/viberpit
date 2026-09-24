@@ -21,7 +21,7 @@ class TestRunner(unittest.TestCase):
             from ccswitch import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
-            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
             with mock.patch.object(accounts, "usage_for", side_effect=lambda n: usage(session=5.0 if n == "beta" else 90.0)):
                 rc = runner.main(["--", "-p", "hi"])
             self.assertEqual(rc, 0)
@@ -31,25 +31,25 @@ class TestRunner(unittest.TestCase):
             from ccswitch import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
-            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
-            os.environ["CCSWITCH_FAKE_LIMITED"] = "beta"  # beta (lowest util) is limited → retry alpha
+            os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            os.environ["VIBERPIT_FAKE_LIMITED"] = "beta"  # beta (lowest util) is limited → retry alpha
             with mock.patch.object(accounts, "usage_for", side_effect=lambda n: usage(session=5.0 if n == "beta" else 50.0)):
                 rc = runner.main(["--", "-p", "hi"])
             self.assertEqual(rc, 0)  # succeeded after retrying alpha
-            os.environ.pop("CCSWITCH_FAKE_LIMITED", None)
+            os.environ.pop("VIBERPIT_FAKE_LIMITED", None)
 
     def test_all_accounts_limited_no_wait_returns_2(self):
         with temp_env():
             from ccswitch import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
-            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
             # Both accounts are limited; all have low utilisation so they're selectable
-            os.environ["CCSWITCH_FAKE_LIMITED"] = "alpha,beta"
+            os.environ["VIBERPIT_FAKE_LIMITED"] = "alpha,beta"
             with mock.patch.object(accounts, "usage_for", side_effect=lambda n: usage(session=5.0)):
                 rc = runner.main(["--", "-p", "hi"])
             self.assertEqual(rc, 2)
-            os.environ.pop("CCSWITCH_FAKE_LIMITED", None)
+            os.environ.pop("VIBERPIT_FAKE_LIMITED", None)
 
     def test_setup_token_injected_into_env(self):
         """Runner injects CLAUDE_CODE_OAUTH_TOKEN when account has a setup-token."""
@@ -123,7 +123,7 @@ class TestRunner(unittest.TestCase):
             from ccswitch import runner, accounts
             from tests.helpers import usage
             _seed("alpha")
-            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
             with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)):
                 rc = runner.main(["--", "-p", "hi"])
             self.assertEqual(rc, 0)

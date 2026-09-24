@@ -74,7 +74,7 @@ from sqlalchemy.types import JSON
 
 from server.db.models import Base
 
-SQLITE = os.environ.get("CCSWITCH_SQLITE_PATH",
+SQLITE = os.environ.get("VIBERPIT_SQLITE_PATH",
                         "/home/tony/.claude-accounts/ccswitch.db")
 BATCH = 5_000
 
@@ -210,13 +210,13 @@ async def _verify_sequences(engine, have: set) -> None:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pg-url", default=os.environ.get("CCSWITCH_DB_URL"))
+    ap.add_argument("--pg-url", default=os.environ.get("VIBERPIT_DB_URL"))
     ap.add_argument("--raw-days", type=float, default=7.0)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--verify", action="store_true")
     args = ap.parse_args()
     if not args.pg_url:
-        raise SystemExit("need --pg-url or CCSWITCH_DB_URL")
+        raise SystemExit("need --pg-url or VIBERPIT_DB_URL")
     if args.apply and args.verify:
         raise SystemExit("--apply and --verify are mutually exclusive -- run one at a time "
                           "(apply, THEN verify, as two separate invocations)")

@@ -89,7 +89,7 @@ class AuthorityClient:
 
     @classmethod
     def from_env(cls, *, deadline_s: float | None = None) -> AuthorityClient:
-        """Build from ``CCSWITCH_CODEX_AUTHORITY_*``. Raises if incomplete.
+        """Build from ``VIBERPIT_CODEX_AUTHORITY_*``. Raises if incomplete.
 
         Raising — rather than returning ``None`` — is the fail-closed half of the
         plan's "do not fall back to managed runner auth". A half-configured

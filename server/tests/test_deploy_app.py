@@ -116,7 +116,7 @@ def test_lifespan_initialises_the_db_only_when_a_url_is_given(monkeypatch):
     uvicorn runs — an asyncpg pool is loop-bound.
 
     Three cases, because the difference is load-bearing: an explicit url is used as-is; the
-    EMPTY string (what serve.py passes when CCSWITCH_DB_URL is unset) still initialises and
+    EMPTY string (what serve.py passes when VIBERPIT_DB_URL is unset) still initialises and
     lets init_db fall back to settings.db_url, exactly as `python -m server.deploy --once`
     does; None means "no DB at all" and is for tests only.
     """
@@ -160,9 +160,9 @@ def test_default_detect_loop_probes_edge_healthz_for_live_sha():
 
 
 def test_poll_interval_default_and_env(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_DEPLOY_POLL_INTERVAL", raising=False)
+    monkeypatch.delenv("VIBERPIT_DEPLOY_POLL_INTERVAL", raising=False)
     assert deploy_app._poll_interval() == 30.0
-    monkeypatch.setenv("CCSWITCH_DEPLOY_POLL_INTERVAL", "45")
+    monkeypatch.setenv("VIBERPIT_DEPLOY_POLL_INTERVAL", "45")
     assert deploy_app._poll_interval() == 45.0
-    monkeypatch.setenv("CCSWITCH_DEPLOY_POLL_INTERVAL", "not-a-number")
+    monkeypatch.setenv("VIBERPIT_DEPLOY_POLL_INTERVAL", "not-a-number")
     assert deploy_app._poll_interval() == 30.0   # bad value falls back to default

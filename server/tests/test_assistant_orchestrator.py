@@ -133,7 +133,7 @@ def test_normal_helper_config_dir_keeps_shared_entries(tmp_path, monkeypatch):
     from ccswitch.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import helper_config_dir
 
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
     dst = Path(helper_config_dir(str(src)))
     assert dst != src
@@ -155,7 +155,7 @@ def test_assistant_scratch_config_dir_drops_customisation_but_keeps_projects(
     from ccswitch.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
     dst = Path(helper_config_dir(str(src), isolated=True))
     assert dst != src
@@ -174,7 +174,7 @@ def test_assistant_scratch_dir_is_distinct_from_the_shared_one(tmp_path, monkeyp
     """Two variants of one account must not fight over the same directory."""
     from server.sessions.scratch_config import helper_config_dir
 
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
     assert helper_config_dir(str(src)) != helper_config_dir(str(src), isolated=True)
 
@@ -183,7 +183,7 @@ def test_assistant_scratch_dir_prunes_links_left_by_an_earlier_build(tmp_path, m
     from ccswitch.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
     dst = Path(helper_config_dir(str(src), isolated=True))
     for name in SHARE_ALLOWLIST:                     # simulate a stale build
@@ -236,10 +236,10 @@ async def _make_orch(*, db_url: str, tmp_path, max_active_sessions: int = 5):
     repo_root.mkdir(exist_ok=True)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared),
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "scratch"),
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_HELPER_SCRATCH_ROOT": str(tmp_path / "scratch"),
     })
     env_patch.start()
     _seed_account("alpha")
@@ -621,7 +621,7 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
     orch._suggester = object()
 
     src = _seed_account_dir(tmp_path)
-    with patch.dict(os.environ, {"CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
+    with patch.dict(os.environ, {"VIBERPIT_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
         plain = orch._isolated_dir_for(src, None)
         asst = orch._isolated_dir_for(src, ASSISTANT_KIND)
     assert plain == src
@@ -666,9 +666,9 @@ def _make_real_configdir_env(*, tmp_path):
     (shared / "settings.json").write_text("{}")
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared),
-        "CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "scratch"),
+        "VIBERPIT_HELPER_SCRATCH_ROOT": str(tmp_path / "scratch"),
     })
     env_patch.start()
     _seed_account("alpha")
@@ -749,7 +749,7 @@ def test_real_spawn_leaves_the_worktree_trusted(tmp_path):
 
     async def run():
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'trust-e2e.db'}"
-        os.environ["CCSWITCH_DB_URL"] = db_url
+        os.environ["VIBERPIT_DB_URL"] = db_url
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(AppSettings(id="singleton", max_active_sessions=5))

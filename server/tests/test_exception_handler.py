@@ -9,7 +9,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 def _client(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DEV", "1")
+    monkeypatch.setenv("VIBERPIT_DEV", "1")
     app = create_app()
 
     async def _explode():

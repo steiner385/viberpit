@@ -23,9 +23,9 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 - `src/ccswitch/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees. Entry points: the `ccswitch` command, `ccrun`, `ccmax`
   (`pyproject.toml`). Tests in `tests/`.
 - `server/app.py` — the **edge**: FastAPI `create_app()`; `app = create_app()` runs at import, so importing the module already reads
-  `CCSWITCH_*` env (see the test note below).
+  `VIBERPIT_*` env (see the test note below).
 - `server/ipc/` — the **session daemon** (`python -m server.ipc`, `viberpit-daemon.service`). It owns every live `claude` process; the edge
-  talks to it over mTLS RPC. Remote hosts (e.g. rocky) run the same daemon in worker role (`CCSWITCH_DAEMON_ROLE`).
+  talks to it over mTLS RPC. Remote hosts (e.g. rocky) run the same daemon in worker role (`VIBERPIT_DAEMON_ROLE`).
 - `server/sessions/` — `SessionOrchestrator` (`orchestrator.py`) + canonical engine registry (`engine.py`) + Claude adapter
   (`claude_driver.py`: SDK client, permissions, model switching). In remote mode the lifespan swaps `app.state.sessions` for
   `FleetOrchestrator` (`fleet_orchestrator.py`, routes via `fleet_router.py`) **after** routers are built — capture it lazily, never at
@@ -78,17 +78,17 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   `min()` over an httpx `Timeout` leg, which is typed `float | None`). Run all four before pushing.
 - CI runs the server suite as `pytest server/tests/ -n auto --dist loadfile --timeout=300`. Serial it takes ~25 min; run it in the
   background with output tee'd to `/tmp/`, and never two full runs at once — the load spike gets the Bash call SIGKILLed (exit 137).
-- **Test-run slot cap (#822):** before a full `pytest server/tests/` run on rocky, acquire via `/api/test-slots` (`CCSWITCH_TEST_SLOT_CAP`,
+- **Test-run slot cap (#822):** before a full `pytest server/tests/` run on rocky, acquire via `/api/test-slots` (`VIBERPIT_TEST_SLOT_CAP`,
   default 1/host; fail-open in `server/api/test_slots.py`). **Put the pytest command in the SAME Bash call / shell as the acquire loop and
   trap** — run the acquire as its own call and that shell exits the moment it finishes, firing the EXIT trap and freeing the slot before
   pytest ever starts, so the cap is a no-op:
   ```bash
-  sid="${CCSWITCH_SESSION_ID:-$$}"; host="$(hostname -s)"; trap 'curl -sf -X POST http://127.0.0.1:8787/api/test-slots/release -H "Content-Type: application/json" -d "{\"sessionId\":\"$sid\"}" >/dev/null 2>&1||true' EXIT
+  sid="${VIBERPIT_SESSION_ID:-$$}"; host="$(hostname -s)"; trap 'curl -sf -X POST http://127.0.0.1:8787/api/test-slots/release -H "Content-Type: application/json" -d "{\"sessionId\":\"$sid\"}" >/dev/null 2>&1||true' EXIT
   while :; do resp="$(curl -sf -X POST http://127.0.0.1:8787/api/test-slots/acquire -H 'Content-Type: application/json' -d "{\"sessionId\":\"$sid\",\"host\":\"$host\"}" 2>/dev/null)" || { echo "test-slot API unreachable — proceeding (fail-open)"; break; }; echo "$resp" | grep -qE '"granted": *true' && break; echo "$resp" | grep -qE '"degraded": *true' && { echo "test-slot control plane degraded — proceeding unchecked"; break; }; echo "waiting for test slot, $(echo "$resp" | grep -oE '"ahead": *[0-9]+' | grep -oE '[0-9]+') ahead"; sleep 15; done
   pytest server/tests/ …   # inside this same block: the trap releases only when THIS shell exits
   ```
-- **Unset `CCSWITCH_SESSIOND_*` and `CCSWITCH_DAEMON_ROLE` before running `server/tests/` locally.** `server/app.py` builds the app at
-  import; a live shell's sessiond client-cert vars make it demand certs, and a worker `CCSWITCH_DAEMON_ROLE` turns ~90 tests into "No
+- **Unset `VIBERPIT_SESSIOND_*` and `VIBERPIT_DAEMON_ROLE` before running `server/tests/` locally.** `server/app.py` builds the app at
+  import; a live shell's sessiond client-cert vars make it demand certs, and a worker `VIBERPIT_DAEMON_ROLE` turns ~90 tests into "No
   session with id" failures.
 - Run the **full** `npm run test`, not just changed files: ~47 web test files manually mock `@/api/hooks`, so adding a hook to a shared
   component (e.g. `SessionList`) breaks tests in files you never touched. CI catches it; a changed-files run does not.
@@ -110,13 +110,13 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   against *production* code. `server/*` is unaffected (pytest's rootdir wins). When touching `src/ccswitch/`, run with
   `PYTHONPATH=<your-checkout>/src` and confirm with `python -c "import ccswitch.ledger as m; print(m.__file__)"`. CI is unaffected: it
   installs from the checkout under test.
-- API auth tests 401 unless `CCSWITCH_TAILNET_ALLOWLIST` includes the test identity (the real shell env sets a live allowlist). Pin it
-  per-test, or run the full suite with `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 pytest` (empty allowlist needs `CCSWITCH_DEV=1`).
+- API auth tests 401 unless `VIBERPIT_TAILNET_ALLOWLIST` includes the test identity (the real shell env sets a live allowlist). Pin it
+  per-test, or run the full suite with `env -u VIBERPIT_TAILNET_ALLOWLIST VIBERPIT_DEV=1 pytest` (empty allowlist needs `VIBERPIT_DEV=1`).
 - `create_all` never ALTERs existing tables, so `init_db` runs `_reconcile_columns` + `_assert_no_schema_drift` on **every** dialect (SQLite
   and Postgres) to ALTER-ADD missing columns. Add new model columns **nullable** and they are picked up automatically on both.
 - A **NOT NULL** column still needs a real migration unless `_ddl_default_literal` can synthesize its default — reconcile logs and skips it,
   then the drift assert fails startup loudly.
-- **Adding a MODEL (not just a column) means re-running the Postgres suite**, which is skipped unless `CCSWITCH_TEST_PG_URL` is set — so it
+- **Adding a MODEL (not just a column) means re-running the Postgres suite**, which is skipped unless `VIBERPIT_TEST_PG_URL` is set — so it
   is green locally and red in CI. Two hand-maintained lists in `server/tests/` enumerate every table and must gain an entry:
   `_REQUIRED_EXTRAS` in `test_postgres_compat.py` (NOT NULL columns the datetime sweep must supply) and, for a NOT NULL column with no
   synthesizable default, `RECONCILE_EXEMPT` in `test_schema_reconcile_coverage.py`.
@@ -222,7 +222,7 @@ does NOT close. Put `Fixes #N` in the PR body for a full fix, `Refs #N` for a pa
 ## Copilot account type
 
 GitHub Copilot Pro+ accounts run through the `whtsky/copilot2api` proxy binary, which translates
-Anthropic API calls into Copilot API calls. Gated on `CCSWITCH_ENABLE_COPILOT=true` plus an
+Anthropic API calls into Copilot API calls. Gated on `VIBERPIT_ENABLE_COPILOT=true` plus an
 installed binary; experimental, with a ToS caveat — see
 `docs/product/features/copilot-account-support.md` for provisioning, the add flow, and the caveat.
 
@@ -233,7 +233,7 @@ installed binary; experimental, with a ToS caveat — see
 - Usage is reported as premium-request quota (mapped to the `Usage` dataclass via `src/ccswitch/copilot.py:usage_from_proxy`), not
   session-reset tokens.
 - The proxy runs as a supervised subprocess per account (see `CopilotProxyManager`), health-gated on `GET /usage`, with idle teardown after
-  `CCSWITCH_COPILOT_IDLE_GRACE_S` (default 300 s).
+  `VIBERPIT_COPILOT_IDLE_GRACE_S` (default 300 s).
 
 ## Server-side dictation (STT)
 
@@ -241,13 +241,13 @@ The mic button streams 16 kHz PCM to `/ws/stt` (`server/stt/`) where `faster-whi
 (`base.en`, int8, CPU) transcribes it with Silero VAD endpointing; Web Speech is the fallback
 when the edge does not advertise `sttEnabled` in `GET /api/config`.
 
-- Enable with `CCSWITCH_ENABLE_STT=true` on the **edge** (needs the `stt` extra: the deploy controller installs `.[server,stt]`; CI/runners
+- Enable with `VIBERPIT_ENABLE_STT=true` on the **edge** (needs the `stt` extra: the deploy controller installs `.[server,stt]`; CI/runners
   stay on `[server]`). First start downloads `Systran/faster-whisper-base.en` into the HuggingFace cache; the lifespan warms the model in a
   background thread.
-- Knobs: `CCSWITCH_STT_MODEL` (`base.en`; `small.en` is ~1 s/tick on CPU — too slow), `CCSWITCH_STT_CPU_THREADS` (4), `CCSWITCH_STT_TICK_S`
-  (1.0), `CCSWITCH_STT_MAX_CONCURRENT` (3), `CCSWITCH_STT_MAX_SESSION_S` (600).
+- Knobs: `VIBERPIT_STT_MODEL` (`base.en`; `small.en` is ~1 s/tick on CPU — too slow), `VIBERPIT_STT_CPU_THREADS` (4), `VIBERPIT_STT_TICK_S`
+  (1.0), `VIBERPIT_STT_MAX_CONCURRENT` (3), `VIBERPIT_STT_MAX_SESSION_S` (600).
 - Policy lives in `server/stt/session.py` (pure, fake-engine tests); the real engine test is `server/tests/test_stt_whisper_integration.py`,
-  gated on `CCSWITCH_TEST_STT=1`.
+  gated on `VIBERPIT_TEST_STT=1`.
 - Audio is never persisted or logged.
 
 ## AI assistant (drawer)
@@ -256,7 +256,7 @@ A right-side drawer backed by a real session of `kind == "assistant"`. Its only 
 in-process `viberpit` MCP server (`server/assistant/tools.py`) where each handler calls exactly
 **one ViberPit HTTP API endpoint over loopback** — never add business logic to a handler, add it to
 the endpoint. Its `ccas1:` bearer token (`server/assistant/token.py`) is identity-bound, never
-persisted, loopback-only. Kill switch `CCSWITCH_ASSISTANT_ENABLED`; evals under
+persisted, loopback-only. Kill switch `VIBERPIT_ASSISTANT_ENABLED`; evals under
 `docs/superpowers/evals/assistant/`. Details: `docs/product/features/ai-assistant.md`.
 
 ## Self-directed model switching
@@ -272,9 +272,9 @@ Codex ends a message with `<!-- ccswitch:model=<tier> reason="..." -->` (parsed 
   "opus"}`). Only `block` refuses a counter-offer.
 - **Never route an approval through `set_model_for_session()`** — it re-runs the policy and re-parks, so every approval would re-ask for
   approval. Approvals use the low-level `driver.set_model()` / `_spawn_session(model=…)` paths.
-- Guards (`server/sessions/self_model_guards.py`): same-tier dedupe, a cap of `CCSWITCH_SELF_MODEL_SWITCH_CAP` (default 3) auto-applies per
+- Guards (`server/sessions/self_model_guards.py`): same-tier dedupe, a cap of `VIBERPIT_SELF_MODEL_SWITCH_CAP` (default 3) auto-applies per
   session, a flip-flop halt, and a drop once a human has amended a request for that tier.
-- Kill switch: `CCSWITCH_SELF_MODEL_SWITCH_ENABLED=false` stops both the instruction and any acting on a request.
+- Kill switch: `VIBERPIT_SELF_MODEL_SWITCH_ENABLED=false` stops both the instruction and any acting on a request.
 - Audit `model_approval.approve` carries `{requested, applied}` — requested ≠ applied is the metric for whether sessions self-assess
   accurately.
 
@@ -287,6 +287,6 @@ replaced the HTML-comment markers. Codex lacks the capability and keeps the mark
 **the marker parsers are permanent**. The Translator reads the signal from the tool-use block, not the handler, to
 keep the sub-agent (`parent_tool_use_id is None`) guard.
 The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch
-`CCSWITCH_SESSION_TOOLS_ENABLED` drops all seven tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
+`VIBERPIT_SESSION_TOOLS_ENABLED` drops all seven tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
 adding a `ToolSpec` + handler + eval case. Details: `docs/product/features/session-tools.md`.
 

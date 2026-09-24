@@ -133,7 +133,7 @@ def test_release_hands_over_without_waiting_out_the_ttl(tmp_path):
 async def test_ensure_driver_refuses_a_session_a_live_peer_holds(tmp_path, monkeypatch):
     """THE regression test for #1379: this is the call both hosts made after the
     21:34 restart, and the second one must now come back empty-handed."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         assert await session_lease.acquire(SID, "dobby", ttl_s=120) == 1
@@ -153,7 +153,7 @@ async def test_ensure_driver_refuses_a_session_a_live_peer_holds(tmp_path, monke
 async def test_ensure_driver_proceeds_once_the_holder_goes_stale(tmp_path, monkeypatch):
     """The mirror: the gate must not permanently strand a session on a dead host.
     Past the TTL the surviving host claims it and gets on with the build."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         await session_lease.acquire(SID, "dobby", ttl_s=120)
@@ -173,7 +173,7 @@ async def test_ensure_driver_proceeds_once_the_holder_goes_stale(tmp_path, monke
 async def test_spawn_over_a_leased_session_raises(tmp_path, monkeypatch):
     """The spawn path (queue promotion / spawn-over-existing-conversation) refuses
     loudly rather than returning a session the caller would treat as started."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         await session_lease.acquire(SID, "dobby", ttl_s=120)
@@ -195,7 +195,7 @@ async def test_spawn_over_a_leased_session_raises(tmp_path, monkeypatch):
 async def test_a_db_error_fails_open(tmp_path, monkeypatch):
     """The lease is a safety net over a rare race — a database blip must never stop
     a whole fleet from running sessions."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         async def boom(*a, **kw):
@@ -212,8 +212,8 @@ async def test_a_db_error_fails_open(tmp_path, monkeypatch):
 async def test_enforcement_kill_switch_allows_a_forced_takeover(tmp_path, monkeypatch):
     """An operator who must force a takeover before the TTL sets the kill switch;
     the claim is still logged and attempted, it just stops being fatal."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
-    monkeypatch.setenv("CCSWITCH_SESSION_LEASE_ENFORCE", "false")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "rocky")
+    monkeypatch.setenv("VIBERPIT_SESSION_LEASE_ENFORCE", "false")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         await session_lease.acquire(SID, "dobby", ttl_s=120)
@@ -232,7 +232,7 @@ async def test_enforcement_kill_switch_allows_a_forced_takeover(tmp_path, monkey
 async def test_driver_teardown_hands_the_lease_back_immediately(tmp_path, monkeypatch):
     """Closing / archiving / idle-reaping a session frees it for another host at
     once, instead of fencing it off for a whole SESSION_LEASE_TTL_S."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         orch = _new_orch()
@@ -250,7 +250,7 @@ async def test_driver_teardown_hands_the_lease_back_immediately(tmp_path, monkey
 async def test_the_renew_loop_releases_leases_whose_driver_is_gone(tmp_path, monkeypatch):
     """Reconciling against `_drivers` is what makes a leaked lease self-heal: no
     teardown path has to remember to release, absence of a driver IS the signal."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         orch = _new_orch()
@@ -405,8 +405,8 @@ async def test_ensure_driver_never_builds_for_a_row_another_host_owns(tmp_path, 
 async def test_stop_releases_every_session_lease(tmp_path, monkeypatch):
     """A planned restart (the deploy path the incident came from) must hand its
     sessions over, not fence the peer off them for the TTL."""
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:
         orch = _new_orch()

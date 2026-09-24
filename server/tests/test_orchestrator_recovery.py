@@ -143,7 +143,7 @@ def test_rotate_away_pauses_when_all_accounts_busy(monkeypatch):
 def test_mark_needs_reauth_sets_ledger_status(tmp_path, monkeypatch):
     # Observability fix: a recompose-failed in-session 401 must flip the ledger off
     # 'ok' so the dashboard stops showing a falsely-healthy account.
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._mark_needs_reauth("kindash")
     from ccswitch import ledger
@@ -739,7 +739,7 @@ def test_auth_forbidden_quarantines_marks_org_denied_and_rotates():
 def test_mark_org_denied_sets_ledger_status(tmp_path, monkeypatch):
     # Operator-visibility fix: a live-session 403 must flip the ledger to a status
     # distinct from 'needs-reauth' — re-logging in cannot fix an org policy.
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._mark_org_denied("kindash")
     from ccswitch import ledger

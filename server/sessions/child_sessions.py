@@ -27,7 +27,7 @@ def check_limits(*, enabled: bool, parent_depth: int, live_children: int, cap: i
                  max_depth: int) -> None:
     if not enabled:
         raise ChildSessionLimit("child sessions are disabled on this host "
-                                "(CCSWITCH_CHILD_SESSIONS_ENABLED=false)")
+                                "(VIBERPIT_CHILD_SESSIONS_ENABLED=false)")
     if parent_depth + 1 > max_depth:
         raise ChildSessionLimit(f"children may not spawn grandchildren beyond depth {max_depth}; "
                                 "do this work yourself or hand it back")

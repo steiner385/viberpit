@@ -34,19 +34,19 @@ def _api() -> Any:
 
 
 def test_the_drawer_runs_on_claude_by_default(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_ASSISTANT_ENGINE", raising=False)
+    monkeypatch.delenv("VIBERPIT_ASSISTANT_ENGINE", raising=False)
     assert assistant_engine() is AgentEngine.CLAUDE_CODE
 
 
 def test_an_operator_can_move_the_drawer_to_codex(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_ENGINE", "codex")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_ENGINE", "codex")
     assert assistant_engine() is AgentEngine.CODEX
 
 
 def test_an_unknown_engine_falls_back_to_the_audited_one(monkeypatch):
     # A typo must not make the drawer unopenable, and must not pick an engine at
     # random either — it runs on the one that has always run it.
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_ENGINE", "gpt-9")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_ENGINE", "gpt-9")
     assert assistant_engine() is AgentEngine.CLAUDE_CODE
 
 
@@ -75,7 +75,7 @@ def test_a_codex_overlay_is_never_handed_to_the_claude_sdk_factory(tmp_path,
     `ClaudeAgentOptions` kwargs — at best a TypeError at spawn, at worst a Claude
     assistant with no `tools=[]` and no denylist.
     """
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "cchome"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
     from server.assistant.options_codex import assistant_codex_options
 
     seen: list[dict] = []
@@ -94,7 +94,7 @@ def test_a_codex_overlay_is_never_handed_to_the_claude_sdk_factory(tmp_path,
 
 
 def test_the_codex_factory_seam_returns_only_codex_overlays(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "cchome"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
     from server.assistant.options_codex import (CodexAssistantOverlay,
                                                 assistant_codex_options)
 
@@ -114,7 +114,7 @@ async def test_the_setup_helper_builds_the_overlay_for_the_session_engine(tmp_pa
                                                                           monkeypatch):
     """`_setup_assistant_overlay` is the ONE place all three driver-build sites
     (spawn, resume, reassign) go through, so the engine has to reach it."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "cchome"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
 
     class _Result:
         def scalar_one_or_none(self): return None

@@ -164,7 +164,7 @@ def test_main_dry_run_returns_0_with_archived_row(tmp_path, monkeypatch):
 
     db_file = tmp_path / "audit_test.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
-    monkeypatch.setenv("CCSWITCH_DB_URL", db_url)
+    monkeypatch.setenv("VIBERPIT_DB_URL", db_url)
     monkeypatch.setattr(aa, "_real_gh", lambda repo, branch: [])
 
     async def run():
@@ -191,8 +191,8 @@ def test_main_dry_run_returns_0_with_archived_row(tmp_path, monkeypatch):
 
 
 def test_main_returns_2_when_db_url_unset(monkeypatch):
-    """main() returns 2 (not a crash) when CCSWITCH_DB_URL is not set."""
-    monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
+    """main() returns 2 (not a crash) when VIBERPIT_DB_URL is not set."""
+    monkeypatch.delenv("VIBERPIT_DB_URL", raising=False)
     rc = asyncio.run(aa.main(["--dry-run"]))
     assert rc == 2
 

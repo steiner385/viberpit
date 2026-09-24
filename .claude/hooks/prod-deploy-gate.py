@@ -81,7 +81,7 @@ _SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;&\n]")
 
 
 def _is_prod_deploy(command: str) -> bool:
-    if os.environ.get("CCSWITCH_DEPLOY_ENV", "").lower() in ("prod", "production"):
+    if os.environ.get("VIBERPIT_DEPLOY_ENV", "").lower() in ("prod", "production"):
         # An explicit deploy-env marker on a deploy command is authoritative.
         return bool(_DEPLOY_VERB.search(command))
     return bool(_DEPLOY_VERB.search(command) and _PROD_TARGET.search(command))
@@ -250,8 +250,8 @@ def main() -> None:
         return
     allowed, reason, route = _evaluate(
         os.environ.get("RELEASE_APPROVAL"),
-        os.environ.get("CCSWITCH_RELEASE_AUTHOR"),
-        os.environ.get("CCSWITCH_RELEASE_APPROVER"),
+        os.environ.get("VIBERPIT_RELEASE_AUTHOR"),
+        os.environ.get("VIBERPIT_RELEASE_APPROVER"),
     )
     if allowed:
         _allow()

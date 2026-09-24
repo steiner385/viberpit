@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Backfill Session.archive_root for sessions archived before the column existed.
 
-Sessions archived under a previous CCSWITCH_ARCHIVE_HOME have archive_root NULL, so
+Sessions archived under a previous VIBERPIT_ARCHIVE_HOME have archive_root NULL, so
 unarchive resolves them against the *current* archive home, misses, and (since the
 loud-failure change) raises ArchiveMissingError. This stamps each such row with the
 root its bytes actually live in.

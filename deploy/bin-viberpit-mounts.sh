@@ -85,7 +85,7 @@ for p in $PATHS; do
       echo "viberpit-mounts: ok (already mounted) $p"
       continue
     fi
-    echo "viberpit-mounts: forced remount of $p (CCSWITCH_MOUNT_FORCE_REMOUNT=1)"
+    echo "viberpit-mounts: forced remount of $p (VIBERPIT_MOUNT_FORCE_REMOUNT=1)"
   fi
   mountpoint -q "$p" && fusermount -u "$p" 2>/dev/null   # clear a stale mount
   mkdir -p "$p" 2>/dev/null

@@ -177,7 +177,7 @@ jobs:
       - name: Server tests (shard ${{ matrix.shard }}/4)
         if: needs.changes.outputs.py == 'true'
         env:
-          CCSWITCH_TEST_PG_URL: postgresql+asyncpg://viberpit_test:test@127.0.0.1:5432/viberpit_test
+          VIBERPIT_TEST_PG_URL: postgresql+asyncpg://viberpit_test:test@127.0.0.1:5432/viberpit_test
         # scripts/ci_shard_tests.py buckets whole FILES (never individual
         # tests) by a hash of their path, so --dist loadfile's per-file worker
         # pinning still holds — files that share DB/Postgres state (e.g.

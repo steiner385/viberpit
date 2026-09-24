@@ -19,7 +19,7 @@ def _client(monkeypatch):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     from fastapi.testclient import TestClient
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(poll_interval=9999.0)
         with TestClient(create_app(orchestrator=orch), raise_server_exceptions=False) as c:
             yield c

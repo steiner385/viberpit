@@ -91,9 +91,9 @@ def remote_edge(tmp_path):
     daemon.start()
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}"
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": daemon.sock,
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+        "VIBERPIT_SESSIOND_SOCKET": daemon.sock,
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
     }
     try:
         with mock.patch.dict(os.environ, env):
@@ -110,9 +110,9 @@ def dead_socket_edge(tmp_path):
     DaemonUnavailable."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}"
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+        "VIBERPIT_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
     }
     with mock.patch.dict(os.environ, env):
         app = create_app()
@@ -312,9 +312,9 @@ def test_vnc_end_to_end_remote(tmp_path):
     daemon = _DaemonThread(orch)
     daemon.start()
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": daemon.sock,
-        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
-        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+        "VIBERPIT_SESSIOND_SOCKET": daemon.sock,
+        "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
+        "VIBERPIT_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
     }
     try:
         with mock.patch.dict(os.environ, env):

@@ -264,7 +264,7 @@ async def test_safe_usage_does_not_orphan_daemon_sockets(blackhole, blackhole_tl
     # locks and parses the REAL ledger.json of whatever box runs the suite,
     # making the assertion below true only by luck of no live account being
     # named "acct".
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     client = blackhole.client(blackhole_tls)
     orch = RemoteOrchestrator(client)
     try:

@@ -382,7 +382,7 @@ def test_child_env_is_a_minimal_allowlist_plus_codex_home():
             "PATH": "/usr/bin",
             "HOME": "/home/tony",
             "ANTHROPIC_API_KEY": "sk-ant-secret",
-            "CCSWITCH_MASTER_KEY": "hunter2",
+            "VIBERPIT_MASTER_KEY": "hunter2",
             "OPENAI_API_KEY": "sk-proj-abcdefghijklmnop",
         },
     )
@@ -390,7 +390,7 @@ def test_child_env_is_a_minimal_allowlist_plus_codex_home():
     assert env["PATH"] == "/usr/bin"
     assert "ANTHROPIC_API_KEY" not in env
     assert "OPENAI_API_KEY" not in env
-    assert "CCSWITCH_MASTER_KEY" not in env
+    assert "VIBERPIT_MASTER_KEY" not in env
 
 
 def test_child_env_refuses_a_secret_shaped_allowlisted_value():

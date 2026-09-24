@@ -1,6 +1,6 @@
 """Task 1.8: idle reap of an assistant drawer session, with resume-on-reopen.
 
-Spec §4.7: an assistant idle for CCSWITCH_ASSISTANT_IDLE_S with no live turn gets its
+Spec §4.7: an assistant idle for VIBERPIT_ASSISTANT_IDLE_S with no live turn gets its
 driver closed (status -> 'ended'), but the row and its engine_session_id survive so the
 next POST /api/assistant/session can resume the same thread. A turn that is still live
 must NOT be reaped regardless of how long the record has been idle.
@@ -77,7 +77,7 @@ async def _boot_orch(tmp_path, monkeypatch, sdk_factory):
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / ".claude.json").write_text("{}")
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(store_home))
+    monkeypatch.setenv("VIBERPIT_HOME", str(store_home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(shared))
     _seed_account("alpha")
 
@@ -101,7 +101,7 @@ async def _teardown(orch, patches) -> None:
 
 @pytest.mark.asyncio
 async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")   # get_settings() is uncached
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")   # get_settings() is uncached
 
     clients: list[FakeSDKClient] = []
     # Script one real turn (SystemMessage subtype=init + a ResultMessage carrying the
@@ -152,7 +152,7 @@ async def test_reap_skips_assistant_with_a_live_turn(isolated_db, tmp_path, monk
     ``_reap_idle_assistants_once``. A regression that flipped that check's polarity
     (or dropped it) would pass every other test in this file, since none of them ever
     put the driver into a live-turn state."""
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")
 
     clients: list[FakeSDKClient] = []
     orch, patches = await _boot_orch(tmp_path, monkeypatch, _capturing_factory(clients))
@@ -204,7 +204,7 @@ async def test_resume_after_reap_rebuilds_the_assistant_overlay(
     Asserted where it actually matters: on the overlay the SDK FACTORY was handed for
     the RESUMED driver, not on the existence of a helper.
     """
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")
 
     clients: list[FakeSDKClient] = []
     overlays: list = []
@@ -253,7 +253,7 @@ async def test_resumed_assistant_token_is_bound_to_the_reopening_identity(
     every tool call the drawer makes would act as "system" rather than as the user who
     opened it. (Re-minting is required in the first place because the token's max-age is
     only `assistant_idle_s * 4` — it can expire while the row is still resumable.)"""
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")
     from server.assistant.token import verify_token
 
     clients: list[FakeSDKClient] = []
@@ -307,7 +307,7 @@ async def test_prompt_racing_the_reap_is_rejected_not_silently_lost(
     send_prompt from inside it. The fix is ordering — `_teardown_driver_state` pops the
     driver BEFORE the display stop, so the prompt sees no driver and is REJECTED.
     """
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")
 
     clients: list[FakeSDKClient] = []
     orch, patches = await _boot_orch(tmp_path, monkeypatch, _capturing_factory(clients))
@@ -352,7 +352,7 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
     a SECOND claude process on the same claude_session_id, whose overlay the sweep then
     deleted and whose session it then stamped "ended".
     """
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_IDLE_S", "100")
 
     clients: list[FakeSDKClient] = []
     orch, patches = await _boot_orch(tmp_path, monkeypatch, _capturing_factory(clients))

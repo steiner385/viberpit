@@ -59,7 +59,7 @@ grows a different answer per call site:
   client that advertised `experimentalApi=false` can never answer a refresh with
   a live token. Both gates matter in the default configuration, where the
   process manager installs a refresh handler unconditionally and
-  `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` defaults to false.
+  `VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED` defaults to false.
 
 Nothing here reads the environment: `external_auth_enabled` is passed in.
 """

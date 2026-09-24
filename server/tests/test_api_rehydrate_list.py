@@ -45,7 +45,7 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
 
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/sessions", headers=_IDENT)
         assert resp.status_code == 200, resp.text
@@ -85,9 +85,9 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
         return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
     env = {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     }
     with patch.dict(os.environ, env), \
          patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
@@ -95,7 +95,7 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
          patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
 
-        # Seed a fake account credential — MUST be inside the CCSWITCH_HOME patch,
+        # Seed a fake account credential — MUST be inside the VIBERPIT_HOME patch,
         # otherwise paths.slot_path() resolves to the real store and leaks an
         # "alpha" account into the user's ~/.claude-accounts.
         now_ms = int(_time.time() * 1000)

@@ -1,4 +1,4 @@
-"""When CCSWITCH_ENABLE_ADOPTION is off (default), adoption routes 404."""
+"""When VIBERPIT_ENABLE_ADOPTION is off (default), adoption routes 404."""
 from __future__ import annotations
 
 import os
@@ -13,7 +13,7 @@ H = {"Tailscale-User-Login": "testuser@example.com"}
 @pytest.fixture(autouse=True)
 def _disable_adoption(monkeypatch):
     # Guarantee the flag is off at request time regardless of ambient shell env.
-    monkeypatch.delenv("CCSWITCH_ENABLE_ADOPTION", raising=False)
+    monkeypatch.delenv("VIBERPIT_ENABLE_ADOPTION", raising=False)
 
 
 def _client():
@@ -21,8 +21,8 @@ def _client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    env = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-           "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}
+    env = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+           "VIBERPIT_DEV": "1", "VIBERPIT_TAILNET_ALLOWLIST": ""}
     with patch.dict(os.environ, env):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         app = create_app(orchestrator=orch)

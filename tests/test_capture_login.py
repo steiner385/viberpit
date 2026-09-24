@@ -16,7 +16,7 @@ FAKE = str(
 
 
 def test_capture_login_stores_slot(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "dotclaude"))
     ok = auth_login.capture_login("primary", claude_bin=[sys.executable, FAKE])
     assert ok is True
@@ -49,7 +49,7 @@ def _seen_env():
 
 
 def test_capture_login_injects_session_bus(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -67,7 +67,7 @@ def test_capture_login_injects_session_bus(tmp_path, monkeypatch):
 
 
 def test_capture_login_env_extra_beats_injected_bus(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -86,7 +86,7 @@ def test_capture_login_env_extra_beats_injected_bus(tmp_path, monkeypatch):
 
 
 def test_capture_login_without_bus_leaves_env_alone(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "no-bus-here"))
     auth_login.capture_login("primary", claude_bin=[sys.executable, str(_env_dumping_fake(tmp_path))])

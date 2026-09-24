@@ -1,7 +1,7 @@
 """Route tests: GET /api/pipeline/repos — per-repo StageModel endpoint.
 
 Auth approach: mirrors test_pipeline_route.py — create_app() with
-CCSWITCH_DEV=1 and CCSWITCH_TAILNET_ALLOWLIST="" so any identity passes,
+VIBERPIT_DEV=1 and VIBERPIT_TAILNET_ALLOWLIST="" so any identity passes,
 then replace app.state.sessions with a lightweight fake after construction.
 Send Tailscale-User-Login header for authenticated requests; omit for 401 test.
 """
@@ -20,9 +20,9 @@ from server.pipeline.track import StageModel, StageNode
 _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

@@ -258,7 +258,7 @@ def _client(db_url: str, gh):
     ``app_token=gitrepos.app_token_for_repo`` and ``env=os.environ`` as DEFAULT
     ARGUMENTS, so patching the module afterwards cannot reach them — and
     ``create_app``'s lifespan registers the real provider. On a host that has
-    ``CCSWITCH_GITHUB_APP_ID`` + a private key (this repo's own runner does),
+    ``VIBERPIT_GITHUB_APP_ID`` + a private key (this repo's own runner does),
     every edit here would otherwise read the App's private key, sign a JWT and
     call api.github.com, and capture the host's real project PAT into
     ``GhWrite._pat``."""
@@ -268,7 +268,7 @@ def _client(db_url: str, gh):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    # Remote-sessiond vars (and CCSWITCH_DAEMON_ROLE) are cleared globally in
+    # Remote-sessiond vars (and VIBERPIT_DAEMON_ROLE) are cleared globally in
     # conftest.py (_no_ambient_remote_daemon_config) so create_app() stays
     # in-process; only the GH token vars need this test's own save/clear/restore.
     _clear = ["CCSWITCH_GH_PROJECT_TOKEN", "VIBERPIT_GH_PROJECT_TOKEN"]
@@ -276,8 +276,8 @@ def _client(db_url: str, gh):
         saved = {k: os.environ.pop(k, None) for k in _clear}
         try:
             stack.enter_context(patch.dict(os.environ, {
-                "CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                "CCSWITCH_TAILNET_ALLOWLIST": ""}))
+                "VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                "VIBERPIT_TAILNET_ALLOWLIST": ""}))
             stack.enter_context(patch(
                 "ccswitch.gitrepos.list_remote_branches",
                 return_value={"default": "master", "branches": ["master"]}))

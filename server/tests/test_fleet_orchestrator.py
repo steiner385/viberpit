@@ -588,7 +588,7 @@ def test_every_remote_method_is_classified():
         # One-shot Codex-native prompt refinement (#1288): account-scoped and not
         # tied to any particular session, so the primary is asked like the codex_*
         # reads above. Fleet-wide multi-host routing is unimplemented (gated behind
-        # CCSWITCH_CODEX_REFINE_ENABLED anyway) — see refine_prompt_codex's docstring.
+        # VIBERPIT_CODEX_REFINE_ENABLED anyway) — see refine_prompt_codex's docstring.
         "refine_prompt_codex",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",

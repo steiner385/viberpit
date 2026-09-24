@@ -1,7 +1,7 @@
 """Per-identity assistant prompt rate limit (spec §4.6, plan Task 3.4).
 
 The WS ``prompt`` handler caps assistant-kind sessions at
-``CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR`` per identity (a token bucket with
+``VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR`` per identity (a token bucket with
 capacity = max/6, refilling to max/3600 per second). A coding session is never
 rate-limited here — the tool-call limiter in server/assistant/client.py is a
 separate, per-session budget.
@@ -22,7 +22,7 @@ def test_assistant_prompt_cap_gates_assistant_not_coding(ws_env, monkeypatch):  
     the WS-level limiter only gates assistant records (spec §4.6)."""
     # capacity = max/6 = 1 → the very next assistant prompt in the same instant
     # is rejected.
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR", "6")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR", "6")
 
     _app, orch, client = ws_env([], client_cls=FakeSDKClient)
     identity = _IDENTITY_HEADERS["Tailscale-User-Login"]

@@ -4,8 +4,8 @@ All requests use a valid Tailscale-User-Login identity header.
 The orchestrator is injected with:
   - fake SDK client via a fake sdk_factory
   - monkeypatched usage_for via a custom usage_fn
-  - temp_env for isolated CCSWITCH_HOME / CLAUDE_CONFIG_DIR
-  - CCSWITCH_DB_URL=sqlite+aiosqlite:///:memory: so the DB initialises cleanly
+  - temp_env for isolated VIBERPIT_HOME / CLAUDE_CONFIG_DIR
+  - VIBERPIT_DB_URL=sqlite+aiosqlite:///:memory: so the DB initialises cleanly
 
 Uses TestClient (sync, lifespan-aware) for most tests.  Async tests that need
 the httpx AsyncClient use a lifespan shim.
@@ -50,7 +50,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -78,9 +78,9 @@ def _busy_usage():
 
 
 def _seed_slot(name: str) -> None:
-    """Write a minimal credential slot file under CCSWITCH_HOME/store/.
+    """Write a minimal credential slot file under VIBERPIT_HOME/store/.
 
-    Must be called with temp_env() active (so CCSWITCH_HOME is set).
+    Must be called with temp_env() active (so VIBERPIT_HOME is set).
     """
     from ccswitch import paths
     store = paths.store_dir()
@@ -103,7 +103,7 @@ def _make_app_and_client(usage_fn=None, extra_env: dict | None = None):
     from server.app import create_app
 
     env = {
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     }
     if extra_env:
         env.update(extra_env)
@@ -141,8 +141,8 @@ def test_get_accounts_returns_usage_shape():
         _seed_slot("alice")
         usage_fn = _make_usage_fn({"alice": fake_usage})
 
-        # Keep temp_env active while the client runs (CCSWITCH_HOME must stay set)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        # Keep temp_env active while the client runs (VIBERPIT_HOME must stay set)
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -193,7 +193,7 @@ def test_get_accounts_includes_live_sessions_and_rank():
         _seed_slot("high")
         usage_fn = _make_usage_fn({"low": low, "high": high})
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -230,7 +230,7 @@ def test_get_accounts_at_ceiling_has_null_rank():
         _seed_slot("busy")
         usage_fn = _make_usage_fn({"busy": busy})
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -256,7 +256,7 @@ def test_get_accounts_no_token_fields():
         usage_fn = _make_usage_fn({"bob": make_usage(session=5.0, weekly=10.0)})
 
         # Keep temp_env active while the client runs
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -293,7 +293,7 @@ def test_session_lifecycle():
              patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
              patch.dict(os.environ, {
-                 "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+                 "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
              }):
             (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
 
@@ -360,7 +360,7 @@ def test_session_lifecycle():
 def test_session_get_404_for_unknown():
     """GET /api/sessions/{unknown_id} returns 404."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -390,7 +390,7 @@ def test_post_sessions_409_when_all_busy():
 
     with temp_env():
         with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             mock_pick.side_effect = AllAccountsBusy(reset_dt, kind="at_ceiling")
 
             from server.sessions.orchestrator import SessionOrchestrator
@@ -423,7 +423,7 @@ def test_post_sessions_409_null_earliest_reset():
 
     with temp_env():
         with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             mock_pick.side_effect = AllAccountsBusy(None, kind="at_ceiling")
 
             from server.sessions.orchestrator import SessionOrchestrator
@@ -458,7 +458,7 @@ def test_create_optimistic_sets_usage_unverified():
              patch("server.sessions.selection.pick_account_detailed",
                    return_value=Picked(name="acct-a", optimistic=True)), \
              patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "acct-a"), \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             (d / "cfg" / "acct-a").mkdir(parents=True, exist_ok=True)
 
             from server.sessions.orchestrator import SessionOrchestrator
@@ -497,7 +497,7 @@ def _create_harness_ctx(d):
     # in-memory DB shares one connection with the orchestrator's startup poll,
     # which races the settings write (see server/tests/test_settings.py).
     stack.enter_context(patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'api-test.db'}"}))
+        os.environ, {"VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{d / 'api-test.db'}"}))
     (d / "cfg" / "acct-a").mkdir(parents=True, exist_ok=True)
     return stack, usage_fn
 
@@ -611,7 +611,7 @@ def test_create_all_unusable_returns_needs_reauth():
     with temp_env():
         with patch("server.sessions.selection.pick_account_detailed",
                    side_effect=AllAccountsBusy(None, kind="no_usable_accounts")), \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+             patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
@@ -641,7 +641,7 @@ def test_create_all_unusable_returns_needs_reauth():
 def test_auth_me_returns_identity():
     """GET /api/auth/me returns the current identity and authMode."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -668,7 +668,7 @@ def test_auth_me_returns_identity():
 def test_unauthenticated_returns_401():
     """Any request without an identity header returns 401."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -694,7 +694,7 @@ def test_unauthenticated_returns_401():
 def test_logout_returns_204():
     """POST /api/auth/logout returns 204."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -721,7 +721,7 @@ def test_account_refresh_returns_usage():
         _seed_slot("charlie")
         usage_fn = _make_usage_fn({"charlie": make_usage(session=30.0, weekly=55.0)})
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -761,7 +761,7 @@ def test_delete_account_returns_204():
     with temp_env() as d:
         _seed_slot("dave")
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -789,7 +789,7 @@ def test_relogin_route_removed():
     in Task 6.  Unknown accounts return 404 from the name+slot guard.
     """
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -816,7 +816,7 @@ def test_relogin_route_removed():
 def test_logout_with_cookie_revokes_session():
     """POST /api/auth/logout with a valid cookie revokes the AppSession (covers lines 57-60)."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -839,7 +839,7 @@ def test_logout_with_cookie_revokes_session():
 def test_identity_middleware_db_unavailable_still_serves():
     """IdentityMiddleware allows requests even when DB is unavailable (covers lines 88-90)."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
@@ -968,7 +968,7 @@ def _client_with_account(d):
     with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
          patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
          patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
-         patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"}):
+         patch.dict(os.environ, {"VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"}):
         (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
         from server.sessions.orchestrator import SessionOrchestrator
         from server.app import create_app
@@ -1133,7 +1133,7 @@ def test_delete_orphaned_session_returns_204():
         with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
              patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{db_path}"}):
+             patch.dict(os.environ, {"VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{db_path}"}):
             (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app

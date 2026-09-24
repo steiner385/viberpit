@@ -50,9 +50,9 @@ async def _make_orch(
     repo_root.mkdir(exist_ok=True)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     env_patch.start()
 
@@ -368,8 +368,8 @@ def test_worker_drain_skips_entries_it_does_not_own(tmp_path):
             # free slot and no in-memory record of the primary's session.
             orch._records.pop(b.id)
             await _set_cap(2)
-            with patch.dict(os.environ, {"CCSWITCH_DAEMON_ROLE": "worker",
-                                         "CCSWITCH_HOST_NAME": "rocky"}):
+            with patch.dict(os.environ, {"VIBERPIT_DAEMON_ROLE": "worker",
+                                         "VIBERPIT_HOST_NAME": "rocky"}):
                 started = await orch._maybe_start_queued()
             assert started == 0
             assert (await sq.positions()) == {b.id: 1}, "worker must not delete a foreign entry"
@@ -416,7 +416,7 @@ def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path):
             # The registry snapshot is cached for _OWNERSHIP_HOSTS_TTL_S; start()
             # may have taken one before the Host row above existed.
             orch._ownership_hosts_cache = None
-            with patch.dict(os.environ, {"CCSWITCH_HOST_NAME": "primary-a"}):
+            with patch.dict(os.environ, {"VIBERPIT_HOST_NAME": "primary-a"}):
                 started = await orch._maybe_start_queued()
                 assert started == 0
                 assert (await sq.positions()) == {b.id: 1}, "primary must not eat a worker's entry"

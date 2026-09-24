@@ -37,12 +37,12 @@ def master_key() -> bytes | None:
     """Return the 32-byte AES key, or None if not configured.
 
     Sources (in order):
-    1. CCSWITCH_MASTER_KEY env var (base64-encoded 32 bytes)
+    1. VIBERPIT_MASTER_KEY env var (base64-encoded 32 bytes)
     2. GNOME keyring via `secret-tool lookup service ccswitch username master-key`
     3. None
     """
     # 1. Environment variable
-    env_val = os.environ.get("CCSWITCH_MASTER_KEY", "")
+    env_val = os.environ.get("VIBERPIT_MASTER_KEY", "")
     if env_val:
         return _decode_key(env_val)
 
@@ -97,7 +97,7 @@ def encrypt(plaintext: str) -> str:
     """
     key = master_key()
     if key is None:
-        raise CryptoUnavailable("No CCSWITCH_MASTER_KEY configured")
+        raise CryptoUnavailable("No VIBERPIT_MASTER_KEY configured")
 
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -125,7 +125,7 @@ def decrypt(token: str) -> str:
     key = master_key()
     if key is None:
         raise CryptoUnavailable(
-            "Token is encrypted (ccenc1:) but CCSWITCH_MASTER_KEY is not configured"
+            "Token is encrypted (ccenc1:) but VIBERPIT_MASTER_KEY is not configured"
         )
 
     try:
@@ -176,7 +176,7 @@ def store_key_in_keyring(b64key: str) -> None:
 
 
 def _oat_env_name(account: str) -> str:
-    return "CCSWITCH_OAT_" + re.sub(r"[^A-Za-z0-9]", "_", account).upper()
+    return "VIBERPIT_OAT_" + re.sub(r"[^A-Za-z0-9]", "_", account).upper()
 
 
 def _oat_file(account: str) -> Path:
@@ -186,7 +186,7 @@ def _oat_file(account: str) -> Path:
 
 def store_oauth_token(account: str, token: str) -> None:
     """Store a setup-token. Preferred path: master-key-encrypted file under the store dir
-    (readable by the keyring-less daemon, which has CCSWITCH_MASTER_KEY). Falls back to the
+    (readable by the keyring-less daemon, which has VIBERPIT_MASTER_KEY). Falls back to the
     GNOME keyring only when no master key is available (interactive dev without a key)."""
     if key_available():
         p = _oat_file(account)
@@ -208,7 +208,7 @@ def store_oauth_token(account: str, token: str) -> None:
 
 def read_oauth_token(account: str) -> str | None:
     """Return the stored setup-token for *account*, or None. Precedence mirrors master_key():
-    1) env override CCSWITCH_OAT_<ACCOUNT>, 2) master-key-encrypted file, 3) GNOME keyring."""
+    1) env override VIBERPIT_OAT_<ACCOUNT>, 2) master-key-encrypted file, 3) GNOME keyring."""
     env_val = os.environ.get(_oat_env_name(account), "").strip()
     if env_val:
         return env_val
@@ -238,7 +238,7 @@ def _warn_no_key_once() -> None:
     if not _warned_no_key:
         _warned_no_key = True
         print(
-            f"{brand.CLI_NAME}: WARNING: No CCSWITCH_MASTER_KEY configured — "
+            f"{brand.CLI_NAME}: WARNING: No VIBERPIT_MASTER_KEY configured — "
             "credentials stored as plaintext. Run `ccswitch crypto init` to enable encryption.",
             file=sys.stderr,
         )

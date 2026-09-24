@@ -4,7 +4,7 @@ Run by ``deploy/ccswitch-codex-auth.service`` as the ``ccswitch-auth`` user. Thi
 is the only module in ``server/codex/`` that both reads the environment and holds
 a process lifetime, so it is where every fail-closed startup check lives:
 
-1. Configuration is loaded from ``CCSWITCH_CODEX_AUTHORITY_*`` and any missing,
+1. Configuration is loaded from ``VIBERPIT_CODEX_AUTHORITY_*`` and any missing,
    unreadable, or non-mTLS value aborts the start.
 2. The instance lock is taken before anything is served. A second authority dies
    rather than becoming a second writer of the generation counter.
@@ -50,7 +50,7 @@ async def run() -> int:
         # runners. Reuse the runner's pinned version/schema probe verbatim.
         external_auth_enabled=True,
         binary=os.environ.get(
-            "CCSWITCH_CODEX_AUTHORITY_BIN", codex_process.CODEX_EXE
+            "VIBERPIT_CODEX_AUTHORITY_BIN", codex_process.CODEX_EXE
         ),
     )
     if not availability.available or not availability.binary_path:
@@ -106,7 +106,7 @@ async def run() -> int:
 def main() -> int:
     from server.obs.jsonlog import configure_logging
 
-    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     configure_logging()
     try:
         return asyncio.run(run())

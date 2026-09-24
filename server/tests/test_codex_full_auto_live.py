@@ -1,8 +1,8 @@
-"""Native boundary smoke; opt in with CCSWITCH_TEST_CODEX_FULL_AUTO=1.
+"""Native boundary smoke; opt in with VIBERPIT_TEST_CODEX_FULL_AUTO=1.
 
 Uses the pinned binary, private empty runtime home and canonical production
 profile. App-server start needs no authentication. The workflow and resume test additionally
-requires CCSWITCH_TEST_CODEX_FULL_AUTO_ACCOUNT and authority client settings; it
+requires VIBERPIT_TEST_CODEX_FULL_AUTO_ACCOUNT and authority client settings; it
 spends real model quota and counts approval callbacks. GitHub PR creation remains
 outside this disposable local-origin harness. Explicit forbidden rules are checked
 with the native execpolicy evaluator, separately from model-driven execution.
@@ -26,8 +26,8 @@ from server.codex.process import CodexProcess, build_child_env, ensure_codex_hom
 from server.codex.protocol import CodexAppServerClient
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("CCSWITCH_TEST_CODEX_FULL_AUTO") != "1",
-    reason="set CCSWITCH_TEST_CODEX_FULL_AUTO=1 for the real Codex boundary smoke",
+    os.environ.get("VIBERPIT_TEST_CODEX_FULL_AUTO") != "1",
+    reason="set VIBERPIT_TEST_CODEX_FULL_AUTO=1 for the real Codex boundary smoke",
 )
 
 
@@ -104,9 +104,9 @@ async def test_native_start_reports_full_auto_policy(
 async def test_native_full_auto_executes_worktree_network_and_socket_workflow(
     native: tuple[str, Path], tmp_path: Path,
 ) -> None:
-    account = os.environ.get("CCSWITCH_TEST_CODEX_FULL_AUTO_ACCOUNT")
+    account = os.environ.get("VIBERPIT_TEST_CODEX_FULL_AUTO_ACCOUNT")
     if not account:
-        pytest.skip("set CCSWITCH_TEST_CODEX_FULL_AUTO_ACCOUNT to authorize a paid live turn")
+        pytest.skip("set VIBERPIT_TEST_CODEX_FULL_AUTO_ACCOUNT to authorize a paid live turn")
     from dotenv import dotenv_values
 
     from server.codex.auth_client import AuthorityClient
@@ -114,10 +114,10 @@ async def test_native_full_auto_executes_worktree_network_and_socket_workflow(
 
     # Optional operator-supplied service files; only authority configuration enters
     # this process. Tokens still travel through the production mTLS provider only.
-    for filename in os.environ.get("CCSWITCH_TEST_CODEX_AUTH_ENV_FILES", "").split(":"):
+    for filename in os.environ.get("VIBERPIT_TEST_CODEX_AUTH_ENV_FILES", "").split(":"):
         if filename:
             for key, value in dotenv_values(filename).items():
-                if key.startswith("CCSWITCH_CODEX_AUTHORITY_") and value is not None:
+                if key.startswith("VIBERPIT_CODEX_AUTHORITY_") and value is not None:
                     os.environ[key] = value
     provider = ExternalAuthProvider(AuthorityClient.from_env())
     binary, home = native

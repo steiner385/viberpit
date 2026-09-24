@@ -203,7 +203,7 @@ class CodexAvailability:
     detail: str = ""
     binary_path: str | None = None
     cli_version: str | None = None
-    #: Set when the operator explicitly widened ``CCSWITCH_CODEX_SUPPORTED_VERSIONS``
+    #: Set when the operator explicitly widened ``VIBERPIT_CODEX_SUPPORTED_VERSIONS``
     #: to admit a version that does not match the pin. Availability is granted, but
     #: the drift is carried so it can be logged and surfaced rather than forgotten.
     accepted_drift: schema.ContractDrift | None = None

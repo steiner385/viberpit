@@ -60,7 +60,7 @@ never written to `.git/config`).
   `git worktree prune` that was reaping live siblings (#425, #630).
 - **Disk preflight.** `check_disk_headroom()` uses `os.statvfs()` to check both free bytes and
   free inodes before any git churn, raising `DiskSpaceError` with a stable marker; defaults are
-  overridable via `CCSWITCH_MIN_FREE_BYTES` (2 GiB) and `CCSWITCH_MIN_FREE_INODES` (100k) (#625,
+  overridable via `VIBERPIT_MIN_FREE_BYTES` (2 GiB) and `VIBERPIT_MIN_FREE_INODES` (100k) (#625,
   #621).
 - **Repo/clone management.** `gitrepos.py` lists gh-accessible repos, clones into the managed
   namespace (reusing a local reference clone via `--reference-if-able --dissociate` when found),

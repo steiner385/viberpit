@@ -14,7 +14,7 @@ handler that
 1. enters the orchestrator's drain mode (``begin_drain``: refuse new turns, snapshot
    pending work, tell the UI "update pending"),
 2. waits with the SAME ceilings as the deploy drain — ``drain_and_wait`` with its
-   ``CCSWITCH_DRAIN_TURN_CAP_SEC`` / ``CCSWITCH_DRAIN_CONDENSE_CAP_SEC`` — while the
+   ``VIBERPIT_DRAIN_TURN_CAP_SEC`` / ``VIBERPIT_DRAIN_CONDENSE_CAP_SEC`` — while the
    control plane keeps serving (the edge sees a draining daemon, not a dead one), then
 3. hands the signal to the handler that was installed before ours (uvicorn's
    ``handle_exit``), which runs the ordinary graceful shutdown: lifespan teardown →

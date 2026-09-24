@@ -5,14 +5,14 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "viberpit-reauth-browser"
 
 
 def _env(tmp_path, prof, fake, **extra):
-    # CCSWITCH_HOME pins the reauth-tmp root the launcher will accept, mirroring
-    # ccswitch.paths.root(). Explicitly set it so a CCSWITCH_HOME leaking in from
+    # VIBERPIT_HOME pins the reauth-tmp root the launcher will accept, mirroring
+    # ccswitch.paths.root(). Explicitly set it so a VIBERPIT_HOME leaking in from
     # the test runner's environment can't change the guard's decision.
     return dict(
         os.environ,
-        CCSWITCH_HOME=str(tmp_path / "home"),
-        CCSWITCH_REAUTH_PROFILE=str(prof),
-        CCSWITCH_REAUTH_BROWSER_BIN=str(fake),
+        VIBERPIT_HOME=str(tmp_path / "home"),
+        VIBERPIT_REAUTH_PROFILE=str(prof),
+        VIBERPIT_REAUTH_BROWSER_BIN=str(fake),
         HOME=str(tmp_path),
         **extra,
     )
@@ -67,23 +67,23 @@ def test_launcher_accepts_real_reauth_tmp_dir(tmp_path):
 
     The launcher previously hardcoded ~/.config/ccswitch/reauth-tmp while
     paths.root() resolves to ~/.claude-accounts, so every real profile was
-    refused (exit 2) and Chrome never opened. Pin CCSWITCH_HOME and confirm a
+    refused (exit 2) and Chrome never opened. Pin VIBERPIT_HOME and confirm a
     profile under the path Python would actually create is accepted.
     """
     from ccswitch import paths
 
     home = tmp_path / "home"
     fake = _fake_browser(tmp_path)
-    # what paths.reauth_tmp_dir() yields under this CCSWITCH_HOME
-    os.environ_backup = os.environ.get("CCSWITCH_HOME")
-    os.environ["CCSWITCH_HOME"] = str(home)
+    # what paths.reauth_tmp_dir() yields under this VIBERPIT_HOME
+    os.environ_backup = os.environ.get("VIBERPIT_HOME")
+    os.environ["VIBERPIT_HOME"] = str(home)
     try:
         prof = paths.reauth_tmp_dir() / "reauth-real"
     finally:
         if os.environ_backup is None:
-            os.environ.pop("CCSWITCH_HOME", None)
+            os.environ.pop("VIBERPIT_HOME", None)
         else:
-            os.environ["CCSWITCH_HOME"] = os.environ_backup
+            os.environ["VIBERPIT_HOME"] = os.environ_backup
     prof.mkdir(parents=True)
     assert str(prof).startswith(str(home / "reauth-tmp"))
     out = subprocess.run(

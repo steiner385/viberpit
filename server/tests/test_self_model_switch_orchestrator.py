@@ -19,7 +19,7 @@ to a real orchestrator instead of inventing a second harness.
 
 ``_provider_of`` is NOT stubbed by default: it is a filesystem check
 (``ccswitch.accounts.provider_of``) already isolated to the harness's
-``CCSWITCH_HOME``, so "alpha" naturally resolves to "anthropic" with no Copilot
+``VIBERPIT_HOME``, so "alpha" naturally resolves to "anthropic" with no Copilot
 token dir present — only the Copilot test overrides it.
 """
 from __future__ import annotations

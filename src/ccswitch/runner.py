@@ -18,7 +18,7 @@ from .selector import AllAccountsBusy
 
 
 def _claude_cmd(cfg) -> list[str]:
-    raw = os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin)
+    raw = os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin)
     return shlex.split(raw)
 
 
@@ -62,7 +62,7 @@ def _parse_leading_flags(argv: list[str]) -> tuple[bool, str | None, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     argv = list(sys.argv[1:] if argv is None else argv)
     wait, engine_value, argv = _parse_leading_flags(argv)
     try:

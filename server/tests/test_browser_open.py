@@ -9,7 +9,7 @@ from server.app import create_app
 _IDENTITY_HEADERS = {"Tailscale-User-Login": "browsertest@example.com"}
 
 _ENV_PATCH = {
-    "CCSWITCH_DEV": "1",
+    "VIBERPIT_DEV": "1",
 }
 
 

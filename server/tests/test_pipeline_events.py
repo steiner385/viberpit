@@ -1,6 +1,6 @@
 """SSE feed: /api/pipeline/events streams DashboardState frames.
 
-Auth approach mirrors test_merge_trains_route.py: create_app() with CCSWITCH_DEV=1
+Auth approach mirrors test_merge_trains_route.py: create_app() with VIBERPIT_DEV=1
 and an empty allowlist so any identity passes, then swap app.state.sessions for a
 lightweight fake facade. The Tailscale-User-Login header supplies the identity.
 
@@ -26,9 +26,9 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

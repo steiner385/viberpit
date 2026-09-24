@@ -70,7 +70,7 @@ insecure origins the paste button falls back to a capture field (#541).
 ## Native display routing (2026-09-06)
 
 A session created from the runner host's **own desktop** does not get a virtual display:
-its `DISPLAY` is the host's real X display (`CCSWITCH_NATIVE_DISPLAY`, default `:0`) and
+its `DISPLAY` is the host's real X display (`VIBERPIT_NATIVE_DISPLAY`, default `:0`) and
 "Open a browser" launches Chromium there. Every other client — any other tailnet device,
 automations, the assistant — keeps the pooled Xvfb display and VNC relay.
 
@@ -87,7 +87,7 @@ does not move a session.
 
 **Requirements / limits.** The daemon runs as the desktop user and the X server must
 accept `SI:localuser:<user>` (GDM's default; otherwise `xhost +SI:localuser:<user>` in the
-session startup). No `XAUTHORITY` is set. `CCSWITCH_NATIVE_DISPLAY` must not fall inside
+session startup). No `XAUTHORITY` is set. `VIBERPIT_NATIVE_DISPLAY` must not fall inside
 the Xvfb pool range or native routing disables itself with a warning (the orphan sweep
 reaps that range). Behind `tailscale serve` (no `X-Real-IP`) locality resolves to unknown →
 virtual. Native routing is effectively **Claude-only** today: only
@@ -97,4 +97,4 @@ that injects `DISPLAY`, so a Codex session resolved native takes no Xvfb lease *
 from a runner's own desktop. In fleet mode an explicit `display: "native"` from a *remote*
 requester skips the locality proof but not placement, so under auto placement its windows
 land on whichever desktop-capable host ranks first, not necessarily the one the requester
-expected — pin `host` to be sure. Kill switch: `CCSWITCH_NATIVE_DISPLAY_ENABLED=false`.
+expected — pin `host` to be sure. Kill switch: `VIBERPIT_NATIVE_DISPLAY_ENABLED=false`.

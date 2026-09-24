@@ -62,7 +62,7 @@ Running re-auth on a worker — it must run on the master and stream the display
   seconds apart. A code is bound to the scope it was consented to, so a refusal cannot be retried at
   exchange time: `_retry_at_fallback_scope` re-issues the challenge once at `FALLBACK_SCOPE`
   (`user:inference`), costing one extra paste but never leaving re-auth worse than before.
-  `CCSWITCH_SETUP_TOKEN_SCOPE` pins the scope without a deploy — the only recovery for a refusal on
+  `VIBERPIT_SETUP_TOKEN_SCOPE` pins the scope without a deploy — the only recovery for a refusal on
   the *authorize* page, where no code is ever produced. A token already minted at the narrow scope
   cannot gain the scope retroactively, so its account reports quota `UNSUPPORTED` (a permanent
   capability gap, not a fetch failure) until it is re-minted.

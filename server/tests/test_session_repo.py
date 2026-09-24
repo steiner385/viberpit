@@ -60,13 +60,13 @@ def repo_setup(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
         # Hermetic auth: pin the allowlist to the test identity so the test passes
         # regardless of the developer's real shell env (an empty allowlist is
         # rejected on a non-loopback bind).
-        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+        "VIBERPIT_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
     })
     with env_patch, \
             patch("ccswitch.accounts.usage_for", side_effect=_fake_usage), \

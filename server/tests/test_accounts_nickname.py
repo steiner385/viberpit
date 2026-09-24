@@ -21,7 +21,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -60,7 +60,7 @@ def test_patch_account_nickname_sets_and_returns_it():
     """PATCH /api/accounts/{name} sets a nickname; response includes it."""
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -81,7 +81,7 @@ def test_patch_account_nickname_clears_with_empty_string():
     """PATCH with empty nickname clears an existing nickname."""
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             # Set
@@ -106,7 +106,7 @@ def test_patch_account_nickname_clears_with_null():
     """PATCH with null nickname clears an existing nickname."""
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             client.patch(
@@ -128,7 +128,7 @@ def test_patch_account_nickname_clears_with_null():
 def test_patch_account_nickname_404_for_unknown():
     """PATCH /api/accounts/{unknown} returns 404."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -143,7 +143,7 @@ def test_patch_account_nickname_404_for_unknown():
 def test_patch_account_nickname_404_for_hidden_name_with_dot():
     """PATCH /api/accounts/{name} rejects names starting with dot."""
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -159,7 +159,7 @@ def test_patch_account_nickname_requires_auth():
     """PATCH /api/accounts/{name} without identity header returns 401."""
     with temp_env():
         _seed_slot("dave")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -174,7 +174,7 @@ def test_get_accounts_includes_nickname_in_response():
     """GET /api/accounts includes the nickname field for each account."""
     with temp_env():
         _seed_slot("eve")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(

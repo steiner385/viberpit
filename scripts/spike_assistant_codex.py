@@ -45,7 +45,7 @@ CLIENT_VERSION = "0.0.0"
 #: advertises elsewhere ("not supported when using Codex with a ChatGPT
 #: account"), so the spike names a workhorse model explicitly and lets the
 #: operator override it rather than inheriting whatever the config default is.
-SPIKE_MODEL = os.environ.get("CCSWITCH_CODEX_SPIKE_MODEL", "gpt-5.6-sol")
+SPIKE_MODEL = os.environ.get("VIBERPIT_CODEX_SPIKE_MODEL", "gpt-5.6-sol")
 
 #: The two fake ViberPit tools, in the app-server's `DynamicToolSpec` shape.
 DYNAMIC_TOOLS: list[dict[str, Any]] = [
@@ -376,9 +376,9 @@ async def main() -> int:
     if not home:
         print("set CODEX_HOME to a codex home containing auth.json", file=sys.stderr)
         return 2
-    codex_bin = os.environ.get("CCSWITCH_CODEX_BIN") or shutil.which("codex")
+    codex_bin = os.environ.get("VIBERPIT_CODEX_BIN") or shutil.which("codex")
     if not codex_bin:
-        print("no codex binary on PATH (set CCSWITCH_CODEX_BIN)", file=sys.stderr)
+        print("no codex binary on PATH (set VIBERPIT_CODEX_BIN)", file=sys.stderr)
         return 2
     print(f"[codex_bin] {codex_bin}")
 

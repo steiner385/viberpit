@@ -29,12 +29,12 @@ def test_client_allowlist_unset_is_none():
 
 
 def test_client_allowlist_blank_is_none():
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_CLIENT_ALLOWLIST": "  ,, "}, clear=True):
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_CLIENT_ALLOWLIST": "  ,, "}, clear=True):
         assert client_allowlist() is None
 
 
 def test_client_allowlist_parses_trims_and_drops_empties():
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_CLIENT_ALLOWLIST": " edge, edge.internal ,"}, clear=True):
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_CLIENT_ALLOWLIST": " edge, edge.internal ,"}, clear=True):
         assert client_allowlist() == frozenset({"edge", "edge.internal"})
 
 

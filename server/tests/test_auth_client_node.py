@@ -1,7 +1,7 @@
 """client_node_name: which tailnet machine the browser is on (spec §4.1).
 
 Same peer-trust rule as identity: X-Real-IP is only honoured from loopback /
-CCSWITCH_TRUSTED_PROXY_IPS, and the whois subprocess is the only source of truth.
+VIBERPIT_TRUSTED_PROXY_IPS, and the whois subprocess is the only source of truth.
 """
 import json
 from unittest.mock import MagicMock

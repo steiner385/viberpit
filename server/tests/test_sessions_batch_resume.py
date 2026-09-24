@@ -2,7 +2,7 @@
 
 Mirrors test_send_prompt_route.py: creates a real SessionOrchestrator (for
 lifespan / DB init), then replaces app.state.sessions with a lightweight fake
-that stubs resume_interrupted.  CCSWITCH_DEV=1 + empty allowlist = no auth
+that stubs resume_interrupted.  VIBERPIT_DEV=1 + empty allowlist = no auth
 friction.
 """
 from __future__ import annotations
@@ -20,9 +20,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

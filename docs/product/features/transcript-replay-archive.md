@@ -103,7 +103,7 @@ oldest archived sessions once a configurable ceiling is exceeded.
   magic-byte sniffing (#123, #842).
 - **Adoption.** `adopt.py` discovers untracked live `claude` processes via `/proc`, classifies
   them, resolves their transcript and account, and can force-terminate to take over — gated behind
-  `CCSWITCH_ENABLE_ADOPTION` (#40, #424, #143).
+  `VIBERPIT_ENABLE_ADOPTION` (#40, #424, #143).
 
 **Evidence** — Replay complete and totally ordered across navigation (#482); heals catch-up from
 the ring instead of full replay (#496); archiving as a pure status flip + reclaim at cap (#787);

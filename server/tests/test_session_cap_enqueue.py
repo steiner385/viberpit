@@ -44,9 +44,9 @@ async def _make_orch(*, db_url: str, tmp_path, max_active_sessions: int) -> Sess
     repo_root.mkdir(exist_ok=True)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     env_patch.start()
 

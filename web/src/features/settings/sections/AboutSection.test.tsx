@@ -16,14 +16,14 @@ describe('AboutSection', () => {
   it('shows version, host and the managed env table', async () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       about: { gitSha: 'f92c6e34', hostName: 'dobby' },
-      managed: [{ key: 'CCSWITCH_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
+      managed: [{ key: 'VIBERPIT_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
     })))
     const router = createMemoryRouter([{ path: '/', element: <AboutSection /> }])
     const { container } = render(<RouterProvider router={router} />)
     expect(screen.getByRole('heading', { level: 2, name: 'About' })).toBeInTheDocument()
     expect(screen.getByText('f92c6e34')).toBeInTheDocument()
     expect(screen.getByText('dobby')).toBeInTheDocument()
-    const row = screen.getByRole('row', { name: /CCSWITCH_ENABLE_COPILOT/ })
+    const row = screen.getByRole('row', { name: /VIBERPIT_ENABLE_COPILOT/ })
     expect(row).toHaveTextContent('off')
     expect(row).toHaveTextContent('Enable GitHub Copilot accounts')
     expect(screen.getByText('/etc/ccswitch/ccswitch.env')).toBeInTheDocument()

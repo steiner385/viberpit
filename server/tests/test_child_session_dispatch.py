@@ -52,8 +52,8 @@ def test_dispatch_enforces_cap_depth_and_switch(tmp_path):
                                 max_active_sessions=20)
         try:
             parent = await orch.create_session(name="P", cwd=str(tmp_path), identity="u@x")
-            with patch.dict(os.environ, {"CCSWITCH_CHILD_SESSION_CAP": "1",
-                                         "CCSWITCH_CHILD_SESSION_MAX_DEPTH": "1"}):
+            with patch.dict(os.environ, {"VIBERPIT_CHILD_SESSION_CAP": "1",
+                                         "VIBERPIT_CHILD_SESSION_MAX_DEPTH": "1"}):
                 c1 = await orch.dispatch_child_session(parent.id, name="child one", prompt="",
                                                        model=None, permission_mode=None, identity="u@x")
                 # Leave a real idle child: a fake turn's pending completion callback
@@ -65,7 +65,7 @@ def test_dispatch_enforces_cap_depth_and_switch(tmp_path):
                 with pytest.raises(ChildSessionLimit, match="depth 1"):
                     await orch.dispatch_child_session(c1["id"], name="grandchild", prompt="x",
                                                       model=None, permission_mode=None, identity="u@x")
-            with patch.dict(os.environ, {"CCSWITCH_CHILD_SESSIONS_ENABLED": "false"}):
+            with patch.dict(os.environ, {"VIBERPIT_CHILD_SESSIONS_ENABLED": "false"}):
                 with pytest.raises(ChildSessionLimit, match="disabled"):
                     await orch.dispatch_child_session(parent.id, name="child three", prompt="x",
                                                       model=None, permission_mode=None, identity="u@x")

@@ -57,7 +57,7 @@ def assistant_engine():
     try:
         return parse_agent_engine(raw, legacy_default=True)
     except InvalidAgentEngine:
-        log.warning("CCSWITCH_ASSISTANT_ENGINE=%r is not a known engine; "
+        log.warning("VIBERPIT_ASSISTANT_ENGINE=%r is not a known engine; "
                     "the assistant will run on %s", raw, AgentEngine.CLAUDE_CODE.value)
         return AgentEngine.CLAUDE_CODE
 

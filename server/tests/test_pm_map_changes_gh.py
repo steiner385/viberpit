@@ -12,7 +12,7 @@ import pytest
 from server.pm.map_changes_gh import GhWrite, GhWriteError
 
 REPO = "cairnea/KinDash"
-PAT_ENV = {"CCSWITCH_GH_PROJECT_TOKEN": "pat-tok"}
+PAT_ENV = {"VIBERPIT_GH_PROJECT_TOKEN": "pat-tok"}
 
 
 class FakeGh:

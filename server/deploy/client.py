@@ -20,7 +20,7 @@ class DeployControllerUnavailable(Exception):
 
 def default_socket_path() -> str:
     """The controller's unix socket: the env override, else the host default."""
-    return os.environ.get("CCSWITCH_DEPLOY_SOCKET", hostpaths.DEPLOY_SOCKET)
+    return os.environ.get("VIBERPIT_DEPLOY_SOCKET", hostpaths.DEPLOY_SOCKET)
 
 
 class DeployControllerClient:

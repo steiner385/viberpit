@@ -42,7 +42,7 @@ are smaller than SQLite's total.
   `sudo -u postgres bash scripts/viberpit-pg-provision.sh '<password>'`
   (idempotent — safe to re-run; creates/updates the `ccswitch` role and `ccswitch` database, owner
   `ccswitch`, and grants `ALL ON SCHEMA public`).
-- `CCSWITCH_TEST_PG_URL` pointed at a scratch database and
+- `VIBERPIT_TEST_PG_URL` pointed at a scratch database and
   `.venv/bin/python -m pytest server/tests/ -q` green with the Postgres-only tests
   (`server/tests/test_postgres_compat.py` and friends) **running**, not skipped.
 - A pre-warm dry run and `--apply` already executed against production Postgres (see below) so the
@@ -153,7 +153,7 @@ existing ones — but per the precondition above, it does **not** replace the au
 
 ## Go/no-go checklist
 
-Tick every box before switching `CCSWITCH_DB_URL`. If any item is unchecked or failed, **STOP and
+Tick every box before switching `VIBERPIT_DB_URL`. If any item is unchecked or failed, **STOP and
 do not switch the URL** — roll back per the section below instead.
 
 - [ ] `viberpit.service`, `viberpit-deploy-controller.service`, `viberpit-daemon.service` all
@@ -166,11 +166,11 @@ do not switch the URL** — roll back per the section below instead.
 - [ ] `--verify` row counts (step 5) show `OK` for every table.
 - [ ] `--verify` sequence checks (step 5) show `OK` for every sequenced table.
 - [ ] `$PG_URL` in hand is the real production URL, not the scratch/test database used for the
-      dry-run or CI (`CCSWITCH_TEST_PG_URL`).
+      dry-run or CI (`VIBERPIT_TEST_PG_URL`).
 
 ## Activate the URL
 
-6. Edit `/etc/viberpit/viberpit.env`: uncomment the Postgres `CCSWITCH_DB_URL=postgresql+asyncpg://
+6. Edit `/etc/viberpit/viberpit.env`: uncomment the Postgres `VIBERPIT_DB_URL=postgresql+asyncpg://
    ccswitch:<password>@<host>/ccswitch` line and comment out the SQLite one.
 
 7. **Start services** — reverse of the stop order, daemon first so the edge/controller find it
@@ -215,7 +215,7 @@ rollback is a config revert, not a data restore:
    sudo systemctl stop viberpit.service viberpit-deploy-controller.service
    sudo systemctl stop viberpit-daemon.service
    ```
-2. Restore the SQLite `CCSWITCH_DB_URL` line in `/etc/viberpit/viberpit.env` (re-comment the
+2. Restore the SQLite `VIBERPIT_DB_URL` line in `/etc/viberpit/viberpit.env` (re-comment the
    Postgres line, uncomment the SQLite one).
 3. Start services (daemon first, as in step 7).
 
@@ -232,7 +232,7 @@ is called, the more real user data a rollback discards. Decide quickly.
   `viberpit-deploy-controller.service`) and trips the split-brain guard at `server/app.py:350`.
   Harmless for the real services on restart (the daemon recreates and rebinds it), but if you run
   `pytest` on this host while services are stopped, set
-  `CCSWITCH_SESSIOND_SOCKET=/nonexistent/viberpit-test.sock` first or the test process will refuse
+  `VIBERPIT_SESSIOND_SOCKET=/nonexistent/viberpit-test.sock` first or the test process will refuse
   to start in-process, mistaking the stale socket for a live daemon.
 - **`init_db`/`create_all` is a safe no-op on Postgres once tables exist.** Every service start
   runs `create_all`; on Postgres this is additive-only (`CREATE TABLE IF NOT EXISTS`-equivalent)

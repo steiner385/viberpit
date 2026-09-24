@@ -9,7 +9,7 @@ from server.api.client_logs import router
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DEV", "1")
+    monkeypatch.setenv("VIBERPIT_DEV", "1")
     # Reset the shared per-identity rate-limiter so each test starts with a full
     # bucket — isolation is structural, not dependent on intra-file test ordering.
     from server.api.ratelimit import _client_logs_limiter

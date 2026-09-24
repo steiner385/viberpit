@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("CCSWITCH_TEST_PG_URL"),
-    reason="set CCSWITCH_TEST_PG_URL to run Postgres-backed tests",
+    not os.environ.get("VIBERPIT_TEST_PG_URL"),
+    reason="set VIBERPIT_TEST_PG_URL to run Postgres-backed tests",
 )
 
 

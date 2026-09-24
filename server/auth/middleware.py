@@ -148,7 +148,7 @@ def _signing_secret() -> str | bytes:
     if not _warned_fallback:
         import logging
         logging.getLogger(__name__).warning(
-            "No CCSWITCH_SESSION_SECRET/MASTER_KEY configured; signing session "
+            "No VIBERPIT_SESSION_SECRET/MASTER_KEY configured; signing session "
             "cookies with an ephemeral per-process secret (cookies reset on restart)."
         )
         _warned_fallback = True
@@ -433,12 +433,12 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Set/renew cookie on response.
-        # secure=True by default — set CCSWITCH_DEV_INSECURE_COOKIE=1 only for
+        # secure=True by default — set VIBERPIT_DEV_INSECURE_COOKIE=1 only for
         # plain-HTTP local dev or tests that inspect cookie attributes.
         session_id = getattr(request.state, "app_session_id", None)
         if session_id:
             signed = _sign_session_id(session_id)
-            _secure = os.environ.get("CCSWITCH_DEV_INSECURE_COOKIE") != "1"
+            _secure = os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1"
             response.set_cookie(
                 _COOKIE_NAME,
                 signed,

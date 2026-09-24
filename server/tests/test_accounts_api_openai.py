@@ -39,8 +39,8 @@ from server.codex.auth_types import (  # noqa: E402
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
 }
 
 
@@ -834,7 +834,7 @@ def test_no_authority_means_no_background_sync_task():
     with temp_env():
         # "Without a credential authority" is this test's PREMISE, so establish it
         # rather than assume it. `temp_env()` manages four variables and none of
-        # them is `CCSWITCH_CODEX_AUTHORITY_*`, so on any host whose shell
+        # them is `VIBERPIT_CODEX_AUTHORITY_*`, so on any host whose shell
         # configures a real authority — which is every Codex operator, and the
         # deployed fleet — the edge would correctly start the task and this would
         # read as a regression in whatever change happened to be in flight.
@@ -844,7 +844,7 @@ def test_no_authority_means_no_background_sync_task():
         # also puts `_ENV`'s in-memory DB URL in force while `init_db` runs, which
         # is what the fixture was always for.
         with patch.dict(os.environ, _ENV):
-            for _var in [v for v in os.environ if v.startswith("CCSWITCH_CODEX_AUTHORITY_")]:
+            for _var in [v for v in os.environ if v.startswith("VIBERPIT_CODEX_AUTHORITY_")]:
                 os.environ.pop(_var, None)
             # The edge's authority client is a process-wide cache, so a neighbouring
             # test that built one would otherwise decide this assertion for us.

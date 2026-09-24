@@ -499,12 +499,12 @@ class DiskHeadroomTests(unittest.TestCase):
             os.statvfs = original_statvfs
 
     def test_headroom_env_overrides(self) -> None:
-        """CCSWITCH_MIN_FREE_BYTES env var overrides default threshold."""
+        """VIBERPIT_MIN_FREE_BYTES env var overrides default threshold."""
         original_statvfs = os.statvfs
         original_env = os.environ.copy()
         try:
             os.statvfs = lambda p: self._FakeStatvfs(bavail=10_000_000)
-            os.environ["CCSWITCH_MIN_FREE_BYTES"] = str(10_000_000 * 4096 + 1)
+            os.environ["VIBERPIT_MIN_FREE_BYTES"] = str(10_000_000 * 4096 + 1)
             with self.assertRaises(worktrees.DiskSpaceError):
                 worktrees.check_disk_headroom("/tmp")
         finally:
@@ -597,7 +597,7 @@ class WorktreeFetchCredentialsTests(unittest.TestCase):
         with mock.patch.object(worktrees.subprocess, "run", spy):
             worktrees._try_fetch_origin(str(self.repo))
 
-        self.assertEqual(seen.get("CCSWITCH_GIT_TOKEN"), "ghs_wt")
+        self.assertEqual(seen.get("VIBERPIT_GIT_TOKEN"), "ghs_wt")
 
     def test_fetch_without_a_provider_inherits_ambient_env(self) -> None:
         from unittest import mock
