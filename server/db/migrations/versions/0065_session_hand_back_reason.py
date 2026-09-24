@@ -1,7 +1,7 @@
 """Session hand-back reason (#2321).
 
-Revision ID: 0064_session_hand_back_reason
-Revises: 0063_artifact_upstream_ref
+Revision ID: 0065_session_hand_back_reason
+Revises: 0064_web_vital_samples
 
 ``sessions.hand_back_reason`` (nullable string) stores the one sentence a session
 passed to ``hand_back(reason)``. Until now that sentence existed only in an audit
@@ -18,8 +18,8 @@ revision is the reviewable record of that change.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0064_session_hand_back_reason"
-down_revision = "0063_artifact_upstream_ref"
+revision = "0065_session_hand_back_reason"
+down_revision = "0064_web_vital_samples"
 branch_labels = None
 depends_on = None
 
