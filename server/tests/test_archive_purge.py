@@ -392,6 +392,43 @@ def test_rmtree_best_effort_returns_none_on_success(tmp_path):
     assert not target.exists()
 
 
+def test_rmtree_best_effort_names_foreign_owned_survivor(tmp_path):
+    """When ignore_errors=True swallows a per-file failure and leaves the path
+    behind, the error string should name the surviving entry and its owner
+    instead of just "still present" — #2062: a root-owned __pycache__ left the
+    daemon (running as `tony`) unable to explain the retry without someone
+    grepping the host by hand."""
+    target = tmp_path / "victim"
+    stuck = target / "stuck"
+    stuck.mkdir(parents=True)
+
+    class _ForeignStat:
+        st_uid = 0
+
+    with patch("server.sessions.orchestrator.shutil.rmtree", lambda *a, **k: None), \
+         patch("server.sessions.orchestrator.os.getuid", return_value=1000), \
+         patch("server.sessions.orchestrator.os.stat", return_value=_ForeignStat()):
+        err = _rmtree_best_effort(str(target))
+
+    assert err is not None
+    assert "path still present after rmtree" in err
+    assert str(stuck) in err
+    assert "uid 0" in err
+    assert "uid 1000" in err
+
+
+def test_rmtree_best_effort_still_present_without_foreign_owner(tmp_path):
+    """If the path lingers but every surviving entry is owned by us, don't
+    fabricate an ownership explanation — fall back to the plain message."""
+    target = tmp_path / "victim"
+    (target / "stuck").mkdir(parents=True)
+
+    with patch("server.sessions.orchestrator.shutil.rmtree", lambda *a, **k: None):
+        err = _rmtree_best_effort(str(target))
+
+    assert err == f"path still present after rmtree: {target}"
+
+
 # ---------------------------------------------------------------------------
 # #825 defect 2: poison-pill handling — one wedged session must not disable the
 # purge for every other archived session.
