@@ -26,7 +26,9 @@ def temp_env():
             # Clear module-level singletons that would otherwise leak between tests.
             import sys
             if "ccswitch.accounts" in sys.modules:
-                sys.modules["ccswitch.accounts"]._dead_accounts.clear()
+                acct_mod = sys.modules["ccswitch.accounts"]
+                acct_mod._dead_accounts.clear()
+                acct_mod._scope_gap_warned.clear()
             yield d
         finally:
             for k, v in old.items():

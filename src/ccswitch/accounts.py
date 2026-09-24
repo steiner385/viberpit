@@ -40,6 +40,13 @@ _auth_failure_sink: Callable[[AuthFailure], None] | None = None
 # only by mark_reauthenticated() so the fast-skip is sticky until the user re-auths.
 _dead_accounts: set[str] = set()
 
+# Process-local set of accounts whose setup-token scope gap has already been logged
+# at WARNING. The gap is permanent until a re-auth, but its UNSUPPORTED snapshot
+# only caches for the usage TTL, so every lapse re-detects it — repeats log at INFO
+# rather than re-filing an auto-error per TTL (#1575). Cleared when the token proves
+# scoped or by mark_reauthenticated().
+_scope_gap_warned: set[str] = set()
+
 
 def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     """Register (or clear) the sink that receives an AuthFailure at each needs-reauth flip.
@@ -332,6 +339,7 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
         if not _setup_token_lacks_usage_scope(name, tok):
+            _scope_gap_warned.discard(name)
             # INFO, not WARNING: a scoped setup-token backing off from a 429/5xx is
             # routine and self-healing (the ledger cooldown already handles it) —
             # WARNING is the auto-error filing floor, so this re-filed every throttle
@@ -342,11 +350,15 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
                 ledger.note_usage_fetch_failure(led, name, time.time())
                 ledger.set_status(led, name, "ok")
             return None
-        log.warning("usage_for(%s): setup-token lacks the user:profile scope (usage endpoint "
-                    "said: %s); keeping ok, quota UNSUPPORTED until the account is "
-                    "re-authenticated", name, e)
+        log.log(logging.INFO if name in _scope_gap_warned else logging.WARNING,
+                "usage_for(%s): setup-token lacks the user:profile scope (usage endpoint "
+                "said: %s); keeping ok, quota UNSUPPORTED until the account is "
+                "re-authenticated", name, e)
+        _scope_gap_warned.add(name)
         u = unknown_snapshot("anthropic", fetched_at=now, availability=UNSUPPORTED,
                              reason=REASON_SETUP_TOKEN_SCOPE)
+    else:
+        _scope_gap_warned.discard(name)
     with ledger.locked_ledger() as led:
         ledger.record_usage(led, name, u, now)
         ledger.set_status(led, name, "ok")
@@ -930,6 +942,7 @@ def mark_reauthenticated(name: str) -> None:
     (which the UI triggers on success) is real and re-affirms the status.
     """
     _dead_accounts.discard(name)
+    _scope_gap_warned.discard(name)
     with ledger.locked_ledger() as led:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
