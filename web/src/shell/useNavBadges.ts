@@ -58,7 +58,7 @@ export function useNavBadges(): NavBadges {
   const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
   const automationAttention = automationsError || automationsData.some((a) => automationTier(a) === 'needs-you')
   const hasNeedsReauth = accounts.some(
-    (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
+    (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin' || a.status === 'org-denied',
   )
 
   return {

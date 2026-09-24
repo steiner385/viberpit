@@ -126,3 +126,14 @@ describe('StatusPill — session status tiers', () => {
     expect(screen.getByText('Your turn').className).toMatch(/narrow:hidden/)
   })
 })
+
+describe('StatusPill — account statuses', () => {
+  // #2244: org-denied is distinct from needs-reauth — re-authenticating cannot
+  // fix an organization-level policy, so the label must not say "reauth".
+  it('renders org-denied as "Org access denied" with danger text, distinct from needs-reauth', () => {
+    const { container } = render(<StatusPill status="org-denied" />)
+    expect(screen.getByText('Org access denied')).toBeInTheDocument()
+    expect(screen.queryByText(/reauth/i)).toBeNull()
+    expect(container.querySelector('.text-danger')).toBeTruthy()
+  })
+})

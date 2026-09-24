@@ -92,7 +92,8 @@ def _account_cfg_dir(name: str) -> str | None:
 
 
 def is_account_helper_ready(name: str) -> bool:
-    """True if *name* is enabled, not needs-reauth, and not authorization-blocked.
+    """True if *name* is enabled, not needs-reauth/org-denied, and not
+    authorization-blocked.
 
     The single source of truth for "would this account's own credentials answer
     a helper call, or just fail" — used both to filter candidates in
@@ -105,10 +106,12 @@ def is_account_helper_ready(name: str) -> bool:
     ledger error — an unverifiable account is never assumed ready; callers fall
     back to :func:`pick_helper_config_dir`, which degrades safely on its own.
 
-    The ledger cannot see an organization-level denial (#1820): an account whose
-    org has turned Claude Code off is "enabled / ok" right up to the 403, so
-    :func:`is_helper_account_blocked` — what the calls themselves learned — is
-    consulted first.
+    The ledger could not see an organization-level denial at all until a LIVE
+    session hit one and flipped the account's status to ``org-denied``
+    (orchestrator._mark_org_denied, #2244) — so this still checks
+    :func:`is_helper_account_blocked` first (what the calls themselves learned,
+    time-boxed) rather than relying on the ledger flip alone: a helper-only
+    account that never runs a live session would otherwise never get one.
     """
     cfg_dir = _account_cfg_dir(name)
     if cfg_dir is None or is_helper_account_blocked(cfg_dir):
@@ -117,7 +120,7 @@ def is_account_helper_ready(name: str) -> bool:
         from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as led:
             return (_ledger.is_account_enabled(led, name)
-                    and _ledger.get_status(led, name) != "needs-reauth")
+                    and _ledger.get_status(led, name) not in ("needs-reauth", "org-denied"))
     except Exception:
         return False
 

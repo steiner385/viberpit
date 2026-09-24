@@ -108,8 +108,8 @@ from server.sessions.suggestions import (
 )
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
-    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
-    STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED, STALL_DIAG_THRESHOLD_S,
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_FORBIDDEN,
+    QUARANTINE_MAX, STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED, STALL_DIAG_THRESHOLD_S,
 )
 from server.sessions.selection import (  # noqa: F401
     AllAccountsBusy, Picked, has_alternative_account, select_account,
@@ -18360,6 +18360,16 @@ class SessionOrchestrator:
             self._mark_needs_reauth(record.account)
             await self._rotate_away(record, reason="auth_401")
             return
+        if kind == "auth_forbidden":
+            # The credential itself is fine — the account's ORGANIZATION has turned
+            # off Claude Code access (#2244). There is no refresh or recompose that
+            # helps, so skip straight to rotation (unlike auth_401, no same-account
+            # retry first). `_mark_needs_reauth` would be misleading here — re-logging
+            # in cannot fix an org policy — so a distinct ledger status is used instead.
+            self._recovery.quarantine(record.account, until=now + QUARANTINE_FORBIDDEN)
+            self._mark_org_denied(record.account)
+            await self._rotate_away(record, reason="auth_forbidden")
+            return
 
     def _recently_recomposed(self, session_id: str, now: float) -> bool:
         ts = self._recompose_attempts.get(session_id)
@@ -18521,6 +18531,36 @@ class SessionOrchestrator:
                 await db.commit()
         except Exception:
             log.warning("mark_needs_reauth_audit failed account=%s", account, exc_info=True)
+
+    def _mark_org_denied(self, account: str) -> None:
+        """Propagate a live-session 403 org denial to the ledger so the Accounts page
+        stops reporting a falsely-healthy 'ok' for an account its ORGANIZATION has
+        cut off (#2244). A distinct status from 'needs-reauth': re-logging in cannot
+        fix an org policy, and the dashboard must not tell the operator to try it."""
+        try:
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, account, "org-denied")
+        except Exception:
+            log.warning("recover.mark_org_denied failed account=%s", account, exc_info=True)
+        with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
+            self._spawn(self._mark_org_denied_audit(account),
+                        name=f"mark-org-denied-{account}")
+
+    async def _mark_org_denied_audit(self, account: str) -> None:
+        """Write an account.org_denied audit row for the in-session 403 flip site."""
+        from server.audit import record_audit
+        from server.db import db_session, _session_factory
+        if _session_factory is None:
+            return
+        try:
+            async with db_session() as db:
+                await record_audit(db, "account.org_denied", "system",
+                                   {"account": account,
+                                    "reason": "oauth_not_allowed_for_organization"})
+                await db.commit()
+        except Exception:
+            log.warning("mark_org_denied_audit failed account=%s", account, exc_info=True)
 
     async def switch_account_manual(self, session_id: str, new_account: str) -> str:
         """User-initiated account switch: resumes the conversation on new_account via

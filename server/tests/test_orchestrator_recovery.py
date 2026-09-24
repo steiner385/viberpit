@@ -37,11 +37,15 @@ def _make_orch():
     def spy_reauth(account):
         o.calls.append(("needs_reauth", account))
 
+    def spy_org_denied(account):
+        o.calls.append(("org_denied", account))
+
     o._replay_same_account = spy_replay
     o._rotate_away = spy_rotate
     o._recompose_same_account = spy_recompose
     o._pause_session = spy_pause
     o._mark_needs_reauth = spy_reauth
+    o._mark_org_denied = spy_org_denied
     # Default to False so the real crypto.read_oauth_token is never called in the
     # shared fixture — a real dev-machine token would flip existing OAuth-path tests
     # into the new setup-token branch and cause false failures.
@@ -717,6 +721,30 @@ def test_401_oauth_path_unchanged_when_no_setup_token():
     asyncio.run(o._recover_session(rec, "auth_401", None))
     assert o.calls == [("recompose", "s1")]
     assert o._recovery.quarantined(now=1000.0) == frozenset()
+
+
+def test_auth_forbidden_quarantines_marks_org_denied_and_rotates():
+    """A live-turn 403 (org-denied account, #2244) skips recompose entirely and goes
+    straight to rotation, unlike auth_401's recompose-first ladder."""
+    o = _make_orch(); rec = _rec(o)
+    asyncio.run(o._recover_session(rec, "auth_forbidden", None))
+    assert ("org_denied", "kindash") in o.calls
+    assert ("rotate", "s1", "auth_forbidden") in o.calls
+    assert ("recompose", "s1") not in o.calls
+    assert ("needs_reauth", "kindash") not in o.calls
+    assert "kindash" in o._recovery.quarantined(now=1000.0 + R.QUARANTINE_FORBIDDEN - 1)
+    assert "kindash" not in o._recovery.quarantined(now=1000.0 + R.QUARANTINE_FORBIDDEN + 1)
+
+
+def test_mark_org_denied_sets_ledger_status(tmp_path, monkeypatch):
+    # Operator-visibility fix: a live-session 403 must flip the ledger to a status
+    # distinct from 'needs-reauth' — re-logging in cannot fix an org policy.
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    o._mark_org_denied("kindash")
+    from ccswitch import ledger
+    with ledger.locked_ledger() as led:
+        assert led["accounts"]["kindash"]["status"] == "org-denied"
 
 
 def test_check_stalls_interrupt_keeps_queued_prompts():
