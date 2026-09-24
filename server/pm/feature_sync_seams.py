@@ -42,6 +42,11 @@ log = logging.getLogger(__name__)
 # shared by every caller (daemon tick and edge resync alike).
 _PM_SYNC_LINK_LOG = LogThrottle()
 
+# Same shape for the planner's parent warnings: a doc citing a parent that is
+# not on the default branch stays that way every tick until the map changes,
+# and the old interpolated line filed one issue per child slug (#2242/#2243).
+_PM_SYNC_PARENT_LOG = LogThrottle()
+
 
 async def list_feature_rows(project_id: str) -> list[FeatureRowView]:
     """Return FeatureRowView for every Feature belonging to *project_id*."""
@@ -73,7 +78,11 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
     ``live`` are left alone."""
     from server.pm.project_slugs import resolve_project_slugs
     for warning in plan.warnings:
-        log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
+        log_event_throttled(
+            log, _PM_SYNC_PARENT_LOG,
+            f"{project_id}\0{warning.kind}\0{warning.slug}\0{warning.parent}",
+            logging.WARNING, f"pm_sync.feature_{warning.kind}",
+            project=project_id, slug=warning.slug, parent=warning.parent)
     async with db_session() as db:
         for up in plan.upserts:
             row = (await db.execute(

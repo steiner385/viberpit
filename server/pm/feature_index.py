@@ -67,11 +67,33 @@ class FeatureUpsert:
 
 
 @dataclass(frozen=True)
+class PlanWarning:
+    """A doc the planner indexed at root because its parent could not stand.
+
+    Structured rather than a preformatted line so the apply can log it as one
+    event per *kind* with the slugs as fields (#2243): interpolated slugs made
+    every broken parent its own auto-error fingerprint, re-filed every tick."""
+
+    kind: str  # "parent_unresolved" | "parent_cycle"
+    slug: str
+    parent: str | None
+
+    @property
+    def detail(self) -> str:
+        if self.kind == "parent_cycle":
+            return "parent chain is a cycle; indexed at root"
+        return f"parent '{self.parent}' not found; indexed at root"
+
+    def __str__(self) -> str:
+        return f"{self.slug}: {self.detail}"
+
+
+@dataclass(frozen=True)
 class FeatureIndexPlan:
     upserts: tuple[FeatureUpsert, ...]
     orphan_slugs: tuple[str, ...]
     revive_slugs: tuple[str, ...]
-    warnings: tuple[str, ...]
+    warnings: tuple[PlanWarning, ...]
 
 
 def _summary(body: str) -> str:
@@ -82,21 +104,23 @@ def _summary(body: str) -> str:
     return ""
 
 
-def _resolve_parents(docs: list[tuple[str, FeatureDoc]]) -> tuple[dict[str, str | None], list[str]]:
+def _resolve_parents(
+    docs: list[tuple[str, FeatureDoc]],
+) -> tuple[dict[str, str | None], list[PlanWarning]]:
     """Map slug → parent slug, dropping unknown parents and breaking cycles.
 
     Docs are visited in the order given; a cycle is broken at the FIRST doc
     (in that order) whose parent chain returns to itself, so the outcome is
     deterministic for a given doc listing."""
     parent: dict[str, str | None] = {}
-    warnings: list[str] = []
+    warnings: list[PlanWarning] = []
     slugs = {doc.slug for _, doc in docs}
     for _, doc in docs:
         if doc.parent is None:
             parent[doc.slug] = None
         elif doc.parent not in slugs:
             parent[doc.slug] = None
-            warnings.append(f"{doc.slug}: parent '{doc.parent}' not found; indexed at root")
+            warnings.append(PlanWarning("parent_unresolved", doc.slug, doc.parent))
         else:
             parent[doc.slug] = doc.parent
     for _, doc in docs:
@@ -105,7 +129,7 @@ def _resolve_parents(docs: list[tuple[str, FeatureDoc]]) -> tuple[dict[str, str 
         while cur is not None:
             if cur in seen:
                 parent[doc.slug] = None
-                warnings.append(f"{doc.slug}: parent chain is a cycle; indexed at root")
+                warnings.append(PlanWarning("parent_cycle", doc.slug, doc.parent))
                 break
             seen.add(cur)
             cur = parent.get(cur)

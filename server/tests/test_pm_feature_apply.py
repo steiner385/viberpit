@@ -33,7 +33,7 @@ def test_apply_writes_parents_and_links_and_rewrites_stale_links():
     from sqlalchemy import select
     from server.db import db_session
     from server.db.models import Feature, FeatureLink, Project
-    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert, PlanWarning
     from server.pm.featuredoc import FeatureLinkRef
 
     with _orch() as orch:
@@ -59,7 +59,7 @@ def test_apply_writes_parents_and_links_and_rewrites_stale_links():
             upserts=(_up("sessions", None), _up("dictation", "sessions",
                                                   [FeatureLinkRef("powered_by", "example-infra", "message-queue"),
                                                    FeatureLinkRef("integrates_with", "example-product", "old")])),
-            orphan_slugs=(), revive_slugs=(), warnings=("dictation: sample warning",))
+            orphan_slugs=(), revive_slugs=(), warnings=(PlanWarning("parent_unresolved", "dictation", "nope"),))
         asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan1))
 
         async def _read():
@@ -446,3 +446,85 @@ def test_a_doc_naming_its_OWN_product_by_a_former_slug_still_links(caplog):
             ("command-line-interface", "credential-store-encryption")]
         assert [r for r in caplog.records
                 if "feature_link_unresolved" in r.getMessage()] == []
+
+
+def _parent_warning_records(caplog):
+    return [r for r in caplog.records
+            if r.levelno >= logging.WARNING and "pm_sync.feature_parent_" in r.getMessage()]
+
+
+def test_unresolved_parent_warns_once_not_once_per_tick(caplog):
+    """A doc citing a parent that is not on the default branch stays that way
+    every pm-sync tick until the map changes; the old interpolated line re-
+    warned ~260 times a day (#2243). Repeats within the window must not
+    re-report at WARNING."""
+    from server.pm import feature_sync_seams as seams_mod
+    from server.db.models import Project
+    from server.db import db_session
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert, PlanWarning
+
+    seams_mod._PM_SYNC_PARENT_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-product", name="Example product")
+                db.add(prod)
+                await db.commit()
+                return prod.id
+        prod_id = asyncio.run(_seed())
+
+        plan = FeatureIndexPlan(
+            upserts=(FeatureUpsert(
+                slug="data-correctness", title="D", state="live", summary="",
+                repo_path="d/data-correctness.md", parent_slug=None, links=()),),
+            orphan_slugs=(), revive_slugs=(),
+            warnings=(PlanWarning("parent_unresolved", "data-correctness", "actionable-work-model"),))
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            for _ in range(5):
+                asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        records = _parent_warning_records(caplog)
+        assert len(records) == 1, f"{len(records)} records for one unresolved parent"
+
+
+def test_two_unresolved_parents_share_one_fingerprint_but_each_report(caplog):
+    """#2242 (all-work-table-ux → browser-app) and #2243 (data-correctness →
+    actionable-work-model) were one condition split into two issues by the
+    slugs in the message. Each broken edge still reports promptly, but both
+    must normalize to the same error signature."""
+    from server.pm import feature_sync_seams as seams_mod
+    from server.db.models import Project
+    from server.db import db_session
+    from server.obs.error_signature import signature_of
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert, PlanWarning
+
+    seams_mod._PM_SYNC_PARENT_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-product", name="Example product")
+                db.add(prod)
+                await db.commit()
+                return prod.id
+        prod_id = asyncio.run(_seed())
+
+        def _up(slug):
+            return FeatureUpsert(slug=slug, title=slug, state="live", summary="",
+                                 repo_path=f"d/{slug}.md", parent_slug=None, links=())
+
+        plan = FeatureIndexPlan(
+            upserts=(_up("data-correctness"), _up("all-work-table-ux")),
+            orphan_slugs=(), revive_slugs=(),
+            warnings=(PlanWarning("parent_unresolved", "data-correctness", "actionable-work-model"),
+                      PlanWarning("parent_unresolved", "all-work-table-ux", "browser-app")))
+
+        with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+            asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        records = _parent_warning_records(caplog)
+        assert len(records) == 2
+        sigs = {signature_of(r, source="daemon", host="h").fingerprint for r in records}  # type: ignore[union-attr]
+        assert len(sigs) == 1

@@ -82,8 +82,7 @@ def lint_feature_docs(root: str | Path) -> LintResult:
     # discovering it in the product's roadmap-hygiene notice after merge.
     plan = plan_feature_index([], parsed)
     for warning in plan.warnings:
-        slug, _, detail = warning.partition(": ")
-        errors.append(LintError(seen_slugs.get(slug, slug), detail or warning))
+        errors.append(LintError(seen_slugs.get(warning.slug, warning.slug), warning.detail))
 
     return LintResult(checked=len(paths), errors=tuple(errors))
 
