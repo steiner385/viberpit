@@ -610,3 +610,51 @@ def test_two_runner_identities_are_ambiguous_and_denied():
 )
 def test_an_unknown_identity_resolves_to_nothing(identities):
     assert resolve_role(identities) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_mid_reap_still_closes_the_connection(monkeypatch):
+    """#2048: the writer close must enclose the inflight reap loop, or a
+    cancellation taken while reaping leaks the socket."""
+    import server.codex.auth_server as auth_server_mod
+
+    in_reap = asyncio.Event()
+
+    async def hanging_reap(task, **kwargs):
+        in_reap.set()
+        await asyncio.sleep(3600)  # the cancellation lands here
+
+    async def hanging_dispatch(self, session, line, writer):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        auth_server_mod, "resolve_role", lambda ids: (Role.EDGE, "codex-edge")
+    )
+    monkeypatch.setattr(auth_server_mod, "cancel_and_reap", hanging_reap)
+    monkeypatch.setattr(AuthorityServer, "_dispatch", hanging_dispatch)
+
+    class FakeWriter:
+        closed = False
+
+        def get_extra_info(self, name):
+            return type("Peer", (), {"getpeercert": lambda self: {"subject": ()}})()
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            return None
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'{"id": 1}\n')
+    reader.feed_eof()
+    writer = FakeWriter()
+    server = AuthorityServer(object(), allowlist=frozenset({"codex-edge"}))  # type: ignore[arg-type]
+
+    task = asyncio.create_task(server._handle(reader, writer))  # type: ignore[arg-type]
+    await asyncio.wait_for(in_reap.wait(), 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert writer.closed

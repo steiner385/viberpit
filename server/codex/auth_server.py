@@ -316,11 +316,18 @@ class AuthorityServer:
             # return_exceptions=True)` returns the CALLER's CancelledError as a
             # value instead of propagating it, so a listener being shut down would
             # sail past its own cancellation (#1164).
-            for task in list(inflight):
-                await cancel_and_reap(
-                    task, phase=f"codex-auth-conn:{identity}", timeout=5.0
-                )
-            await _close(writer)
+            try:
+                for task in list(inflight):
+                    await cancel_and_reap(
+                        task, phase=f"codex-auth-conn:{identity}", timeout=5.0
+                    )
+            finally:
+                # Enclosing the reap loop, so a cancellation taken mid-reap still
+                # closes the socket (#2048). Load-bearing: _close() calls the
+                # non-suspending writer.close() BEFORE its first await, so even a
+                # redelivered cancellation cannot skip the close — only the
+                # best-effort wait_closed() after it.
+                await _close(writer)
 
     async def _dispatch(
         self, session: Session, line: bytes, writer: asyncio.StreamWriter
