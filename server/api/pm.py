@@ -999,6 +999,14 @@ async def get_onboarding(
         "action": _onboarding_action_to_dict(next_onboarding_action(view)),
         "counts": _counts_to_dict(view),
         "mapPr": map_pr,
+        # issue #2259 (item 2 of #2165): offer a "propose constitution" session
+        # once the map is merged (the ladder states before it are still busy
+        # with the required steps) AND there is an actual governance gap —
+        # `constitution_status` is None once pm-sync classifies the document as
+        # ratified (`server.sdlc.constitution_status.classify_document`).
+        "offerConstitution": (
+            p.constitution_status is not None
+            and view.state not in ("registered", "syncing", "map_proposed")),
     }
 
 
@@ -1036,6 +1044,33 @@ async def propose_map(
             "error": "no_capacity",
             "message": "no healthy account or primary repo to spawn the session"})
     await record_audit(db=db, type="pm.onboard.propose_map", identity=identity,
+                       detail={"slug": slug, "sessionId": _rec_id(rec)})
+    return {"sessionId": _rec_id(rec)}
+
+
+@router.post("/projects/{slug}/propose-constitution", status_code=status.HTTP_202_ACCEPTED)
+async def propose_constitution(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Spawn the constitution-proposal session (issue #2259, item 2 of #2165;
+    idempotent — see ``pm_onboard_spawn_constitution``'s dedupe key). 409 when
+    the repo's governance document is already ratified
+    (``Project.constitution_status is None``)."""
+    p = await _load_project(db, slug)
+    if p.constitution_status is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_governance_gap",
+            "message": "the repository constitution is already ratified"})
+    orch = request.app.state.sessions
+    rec = await orch.pm_onboard_spawn_constitution(slug)
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_capacity",
+            "message": "no healthy account or primary repo to spawn the session"})
+    await record_audit(db=db, type="pm.onboard.propose_constitution", identity=identity,
                        detail={"slug": slug, "sessionId": _rec_id(rec)})
     return {"sessionId": _rec_id(rec)}
 

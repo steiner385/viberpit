@@ -60,6 +60,12 @@ def map_branch_name(slug: str) -> str:
     return f"pm/feature-map-{slug}"
 
 
+def constitution_branch_name(slug: str) -> str:
+    """Deterministic branch a constitution-proposal PR pushes to (issue #2259).
+    Mirrors ``map_branch_name`` — one proposal per project per tap."""
+    return f"pm/constitution-{slug}"
+
+
 class ClassificationParseError(ValueError):
     """Raised only when a classify session's output has no parseable JSON array.
     Individual malformed rows are skipped, not fatal (one bad row must never lose
@@ -370,6 +376,77 @@ def build_coverage_critic_prompt(
         f"DO NOT open a new pull request. DO NOT arm auto-merge. Leave the PR for "
         f"human review.\n"
         f"6. End every commit message with:\n"
+        f"   `{commit_trailer(engine)}`\n"
+    )
+
+
+# The status-specific opening line, keyed on
+# `server.sdlc.constitution_status.classify_document`'s vocabulary. Kept as a
+# plain dict rather than importing that module — this one is a display string,
+# not the classification itself, and pm/classification.py stays free of a
+# server.sdlc import.
+_CONSTITUTION_STATUS_OPENING = {
+    "missing": "has no governance document at all",
+    "template": "still carries the unfilled spec-kit template",
+    "no_version_footer": "is missing a parseable Version/Ratified/Last Amended footer",
+}
+
+
+def build_constitution_proposal_prompt(
+    *,
+    slug: str,
+    repo: str,
+    default_branch: str,
+    constitution_status: str | None = None,
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+) -> str:
+    """Seed prompt for the constitution-proposal session (issue #2259, item 2 of
+    #2165). Offered from the onboarding wizard once ``Project.constitution_status``
+    is non-``None`` (missing / template / no_version_footer) — i.e. there is an
+    actual governance gap to propose fixing.
+
+    Drafts ``.specify/memory/constitution.md`` from the repo's own ADRs,
+    AGENTS.md (or equivalent AI-context files), and any spec-kit templates
+    already in the repo, and opens ONE non-draft PR. Propose-only, the same
+    shape as ``build_map_synthesis_prompt``'s ``scope="initial"``: a human
+    reviews and merges — auto-merge is never armed, because ratifying a repo's
+    own governance document is exactly the kind of change
+    ``constitution_gate.check_amendment`` escalates to the owner."""
+    repo_clause = f" in repository `{repo}`" if repo else ""
+    branch = constitution_branch_name(slug)
+    gap = _CONSTITUTION_STATUS_OPENING.get(
+        constitution_status or "", "needs review")
+    return (
+        "You are proposing a **repository constitution** for an existing "
+        f"project{repo_clause}. Its governance document at "
+        f"`.specify/memory/constitution.md` currently {gap} — draft or "
+        "complete one.\n\n"
+        "Sources to draw from, in order of authority:\n"
+        "- Architecture Decision Records (ADRs) anywhere in the repo "
+        "(commonly under `docs/adr/`, `docs/decisions/`, or similar)\n"
+        "- CLAUDE.md, AGENTS.md, or equivalent AI-context files — these "
+        "usually already state governance rules in prose\n"
+        "- Any spec-kit templates already in the repo (e.g. under "
+        "`.specify/templates/` or `.specify/memory/`), which give the "
+        "expected structure (Principles, Governance, versioning footer)\n\n"
+        "Write `.specify/memory/constitution.md` with numbered Principles "
+        "(each a short name plus a concrete, testable rule — not vague "
+        "aspiration), a Governance section describing how amendments are "
+        "reviewed, and a footer of the form `**Version**: X.Y.Z | "
+        "**Ratified**: <date> | **Last Amended**: <date>` so "
+        "`constitution_gate.parse_footer` can read it. Ground every "
+        "principle in something this repo actually does — cite the file "
+        "paths or ADRs that justify it. Do not invent principles the repo "
+        "has no evidence for.\n\n"
+        "Requirements — follow exactly:\n"
+        f"1. Branch off `origin/{default_branch}` (never local "
+        f"`{default_branch}`) into a branch named exactly `{branch}`.\n"
+        "2. Commit only `.specify/memory/constitution.md` (and, if you "
+        "formalize one into a principle, an ADR you create to record it).\n"
+        "3. Open exactly ONE non-draft PR, marked ready for review.\n"
+        "4. Do NOT arm auto-merge: a project's own governance document is a "
+        "human decision, and the PR review is where it is argued with.\n"
+        "5. End every commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
     )
 

@@ -1193,6 +1193,11 @@ class RemoteOrchestrator:
         return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
                                        timeout=SPAWN_RPC_TIMEOUT)
 
+    async def pm_onboard_spawn_constitution(self, slug: str, **kwargs) -> dict | None:
+        """Spawn the constitution-proposal session, via the daemon."""
+        return await self._client.call("pm_onboard_spawn_constitution", slug=slug, **kwargs,
+                                       timeout=SPAWN_RPC_TIMEOUT)
+
     async def pm_classify_run(self, slug: str, **kwargs) -> int:
         """Spawn one backlog-classification session, via the daemon."""
         r = await self._client.call("pm_classify_run", slug=slug, **kwargs,

@@ -9,6 +9,7 @@ import { OnboardingWizard } from '../OnboardingWizard'
 
 const classify = vi.fn().mockResolvedValue({ dispatched: 3 })
 const proposeMap = vi.fn().mockResolvedValue({ sessionId: null })
+const proposeConstitution = vi.fn().mockResolvedValue({ sessionId: null })
 const fetchOnboarding = vi.fn()
 const advanceMap = vi.fn().mockResolvedValue({ onboardingState: 'map_merged' })
 const advanceLive = vi.fn().mockResolvedValue({ onboardingState: 'live' })
@@ -18,6 +19,7 @@ vi.mock('@/api/pm', async (importOriginal) => ({
   fetchOnboarding: (...a: unknown[]) => fetchOnboarding(...a),
   runClassify: (...a: unknown[]) => classify(...a),
   proposeMap: (...a: unknown[]) => proposeMap(...a),
+  proposeConstitution: (...a: unknown[]) => proposeConstitution(...a),
   advanceMap: (...a: unknown[]) => advanceMap(...a),
   advanceLive: (...a: unknown[]) => advanceLive(...a),
 }))
@@ -161,16 +163,58 @@ describe('OnboardingWizard', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('renders nothing when state is live', async () => {
+  it('renders nothing when state is live and no constitution is offered', async () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'live', action: { type: 'live' },
       counts: BASE_COUNTS,
       mapPr: null,
+      offerConstitution: false,
     })
     const { container } = renderWizard()
     // Give the query time to resolve, then assert the wizard is absent
     await waitFor(() => expect(fetchOnboarding).toHaveBeenCalled())
     // The live guard returns null — no wizard content should exist
     expect(container.firstChild).toBeNull()
+  })
+
+  it('offers Propose constitution alongside Classify backlog when offerConstitution is true', async () => {
+    fetchOnboarding.mockResolvedValueOnce({
+      state: 'map_merged', action: { type: 'classify' },
+      counts: BASE_COUNTS,
+      mapPr: null,
+      offerConstitution: true,
+    })
+    renderWizard()
+    await screen.findByRole('button', { name: /classify backlog/i })
+    fireEvent.click(screen.getByRole('button', { name: /propose constitution/i }))
+    await waitFor(() => expect(proposeConstitution).toHaveBeenCalledWith('viberpit'))
+  })
+
+  it('offers only Propose constitution when live and offerConstitution is true', async () => {
+    fetchOnboarding.mockResolvedValueOnce({
+      state: 'live', action: { type: 'live' },
+      counts: BASE_COUNTS,
+      mapPr: null,
+      offerConstitution: true,
+    })
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: /propose constitution/i }))
+    await waitFor(() => expect(proposeConstitution).toHaveBeenCalledWith('viberpit'))
+  })
+
+  it('renders the server error inline under Propose constitution when it fails', async () => {
+    fetchOnboarding.mockResolvedValueOnce({
+      state: 'live', action: { type: 'live' },
+      counts: BASE_COUNTS,
+      mapPr: null,
+      offerConstitution: true,
+    })
+    proposeConstitution.mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'already ratified' } }))
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: /propose constitution/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('already ratified')
+    expect(alert).toHaveClass('text-danger')
   })
 })

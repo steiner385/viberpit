@@ -593,7 +593,7 @@ def test_every_remote_method_is_classified():
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "maybe_start_queued",
-        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
+        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_onboard_spawn_constitution", "pm_classify_run",
         "pm_advance_map_merged", "pm_advance_live",
         # Materialization apply (#992): initiative-scoped, not session-scoped, and
         # its truth is the shared DB plus the daemon's gh credential ladder. A
@@ -781,7 +781,7 @@ def test_api_orchestrator_reads_are_all_classified():
         "resume_recovery_status", "pr_doctor_job", "maybe_start_queued",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
         "process_quota_refresh",
-        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
+        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_onboard_spawn_constitution", "pm_classify_run",
         "pm_advance_map_merged", "pm_advance_live",
         # Initiative-scoped human-gate apply (#992) — see the GLOBAL-set comment
         # in the sibling test: fanning it out would repeat every GitHub write.

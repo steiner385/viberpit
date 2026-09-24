@@ -115,6 +115,38 @@ def test_pm_onboard_spawn_map_rpc_returns_none_when_orchestrator_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# pm_onboard_spawn_constitution (issue #2259) — same shape as
+# pm_onboard_spawn_map: an object → must strip to {"id": ...}
+# ---------------------------------------------------------------------------
+
+def test_pm_onboard_spawn_constitution_rpc_is_json_serializable_with_record():
+    app, orch = _rpc_app()
+    orch.pm_onboard_spawn_constitution = mock.AsyncMock(return_value=_FakeRec("session-xyz"))
+
+    with TestClient(app) as c:
+        resp = c.post("/rpc/pm_onboard_spawn_constitution", json={"slug": "my-project"})
+
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    json.dumps(result)  # must not raise
+    assert result == {"id": "session-xyz"}
+    orch.pm_onboard_spawn_constitution.assert_awaited_once_with(slug="my-project")
+
+
+def test_pm_onboard_spawn_constitution_rpc_returns_none_when_orchestrator_returns_none():
+    app, orch = _rpc_app()
+    orch.pm_onboard_spawn_constitution = mock.AsyncMock(return_value=None)
+
+    with TestClient(app) as c:
+        resp = c.post("/rpc/pm_onboard_spawn_constitution", json={"slug": "my-project"})
+
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    json.dumps(result)  # must not raise
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
 # pm_classify_run — int → must stay JSON-serializable (kept in _SIMPLE)
 # ---------------------------------------------------------------------------
 
