@@ -1029,6 +1029,12 @@ class SessionOrchestrator:
         from server.pipeline import merge_queue_store
 
         async def _merge_queue_sink(by_repo: dict, captured_at: int) -> None:
+            # Primary-only (#2273): record() is a plain INSERT per entry, so a
+            # worker would interleave its own snapshot into the one shared series
+            # window() reads. The poller keeps running on workers — its cache is
+            # the pr_for() fallback — only this fleet-global write is gated.
+            if not drives_fleet_automations():
+                return
             for repo, entries in by_repo.items():
                 await merge_queue_store.record(repo, captured_at, entries)
             await merge_queue_store.prune(older_than_epoch=captured_at - 36 * 3600)
@@ -2235,7 +2241,13 @@ class SessionOrchestrator:
         await self._process_quota.start()
         await self._pr_poller.start()
         await self._pr_population.start()
-        await self._deploy_watcher.start()
+        # Primary-only (#2273): the watcher polls every configured healthUrl and
+        # spends GitHub compare calls against the shared budget; its throttle cache
+        # is per-host, so N daemons meant N× the traffic. Its only reader,
+        # deploy_status(), is unrouted in FleetOrchestrator and so always lands on
+        # the primary — a worker's watcher had no consumer at all.
+        if drives_fleet_automations():
+            await self._deploy_watcher.start()
         self._pr_branch_task = asyncio.create_task(
             self._pr_branch_monitor(), name="pr-branch-monitor"
         )
@@ -2295,7 +2307,8 @@ class SessionOrchestrator:
         # the single source of truth (test_primary_lease pins the two agree).
         # NOT the whole story: an automation with no loop task of its own escapes
         # both — PR Doctor rides the per-host PR poller started above and is gated
-        # at its hooks by drives_fleet_automations() instead (#2106).
+        # at its hooks by drives_fleet_automations() instead (#2106), as are the
+        # merge-queue sink and the deploy watcher (#2273).
         if daemon_role() == "primary":
             # Backlog Runner control loop: one tick per interval (refill + handoff/
             # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
