@@ -244,6 +244,31 @@ unit file with the new `ExecStartPre` (`sudo cp deploy/viberpit-daemon-remote.se
 /etc/systemd/system/viberpit-daemon.service && sudo systemctl daemon-reload`), and restart
 the daemon when the Sessions page shows nothing mid-turn.
 
+### A tracked file modified on the runner (auto-recovered)
+
+Nothing is supposed to write to a runner checkout, but things do: one `npm install`
+anywhere in the tree rewrites `web/package-lock.json`, and from then on every upgrade of
+that host aborts with
+
+```
+merge failed (rc=1): error: Your local changes to the following files would be
+overwritten by merge: web/package-lock.json
+```
+
+Since 2026-09-24 the deploy recovers this itself: `RunnerDeploy._merge` restores **exactly**
+the tracked paths git named (`git checkout -- <paths>`) and retries the merge **once**.
+Those files are upstream content, and the merge that follows installs the canonical
+version of each. The untracked-file collision is a different git message with a
+different remedy (deleting files) and is **not** recovered — see #2323. Anything else
+dirty in the tree is left alone and still fails the
+runner loudly — same stance as `runner_sync`, which refuses to move a dirty checkout at
+boot. Look for `checkout dirty, restoring … and retrying the merge once` at WARNING in
+the edge's journal; a host that needs it repeatedly has something writing to its
+checkout, which is worth finding.
+
+Note `runner_sync` (§5.1) has **not** been given the same recovery: at boot there is no
+operator watching, so it still logs and fences rather than discarding anything.
+
 ### A hotfixed remote host cannot fast-forward
 
 If you ever patch rocky directly — a branch, a cherry-pick, a copied file — the next
