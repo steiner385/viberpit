@@ -1190,6 +1190,9 @@ class CodexRunnerManager:
             "codex.manager.runner_unrecoverable",
             account=runner.account,
             restarts=runner.restarts - 1,
+            # #1856: without this, the auto-filed issue carried only the
+            # restart count and never why the account gave up.
+            detail=detail,
         )
         self._notify(
             RunnerNotice(

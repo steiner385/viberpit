@@ -616,6 +616,30 @@ def test_restart_is_bounded_and_backs_off_with_jitter():
     asyncio.run(go())
 
 
+def test_giving_up_reports_why_not_just_the_restart_count(caplog):
+    """#1856: the auto-filed issue for ``runner_unrecoverable`` carried only
+    ``account`` and ``restarts`` — never the crash detail the supervisor had
+    already computed for the notice, so seven occurrences over five days never
+    said why the account's app-server was unrecoverable."""
+
+    async def go():
+        manager, spawned = _manager(max_restarts=1, backoff_base_s=0.0, backoff_max_s=0.0)
+        await manager.ensure("a")
+        with caplog.at_level(logging.ERROR, logger="server.codex.manager"):
+            for _ in range(2):
+                spawned[-1].crash()
+                await manager.wait_settled("a", timeout=2.0)
+
+        found = [
+            r for r in caplog.records
+            if getattr(r, "event", None) == "codex.manager.runner_unrecoverable"
+        ]
+        assert len(found) == 1
+        assert found[0].fields["detail"], "no reason means the issue diagnoses nothing"
+
+    asyncio.run(go())
+
+
 def test_backoff_is_capped():
     async def go():
         slept: list[float] = []
