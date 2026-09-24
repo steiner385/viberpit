@@ -19,7 +19,11 @@ server = [
   "itsdangerous",
     "fastapi",
     "uvicorn[standard]",
-    "sqlalchemy[asyncio]",
+    # Pin below 2.1 for the same reason as ruff below: 2.1.0 retyped `select(Model)`
+    # (Select[Model] vs Select[tuple[Model]]) and mypy went red on untouched code the
+    # day it shipped. It would also reach prod unreviewed on the next deploy install.
+    # Adopting 2.1 is a deliberate change — bump this pin in its own PR.
+    "sqlalchemy[asyncio]>=2.0,<2.1",
     "aiosqlite",
     "asyncpg",
     "alembic",
