@@ -205,6 +205,41 @@ def test_spawn_keeps_a_pause_applied_while_queued(tmp_path):
     assert live.autopilot_paused is True
 
 
+def test_spawn_keeps_a_rename_applied_while_queued(tmp_path):
+    """Same shape as the pause above: the queue entry's `params` blob still holds the
+    enqueue-time `name` / `name_is_auto=True`, so a drain that seeds the live record
+    from it shows the stale name and re-arms the auto-namer over a manual rename."""
+    async def body(orch):
+        with patch.object(orch, "_max_active_sessions", return_value=0):
+            queued = await orch.create_session("auto")
+        assert queued.status == "queued" and queued.name_is_auto is True
+        await orch.rename_session(queued.id, "my manual name")
+        assert await orch.maybe_start_queued() >= 1
+        return orch._records[queued.id], await _row(queued.id)
+
+    live, row = _run_with_orch(tmp_path, body)
+    assert live.status != "queued"
+    assert live.name == "my manual name"
+    assert live.name_is_auto is False
+    assert row.name == "my manual name" and row.name_is_auto is False
+
+
+def test_spawn_keeps_an_account_pin_applied_while_queued(tmp_path):
+    """Audit sibling of the rename: `set_account_pin` on a queued record must survive
+    the drain's fresh record too."""
+    async def body(orch):
+        with patch.object(orch, "_max_active_sessions", return_value=0):
+            queued = await orch.create_session("auto")
+        assert queued.status == "queued"
+        await orch.set_account_pin(queued.id, True)
+        assert await orch.maybe_start_queued() >= 1
+        return orch._records[queued.id]
+
+    live = _run_with_orch(tmp_path, body)
+    assert live.status != "queued"
+    assert live.account_pinned is True
+
+
 # --------------------------------------------------------------- remote proxy
 
 
