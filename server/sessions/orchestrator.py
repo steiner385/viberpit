@@ -10165,7 +10165,7 @@ class SessionOrchestrator:
         lossless extractor. Best-effort: any failure returns ""."""
         from server.sessions.events import TextDelta
         try:
-            window = await self.transcript_window(session_id, limit=2)
+            window = await self.transcript_window(session_id, limit=2, background=True)
         except Exception:
             log.warning("chain_ingest.output_text failed sid=%s", session_id,
                         exc_info=True)
@@ -12284,7 +12284,7 @@ class SessionOrchestrator:
         from server.sessions.events import TextDelta, ToolCall, UserMessage
         from server.sessions.excerpt import elide_middle
         try:
-            window = await self.transcript_window(session_id, limit=turns)
+            window = await self.transcript_window(session_id, limit=turns, background=True)
         except Exception:
             log.debug("autopilot.transcript_tail failed sid=%s", session_id, exc_info=True)
             return []
@@ -13993,7 +13993,7 @@ class SessionOrchestrator:
             if not self._owns_record(rec, enabled_hosts):
                 continue
             try:
-                window = await self.transcript_window(sid, limit=1)
+                window = await self.transcript_window(sid, limit=1, background=True)
                 if window is None or window.total_turns == 0:
                     continue
                 if self._goal_marker.get(sid) == window.total_turns:
@@ -20726,7 +20726,8 @@ class SessionOrchestrator:
             return []
 
     async def transcript_window(self, session_id: str, *, before: int | None = None,
-                                limit: int | None = None, timeout_s: float | None = None):
+                                limit: int | None = None, timeout_s: float | None = None,
+                                background: bool = False):
         """Windowed transcript replay. Returns a ReplayWindow, or None if no transcript.
 
         Use before/limit for lazy scrollback paging: returns up to `limit` turns
@@ -20739,6 +20740,11 @@ class SessionOrchestrator:
         download passes TRANSCRIPT_EXPORT_CEILING_S). Returns None on timeout — a caller
         that has already established the transcript EXISTS must treat that None as an
         error (504), not as an empty transcript.
+
+        ``background=True`` marks a best-effort in-daemon sweep (goal inference, the
+        autopilot tail, chain ingest) that already treats None as "skip this pass" and
+        retries on its next tick. A timeout there is a deferred sweep, not a user-facing
+        blank, so it logs at INFO instead of the WARNING the error sink files (#1712).
         """
         ceiling = _TRANSCRIPT_WINDOW_CEILING_S if timeout_s is None else timeout_s
         replay = await self._engine_replay(session_id)
@@ -20760,8 +20766,9 @@ class SessionOrchestrator:
                 timeout=ceiling,
             )
         except asyncio.TimeoutError:
-            log.warning("session.transcript_window id=%s exceeded %.0fs — returning empty",
-                        session_id, ceiling)
+            log.log(logging.INFO if background else logging.WARNING,
+                    "session.transcript_window id=%s exceeded %.0fs — returning empty",
+                    session_id, ceiling)
             return None
         except Exception as exc:
             self._log_replay_failure("transcript_window", session_id, exc)

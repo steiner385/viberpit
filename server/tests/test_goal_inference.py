@@ -235,9 +235,10 @@ class _Window:
 
 
 def _wire(orch, *, turns=3, inferred="Land the login fix as PR #7"):
-    calls = {"infer": 0}
+    calls = {"infer": 0, "window_kwargs": []}
 
-    async def fake_window(sid, *, before=None, limit=20):
+    async def fake_window(sid, *, before=None, limit=20, **kw):
+        calls["window_kwargs"].append(kw)
         return _Window(turns)
     orch.transcript_window = fake_window
 
@@ -268,6 +269,8 @@ def test_goal_sweep_infers_and_persists(tmp_path):
         await orch._goal_sweep()
 
         assert calls["infer"] == 1
+        # #1712: the sweep's read is best-effort, so a slow replay must not WARN.
+        assert calls["window_kwargs"] == [{"background": True}]
         assert orch._records["s1"].inferred_goal == "Land the login fix as PR #7"
         async with db_session() as db:
             row = (await db.execute(select(DbSession).where(DbSession.id == "s1"))).scalar_one()

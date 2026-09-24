@@ -302,7 +302,7 @@ def test_goal_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
         }
         inferred: list[str] = []
 
-        async def _fake_window(sid, limit=1):
+        async def _fake_window(sid, limit=1, **_):
             return SimpleNamespace(total_turns=3)
 
         async def _fake_infer(sid):
