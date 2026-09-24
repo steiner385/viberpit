@@ -9,7 +9,7 @@ import logging
 
 from ccswitch.quota import QuotaSnapshot
 from server.ipc.client import DaemonUnavailable
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
@@ -249,9 +249,14 @@ class FleetOrchestrator:
           out of the error sink) and re-reports afterwards, so the record keeps saying
           "still down" without filing it again. The window is dropped on recovery
           (``_note_reachable``) so a host that flaps reports each outage promptly.
-        * **One condition is one record.** Every site shares ``_UNREACHABLE_MSG`` so
-          the sink groups them, and a transport failure is summarized rather than
-          carrying its httpx traceback (see ``_EXPECTED_UNREACHABLE``).
+        * **One condition is one record.** The throttled WARNING below is a structured
+          ``log_event_throttled`` record keyed on the dotted event name, not on
+          ``_UNREACHABLE_MSG`` text: the sink fingerprints a plain record on its
+          normalized message, and ``host`` — unlike the quoted ``site``/``cause`` —
+          survives normalization, so this call site alone used to mint one auto-error
+          issue per host (#2126). ``_UNREACHABLE_MSG`` remains only for the unthrottled
+          INFO line below, which the sink never sees. A transport failure is summarized
+          rather than carrying its httpx traceback (see ``_EXPECTED_UNREACHABLE``).
 
         What is deliberately NOT thinned here is ``host_probe``'s ``fleet.probe_failed``:
         the probe is the fleet's reachability DETECTOR and owns the canonical record,
@@ -270,9 +275,9 @@ class FleetOrchestrator:
                      host, _field(site), cause)
             return
         expected = isinstance(exc, _EXPECTED_UNREACHABLE)
-        log_throttled(
+        log_event_throttled(
             log, self._unreachable_log, host, logging.WARNING,
-            _UNREACHABLE_MSG, host, _field(site), cause,
+            "fleet.host_unreachable", host=host, site=_field(site), cause=cause,
             exc_info=None if expected else exc,
         )
 

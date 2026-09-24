@@ -697,7 +697,8 @@ def test_codex_status_timeout_degrades_quietly(authority, caplog):
     assert entry["codex"]["quota"]["availability"] == "unknown"
 
     warnings = [r for r in caplog.records if r.levelname == "WARNING"
-                and "codex status for chatgpt-pro" in r.getMessage()]
+                and r.getMessage() == "account.codex_status_failed"
+                and r.fields.get("account") == "chatgpt-pro"]
     assert len(warnings) == 1
     assert warnings[0].exc_info is None
 

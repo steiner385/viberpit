@@ -77,14 +77,18 @@ int or a quoted string. Sweep with:
 grep -rn "log_throttled(" --include=*.py server/ src/ | grep -v log_event_throttled
 ```
 
-Known siblings at the time of writing, each still on the plain form:
+Known siblings at the time of writing, all fixed by #2126:
 
 | Call site | Slug in the message | Issues it can mint |
 |---|---|---|
-| `server/api/accounts.py:208,212` | account name | one per account |
-| `server/sessions/host_probe.py:121,126` | host name, endpoint, `str(exc)` | one per host × per exception text |
-| `server/sessions/fleet_orchestrator.py:270` | host, site, cause | one per host |
-| `server/sessions/orchestrator.py:19412` | replay surface, scrubbed cause | one per surface × category (#1852 / #1860) |
+| `server/api/accounts.py` (`_safe_usage`, `_codex_statuses`) | account name | one per account |
+| `server/sessions/host_probe.py` (`probe_host`) | host name, endpoint, `str(exc)` | one per host × per exception text |
+| `server/sessions/fleet_orchestrator.py` (`_log_unreachable`) | host, site, cause | one per host |
+| `server/sessions/orchestrator.py` (`_log_replay_failure`) | replay surface, scrubbed cause | one per surface × category (#1852 / #1860) |
+
+`accounts.py`'s `_codex_statuses` (`codex status for %s …`) was not in the original sweep
+table but shares the exact defect and fix — found while touching the same file for the
+`_safe_usage` entry above.
 
 Prior instances of the same shape, all closed as "one call site, two issue lineages":
 #1531 / #1875 and #1533 / #1877 (`src=<slug>` in the feature-doc link warning),

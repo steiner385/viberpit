@@ -1017,7 +1017,8 @@ async def test_unreachable_worker_still_warns_when_no_restart_is_expected(caplog
     with mock.patch.object(host_upgrade, "restart_expected", not_expected), \
          caplog.at_level(logging.INFO, logger="server.sessions.fleet_orchestrator"):
         await fo.live_session_load()
-    rocky_lines = [r for r in caplog.records if "host=rocky" in r.getMessage()]
+    rocky_lines = [r for r in caplog.records
+                   if r.getMessage() == "fleet.host_unreachable" and r.fields.get("host") == "rocky"]
     assert rocky_lines and all(r.levelno == logging.WARNING for r in rocky_lines)
 
 
@@ -1030,6 +1031,11 @@ async def test_unreachable_worker_still_warns_when_no_restart_is_expected(caplog
 # (server/obs/error_signature.py), so each site hashed differently and filed its own
 # ticket — each carrying 60 lines of httpx transport boilerplate, and each re-filed
 # on every pass of the ~30 s gap before the probe marks the host unhealthy.
+#
+# The host name itself turned out to be the same shape (#2126): unlike the quoted
+# site/cause, it rode the message unquoted and survived normalization, so this
+# whole call site still minted one issue per HOST. `log_event_throttled` fixes
+# that the same way — fingerprint on the event name, host/site/cause in `fields`.
 
 class _DownOrch(_FakeOrch):
     """A worker that refuses every no-id fan-out site while ``up`` is False."""
@@ -1074,7 +1080,8 @@ def _fleet_with_down_worker(exc):
 
 
 def _rocky_records(caplog):
-    return [r for r in caplog.records if "host=rocky" in r.getMessage()]
+    return [r for r in caplog.records
+            if r.getMessage() == "fleet.host_unreachable" and r.fields.get("host") == "rocky"]
 
 
 @pytest.mark.asyncio
@@ -1104,14 +1111,14 @@ async def test_every_fanout_site_shares_one_unreachable_fingerprint(caplog):
             await site(_fleet_with_down_worker(exc)[0])
 
     recs = _rocky_records(caplog)
-    assert len(recs) == len(sites), [r.getMessage() for r in recs]
+    assert len(recs) == len(sites), [r.fields for r in recs]
     assert all(r.levelno == logging.WARNING for r in recs)
     fingerprints = {signature_of(r, source="edge", host="dobby").fingerprint
                     for r in recs}
-    assert len(fingerprints) == 1, [r.getMessage() for r in recs]
+    assert len(fingerprints) == 1, [r.fields for r in recs]
     # The site is still readable — collapsed in the fingerprint, kept in the record.
     assert {"live_session_load", "list_sessions", "codex_account_status"} <= {
-        m.split("site='")[1].split("'")[0] for m in (r.getMessage() for r in recs)}
+        r.fields["site"] for r in recs}
 
 
 @pytest.mark.asyncio
@@ -1127,7 +1134,7 @@ async def test_a_transport_failure_is_summarized_instead_of_carrying_its_traceba
             DaemonUnavailable("All connection attempts failed"))[0].live_session_load()
     rec = _rocky_records(caplog)[-1]
     assert rec.exc_info is None
-    assert "cause='DaemonUnavailable: All connection attempts failed'" in rec.getMessage()
+    assert rec.fields["cause"] == "DaemonUnavailable: All connection attempts failed"
 
     caplog.clear()
     with _unplanned_outage(), \

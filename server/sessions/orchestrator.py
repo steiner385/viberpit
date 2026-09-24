@@ -118,7 +118,7 @@ from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, reso
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
 from server.obs.context import bind_session, log_event, PROC_EPOCH
-from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
@@ -20279,15 +20279,22 @@ class SessionOrchestrator:
         Both are throttled, because the difference that matters for the error sink
         is not which kind of failure it is but that a sweep re-reads the same dead
         thread every tick for a week.
+
+        `log_event_throttled`, not `log_throttled`: the surface and cause used to ride
+        the message, and the sink fingerprints a plain record on its normalized
+        message — so one call site minted a separate issue per surface x category,
+        which is what made #1852 and #1860 two issues instead of one (#2126). Keyed
+        on the ``codex.replay.failed`` event name, matching the sibling
+        ``codex.replay.runner_unavailable`` record above.
         """
         from server.codex.protocol import CodexProtocolError
         from server.codex.redaction import scrub_exception
 
         expected = isinstance(exc, CodexProtocolError)
         cause = scrub_exception(exc) if expected else type(exc).__name__
-        log_throttled(
+        log_event_throttled(
             log, _REPLAY_FAILURE_LOG, f"{surface}:{session_id}:{cause}", logging.WARNING,
-            "session.%s id=%s replay failed (%s)", surface, session_id, cause,
+            "codex.replay.failed", surface=surface, session=session_id, error=cause,
             exc_info=None if expected else exc,
         )
 
