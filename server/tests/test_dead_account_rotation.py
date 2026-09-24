@@ -204,6 +204,54 @@ async def test_rotation_monitor_rotates_at_usage_ceiling():
     assert ("rotate", "s1", "session limit reached") in o.calls
 
 
+class _LeaseRow:
+    def __init__(self, holder: str, age_s: float):
+        self.holder = holder
+        self.fence = 1
+        self.age_s = age_s
+
+
+def _lease_row(monkeypatch, state):
+    async def current(session_id):
+        return state
+
+    monkeypatch.setattr(orch_mod, "self_host_name", lambda: "rocky")
+    monkeypatch.setattr(orch_mod.session_lease, "current", current)
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_backs_off_a_lease_held_session_with_a_driver(monkeypatch):
+    """A refused reassign leaves the closed driver installed, so the monitor's
+    driver-present branch re-picks the session on every poll while the account stays
+    at ceiling — the sibling of the driverless and sweep loops gated in #2076 (#1800)."""
+    _lease_row(monkeypatch, _LeaseRow("dobby", 5.0))
+    o = _make_orch()
+    rec = _rec(o, account="copilot_acct")
+    rec.paused_reason = orch_mod._LEASE_HELD_PAUSE_REASON
+    o._poller = _poller_with_failures(0)
+    usage = anthropic_snapshot(session_pct=100.0, session_resets_at=None,
+                  weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
+
+    assert not any(c[0] == "rotate" for c in o.calls)
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_rotates_a_lease_held_session_once_the_lease_lapses(monkeypatch):
+    _lease_row(monkeypatch, _LeaseRow("dobby", orch_mod.SESSION_LEASE_TTL_S + 1))
+    o = _make_orch()
+    rec = _rec(o, account="copilot_acct")
+    rec.paused_reason = orch_mod._LEASE_HELD_PAUSE_REASON
+    o._poller = _poller_with_failures(0)
+    usage = anthropic_snapshot(session_pct=100.0, session_resets_at=None,
+                  weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
+
+    assert ("rotate", "s1", "session limit reached") in o.calls
+
+
 @pytest.mark.asyncio
 async def test_rotation_monitor_notifies_account_limited(monkeypatch):
     """#1354 kind="account" watch: hitting the usage ceiling fires account_limited."""
