@@ -46,6 +46,31 @@ def test_classify_stuck_enqueue():
                         auto_merge_enabled=False, in_merge_queue=False)) == "blocked"
 
 
+def test_classify_defers_stuck_enqueue_while_ci_is_still_in_flight():
+    # #2324: this repo has no real GitHub merge queue, so `in_merge_queue` is
+    # never true — a PR that just opened with auto-merge armed reads BLOCKED
+    # + armed + not-in-queue for the first several minutes purely because its
+    # checks haven't all reported yet, identical to a genuinely silently-
+    # refused enqueue. A still-running check must defer, not fire.
+    # Falls through to "blocked" (Notify, no action) rather than "stuck_enqueue"
+    # (Mechanical) — "blocked" does not gate Backlog Runner capacity for the
+    # product, and the next poll re-classifies once checks finish reporting.
+    still_running = _detail(("changes", "success"), ("server-tests (4)", "pending"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="pending",
+                        auto_merge_enabled=True, in_merge_queue=False,
+                        checks_detail=still_running)) == "blocked"
+
+
+def test_classify_stuck_enqueue_once_checks_genuinely_resolve():
+    # Once every check has actually reported (no pending/cancelled left) and
+    # the PR is still BLOCKED + armed + not in queue, that is the real
+    # stuck-enqueue signature — the guard must not blunt it.
+    resolved = _detail(("changes", "success"), ("server-tests (4)", "success"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="passing",
+                        auto_merge_enabled=True, in_merge_queue=False,
+                        checks_detail=resolved)) == "stuck_enqueue"
+
+
 def test_classify_conflict_via_mergeable_or_dirty():
     assert classify(_pr(mergeable="CONFLICTING")) == "merge_conflict"
     assert classify(_pr(merge_state_status="DIRTY")) == "merge_conflict"

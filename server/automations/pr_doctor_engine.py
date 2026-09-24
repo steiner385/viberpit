@@ -47,6 +47,10 @@ _NO_VERDICT = frozenset({"pending", "cancelled"})
 def ci_red_is_unproven(info: PullRequestInfo) -> bool:
     """True when *info*'s red rollup is not evidence that the branch is broken (#2218).
 
+    Also guards the ``stuck_enqueue`` arm of ``classify`` (#2324): a still-in-flight
+    check makes BLOCKED+armed+not-in-queue indistinguishable from a genuinely
+    silently-refused enqueue, so the same freshness test applies there too.
+
     ``checks == "failing"`` comes from ``statusCheckRollup.state``, which goes
     FAILURE as soon as ANY context is non-green — including a context that never
     produced a verdict. Two shapes make that red a lie, and both are readable off
@@ -110,7 +114,19 @@ def classify(info: PullRequestInfo) -> str | None:
             # run was merely superseded gets a mechanical update-branch pushed at
             # it (PR #2213 was armed and not in a queue). Wait for the next poll.
             return None if ci_red_is_unproven(info) else "failing_ci"
-        if info.auto_merge_enabled and not info.in_merge_queue:
+        # Same freshness guard as the failing_ci arm above, and for the same
+        # reason: this repo has no real GitHub merge queue (`in_merge_queue` is
+        # never true), so "armed + BLOCKED + not in queue" is indistinguishable
+        # from "a required check is still mid-run" at a single snapshot — every
+        # PR with auto-merge enabled is BLOCKED for the first several minutes of
+        # its life purely because its checks haven't all reported yet. Only a
+        # check that has genuinely reported (or a required check that never
+        # shows up at all — the shadowed-check case this arm exists for) leaves
+        # `ci_red_is_unproven` False. Caught live on #2324: opened, auto-merge
+        # armed, checks still running — misclassified as stuck_enqueue within
+        # two minutes and "fixed" with a needless branch update, which gated
+        # the whole product's Backlog Runner capacity on nothing.
+        if info.auto_merge_enabled and not info.in_merge_queue and not ci_red_is_unproven(info):
             return "stuck_enqueue"
         return "blocked"  # review/approval gate — notify only (non-goal to approve)
     if info.mergeable == "CONFLICTING" or info.merge_state_status == "DIRTY":
