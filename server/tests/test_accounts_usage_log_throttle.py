@@ -21,6 +21,7 @@ import logging
 import pytest
 
 from server.api import accounts as accounts_api
+from server.ipc.client import DaemonUnavailable
 
 
 class _FailingOrch:
@@ -32,6 +33,8 @@ class _FailingOrch:
     async def usage(self, name: str):
         if self.behaviour == "hang":
             await asyncio.sleep(1000)
+        if self.behaviour == "unreachable":
+            raise DaemonUnavailable("All connection attempts failed")
         raise RuntimeError("daemon said no")
 
 
@@ -118,3 +121,19 @@ def test_throttling_does_not_change_what_safe_usage_returns(caplog):
         results = asyncio.run(run())
 
     assert results == [STALE] * 3
+
+
+def test_a_refused_daemon_connection_warns_without_a_traceback(caplog):
+    """The usage sibling of #1675: ``DaemonUnavailable`` is already diagnosed by its
+    message, so the WARNING carries no httpx traceback."""
+
+    async def run():
+        await accounts_api._safe_usage(_FailingOrch("unreachable"), "acct", timeout=0.01)
+
+    with caplog.at_level(logging.DEBUG, logger=accounts_api.log.name):
+        asyncio.run(run())
+
+    (record,) = _fallback_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.fields["reason"] == "unreachable"
+    assert record.exc_info is None
