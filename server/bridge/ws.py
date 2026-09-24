@@ -66,6 +66,7 @@ from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
+from server.obs.logdedupe import LogThrottle, log_throttled
 from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
 from server.sessions.commands.catalog import parse_command_line
@@ -90,6 +91,14 @@ _BATCH_INTERVAL = 0.016
 _AUTO_REATTACH_MIN_INTERVAL_S = 2.0
 # Maximum inbound frame size (bytes)
 _MAX_FRAME = 262144
+# A daemon-connectivity blip (restart, deploy, brief outage) makes every attached
+# session on every open dashboard socket hit DaemonUnavailable on its own lifecycle
+# status event (the auto=True re-attach path) at once — one blip fanning out into a
+# WARNING per session per socket (#2025, 368 records across 5 sessions over 11 days).
+# Shared across both `ws.attach: session daemon unavailable for %s` call sites: they
+# report the same underlying condition under one fingerprint, so a session already
+# reported by one should not re-report through the other inside the window.
+_WS_ATTACH_DAEMON_UNAVAILABLE_LOG = LogThrottle()
 # Hard ceiling (seconds) on resuming a detached session's SDK subprocess. A
 # resume boots the whole MCP-server fleet, which can legitimately take tens of
 # seconds cold — but it must never block forever. On a saturated box a wedged
@@ -749,7 +758,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     "busy. Try again in a moment.", auto)
                 return None
             except DaemonUnavailable:
-                log.warning("ws.attach: session daemon unavailable for %s", session_id)
+                log_throttled(log, _WS_ATTACH_DAEMON_UNAVAILABLE_LOG, session_id,
+                              logging.WARNING,
+                              "ws.attach: session daemon unavailable for %s", session_id)
                 if not auto:
                     await websocket.close(code=1013)
                 return None
@@ -1250,7 +1261,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # unless this is an auto re-attach, which must never cost the user a
                 # socket it shares with every other session it is viewing (see
                 # _resume_driver_or_error's `auto`).
-                log.warning("ws.attach: session daemon unavailable for %s", session_id)
+                log_throttled(log, _WS_ATTACH_DAEMON_UNAVAILABLE_LOG, session_id,
+                              logging.WARNING,
+                              "ws.attach: session daemon unavailable for %s", session_id)
                 if not auto:
                     await websocket.close(code=1013)
                 return
