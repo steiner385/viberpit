@@ -529,6 +529,10 @@ function restoreQuestionInPlace(state: TranscriptState, questionId: string): Tra
  * may render far from where its content belongs, so it is marked `fabricated` and
  * `anchorTurnStart` moves it once its turnStart says where it begins.
  *
+ * Logged at `info`, not `warn`: this is a handled recovery path, kept as order telemetry
+ * in client_logs. `warn` is the auto-error ingest floor, so it filed one issue per event
+ * type (#1978, #2071, #1678, #1818) for a condition nothing is wrong with.
+ *
  * The lookup is role-scoped (see `findRoleTurnIdx`): a user turn holding this same id
  * is NOT the agent's turn, and adopting it would file agent output under the human's
  * name. Returns [nextTurns, idx].
@@ -536,7 +540,7 @@ function restoreQuestionInPlace(state: TranscriptState, questionId: string): Tra
 function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
   const idx = findRoleTurnIdx(turns, turnId, 'assistant')
   if (idx !== -1) return [turns, idx]
-  clientLogger.warn(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
+  clientLogger.info(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
   const id = newRoleTurnId(turns, turnId, 'assistant')
   return [[...turns, { id, role: 'assistant', blocks: [], fabricated: true }], turns.length]
 }
@@ -807,7 +811,7 @@ export function transcriptReducer(
         // reattach's ring resupply, not by a replay — a replayReset empties `turns`
         // first, so the prefix legitimately lands on an empty transcript.
         if (ev.ownerPrefix && state.turns.length > 0) {
-          clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
+          clientLogger.info(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
         }
         nextTurns = [...state.turns, userTurn(newRoleTurnId(state.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context, ev.origin)]
       } else {

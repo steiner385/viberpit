@@ -4,8 +4,8 @@ import type { SessionEvent } from '../events'
 import { clientLogger } from '../../obs/logger'
 
 describe('transcript.turn.fabricated telemetry', () => {
-  it('warns when a block event arrives for a turn no turnStart introduced', () => {
-    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+  it('logs at info when a block event arrives for a turn no turnStart introduced', () => {
+    const spy = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
     const s = transcriptReducer({ ...initialTranscript, replaying: false },
       { type: 'textDelta', turnId: 'ghost', text: 'late' } as SessionEvent)
     expect(s.turns.map((t) => t.id)).toEqual(['ghost'])   // behaviour unchanged: still appended
@@ -13,8 +13,8 @@ describe('transcript.turn.fabricated telemetry', () => {
     spy.mockRestore()
   })
 
-  it('warns when an owner-prefix user turn is appended onto loaded content', () => {
-    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+  it('logs at info when an owner-prefix user turn is appended onto loaded content', () => {
+    const spy = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
     const s0 = transcriptReducer({ ...initialTranscript, replaying: false },
       { type: 'turnStart', turnId: 'a1', turnIndex: 1 } as SessionEvent)
     // A reattach's ring resupply re-delivers a window's owning prompt. Its real position
@@ -29,7 +29,7 @@ describe('transcript.turn.fabricated telemetry', () => {
   it('stays silent for an owner-prefix turn that opens a rebuilt transcript', () => {
     // The normal path: a replayReset empties `turns`, so the window's prefix legitimately
     // arrives first and is exactly where it belongs.
-    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const spy = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
     transcriptReducer({ ...initialTranscript, replaying: true },
       { type: 'user', turnId: 'U', text: 'own', ownerPrefix: true } as SessionEvent)
     expect(spy).not.toHaveBeenCalled()
@@ -37,7 +37,7 @@ describe('transcript.turn.fabricated telemetry', () => {
   })
 
   it('stays silent for an ordinary user turn appended at the tail', () => {
-    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const spy = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
     const s0 = transcriptReducer({ ...initialTranscript, replaying: false },
       { type: 'turnStart', turnId: 'a1' } as SessionEvent)
     transcriptReducer(s0, { type: 'user', turnId: 'U', text: 'next prompt' } as SessionEvent)
@@ -45,8 +45,23 @@ describe('transcript.turn.fabricated telemetry', () => {
     spy.mockRestore()
   })
 
+  it('never logs at warn or error, the auto-error ingest floor (#1978)', () => {
+    // A fabricated turn is a handled recovery path; at warn every event type filed its
+    // own auto-error issue. Both sites: an assistant block and an owner-prefix user turn.
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const error = vi.spyOn(clientLogger, 'error').mockImplementation(() => {})
+    const info = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
+    const s0 = transcriptReducer({ ...initialTranscript, replaying: false },
+      { type: 'textDelta', turnId: 'ghost', text: 'late' } as SessionEvent)
+    transcriptReducer(s0, { type: 'user', turnId: 'U', text: 'own', ownerPrefix: true } as SessionEvent)
+    expect(info).toHaveBeenCalledTimes(2)
+    expect(warn).not.toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
   it('stays silent when the turn exists', () => {
-    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const spy = vi.spyOn(clientLogger, 'info').mockImplementation(() => {})
     const s0 = transcriptReducer({ ...initialTranscript, replaying: false },
       { type: 'turnStart', turnId: 'a1' } as SessionEvent)
     const s1 = transcriptReducer(s0, { type: 'textDelta', turnId: 'a1', text: 'ok' } as SessionEvent)
