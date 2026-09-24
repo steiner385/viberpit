@@ -172,5 +172,13 @@ test.describe('Pipeline — kiosk', () => {
     await expect(page.getByRole('heading', { level: 3 }).first()).toHaveText(/o\/b/, { timeout: 15_000 })
     // The kiosk URL is its configuration: the cycle never writes ?pipeline=.
     expect(new URL(page.url()).searchParams.get('pipeline')).toBeNull()
+    // Shell spec §5 (#1555): the health band stays visible but is inert.
+    const health = page.getByRole('group', { name: 'Overall CI health' })
+    await expect(health.getByRole('button').first()).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  test('a ?pipeline= deep link seeds the starting repo (#1555)', async ({ page }) => {
+    await page.goto('/pipeline?kiosk=1&cycle=10&pipeline=o%2Fb')
+    await expect(page.getByRole('heading', { level: 3 }).first()).toHaveText(/o\/b/)
   })
 })

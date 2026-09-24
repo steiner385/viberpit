@@ -56,6 +56,10 @@ function writeCollapsedSet(set: Set<string>): void {
   }
 }
 
+/** The board's one-line status notes (deploy backlog, merges next, deploy
+ *  chain): muted, small, and spaced like the rows they sit between. */
+const NOTE = 'mb-1.5 text-xs text-ink-muted';
+
 /** Compact ETA like "~5m" / "~1h"; null when unknown. */
 function eta(secs: number | null): string | null {
   if (secs == null) return null;
@@ -148,7 +152,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                 <>
                   <QueueTrain queue={r.queue} />
                   {backlog && (backlog.awaitingQa > 0 || backlog.awaitingProd > 0 || backlog.awaitingAdmin > 0) && (
-                    <p className="deploy-backlog" role="region" aria-label="Deploy backlog">
+                    <p className={NOTE} role="region" aria-label="Deploy backlog">
                       📦 Deploy backlog:{' '}
                       {[
                         backlog.awaitingQa > 0 ? `${backlog.awaitingQa} awaiting QA` : null,
@@ -163,7 +167,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                     const prs = next.prNumbers.map((n) => `#${n}`).join(', ');
                     const e = eta(next.etaSeconds);
                     return (
-                      <p className="next-to-merge" role="region" aria-label="Merges next">
+                      <p className={NOTE} role="region" aria-label="Merges next">
                         ⏭ Merges next: <strong>{prs}</strong>{' '}
                         {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
                         {e ? ` · ${e}` : ''}
@@ -181,21 +185,28 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                     ].filter(Boolean);
                     const label = parts.length ? parts.join(' · ') : 'deploying';
                     return (
-                      <div className="pipeline-cohort">
-                        <button type="button" className="cohort-toggle" aria-expanded={cohortOpen} onClick={() => toggleCohort(r.repo)}>
+                      <div className="mb-1.5">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="gap-1.5 px-1 text-xs text-ink-muted hover:text-ink"
+                          aria-expanded={cohortOpen}
+                          onClick={() => toggleCohort(r.repo)}
+                        >
                           <span aria-hidden="true">{cohortOpen ? '▾' : '▸'}</span> {cohort.length} merged · {label}
-                        </button>
+                        </Button>
                         {cohortOpen && cohort.map((pr) => row(pr, r))}
                       </div>
                     );
                   })()}
                   {r.deploy?.chain && (r.deploy.chain.inFlight || r.deploy.chain.supersededCount > 0) && (
-                    <p className="deploy-chain" role="region" aria-label="Deploy chain">
+                    <p className={NOTE} role="region" aria-label="Deploy chain">
                       {r.deploy.chain.inFlight && (
                         <>⤴ Deploying <strong>#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage}, flowing to prod</>
                       )}
                       {r.deploy.chain.supersededCount > 0 && (
-                        <span className="deploy-superseded">
+                        <span>
                           {r.deploy.chain.inFlight ? ' · ' : ''}
                           {r.deploy.chain.supersededCount} superseded (rolled into a newer deploy)
                         </span>

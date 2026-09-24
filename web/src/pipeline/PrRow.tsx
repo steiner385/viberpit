@@ -261,7 +261,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
               <Link className="text-xs text-ink-muted hover:underline" to={sessionPath(session.id)}
                     title={`Open session ${session.name}`}>⌗ {session.name}</Link>
               {session.fixable && onFixPr && (
-                <Button type="button" size="sm" variant="secondary" className="h-6 border-warning px-2 text-xs text-warning"
+                <Button type="button" size="sm" variant="secondary" className="border-warning px-2 text-xs text-warning"
                         onClick={() => onFixPr(session.id, pr.number)}>Fix</Button>
               )}
             </span>

@@ -1,7 +1,8 @@
-// Ported from plotroom@5166b52 frontend/src/__tests__/HealthHeader.test.tsx; edits: none
+// Ported from plotroom@5166b52 frontend/src/__tests__/HealthHeader.test.tsx; edits: kiosk (aria-disabled) cases, #1555
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { HealthHeader } from '../HealthHeader';
+import { InteractionProvider } from '@/shell/InteractionContext';
 import type { DashboardState } from '../types';
 
 // A repo whose only PR failed CI → the PR CI lane is red.
@@ -84,5 +85,36 @@ describe('HealthHeader', () => {
   it('hides the inline summary on a green lane (#189)', () => {
     render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
     expect(screen.getByTestId('health-lane-main').querySelector('.text-ink-muted')).toBeNull();
+  });
+
+  it('below md the chip collapses to dot + glyph; the title stays in aria-label (#1555)', () => {
+    render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
+    const chip = screen.getByTestId('health-lane-pr-ci');
+    const title = Array.from(chip.querySelectorAll('span')).find((s) => s.textContent === 'PR CI');
+    expect(title).toHaveClass('hidden', 'md:inline');
+    expect(chip).toHaveAttribute('aria-label', expect.stringContaining('PR CI'));
+  });
+
+  // Shell spec §5 / #1555: kiosk buttons render aria-disabled and do not act.
+  it('kiosk (non-interactive): chips and rollup are aria-disabled and do not jump', () => {
+    const onJump = vi.fn();
+    render(
+      <InteractionProvider interactive={false}>
+        <HealthHeader state={redState()} onJumpToLane={onJump} />
+      </InteractionProvider>,
+    );
+    const rollup = screen.getByTestId('health-rollup');
+    const chip = screen.getByTestId('health-lane-pr-ci');
+    expect(rollup).toHaveAttribute('aria-disabled', 'true');
+    expect(chip).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(rollup);
+    fireEvent.click(chip);
+    expect(onJump).not.toHaveBeenCalled();
+  });
+
+  it('interactive: chips carry no aria-disabled', () => {
+    render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
+    expect(screen.getByTestId('health-rollup')).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('health-lane-pr-ci')).not.toHaveAttribute('aria-disabled');
   });
 });
