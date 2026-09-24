@@ -18,6 +18,7 @@ positive one:
 from __future__ import annotations
 
 import json
+import logging
 
 from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events
 from server.tests.test_ws import ws_env as ws_env  # noqa: F401 — fixture lives in test_ws
@@ -149,3 +150,30 @@ def test_a_failed_wake_acks_the_prompt_as_failed(ws_env):
     failed_idx = next(i for i, f in enumerate(frames)
                       if f.get("type") == "promptAck" and f.get("stage") == "failed")
     assert err_idx < failed_idx, [f.get("type") for f in frames]
+
+
+def test_a_failed_wake_does_not_log_a_second_warning(ws_env, caplog):  # noqa: F811
+    """A failed wake already gets a WARNING with the real reason from
+    ``_resume_driver_or_error`` (e.g. SESSION_NOT_FOUND / SESSION_START_FAILED),
+    which is what the client-facing error frame explains. The ``_handle_prompt``
+    call site used to log a SECOND, less specific WARNING
+    ("ws.prompt: wake failed, prompt not delivered") for the exact same failure —
+    two auto-filed error-triage issues (#1783, #1784) for one incident. That
+    consequence-only log carries no diagnostic info the upstream WARNING lacks,
+    so it must not itself sit at WARNING (issue #1783)."""
+    _app, orch, client = ws_env([])
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": "ghost2", "text": "hi"}))
+            _drain_events(ws, until_type="replayComplete")
+            ws.send_text("not json")
+            _drain_events(
+                ws, until=lambda f: f.get("type") == "error" and f.get("code") == "INVALID_JSON")
+
+    wake_failed = [r for r in caplog.records if "wake failed" in r.message]
+    assert wake_failed, "expected the wake-failed consequence log to still fire"
+    assert all(r.levelno < logging.WARNING for r in wake_failed), (
+        f"wake-failed log must not be WARNING+ (duplicates the upstream reason "
+        f"log and double-files auto-error issues): {[r.levelno for r in wake_failed]!r}"
+    )
