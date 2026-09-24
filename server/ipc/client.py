@@ -285,19 +285,47 @@ _EXPECTED_RECONNECT_CODES = frozenset({websockets.CloseCode.SERVICE_RESTART})
 #: just type: `websockets.asyncio.connection` raises the same bare
 #: `TimeoutError` with a different message ("timed out while closing
 #: connection") for a hang on an already-established connection, which is a
-#: real-problem shape and must keep warning.
+#: real-problem shape and must keep warning. Unlike the clean close, a handshake
+#: timeout is only expected while it is brief — a daemon wedged in startup times
+#: out the same way forever — so it rides the grace window below rather than
+#: being INFO unconditionally.
 _EXPECTED_RECONNECT_TIMEOUT_MESSAGE = "timed out during opening handshake"
 
 
 def _is_expected_reconnect(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return str(exc) == _EXPECTED_RECONNECT_TIMEOUT_MESSAGE
     if not isinstance(exc, websockets.ConnectionClosed):
         return False
     return any(
         close is not None and close.code in _EXPECTED_RECONNECT_CODES
         for close in (exc.rcvd, exc.sent)
     )
+
+
+def _is_transient_connect_failure(exc: Exception) -> bool:
+    """A connect attempt that failed the way a restarting or briefly slow daemon fails."""
+    if isinstance(exc, TimeoutError):
+        return str(exc) == _EXPECTED_RECONNECT_TIMEOUT_MESSAGE
+    return isinstance(exc, ConnectionRefusedError)
+
+
+#: How long the events link may stay down before a transient connect failure is
+#: WARNING. A single failed attempt that the next retry heals — an opening-
+#: handshake timeout over the tailnet, a refused connect while a restarted daemon
+#: is still binding — is not an outage, yet each one filed as an auto-error
+#: (#1742: seven "timed out during opening handshake" records, every one followed
+#: by a clean reconnect). The backoff caps at 2s, so a minute is ~30 attempts:
+#: long enough to ride out a daemon restart, short enough that a daemon that is
+#: genuinely down (#1506) still reports within the minute.
+_RECONNECT_WARN_AFTER_S = 60.0
+
+
+def _reconnect_log_level(exc: Exception, outage_s: float) -> int:
+    """INFO for an expected restart close, or a transient connect failure inside the grace window."""
+    if _is_expected_reconnect(exc):
+        return logging.INFO
+    if _is_transient_connect_failure(exc) and outage_s < _RECONNECT_WARN_AFTER_S:
+        return logging.INFO
+    return logging.WARNING
 
 
 class DaemonClient:
@@ -1027,6 +1055,8 @@ class DaemonClient:
 
     async def _reader(self) -> None:
         backoff = 0.05
+        # Monotonic start of the current run of failed attempts; None while healthy.
+        outage_since: float | None = None
         while True:
             try:
                 async with daemon_ws_connect(self.endpoint, "/events", self._ssl) as ws:
@@ -1040,6 +1070,9 @@ class DaemonClient:
                     for stream in list(self._desired):
                         await ws.send(json.dumps(proto.subscribe_frame(stream, since=self._since_for(stream))))
                         self._ready[stream].set()
+                    # Fully resubscribed: the link is healthy again, so the next
+                    # failure starts a fresh grace window.
+                    outage_since = None
                     async for raw in ws:
                         frame = json.loads(raw)
                         ftype = frame.get("type")
@@ -1067,9 +1100,16 @@ class DaemonClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry
-                level = logging.INFO if _is_expected_reconnect(exc) else logging.WARNING
+                now = time.monotonic()
+                if outage_since is None:
+                    outage_since = now
+                level = _reconnect_log_level(exc, now - outage_since)
+                # INFO records pace on their own key: a transient blip must not spend
+                # the WARNING window, or the sustained outage it turns into would be
+                # demoted to DEBUG — out of the error sink — for the next six hours.
+                key = str(self.endpoint) if level >= logging.WARNING else f"{self.endpoint}#transient"
                 log_throttled(
-                    log, _WS_RECONNECT_LOG, str(self.endpoint), level,
+                    log, _WS_RECONNECT_LOG, key, level,
                     "ipc: events WS error (%s) — reconnecting in %.2fs", exc, backoff,
                 )
             self._ws = None
