@@ -332,8 +332,12 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
         if not _setup_token_lacks_usage_scope(name, tok):
-            log.warning("usage_for(%s): setup-token usage fetch failed (%s) but the token "
-                        "carries the usage scope — transient, backing off", name, e)
+            # INFO, not WARNING: a scoped setup-token backing off from a 429/5xx is
+            # routine and self-healing (the ledger cooldown already handles it) —
+            # WARNING is the auto-error filing floor, so this re-filed every throttle
+            # as an issue (#1773).
+            log.info("usage_for(%s): setup-token usage fetch failed (%s) but the token "
+                     "carries the usage scope — transient, backing off", name, e)
             with ledger.locked_ledger() as led:
                 ledger.note_usage_fetch_failure(led, name, time.time())
                 ledger.set_status(led, name, "ok")

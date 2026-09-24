@@ -183,6 +183,26 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 accounts.usage_for("alpha")
                 self.assertEqual(fu.call_count, 2)
 
+    def test_setup_token_transient_429_logs_info_not_warning(self):
+        """The same routine throttle as test_setup_token_with_usage_scope_treats_a_429_as_transient,
+        but pinning the log level: WARNING is the auto-error filing floor, and a
+        scoped setup-token backing off from a 429 is handled, not an anomaly (#1773).
+        """
+        with temp_env():
+            from ccswitch import accounts, crypto, oauth
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=True), \
+                 mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")), \
+                 self.assertLogs("ccswitch.accounts", level="INFO") as cm:
+                self.assertIsNone(accounts.usage_for("alpha"))
+            levels = [r.levelname for r in cm.records
+                      if r.getMessage().startswith("usage_for(alpha): setup-token usage fetch failed")]
+            self.assertEqual(levels, ["INFO"])
+
     def test_setup_token_scope_probe_failure_is_transient_not_unsupported(self):
         """If the scope oracle itself cannot answer (network, 5xx), we do not know —
         and 'do not know' is a backoff, never a permanent UNSUPPORTED verdict."""
