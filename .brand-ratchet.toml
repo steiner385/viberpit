@@ -187,3 +187,26 @@ id = "constitution"
 paths = [".specify/memory/constitution.md"]
 issue = 1377
 ceiling = 2
+
+[[allow]]
+# The three env vars the prod-deploy gate reads. The hook is a `GUARDRAIL_PATHS`
+# file (server/sdlc/governance.py): any diff to it fails the `amendment` CI check
+# without an "Owner acknowledgment:" line, which an agent must not write for
+# itself (#1377 "Owner-only"). So #1591 could not rename these, and the two
+# companions have to hold the same spelling or they would be wrong rather than
+# stale — `.claude/README.md` documents which names the hook reads, and the test
+# passes them to the real hook as a subprocess. Renaming all three is one
+# owner-acknowledged diff; until then they move together or not at all.
+#
+# Note the hook cannot lean on the Phase 0b mirror the way `env-prefix-mirror`
+# call sites do: Claude Code spawns it as a bare `python3` script that never
+# imports `ccswitch`, so no mirror ever runs in its process.
+id = "guardrail-env-prefix"
+pattern = '\bCCSWITCH_[A-Z0-9_]*'
+paths = [
+  ".claude/hooks/prod-deploy-gate.py",
+  ".claude/README.md",
+  "server/tests/test_sdlc_governance_config.py",
+]
+issue = 1377
+ceiling = 11

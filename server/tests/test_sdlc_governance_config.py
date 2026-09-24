@@ -96,8 +96,8 @@ def _run_hook_event(event: dict, env_extra: dict[str, str]) -> dict | None:
     # Start from a clean slate for the governance vars so the test runner's own
     # environment can't leak an approval token in, then apply only what the case sets.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("RELEASE_APPROVAL", "VIBERPIT_DEPLOY_ENV",
-                        "VIBERPIT_RELEASE_AUTHOR", "VIBERPIT_RELEASE_APPROVER")}
+           if k not in ("RELEASE_APPROVAL", "CCSWITCH_DEPLOY_ENV",
+                        "CCSWITCH_RELEASE_AUTHOR", "CCSWITCH_RELEASE_APPROVER")}
     env.update(env_extra)
     proc = subprocess.run(
         [sys.executable, str(_HOOK)],
@@ -134,8 +134,8 @@ def test_hook_blocks_self_approved_prod_deploy():
         "deploy production",
         {
             "RELEASE_APPROVAL": "incident-42",
-            "VIBERPIT_RELEASE_AUTHOR": "backlog_runner",
-            "VIBERPIT_RELEASE_APPROVER": "backlog_runner",
+            "CCSWITCH_RELEASE_AUTHOR": "backlog_runner",
+            "CCSWITCH_RELEASE_APPROVER": "backlog_runner",
         },
     )
     assert decision is not None

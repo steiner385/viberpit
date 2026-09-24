@@ -33,11 +33,11 @@ one:
 ## The prod-deploy gate
 
 A production deploy (a `Bash` command with a deploy verb targeting prod, or run
-with `VIBERPIT_DEPLOY_ENV=prod`) is denied unless:
+with `CCSWITCH_DEPLOY_ENV=prod`) is denied unless:
 
 1. `RELEASE_APPROVAL=<change/incident ref>` is set in the deploy environment, **and**
-2. the approver (`VIBERPIT_RELEASE_APPROVER`) differs from the change author
-   (`VIBERPIT_RELEASE_AUTHOR`) — separation of duties (design §4 step 6). The agent
+2. the approver (`CCSWITCH_RELEASE_APPROVER`) differs from the change author
+   (`CCSWITCH_RELEASE_AUTHOR`) — separation of duties (design §4 step 6). The agent
    that wrote the change cannot authorize its own release.
 
 The deny message carries both the reason and the unblock route.
