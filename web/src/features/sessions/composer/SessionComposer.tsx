@@ -8,6 +8,7 @@
 
 import { useMemo, useCallback } from 'react'
 import { Composer } from './Composer'
+import type { MentionSource } from './MentionMenu'
 import { deriveHistory } from '@/session/history'
 import { useGenerateSuggestions } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -25,9 +26,12 @@ interface Props {
   hideModeSelector?: boolean
   /** Prefill the draft from outside the composer (e.g. a NoticeCard's "Ask about it"). */
   externalDraft?: { text: string } | null
+  /** `@` mentions the composer can insert (spec v2 §10.2). Only the AI assistant
+   *  drawer supplies this — see Composer's own doc on the prop. */
+  mentionSource?: MentionSource[]
 }
 
-export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideModeSelector, externalDraft }: Props) {
+export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideModeSelector, externalDraft, mentionSource }: Props) {
   // `hideModeSelector` is forward-compat only — Composer has no mode-selector UI to
   // hide today (see the Props doc above). Referenced here (no-op) so it isn't
   // flagged as unused; wire it up for real once that UI exists.
@@ -59,6 +63,7 @@ export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideMo
       history={history}
       sessionId={rt.sessionId}
       externalDraft={externalDraft}
+      mentionSource={mentionSource}
     />
   )
 }

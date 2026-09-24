@@ -8,11 +8,13 @@ import { useImageAttachments } from './useImageAttachments'
 import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { MentionMenu, type MentionMenuHandle, type MentionSource } from './MentionMenu'
 import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
 import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { mentionQueryAt } from '@/lib/mentionQuery'
 
 interface Props {
   status: { state: string; count: number }
@@ -40,9 +42,13 @@ interface Props {
    *  each time — even identical text twice in a row — so the effect re-fires; the user
    *  can still edit or clear it before sending. */
   externalDraft?: { text: string } | null
+  /** `@` mentions the composer can insert as `[title](/sessions/<id>)`. Only supplied
+   *  by the AI assistant drawer — a coding session's Composer never sees this prop, so
+   *  typing `@` there is plain text. */
+  mentionSource?: MentionSource[]
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource }: Props) {
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -50,6 +56,11 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
+  const mentionRef = useRef<MentionMenuHandle>(null)
+  // Caret position, tracked only for the mention trigger — unlike the slash palette
+  // (whole-text-anchored at position 0), a mention can open mid-message, so finding
+  // its query needs to know where the cursor actually is.
+  const [caretPos, setCaret] = useState(0)
   const isWorking = statusTier(status.state) === 'busy'
   // Engine-aware attachment gating (Codex has no PDF ingestion path — see
   // useImageAttachments.ts). Looked up from the sessions list cache rather
@@ -83,6 +94,18 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const pickingCommand = slash && !/\s/.test(afterSlash)
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
+  // `@` session mentions (assistant drawer only — mentionSource is absent for a
+  // coding session's Composer). Mutually exclusive with the slash palette: a
+  // message starting with `/` is a command line, not prose with a mention in it.
+  const mentionQuery = !pickingCommand && mentionSource ? mentionQueryAt(text, caretPos) : null
+  // The `@` position the current query is anchored to — Esc records it here so the
+  // SAME mention attempt stays dismissed across further keystrokes; a fresh `@`
+  // elsewhere has a different start and reopens. Cleared in handleChange (not an
+  // effect) the moment there is no active query to be dismissed FROM.
+  const mentionStart = mentionQuery !== null ? caretPos - mentionQuery.length - 1 : null
+  const [dismissedMentionAt, setDismissedMentionAt] = useState<number | null>(null)
+  const pickingMention = mentionQuery !== null && mentionStart !== dismissedMentionAt
+
   const ghost =
     !isWorking && text === '' && suggestions && suggestions.length > 0
       ? suggestions[0]
@@ -94,6 +117,9 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const histPosRef = useRef(0)
   const draftRef = useRef('')
   const caretToEndRef = useRef(false)
+  // A specific caret target for the next text-driven layout pass (mention insertion
+  // lands mid-string, not at the end) — null means "no pending target".
+  const pendingCaretRef = useRef<number | null>(null)
 
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session. Also reset recall state.
@@ -103,16 +129,19 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     draftRef.current = ''
   }, [autoFocusKey])
 
-  // After a programmatic recall, grow the box and place the caret at the end.
+  // After a programmatic recall or mention insertion, grow the box and place the
+  // caret — at the end for a recall, at the insertion point for a mention.
   useEffect(() => {
-    if (!caretToEndRef.current) return
-    caretToEndRef.current = false
+    if (!caretToEndRef.current && pendingCaretRef.current === null) return
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
-    const end = el.value.length
-    el.setSelectionRange(end, end)
+    const pos = pendingCaretRef.current ?? el.value.length
+    el.focus()
+    el.setSelectionRange(pos, pos)
+    caretToEndRef.current = false
+    pendingCaretRef.current = null
   }, [text])
 
   const recallTo = useCallback((pos: number, value: string) => {
@@ -135,12 +164,35 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     if (histPosRef.current !== 0) histPosRef.current = 0
-    setText(e.target.value)
+    const value = e.target.value
+    const nextCaret = e.target.selectionStart ?? value.length
+    setText(value)
+    setCaret(nextCaret)
+    // A dismissed mention only stays dismissed for its OWN query; once there is no
+    // active query at all (the user moved on), clear the marker so the next `@`
+    // — even at the same buffer position — opens normally.
+    if (mentionSource && dismissedMentionAt !== null && mentionQueryAt(value, nextCaret) === null) {
+      setDismissedMentionAt(null)
+    }
     onActivity?.()
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
   }
+
+  // Replace the active `@query` (from its `@` up to the caret) with the mention
+  // link and land the caret right after the inserted `) ` — mirrors the ghost
+  // suggestion's prefill() in spirit, but at an arbitrary offset rather than the end.
+  const insertMention = useCallback((session: MentionSource) => {
+    const query = mentionQueryAt(text, caretPos)
+    if (query === null) return
+    const start = caretPos - query.length - 1
+    const inserted = `[${session.title}](/sessions/${session.id}) `
+    const newCaret = start + inserted.length
+    pendingCaretRef.current = newCaret
+    setCaret(newCaret)
+    setText(text.slice(0, start) + inserted + text.slice(caretPos))
+  }, [text, caretPos])
 
   const runCommandFromText = useCallback((raw: string): boolean => {
     if (!raw.startsWith('/') || raw.includes('\n')) return false
@@ -233,8 +285,9 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
       return
     }
     if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
+    if (!pickingCommand && pickingMention && mentionRef.current?.handleKeyDown(e)) return
 
-    if (!pickingCommand && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
+    if (!pickingCommand && !pickingMention && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
       const el = e.currentTarget
       const caret = el.selectionStart ?? 0
       const empty = text === ''
@@ -329,6 +382,15 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             onSelect={(c) => { if (c.argumentHint) { setText(`/${c.name} `) } else { onCommand?.(c.name, ''); setText('') } }}
             onComplete={(c) => setText(`/${c.name} `)}
             onDismiss={() => { /* keep text; palette hides when slash becomes false */ }}
+          />
+        )}
+        {pickingMention && (
+          <MentionMenu
+            ref={mentionRef}
+            sessions={mentionSource ?? []}
+            query={mentionQuery ?? ''}
+            onSelect={insertMention}
+            onDismiss={() => setDismissedMentionAt(mentionStart)}
           />
         )}
         <div className="relative flex-1">

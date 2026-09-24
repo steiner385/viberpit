@@ -16,9 +16,10 @@
  * here so it can call `useSessionRuntimeContext()` — the provider's own descendant,
  * not the component that renders the provider.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
+import { useSessions } from '@/api/hooks'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import {
   createSessionFailureMessage,
@@ -80,6 +81,14 @@ function AssistantSheetBody() {
   // twice, so Composer's prefill effect re-fires (see Composer.tsx's externalDraft).
   const [draftSeed, setDraftSeed] = useState<{ text: string } | null>(null)
 
+  // `@` session mentions (spec v2 §10.2): only the assistant drawer's composer gets
+  // this — a coding session's Composer never receives mentionSource at all.
+  const { data: sessions } = useSessions()
+  const mentionSource = useMemo(
+    () => (sessions ?? []).map((s) => ({ id: s.id, title: s.name })),
+    [sessions],
+  )
+
   // Publish this turn's liveness to `DrawerHost` so Escape can interrupt it before
   // closing the drawer, instead of abandoning an in-flight assistant turn silently.
   useAssistantGestures({
@@ -137,6 +146,7 @@ function AssistantSheetBody() {
         hideModeSelector
         contextProvider={() => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) })}
         externalDraft={draftSeed}
+        mentionSource={mentionSource}
       />
       <p className="border-t border-edge px-3 py-1 text-xs text-ink-muted">
         AI-generated. Actions ask for confirmation.

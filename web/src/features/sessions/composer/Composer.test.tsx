@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Composer } from './Composer'
 import type { Command } from '@/session/events'
@@ -323,5 +323,74 @@ describe('Composer', () => {
     box.focus()
     await user.keyboard('{ArrowUp}')
     expect(box).toHaveValue('')
+  })
+
+  // ── `@` session mentions (assistant drawer only) ────────────────────────────
+
+  const mentionSource = [
+    { id: 'sess-1', title: 'Fix the login bug' },
+    { id: 'sess-2', title: 'Refactor the queue drainer' },
+  ]
+
+  it('typing @ does not open the menu when mentionSource is absent (coding session)', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} />)
+    await user.type(screen.getByRole('textbox', { name: /message/i }), 'hi @fi')
+    expect(screen.queryByRole('listbox', { name: /session mentions/i })).not.toBeInTheDocument()
+  })
+
+  it('typing @ opens the mention menu filtered by the following characters', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} mentionSource={mentionSource} />)
+    await user.type(screen.getByRole('textbox', { name: /message/i }), 'hi @fi')
+    const listbox = screen.getByRole('listbox', { name: /session mentions/i })
+    expect(within(listbox).getByText('Fix the login bug')).toBeInTheDocument()
+    expect(within(listbox).queryByText('Refactor the queue drainer')).not.toBeInTheDocument()
+  })
+
+  it('opens mid-message, not only at the start of the line', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} mentionSource={mentionSource} />)
+    await user.type(screen.getByRole('textbox', { name: /message/i }), 'can you check @refac for me')
+    expect(screen.queryByRole('listbox', { name: /session mentions/i })).not.toBeInTheDocument()
+  })
+
+  it('Enter inserts [title](/sessions/<id>) and closes the menu', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} mentionSource={mentionSource} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, 'hi @fi')
+    await user.keyboard('{Enter}')
+    expect(box).toHaveValue('hi [Fix the login bug](/sessions/sess-1) ')
+    expect(screen.queryByRole('listbox', { name: /session mentions/i })).not.toBeInTheDocument()
+  })
+
+  it('Esc closes the menu without changing the text', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} mentionSource={mentionSource} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, 'hi @fi')
+    await user.keyboard('{Escape}')
+    expect(box).toHaveValue('hi @fi')
+    expect(screen.queryByRole('listbox', { name: /session mentions/i })).not.toBeInTheDocument()
+  })
+
+  it('does not recall history while the mention menu is open', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} mentionSource={mentionSource} history={['older prompt']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, '@fi')
+    await user.keyboard('{ArrowUp}')
+    // Consumed by the mention menu (selection move), not history recall.
+    expect(box).toHaveValue('@fi')
+  })
+
+  it('the coding-session composer (no mentionSource) is unaffected: history recall still works with @ in text', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={['older prompt']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, '@fi')
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('older prompt')
   })
 })

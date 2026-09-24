@@ -1,15 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionComposer } from './SessionComposer'
+import type { MentionSource } from './MentionMenu'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
 // SessionComposer now owns the on-demand suggestion mutation (useGenerateSuggestions),
 // so it needs a QueryClient in context.
-function renderComposer(rt: SessionRuntime) {
+function renderComposer(rt: SessionRuntime, mentionSource?: MentionSource[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}><SessionComposer rt={rt} /></QueryClientProvider>,
+    <QueryClientProvider client={qc}><SessionComposer rt={rt} mentionSource={mentionSource} /></QueryClientProvider>,
   )
 }
 
@@ -49,6 +51,22 @@ describe('SessionComposer (shared mobile/desktop wiring)', () => {
   it('renders no ghost when there are no suggestions', () => {
     renderComposer(fakeRuntime())
     expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+})
+
+describe('SessionComposer mentionSource wiring (spec v2 §10.2)', () => {
+  it('forwards mentionSource so the assistant drawer can @ mention a session', async () => {
+    const user = userEvent.setup()
+    renderComposer(fakeRuntime(), [{ id: 's2', title: 'Fix the flaky test' }])
+    await user.type(screen.getByLabelText('Message'), '@fi')
+    expect(screen.getByRole('listbox', { name: /session mentions/i })).toHaveTextContent('Fix the flaky test')
+  })
+
+  it('a coding session (no mentionSource) never shows the mention menu', async () => {
+    const user = userEvent.setup()
+    renderComposer(fakeRuntime())
+    await user.type(screen.getByLabelText('Message'), '@fi')
+    expect(screen.queryByRole('listbox', { name: /session mentions/i })).not.toBeInTheDocument()
   })
 })
 
