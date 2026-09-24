@@ -140,8 +140,13 @@ async def generate_title(
         # text when the failure has no HTTP status — those are process exits whose
         # partial assistant text may still be a useful title.
         if outcome.api_error_status is not None:
-            log.warning("generate_title HTTP %s config_dir=%s: %s",
-                        outcome.api_error_status, config_dir, outcome.describe())
+            # A rate-limit is a handled, routine condition — run_helper_call already
+            # opened this account's lane and we degrade to no title — so it logs
+            # below the auto-error filing floor; anything else (401, 5xx) stays
+            # WARNING. Re-filing on every throttle was #1837.
+            level = logging.INFO if outcome.failure_kind == "rate_limit" else logging.WARNING
+            log.log(level, "generate_title HTTP %s config_dir=%s: %s",
+                    outcome.api_error_status, config_dir, outcome.describe())
             return None
         salvaged = sanitize_title(_extract_text(outcome.messages))
         if salvaged is None:

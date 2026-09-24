@@ -1,5 +1,6 @@
 """Tests for the AI title generator (one-shot claude-agent-sdk query)."""
 import asyncio
+import logging
 from types import SimpleNamespace
 
 from server.sessions.title_generator import generate_title
@@ -139,6 +140,36 @@ def test_discards_error_text_on_rate_limit():
         return gen()
 
     assert _run(["x"], query_fn=qf) is None
+
+
+def _http_error_query(status: int):
+    def qf(*, prompt, options=None, **_):
+        async def gen():
+            yield _assistant(f"API Error: {status}")
+            yield _result_msg(status)
+            raise RuntimeError("Claude Code returned an error result: success")
+
+        return gen()
+
+    return qf
+
+
+def test_rate_limit_is_logged_below_the_auto_error_floor(caplog):
+    # A 429 is handled: the helper breaker opens the account's lane and the
+    # caller degrades to no title. Logging that at WARNING crossed the
+    # auto-error filing floor and re-filed the same issue on every throttle (#1837).
+    with caplog.at_level(logging.INFO, logger="server.sessions.title_generator"):
+        assert _run(["x"], query_fn=_http_error_query(429)) is None
+    recs = [r for r in caplog.records if r.name == "server.sessions.title_generator"]
+    assert recs and all(r.levelno < logging.WARNING for r in recs)
+
+
+def test_non_throttle_http_error_still_warns(caplog):
+    # 401/5xx are not routine throttles — they keep the WARNING signal.
+    with caplog.at_level(logging.INFO, logger="server.sessions.title_generator"):
+        assert _run(["x"], query_fn=_http_error_query(401)) is None
+    assert any(r.levelno == logging.WARNING and r.name == "server.sessions.title_generator"
+               for r in caplog.records)
 
 
 def test_salvages_when_result_has_no_api_error_status():
