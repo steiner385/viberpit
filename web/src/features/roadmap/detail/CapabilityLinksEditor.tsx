@@ -1,9 +1,10 @@
 // A capability's links to other capabilities (spec §8 "Capability links — chip
-// editor on Overview", R8c-2): a labelled section saying what a link IS, the
+// editor", R8c-2), mounted on the capability's Dependencies tab
+// (docs/PAGE-TABS.md §5): a labelled section saying what a link IS, the
 // chips it has with a remove on each, and an add row that stays behind a
 // "+ Link" button until asked for — almost no capability has links, so a
-// permanently open three-select form read as an unexplained chore on every
-// Overview. Every change sends the FULL list as one `links` op — the server
+// permanently open three-select form read as an unexplained chore. Every
+// change sends the FULL list as one `links` op — the server
 // replaces the doc's link block rather than merging into it, so a partial
 // list would silently drop the rest.
 import { useState } from 'react'
