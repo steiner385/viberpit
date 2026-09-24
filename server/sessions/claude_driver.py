@@ -1173,9 +1173,34 @@ class ClaudeAgentDriver:
             message = {"type": "user",
                        "message": {"role": "user", "content": content},
                        "parent_tool_use_id": None, "session_id": "default"}
-            await self._client.query(_aiter_one(message))
+            payload: object = _aiter_one(message)
         else:
-            await self._client.query(sdk_text)
+            payload = sdk_text
+        try:
+            await self._client.query(payload)
+        except CLIConnectionError:
+            # The SDK transport is already dead, but no reader has been scheduled to
+            # notice it yet: `_stream_ended` is set asynchronously, by _drain or the
+            # idle listener observing the dead cursor, so every guard in send_prompt
+            # still said "live" and the prompt arrived here. Uncaught, this escaped
+            # the daemon's RPC as an opaque `DaemonError: CLIConnectionError` at the
+            # edge (#1997) and left the turn open with no pump to ever close it — the
+            # session sat on "Working" until the stall watchdog swept it.
+            #
+            # It is the same loss _drain reports one scheduling tick later, so take
+            # the same exit: mark the stream dead FIRST (so _end_turn issues no
+            # control request and dequeues nothing onto the corpse), settle the turn,
+            # then signal ONE process_crash — the orchestrator recomposes the driver
+            # and replays this prompt. No log of our own: _on_stream_ended owns the
+            # record for a stream death, and a second line would file a duplicate
+            # auto-error issue for one incident.
+            #
+            # Same shape as PR #517, which gave interrupt() this guard after a daemon
+            # restart left drivers holding disconnected clients; query() never got it.
+            self._stream_ended = True
+            await self._end_turn()
+            await self._on_stream_ended(mid_turn=True)
+            return
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:
