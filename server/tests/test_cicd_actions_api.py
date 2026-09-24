@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from types import SimpleNamespace
 
+from ccswitch import gitrepos
 from server.github.actions_api import (
     junit_artifacts, list_completed_runs, list_jobs, repo_ci_meta, workflow_texts,
 )
@@ -115,7 +117,6 @@ def test_default_runner_authenticates_as_owner_app(monkeypatch):
     """With no run= injected, the doctor's default runner threads the repo owner's
     App installation token (issue #913) — not the ambient gh user, whose expired
     credential drops gh to anonymous and 404s private repos."""
-    from ccswitch import gitrepos
     monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
     seen = {}
 
@@ -130,7 +131,6 @@ def test_default_runner_authenticates_as_owner_app(monkeypatch):
 
 def test_default_run_bytes_authenticates_as_owner_app(monkeypatch):
     """The artifact-zip fetch (_run_gh_bytes) is bound to the owner's App token too."""
-    from ccswitch import gitrepos
     from server.github import actions_api
     monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
     seen = {}
@@ -215,3 +215,62 @@ def test_workflow_texts_listing_failure_not_cached():
     state["fail_listing"] = False
     assert workflow_texts("o/r", "master", run=fake_run, cache=cache) == {
         ".github/workflows/ci.yml": "name: CI\n"}  # retried, now succeeds
+
+
+def _junit_zip() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("server.xml", "<testsuite/>")
+    return buf.getvalue()
+
+
+_JUNIT_LISTING = {"artifacts": [{"id": 1, "name": "junit-python-server-shard-4",
+                                 "expired": False}]}
+
+
+def test_junit_artifacts_retries_github_5xx_then_succeeds():
+    """A GitHub-side 5xx on the artifact zip is transient (#1839): retry it rather
+    than dropping that shard's results from the run for good."""
+    calls, slept = [], []
+
+    def flaky(args):
+        calls.append(args)
+        if len(calls) < 3:
+            raise gitrepos.GhError("gh: HTTP 503")
+        return _junit_zip()
+
+    out = junit_artifacts("o/r", 5, run=lambda a, token=None: _ok(_JUNIT_LISTING),
+                          run_bytes=flaky, sleep=slept.append)
+    assert out == [("junit-python-server-shard-4", b"<testsuite/>")]
+    assert len(calls) == 3 and len(slept) == 2
+
+
+def test_junit_artifacts_exhausted_5xx_logs_info_not_warning(caplog):
+    """A 5xx that survives every retry is GitHub's outage, not a ViberPit defect:
+    INFO, so error triage does not file it as an auto-error issue (#1839)."""
+
+    def down(args):
+        raise gitrepos.GhError("gh: HTTP 503")
+
+    with caplog.at_level(logging.DEBUG):
+        out = junit_artifacts("o/r", 5, run=lambda a, token=None: _ok(_JUNIT_LISTING),
+                              run_bytes=down, sleep=lambda s: None)
+    assert out == []
+    hits = [r for r in caplog.records if "artifact_fetch" in r.getMessage()]
+    assert hits and all(r.levelno < logging.WARNING for r in hits)
+
+
+def test_junit_artifacts_non_5xx_failure_still_warns_without_retry(caplog):
+    """Only a 5xx is retried and demoted; a 404 or corrupt zip is still a WARNING."""
+    calls = []
+
+    def missing(args):
+        calls.append(args)
+        raise gitrepos.GhError("gh: Not Found (HTTP 404)")
+
+    with caplog.at_level(logging.DEBUG):
+        junit_artifacts("o/r", 5, run=lambda a, token=None: _ok(_JUNIT_LISTING),
+                        run_bytes=missing, sleep=lambda s: None)
+    assert len(calls) == 1
+    assert any(r.levelno == logging.WARNING and "artifact_fetch_failed" in r.getMessage()
+               for r in caplog.records)
