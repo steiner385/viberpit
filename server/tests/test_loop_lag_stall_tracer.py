@@ -143,3 +143,42 @@ def test_thread_tracer_can_be_rearmed_after_cancel():
         assert "loop_lag stall dump" in f.read(), (
             "arm() after cancel() must revive the tracer"
         )
+
+
+# --- production wiring: the dump is on by default (#1913) --------------------
+# Opt-in meant it never ran: dobby logged 38s stalls for weeks with no stack to
+# name the culprit, because nobody had set the knob. Both processes build the
+# watchdog through one factory so the default cannot drift between them.
+
+def test_watchdog_from_env_arms_the_stall_dump_by_default(monkeypatch):
+    from server.obs.loop_lag import DEFAULT_STALL_DUMP_S, watchdog_from_env
+
+    monkeypatch.delenv("VIBERPIT_LOOP_STALL_DUMP_S", raising=False)
+    monkeypatch.delenv("VIBERPIT_LOOP_STALL_DUMP_PATH", raising=False)
+    wd = watchdog_from_env(_tracer=_RecordingTracer())
+    assert DEFAULT_STALL_DUMP_S > 0
+    assert wd.dump_after == DEFAULT_STALL_DUMP_S
+
+
+def test_watchdog_from_env_zero_is_the_off_switch(monkeypatch):
+    from server.obs.loop_lag import watchdog_from_env
+
+    monkeypatch.setenv("VIBERPIT_LOOP_STALL_DUMP_S", "0")
+    wd = watchdog_from_env(_tracer=_RecordingTracer())
+    assert wd.dump_after is None
+    assert wd._tracer is None
+
+
+def test_watchdog_from_env_honours_an_explicit_threshold_and_path(monkeypatch, tmp_path):
+    from server.obs.loop_lag import watchdog_from_env
+
+    dump = tmp_path / "stalls.txt"
+    monkeypatch.setenv("VIBERPIT_LOOP_STALL_DUMP_S", "12.5")
+    monkeypatch.setenv("VIBERPIT_LOOP_STALL_DUMP_PATH", str(dump))
+    wd = watchdog_from_env()
+    try:
+        assert wd.dump_after == 12.5
+        assert isinstance(wd._tracer, ThreadStallTracer)
+        assert wd._tracer._file.name == str(dump)
+    finally:
+        wd._tracer._file.close()

@@ -5960,7 +5960,8 @@ class SessionOrchestrator:
         """
         if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
             from .background_tasks import is_parked
-            return await asyncio.to_thread(is_parked, self.transcript_path(session_id))
+            path = await asyncio.to_thread(self.transcript_path, session_id)
+            return await asyncio.to_thread(is_parked, path)
         tasks = await self._open_background_work(session_id)
         return bool(tasks)
 
@@ -5973,7 +5974,7 @@ class SessionOrchestrator:
         never to a partial one the restart would present as complete.
         """
         if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
-            path = self.transcript_path(session_id)
+            path = await asyncio.to_thread(self.transcript_path, session_id)
             if not path:
                 return []
             return await asyncio.to_thread(scan_open_background_tasks, path)
@@ -13721,7 +13722,8 @@ class SessionOrchestrator:
             title = await self._generate_codex_fallback_title(session_id, rec)
             source = "generated"
         else:
-            path = self.transcript_path(session_id)
+            # Off the loop: the lookup stats/globs a network mount (#826, #1913).
+            path = await asyncio.to_thread(self.transcript_path, session_id)
             if not path:
                 return
             title = await asyncio.to_thread(read_ai_title_from_file, path)

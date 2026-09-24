@@ -44,11 +44,13 @@ read mid-mutation. See ``ThreadStallTracer`` for the tradeoff this costs.
 """
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
 import traceback
 
+from server.config import env_float
 from server.obs.context import emit_event
 
 _default_log = logging.getLogger("server.obs.loop_lag")
@@ -264,3 +266,25 @@ class LoopLagWatchdog:
                 self._arm_tracer()
         finally:
             self._disarm_tracer()
+
+
+# On by default (#1913). Opt-in meant it never ran: dobby logged stalls of up to
+# 38s for weeks with no stack naming the culprit, because nobody set the knob.
+# 5s sits well above routine overshoot (sub-second to ~1s under normal load), so
+# only a real block produces a dump — one per stall, since the tracer stays quiet
+# until the next healthy tick re-arms it.
+DEFAULT_STALL_DUMP_S = 5.0
+
+
+def watchdog_from_env(**kwargs) -> LoopLagWatchdog:
+    """The production watchdog, as both the daemon and the edge build it.
+
+    ``VIBERPIT_LOOP_STALL_DUMP_S`` sets the stall-dump threshold (``0`` turns the
+    dump off); ``VIBERPIT_LOOP_STALL_DUMP_PATH`` sends it to a file instead of the
+    journal. One factory, so the two processes cannot drift on the default.
+    """
+    return LoopLagWatchdog(
+        dump_after=env_float("VIBERPIT_LOOP_STALL_DUMP_S", DEFAULT_STALL_DUMP_S, minimum=0.0),
+        dump_path=os.environ.get("VIBERPIT_LOOP_STALL_DUMP_PATH") or None,
+        **kwargs,
+    )

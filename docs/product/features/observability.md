@@ -69,7 +69,9 @@ out of scope — see the fleet crash-loop gap #816).
   plain thread (schedulable while the loop is blocked) and snapshots the stuck thread's stack via
   `sys._current_frames()` — the pure-Python replacement (PR #793) for the segfaulting
   `faulthandler.dump_traceback_later` (issue #792), added to close issue #762 where the daemon
-  blocked ~130s and logged nothing about where.
+  blocked ~130s and logged nothing about where. The dump is on by default at a 5s stall (issue
+  #1913 — while it was opt-in it never ran in prod); `VIBERPIT_LOOP_STALL_DUMP_S` changes the
+  threshold (`0` disables it) and `VIBERPIT_LOOP_STALL_DUMP_PATH` redirects it from the journal to a file.
 - **Task supervision** (`server/obs/tasks.py`): `supervise` attaches a done-callback that always
   retrieves a failed task's exception, logs it loudly with the task name, and invokes an optional
   recovery hook; clean returns and cancellations pass through untouched (audit W2.6 — a bare
