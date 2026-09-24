@@ -4,8 +4,10 @@ The sibling of the ``host_probe`` flood (#1507/#1669/#1724/#1676), found by
 sweeping the open ``auto-error`` issues for the same shape. ``GET /api/accounts``
 is re-requested by every open dashboard on a refetch interval, so an account
 whose usage RPC keeps losing the deadline warns on every request — and because
-the account name is in the message, ``server.obs.errsink`` fingerprints one
-issue PER ACCOUNT: #2042 (116 occurrences), #2043 (50), #2041 (30), #2044 (28).
+the account name used to ride the message, ``server.obs.errsink`` fingerprinted
+one issue PER ACCOUNT: #2042 (116 occurrences), #2043 (50), #2041 (30), #2044
+(28). ``log_event_throttled`` fingerprints on the ``account.usage_fetch_failed``
+event name instead, with the account riding ``fields`` (#2126).
 
 Same shape, same source of truth: ``server.obs.logdedupe``, keyed per account
 and per reason. The fallback behaviour is untouched — only how often the
@@ -51,7 +53,7 @@ def _no_ledger_and_fresh_throttle(monkeypatch):
 
 
 def _fallback_records(caplog):
-    return [r for r in caplog.records if "trying stale ledger" in r.getMessage()]
+    return [r for r in caplog.records if r.getMessage() == "account.usage_fetch_failed"]
 
 
 def test_one_accounts_repeated_usage_timeout_warns_once_and_demotes_the_repeats(caplog):
@@ -80,11 +82,11 @@ def test_a_second_accounts_failure_is_not_suppressed_by_the_first(caplog):
     with caplog.at_level(logging.DEBUG, logger=accounts_api.log.name):
         asyncio.run(run())
 
-    warnings = [r.getMessage() for r in _fallback_records(caplog)
-                if r.levelno == logging.WARNING]
+    warnings = [r for r in _fallback_records(caplog) if r.levelno == logging.WARNING]
     assert len(warnings) == 2
-    assert any("tony_cairnea.com" in m for m in warnings)
-    assert any("tony_kindash.com" in m for m in warnings)
+    accounts = [r.fields["account"] for r in warnings]
+    assert "tony_cairnea.com" in accounts
+    assert "tony_kindash.com" in accounts
 
 
 def test_a_raising_fetch_reports_even_while_a_timeouts_window_is_open(caplog):
@@ -98,11 +100,10 @@ def test_a_raising_fetch_reports_even_while_a_timeouts_window_is_open(caplog):
     with caplog.at_level(logging.DEBUG, logger=accounts_api.log.name):
         asyncio.run(run())
 
-    warnings = [r.getMessage() for r in _fallback_records(caplog)
-                if r.levelno == logging.WARNING]
+    warnings = [r for r in _fallback_records(caplog) if r.levelno == logging.WARNING]
     assert len(warnings) == 2
-    assert "timed out" in warnings[0]
-    assert "timed out" not in warnings[1]
+    assert warnings[0].fields["reason"] == "timeout"
+    assert warnings[1].fields["reason"] == "error"
 
 
 def test_throttling_does_not_change_what_safe_usage_returns(caplog):

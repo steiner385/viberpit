@@ -178,8 +178,8 @@ async def test_an_app_server_refusal_is_logged_without_a_traceback(
     assert len(caplog.records) == 1
     record = caplog.records[0]
     assert record.exc_info is None, "expected refusal logged with a traceback"
-    assert "transport_closed" in record.getMessage(), record.getMessage()
-    assert surface in record.getMessage()
+    assert "transport_closed" in record.fields["error"], record.fields
+    assert record.fields["surface"] == surface
 
 
 @pytest.mark.asyncio
@@ -191,7 +191,7 @@ async def test_an_unexpected_failure_keeps_its_traceback(monkeypatch, caplog):
         assert await o.transcript_events("37e13a96") == []
 
     assert caplog.records[0].exc_info is not None
-    assert "AttributeError" in caplog.records[0].getMessage()
+    assert caplog.records[0].fields["error"] == "AttributeError"
 
 
 @pytest.mark.asyncio
@@ -262,8 +262,8 @@ async def test_a_peer_rejected_thread_read_is_logged_without_a_traceback(
     assert len(caplog.records) == 1
     record = caplog.records[0]
     assert record.exc_info is None, "peer rejection logged with a traceback"
-    assert "peer_error:-32600" in record.getMessage(), record.getMessage()
-    assert surface in record.getMessage()
+    assert "peer_error:-32600" in record.fields["error"], record.fields
+    assert record.fields["surface"] == surface
 
 
 # ---------------------------------------------------------------------------

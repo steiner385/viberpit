@@ -203,4 +203,4 @@ def test_failed_probe_logs_info_while_the_hosts_restart_is_expected(tmp_path, ca
     assert row.healthy is False
     lines = [r for r in caplog.records if "probe_failed" in r.getMessage()]
     assert lines and all(r.levelno == logging.INFO for r in lines)
-    assert "restart in progress" in lines[0].getMessage()
+    assert lines[0].fields.get("restart") == "in_progress"

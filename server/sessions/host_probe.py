@@ -17,7 +17,7 @@ from sqlalchemy import select as sa_select, update as sa_update
 from server.db import db_session
 from server.db.models import Host
 from server.deploy.state import DeployState, read_deploy_state
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
 from server.sessions.version_skew import IsAncestor, detect_skew, edge_is_ancestor
 
 log = logging.getLogger(__name__)
@@ -115,17 +115,23 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
         # The restart-expected branch carries its own key prefix rather than sharing the
         # host's: an outage that outlives the deploy is the one record worth escalating,
         # and a shared key would let the INFO demotion gag that WARNING for a window.
+        #
+        # `log_event_throttled`, not `log_throttled`: the host name used to ride the
+        # message, so `server.obs.error_signature.signature_of` — which fingerprints on
+        # the normalized message, not the throttle key — minted one auto-error issue per
+        # host (#2126). ``host`` now rides ``fields`` and the fingerprint is the dotted
+        # event name.
         cause = type(exc).__name__
         from server.sessions import host_upgrade  # deferred: runners imports this module
         if await host_upgrade.restart_expected(name):
-            log_throttled(
+            log_event_throttled(
                 log, _PROBE_FAILURE_LOG, f"{name}:restart:{cause}", logging.INFO,
-                "fleet.probe_failed host=%s endpoint=%s: %s (restart in progress)",
-                name, endpoint, exc)
+                "fleet.probe_failed", host=name, endpoint=endpoint, error=str(exc),
+                restart="in_progress")
         else:
-            log_throttled(
+            log_event_throttled(
                 log, _PROBE_FAILURE_LOG, f"{name}:{cause}", logging.WARNING,
-                "fleet.probe_failed host=%s endpoint=%s: %s", name, endpoint, exc)
+                "fleet.probe_failed", host=name, endpoint=endpoint, error=str(exc))
 
     async with db_session() as db:
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))

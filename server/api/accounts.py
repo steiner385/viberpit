@@ -49,7 +49,7 @@ from server.codex.auth_types import (
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.ipc.client import DaemonTimeout
-from server.obs.logdedupe import LogThrottle, log_throttled
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.reauth import ReauthBusy, ReauthNoKey
 from server.sessions.engine import AgentEngine
 from server.sessions.facade import call_with_deadline
@@ -62,20 +62,21 @@ log = logging.getLogger(__name__)
 
 # GET /api/accounts is re-requested by every open dashboard on a refetch interval, so an
 # account whose usage RPC keeps losing the deadline degrades to the stale ledger — and
-# says so — on every request. The account name is in the message, so `server.obs.errsink`
-# fingerprints one auto-error issue PER ACCOUNT: #2042, #2043, #2041 and #2044 are four
-# issues for one wedged daemon. Same throttle the probe loop uses, keyed account+reason;
-# the fallback itself is unchanged, only how often it announces itself.
+# says so — on every request. `log_event_throttled` keys the fingerprint on the event
+# name, not the account-name-bearing message, so `server.obs.errsink` no longer mints
+# one auto-error issue PER ACCOUNT: #2042, #2043, #2041 and #2044 were four issues for
+# one wedged daemon (#2126). Still throttled per account+reason; the fallback itself is
+# unchanged, only how often it announces itself.
 _USAGE_FALLBACK_LOG = LogThrottle()
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
-# Same fix as _USAGE_FALLBACK_LOG above, for the Codex status RPC: the account
-# name in "codex status for %s failed" makes server.obs.errsink fingerprint one
-# auto-error issue per account for what is really one wedged/unreachable daemon
-# (#1727). Throttled per account+reason, and a plain timeout — pure httpx/
-# httpcore boilerplate, already diagnosed by its type — drops exc_info the way
-# fleet_orchestrator's _EXPECTED_UNREACHABLE does; any other exception keeps it.
+# Same fix as _USAGE_FALLBACK_LOG above, for the Codex status RPC: the account name
+# used to ride the message, so server.obs.errsink fingerprinted one auto-error issue
+# per account for what is really one wedged/unreachable daemon (#1727, #2126).
+# Throttled per account+reason, and a plain timeout — pure httpx/httpcore boilerplate,
+# already diagnosed by its type — drops exc_info the way fleet_orchestrator's
+# _EXPECTED_UNREACHABLE does; any other exception keeps it.
 _CODEX_STATUS_LOG = LogThrottle()
 
 # Env keys that must never be overridable (constitution II: strict isolation)
@@ -213,13 +214,13 @@ async def _safe_usage(orch, name: str, timeout: float):
     except (asyncio.TimeoutError, DaemonTimeout):
         # Keyed per account AND per reason: "the daemon is too slow" and "the daemon
         # refused" have different fixes, so one must not sit inside the other's window.
-        log_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:timeout", logging.WARNING,
-                      "usage fetch for %s timed out after %.1fs — trying stale ledger",
-                      name, timeout)
+        log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:timeout", logging.WARNING,
+                             "account.usage_fetch_failed", account=name, reason="timeout",
+                             timeout_s=timeout)
     except Exception:  # noqa: BLE001 — one account must never fail the whole list
-        log_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:error", logging.WARNING,
-                      "usage fetch for %s failed — trying stale ledger",
-                      name, exc_info=True)
+        log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:error", logging.WARNING,
+                             "account.usage_fetch_failed", account=name, reason="error",
+                             exc_info=True)
     return _stale_fallback(name)
 
 
@@ -521,12 +522,14 @@ async def _codex_details(
         try:
             status = await orch.codex_account_status(account, force=force)
         except (asyncio.TimeoutError, DaemonTimeout):
-            log_throttled(log, _CODEX_STATUS_LOG, f"{account}:timeout", logging.WARNING,
-                          "codex status for %s timed out", account)
+            log_event_throttled(log, _CODEX_STATUS_LOG, f"{account}:timeout", logging.WARNING,
+                                 "account.codex_status_failed", account=account,
+                                 reason="timeout")
             status = {}
         except Exception:  # noqa: BLE001 -- one account must not fail the list
-            log_throttled(log, _CODEX_STATUS_LOG, f"{account}:error", logging.WARNING,
-                          "codex status for %s failed", account, exc_info=True)
+            log_event_throttled(log, _CODEX_STATUS_LOG, f"{account}:error", logging.WARNING,
+                                 "account.codex_status_failed", account=account,
+                                 reason="error", exc_info=True)
             status = {}
         raw_quota = status.get("quota")
         # A failed status read is a CURRENT unknown, never permission to fall

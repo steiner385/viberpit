@@ -106,8 +106,8 @@ def test_a_different_failure_class_on_the_same_host_reports_immediately(
 
     warnings = [r for r in _probe_records(caplog) if r.levelno == logging.WARNING]
     assert len(warnings) == 2
-    assert "timed out" in warnings[0].getMessage()
-    assert "All connection attempts failed" in warnings[1].getMessage()
+    assert "timed out" in warnings[0].fields["error"]
+    assert "All connection attempts failed" in warnings[1].fields["error"]
 
 
 def test_a_second_failing_host_is_not_suppressed_by_the_first(tmp_path, caplog):
@@ -126,11 +126,11 @@ def test_a_second_failing_host_is_not_suppressed_by_the_first(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="server.sessions.host_probe"):
         asyncio.run(run())
 
-    warnings = [r.getMessage() for r in _probe_records(caplog)
-                if r.levelno == logging.WARNING]
+    warnings = [r for r in _probe_records(caplog) if r.levelno == logging.WARNING]
     assert len(warnings) == 2
-    assert any("host=rocky" in m for m in warnings)
-    assert any("host=dobby" in m for m in warnings)
+    hosts = [r.fields["host"] for r in warnings]
+    assert "rocky" in hosts
+    assert "dobby" in hosts
 
 
 def test_a_still_dead_host_re_reports_once_the_window_elapses(
@@ -194,7 +194,7 @@ def test_an_outage_that_outlives_the_deploy_restart_escalates_to_warning(
 
     records = _probe_records(caplog)
     assert [r.levelno for r in records] == [logging.INFO, logging.WARNING]
-    assert "restart in progress" in records[0].getMessage()
+    assert records[0].fields.get("restart") == "in_progress"
 
 
 def test_an_unreadable_deploy_state_warns_once_per_window(tmp_path, caplog):
