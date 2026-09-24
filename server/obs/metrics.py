@@ -225,6 +225,9 @@ assistant_gap_reports_total = Counter(
 assistant_feedback_total = Counter(
     "assistant_feedback_total", "Per-turn thumbs feedback recorded on assistant turns",
     labelnames=("vote",))
+# `@` session mentions sent from the assistant composer (spec v2 §4.10/§10.2, Task 10.2).
+assistant_mentions_total = Counter(
+    "assistant_mentions_total", "Assistant prompts that embed a `[title](/sessions/<id>)` mention")
 
 # Session tool surface (session tools spec §3, §4). Same shape as the assistant's
 # counters so one Grafana row can compare the two surfaces.

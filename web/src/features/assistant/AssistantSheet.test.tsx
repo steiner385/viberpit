@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react'
 import { fireEvent, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
+import { QK } from '@/api/hooks'
+import type { Session } from '@/api/types'
 
 vi.mock('@/api/assistant', () => ({
   useAssistantStatus: vi.fn(),
@@ -162,6 +166,30 @@ describe('AssistantSheet', () => {
     renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
     const dlg = screen.getByRole('dialog', { name: /assistant/i })
     expect(within(dlg).getByRole('region', { name: /pending question/i })).toBeInTheDocument()
+  })
+
+  it('@ opens a mention menu over the sessions list and inserts a link on Enter (spec v2 §10.2)', async () => {
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(fakeRuntime() as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const mentioned: Session = {
+      id: 'sess-42', name: 'Fix the login bug', accountName: 'a',
+      engine: 'claude_code', engineSessionId: null,
+      status: 'idle', createdAt: '2026-06-21T00:00:00Z', updatedAt: '2026-06-21T00:00:00Z',
+      prs: [],
+    }
+    qc.setQueryData(QK.sessions, [mentioned])
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop', queryClient: qc })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    const box = within(dlg).getByRole('textbox', { name: /message/i })
+    await user.type(box, 'help with @fi')
+    const listbox = within(dlg).getByRole('listbox', { name: /session mentions/i })
+    expect(within(listbox).getByText('Fix the login bug')).toBeInTheDocument()
+    await user.keyboard('{Enter}')
+    expect(box).toHaveValue('help with [Fix the login bug](/sessions/sess-42) ')
   })
 
   it('a failed create names the reason instead of "API error <status>"', () => {

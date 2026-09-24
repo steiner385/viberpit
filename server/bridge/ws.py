@@ -66,7 +66,7 @@ from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
-from server.obs.metrics import assistant_prompts_total
+from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
 from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
@@ -1715,6 +1715,12 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 return
             if assistant_record:
                 assistant_prompts_total.inc()
+                # `@` session mentions (spec v2 §4.10/§10.2, Task 10.2): the composer
+                # inserts `[title](/sessions/<id>)`, so the marker alone (never
+                # legitimate in a coding-session prompt) is enough to count it — no
+                # need to parse out the id.
+                if "](/sessions/" in text:
+                    assistant_mentions_total.inc()
             status = await orchestrator.send_prompt(
                 session_id, text, attachment_ids, **extra)
             if status == "no_driver":
