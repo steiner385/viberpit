@@ -62,14 +62,20 @@ def test_a_disabled_or_modeless_row_never_resolves_to_a_writing_mode(tmp_path):
 
 
 def test_a_two_mode_automation_resolves_an_enabled_row_with_no_mode(tmp_path):
-    """archive-audit and cicd-doctor hide the mode ``<select>`` in the UI, so their toggle
-    enables the row with ``mode`` left NULL. Without ``default_mode`` such a row would be
-    enabled-but-stuck-off forever."""
+    """archive-audit and cicd-doctor resolve an enabled row with ``mode`` left NULL to their
+    first active mode. Without ``default_mode`` such a row would be enabled-but-stuck-off
+    forever. Archive Audit's is ``propose`` (review finding), never ``auto_reopen`` (#1611)."""
     async def run():
         await _init_db(tmp_path)
         orch = _bare_orch()
         await _set_row("archive-audit", enabled=True, mode=None)
-        assert (await orch._archaudit_read_config())[0] == "act"
+        assert (await orch._archaudit_read_config())[0] == "propose"
+        # A row saved before #1611 still says "act" (auto-unarchive). That is not consent to
+        # the new explicit auto_reopen opt-in: it reads as propose.
+        await _set_row("archive-audit", enabled=True, mode="act")
+        assert (await orch._archaudit_read_config())[0] == "propose"
+        await _set_row("archive-audit", enabled=True, mode="auto_reopen")
+        assert (await orch._archaudit_read_config())[0] == "auto_reopen"
         await _set_row("cicd-doctor", enabled=True, mode=None)
         assert (await orch._cicd_read_config())[0] == "propose"
         await _set_row("cicd-doctor", enabled=False, mode=None)

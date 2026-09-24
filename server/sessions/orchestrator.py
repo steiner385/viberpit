@@ -1061,7 +1061,7 @@ class SessionOrchestrator:
         self._deploy_watcher: DeployWatcher = DeployWatcher()
         from server.automations.action_providers import (
             PrDoctorActionProvider, BacklogRunnerActionProvider,
-            CicdDoctorActionProvider,
+            CicdDoctorActionProvider, ArchiveAuditActionProvider,
         )
         from server.automations.error_triage import ErrorTriageActionProvider
         from server.automations.session_feedback import SessionFeedbackActionProvider
@@ -1071,6 +1071,7 @@ class SessionOrchestrator:
             "pr-doctor": PrDoctorActionProvider(self),
             "backlog-runner": BacklogRunnerActionProvider(self),
             "cicd-doctor": CicdDoctorActionProvider(self),
+            "archive-audit": ArchiveAuditActionProvider(self),
             "error-triage": ErrorTriageActionProvider(self),
             "session-feedback": SessionFeedbackActionProvider(self),
             "deploy-monitor": DeployMonitorActionProvider(self),
@@ -1497,7 +1498,7 @@ class SessionOrchestrator:
         self._deploy_monitor_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
-        from server.automations.archive_audit import list_recent_archived_rows
+        from server.automations.archive_audit import list_recent_archived_rows, persist_findings
         self._archaudit_ctx = AutomationContext("archive-audit")
         self._archaudit_loop = ArchiveAuditLoop(
             self._archaudit_ctx,
@@ -1507,6 +1508,7 @@ class SessionOrchestrator:
             gh_num_fn=_real_gh_num,
             unarchive_fn=lambda sid: self.unarchive(sid),  # type: ignore[arg-type,return-value]
             clock=time.time,
+            record_findings_fn=lambda results, mode: persist_findings(db_session, results, mode),
         )
         self._archaudit_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
@@ -11736,12 +11738,49 @@ class SessionOrchestrator:
         any bad row so a corrupt config can never act."""
         from server.automations.archive_audit import ArchiveAudit
         from server.automations.config_store import read_automation_config
-        # archive-audit is a 2-mode (off/act) automation; resolve enabled + no explicit
-        # mode to the first non-off mode (act), else an enabled row is stuck 'off' forever.
+        # archive-audit resolves an enabled row with no (or a retired, e.g. the pre-#1611
+        # "act") mode to the first non-off mode — propose, which files a review finding
+        # and never reopens on its own. A legacy "act" row is NOT consent to the new
+        # explicit auto_reopen opt-in, so it must fall through to here, not match it.
         active = tuple(m for m in ArchiveAudit.modes if m != "off")
         return await read_automation_config(
             ArchiveAudit, modes=active, default_mode=active[0],
             log_key="archive_audit")
+
+    async def archive_audit_open_findings(self) -> list[dict]:
+        """Open review findings awaiting a human decision (ArchiveAuditActionProvider)."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import ArchiveReviewFinding
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(ArchiveReviewFinding)
+                .where(ArchiveReviewFinding.status == "open")
+                .order_by(ArchiveReviewFinding.last_seen_at.desc()))).scalars().all()
+            return [{"id": r.id, "session_id": r.session_id, "repo": r.repo,
+                     "goal": r.goal, "reason": r.reason} for r in rows]
+
+    async def archive_audit_decide_finding(self, finding_id: str, decision: str) -> str:
+        """Record a human's decision on one open finding: ``retain`` keeps the session
+        archived, ``reopen`` unarchives it (restoring it to idle — this never starts a
+        turn). Returns a status string the provider maps to a toast. The decision is
+        persisted only after a reopen actually succeeds, so a failed unarchive leaves the
+        finding open for a retry."""
+        from sqlalchemy import select as sa_select
+        from server.db.clock import naive_utc_now
+        from server.db.models import ArchiveReviewFinding
+        async with db_session() as db:
+            row = (await db.execute(sa_select(ArchiveReviewFinding).where(
+                ArchiveReviewFinding.id == finding_id))).scalar_one_or_none()
+            if row is None:
+                return "not_found"
+            if row.status != "open":
+                return "already_decided"
+            if decision == "reopen" and await self.unarchive(row.session_id or "") is None:
+                return "unarchive_failed"
+            row.status = "retained" if decision == "retain" else "reopened"
+            row.decided_at, row.decided_by = naive_utc_now(), "operator"
+            await db.commit()
+        return "retained" if decision == "retain" else "reopened"
 
     # ------------------------------------------------------------------
     # Recurring-session scheduler (#603 dispatch): fire cron-scheduled sessions

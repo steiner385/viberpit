@@ -185,11 +185,15 @@ registry.register(ArchiveAudit(), oversight=AutomationOversight(
     Responsibility.EXECUTION, 'Recently archived sessions within the configured lookback window.',
     {
         'off': 'Disable periodic completion rechecks.',
-        'act': 'Recheck archived sessions and automatically unarchive premature completions. '
-               'Unarchiving and starting another turn are distinct actions.',
+        'propose': 'Recheck archived sessions and file a review finding for a premature completion; '
+                   'a human retains it or reopens it. Nothing is reopened automatically. Rows saved '
+                   'as "act" before this change behave as propose.',
+        'auto_reopen': 'Recheck archived sessions and automatically unarchive premature completions. '
+                       'Explicit opt-in. Unarchiving and starting another turn are distinct actions.',
     },
     (Relationship('shares_work_with', 'autopilot',
-                  'Rechecks the shared completion predicate and can undo a premature archive.'),),
+                  'Rechecks the shared completion predicate; flags, or with auto_reopen undoes, '
+                  'a premature archive.'),),
 ))
 registry.register(SdlcIntake(), oversight=AutomationOversight(
     Responsibility.PREPARATION, 'Configured repository intake triggers and queued improvement initiatives.',

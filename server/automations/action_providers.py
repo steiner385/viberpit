@@ -208,6 +208,43 @@ class BacklogRunnerActionProvider:
         return TriggerResult(status=status, level=level, message=message)
 
 
+# --- Archive Audit ---------------------------------------------------------
+
+_ARCHIVE_AUDIT_STATUS_MAP = {
+    "retained": ("ok", "Kept the completed state"),
+    "reopened": ("ok", "Reopened — the session is idle; no turn was started"),
+    "already_decided": ("warn", "This finding was already decided"),
+    "not_found": ("warn", "Finding no longer exists"),
+    "unarchive_failed": ("error", "Could not reopen the session — see the automation feed"),
+}
+
+
+class ArchiveAuditActionProvider:
+    """Open Archive Audit review findings: an archived session that no longer meets
+    the completion bar, waiting for a human to retain it or reopen it (#1611).
+
+    Reopening only unarchives — it never starts a turn — and the decision is durable:
+    a later tick will not re-flag a decided finding."""
+
+    valid_kinds = frozenset({"retain", "reopen"})
+
+    def __init__(self, orch) -> None:
+        self._orch = orch
+
+    async def actionable(self) -> list[ActionableItem]:
+        return [ActionableItem(
+            id=f["id"], title=f.get("goal") or f["session_id"] or f["id"],
+            subtitle=f.get("repo"), status=None,
+            actions=[ActionSpec(kind="retain", label="Retain completed", style="default"),
+                     ActionSpec(kind="reopen", label="Reopen", style="risky")])
+            for f in await self._orch.archive_audit_open_findings()]
+
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+        status = await self._orch.archive_audit_decide_finding(item_id, kind)
+        level, message = _ARCHIVE_AUDIT_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        return TriggerResult(status=status, level=level, message=message)
+
+
 # --- CI/CD Doctor ----------------------------------------------------------
 
 _CICD_STATUS_MAP = {

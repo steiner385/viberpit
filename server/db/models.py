@@ -985,6 +985,43 @@ class CiFinding(Base):
         DateTime(timezone=True), nullable=True, default=None)
 
 
+class ArchiveReviewFinding(Base):
+    """A durable Archive Audit finding (Phase 4, #1611): in ``propose`` mode a
+    session re-classified ``premature`` gets ONE open finding instead of an
+    automatic reopen — a human decides via the action provider (retain the
+    archived state, or reopen for another turn). Deduped by ``session_id``:
+    once a finding is decided (``retained``/``reopened``) a later tick must
+    never resurrect it, even if the session is (still, again) premature —
+    that would silently undo the human's decision. An ``open`` finding whose
+    session no longer classifies premature self-resolves.
+
+    Every column is nullable so `_reconcile_columns` adds the table on both
+    dialects without a hand migration; every timestamp is naive UTC
+    (server/db/clock.py)."""
+
+    __tablename__ = "archive_review_finding"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # open -> retained | reopened | resolved. retained/reopened are a durable human
+    # decision; resolved means the underlying premature condition cleared on its own.
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", name="uq_archive_review_finding_session"),
+    )
+
+
 class SessionFeedback(Base):
     """A report a coding session made about ViberPit itself via the `report_feedback`
     session tool (session tools spec §4–§5). Fingerprint-deduped; Phase 2's filer turns

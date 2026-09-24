@@ -13,6 +13,7 @@ from server.automations.base import (
     AutomationStatus,
     operator_triggered,
     retired_config_keys_of,
+    retired_modes_of,
     validate_config,
     work_class_of,
 )
@@ -119,7 +120,9 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
         oversight = registry.oversight_for(a.id)
         out.append({
             "id": a.id, "name": a.name, "description": a.description,
-            "enabled": row.enabled, "mode": row.mode, "modes": list(a.modes),
+            "enabled": row.enabled,
+            "mode": retired_modes_of(a).get(row.mode, row.mode) if row.mode else row.mode,
+            "modes": list(a.modes),
             # Phase 3 (spec §9/§10): the runner's per-product rows ride INSIDE
             # ``status`` (``AutomationStatus.to_dict``) — a list for an automation
             # whose status carries per-product data, ``None`` for one that has no
