@@ -15,12 +15,28 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
+# Every orchestrator below MUST be built with a fake usage_fn, as UsagePoller's
+# docstring requires. The default is the production ccswitch.accounts.usage_for:
+# the tests that plant a live-looking `<account>.cred.json` would send its refresh
+# token to the real Anthropic endpoint, and the 400 that comes back writes the
+# ledger (ledger.json, its .lock, a temp file — via paths.ensure_root(), which
+# re-CREATES $VIBERPIT_HOME) from the poller's executor thread. poller.stop()
+# shuts that pool down with wait=False by design, so the thread outlives the
+# lifespan and can land those writes inside temp_env()'s TemporaryDirectory
+# cleanup, failing the test with "OSError: Directory not empty: …/accounts".
+
+
+def _no_usage(_account: str) -> None:
+    """Fake usage_fn: no account has usage, and no real fetch is made."""
+    return None
+
 
 def _make_app_and_client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=_no_usage,
+                                   poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         from fastapi.testclient import TestClient
         client = TestClient(app, raise_server_exceptions=False)
@@ -329,7 +345,8 @@ def test_create_session_with_repo_clones(tmp_path):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
-            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=_no_usage,
+                                       poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
 
@@ -373,7 +390,8 @@ def test_create_session_accepts_attachment_ids(tmp_path):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
-            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=_no_usage,
+                                       poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
             with client:
@@ -402,7 +420,8 @@ def test_create_session_clone_error_502(tmp_path):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
-            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=_no_usage,
+                                       poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
             with client:

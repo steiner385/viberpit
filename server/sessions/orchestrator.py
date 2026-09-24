@@ -2520,6 +2520,37 @@ class SessionOrchestrator:
         seen[session_id] = key
         return True
 
+    def _lease_foreign_reported(self) -> set[str]:
+        """sids whose layer-4 ``session.lease_foreign_holder`` was already logged
+        at CRITICAL in the current deferred/log-only run. Created on demand for
+        the same reason as ``_lease_fences``."""
+        reported = getattr(self, "_session_lease_foreign_reported", None)
+        if reported is None:
+            reported = set()
+            self._session_lease_foreign_reported = reported
+        return reported
+
+    def _log_foreign_holder(self, session_id: str, holder: str | None,
+                            action: str) -> None:
+        """Emit ``session.lease_foreign_holder`` — CRITICAL on the first tick that
+        cannot act, DEBUG on every repeat, mirroring ``_lease_denial_is_news``.
+
+        Same steady-state problem as layer 1's refusal (#1778): a wedged
+        ``turn_active`` driver or a rollback with enforcement off reports this
+        every ~24 s heartbeat forever, which is how CRITICAL stops meaning
+        anything (#1832). The caller clears the sid from
+        ``_lease_foreign_reported`` once it acts or the row is no longer
+        foreign, so a condition that clears and recurs reports promptly again.
+        """
+        reported = self._lease_foreign_reported()
+        if session_id in reported:
+            log_event(log, logging.DEBUG, "session.lease_foreign_holder",
+                      session_id=session_id, host=holder, action=action)
+            return
+        reported.add(session_id)
+        log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                  session_id=session_id, host=holder, action=action)
+
     async def _claim_session(self, session_id: str, *, why: str,
                              adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
@@ -2749,6 +2780,8 @@ class SessionOrchestrator:
             denials = self._lease_denials()
             for sid in [s for s in denials if s not in records]:
                 del denials[sid]
+            reported = self._lease_foreign_reported()
+            reported.difference_update([s for s in reported if s not in records])
 
     async def _reconcile_foreign_lease(self, sid: str, rec: SessionRecord,
                                        enabled: frozenset[str] | None) -> bool:
@@ -2768,6 +2801,7 @@ class SessionOrchestrator:
         """
         stamp = getattr(rec, "host", None)
         if enabled is None or self._owns_record_by_stamp(stamp, enabled):
+            self._lease_foreign_reported().discard(sid)
             return False
         driver = self._drivers.get(sid)
         if driver is None:
@@ -2779,21 +2813,19 @@ class SessionOrchestrator:
             # swap registers the NEW driver: a live driver with no lease, which this
             # tick — iterating _lease_fences — never looks at again. Defer; the next
             # tick re-checks once the swap has registered or failed.
-            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
-                      session_id=sid, host=stamp, action="deferred_build_in_flight")
+            self._log_foreign_holder(sid, stamp, "deferred_build_in_flight")
             return False
         if getattr(driver, "turn_active", False) or getattr(driver, "drain_alive", False):
-            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
-                      session_id=sid, host=stamp, action="deferred_turn_active")
+            self._log_foreign_holder(sid, stamp, "deferred_turn_active")
             return False
         if not session_lease_enforced():
-            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
-                      session_id=sid, host=stamp, action="log_only")
+            self._log_foreign_holder(sid, stamp, "log_only")
             return False
         popped = await self._teardown_driver_state(sid)   # pops driver, releases lease
         if popped is not None:
             self._spawn(self._close_automation_driver(popped, sid),
                         name=f"lease-reconcile-close-{sid}")
+        self._lease_foreign_reported().discard(sid)
         log_event(log, logging.WARNING, "session.lease_reconciled",
                   session_id=sid, host=stamp)
         return True

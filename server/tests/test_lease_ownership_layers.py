@@ -399,6 +399,22 @@ async def test_tick_defers_while_a_swap_or_spawn_is_in_flight(reconciling, caplo
 
 
 @pytest.mark.asyncio
+async def test_a_repeated_deferral_demotes_to_debug(reconciling, caplog):
+    """A wedged turn_active driver ticks every ~24s forever while it cannot act
+    (#1832): the first tick is a real CRITICAL alarm, but every later tick of
+    the SAME condition must not re-file it — only a heartbeat at DEBUG."""
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    reconciling._drivers["s1"] = LiveDriver(turn_active=True)
+    with caplog.at_level(logging.DEBUG, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+        await reconciling._session_lease_tick()
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_foreign_holder"]
+    assert [r.levelno for r in ev] == [logging.CRITICAL, logging.DEBUG]
+    assert [r.fields["action"] for r in ev] == ["deferred_turn_active"] * 2
+
+
+@pytest.mark.asyncio
 async def test_tick_isolates_a_failing_reconcile(reconciling, caplog):
     """A raising teardown for one session must not skip the renew of the others,
     and the failing session itself is still renewed (lease kept, retried next tick)."""
