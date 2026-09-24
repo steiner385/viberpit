@@ -180,6 +180,9 @@ describe('useNavBadges', () => {
   it.each([
     ['needs-reauth' as const, true],
     ['needs-relogin' as const, true],
+    // #2244: an org-denied account needs an operator's attention just as much
+    // as a reauth-needed one, even though reauth itself cannot fix it.
+    ['org-denied' as const, true],
     ['ok' as const, undefined],
   ])('an account with status %s gives settings = %s', (status, expected) => {
     useAccounts.mockReturnValue({ data: [account({ status })] })

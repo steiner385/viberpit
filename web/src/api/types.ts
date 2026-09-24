@@ -1,4 +1,4 @@
-export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' | 'not-max' | 'unknown'
+export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' | 'org-denied' | 'not-max' | 'unknown'
 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'

@@ -127,13 +127,13 @@ def test_plain_execution_error_is_not_turn_dropped():
 # that as the opaque "Claude Code returned an error result: success", so the text
 # alone classified "other" and nothing upstream could tell a durable authorization
 # denial from a passing blip.
-def test_api_403_code_is_auth_forbidden_and_not_recoverable():
+def test_api_403_code_is_auth_forbidden_and_recoverable():
     f = classify("api_403", "Claude Code returned an error result: success")
     assert f.kind == "auth_forbidden"
-    # Deliberately NOT recoverable: recomposing credentials or rotating cannot
-    # undo an organization-level denial, and "other" (today's verdict) is the
-    # same no-op — this only names the condition.
-    assert not f.is_recoverable
+    # Recoverable as of #2244: nothing can undo an organization-level denial on
+    # THIS account, but a live session CAN rotate to a different one — the same
+    # recovery a 401 that survives recompose gets.
+    assert f.is_recoverable
 
 
 @pytest.mark.parametrize("message", [

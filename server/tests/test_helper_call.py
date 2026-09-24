@@ -267,6 +267,24 @@ def test_a_blocked_account_is_not_helper_ready_so_the_pickers_fail_over(monkeypa
     assert helper_call.is_account_helper_ready("other") is True
 
 
+def test_org_denied_ledger_status_alone_is_not_helper_ready(monkeypatch):
+    """The in-memory 30-min block above resets on a daemon restart, but a live
+    session's ledger flip to 'org-denied' (#2244) persists — so readiness must
+    also fail on that status directly, with no block in play."""
+    import contextlib
+
+    from ccswitch import ledger as _ledger
+
+    @contextlib.contextmanager
+    def _org_denied_ledger():
+        yield {}
+    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr(_ledger, "locked_ledger", _org_denied_ledger)
+    monkeypatch.setattr(_ledger, "is_account_enabled", lambda led, name: True)
+    monkeypatch.setattr(_ledger, "get_status", lambda led, name: "org-denied")
+    assert helper_call.is_account_helper_ready("kindash") is False
+
+
 def test_the_account_block_expires_so_a_restored_account_recovers():
     clock = Clock()
     _, sleep = _sleeps_recorded()

@@ -4,6 +4,7 @@ import {
   WifiOff,
   CircleAlert,
   Clock,
+  ShieldOff,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
@@ -152,6 +153,14 @@ const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
   'needs-reauth': {
     label: 'Needs re-auth',
     Icon: WifiOff,
+    tone: 'danger',
+  },
+  // Distinct from needs-reauth (#2244): the credential is fine, the account's
+  // ORGANIZATION turned Claude Code off. Re-authenticating cannot fix this, so
+  // the label and icon deliberately don't imply a login problem.
+  'org-denied': {
+    label: 'Org access denied',
+    Icon: ShieldOff,
     tone: 'danger',
   },
   'not-max': {

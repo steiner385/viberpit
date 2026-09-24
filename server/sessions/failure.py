@@ -1,9 +1,11 @@
 """Classify a turn failure into a recovery kind.
 
-A live session turn can fail with an HTTP 429 (rate-limited) or 401 (invalid
-credentials). The orchestrator recovers those — same-account retry/recompose,
-then rotation. Everything else keeps today's behavior (surface the error, mark
-the turn failed, no rotation).
+A live session turn can fail with an HTTP 429 (rate-limited), 401 (invalid
+credentials), or 403 (the account's organization has turned Claude Code off).
+The orchestrator recovers those — same-account retry/recompose then rotation
+for 429/401, straight to rotation for 403 (nothing to recompose). Everything
+else keeps today's behavior (surface the error, mark the turn failed, no
+rotation).
 
 The classifier is pure and type-agnostic: it works off the ErrorEvent ``code``
 and ``message`` the translator already produces (``api_429`` / ``api_401`` from
@@ -22,17 +24,22 @@ _RETRY_AFTER_CAP = 120.0
 # cursor ended while the session was IDLE (the CLI exited, or its stdout reader died
 # between turns). Recovered like a crash — recompose in place — but with no cut-off
 # turn to replay. Mid-turn, the same loss is reported as ``process_crash``.
-_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash", "turn_dropped",
-                          "stream_lost"})
+#
+# ``auth_forbidden`` joined this set in #2244: unlike a 401 there is nothing to
+# recompose or retry, but there IS a recovery — rotate to another account, the same
+# way a 401 that survives recompose does. Only the "try again on this account"
+# step is skipped (see orchestrator._recover_session).
+_RECOVERABLE = frozenset({"rate_limit", "auth_401", "auth_forbidden", "process_crash",
+                          "turn_dropped", "stream_lost"})
 
 _OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
 _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 
 # ``auth_forbidden`` — HTTP 403: the credential is valid but its *organization*
-# has turned Claude Code access off. Deliberately not in _RECOVERABLE: unlike a
-# 401 there is nothing to recompose and no retry that helps, so live-turn
-# handling stays exactly what "other" already did (surface it, fail the turn).
-# The point of naming it is that helper calls CAN act on it — they pick their
+# has turned Claude Code access off. There is nothing to recompose or retry on
+# THIS account, so live-turn handling (orchestrator._recover_session) rotates
+# straight to another account rather than the recompose-then-rotate ladder a 401
+# gets. Helper calls act on the same condition their own way — they pick their
 # account, so they fail over to another one (helper_call._note_auth_blocked).
 # Markers are the CLI's own spellings, seen in a helper transcript on 2026-09-22
 # (#1820): apiErrorCode ``oauth_not_allowed_for_organization``, the assistant

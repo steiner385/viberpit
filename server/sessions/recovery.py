@@ -19,6 +19,12 @@ from collections import defaultdict
 RETRY_AFTER_MAX: float = 30.0     # wait-and-retry the same account if Retry-After <= this
 QUARANTINE_429: float = 60.0      # cooldown after a 429 with no usable Retry-After
 QUARANTINE_401: float = 300.0     # cooldown after a recompose-failed 401 (creds genuinely bad)
+# cooldown after a live-turn 403 (org-denied account, #2244). Matches
+# helper_call._AUTH_BLOCK_S so both surfaces agree how long a denied account
+# stays excluded; unlike QUARANTINE_401 this never heals on its own (an org
+# policy flip is out of band), so it is long enough to stop a session from
+# rotating straight back onto it moments later.
+QUARANTINE_FORBIDDEN: float = 1800.0
 # Hard cap on quarantine duration so a large API Retry-After (Anthropic can return 3600s)
 # cannot block the only account with headroom for hours. The per-session recovery still
 # handles repeated 429s via rotation/crash caps.
