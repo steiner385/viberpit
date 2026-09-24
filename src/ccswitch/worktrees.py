@@ -498,9 +498,15 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     ``force=True`` bypasses the dirty guard and uses ``git worktree remove
     --force``.  Only the janitor's max-age eviction path should set this —
     normal teardown must never discard uncommitted work.
+
+    Every ``False`` leaves a journal line naming why.  The two pre-flight
+    refusals below used to return silently, which is what made the janitor's
+    stuck-eviction loop undiagnosable: 916 sweeps refused the same eleven
+    worktrees without a single line saying what git objected to (#1664).
     """
     wt = os.path.abspath(worktree_path)
     if not os.path.isdir(wt):
+        log.info("worktree.remove_skipped path=%s reason=not_a_directory", wt)
         return False
 
     # A Codex session may have staged attachment copies under the workspace
@@ -517,6 +523,10 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     # <repo>/.git; the worktree's own .git is just a pointer file).
     common = _run(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir"])
     if common.returncode != 0:
+        log.info(
+            "worktree.remove_skipped path=%s reason=no_git_common_dir err=%s",
+            wt, common.stderr.strip(),
+        )
         return False
     repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
 

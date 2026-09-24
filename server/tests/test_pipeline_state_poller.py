@@ -126,3 +126,53 @@ async def test_start_runs_loop_and_stop_cancels_cleanly():
     gen_at_stop = poller.generation
     await asyncio.sleep(0.05)
     assert poller.generation == gen_at_stop  # loop truly stopped
+
+
+@pytest.mark.asyncio
+async def test_daemon_unavailable_is_a_throttled_warning_not_an_error(caplog):
+    """A daemon restart/deploy window makes every 10 s build hit DaemonUnavailable.
+    That is an expected transient, not a pipeline bug: #1656 was 92+ ERROR records
+    (with a full httpx traceback each) for it. It must log at WARNING, once per
+    throttle window, then demote repeats to DEBUG — and still carry forward."""
+    import logging
+
+    import server.pipeline.state_poller as mod
+    from server.ipc.client import DaemonUnavailable
+
+    mod._DAEMON_UNAVAILABLE_LOG.clear()
+    fail = False
+
+    async def builder():
+        if fail:
+            raise DaemonUnavailable("All connection attempts failed")
+        return {"ok": True}
+
+    poller = PipelineStatePoller(builder)
+    await poller.poll_once()
+    fail = True
+    with caplog.at_level(logging.DEBUG, logger="server.pipeline.state_poller"):
+        await poller.poll_once()
+        await poller.poll_once()
+
+    records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+    assert all(r.exc_info is None for r in records)  # no traceback spam
+    assert poller.snapshot() == {"ok": True}
+    assert poller.generation == 1
+
+
+@pytest.mark.asyncio
+async def test_unexpected_builder_error_still_logs_at_error(caplog):
+    """Only the daemon-unreachable transient is demoted; a real bug keeps its
+    ERROR + traceback so it is still filed."""
+    import logging
+
+    async def builder():
+        raise RuntimeError("boom")
+
+    with caplog.at_level(logging.DEBUG, logger="server.pipeline.state_poller"):
+        await PipelineStatePoller(builder).poll_once()
+
+    (rec,) = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
+    assert rec.levelno == logging.ERROR
+    assert rec.exc_info is not None

@@ -28,10 +28,21 @@ from starlette.requests import Request
 from starlette.websockets import WebSocket
 
 from server.config import get_settings
+from server.obs.logdedupe import LogThrottle, log_throttled
 
 logger = logging.getLogger(__name__)
 
 _AnyAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+# A single untrusted peer (or a proxy hop whose IP dropped out of
+# VIBERPIT_TRUSTED_PROXY_IPS / the self-tailscale-IP cache) re-enters this branch on
+# every request it sends, turning one standing misconfiguration into tens of
+# thousands of identical WARNINGs (#1483: 63729 occurrences from one peer over ~40h).
+# server.obs.errsink files one auto-error issue per fingerprint, so the flood buried
+# the "still happening" signal under its own repeats. Keyed by peer IP: cardinality
+# is bounded by LogThrottle's own eviction, and a newly-untrusted peer is still worth
+# reporting promptly even while another one's window is open.
+_UNTRUSTED_IDENTITY_HEADER_LOG = LogThrottle()
 
 # This node's own tailnet addresses are stable, so a hit is cached for minutes. A
 # miss (tailscale absent / daemon down) is cached briefly so a host without
@@ -95,7 +106,11 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         # (server/audit.py redacts token material, but not identities). The peer is
         # the actionable datum — it says who tried.
         peer = request.client.host if request.client else "<unknown>"
-        logger.warning(
+        log_throttled(
+            logger,
+            _UNTRUSTED_IDENTITY_HEADER_LOG,
+            peer,
+            logging.WARNING,
             "ignoring Tailscale identity header asserted by untrusted peer %s "
             "(trusted: loopback + this node's own tailnet IPs + VIBERPIT_TRUSTED_PROXY_IPS)",
             peer,

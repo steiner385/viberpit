@@ -21,6 +21,8 @@ import logging
 from typing import Awaitable, Callable
 
 from server.aio import cancel_and_reap
+from server.ipc.client import DaemonUnavailable
+from server.obs.logdedupe import LogThrottle, log_throttled
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +30,14 @@ log = logging.getLogger(__name__)
 _POLL_INTERVAL_S = 10.0
 
 Builder = Callable[[], Awaitable[dict]]
+
+# A session-daemon restart/deploy window makes every build in it hit
+# DaemonUnavailable — an expected transient, not a pipeline bug. Logged via
+# log.exception it filed #1656 (hundreds of ERROR records, each with a full httpx
+# traceback). One key: the poller is a singleton and the condition is host-wide.
+# Only the exception *class* is logged: raw httpx text varies per failure shape
+# and would split one condition into several auto-error fingerprints.
+_DAEMON_UNAVAILABLE_LOG = LogThrottle()
 
 
 class PipelineStatePoller:
@@ -104,6 +114,11 @@ class PipelineStatePoller:
         """One build → publish. Never raises (the loop must not die)."""
         try:
             state = await self._builder()
+        except DaemonUnavailable as exc:
+            log_throttled(log, _DAEMON_UNAVAILABLE_LOG, "daemon", logging.WARNING,
+                          "pipeline state build skipped: session daemon unavailable "
+                          "(%s)", type(exc).__name__)  # carry-forward last frame
+            return
         except Exception:
             log.exception("pipeline state build failed")  # carry-forward last frame
             return
