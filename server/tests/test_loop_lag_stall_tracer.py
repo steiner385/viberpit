@@ -182,3 +182,16 @@ def test_watchdog_from_env_honours_an_explicit_threshold_and_path(monkeypatch, t
         assert wd._tracer._file.name == str(dump)
     finally:
         wd._tracer._file.close()
+
+
+def test_watchdog_from_env_warns_only_past_the_dump_threshold_by_default(monkeypatch):
+    """A filed stall warning has a stack dump beside it (#1514)."""
+    from server.obs.loop_lag import DEFAULT_STALL_DUMP_S, watchdog_from_env
+
+    monkeypatch.delenv("VIBERPIT_LOOP_LAG_WARN_S", raising=False)
+    monkeypatch.delenv("VIBERPIT_LOOP_STALL_DUMP_S", raising=False)
+    wd = watchdog_from_env(_tracer=_RecordingTracer())
+    assert wd.alert_after == DEFAULT_STALL_DUMP_S
+
+    monkeypatch.setenv("VIBERPIT_LOOP_LAG_WARN_S", "2")
+    assert watchdog_from_env(_tracer=_RecordingTracer()).alert_after == 2.0

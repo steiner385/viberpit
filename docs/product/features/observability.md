@@ -72,6 +72,9 @@ out of scope — see the fleet crash-loop gap #816).
   blocked ~130s and logged nothing about where. The dump is on by default at a 5s stall (issue
   #1913 — while it was opt-in it never ran in prod); `VIBERPIT_LOOP_STALL_DUMP_S` changes the
   threshold (`0` disables it) and `VIBERPIT_LOOP_STALL_DUMP_PATH` redirects it from the journal to a file.
+  Only a stall of at least `VIBERPIT_LOOP_LAG_WARN_S` (default: the dump threshold) is a WARNING and
+  so an auto-error issue; routine sub-threshold overshoot logs at INFO, throttled separately so it
+  never swallows a real stall (issue #1514).
 - **Task supervision** (`server/obs/tasks.py`): `supervise` attaches a done-callback that always
   retrieves a failed task's exception, logs it loudly with the task name, and invokes an optional
   recovery hook; clean returns and cancellations pass through untouched (audit W2.6 — a bare

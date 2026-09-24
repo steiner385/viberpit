@@ -180,3 +180,60 @@ def test_stall_records_are_one_condition_to_the_error_sink():
     assert len({s.fingerprint for s in sigs}) == 1, "one stall split into many issues"
     # The measurement is still reported — it moved from the identity to the title.
     assert "lag_s" in sigs[0].sample_message
+
+
+# --- routine overshoot is INFO, a real stall is WARNING (#1514) --------------
+# WARNING is the auto-error filing decision. The daemon overshoots by ~1s many
+# times a day under normal load; filing each as an issue (#1514 and ~30 siblings)
+# produced tickets with no stack to act on. Only a stall past ``alert_after`` —
+# by default the stack-dump threshold, so the filed warning has a dump beside it
+# — is a WARNING. Routine overshoot is still reported, at INFO.
+
+class _LevelLog(_CapturingLog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.levels: list[int] = []
+
+    def log(self, level, msg, *args, extra=None, **kwargs) -> None:
+        self.levels.append(level)
+        super().log(level, msg, *args, extra=extra, **kwargs)
+
+
+def test_routine_overshoot_logs_at_info_not_warning():
+    log = _LevelLog()
+    wd = LoopLagWatchdog(interval=1.0, warn_after=0.5, alert_after=5.0,
+                         _log=log, _clock=_FakeClock())
+    wd._note_lag(1.02)
+    assert log.levels == [logging.INFO]
+    assert log.events[0][0] == "loop_lag.stall"
+
+
+def test_a_stall_past_alert_after_is_a_warning():
+    log = _LevelLog()
+    wd = LoopLagWatchdog(interval=1.0, warn_after=0.5, alert_after=5.0,
+                         _log=log, _clock=_FakeClock())
+    wd._note_lag(5.2)
+    assert log.levels == [logging.WARNING]
+
+
+def test_routine_overshoot_does_not_swallow_a_following_real_stall():
+    """An INFO line must not spend the WARNING's throttle window."""
+    log = _LevelLog()
+    clock = _FakeClock()
+    wd = LoopLagWatchdog(interval=1.0, warn_after=0.5, alert_after=5.0,
+                         warn_every=60.0, _log=log, _clock=clock)
+    wd._note_lag(1.0)
+    clock.advance(2.0)
+    wd._note_lag(0.9)            # suppressed INFO
+    clock.advance(2.0)
+    wd._note_lag(30.0)           # inside the INFO window, but a real stall
+    assert log.levels == [logging.INFO, logging.WARNING]
+    # The warning reports only its own class; routine ticks don't inflate it.
+    assert log.fields[1]["suppressed"] == 0
+
+
+def test_without_alert_after_every_reported_stall_is_a_warning():
+    log = _LevelLog()
+    wd = LoopLagWatchdog(interval=1.0, warn_after=0.5, _log=log, _clock=_FakeClock())
+    wd._note_lag(0.9)
+    assert log.levels == [logging.WARNING]
