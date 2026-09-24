@@ -48,7 +48,7 @@ from server.codex.auth_types import (
 )
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.ipc.client import DaemonTimeout
+from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.reauth import ReauthBusy, ReauthNoKey
 from server.sessions.engine import AgentEngine
@@ -74,9 +74,9 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 # Same fix as _USAGE_FALLBACK_LOG above, for the Codex status RPC: the account name
 # used to ride the message, so server.obs.errsink fingerprinted one auto-error issue
 # per account for what is really one wedged/unreachable daemon (#1727, #2126).
-# Throttled per account+reason, and a plain timeout — pure httpx/httpcore boilerplate,
-# already diagnosed by its type — drops exc_info the way fleet_orchestrator's
-# _EXPECTED_UNREACHABLE does; any other exception keeps it.
+# Throttled per account+reason, and a plain timeout or refused connection — pure
+# httpx/httpcore boilerplate, already diagnosed by its type — drops exc_info the way
+# fleet_orchestrator's _EXPECTED_UNREACHABLE does; any other exception keeps it.
 _CODEX_STATUS_LOG = LogThrottle()
 
 # Env keys that must never be overridable (constitution II: strict isolation)
@@ -217,6 +217,10 @@ async def _safe_usage(orch, name: str, timeout: float):
         log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:timeout", logging.WARNING,
                              "account.usage_fetch_failed", account=name, reason="timeout",
                              timeout_s=timeout)
+    except DaemonUnavailable:
+        log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:unreachable", logging.WARNING,
+                             "account.usage_fetch_failed", account=name,
+                             reason="unreachable")
     except Exception:  # noqa: BLE001 — one account must never fail the whole list
         log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:error", logging.WARNING,
                              "account.usage_fetch_failed", account=name, reason="error",
@@ -525,6 +529,13 @@ async def _codex_details(
             log_event_throttled(log, _CODEX_STATUS_LOG, f"{account}:timeout", logging.WARNING,
                                  "account.codex_status_failed", account=account,
                                  reason="timeout")
+            status = {}
+        except DaemonUnavailable:
+            # Refused/unroutable (httpx.ConnectError): the client already reduced it to
+            # a typed exception whose message is the diagnosis, so no traceback (#1675).
+            log_event_throttled(log, _CODEX_STATUS_LOG, f"{account}:unreachable",
+                                 logging.WARNING, "account.codex_status_failed",
+                                 account=account, reason="unreachable")
             status = {}
         except Exception:  # noqa: BLE001 -- one account must not fail the list
             log_event_throttled(log, _CODEX_STATUS_LOG, f"{account}:error", logging.WARNING,

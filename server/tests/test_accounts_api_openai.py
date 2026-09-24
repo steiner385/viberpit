@@ -703,6 +703,32 @@ def test_codex_status_timeout_degrades_quietly(authority, caplog):
     assert warnings[0].exc_info is None
 
 
+def test_codex_status_connect_refused_degrades_quietly(authority, caplog):
+    """#1675: a refused daemon connection (``DaemonUnavailable``, not a timeout) is
+    the same standing condition as a timeout — one line, no httpx traceback."""
+    from server.ipc.client import DaemonUnavailable
+
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, sessions = _make_client(authority)
+        sessions.codex_account_status.side_effect = DaemonUnavailable(
+            "All connection attempts failed"
+        )
+        with client, caplog.at_level("WARNING", logger="server.api.accounts"):
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    entry = next(a for a in resp.json() if a["name"] == "chatgpt-pro")
+    assert entry["codex"]["quota"]["availability"] == "unknown"
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                and r.getMessage() == "account.codex_status_failed"
+                and r.fields.get("account") == "chatgpt-pro"]
+    assert len(warnings) == 1
+    assert warnings[0].fields["reason"] == "unreachable"
+    assert warnings[0].exc_info is None
+
+
 @pytest.mark.parametrize(
     "malformed",
     [
