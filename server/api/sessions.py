@@ -436,8 +436,14 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
             return {}
         try:
             return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
-        except Exception:
-            log_event_throttled(log, _ENRICH_BATCH_FAIL_LOG, name, logging.WARNING,
+        except Exception as exc:
+            # A refused/timed-out connect is a transient daemon blip (restart, deploy
+            # rollout), not a defect: the routes that need the daemon 503 on their own and
+            # these fields just render empty. WARNING here is what made the error sink file
+            # #1668 (155+ occurrences of one ConnectError), so keep it below the sink's
+            # threshold outright rather than only after the throttle window.
+            level = logging.INFO if isinstance(exc, DaemonUnavailable) else logging.WARNING
+            log_event_throttled(log, _ENRICH_BATCH_FAIL_LOG, name, level,
                                  "list_sessions.enrich_batch_failed",
                                  rpc=name, session_count=len(ids), exc_info=True)
             return {}
