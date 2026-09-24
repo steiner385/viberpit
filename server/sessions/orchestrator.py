@@ -18360,6 +18360,15 @@ class SessionOrchestrator:
                             name=f"limited-{record.id}",
                         )
                         continue
+                    if (record.paused_reason == _LEASE_HELD_PAUSE_REASON
+                            and await self._lease_held_elsewhere(record.id)):
+                        # Third sibling of the #2076 fix (_restart_driverless,
+                        # _sweep_needs_attention): this loop fires on account usage
+                        # alone, so a session parked lease_held gets re-picked every
+                        # time the account crosses the ceiling — refused identically
+                        # each time. Wait for the lease to lapse (#1778).
+                        log.debug("rotation.skip_lease_held session=%s", record.id)
+                        continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f reason=%s",
                         record.id, account, session_pct, reason,
