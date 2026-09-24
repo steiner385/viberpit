@@ -26,6 +26,11 @@ Safety invariants
   ``keep_stray``/``kept_stray=N`` split used for strays (#1652): a varying
   path in a WARNING+ record survives ``error_signature.normalize`` and mints
   a fresh auto-error fingerprint per host and path (#1642, #1663, #1992).
+* Every eviction outcome is reported *after* the removal is attempted, so a
+  discard is only ever claimed once it happened (#1664).  A removal git
+  refuses is ``evict_failed`` — the one keep reason that never settles, since
+  the next sweep retries it identically — and gets its own aggregated
+  per-sweep WARNING.
 """
 from __future__ import annotations
 
@@ -189,7 +194,9 @@ def sweep_orphaned_worktrees(
     and whose mtime exceeds ``max_dirty_age`` (default 7 days) is stashed and
     then force-removed.  The stash SHA is logged for recovery.  If stashing
     fails the worktree is still force-removed (changes are considered
-    abandoned after 7 days with no active session).
+    abandoned after 7 days with no active session).  A removal git refuses is
+    counted ``evict_failed`` (and ``kept_error``) and never reported as a
+    discard — nothing left the disk (#1664).
 
     **Strays**: a dir git cannot read as a working tree is not a worktree and
     is never counted dirty (#1883).  An empty one is reclaimed with
@@ -198,8 +205,8 @@ def sweep_orphaned_worktrees(
     Returns a count dict with keys:
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
       ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``,
-      ``evicted_dirty_unstashed``, ``orphaned``, ``orphaned_unmanaged``,
-      ``kept_stray``, ``pruned_empty``
+      ``evicted_dirty_unstashed``, ``evict_failed``, ``orphaned``,
+      ``orphaned_unmanaged``, ``kept_stray``, ``pruned_empty``
 
     **Orphans**: a worktree whose shared clone is gone is counted, never
     removed (#1003).  ``orphaned`` is the recoverable shape — the clone sits
@@ -222,6 +229,7 @@ def sweep_orphaned_worktrees(
         "kept_error": 0,
         "evicted_dirty": 0,
         "evicted_dirty_unstashed": 0,
+        "evict_failed": 0,
         "orphaned": 0,
         "orphaned_unmanaged": 0,
         "kept_stray": 0,
@@ -308,6 +316,7 @@ def sweep_orphaned_worktrees(
     _emit_unmanaged_orphan_alert(counts["orphaned_unmanaged"])
     _emit_stray_alert(counts["kept_stray"])
     _emit_unstashed_eviction_alert(counts["evicted_dirty_unstashed"])
+    _emit_evict_failed_alert(counts["evict_failed"])
     return counts
 
 
@@ -335,34 +344,54 @@ def _handle_stray(wt: str, counts: dict[str, int]) -> None:
 
 
 def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
-    """Stash + force-remove a dirty worktree that has exceeded the max-age window."""
+    """Stash + force-remove a dirty worktree that has exceeded the max-age window.
+
+    Every outcome is reported only once the removal has actually been attempted
+    (#1664).  Announcing the discard first made a failed eviction
+    indistinguishable from a successful one: the sweep logged
+    ``stash failed, discarding`` and
+    counted ``evicted_dirty_unstashed`` for a worktree git then refused to
+    remove, so the changes were still on disk and the *same* imaginary discard
+    was re-announced on the next pass — ten stuck worktrees on one host produced
+    916 journal lines over two weeks and filed one condition as six auto-error
+    issues, while the only true signal (``kept_error``) rode an INFO summary
+    line that escalated to nobody.
+    """
     age_days = age_s / 86400.0
     stash_sha = _git_stash(wt)
     if stash_sha:
+        # Logged before the removal is attempted, unlike the discard below: the
+        # stash is already in the parent repo's object store either way, and the
+        # SHA is the only route back to the changes.
         log.info(
             "worktree-janitor: stashed max-age dirty path=%s stash=%s age_days=%.1f",
             wt, stash_sha, age_days,
         )
-    else:
+
+    # After a successful stash the worktree is clean; after a failed stash we
+    # use force=True to discard changes (7+ days with no active session).
+    if not remove_worktree(wt, force=(stash_sha is None)):
+        log.info(
+            "worktree-janitor: evict_failed path=%s stashed=%s age_days=%.1f",
+            wt, stash_sha or "no", age_days,
+        )
+        counts["evict_failed"] += 1
+        counts["kept_error"] += 1
+        return
+
+    if not stash_sha:
         # INFO, like keep_stray: a path is per-worktree detail for the journal,
         # and a varying path in a WARNING+ record mints a fresh error-triage
         # fingerprint per host and path (#1652). The aggregated count is what
         # tells an operator changes were discarded — see
         # _emit_unstashed_eviction_alert.
         log.info(
-            "worktree-janitor: stash failed, discarding path=%s age_days=%.1f",
+            "worktree-janitor: stash failed, discarded path=%s age_days=%.1f",
             wt, age_days,
         )
         counts["evicted_dirty_unstashed"] += 1
-
-    # After a successful stash the worktree is clean; after a failed stash we
-    # use force=True to discard changes (7+ days with no active session).
-    removed = remove_worktree(wt, force=(stash_sha is None))
-    if removed:
-        counts["evicted_dirty"] += 1
-        counts["removed"] += 1
-    else:
-        counts["kept_error"] += 1
+    counts["evicted_dirty"] += 1
+    counts["removed"] += 1
 
 
 def _journal_orphan_clones(clones: dict[str, int]) -> None:
@@ -460,6 +489,31 @@ def _emit_unstashed_eviction_alert(evicted_dirty_unstashed: int) -> None:
         "had their changes discarded because stashing failed — see the "
         "'stash failed, discarding path=' lines in this sweep",
         evicted_dirty_unstashed,
+    )
+
+
+def _emit_evict_failed_alert(evict_failed: int) -> None:
+    """One line per sweep for max-age evictions git refused to carry out (#1664).
+
+    Unlike every other keep reason, this one does not settle: the worktree is
+    still dirty and still past the max age, so the next sweep attempts the same
+    eviction and fails the same way, forever.  The only trace used to be
+    ``kept_error`` in an INFO summary, which escalates to nobody — ten stuck
+    worktrees on one host went unnoticed for two weeks while the discard the
+    sweep *claimed* to have made never happened.
+
+    Path-free, count-only, for the reason ``_emit_stray_alert`` is: a varying
+    path in a WARNING+ record survives ``error_signature.normalize`` and mints
+    a fresh auto-error fingerprint per host and path.  The paths are in this
+    sweep's ``evict_failed path=`` INFO lines.
+    """
+    if not evict_failed:
+        return
+    log.warning(
+        "worktree-janitor: evict_failed=%d max-age dirty worktree(s) could not be "
+        "removed — nothing was discarded and every sweep will retry the same "
+        "eviction; see the evict_failed path= lines in this sweep",
+        evict_failed,
     )
 
 
