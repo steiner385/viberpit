@@ -130,3 +130,34 @@ def test_commitless_pr_triggers_never_cancel_a_run_for_the_same_commit(path: Pat
         "CANCELLED check-run on it — which GitHub's status rollup reports as a FAILURE. "
         "Set cancel-in-progress: false."
     )
+
+
+def test_lint_and_test_aggregator_stays_strict_about_cancelled_shards():
+    """The `lint-and-test` aggregator must keep demanding a literal `success` (#2218).
+
+    Its `if: always()` + `!= "success"` check is what turns a superseded PR run —
+    every shard `cancelled` by `cancel-in-progress` — into a hard `failure` on a
+    REQUIRED context, which in turn made PR Doctor dispatch a recovery session
+    against a branch that was never broken (PR #2213, 2026-09-22).
+
+    Loosening this to tolerate `cancelled` is the tempting fix and the wrong one:
+    a required check reporting green for a shard that never finished would let
+    branch protection merge an unverified sha. The guard lives on the consumer
+    side instead — ``pr_doctor_engine.ci_red_is_unproven`` — so this test pins the
+    producer so the two halves cannot be "reconciled" in the unsafe direction.
+    """
+    doc = yaml.safe_load((_WORKFLOWS / "ci.yml").read_text()) or {}
+    steps = doc["jobs"]["lint-and-test"]["steps"]
+    script = "\n".join(s.get("run", "") for s in steps)
+    assert doc["jobs"]["lint-and-test"]["if"] in (True, "always()"), (
+        "lint-and-test must run unconditionally: a skipped REQUIRED check never "
+        "reports and wedges branch protection."
+    )
+    for result in ("needs.lint-and-test-core.result", "needs.server-tests.result"):
+        assert result in script, f"lint-and-test no longer reads {result}"
+    assert '!= "success"' in script, (
+        "lint-and-test stopped requiring a literal `success` from its shards. A "
+        "`cancelled` shard produced no verdict, so accepting it would green-light a "
+        "sha whose tests never ran. Suppress the false PR Doctor dispatch in "
+        "server/automations/pr_doctor_engine.py:ci_red_is_unproven instead (#2218)."
+    )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from server.github.pr_status import PullRequestInfo
+from server.github.pr_status import CheckDetail, PullRequestInfo
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
@@ -147,6 +147,60 @@ async def test_pr_push_no_match_no_crash(monkeypatch, tmp_path):
 
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
     assert len(calls) == 0
+
+
+class _SupersededPoller:
+    """PR #2213's superseded sha (#2218): ``cancel-in-progress`` killed every
+    substantive job and the ``if: always()`` aggregator turned that into one hard
+    ``failure``, so the rollup reads FAILURE for a branch that was never broken."""
+
+    def __init__(self) -> None:
+        self.detail = tuple(
+            CheckDetail(name=n, conclusion=c) for n, c in (
+                ("changes", "success"), ("frontend", "success"),
+                ("lint-and-test-core", "cancelled"),
+                ("server-tests (1)", "cancelled"), ("server-tests (2)", "cancelled"),
+                ("lint-and-test", "failure"),
+            )
+        )
+
+    def cached(self, repo: str, branch: str):
+        return PullRequestInfo(
+            number=7, url="https://x/pull/7", state="open", checks="failing", title="t",
+            checks_detail=self.detail)
+
+
+@pytest.mark.asyncio
+async def test_no_push_when_the_red_is_only_a_superseded_run(monkeypatch, tmp_path):
+    """A rollup red only because its checks were cancelled must not alert — and
+    must not arm the debounce, so a red that later proves real still fires."""
+    import server.sessions.orchestrator as orch_mod
+    await _init_pr_doctor_db(tmp_path)
+    calls = []
+
+    async def fake_notify(title, body, *, url=None):
+        calls.append((title, body))
+
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
+
+    async def _mode_off(self):
+        return "propose"
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_off, raising=True)
+
+    orch = _make_orch()
+    poller = _SupersededPoller()
+    orch._pr_poller = poller  # type: ignore[assignment]
+    _add_record(orch, "s1", name="my-session", repo="o/r", branch="feat/x")
+
+    await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+    assert calls == []
+    assert orch._pushed_pr == set()
+
+    # The run on the real head now reports a genuine failure → alert as usual.
+    poller.detail = (CheckDetail(name="lint-and-test-core", conclusion="failure"),)
+    await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

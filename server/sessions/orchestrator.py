@@ -12308,10 +12308,21 @@ class SessionOrchestrator:
         if rec is None:
             return
 
+        from server.automations import pr_doctor_engine as engine
+
         info = self.pr_for(repo, branch)
+        # A rollup that went red only because its checks were CANCELLED (a push
+        # superseded the run) or have not reported yet is not a broken PR — say
+        # nothing rather than crying wolf on a branch that was never broken
+        # (#2218). ``_pr_doctor_step`` still runs: its own ``classify`` declines
+        # to act on the same evidence, but it keeps the per-target mechanical
+        # bookkeeping ticking, and the ``_pushed_pr`` debounce is deliberately
+        # NOT armed here so a red that later proves real still notifies.
+        unproven = info is not None and engine.ci_red_is_unproven(info)
+
         # Surface the failure on the activity feed once, on the transition INTO
         # failing (not on every failing→failing re-poll).
-        if old_checks != "failing" and doctor:
+        if old_checks != "failing" and doctor and not unproven:
             target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
             await self._pr_doctor_ctx.emit(
                 "warn", f"{repo} CI failing on {target}", kind="detected", target=target)
@@ -12319,8 +12330,8 @@ class SessionOrchestrator:
         injected = False
         if info is not None and doctor:
             injected = await self._pr_doctor_step(repo, branch, info, rec=rec)
-        if injected:
-            return  # a recovery action fired; skip the redundant break notification
+        if injected or unproven:
+            return  # a recovery action fired (or nothing is proven broken)
 
         # Notify (off, propose, GiveUp, or auto-fallback). Debounced like before.
         if key in self._pushed_pr:
@@ -17299,11 +17310,18 @@ class SessionOrchestrator:
         # starting new backlog work. Cheap: reads the PR poller's in-memory cache (no
         # gh call). Guarded so a missing poller / any error never breaks suggestions.
         if rec.branch:
+            from server.automations import pr_doctor_engine as engine
             try:
                 pr = self.pr_for(repo, rec.branch)
+                # Same evidence bar as PR Doctor's own dispatch (#2218): a rollup
+                # red only because its checks were cancelled or have not reported
+                # yet must not send the session off to "fix" a branch that was
+                # never broken. Inside the try so this keeps "never raises".
+                unproven = pr is not None and engine.ci_red_is_unproven(pr)
             except Exception:
-                pr = None
-            if pr is not None and getattr(pr, "checks", None) == "failing":
+                pr, unproven = None, False
+            if (pr is not None and getattr(pr, "checks", None) == "failing"
+                    and not unproven):
                 return dispatch.broken_pr_proposal_text(pr.number, pr.title)
             # Priority 2 — unresolved review comments on the session's own PR.
             # Only consulted when PR exists and is NOT failing (handled above).
