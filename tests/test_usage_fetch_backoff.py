@@ -289,3 +289,42 @@ class TestUsageFetchBackoff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTransientUsageLogLevel(unittest.TestCase):
+    """A handled throttle logs at INFO: WARNING is the auto-error filing floor (#1638)."""
+
+    def _levels(self, **usage_kw):
+        from ccswitch import accounts
+        with self.assertLogs("ccswitch.accounts", level="INFO") as cm:
+            self.assertIsNone(accounts.usage_for("alpha", **usage_kw))
+        return [r.levelname for r in cm.records if r.getMessage().startswith("usage_for(alpha")]
+
+    def test_usage_endpoint_429_logs_info(self):
+        with temp_env():
+            from ccswitch import oauth
+            _seed_account("alpha")
+            with mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")):
+                self.assertEqual(self._levels(), ["INFO"])
+
+    def test_transient_refresh_error_logs_info(self):
+        with temp_env():
+            from ccswitch import oauth
+            _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.TransientError("token endpoint returned 429")):
+                self.assertEqual(self._levels(), ["INFO"])
+
+    def test_live_session_429_logs_info_but_401_stays_warning(self):
+        with temp_env():
+            from ccswitch import oauth
+            _seed_account("alpha")
+            with mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")), \
+                 mock.patch("ccswitch.accounts.sync_back"):
+                self.assertEqual(self._levels(allow_refresh=False), ["INFO"])
+            _expire_cooldown("alpha")
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
+                 mock.patch("ccswitch.accounts.sync_back"):
+                self.assertEqual(self._levels(allow_refresh=False), ["WARNING"])
