@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable
 from server.deploy import drain as _drain
 from server.host_units import resolve_unit
 from server.deploy.steps import (
-    SSH_HOST_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
+    SSH_HOST_RE, SSH_REL_PATH_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
 )
 
 log = logging.getLogger("server.deploy.runners")
@@ -103,6 +103,47 @@ def remote_update_commands(repo_path: str, target_sha: str, *,
                              f"'{repo_path}[server]'", "--quiet"]))
     cmds.append(("sync", ["sync"]))
     return cmds
+
+
+_DIRTY_MERGE_HEADER = "local changes to the following files would be overwritten"
+_DIRTY_MERGE_FOOTER = "Please commit your changes"
+
+
+def local_change_collisions(stderr: str) -> list[str]:
+    """The TRACKED paths a `git merge --ff-only` named as locally modified, or [].
+
+    A runner checkout is deploy-managed state, not a workspace, but things still write to
+    it: one `npm install` anywhere in the tree rewrites `web/package-lock.json`, and from
+    then on every upgrade of that host aborts with "Your local changes to the following
+    files would be overwritten by merge" (rocky, 2026-09-20 → 09-24). The edge repo never
+    hits this because the controller calls ``steps.guard_working_tree`` first; runners had
+    no equivalent.
+
+    Only this one git message is recognised. The untracked-file variant reads almost the
+    same but its remedy is DELETING files, not restoring them — that one is
+    ``steps._clear_incoming_untracked_collisions``'s, and conflating them here would let a
+    failed merge quietly delete a runner's untracked state. That half is still unhandled
+    on the runner path — tracked in #2323.
+
+    Returns [] — recover nothing — if ANY named path fails ``SSH_REL_PATH_RE``. These
+    paths go back out in ssh argv, which ssh joins into a remote shell line; a path git
+    could not have produced means this stderr is not the message we take it for, and
+    picking out the "safe half" would be reasoning about a string we no longer trust.
+    """
+    if _DIRTY_MERGE_HEADER not in stderr:
+        return []
+    paths: list[str] = []
+    for line in stderr.splitlines():
+        if _DIRTY_MERGE_HEADER in line:
+            paths = []          # a second header: keep only the last block
+            continue
+        if _DIRTY_MERGE_FOOTER in line or line.startswith("Aborting"):
+            break
+        if line.startswith(("\t", "    ")):
+            paths.append(line.strip())
+    if not paths or not all(SSH_REL_PATH_RE.match(p) for p in paths):
+        return []
+    return paths
 
 
 def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str]]]:
@@ -198,11 +239,43 @@ class RunnerDeploy:
         ssh_host = self.target.ssh_host
         if not ssh_host or not SSH_HOST_RE.match(ssh_host):
             raise RuntimeError(f"ssh_host {ssh_host!r} is not a valid [user@]host")
-        argv = ["ssh", *SSH_OPTS, ssh_host, *remote]
-        r = await asyncio.to_thread(self._run, argv, capture_output=True, text=True)
+        r = await self._ssh_raw(remote)
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or "").strip()[:500]
             raise RuntimeError(f"{step} failed (rc={r.returncode}): {detail}")
+
+    async def _ssh_raw(self, remote: list[str]) -> subprocess.CompletedProcess:
+        """Run *remote* over ssh and hand back the result — the caller decides if it failed."""
+        ssh_host = self.target.ssh_host
+        if not ssh_host or not SSH_HOST_RE.match(ssh_host):
+            raise RuntimeError(f"ssh_host {ssh_host!r} is not a valid [user@]host")
+        argv = ["ssh", *SSH_OPTS, ssh_host, *remote]
+        return await asyncio.to_thread(self._run, argv, capture_output=True, text=True)
+
+    async def _merge(self, repo_path: str, remote: list[str]) -> None:
+        """The `merge` step, with one recovery for a dirty checkout.
+
+        Exactly one retry, and only after restoring exactly the tracked paths git named
+        (`git checkout -- <paths>`): those files are either upstream content or
+        regenerable, and the merge about to run installs the canonical version of every
+        one of them. Anything else dirty in the tree is left alone and still fails the
+        runner loudly — matching ``runner_sync``'s stance that an operator's work in a
+        checkout is not ours to discard.
+        """
+        r = await self._ssh_raw(remote)
+        if r.returncode == 0:
+            return
+        detail = (r.stderr or r.stdout or "").strip()
+        paths = local_change_collisions(detail)
+        if not paths:
+            raise RuntimeError(f"merge failed (rc={r.returncode}): {detail[:500]}")
+        log.warning("runner %s: checkout dirty, restoring %s and retrying the merge once",
+                    self.target.name, ", ".join(paths))
+        await self._ssh("restore", ["git", "-C", repo_path, "checkout", "--", *paths])
+        r2 = await self._ssh_raw(remote)
+        if r2.returncode != 0:
+            detail2 = (r2.stderr or r2.stdout or "").strip()[:500]
+            raise RuntimeError(f"merge failed (rc={r2.returncode}): {detail2}")
 
     async def _local(self, step: str, argv: list[str]) -> None:
         r = await asyncio.to_thread(self._run, argv, capture_output=True, text=True)
@@ -327,9 +400,11 @@ class RunnerDeploy:
                 for step, remote in remote_update_commands(repo_path, target_sha,
                                                            deps_changed=deps_changed):
                     self._mark(step=step)
-                    await self._ssh(step, remote)
                     if step == "merge":
+                        await self._merge(repo_path, remote)
                         self.progress.moved = True
+                    else:
+                        await self._ssh(step, remote)
 
             if daemon_changed:
                 await self._drain_then()

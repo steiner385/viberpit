@@ -252,6 +252,22 @@ jobs:
       - name: Install deps
         if: needs.changes.outputs.web == 'true'
         run: npm ci
+      # `npm ci` NEVER rewrites the lockfile, so a lock that disagrees with what npm
+      # would generate is invisible to every other job here — it only surfaces on a
+      # machine where someone runs `npm install`, as a tracked file that is suddenly
+      # dirty. On a session runner that wedges `git merge --ff-only` and every upgrade
+      # of the host fails until an operator intervenes (rocky, 2026-09-20 → 09-24).
+      # --prefer-offline keeps the check deterministic: resolution comes from the npm
+      # cache setup-node restored for this exact lockfile, not from live registry
+      # metadata that a mid-flight in-range publish could move under an unrelated PR.
+      - name: Lockfile is canonical
+        if: needs.changes.outputs.web == 'true'
+        run: |
+          npm install --package-lock-only --prefer-offline --no-audit --no-fund --ignore-scripts
+          git diff --exit-code --stat package-lock.json || {
+            echo "::error file=web/package-lock.json::package-lock.json is not what npm generates from package.json. Run 'npm install --package-lock-only' in web/ and commit the result."
+            exit 1
+          }
       - name: Typecheck
         if: needs.changes.outputs.web == 'true'
         run: npm run typecheck
