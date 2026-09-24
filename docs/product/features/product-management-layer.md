@@ -281,7 +281,7 @@ branch merely inherited unchanged is left alone.
 
 The roadmap UI for all of this is row 8c: a capability's Overview gets **Edit** (title, summary,
 parent, sent as up to three ops) and **+ Sub-capability**; a product's Overview gets **+
-Capability**. A capability's Overview also gets the links chip editor (`CapabilityLinksEditor`, one
+Capability**. A capability's Dependencies tab carries the links chip editor (`CapabilityLinksEditor`, one
 `links` op per change); links belong to a capability, so the product's Overview has **+ Capability**
 and the PR card only. That card is `MapChangesCard` — the open PR's number/link and age, Rebase
 when `behind`, a danger banner when `conflicting`, and Abandon behind a typed-slug confirm — above
