@@ -2,9 +2,28 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+from unittest.mock import patch
 
 from server.db import db_session, init_db
 from server.db.models import Automation, Session as DbSession
+from server.github import repo_canon
+
+_FIELD = re.compile(r'(r\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\)')
+
+
+def _gh_resolving(mapping: dict[str, str]):
+    """Fake GraphQL gh: answers each aliased repository field via *mapping*
+    (slug -> nameWithOwner); a slug absent from it resolves to itself."""
+    def run(args, **kw):
+        data = {alias: {"nameWithOwner": mapping.get(f"{o}/{n}", f"{o}/{n}")}
+                for alias, o, n in _FIELD.findall(kw.get("input") or "")}
+
+        class P:
+            returncode, stdout, stderr = 0, json.dumps({"data": data}), ""
+        return P()
+    return run
 
 
 def _orch():
@@ -69,10 +88,30 @@ def test_list_repos_config_overrides_managed(tmp_path):
             db.add(DbSession(id="s1", name="n", account_name="a", cwd="/tmp",
                              repo="o/managed"))
             await db.flush()
-        assert await SessionOrchestrator._cicd_list_repos(orch, {"enabled_repos": []}) \
-            == ["o/managed"]
+        with patch.object(repo_canon.gitrepos, "_run_gh", _gh_resolving({})):
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed"]
         assert await SessionOrchestrator._cicd_list_repos(
             orch, {"enabled_repos": ["o/pinned"]}) == ["o/pinned"]
+    asyncio.run(run())
+
+
+def test_list_repos_collapses_a_renamed_repo_alias(tmp_path):
+    """#1710: session rows that predate a rename carry the old slug, a GitHub
+    redirect alias for the new one. Listed raw, the doctor ran a second lane over
+    the same runs; the managed list must collapse onto the canonical name."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.sessions.orchestrator import SessionOrchestrator
+        orch = _orch()
+        async with db_session() as db:
+            for sid, repo in (("s1", "o/old-name"), ("s2", "o/new-name"), ("s3", "o/other")):
+                db.add(DbSession(id=sid, name="n", account_name="a", cwd="/tmp", repo=repo))
+            await db.flush()
+        gh = _gh_resolving({"o/old-name": "o/new-name"})
+        with patch.object(repo_canon.gitrepos, "_run_gh", gh):
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/new-name", "o/other"]
     asyncio.run(run())
 
 

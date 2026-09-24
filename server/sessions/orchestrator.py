@@ -11456,7 +11456,13 @@ class SessionOrchestrator:
             rows = (await db.execute(
                 select(DbSession.repo).where(DbSession.repo.is_not(None))
                 .distinct())).scalars().all()
-        return sorted(r for r in rows if r)
+        # sessions.repo is a free-text snapshot, so rows that predate a rename still
+        # carry the old slug — a redirect alias that would run a second doctor lane
+        # over the same runs (#1710). Pinned enabled_repos are canonicalized on
+        # write; this path needs it on read. Fails open (slugs kept verbatim).
+        from server.github.repo_canon import canonicalize_repo_list
+        repos = await asyncio.to_thread(canonicalize_repo_list, [r for r in rows if r])
+        return sorted(repos)
 
     # ------------------------------------------------------------------
     # Error Triage control loop

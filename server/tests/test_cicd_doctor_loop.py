@@ -131,6 +131,29 @@ def test_ingest_is_cursor_idempotent(tmp_path):
     asyncio.run(run())
 
 
+def test_run_already_stored_under_a_repo_alias_is_not_reinserted(tmp_path, caplog):
+    """#1710: a renamed repo's old slug is a GitHub redirect alias, so both slugs
+    list the SAME runs. The seen-set was scoped to the slug being ingested while
+    ci_run/ci_job ids are global PKs, so the second slug re-inserted every run the
+    first had stored — a UniqueViolation that failed the repo on every tick and
+    froze its cursor. Already-stored ids must be skipped whatever repo holds them."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(2),
+                     junit_by_run={1: [("junit-python", JUNIT_PASS)]},
+                     repos=("o/old-name", "o/new-name"))
+        with caplog.at_level(logging.WARNING, logger="server.automations.cicd_doctor"):
+            await loop.tick()
+        assert "cicd_doctor.repo_failed" not in caplog.text
+        async with db_session() as db:
+            assert len((await db.execute(select(CiTestResult))).scalars().all()) == 1
+        # Neither slug is wedged: both cursors advance past the shared runs.
+        for repo in ("o/old-name", "o/new-name"):
+            assert (await ctx.get_target_state(f"cursor:{repo}"))["last_created_ts"] == 1002.0
+    asyncio.run(run())
+
+
 def test_malformed_junit_warnings_are_throttled_per_repo(tmp_path, caplog):
     """#1704: a repo whose CI keeps producing bad junit XML re-entered the
     per-run warning on every ingested run — 145 records for one standing
