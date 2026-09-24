@@ -365,6 +365,10 @@ class ClaudeAgentDriver:
         # subscriber so a mid-stream (re)attach shows the whole message, not the tail.
         self._turn_buffer: list = []
         self._pump: asyncio.Task | None = None
+        # True from the moment a `_start_turn` claims the cursor until its pump exists.
+        # Distinct from `_turn_active`, which `_end_turn` deliberately leaves set across
+        # its own dequeue into `_start_turn` (PR #1480) and so cannot gate that call.
+        self._starting_turn: bool = False
         self._titled: bool = False
         # Each entry: (text, images, context). The context chip (assistant sessions
         # only, spec §4.5) rides along so a prompt that waits in the queue still gets
@@ -1095,7 +1099,33 @@ class ClaudeAgentDriver:
         so a prompt that came off the queue is treated exactly like one that started
         immediately. The emitted UserMessage always carries the original ``text`` plus
         the raw ``context``/``origin`` dicts, so the transcript stays independent of
-        what the model sees."""
+        what the model sees.
+
+        Only one call may be starting a turn at a time. ``send_prompt`` reads
+        ``_turn_live()`` before calling here, but ``_turn_active`` is not set until after
+        the ``await`` on ``_stop_listener()`` below, so two prompts delivered together —
+        the unarchive "why you're back" seed and the human's own re-prompt — both saw an
+        idle driver, both queried the SDK, and both spawned a pump over the one shared
+        cursor: ``RuntimeError: anext(): asynchronous generator is already running``.
+        The loser of the race queues instead, exactly as it would have had it arrived a
+        tick later; the winner's turn end dequeues it."""
+        if self._starting_turn:
+            self._queue.append((text, images or [], context, origin))
+            log.info("driver.start_turn: another turn is starting — queued prompt "
+                     "session=%s queue_depth=%d", self.session_id, len(self._queue))
+            await self._emit_status()
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            return
+        self._starting_turn = True
+        try:
+            await self._begin_turn(text, images, context=context, origin=origin)
+        finally:
+            self._starting_turn = False
+
+    async def _begin_turn(self, text: str, images: list[dict] | None = None, *,
+                          context: PromptContext | None = None,
+                          origin: PromptOrigin | None = None):
+        """The body of `_start_turn`, run while it holds the ``_starting_turn`` claim."""
         await self._automation_fence.enter()
         self._automation_terminal_observed = False
         images = images or []
