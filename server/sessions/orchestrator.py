@@ -2610,9 +2610,13 @@ class SessionOrchestrator:
           heartbeat lapsed past ``SESSION_LEASE_TTL_S``. The fence is remembered so
           ``_session_lease_loop`` can renew it, and the build proceeds.
         * **lost** — a DIFFERENT host holds it with a fresh heartbeat, i.e. a live
-          twin already owns this conversation. Log loudly and refuse: spawning here
-          is exactly the duplicate-CLI bug (#1379), and the caller treats a refusal
-          the same as any other failed build.
+          twin already owns this conversation. Refuse: spawning here is exactly the
+          duplicate-CLI bug (#1379), and the caller treats a refusal the same as any
+          other failed build. This IS the fence working as designed — the two hosts
+          racing to resume the same conversation is the anticipated condition it
+          exists to catch, not a fault of its own — so the refusal logs at INFO, not
+          WARNING (#1785); a genuinely stuck resume shows up as a retry loop or a
+          pause reason, which already warn on their own terms.
         * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
           database blip must never stop a whole fleet from running sessions. The
           loop re-attempts the claim on its next tick.
@@ -2676,12 +2680,16 @@ class SessionOrchestrator:
                 session_id, holder, age, why)
             return True
         if self._lease_denial_is_news(session_id, holder, "lease"):
-            log.warning(
+            # INFO, not WARNING: a live twin holding the lease is the fence catching
+            # exactly the race it was built for (#1379), not an error condition — a
+            # WARNING here auto-files an issue for every such race (#1785). The
+            # de-dupe above still keeps this to one line per distinct holder/session.
+            log.info(
                 "session-lease: refusing to %s session %s — host %r holds its lease "
                 "(renewed %s). Two live CLIs on one conversation race on git and split "
                 "its worktree (#1379); leaving it to its owner.",
                 why, session_id, holder, age)
-            log_event(log, logging.WARNING, "session.lease_denied",
+            log_event(log, logging.INFO, "session.lease_denied",
                       session_id=session_id, holder=holder, reason=why)
         else:
             log.debug(
