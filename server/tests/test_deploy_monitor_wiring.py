@@ -54,5 +54,5 @@ def test_read_config_resolves_enabled_row_without_mode_to_watch(monkeypatch):
 def test_web_notification_labels_include_deploy_failed():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    src = (root / "web/src/features/settings/sections/NotificationsSection.tsx").read_text()
+    src = (root / "web/src/features/settings/sections/notificationsApi.ts").read_text()
     assert "{ value: 'deploy_failed', label: 'Deploy failed' }" in src
