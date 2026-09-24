@@ -370,6 +370,19 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         return []
 
 
+_NOT_A_PR_MARKER = "Could not resolve to a PullRequest"
+
+
+def _is_not_a_pr(detail: object) -> bool:
+    """True when a gh failure only means "#N is not a PR" (#1907/#1908/#2026).
+
+    A goal's `#N` ref cannot distinguish an issue from a PR, so probing an issue
+    number is a normal outcome, re-hit every tick while the archive stays in the
+    window — not an auto-error. Matched on the message, never the type: a missing
+    *repository* (the #913 stale-credential 404) is also NOT_FOUND and must warn."""
+    return _NOT_A_PR_MARKER in str(detail)
+
+
 def _real_gh_num(repo: str, number: int) -> "dict | None":
     """GraphQL query for a single PR by number. Returns None on ANY failure
     (missing gh / auth / network / non-zero / JSON error / GraphQL errors /
@@ -395,14 +408,20 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
         if r.returncode != 0:
             raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
     except Exception as exc:
-        log.warning("archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
+        if _is_not_a_pr(exc):
+            log.debug("archive_audit ref is not a PR repo=%s number=%s", repo, number)
+        else:
+            log.warning("archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
         return None
     try:
         data = json.loads(r.stdout or "{}")
     except json.JSONDecodeError:
         return None
     if data.get("errors"):
-        log.warning("archive_audit gh graphql errors repo=%s number=%s: %s", repo, number, data["errors"])
+        if _is_not_a_pr(data["errors"]):
+            log.debug("archive_audit ref is not a PR repo=%s number=%s", repo, number)
+        else:
+            log.warning("archive_audit gh graphql errors repo=%s number=%s: %s", repo, number, data["errors"])
         return None
     try:
         return data["data"]["repository"]["pullRequest"]  # None if PR not found
