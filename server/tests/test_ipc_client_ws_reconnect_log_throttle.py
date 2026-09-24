@@ -22,9 +22,15 @@ A third variant has the same cause but a different exception shape (#1743): the
 *next* reconnect attempt after a SERVICE_RESTART close can land while the new
 daemon process is still starting up, so `websockets` raises a bare
 `TimeoutError("timed out during opening handshake")` instead of a clean close.
-That also logs at INFO. A same-typed `TimeoutError` from a hang on an
-already-established connection ("timed out while closing connection") is a
-real-problem shape and must keep warning.
+A same-typed `TimeoutError` from a hang on an already-established connection
+("timed out while closing connection") is a real-problem shape and must keep
+warning.
+
+The same handshake timeout, or a refused connect, is also the transient blip
+(#1742) that the very next retry heals. Neither is an outage while it is brief,
+so these connect failures log at INFO until the link has been down for
+``_RECONNECT_WARN_AFTER_S``; only a sustained outage — including a daemon wedged
+in startup that times out forever — escalates to WARNING.
 """
 from __future__ import annotations
 
@@ -58,10 +64,17 @@ def _fresh_throttle():
     ipc_client._WS_RECONNECT_LOG.clear()
 
 
+@pytest.fixture
+def _no_grace(monkeypatch):
+    """Escalate on the first failure, for tests about the throttle itself."""
+    monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 0.0)
+
+
 def _ws_error_records(caplog):
     return [r for r in caplog.records if "ipc: events WS error" in r.getMessage()]
 
 
+@pytest.mark.usefixtures("_no_grace")
 @pytest.mark.asyncio
 async def test_repeated_reconnect_failures_warn_once_and_demote_the_repeats(
         tmp_path, caplog, monkeypatch):
@@ -87,6 +100,7 @@ async def test_repeated_reconnect_failures_warn_once_and_demote_the_repeats(
     assert all(r.levelno == logging.DEBUG for r in records[1:4])
 
 
+@pytest.mark.usefixtures("_no_grace")
 @pytest.mark.asyncio
 async def test_a_different_endpoint_is_not_suppressed_by_the_first(
         tmp_path, caplog, monkeypatch):
@@ -141,7 +155,7 @@ async def test_service_restart_close_reconnect_logs_at_info_not_warning(
 
 
 @pytest.mark.asyncio
-async def test_opening_handshake_timeout_reconnect_logs_at_info_not_warning(
+async def test_opening_handshake_timeout_inside_the_grace_window_logs_at_info(
         tmp_path, caplog, monkeypatch):
     monkeypatch.setattr(
         ipc_client, "daemon_ws_connect",
@@ -154,14 +168,13 @@ async def test_opening_handshake_timeout_reconnect_logs_at_info_not_warning(
         with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
             client.subscribe("s1")
             await asyncio.wait_for(
-                _wait_for_n_records(caplog, _ws_error_records, 1), timeout=5)
+                _wait_for_n_records(caplog, _ws_error_records, 3), timeout=5)
     finally:
         await client.aclose()
 
     records = _ws_error_records(caplog)
-    assert records, "the reconnect is still logged somewhere"
     assert records[0].levelno == logging.INFO
-    assert not any(r.levelno == logging.WARNING for r in records)
+    assert not any(r.levelno >= logging.WARNING for r in records)
 
 
 @pytest.mark.asyncio
@@ -185,6 +198,49 @@ async def test_closing_connection_timeout_reconnect_still_warns(
     records = _ws_error_records(caplog)
     assert records, "the reconnect is still logged somewhere"
     assert records[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_outage_past_the_grace_window_escalates_to_warning(
+        tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 0.2)
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            TimeoutError("timed out during opening handshake")),
+    )
+
+    def _warnings(caplog):
+        return [r for r in _ws_error_records(caplog) if r.levelno == logging.WARNING]
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(_wait_for_n_records(caplog, _warnings, 1), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    # The blip reported at INFO first, and spending that did NOT consume the
+    # WARNING window — the sustained outage still reaches the error sink.
+    assert records[0].levelno == logging.INFO
+    assert len(_warnings(caplog)) == 1
+
+
+def test_reconnect_log_level_policy(monkeypatch):
+    monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 60.0)
+    for blip in (TimeoutError("timed out during opening handshake"),
+                 ConnectionRefusedError("connection refused")):
+        assert ipc_client._reconnect_log_level(blip, 0.0) == logging.INFO
+        assert ipc_client._reconnect_log_level(blip, 59.9) == logging.INFO
+        assert ipc_client._reconnect_log_level(blip, 60.0) == logging.WARNING
+    close = websockets.frames.Close(websockets.CloseCode.SERVICE_RESTART, "restart")
+    restart = websockets.ConnectionClosed(close, close, rcvd_then_sent=True)
+    assert ipc_client._reconnect_log_level(restart, 3600.0) == logging.INFO
+    # A hang on an established connection is never a connect blip (#1743).
+    hang = TimeoutError("timed out while closing connection")
+    assert ipc_client._reconnect_log_level(hang, 0.0) == logging.WARNING
 
 
 async def _wait_for_n_records(caplog, selector, n: int) -> None:
