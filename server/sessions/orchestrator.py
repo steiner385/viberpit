@@ -20379,17 +20379,32 @@ class SessionOrchestrator:
                             session_id, candidate, err)
                 return False
             log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
-        else:
+        elif stored_root is not None:
             # Never let this pass silently. This used to resolve against the CURRENT
             # archive home, so once that setting moved disks the rmtree targeted a path
             # under the new root that had never existed — and `ignore_errors=True` made
             # it "succeed". The row was deleted and the real directory stranded on the
             # old root forever: one leaked working tree per purged session (150 of them,
-            # 28 GB, found 2026-08-21). Proceed with the row deletion, but say so.
+            # 28 GB, found 2026-08-21). Proceed with the row deletion, but say so — this
+            # row's archive_root is recorded, so we KNOW where its files should be, and
+            # they aren't there: a real stranded-directory signal worth a WARNING.
             log.warning(
                 "session.permanent_delete id=%s archive dir ABSENT at %s (archive_root=%s)"
                 " — deleting the row anyway; check for a stranded directory under a"
-                " previous archive root", session_id, candidate, stored_root or "<unset>",
+                " previous archive root", session_id, candidate, stored_root,
+            )
+        else:
+            # archive_root is NULL: overwhelmingly this is a new-style (stay-in-place)
+            # archive whose worktree is simply already gone by the time the cap purge
+            # reaches it — e.g. a retried purge after an earlier partial failure already
+            # removed it. Such a row was NEVER moved into the archive home in the first
+            # place, so there is nothing to have stranded there; checking it at all is
+            # only the fallback for the rare ancient pre-archive_root row. High-volume
+            # and expected, not a leak to chase — INFO, not WARNING (#1573).
+            log.info(
+                "session.permanent_delete id=%s archive dir absent at %s"
+                " (archive_root=<unset>) — deleting the row anyway",
+                session_id, candidate,
             )
         return True
 

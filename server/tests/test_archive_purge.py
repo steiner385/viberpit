@@ -153,6 +153,54 @@ def test_purge_detaches_dispatch_outcomes_instead_of_blocking_delete(tmp_path):
     assert outcome_session_id is None  # history row survives, reference detached
 
 
+def _absent_dir_records(caplog) -> list:
+    return [r for r in caplog.records if "archive dir" in r.getMessage()
+            and "absent" in r.getMessage().lower()]
+
+
+def test_purge_absent_archive_dir_with_unset_root_is_not_a_warning(tmp_path, caplog):
+    """A new-style archive (archive_root NULL) whose worktree is already gone has nothing
+    under the archive home to lose: the purge still drops the row, but the "dir absent"
+    line is expected noise, not a stranded-directory alarm — a WARNING here auto-files an
+    issue on every such purge (#1573)."""
+    import logging
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([_archived(0, archived_at=_BASE)])  # cwd=/old/0 never exists
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                return await orch.purge_oldest_archived(1)
+
+    assert asyncio.run(run()) == ["arch0"]  # row still deleted
+    records = _absent_dir_records(caplog)
+    assert records, "the absent-dir condition should still be recorded"
+    assert all(r.levelno == logging.INFO for r in records)
+
+
+def test_purge_absent_archive_dir_with_recorded_root_still_warns(tmp_path, caplog):
+    """A legacy row records the root its files were moved into, so an absent dir there is a
+    genuine stranded-directory signal (the 2026-08-21 incident) and must stay a WARNING."""
+    import logging
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+    root = tmp_path / "archive-root"
+    root.mkdir()
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([{**_archived(0, archived_at=_BASE), "archive_root": str(root)}])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                return await orch.purge_oldest_archived(1)
+
+    assert asyncio.run(run()) == ["arch0"]
+    records = _absent_dir_records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING]
+
+
 def test_purge_prioritizes_automation_over_human(tmp_path):
     """Automation-origin sessions are purged first; human sessions survive as long as
     there are automation archives to consume (#921)."""
