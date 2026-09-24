@@ -23,7 +23,7 @@ from server.version import repo_root
 log = logging.getLogger(__name__)
 
 __all__ = ["start_upgrade", "run_upgrade", "upgrade_wire", "is_running", "default_target_sha",
-           "restart_expected"]
+           "restart_expected", "restart_deliberate"]
 
 _STATE: dict[str, dict[str, Any]] = {}
 
@@ -89,6 +89,42 @@ async def restart_expected(name: str, *,
         return True
     hosts = await _controller_hosts(controller_status or _default_controller_status)
     return (hosts.get(name) or {}).get("state") == "running"
+
+
+async def restart_deliberate(name: str, *, was_sha: str | None, now_sha: str | None,
+                             controller_status: Callable[[], Awaitable[dict]] | None = None,
+                             ) -> bool:
+    """True when an OBSERVED restart of ``name``'s daemon has a deliberate explanation.
+
+    ``restart_expected`` answers "is this host down on purpose *right now*", which is
+    the right question while an outage is in progress (``host_probe`` logs from inside
+    the unreachable window, so the deploy is still running when it asks). A restart is
+    observed *afterwards* — by an epoch change that a 15 s poll or a WS reconnect
+    notices some time after the daemon is already back — and by then the deploy step
+    for that host has often finished. Asking ``restart_expected`` alone therefore
+    reports a routine deploy as an incident whenever it loses that race, which is most
+    of the time on the last host of a fan-out.
+
+    So the deliberate-ness test adds the evidence that OUTLIVES the deploy window: the
+    daemon came back running a different commit. Nothing but a deploy changes a running
+    daemon's sha, and the new sha is still there on the poll that notices the restart,
+    however late it is.
+
+    The two are OR'd rather than either one alone because each covers the other's blind
+    spot — a Fleet "Update" (or a rewind) restarts at the sha already deployed, leaving
+    no sha evidence at all, and only ``restart_expected`` sees it.
+
+    An unknown sha on either side is NOT evidence: a daemon too old to report one, or a
+    probe that failed to cache one, must not read as "deployed". It falls through to
+    ``restart_expected``, and absent that, to WARNING — the safe direction for a
+    predicate whose false-negative is a needless alarm and whose false-positive is a
+    silently-swallowed wedge.
+
+    Never raises: like ``restart_expected``, this only ever decides a log level.
+    """
+    if was_sha and now_sha and was_sha != now_sha:
+        return True
+    return await restart_expected(name, controller_status=controller_status)
 
 
 def upgrade_wire(name: str) -> dict[str, Any]:

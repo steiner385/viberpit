@@ -57,6 +57,38 @@ def test_normalize_caps_length():
     assert len(normalize("x" * 1000)) == 200
 
 
+# The exact records quoted by #1655, #1657, #1658, #1659, #1660 and #1661 — one
+# `DaemonClient._reader` retry loop, filed as SIX issue lineages because the only
+# thing separating them was the exponential backoff's fractional part. Under the
+# old `\b\d+\b` masker "2.00s" kept its fraction ("<n>.00s"), so every rung of the
+# backoff ladder minted its own fingerprint.
+#
+# The ladder is the corpus on purpose: it is bounded and exhaustive (backoff
+# doubles from 0.10s and caps at 2.0s in `_reader`), so a regression in the
+# masker cannot hide in a rung this test skipped.
+_WS_RECONNECT_BACKOFF_LADDER = [
+    f"ipc: events WS error ([Errno 111] Connection refused) — reconnecting in {b:.2f}s"
+    for b in (0.10, 0.20, 0.40, 0.80, 1.60, 2.00)
+]
+
+
+def test_one_retry_loop_is_one_fingerprint_whatever_the_backoff():
+    from server.obs.error_signature import normalize
+    normalized = {normalize(m) for m in _WS_RECONNECT_BACKOFF_LADDER}
+    assert normalized == {
+        "ipc: events ws error ([errno <n>] connection refused) — reconnecting in <n>s"
+    }, f"the backoff ladder split into {len(normalized)} fingerprint(s): {sorted(normalized)}"
+
+
+def test_the_backoff_ladder_would_have_split_under_the_old_masker():
+    """Proves the guard above can fail — a corpus that collapses under ANY masker
+    would assert nothing (the rungs must really be distinct before normalization)."""
+    import re
+    old = re.compile(r"\b\d+\b")
+    split = {old.sub("<n>", m.lower()) for m in _WS_RECONNECT_BACKOFF_LADDER}
+    assert len(split) == len(_WS_RECONNECT_BACKOFF_LADDER) == 6
+
+
 def test_fingerprint_stable_across_volatile_fields():
     a = _sig(rec=_rec("db locked after 1 retries", session_id="s1", request_id="r1"))
     b = _sig(rec=_rec("db locked after 7 retries", session_id="s2", request_id="r2"))

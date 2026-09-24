@@ -25,14 +25,27 @@ import logging
 import os
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from server.aio import cancel_and_reap
 # Mirror the watchdog's default (scripts/ccswitch-health-check.sh: STATE_DIR).
 from server.hostpaths import HEALTH_STATE_DIR as _DEFAULT_HEALTH_STATE_DIR
+from server.hostname import self_host_name
+from server.obs.context import log_event
 
 log = logging.getLogger("server.sessions.daemon_health")
+
+
+@dataclass(frozen=True)
+class Restart:
+    """One observed epoch change, with the facts needed to judge and report it."""
+    was: str
+    now: str
+    was_sha: str | None
+    now_sha: str | None
+    count: int          # restarts inside the window, this one included
 
 
 def epoch_started_at_ms(epoch: str | None) -> int | None:
@@ -96,32 +109,83 @@ class DaemonHealthMonitor:
         poll_interval_s: float = 15.0,
         stale_after_s: float | None = None,
         clock: Callable[[], float] = time.time,
+        host_name: str | None = None,
     ) -> None:
         self._info_fn = info_fn
         self._window_s = window_s
         self._poll_interval_s = poll_interval_s
         self._stale_after_s = stale_after_s if stale_after_s is not None else 3 * poll_interval_s
         self._clock = clock
+        # The monitor watches the daemon on THIS host (app.state.daemon_endpoint), so its
+        # fleet identity is this process's own — the same name the deploy controller uses
+        # for its `local_name`, which is what makes `restart_deliberate` able to match.
+        self._host_name = host_name or self_host_name()
         self._epoch: str | None = None
+        self._sha: str | None = None              # the daemon's commit, to explain a restart
         self._last_seen_at: float | None = None  # when /info last succeeded (issue #766)
         self._restarts: deque[float] = deque()   # unix timestamps of observed epoch changes
         self._task: asyncio.Task | None = None
 
-    def record(self, epoch: str | None, *, now: float) -> None:
-        """Fold a freshly-observed epoch into the history.
+    def record(self, epoch: str | None, *, now: float, sha: str | None = None) -> Restart | None:
+        """Fold a freshly-observed epoch into the history; return the restart, if any.
 
         A change from a previously-seen epoch is a restart; the first epoch we ever see is
         not (the edge just connected). Unknown/None epochs are ignored.
+
+        Deliberately does NOT log. Whether a restart is an incident or a deploy doing its
+        job takes an `await` (`host_upgrade.restart_deliberate`), and forcing that into a
+        synchronous fold would either block the loop or split the decision across two
+        places. `poll_once` reports; this stays a pure, synchronously-testable fold.
         """
         if not epoch:
-            return
+            return None
+        restart = None
         if self._epoch is not None and epoch != self._epoch:
+            # Prune BEFORE counting. `_prune` used to run only in `snapshot`, so the count
+            # in the log included restarts that had already aged out of the window, and
+            # `len(...) + 1` then added a restart that had just been appended — #1653's own
+            # sample read "2 restart(s) in the last 24h" for the first restart of the day.
+            self._prune(now)
             self._restarts.append(now)
-            log.warning(
-                "daemon restart observed: epoch %s → %s (%d restart(s) in the last %.0fh)",
-                self._epoch, epoch, len(self._restarts) + 1, self._window_s / 3600)
+            restart = Restart(was=self._epoch, now=epoch, was_sha=self._sha, now_sha=sha,
+                              count=len(self._restarts))
         self._epoch = epoch
+        # Keep the last sha we were told about: a daemon that stops reporting one must not
+        # make the NEXT restart look like a deploy by comparing a real sha against None.
+        if sha:
+            self._sha = sha
         self._last_seen_at = now
+        return restart
+
+    async def _report(self, restart: Restart) -> None:
+        """Log an observed restart at the severity its explanation earns.
+
+        A restart is routine — every deploy performs one, and this host does 7-9 a day —
+        so logging all of them at WARNING filed a stream of auto-errors about a daemon
+        doing exactly what it was told (#1653, and #1614 before it). An UNEXPLAINED
+        restart is still an incident and still warns: that is the wedge→watchdog event
+        issue #434 built this monitor to surface.
+
+        Structured rather than interpolated, because `server.obs.error_signature`
+        fingerprints on the normalized message: with the epochs in the text, a record
+        whose hex runs happened not to normalize would mint a fresh issue lineage per
+        restart. Keyed on the event name, the family is one fingerprint and the volatile
+        parts ride in fields (#2126).
+        """
+        from server.sessions import host_upgrade  # deferred: runners imports this package
+
+        try:
+            deliberate = await host_upgrade.restart_deliberate(
+                self._host_name, was_sha=restart.was_sha, now_sha=restart.now_sha)
+        except Exception as exc:  # noqa: BLE001 — a log level must never break the poll loop
+            log.debug("daemon-health: restart_deliberate failed (%s)", exc)
+            deliberate = False
+        log_event(
+            log, logging.INFO if deliberate else logging.WARNING, "daemon.restart_observed",
+            host=self._host_name, wasEpoch=restart.was, epoch=restart.now,
+            wasSha=restart.was_sha, sha=restart.now_sha,
+            restartCount=restart.count, windowHours=round(self._window_s / 3600, 1),
+            deliberate=deliberate)
 
     def _prune(self, now: float) -> None:
         cutoff = now - self._window_s
@@ -162,7 +226,9 @@ class DaemonHealthMonitor:
         except Exception as exc:  # noqa: BLE001 — /info unreachable mid-restart is expected
             log.debug("daemon-health poll: /info unavailable (%s)", exc)
             return
-        self.record(info.get("epoch"), now=self._clock())
+        restart = self.record(info.get("epoch"), now=self._clock(), sha=info.get("sha"))
+        if restart is not None:
+            await self._report(restart)
 
     async def _run(self) -> None:
         while True:

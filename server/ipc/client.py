@@ -13,7 +13,8 @@ import websockets
 
 from server.aio import cancel_and_reap
 from server.ipc import protocol as proto
-from server.ipc.paths import Endpoint, parse_endpoint
+from server.ipc.paths import Endpoint, endpoint_host_name, parse_endpoint
+from server.obs.context import log_event
 from server.obs.logdedupe import LogThrottle, log_throttled
 
 log = logging.getLogger("server.ipc.client")
@@ -733,7 +734,36 @@ class DaemonClient:
             return self._last_seq[stream]
         return self._baseline.get(stream)
 
-    async def _recycle_transport(self, was: str, now: str) -> None:
+    async def _report_restart(self, was: str, now: str, was_sha: str | None,
+                              now_sha: str | None, stats: dict) -> None:
+        """Log the restart + pool recycle at the severity its explanation earns.
+
+        Called last and guarded by the caller: *stats* is sampled before the recycle, so
+        this reports the pool the restart left behind without a logging decision ever
+        standing between the diagnosis and the action that clears the outage.
+
+        Structured rather than interpolated so the whole family is ONE fingerprint in
+        `server.obs.error_signature` and the endpoint rides in fields — the mistake that
+        split one call site across issue lineages in #2126.
+        """
+        from server.sessions import host_upgrade  # deferred: sessions imports this package
+
+        host = endpoint_host_name(self.endpoint)
+        try:
+            deliberate = await host_upgrade.restart_deliberate(
+                host, was_sha=was_sha, now_sha=now_sha)
+        except Exception as exc:  # noqa: BLE001 — a log level must never break the recycle
+            log.debug("ipc: restart_deliberate failed (%s)", exc)
+            deliberate = False
+        log_event(
+            log, logging.INFO if deliberate else logging.WARNING, "ipc.daemon_restarted",
+            host=host, endpoint=str(self.endpoint), wasEpoch=was, epoch=now,
+            wasSha=was_sha, sha=now_sha, deliberate=deliberate,
+            connections=stats["connections"], inUse=stats["inUse"], idle=stats["idle"],
+            queued=stats["queued"], poolTimeouts=stats["poolTimeouts"])
+
+    async def _recycle_transport(self, was: str, now: str, *, was_sha: str | None = None,
+                                 now_sha: str | None = None) -> None:
         """Discard every pooled connection. Called ONLY when the daemon has restarted.
 
         WHAT THIS DOES: closes the httpcore pool (``AsyncHTTPTransport.aclose()`` →
@@ -772,15 +802,25 @@ class DaemonClient:
 
         Never raises: a client that cannot recycle must still be a working client.
         """
-        # Logged at WARNING on purpose: a daemon restart is rare and operationally
-        # significant, and both wedges were diagnosed by hand with `ss` because the
-        # journal said nothing about the pool. The count comes from a private httpcore
-        # attribute, so it degrades to -1 rather than ever pre-empting the recycle.
+        # The pool stats are the whole point of this record: both wedges were diagnosed by
+        # hand with `ss` because the journal said nothing about the pool. They are reported
+        # on EVERY restart, at whatever level the restart earns — the demotion below changes
+        # the severity, never the detail. The count comes from a private httpcore attribute,
+        # so it degrades to -1 rather than ever pre-empting the recycle.
+        #
+        # It WAS unconditionally WARNING, on the reasoning that "a daemon restart is rare".
+        # It is not rare — every deploy restarts the daemon, this host does 7-9 a day, and
+        # `server.obs.errsink` files WARNING+ as auto-errors, so the site reported 60
+        # occurrences of a daemon doing exactly what it was told (#1654). Severity now
+        # follows the same predicate `host_probe` already consults for the same question
+        # (#1614), so an unexplained restart — a wedge, a crash, an OOM kill — still warns.
+        #
+        # SAMPLED here, REPORTED at the bottom: judging the restart's severity needs an
+        # `await` (the deploy controller's status socket), and a suspension point between
+        # the diagnosis and the recycle would delay the one action that clears the outage.
+        # The stats describe the pool as the restart left it, which is what an operator
+        # needs, so they are captured before anything is closed and carried down.
         stats = self.pool_stats()
-        log.warning("ipc: daemon restarted (epoch %s → %s) — recycling %d pooled "
-                    "connection(s) to the old process (%d in use, %d idle, %d queued, "
-                    "%d pool timeout(s) since start)", was, now, stats["connections"],
-                    stats["inUse"], stats["idle"], stats["queued"], stats["poolTimeouts"])
         # The wedge is over as far as the counters are concerned: the slots are about to be
         # returned, so a stale consecutive count must not keep reading as an active wedge —
         # and the quiet-window clock must restart too. `_note_slot_served` bundles BOTH,
@@ -805,6 +845,10 @@ class DaemonClient:
             # failure leaves the pool usable — just with a socket or two still held.
             log.warning("ipc: pool recycle after daemon restart failed (%s) — "
                         "connections to the old process may linger", exc)
+        try:
+            await self._report_restart(was, now, was_sha, now_sha, stats)
+        except Exception:  # noqa: BLE001 — reporting a restart must never break a client
+            log.debug("ipc: restart report failed", exc_info=True)
 
     async def _reconcile_epoch(self) -> None:
         """Detect a daemon restart, recycle the HTTP pool, and drop stale watermarks.
@@ -848,12 +892,20 @@ class DaemonClient:
         # Same response already carries the daemon's running sha; cache it so the
         # edge can report it on /healthz and the deploy gate can catch edge/daemon
         # version skew without a second round-trip.
-        self._sha = info.get("sha") or self._sha
+        #
+        # The PREVIOUS sha is captured first because the cache is about to overwrite it,
+        # and a restart onto a different commit is the evidence that explains the restart
+        # as a deploy (see host_upgrade.restart_deliberate). Caching before comparing
+        # discarded exactly that.
+        was_sha = self._sha
+        now_sha = info.get("sha")
+        self._sha = now_sha or self._sha
         epoch = info.get("epoch")
         if epoch is None:
             return
         if self._epoch is not None and epoch != self._epoch:
-            await self._recycle_transport(self._epoch, epoch)
+            await self._recycle_transport(self._epoch, epoch,
+                                          was_sha=was_sha, now_sha=now_sha)
             self._last_seq.clear()
             for stream in self._baseline:
                 self._baseline[stream] = None

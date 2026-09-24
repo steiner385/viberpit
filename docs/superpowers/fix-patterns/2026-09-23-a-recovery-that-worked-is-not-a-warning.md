@@ -60,6 +60,23 @@ snapshot is read), and the unrecovered case still files.
   `RecoveryState.stall_streak` in `server/sessions/recovery.py`. Guarded by
   `server/tests/test_stall_watchdog_log_levels.py`, which asserts the level of every
   rung, not just the message.
+- Fixed: the two daemon-restart observers — `DaemonHealthMonitor._report` in
+  `server/sessions/daemon_health.py` (#1653, #2190) and `DaemonClient._report_restart`
+  in `server/ipc/client.py` (#1654). Guarded by
+  `server/tests/test_daemon_restart_log_severity.py`.
+
+  These add a rung the ladder above does not have, worth copying when the "recovery"
+  is really an *observation of someone else's deliberate action*: rather than demote
+  unconditionally, ask whether the event has an explanation, and keep WARNING when it
+  does not. `server/sessions/host_upgrade.py:restart_deliberate` is that predicate —
+  a changed sha, or `restart_expected` — so a deploy restart is INFO while a wedge,
+  crash or OOM kill still files. A blanket demotion here would have thrown away the
+  signal issue #434 built the monitor for.
+
+  The reusable half: `restart_expected` answers "down on purpose *right now*", which
+  only fits a caller logging from inside the outage (`host_probe` does). Anything that
+  notices an event *afterwards* — an epoch change seen on a 15 s poll — loses that race
+  and needs evidence that outlives the deploy window. A commit sha is that evidence.
 - Same shape, still open (each has its own auto-error issue; swept under #2275):
   - `rehydrate: recovered %d undelivered initial prompt(s)` and the
     `session.initial_prompt_recovered` event, `server/sessions/orchestrator.py` —
@@ -67,9 +84,9 @@ snapshot is read), and the unrecovered case still files.
   - `ws.prompt: no_driver with a live stream entry — rebuilding driver and retrying
     once`, `server/bridge/ws.py` (#1976).
   - `codex.manager.runner_restarted`, `server/codex/manager.py` — the restart that
-    succeeded, alongside `runner_exited` which is the failure (#2149, #2150).
-  - `daemon restart observed`, `server/sessions/daemon_health.py` — an observation of a
-    deploy, not a fault (#2190).
+    succeeded, alongside `runner_exited` which is the failure (#2149, #2150). Closest
+    remaining sibling to the daemon-restart pair above; `restart_deliberate` is the
+    shape to reach for if the runner restart has an explanation to consult.
 - Companion: `2026-09-20-a-refusal-is-a-state-not-an-event.md` covers volume (one line
   per distinct fact). This note covers band (which facts belong above the filing
   threshold at all). A line can need both.
