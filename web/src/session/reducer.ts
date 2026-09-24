@@ -492,6 +492,36 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
 }
 
 /**
+ * Undo an optimistic `resolveQuestionInPlace` when the server refuses the answer
+ * (QUESTION_NOT_OWNED / QUESTION_NOT_PENDING, #2206): the client resolves the card the
+ * moment the WS frame is sent, before any reply, so a refusal must put it back to
+ * `live: true` with no `answered` labels — otherwise the error banner sits above a card
+ * that still reads as answered while the server lists the question pending again.
+ * Sibling of `resolveQuestionInPlace`; returns the same state reference when no
+ * matching block exists.
+ */
+function restoreQuestionInPlace(state: TranscriptState, questionId: string): TranscriptState {
+  const restore = (turns: Turn[]): Turn[] => {
+    let changed = false
+    const next = turns.map((turn) => {
+      const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
+      if (!hasIt) return turn
+      changed = true
+      return {
+        ...turn,
+        blocks: turn.blocks.map((b) =>
+          b.kind === 'question' && b.questionId === questionId ? { ...b, live: true, answered: undefined } : b),
+      }
+    })
+    return changed ? next : turns
+  }
+  const turns = restore(state.turns)
+  const subAgents = mapSubThreadTurns(state.subAgents, restore)
+  if (turns === state.turns && subAgents === state.subAgents) return state
+  return { ...state, turns, subAgents }
+}
+
+/**
  * Ensure an ASSISTANT turn exists at turnId; if it doesn't, append an empty assistant
  * turn at the TAIL and count it. A block event with no preceding turnStart means the
  * frame reached us out of order (an attach re-emit of a pending ask/error whose turn
@@ -1211,15 +1241,20 @@ export function transcriptReducer(
       // it stays visible in place and a later error can't erase it (the banner is a
       // single slot; the timeline is append-only).
       const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
-      if (!ev.turnId) return { ...state, error: banner }
-      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId, ev.type)
+      // A refused answerQuestion (QUESTION_NOT_OWNED / QUESTION_NOT_PENDING, #2206)
+      // carries the questionId the bridge rejected — undo the optimistic resolve so
+      // the card goes back to answerable instead of sitting under the banner looking
+      // answered.
+      const restored = ev.questionId ? restoreQuestionInPlace(state, ev.questionId) : state
+      if (!ev.turnId) return { ...restored, error: banner }
+      const [withTurn, idx] = ensureAssistantTurn(restored.turns, ev.turnId, ev.type)
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
         code: ev.code, message: ev.message, resetsAt: ev.resetsAt, ts: ev.ts,
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
-      return { ...state, turns, error: banner }
+      return { ...restored, turns, error: banner }
     }
 
     // ── recovering ────────────────────────────────────────────────────────────

@@ -1968,10 +1968,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         _log("ws.resolve_permission rejected session=%s perm=%s identity=%s code=%s",
                              session_id, perm_id, identity, action_error.code)
                         # The helper's message, not a copy: it distinguishes "gone"
-                        # from "still pending, owned by another identity".
+                        # from "still pending, owned by another identity". permId rides
+                        # along (#2206) so a client-side restore can target this exact
+                        # card if it ever needs to (the question twin below is the one
+                        # the client currently acts on).
                         await _send({"type": "error", "code": action_error.code,
                                      "message": action_error.message,
-                                     "sessionId": session_id})
+                                     "sessionId": session_id, "permId": perm_id})
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
                     selected = msg.get("selected", [])
@@ -1994,9 +1997,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         _log = log.warning if action_error.http != 404 else log.info
                         _log("ws.answer_question rejected session=%s qid=%s identity=%s code=%s",
                              session_id, question_id, identity, action_error.code)
+                        # questionId rides along (#2206) so the client can undo the
+                        # optimistic _resolveQuestion it already dispatched when it sent
+                        # the frame, instead of leaving that card stuck reading
+                        # "answered" under the error banner until a reload.
                         await _send({"type": "error", "code": action_error.code,
                                      "message": action_error.message,
-                                     "sessionId": session_id})
+                                     "sessionId": session_id, "questionId": question_id})
                 elif msg_type == "activity":
                     # Lightweight steering signal — user typing / interacting before send. Refreshes
                     # the human-deference window; no response frame.

@@ -23,7 +23,9 @@ import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean }
 export interface WsUsageMsg        { type: 'usage';         account: string; usage: AccountUsage }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
-export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
+// `questionId` / `permId` are set only for a refused answerQuestion / permissionResponse
+// (#2206) — see EvError (session/events.ts), which this is forwarded into verbatim.
+export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null; questionId?: string; permId?: string }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
 export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
