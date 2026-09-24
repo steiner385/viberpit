@@ -43,7 +43,7 @@ HISTORY_ROW_CAP = 2000
 
 _ENABLED_ENV = "VIBERPIT_DISPATCH_REPO_CHECK_ENABLED"
 _TIMEOUT_ENV = "VIBERPIT_REPO_CHECK_TIMEOUT_S"
-_DEFAULT_TIMEOUT_S = 8.0
+_DEFAULT_TIMEOUT_S = 20.0
 
 _SYSTEM = (
     "You are a router for a coding-agent fleet. You are given a draft prompt a "
