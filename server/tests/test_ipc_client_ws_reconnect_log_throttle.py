@@ -9,6 +9,14 @@ under its own repetitions.
 The fix routes the record through ``server.obs.logdedupe`` — the repo's existing
 answer to this shape (see ``test_host_probe_log_throttle.py`` for the sibling
 fix), keyed per endpoint so a different daemon is never suppressed by this one.
+
+A second, narrower flood has the same symptom but a different cause (#1662):
+uvicorn closes every open websocket with code 1012 (SERVICE_RESTART) on its own
+lifespan shutdown, i.e. on every deploy of the daemon it is talking to. That is
+expected operational behaviour, not a signal anything is wrong, but throttling
+alone still let the *first* occurrence of each 6h window through at WARNING —
+indistinguishable from a real outage in the error sink. Those reconnects log at
+INFO instead.
 """
 from __future__ import annotations
 
@@ -16,6 +24,7 @@ import asyncio
 import logging
 
 import pytest
+import websockets
 
 from server.ipc import client as ipc_client
 from server.ipc.client import DaemonClient
@@ -95,6 +104,32 @@ async def test_a_different_endpoint_is_not_suppressed_by_the_first(
 
     warnings = [r for r in _ws_error_records(caplog) if r.levelno == logging.WARNING]
     assert len(warnings) == 2
+
+
+@pytest.mark.asyncio
+async def test_service_restart_close_reconnect_logs_at_info_not_warning(
+        tmp_path, caplog, monkeypatch):
+    close = websockets.frames.Close(
+        websockets.CloseCode.SERVICE_RESTART, "service restart")
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            websockets.ConnectionClosed(close, close, rcvd_then_sent=True)),
+    )
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(
+                _wait_for_n_records(caplog, _ws_error_records, 1), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    assert records, "the reconnect is still logged somewhere"
+    assert records[0].levelno == logging.INFO
+    assert not any(r.levelno == logging.WARNING for r in records)
 
 
 async def _wait_for_n_records(caplog, selector, n: int) -> None:

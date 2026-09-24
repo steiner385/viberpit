@@ -268,6 +268,23 @@ def daemon_ws_connect(endpoint: Endpoint, path: str, ssl_ctx=None):
 # of latching silent — see server/obs/logdedupe.py.
 _WS_RECONNECT_LOG = LogThrottle()
 
+#: uvicorn sends close code 1012 (SERVICE_RESTART) to every open websocket on
+#: lifespan shutdown — i.e. on every deploy/daemon restart, not on failure.
+#: `_reader` reconnects either way, but this one cause is expected operational
+#: behaviour rather than a signal something is wrong, so it must not be filed
+#: as an auto-error (#1662: one WARNING per deploy, indistinguishable from a
+#: real outage in the error sink).
+_EXPECTED_RECONNECT_CODES = frozenset({websockets.CloseCode.SERVICE_RESTART})
+
+
+def _is_expected_reconnect(exc: Exception) -> bool:
+    if not isinstance(exc, websockets.ConnectionClosed):
+        return False
+    return any(
+        close is not None and close.code in _EXPECTED_RECONNECT_CODES
+        for close in (exc.rcvd, exc.sent)
+    )
+
 
 class DaemonClient:
     def __init__(self, endpoint, *, client_tls=None):
@@ -1036,8 +1053,9 @@ class DaemonClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry
+                level = logging.INFO if _is_expected_reconnect(exc) else logging.WARNING
                 log_throttled(
-                    log, _WS_RECONNECT_LOG, str(self.endpoint), logging.WARNING,
+                    log, _WS_RECONNECT_LOG, str(self.endpoint), level,
                     "ipc: events WS error (%s) — reconnecting in %.2fs", exc, backoff,
                 )
             self._ws = None
