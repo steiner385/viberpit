@@ -438,7 +438,9 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         try:
             u = oauth.fetch_usage(blob["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError, oauth.AuthError) as e:
-            log.warning("usage_for(%s, allow_refresh=False): usage fetch failed: %s", name, e)
+            # A 401 here is worth a WARNING; a throttle / 5xx is routine (#1638).
+            log.log(logging.WARNING if isinstance(e, oauth.AuthError) else logging.INFO,
+                    "usage_for(%s, allow_refresh=False): usage fetch failed: %s", name, e)
             _note_usage_fetch_failure(name)
             return None
         with ledger.locked_ledger() as led:
@@ -454,7 +456,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # Token endpoint rate-limited (429) or unavailable (5xx). The refresh token
         # is presumed valid — leave status unchanged so a transient throttle can't
         # flip an idle account to needs-reauth.
-        log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
+        log.info("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
         _note_usage_fetch_failure(name)
         return None
     except oauth.AuthError as e:
@@ -481,8 +483,10 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # exhausted retries. The token is valid — only the usage API is
         # unavailable. Return None (no usage) WITHOUT marking needs-reauth, so
         # callers (the accounts list) degrade gracefully instead of 500-ing the
-        # whole dashboard.
-        log.warning("usage_for(%s): transient usage error, leaving status unchanged: %s", name, e)
+        # whole dashboard. INFO, not WARNING: a 429 here is routine, handled, and
+        # already backed off via the ledger cooldown — a WARNING auto-files an
+        # issue per throttle (#1638).
+        log.info("usage_for(%s): transient usage error, leaving status unchanged: %s", name, e)
         _note_usage_fetch_failure(name)
         return None
     except oauth.AuthError:
@@ -508,7 +512,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             # Do NOT proceed to a usage fetch with the now-dead token.
             _refresh_auth_err = _re
         except (oauth.UsageError, oauth.TransientError) as e:
-            log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
+            log.info("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             _note_usage_fetch_failure(name)
             return None
 
@@ -536,7 +540,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         try:
             u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError) as e:
-            log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
+            log.info("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             _note_usage_fetch_failure(name)
             return None
         except oauth.AuthError as e:
