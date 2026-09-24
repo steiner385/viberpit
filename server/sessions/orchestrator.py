@@ -6824,11 +6824,11 @@ class SessionOrchestrator:
         summary, so the page and the runner's event both say so (#2217).
 
         The one-shot SDK call needs a config dir — the DAEMON process has no
-        ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account (same trick the
-        old inline ranking used); with no healthy account the SDK default
-        applies. A failed model call propagates as ``GroupingModelError`` with
-        the SDK's message (so the runner's ``groups_refresh_failed`` event can
-        name it); a model that answered with nothing parseable raises below.
+        ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account, verified
+        helper-ready (``_autopilot_helper_config_dir``), else the helper picker.
+        A failed model call propagates as ``GroupingModelError`` naming the
+        classified cause (so the runner's ``groups_refresh_failed`` event can
+        say why).
 
         The ``evidence``-held candidates are bucketed by fingerprint family HERE
         (``family_groups``, spec 2026-09-18 §5) and never reach the model: they
@@ -6853,11 +6853,13 @@ class SessionOrchestrator:
         # An evidence-only pool has nothing for the model to partition — asking
         # would burn a call to be told so.
         if rest:
-            config_dir = None
+            # Quota-healthy is not helper-ready: a healthy-looking account can be
+            # org-denied (#1845/#1846), so the pick goes through the one verified
+            # helper identity, which falls back to the helper picker.
+            from server.sessions.helper_call import pick_helper_config_dir
             acct = await self._backlog_healthy_account()
-            if acct is not None:
-                from ccswitch import paths
-                config_dir = str(paths.account_cfg_dir(acct))
+            config_dir = (self._autopilot_helper_config_dir(acct) if acct is not None
+                          else pick_helper_config_dir())
             proposed = await propose_groups(rest, config, _config_dir=config_dir)
             groups, degraded = proposed.groups, proposed.degraded
         # Two orderings, applied in this order and nowhere else. First rank: the

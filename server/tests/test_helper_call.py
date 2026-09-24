@@ -6,6 +6,7 @@ import pytest
 
 from server.sessions import helper_call
 from server.sessions.helper_call import run_helper_call
+from server.tests.fakes.helper_streams import OPAQUE_SDK_ERROR, org_denied_messages
 
 
 @pytest.fixture(autouse=True)
@@ -188,21 +189,10 @@ def test_per_attempt_timeout_fails_open_without_retry():
 # text was the SDK's opaque "returned an error result: success".               #
 # --------------------------------------------------------------------------- #
 
-_ORG_DENIED = ("Your organization has disabled Claude subscription access for Claude "
-               "Code · Use an Anthropic API key instead, or ask your admin to enable "
-               "access")
-
-
-def _api_error_assistant(text, error="oauth_org_not_allowed"):
-    """SDK shape for an API-error assistant message: ``.error`` is set and the
-    text block carries the CLI's own sentence."""
-    return SimpleNamespace(content=[SimpleNamespace(text=text)], error=error)
-
-
 def _org_denied_stream(*, status=403, counter=None):
     return _stream_factory(
-        yield_msgs=[_api_error_assistant(_ORG_DENIED), _result(status)],
-        raise_exc=RuntimeError("Claude Code returned an error result: success"),
+        yield_msgs=org_denied_messages(status),
+        raise_exc=RuntimeError(OPAQUE_SDK_ERROR),
         counter=counter)
 
 

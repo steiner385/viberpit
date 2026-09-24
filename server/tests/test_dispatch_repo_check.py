@@ -413,3 +413,30 @@ async def test_recent_repo_vocabulary_window(isolated_db):
 async def test_recent_repo_vocabulary_db_failure_is_empty():
     with patch("server.sessions.repo_match.db_session", side_effect=RuntimeError("no db")):
         assert await recent_repo_vocabulary() == []
+
+
+@pytest.mark.asyncio
+async def test_suggest_org_denied_logs_the_cause_and_bars_the_account(caplog):
+    """#1849: suggest_repo logged "model call failed: Claude Code returned an
+    error result: success" six times with no cause. The log now carries the
+    classified kind and the CLI's own sentence, and the barred account is not
+    called again — the next dispatch fails over (or degrades) instead."""
+    import logging
+
+    from server.sessions.helper_call import reset_breakers
+    from server.tests.fakes.helper_streams import org_denied_query
+
+    reset_breakers()
+    calls: list = []
+    with caplog.at_level(logging.WARNING, logger="server.sessions.repo_match"):
+        for _ in range(2):
+            assert await suggest_repo(
+                "Fix the modal", "steiner385/viberpit", VOCAB,
+                _query_fn=org_denied_query(calls), _config_dir="/cfg/org-denied",
+                _cwd="/tmp") is None
+    failed = [r.getMessage() for r in caplog.records
+              if r.name == "server.sessions.repo_match"]
+    assert len(failed) == 1
+    assert "kind=auth_forbidden" in failed[0]
+    assert "organization has disabled" in failed[0]
+    assert len(calls) == 1

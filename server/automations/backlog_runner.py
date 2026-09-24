@@ -1133,12 +1133,14 @@ class BacklogRunnerLoop:
         try:
             summary = await self._refresh_groups(config)
         except Exception as exc:
-            log.warning("backlog_runner.group_refresh_failed", exc_info=True)
-            self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
             # The event names the error: "retrying shortly" alone sent an operator
             # to the journal to learn WHY (2026-09-16). Debounced per distinct
-            # error rather than per streak — a changed cause is news.
+            # error rather than per streak — a changed cause is news. The journal
+            # line names it too: this is the ONE record of a failed refresh
+            # (``propose_groups`` no longer logs its own copy, #1845/#1846).
             error = f"{type(exc).__name__}: {exc}"
+            log.warning("backlog_runner.group_refresh_failed: %s", error, exc_info=True)
+            self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
             if error != self._group_refresh_last_error:
                 self._group_refresh_last_error = error
                 await self._ctx.emit(

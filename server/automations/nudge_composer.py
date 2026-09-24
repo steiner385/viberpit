@@ -12,7 +12,7 @@ from pathlib import Path
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd
+from server.sessions.helper_call import helper_cwd, run_helper_call
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +93,15 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
         prompt = _build_prompt(ctx, intent_hint=intent_hint, verdict_reason=verdict_reason,
                                verdict_remedy=verdict_remedy, recent_nudges=recent_nudges,
                                rich_tail=rich_tail, facts_verified=facts_verified)
-        async for msg in query_fn(prompt=prompt, options=options):
+        outcome = await run_helper_call(
+            lambda: query_fn(prompt=prompt, options=options),
+            subsystem="nudge_composer", account_key=config_dir)
+        if outcome.skipped:
+            return None  # lane cooled-down / account barred — the loop escalates
+        if outcome.error is not None:
+            log.warning("nudge_composer failed: %s", outcome.describe())
+            return None
+        for msg in outcome.messages:
             content = getattr(msg, "content", None)
             if isinstance(content, list):
                 for block in content:

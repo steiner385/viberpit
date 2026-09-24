@@ -110,3 +110,29 @@ async def test_no_helper_account_declines_without_opening_the_model_door(monkeyp
         recent_nudges=[], rich_tail=[], facts_verified=False, _config_dir="")
     assert out is None
     assert opened == [], "the SDK door must not be opened without a helper account"
+
+
+@pytest.mark.asyncio
+async def test_org_denial_is_decoded_and_the_account_barred(caplog):
+    """Sibling of #1845/#1846: the composer drove the SDK stream by hand, so a
+    failure logged only the opaque "returned an error result: success" and an
+    org-denied account was re-called on every nudge. It now rides
+    ``run_helper_call`` like every other helper: the log names the kind and the
+    CLI's own sentence, and the barred account is skipped next time."""
+    import logging
+
+    from server.tests.fakes.helper_streams import org_denied_query
+
+    calls: list = []
+    with caplog.at_level(logging.WARNING, logger="server.automations.nudge_composer"):
+        for _ in range(2):
+            assert await compose_nudge(
+                _ctx(), intent_hint="fix CI", verdict_reason=None, verdict_remedy=None,
+                recent_nudges=[], rich_tail=[], facts_verified=False,
+                _query_fn=org_denied_query(calls), _config_dir="/cfg/org-denied") is None
+    failed = [r.getMessage() for r in caplog.records
+              if r.name == "server.automations.nudge_composer"]
+    assert len(failed) == 1
+    assert "kind=auth_forbidden" in failed[0]
+    assert "organization has disabled" in failed[0]
+    assert len(calls) == 1
