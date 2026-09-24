@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -1267,6 +1268,89 @@ def test_daemon_timeout_on_resume_takes_the_timeout_branch_not_the_1013_close(tm
                 "socket was closed — the 1013 branch caught the DaemonTimeout"
             )
 
+
+def test_ws_attach_daemon_unavailable_is_throttled_not_flooded(tmp_path, caplog):
+    """A daemon-connectivity blip (restart, deploy, brief outage) makes every attach
+    of an affected session hit DaemonUnavailable and log at WARNING; #2025 was 368
+    such records across 5 sessions over 11 days from repeated daemon-restart windows.
+    The repeat within the throttle window must demote to DEBUG so it stays out of the
+    error sink (see server/obs/logdedupe.py)."""
+    import server.bridge.ws as wsmod
+    from starlette.websockets import WebSocketDisconnect
+    from server.ipc.client import DaemonUnavailable
+
+    wsmod._WS_ATTACH_DAEMON_UNAVAILABLE_LOG.clear()
+
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        async def _unavailable(*_a, **_k):
+            raise DaemonUnavailable("daemon down")
+        orch.get_session = _unavailable
+
+        with caplog.at_level(logging.DEBUG, logger="server.bridge.ws"):
+            for _ in range(2):
+                with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                    ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+                    with pytest.raises(WebSocketDisconnect) as ei:
+                        for _ in range(20):
+                            ws.receive_text()
+                    assert ei.value.code == 1013
+
+    records = [r for r in caplog.records
+               if r.getMessage() == f"ws.attach: session daemon unavailable for {session_id}"]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+
+
+def test_ws_attach_and_resume_daemon_unavailable_share_one_throttle_window(tmp_path, caplog):
+    """The `ws.attach: session daemon unavailable for %s` message is logged from two
+    call sites for the SAME underlying condition -- _handle_attach's get_session (rec
+    load) and _resume_driver_or_error's ensure_driver (lazy resume on prompt). They
+    share one module-level LogThrottle keyed by session_id so a session that hits one
+    path and then the other during the same daemon blip does not double-report (#2025)."""
+    import server.bridge.ws as wsmod
+    from starlette.websockets import WebSocketDisconnect
+    from server.ipc.client import DaemonUnavailable
+
+    wsmod._WS_ATTACH_DAEMON_UNAVAILABLE_LOG.clear()
+
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        real_get_session = orch.get_session
+        state = {"failed_once": False}
+
+        async def _get_session_fails_first_time(sid):
+            if not state["failed_once"]:
+                state["failed_once"] = True
+                raise DaemonUnavailable("daemon down")
+            return real_get_session(sid)
+        orch.get_session = _get_session_fails_first_time
+
+        with caplog.at_level(logging.DEBUG, logger="server.bridge.ws"):
+            # First attach: get_session raises -> WARNING, socket closes 1013.
+            with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+                with pytest.raises(WebSocketDisconnect) as ei:
+                    for _ in range(20):
+                        ws.receive_text()
+                assert ei.value.code == 1013
+
+            # Second attach succeeds, then a prompt's lazy resume hits ensure_driver,
+            # which raises the same DaemonUnavailable -> must be DEBUG, not WARNING.
+            async def _ensure_driver_unavailable(*_a, **_k):
+                raise DaemonUnavailable("daemon down")
+            orch.ensure_driver = _ensure_driver_unavailable
+
+            with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+                _drain_events(ws, until_type="replayComplete", timeout=8.0)
+
+                ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+                with pytest.raises(WebSocketDisconnect) as ei2:
+                    for _ in range(20):
+                        ws.receive_text()
+                assert ei2.value.code == 1013
+
+    records = [r for r in caplog.records
+               if r.getMessage() == f"ws.attach: session daemon unavailable for {session_id}"]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
 
 
 # ---------------------------------------------------------------------------
