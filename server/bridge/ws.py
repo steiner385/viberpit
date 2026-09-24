@@ -1410,7 +1410,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             driver = await _resume_driver_or_error(session_id)
             resume_ms = round((time.monotonic() - started) * 1000, 1)
             if driver is None:
-                log_event(log, logging.WARNING, "ws.session.resume",
+                # INFO, not WARNING: _resume_driver_or_error already logged the real
+                # reason at WARNING (SESSION_NOT_FOUND / SESSION_START_FAILED /
+                # SESSION_RESUME_TIMEOUT, or the generic-exception branch's exc_info)
+                # before returning None here. This event's job is measurement — the
+                # resume-cost numbers (#1180) need the failed calls too, so it must
+                # still fire — but at WARNING it re-filed the SAME incident as its
+                # own auto-error issue (#1784, twin of #1783's _handle_prompt line).
+                log_event(log, logging.INFO, "ws.session.resume",
                           session_id=session_id, resume_ms=resume_ms, ok=False)
                 return False
             # Same uniform interface as _handle_attach (no replay here, so there is

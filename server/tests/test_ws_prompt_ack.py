@@ -235,3 +235,59 @@ def test_a_failed_wake_does_not_log_a_second_warning(ws_env, caplog):  # noqa: F
         f"wake-failed log must not be WARNING+ (duplicates the upstream reason "
         f"log and double-files auto-error issues): {[r.levelno for r in wake_failed]!r}"
     )
+
+
+def _resume_events(caplog):
+    return [r for r in caplog.records if getattr(r, "event", None) == "ws.session.resume"]
+
+
+def test_a_failed_resume_measurement_is_not_itself_a_warning(ws_env, caplog):  # noqa: F811
+    """``ws.session.resume ok=false`` is the MEASUREMENT of a lazy resume (#1180),
+    emitted by ``_ensure_live`` after ``_resume_driver_or_error`` already reported the
+    failure to the client. Error triage files every WARNING+ record as its own
+    auto-error issue, so the measurement sitting at WARNING re-filed each incident
+    that ``_resume_driver_or_error`` had already logged (#1784, twin of #1783). It
+    must still fire — the resume-cost numbers need the failures too — just below
+    WARNING."""
+    _app, orch, client = ws_env([])
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": "ghost3", "text": "hi"}))
+            _drain_events(ws, until_type="replayComplete")
+            ws.send_text("not json")
+            _drain_events(
+                ws, until=lambda f: f.get("type") == "error" and f.get("code") == "INVALID_JSON")
+
+    resumes = _resume_events(caplog)
+    assert resumes, "the failed resume must still be measured"
+    assert all(r.fields["ok"] is False for r in resumes), resumes  # type: ignore[attr-defined]
+    assert all(r.levelno < logging.WARNING for r in resumes), (
+        f"ws.session.resume ok=false must not be WARNING+ (re-files the incident "
+        f"_resume_driver_or_error already reported): {[r.levelno for r in resumes]!r}")
+
+
+def test_a_resume_that_raises_files_exactly_one_warning(ws_env, caplog):  # noqa: F811
+    """An ``ensure_driver`` that raises is logged at WARNING once, with its traceback,
+    by ``_resume_driver_or_error`` — the measurement must not add a second."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "resume-raises")
+    sid = session.id
+
+    async def _boom(_sid, *_a, **_k):
+        raise RuntimeError("token dead")
+    orch.ensure_driver = _boom  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": sid, "text": "hi"}))
+            _drain_events(ws, until_type="replayComplete")
+            ws.send_text("not json")
+            _drain_events(
+                ws, until=lambda f: f.get("type") == "error" and f.get("code") == "INVALID_JSON")
+
+    warnings = [r for r in caplog.records
+                if r.name == "server.bridge.ws" and r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [(r.levelno, r.getMessage()) for r in warnings]
+    assert "ensure_driver failed" in warnings[0].getMessage()
+    assert _resume_events(caplog), "the failed resume must still be measured"
