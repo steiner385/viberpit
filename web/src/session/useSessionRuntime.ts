@@ -207,7 +207,10 @@ export function useSessionRuntime(
       // an async failure from another session carries that session's id and would
       // otherwise paint this view's error banner.
       if (isForOtherSession(msg.sessionId)) return
-      dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
+      dispatch({
+        type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null,
+        questionId: msg.questionId, permId: msg.permId,
+      })
     }
 
     // The edge's positive receipt for a prompt frame (server/bridge/ws.py). This is the

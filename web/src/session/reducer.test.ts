@@ -365,6 +365,39 @@ describe('transcriptReducer', () => {
     expect(blocks[0].kind === 'question' && blocks[0].answered).toEqual(['A'])
   })
 
+  it('an error frame carrying questionId restores the optimistically-resolved question to live (#2206)', () => {
+    // The client resolves the card the moment the WS frame is sent, before any
+    // reply. If the server then refuses it (QUESTION_NOT_OWNED / QUESTION_NOT_PENDING),
+    // the error frame names the questionId it rejected — the card must go back to
+    // answerable instead of sitting under the banner looking answered.
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false },
+      { type: '_resolveQuestion', questionId: 'q-1', selected: ['A'] },
+    ])
+    const restored = transcriptReducer(s, {
+      type: 'error', code: 'QUESTION_NOT_OWNED', message: 'still pending, owned by another identity',
+      questionId: 'q-1',
+    })
+    const q = restored.turns[0].blocks.find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' && q.live).toBe(true)
+    expect(q && q.kind === 'question' && q.answered).toBeUndefined()
+    // The banner still surfaces, explaining the refusal.
+    expect(restored.error?.code).toBe('QUESTION_NOT_OWNED')
+  })
+
+  it('an error frame with no questionId leaves resolved questions untouched', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }], multiSelect: false },
+      { type: '_resolveQuestion', questionId: 'q-1', selected: ['A'] },
+    ])
+    const next = transcriptReducer(s, { type: 'error', code: 'rate_limit', message: 'Too many requests' })
+    const q = next.turns[0].blocks.find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+    expect(q && q.kind === 'question' && q.answered).toEqual(['A'])
+  })
+
   // ── error ─────────────────────────────────────────────────────────────────
 
   it('error sets state.error', () => {
