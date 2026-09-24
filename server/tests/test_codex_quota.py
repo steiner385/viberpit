@@ -6,6 +6,7 @@ being papered over by a hand-built DTO.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any
 from datetime import datetime, timezone
@@ -342,6 +343,35 @@ async def test_failure_detail_is_scrubbed() -> None:
     snapshot = await reader.read("acct", client=client)
 
     assert "sk-abcdefghijklmnop" not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc, expected_category",
+    [
+        (protocol.CodexTransportClosed("stream ended"), "transport_closed"),
+        (protocol.CodexRequestTimeout("deadline exceeded"), "timeout"),
+        (
+            protocol.CodexNotInitializedError("codex app-server call before handshake"),
+            "not_initialized",
+        ),
+    ],
+)
+async def test_unavailable_warning_names_the_specific_failure(caplog, exc, expected_category):
+    """`codex.quota.unavailable` must report #1861's taxonomy, not a bare
+    ``runtime_error`` — every one of these exceptions subclasses ``RuntimeError``,
+    which is exactly the collapse #2083 fixed in `redaction.scrub_exception`
+    (issue #1765: the quota reader hit the same opaque category)."""
+    client = FakeRateLimitClient(exc)
+    reader = CodexQuotaReader(clock=FakeClock())
+
+    with caplog.at_level(logging.WARNING, logger="server.codex.quota"):
+        await reader.read("acct", client=client)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].fields["detail"] == expected_category
+    assert warnings[0].fields["detail"] != "runtime_error"
 
 
 # ---------------------------------------------------------------------------
