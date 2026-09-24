@@ -12,4 +12,4 @@ matcher = "^(Bash|apply_patch)$"
 type = "command"
 command = '/usr/bin/python3 "$(git rev-parse --show-toplevel)/.claude/hooks/prod-deploy-gate.py"'
 timeout = 30
-statusMessage = "Checking ccswitch governance policy"
+statusMessage = "Checking ViberPit governance policy"

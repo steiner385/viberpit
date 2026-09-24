@@ -21,7 +21,11 @@ Safety invariants
   after ``max_dirty_age`` seconds (default 7 days).  The stash SHA is logged
   for recovery.  If stashing fails the worktree is still force-evicted
   (``git worktree remove --force``) — 7 days without an active session means
-  the changes are abandoned.
+  the changes are abandoned.  A failed stash is journalled per-worktree at
+  INFO and aggregated into one per-sweep WARNING with no path, the same
+  ``keep_stray``/``kept_stray=N`` split used for strays (#1652): a varying
+  path in a WARNING+ record survives ``error_signature.normalize`` and mints
+  a fresh auto-error fingerprint per host and path (#1642, #1663, #1992).
 """
 from __future__ import annotations
 
@@ -194,7 +198,8 @@ def sweep_orphaned_worktrees(
     Returns a count dict with keys:
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
       ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``,
-      ``orphaned``, ``orphaned_unmanaged``, ``kept_stray``, ``pruned_empty``
+      ``evicted_dirty_unstashed``, ``orphaned``, ``orphaned_unmanaged``,
+      ``kept_stray``, ``pruned_empty``
 
     **Orphans**: a worktree whose shared clone is gone is counted, never
     removed (#1003).  ``orphaned`` is the recoverable shape — the clone sits
@@ -216,6 +221,7 @@ def sweep_orphaned_worktrees(
         "kept_unpushed": 0,
         "kept_error": 0,
         "evicted_dirty": 0,
+        "evicted_dirty_unstashed": 0,
         "orphaned": 0,
         "orphaned_unmanaged": 0,
         "kept_stray": 0,
@@ -301,6 +307,7 @@ def sweep_orphaned_worktrees(
     _emit_orphan_alert(counts["orphaned"])
     _emit_unmanaged_orphan_alert(counts["orphaned_unmanaged"])
     _emit_stray_alert(counts["kept_stray"])
+    _emit_unstashed_eviction_alert(counts["evicted_dirty_unstashed"])
     return counts
 
 
@@ -337,10 +344,16 @@ def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
             wt, stash_sha, age_days,
         )
     else:
-        log.warning(
+        # INFO, like keep_stray: a path is per-worktree detail for the journal,
+        # and a varying path in a WARNING+ record mints a fresh error-triage
+        # fingerprint per host and path (#1652). The aggregated count is what
+        # tells an operator changes were discarded — see
+        # _emit_unstashed_eviction_alert.
+        log.info(
             "worktree-janitor: stash failed, discarding path=%s age_days=%.1f",
             wt, age_days,
         )
+        counts["evicted_dirty_unstashed"] += 1
 
     # After a successful stash the worktree is clean; after a failed stash we
     # use force=True to discard changes (7+ days with no active session).
@@ -426,6 +439,27 @@ def _emit_stray_alert(kept_stray: int) -> None:
         "git working trees and could not be reclaimed — see the keep_stray "
         "path= lines in this sweep",
         kept_stray,
+    )
+
+
+def _emit_unstashed_eviction_alert(evicted_dirty_unstashed: int) -> None:
+    """One line per sweep for max-age evictions whose stash failed (#1652).
+
+    Discarding uncommitted work is worth an operator's attention, unlike a
+    stray dir — but the text carries no paths, only the count, for the same
+    reason ``_emit_stray_alert`` doesn't: a varying path survives
+    ``error_signature.normalize`` and would mint a fresh auto-error
+    fingerprint per host and path instead of one condition (#1642, #1663,
+    #1992).  The paths are in this sweep's ``stash failed, discarding path=``
+    INFO lines.
+    """
+    if not evicted_dirty_unstashed:
+        return
+    log.warning(
+        "worktree-janitor: evicted_dirty_unstashed=%d max-age dirty worktree(s) "
+        "had their changes discarded because stashing failed — see the "
+        "'stash failed, discarding path=' lines in this sweep",
+        evicted_dirty_unstashed,
     )
 
 

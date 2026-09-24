@@ -215,10 +215,24 @@ class TestMaxAgeDirtyEviction:
             with patch(_REMOVE, return_value=True) as mock_rm:
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["evicted_dirty"] == 1
+        assert counts["evicted_dirty_unstashed"] == 1
         assert counts["removed"] == 1
         assert counts["kept_dirty"] == 0
         # remove_worktree called WITH force=True because stash failed
         mock_rm.assert_called_once_with(str(wt.resolve()), force=True)
+
+    def test_dirty_exceeds_grace_stash_succeeds_does_not_count_unstashed(self, tmp_path):
+        """A successful stash must not be miscounted as a discard (#1652)."""
+        _make_wt(tmp_path, "old-dirty-stashed", VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(0, "Saved working directory"),
+            "rev-parse refs/stash": _cp(0, "abc123def456"),
+        }
+        with patch(_RUN, side_effect=_fake_run(dirty_responses)):
+            with patch(_REMOVE, return_value=True):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evicted_dirty_unstashed"] == 0
 
     def test_eviction_remove_failure_increments_kept_error(self, tmp_path):
         """If remove_worktree fails after stash, increment kept_error not evicted_dirty."""
@@ -233,6 +247,92 @@ class TestMaxAgeDirtyEviction:
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["evicted_dirty"] == 0
         assert counts["kept_error"] == 1
+
+
+class TestUnstashedEvictionAlert:
+    """A failed stash discards work — worth an operator's attention (#1652) —
+    but the per-worktree path must never reach a WARNING+ record: error
+    triage mints one auto-error issue per distinct message, and a varying
+    path there filed one condition (387 occurrences across hosts/repos) as
+    an unbounded stream of issues instead of one.
+    """
+
+    def _sweep_unstashed(self, tmp_path, name, caplog):
+        import logging
+        wt = _make_wt(tmp_path, name, VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(1, "", "error: stash failed"),
+            "rev-parse refs/stash": _cp(1, "", ""),
+        }
+        with patch(_RUN, side_effect=_fake_run(dirty_responses)):
+            with patch(_REMOVE, return_value=True):
+                with caplog.at_level(logging.INFO, logger=_MOD):
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        return wt, counts
+
+    def test_stash_failure_is_never_logged_at_warning(self, tmp_path, caplog):
+        """The worktree path must never ride in a WARNING+ record (#1652)."""
+        wt, counts = self._sweep_unstashed(tmp_path, "old-dirty-nostash", caplog)
+        assert counts["evicted_dirty_unstashed"] == 1
+        assert not any(
+            str(wt.resolve()) in r.getMessage() and r.levelno >= 30  # WARNING
+            for r in caplog.records
+        )
+
+    def test_stash_failure_path_is_journalled_at_info(self, tmp_path, caplog):
+        wt, counts = self._sweep_unstashed(tmp_path, "old-dirty-nostash", caplog)
+        info = [r for r in caplog.records if r.levelno == 20]  # INFO
+        assert any(
+            str(wt.resolve()) in r.getMessage() and "stash failed" in r.getMessage()
+            for r in info
+        )
+
+    def test_unstashed_alert_is_one_aggregated_warning(self, tmp_path, caplog):
+        import logging
+        for i in range(3):
+            _make_wt(tmp_path, f"nostash{i}", VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(1, "", "error: stash failed"),
+            "rev-parse refs/stash": _cp(1, "", ""),
+        }
+        with patch(_RUN, side_effect=_fake_run(dirty_responses)):
+            with patch(_REMOVE, return_value=True):
+                with caplog.at_level(logging.WARNING, logger=_MOD):
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evicted_dirty_unstashed"] == 3
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "evicted_dirty_unstashed=3" in warnings[0].getMessage()
+
+    def test_unstashed_alert_is_one_triage_fingerprint(self, tmp_path, caplog):
+        """Paths stay out of the WARNING text, or triage files one issue per
+        host — the exact #1652 shape (387 occurrences from one condition)."""
+        import logging
+        from server.obs.error_signature import normalize
+
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(1, "", "error: stash failed"),
+            "rev-parse refs/stash": _cp(1, "", ""),
+        }
+
+        def _warning_for(sub, names):
+            base = tmp_path / sub
+            for n in names:
+                _make_wt(base, n, VERY_OLD, NOW)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger=_MOD):
+                with patch(_RUN, side_effect=_fake_run(dirty_responses)):
+                    with patch(_REMOVE, return_value=True):
+                        sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
+            return next(r.getMessage() for r in caplog.records
+                        if r.levelno == logging.WARNING)
+
+        a = _warning_for("kindash", ["00737b3e", "1f39f056"])
+        b = _warning_for("viberpit", ["b0433855", "c257153a", "25aa9b4f"])
+        assert normalize(a) == normalize(b)
 
 
 class TestDirtyAlerts:
