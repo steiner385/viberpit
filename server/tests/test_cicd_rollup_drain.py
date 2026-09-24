@@ -33,6 +33,7 @@ def _engine(monkeypatch=None, batch=None, clock=None):
         monkeypatch.setattr(mod, "_ROLLUP_BATCH", batch)
     engine = mod.CicdDoctorLoop.__new__(mod.CicdDoctorLoop)
     engine._clock = clock or (lambda: NOW)
+    engine._rollup_behind_log = mod.LogThrottle()
     return engine
 
 
@@ -86,12 +87,35 @@ async def test_rollup_stops_at_the_time_budget_and_keeps_partial_progress(monkey
         daily = (await db.execute(select(CiTestDaily))).scalars().all()
     assert raw_n == 15, "exactly one full batch should have been folded"
     assert daily and daily[0].passed == 10, "the folded batch must be committed"
-    behind = [r for r in caplog.records
-              if "rollup" in r.message and "behind" in r.message]
+    behind = [r for r in caplog.records if r.message == "cicd_doctor.rollup_behind"]
     assert behind, "stopping early must be logged as a WARNING naming the lag"
-    assert any("15" in r.message for r in behind), (
+    assert behind[0].levelno == logging.WARNING
+    assert behind[0].fields["remaining"] == 15, (
         "the WARNING must name the rows still stale (#833: 'log the lag' means "
         "the actual backlog size, not just that one exists)")
+
+
+@pytest.mark.asyncio
+async def test_rollup_behind_warning_is_throttled_across_ticks(monkeypatch, caplog):
+    """#2221: falling behind during a CI ingest burst is the designed,
+    self-healing degrade path, but every tick that spent the budget filed another
+    auto-error occurrence. The first tick reports at WARNING; repeats inside the
+    throttle window drop to DEBUG (still journaled, out of the error sink)."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    await _seed(45)
+    t = {"now": NOW}
+    def clock():
+        t["now"] += 1000.0
+        return t["now"]
+    engine = _engine(monkeypatch, batch=10, clock=clock)
+
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            await engine._rollup_passed({"rollup_budget_s": 0.5})
+
+    behind = [r for r in caplog.records if r.message == "cicd_doctor.rollup_behind"]
+    assert [r.levelno for r in behind] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert [r.fields["remaining"] for r in behind] == [35, 25, 15]
 
 
 @pytest.mark.asyncio
