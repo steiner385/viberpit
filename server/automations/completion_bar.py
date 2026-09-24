@@ -40,6 +40,9 @@ class PrFact:
     url: str
     in_merge_queue: bool = False   # mergeQueueEntry != null
     checks: str = "none"           # rollup: 'passing' | 'failing' | 'pending' | 'none'
+    # True when every changed file (files page-1) is under docs/ — a spec/plan-only
+    # PR that merging does not mean the implementation landed (#1756).
+    is_docs_only: bool = False
 
     @property
     def is_armed(self) -> bool:
@@ -82,7 +85,8 @@ class PrFacts:
             "has_repo": self.has_repo,
             "prs": [{"number": p.number, "state": p.state, "is_draft": p.is_draft,
                      "auto_merge_enabled": p.auto_merge_enabled,
-                     "in_merge_queue": p.in_merge_queue, "checks": p.checks}
+                     "in_merge_queue": p.in_merge_queue, "checks": p.checks,
+                     "is_docs_only": p.is_docs_only}
                     for p in self.prs],
         }
 
@@ -174,7 +178,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     overriding the non-code/research escape hatch that would otherwise return
     ``met=True`` with no PR in the cache."""
     merged = facts.merged_pr
-    if merged is not None:
+    if merged is not None and not (merged.is_docs_only and _is_code_goal(goal)):
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
     armed = facts.armed_pr
     if armed is not None:

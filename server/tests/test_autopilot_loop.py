@@ -28,10 +28,13 @@ class FakeCtx:
 
 
 def _dc(sid="s1", *, no_auto_archive=False, origin=None):
+    # stuck has no open card by default: the "complete"-decision tests below feed
+    # this through post_validate, which now escalates (never archives) a `complete`
+    # arriving on top of an open question/permission/plan card (#1756) — a fixture
+    # default of "permission" here would spuriously trip that guard.
     return DecisionContext(session_id=sid, status="waiting_input", account="a", repo=None,
                            branch=None, effective_goal="g", goal_source="explicit",
-                           stuck={"kind": "permission", "tool_name": "Bash",
-                                  "tool_input": {"command": "pytest"}},
+                           stuck={"kind": "idle"},
                            transcript_tail=[], ledger={}, no_auto_archive=no_auto_archive,
                            origin=origin)
 

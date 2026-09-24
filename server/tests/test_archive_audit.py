@@ -535,6 +535,109 @@ def test_self_declared_no_pr_row_on_code_goal_is_not_legit():
     assert unarchived == []
 
 
+# ---------------------------------------------------------------------------
+# docs-only merged PR (#1756): 70904123 was auto-archived because its docs-only
+# spec/plan PR (#1644) merged, while the implementation branch was never pushed.
+# ---------------------------------------------------------------------------
+
+def test_pr_fact_from_gh_sets_is_docs_only_true_when_every_file_under_docs():
+    d = {"number": 1644, "state": "MERGED", "isDraft": False, "autoMergeRequest": None,
+         "url": "http://x/1644",
+         "files": {"nodes": [{"path": "docs/plans/roadmap.md"}, {"path": "docs/README.md"}]}}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.is_docs_only is True
+
+
+def test_pr_fact_from_gh_sets_is_docs_only_false_when_any_file_outside_docs():
+    d = {"number": 1, "state": "MERGED", "isDraft": False, "autoMergeRequest": None,
+         "url": "http://x/1",
+         "files": {"nodes": [{"path": "docs/plan.md"}, {"path": "server/x.py"}]}}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.is_docs_only is False
+
+
+def test_pr_fact_from_gh_is_docs_only_false_when_files_absent():
+    d = {"number": 1, "state": "MERGED", "isDraft": False, "autoMergeRequest": None,
+         "url": "http://x/1"}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.is_docs_only is False
+
+
+def test_docs_only_merged_pr_is_not_legit_for_code_goal():
+    """A docs-only merged PR must not satisfy an implementation goal — the retro
+    audit should keep re-judging the session instead of treating it as legit."""
+    unarchived = []
+    row = _row("s1", "implement automatic roadmap execution")
+    docs_only_merged = {"number": 1644, "state": "MERGED", "isDraft": False,
+                        "autoMergeRequest": None, "url": "http://x/1644",
+                        "files": {"nodes": [{"path": "docs/plans/roadmap.md"}]}}
+    out = asyncio.run(aa.run_audit(
+        [row], _gh_returning(docs_only_merged), unarchived.append))
+    assert out[0]["bucket"] != "legit"
+
+
+def test_real_gh_query_requests_files_field(monkeypatch):
+    """_real_gh's GraphQL query must fetch changed-file paths so docs-only can be
+    detected (#1756)."""
+    cap: dict = {}
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh("{}", capture=cap))
+    aa._real_gh("o/r", "feat/x")
+    assert any("files(first:" in a or "files(first: " in a for a in cap["args"])
+
+
+def test_real_gh_num_query_requests_files_field(monkeypatch):
+    cap: dict = {}
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh("{}", capture=cap))
+    aa._real_gh_num("o/r", 42)
+    assert any("files(first:" in a or "files(first: " in a for a in cap["args"])
+
+
+# ---------------------------------------------------------------------------
+# archive_context.pr_state seeding (#1756): the audit should recognize a PR that
+# was already known at archive time even when it lives on a branch the session
+# never recorded in authored_branches.
+# ---------------------------------------------------------------------------
+
+def test_archived_pr_numbers_from_pr_state():
+    ctx = {"pr_state": {"has_repo": True, "prs": [{"number": 16225}, {"number": 1558}]}}
+    assert aa.archived_pr_numbers(ctx) == [1558, 16225]
+
+
+def test_archived_pr_numbers_handles_none_and_missing():
+    assert aa.archived_pr_numbers(None) == []
+    assert aa.archived_pr_numbers({}) == []
+    assert aa.archived_pr_numbers({"pr_state": None}) == []
+    assert aa.archived_pr_numbers({"pr_state": {"prs": []}}) == []
+
+
+def test_archived_row_to_dict_carries_archive_context():
+    import types
+    row = types.SimpleNamespace(
+        id="s1", repo="o/r", branch="b", authored_branches=[], initial_prompt=None,
+        active_goal=None, inferred_goal=None, name="n",
+        pr_resolution=None, pr_resolution_source=None,
+        archive_context={"pr_state": {"prs": [{"number": 16225}]}})
+    assert aa._archived_row_to_dict(row)["archive_context"] == {
+        "pr_state": {"prs": [{"number": 16225}]}}
+
+
+def test_run_audit_seeds_ref_numbers_from_archive_context_pr_state():
+    """A PR the session never recorded in authored_branches/goal text, but which
+    WAS known at archive time (archive_context.pr_state), is still found via
+    gh_num_fn — matching a merged/armed PR should flip the bucket to legit."""
+    unarchived = []
+    row = _row("s1", "ship the dashboard feature", branch="feature/single-home-dashboard",
+               authored=())
+    row["archive_context"] = {"pr_state": {"prs": [{"number": 16225}]}}
+    merged_pr = {"number": 16225, "state": "MERGED", "isDraft": False,
+                 "autoMergeRequest": None, "url": "http://x/16225"}
+    out = asyncio.run(aa.run_audit(
+        [row], _gh_returning(None), unarchived.append,
+        gh_num_fn=_gh_num_returning(merged_pr)))
+    assert out[0]["bucket"] == "legit"
+    assert unarchived == []
+
+
 def test_archived_row_dict_carries_resolution_source():
     """The audit's row shape must carry provenance or classify() cannot tell a
     self-certified marker from a classifier-verified resolution."""

@@ -135,3 +135,38 @@ def test_round_trip_preserves_touches_workflows():
 def test_from_dict_defaults_touches_workflows_false_when_missing():
     d = {"number": 23, "url": "u", "state": "open", "checks": "passing", "title": "t"}
     assert PullRequestInfo.from_dict(d).touches_workflows is False
+
+
+# --- docsOnly (#1756): a spec/plan-only PR merging must not read as landed code ---
+
+def test_to_info_docs_only_true_when_every_file_under_docs():
+    info = _to_info(_node_with_files(["docs/design/plan.md", "docs/README.md"]), {})
+    assert info.docs_only is True
+
+
+def test_to_info_docs_only_false_when_any_file_outside_docs():
+    info = _to_info(_node_with_files(["docs/plan.md", "src/x.py"]), {})
+    assert info.docs_only is False
+
+
+def test_to_info_docs_only_false_when_files_absent():
+    node = {"number": 24, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "", "updatedAt": "", "commits": {"nodes": []}}
+    assert _to_info(node, {}).docs_only is False
+
+
+def test_to_info_docs_only_false_when_files_empty():
+    info = _to_info(_node_with_files([]), {})
+    assert info.docs_only is False
+
+
+def test_round_trip_preserves_docs_only():
+    info = PullRequestInfo(number=25, url="u", state="merged", checks="passing", title="t",
+                           docs_only=True)
+    back = PullRequestInfo.from_dict(info.to_dict())
+    assert back.docs_only is True
+
+
+def test_from_dict_defaults_docs_only_false_when_missing():
+    d = {"number": 26, "url": "u", "state": "open", "checks": "passing", "title": "t"}
+    assert PullRequestInfo.from_dict(d).docs_only is False

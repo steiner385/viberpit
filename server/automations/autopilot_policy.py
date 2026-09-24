@@ -262,6 +262,14 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         opts = stuck.get("options") or []
         if decision.answer_index is None or not (0 <= decision.answer_index < len(opts)):
             return Decision(action="escalate", reason="answer_index out of range")
+    if decision.action == "complete" and stuck.get("kind") in ("question", "permission", "plan"):
+        # The completion-marker path (_completion_open_question) already holds a
+        # session with an open structured card instead of archiving it; this is the
+        # same hold for the autopilot decision path. An untrusted decider must never
+        # override a still-open question/permission/plan by calling the goal met —
+        # 7866e6a5 was archived over a live hand-back question this way (#1756).
+        return Decision(action="escalate",
+                        reason=f"open {stuck['kind']} pending — cannot archive")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally

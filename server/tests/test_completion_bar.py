@@ -13,10 +13,10 @@ def _facts(prs=(), has_repo=True):
 
 
 def _pr(number=1, state="open", is_draft=False, auto_merge=False, in_merge_queue=False,
-        checks="none"):
+        checks="none", is_docs_only=False):
     return PrFact(number=number, state=state, is_draft=is_draft,
                   auto_merge_enabled=auto_merge, in_merge_queue=in_merge_queue,
-                  url=f"http://x/{number}", checks=checks)
+                  url=f"http://x/{number}", checks=checks, is_docs_only=is_docs_only)
 
 
 def test_merged_pr_is_met_high():
@@ -163,6 +163,34 @@ def test_merged_pr_ignores_stale_failing_checks():
     'failing' (merge precedence is evaluated before the armed CI gate)."""
     v = met_bar("fix ci", "explicit",
                 _facts([_pr(state="merged", checks="failing")]))
+    assert v.met and v.confidence == "high"
+
+
+# ---------------------------------------------------------------------------
+# docs-only merged PR must not satisfy a code goal (#1756)
+# ---------------------------------------------------------------------------
+
+def test_docs_only_merged_pr_does_not_satisfy_code_goal():
+    """A spec/plan-only PR (every changed file under docs/) merging does not mean
+    the implementation landed — 70904123 was auto-archived on this false premise
+    (PR #1644, docs-only, merged) while the code branch was never pushed."""
+    v = met_bar("implement automatic roadmap execution", "explicit",
+                _facts([_pr(state="merged", is_docs_only=True)]))
+    assert not v.met
+
+
+def test_docs_only_merged_pr_still_meets_research_goal():
+    """A docs-only merge is exactly what a research/Q&A goal should produce — the
+    disqualification only applies to code goals."""
+    v = met_bar("investigate the flaky test", "explicit",
+                _facts([_pr(state="merged", is_docs_only=True)]))
+    assert v.met
+
+
+def test_non_docs_only_merged_pr_still_satisfies_code_goal():
+    """Regression guard: an ordinary merged PR (not docs-only) is unaffected."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="merged", is_docs_only=False)]))
     assert v.met and v.confidence == "high"
 
 

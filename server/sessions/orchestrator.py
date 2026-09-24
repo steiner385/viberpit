@@ -11861,7 +11861,7 @@ class SessionOrchestrator:
                     number=info.number, state=info.state, is_draft=info.is_draft,
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks)
+                    checks=info.checks, is_docs_only=info.docs_only)
         return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
 
     async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
@@ -12098,7 +12098,7 @@ class SessionOrchestrator:
                     number=info.number, state=info.state, is_draft=info.is_draft,
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks))
+                    checks=info.checks, is_docs_only=info.docs_only))
         if extra:
             facts = PrFacts(has_repo=facts.has_repo, prs=facts.prs + tuple(extra))
         return facts

@@ -324,6 +324,48 @@ def test_structured_question_still_defers_to_the_decider():
     assert pre_decide(ctx, CONFIG, now=1000.0) is None
 
 
+# --------------------------------------------------------------------------- #
+# The completion-marker path (_auto_archive_completed / _completion_open_question) #
+# already holds a session with an open structured card (question/permission/plan)  #
+# instead of archiving it. The autopilot decision path's own `complete` -> archive #
+# route had no equivalent: a decider that mis-judges "goal met" while a card is    #
+# still open must not win — 7866e6a5 was archived over a live hand-back question   #
+# on 2026-09-09 (issue #1756). `pre_decide` already forces `escalate` for a bare   #
+# hand-back (`waiting_question` with no card); this closes the same hole for a     #
+# structured card, where `pre_decide` intentionally defers to the decider.         #
+# --------------------------------------------------------------------------- #
+
+def test_complete_with_open_question_card_is_escalated_not_archived():
+    ctx = _ctx(status="waiting_question",
+               stuck={"kind": "question", "question_id": "q1", "question": "Which?",
+                      "options": ["a", "b"]})
+    d = post_validate(Decision(action="complete", reason="goal met"), ctx, CONFIG)
+    assert d.action == "escalate"
+
+
+def test_complete_with_open_permission_card_is_escalated_not_archived():
+    ctx = _ctx(status="waiting_input",
+               stuck={"kind": "permission", "tool_name": "Bash",
+                      "tool_input": {"command": "pytest"}})
+    d = post_validate(Decision(action="complete", reason="goal met"), ctx, CONFIG)
+    assert d.action == "escalate"
+
+
+def test_complete_with_open_plan_card_is_escalated_not_archived():
+    ctx = _ctx(status="waiting_input",
+               stuck={"kind": "plan", "tool_name": "ExitPlanMode", "plan_text": "..."})
+    d = post_validate(Decision(action="complete", reason="goal met"), ctx, CONFIG)
+    assert d.action == "escalate"
+
+
+def test_complete_without_an_open_card_is_unaffected():
+    """Regression guard: the new guard must not fire for the ordinary self-declared
+    complete status (stuck.kind == 'complete')."""
+    ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_armed_facts())
+    d = post_validate(Decision(action="complete", reason="armed"), ctx, CONFIG)
+    assert d.action == "complete"
+
+
 def test_hand_back_fingerprint_keys_on_the_reason():
     """A NEW hand-back reason is new information: it must re-surface in the feed,
     so it needs a fresh fingerprint (the escalate de-spam keys on it)."""
