@@ -113,6 +113,56 @@ def test_hysteresis_applies_on_second_tick():
     assert second.per_product == first.pending
 
 
+def test_hysteresis_ticks_is_a_config_knob_not_a_hardcoded_two():
+    """#2032 deferred-minor: `hysteresis_ticks` generalises the streak length —
+    default 2 (unchanged), but 1 applies immediately and 3 needs a second
+    confirming repeat before the value the default would already have applied."""
+    i = _inputs()
+
+    # hysteresis_ticks=1: nothing to confirm, the first proposal applies straight away.
+    immediate = plan_capacity(i, push_level="steady", hysteresis_ticks=1)
+    assert immediate.per_product == {"kindash": 2, "viberpit": 2, "ghostdriver": 2}
+    assert immediate.pending == {}
+
+    # hysteresis_ticks=3: the default's second (confirming) tick is not enough yet.
+    first = plan_capacity(i, push_level="steady", hysteresis_ticks=3)
+    second = plan_capacity(i, push_level="steady", hysteresis_ticks=3, previous=first)
+    assert second.per_product == first.per_product   # still carried, not yet confirmed
+    assert second.pending == first.pending
+    third = plan_capacity(i, push_level="steady", hysteresis_ticks=3, previous=second)
+    assert third.per_product == first.pending         # confirmed on the third matching tick
+    assert third.pending == {}
+
+
+def test_hysteresis_streak_survives_the_store_round_trip():
+    """The streak has no column: the governor loop writes it as `budget.pendingStreak`
+    and `plan_from_dict` restores it, so a real (persisted) plan confirms on the
+    same tick an in-memory one would."""
+    from server.automations.capacity_plan import plan_from_dict
+
+    i = _inputs()
+    first = plan_capacity(i, push_level="steady", hysteresis_ticks=3)
+    stored = {"pushLevel": first.push_level, "fleetConcurrency": first.fleet_concurrency,
+              "perProduct": first.per_product, "pending": first.pending,
+              "budget": {**first.budget, "limiting": first.limiting,
+                         "pendingStreak": first.pending_streak}}
+    restored = plan_from_dict(stored)
+    assert restored.pending_streak == {"kindash": 1, "viberpit": 1, "ghostdriver": 1}
+    second = plan_capacity(i, push_level="steady", hysteresis_ticks=3, previous=restored)
+    assert second.pending_streak == {"kindash": 2, "viberpit": 2, "ghostdriver": 2}
+
+
+def test_a_changed_proposal_restarts_the_hysteresis_streak():
+    """Confirmation is for the SAME value repeated: a source that flaps 2 → 3 → 2 must
+    not accumulate a streak across the different values."""
+    first = plan_capacity(_inputs(), push_level="steady", hysteresis_ticks=3)
+    flapped = plan_capacity(_inputs(accounts=(_acct("a1"), _acct("a2"))), push_level="steady",
+                            hysteresis_ticks=3, previous=first)
+    assert flapped.pending != first.pending
+    assert all(streak == 1 for slug, streak in flapped.pending_streak.items()
+               if flapped.pending[slug] != first.pending.get(slug))
+
+
 def test_zero_available_accounts_idles_with_reset():
     i = _inputs(accounts=(
         _acct("a1", available=False, next_reset_at="2026-09-23T08:00:00+00:00"),

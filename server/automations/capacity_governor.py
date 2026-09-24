@@ -9,7 +9,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from .base import AutomationStatus, ConfigField
-from .capacity_plan import PUSH_LEVELS, plan_capacity, plan_from_dict
+from .capacity_plan import DEFAULT_HYSTERESIS_TICKS, PUSH_LEVELS, plan_capacity, plan_from_dict
 from .capacity_readout import readout_to_inputs
 from .context import observation_failed, publish_observation
 from .engine_policy import EnginePolicy
@@ -33,6 +33,10 @@ class CapacityGovernor:
         ConfigField("sessions_per_account", "Sessions per account", "int", 2, min=1,
                     help="Concurrent runner sessions one account can carry before its quota "
                          "burns faster than it resets.",
+                    surface="capacity"),
+        ConfigField("hysteresis_ticks", "Confirmation ticks", "int", DEFAULT_HYSTERESIS_TICKS, min=1,
+                    help="How many consecutive ticks must propose the same new in-flight cap "
+                         "before it is applied; 1 applies changes immediately.",
                     surface="capacity"),
     ]
 
@@ -97,13 +101,15 @@ class CapacityGovernorLoop:
         previous = plan_from_dict(await self._read_plan())
         plan = plan_capacity(readout_to_inputs(readout), push_level=config.get("push_level", "steady"),
                              sessions_per_account=int(config.get("sessions_per_account") or 2),
+                             hysteresis_ticks=int(config.get("hysteresis_ticks") or DEFAULT_HYSTERESIS_TICKS),
                              previous=previous)
         applied = mode == "act" and bool(self._kill_switch())
         try:
             await self._write_plan({
                 "pushLevel": plan.push_level, "applied": applied,
                 "fleetConcurrency": plan.fleet_concurrency, "perProduct": plan.per_product,
-                "pending": plan.pending, "budget": {**plan.budget, "limiting": plan.limiting},
+                "pending": plan.pending, "budget": {**plan.budget, "limiting": plan.limiting,
+                           "pendingStreak": plan.pending_streak},
                 "binding": readout.get("binding"), "reasons": plan.reasons,
                 "defects": readout.get("defects", []),
             })
@@ -125,13 +131,20 @@ class CapacityGovernorLoop:
         self._stale_emitted = False
         prev_caps = previous.per_product if previous else {}
         for slug, cap in plan.per_product.items():
-            if slug in prev_caps and prev_caps[slug] != cap:
-                reason = next((r for r in plan.reasons if r.startswith(f"{slug}:")), "")
-                mode_text = "applied" if applied else "monitor only"
-                suffix = f": {reason}" if reason else ""
-                await self._ctx.emit(
-                    "info", f"{slug} in-flight cap {prev_caps[slug]} → {cap} ({mode_text}{suffix})",
-                    kind="cap_changed", target=slug)
+            # Two silent cases, both deliberate: the very first plan (`previous` is
+            # None — nothing was shown before, so nothing "changed"), and a cap that
+            # did not move. A slug missing from an EXISTING previous plan is that
+            # product's first derived cap (newly added, dispatch turned on, backlog
+            # refilled): announce it, or the owner never hears a product joined.
+            if previous is None or prev_caps.get(slug) == cap:
+                continue
+            reason = next((r for r in plan.reasons if r.startswith(f"{slug}:")), "")
+            mode_text = "applied" if applied else "monitor only"
+            suffix = f": {reason}" if reason else ""
+            change = f"{prev_caps[slug]} → {cap}" if slug in prev_caps else f"first derived: {cap}"
+            await self._ctx.emit(
+                "info", f"{slug} in-flight cap {change} ({mode_text}{suffix})",
+                kind="cap_changed", target=slug)
         current = {d["target"] for d in readout.get("defects", [])}
         for d in readout.get("defects", []):
             if d["target"] not in self._defects_emitted:

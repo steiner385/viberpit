@@ -3,22 +3,27 @@ from datetime import datetime, timezone
 
 import pytest
 
+# QuotaWindow/anthropic_snapshot via tests.helpers (the real source, already
+# imported there for `usage()`) rather than through server.api.accounts, which
+# used to carry an unused re-export (suppressed as F401) solely so this file
+# could reach them — and rather than a second copy of that import here, which
+# the brand ratchet's `python-package` category has no headroom for (#2032).
+from tests.helpers import QuotaWindow, anthropic_snapshot, register_accounts, temp_env
 from server.api import accounts as accounts_api
 
 
 def _snap(weekly_pct: float, provider="anthropic", session_pct: float = 10.0):
-    # accounts_api.anthropic_snapshot (not a hand-rolled QuotaSnapshot) so the
-    # windows carry duration_seconds — QuotaSnapshot.reserve_window() needs it to
-    # pick the longest (weekly) window over session, exactly as the real read
-    # path does.
+    # anthropic_snapshot (not a hand-rolled QuotaSnapshot) so the windows carry
+    # duration_seconds — QuotaSnapshot.reserve_window() needs it to pick the
+    # longest (weekly) window over session, exactly as the real read path does.
     if provider == "anthropic":
-        return accounts_api.anthropic_snapshot(session_pct, None, weekly_pct,
-                                               datetime(2026, 9, 23, 8, tzinfo=timezone.utc))
+        return anthropic_snapshot(session_pct, None, weekly_pct,
+                                  datetime(2026, 9, 23, 8, tzinfo=timezone.utc))
     return accounts_api.QuotaSnapshot(
         provider=provider, fetched_at=datetime.now(timezone.utc), availability=accounts_api.AVAILABLE,
-        windows=(accounts_api.QuotaWindow(key="session", label="session", used_pct=session_pct),
-                 accounts_api.QuotaWindow(key="weekly", label="weekly", used_pct=weekly_pct,
-                                          resets_at=datetime(2026, 9, 23, 8, tzinfo=timezone.utc))))
+        windows=(QuotaWindow(key="session", label="session", used_pct=session_pct),
+                 QuotaWindow(key="weekly", label="weekly", used_pct=weekly_pct,
+                            resets_at=datetime(2026, 9, 23, 8, tzinfo=timezone.utc))))
 
 
 @pytest.fixture
@@ -103,3 +108,30 @@ def test_effective_reserve_pct_is_override_or_push_level():
     assert accounts_api.effective_reserve_pct({"weeklyReservePct": None}, "steady") == 20.0
     assert accounts_api.effective_reserve_pct({}, "conserve") == 40.0
     assert accounts_api.effective_reserve_pct({}, "bogus") == 20.0
+
+
+def test_headroom_engine_uses_canonical_registry_resolution(monkeypatch):
+    """#2032 deferred-minor: ``engine`` must come from
+    ``account_registry.entry(name).engine`` (the same resolution
+    ``account_to_wire`` uses), never a ``provider == "openai"`` guess — a Copilot
+    account is ALSO provider "openai" and that heuristic would misclassify it as
+    codex."""
+    with temp_env():
+        register_accounts("codex-acct", provider="openai", engine="codex")
+        register_accounts("plain-acct", provider="anthropic")
+        infos = [{"name": "codex-acct", "enabled": True, "provider": "openai"},
+                 {"name": "plain-acct", "enabled": True, "provider": "anthropic"},
+                 # Not in the manifest at all — must still resolve to the engine
+                 # registry's default, never raise.
+                 {"name": "unregistered", "enabled": True, "provider": "anthropic"}]
+        monkeypatch.setattr(accounts_api, "list_accounts", lambda: infos)
+
+        async def gather(orch, names, timeout):
+            return {n: (None, None) for n in names}
+        monkeypatch.setattr(accounts_api, "_gather_usages", gather)
+
+        rows = asyncio.run(accounts_api.account_headroom(object(), push_level="steady"))
+        by = {r["name"]: r for r in rows}
+        assert by["codex-acct"]["engine"] == "codex"
+        assert by["plain-acct"]["engine"] == "claude_code"
+        assert by["unregistered"]["engine"] == "claude_code"

@@ -244,7 +244,8 @@ def test_decide_failure_is_contained_to_its_own_product():
     assert len(r["products"]) == 2
     by_slug = {p["slug"]: p for p in r["products"]}
     assert by_slug["broken"]["constraint"] == "readout_unavailable"
-    assert "admission read failed" in by_slug["broken"]["waitingOn"]
+    # Fixed sentence, not the raw exception text (#2032 deferred-minor).
+    assert by_slug["broken"]["waitingOn"] == "Admission read failed; retrying next tick."
     assert by_slug["broken"]["eligible"] == 5
     # The OTHER product's own read still ran normally and is unaffected.
     assert by_slug["viberpit"]["constraint"] == "product_capacity_full"

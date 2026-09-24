@@ -162,6 +162,22 @@ describe('FleetSection — weight and cap', () => {
     expect(api.put).not.toHaveBeenCalled()
   })
 
+  // #2032: the weight field gets the same guard the cap field has — a blank,
+  // zero, negative, fractional or out-of-range entry never reaches the server
+  // (which would silently clamp it), the field reverts, and the row says why.
+  it.each(['', '0', '-2', '2.5', '1001'])(
+    'weight "%s" sends nothing, reverts the field, and shows a row-level error',
+    (bad) => {
+      renderFleet([fleetHost({ name: 'rocky', weight: 3 })])
+      const input = screen.getByLabelText('weight (dispatch share) for rocky')
+      fireEvent.change(input, { target: { value: bad } })
+      fireEvent.blur(input)
+      expect(api.put).not.toHaveBeenCalled()
+      expect(input).toHaveValue(3)
+      expect(screen.getByRole('alert')).toHaveTextContent('Weight must be a whole number from 1 to 1000')
+    },
+  )
+
   it('has a Cap column, blank for a host with no cap', () => {
     renderFleet([fleetHost({ name: 'rocky', maxSessions: null })])
     expect(screen.getByRole('columnheader', { name: 'Cap' })).toBeInTheDocument()

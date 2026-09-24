@@ -32,8 +32,7 @@ from ccswitch import account_registry, copilot, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
-from ccswitch.quota import (AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot,  # noqa: F401 - QuotaWindow/anthropic_snapshot re-exported for server.tests.test_account_headroom
-                            QuotaWindow, anthropic_snapshot, unknown_snapshot)
+from ccswitch.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
 from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
 from server.automations.capacity_governor import CapacityGovernor
@@ -259,6 +258,20 @@ async def _push_level() -> str:
     return push_level_of(gov)
 
 
+def _account_engine(name: str) -> str:
+    """The account's engine, resolved the same way ``account_to_wire`` resolves
+    it (``account_registry.entry(name).engine``, defaulting to
+    ``AgentEngine.CLAUDE_CODE``) — NOT a provider-based guess. ``list_accounts()``
+    rows never carry an ``engine`` key, so a ``provider == "openai"`` heuristic
+    here would silently misclassify anything not on that one axis (e.g. a
+    Copilot account, whose provider is also ``openai``) (#2032 deferred-minor)."""
+    try:
+        entry = account_registry.entry(name)
+    except (UnknownAccountError, OSError):
+        return AgentEngine.CLAUDE_CODE.value
+    return entry.engine or AgentEngine.CLAUDE_CODE.value
+
+
 def effective_reserve_pct(acct: dict, push_level: str) -> float:
     """THE reserve an account is judged by (spec 2026-09-20 D4): its own
     ``weeklyReservePct`` override when set, else the push level's ``RESERVE_PCT``.
@@ -323,7 +336,7 @@ async def account_headroom(orch, *, push_level: str,
                 if reserve_window is not None and reserve_window.resets_at is not None:
                     next_reset = iso_utc(reserve_window.resets_at)
         rows.append({
-            "name": name, "engine": acct.get("engine") or ("codex" if acct.get("provider") == "openai" else "claude_code"),
+            "name": name, "engine": _account_engine(name),
             "provider": acct.get("provider"), "enabled": enabled, "metered": metered,
             "available": reason is None, "reason": reason, "nextResetAt": next_reset,
             "reservePct": reserve,

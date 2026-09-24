@@ -206,6 +206,46 @@ def test_wiring_decide_feeds_pr_doctor_pending_into_admission(tmp_path, monkeypa
     asyncio.run(run())
 
 
+def test_wiring_decide_calls_gather_implementation_snapshot_once_per_tick(tmp_path, monkeypatch):
+    """#2032 deferred-minor: the comment on `sources_for` promises ONE
+    `gather_implementation_snapshot()` per readout tick — built lazily on the
+    first `decide()` and reused for the rest of that `sources_for()` call —
+    not one `gh`-subprocess fan-out per product. Nothing previously asserted
+    the call count, so a regression (e.g. dropping the `nonlocal _snapshot`
+    cache) would pass every other test silently."""
+    async def run():
+        await _init(tmp_path, "seams_snapshot_calls.db")
+        _identity(monkeypatch)
+        await _seed_product("product-a", "o/r", policy={"dispatch": "auto"})
+        await _seed_product("product-b", "o/r2", policy={"dispatch": "auto"})
+        await _set_runner_row(mode="on", config={"max_concurrent": 5, "max_spawns_per_day": 10})
+        orch = _orch_with_ctx()
+
+        calls: list[list[str]] = []
+
+        async def fake_gather(repos, *, context, pr_doctor_pending):
+            calls.append(list(repos))
+            return await gather_implementation_snapshot(
+                repos, context=context, pr_doctor_pending=pr_doctor_pending)
+
+        monkeypatch.setattr("server.automations.capacity_wiring.gather_implementation_snapshot",
+                            fake_gather)
+
+        from server.automations.capacity_wiring import sources_for
+        sources = sources_for(orch)
+        await sources.decide("o/r", "product-a")
+        await sources.decide("o/r2", "product-b")
+        assert len(calls) == 1   # one fan-out call, covering both repos, for both decide()s
+
+        # A fresh `sources_for()` (the next readout tick) builds its own snapshot —
+        # this is a per-tick cache, not a long-lived one.
+        sources2 = sources_for(orch)
+        await sources2.decide("o/r", "product-a")
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # Admission end to end: the plan's per-product cap governs product_capacity   #
 # --------------------------------------------------------------------------- #

@@ -158,6 +158,36 @@ async def test_cap_changed_emitted_once_per_confirmed_change():
 
 
 @pytest.mark.asyncio
+async def test_cap_changed_announces_a_products_first_derived_cap():
+    """#2032 deferred-minor: a slug absent from an EXISTING previous plan (a product
+    just added, dispatch turned on, backlog refilled) is announced once; the very
+    first plan (`previous is None`) stays silent."""
+    readout = _readout(products=[_product("viberpit", rank=1, eligible=5),
+                                 _product("kindash", rank=2, eligible=5)],
+                       accounts_available=1, accounts_total=1)
+    # The stored plan already covers viberpit at the value this tick proposes, so
+    # kindash is the only slug with news: it is not in `perProduct` at all.
+    previous_plan = {"pushLevel": "steady", "applied": False, "fleetConcurrency": 2,
+                     "perProduct": {"viberpit": 1}, "pending": {}, "budget": {}}
+    # hysteresis_ticks=1: kindash's cap confirms on the very tick it is proposed,
+    # so this test isolates the first-appearance announcement from the separate
+    # (correct) "cap changed" event a carried-then-confirmed value would also fire.
+    loop, ctx, _calls, _store = _build_loop(readout=readout, initial_plan=previous_plan,
+                                            config={"hysteresis_ticks": 1})
+
+    await loop.tick()
+    announced = [e for e in ctx.events if e["kind"] == "cap_changed" and e["target"] == "kindash"]
+    assert len(announced) == 1
+    assert announced[0]["level"] == "info"
+    assert "first derived" in announced[0]["summary"]
+
+    # The next tick has it in the previous plan: no repeat announcement.
+    await loop.tick()
+    assert len([e for e in ctx.events
+                if e["kind"] == "cap_changed" and e["target"] == "kindash"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_readout_failure_keeps_previous_plan_and_emits_plan_stale_once():
     loop, ctx, calls, _store = _build_loop(readout_raises=True)
     await loop.tick()
@@ -217,7 +247,7 @@ def test_the_automation_surface_is_claude_only_with_off_monitor_act():
     assert a.id == "capacity-governor"
     assert a.modes == ("off", "monitor", "act")
     assert a.engine_policy is EnginePolicy.CLAUDE_ONLY
-    assert {f.key for f in a.config_schema} == {"push_level", "sessions_per_account"}
+    assert {f.key for f in a.config_schema} == {"push_level", "sessions_per_account", "hysteresis_ticks"}
     assert {f.surface for f in a.config_schema} == {"capacity"}
 
 

@@ -156,10 +156,14 @@ async def build_readout(src: CapacitySources) -> dict:
         else:
             try:
                 decision, _pol = await src.decide(p["primaryRepo"], slug)
-            except Exception as exc:  # noqa: BLE001 — one product's admission read must not blank the whole stack
+            except Exception:  # noqa: BLE001 — one product's admission read must not blank the whole stack
+                # Fixed sentence, not the raw exception text (#2032 deferred-minor):
+                # this card is visible to anyone who can see the product, and the
+                # exception could carry request/path detail that belongs in the log,
+                # not the UI. The full exception is still in the warning below.
                 log.warning("capacity_readout.decide_failed slug=%s", slug, exc_info=True)
                 constraint = "readout_unavailable"
-                waiting = f"admission read failed: {exc}"
+                waiting = "Admission read failed; retrying next tick."
             else:
                 refused = [c for c in decision.constraints if c.state != "permitted"]
                 if refused:

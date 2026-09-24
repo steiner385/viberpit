@@ -60,6 +60,9 @@ class CapacityPlan:
     budget: dict
     reasons: list[str] = field(default_factory=list)
     limiting: str = "none"
+    # Consecutive ticks each `pending` value has been proposed (hysteresis
+    # bookkeeping). Persisted inside `budget` — see `plan_from_dict`.
+    pending_streak: dict[str, int] = field(default_factory=dict)
 
 
 def product_order(products) -> list[ProductCapacity]:
@@ -78,7 +81,11 @@ def plan_from_dict(d: dict | None) -> CapacityPlan | None:
                         # (CapacityGovernorLoop) smuggles it into `budget`; restore it
                         # here rather than leave every reader of a round-tripped plan
                         # seeing the CapacityPlan default ("none").
-                        limiting=str((d.get("budget") or {}).get("limiting") or "none"))
+                        limiting=str((d.get("budget") or {}).get("limiting") or "none"),
+                        # Same story for the hysteresis streak: no column, so the
+                        # writer carries it in `budget` (`budget.pendingStreak`).
+                        pending_streak={k: int(v) for k, v in
+                                        ((d.get("budget") or {}).get("pendingStreak") or {}).items()})
 
 
 def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str, dict]:
@@ -165,7 +172,11 @@ def _split(fleet: int, products: list[ProductCapacity]) -> dict[str, int]:
     return caps
 
 
+DEFAULT_HYSTERESIS_TICKS = 2
+
+
 def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_account: int = 2,
+                  hysteresis_ticks: int = DEFAULT_HYSTERESIS_TICKS,
                   previous: CapacityPlan | None = None) -> CapacityPlan:
     push_level = normalise_push_level(push_level)
     reserve = RESERVE_PCT[push_level]
@@ -209,11 +220,18 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     pending: dict[str, int] = {}
     prev_caps = previous.per_product if previous else {}
     prev_pending = previous.pending if previous else {}
+    prev_streak = previous.pending_streak if previous else {}
+    pending_streak: dict[str, int] = {}
     by_slug = {p.slug: p for p in ordered}
     for slug, value in proposed.items():
         p = by_slug[slug]
         current = prev_caps.get(slug, p.pin)
-        if p.capacity_mode == "pinned" or value == current or prev_pending.get(slug) == value:
+        # Hysteresis (spec §6.2): a change applies only once the SAME new value has
+        # been proposed on `hysteresis_ticks` consecutive ticks, this one included.
+        # The streak restarts at 1 the moment the proposal changes, so a flapping
+        # source never accumulates confirmation across different values.
+        streak = prev_streak.get(slug, 1) + 1 if prev_pending.get(slug) == value else 1
+        if p.capacity_mode == "pinned" or value == current or streak >= max(1, hysteresis_ticks):
             per_product[slug] = value
             reasons.append(f"{slug}: {value} (rank {p.rank if p.rank is not None else '—'}, "
                            f"{'pinned' if p.capacity_mode == 'pinned' else 'auto'}, {p.eligible} eligible)")
@@ -226,6 +244,8 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
             carried = max(current, p.in_flight)
             per_product[slug] = carried
             pending[slug] = value
+            pending_streak[slug] = streak
             reasons.append(f"{slug}: {carried} → {value} pending confirmation next tick")
     return CapacityPlan(push_level=push_level, fleet_concurrency=fleet, per_product=per_product,
-                        pending=pending, budget=budget, reasons=reasons, limiting=limiting)
+                        pending=pending, pending_streak=pending_streak, budget=budget,
+                        reasons=reasons, limiting=limiting)

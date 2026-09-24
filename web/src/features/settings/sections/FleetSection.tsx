@@ -97,6 +97,9 @@ export function FleetSection() {
   // Row-level "max sessions" validation error, keyed by host name — set on an
   // invalid blur (kept local, never sent), cleared on the next valid blur.
   const [maxSessionsError, setMaxSessionsError] = useState<Record<string, string | null>>({})
+  // Same shape for the weight field (#2032): the server clamps to 1–1000 but
+  // would silently turn a blank or 0 into 1, so a bad entry is refused here.
+  const [weightError, setWeightError] = useState<Record<string, string | null>>({})
 
   const patch = useFleetHostPatch()
   const { data: settings } = useSettings()
@@ -251,12 +254,29 @@ export function FleetSection() {
                       max={1000}
                       defaultValue={h.weight}
                       aria-label={`weight (dispatch share) for ${h.name}`}
+                      aria-invalid={weightError[h.name] ? true : undefined}
                       className="w-16 rounded border border-edge-strong bg-transparent px-1"
                       onBlur={(e) => {
-                        const weight = Number(e.target.value)
+                        const raw = e.target.value.trim()
+                        const weight = Number(raw)
+                        if (raw === '' || !Number.isInteger(weight) || weight < 1 || weight > 1000) {
+                          // Never patch a bad value — reset to what the server last
+                          // confirmed and say why (mirrors the cap field below).
+                          e.target.value = String(h.weight)
+                          setWeightError((prev) => ({
+                            ...prev, [h.name]: 'Weight must be a whole number from 1 to 1000',
+                          }))
+                          return
+                        }
+                        setWeightError((prev) => ({ ...prev, [h.name]: null }))
                         if (weight !== h.weight) patch.mutate({ name: h.name, body: { weight } })
                       }}
                     />
+                    {weightError[h.name] && (
+                      <p role="alert" className="text-xs text-danger">
+                        {weightError[h.name]}
+                      </p>
+                    )}
                   </td>
                   <td className="pr-2">
                     <input
