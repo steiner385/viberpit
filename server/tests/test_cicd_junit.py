@@ -38,3 +38,11 @@ def test_flat_suite_and_error_outcome():
 def test_malformed_raises():
     with pytest.raises(ValueError):
         parse_junit_xml(b"<not-closed")
+
+
+@pytest.mark.parametrize("data", [b"", b"   \n", b"\xef\xbb\xbf\n"])
+def test_empty_document_is_no_results_not_malformed(data):
+    """#1768: a cancelled CI job leaves the 0-byte report its reporter opened
+    before being killed, and `always()` uploads it. That is "no results", not a
+    corrupt document — raising filed hundreds of junit_malformed warnings."""
+    assert parse_junit_xml(data) == []

@@ -129,7 +129,7 @@ jobs:
         if: needs.changes.outputs.py == 'true'
         run: python -m pytest tests/ -q --junitxml=test-results/core.xml
       - name: Upload test results
-        if: always() && needs.changes.outputs.py == 'true'
+        if: ${{ !cancelled() && needs.changes.outputs.py == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-python-core
@@ -194,10 +194,11 @@ jobs:
           # shellcheck disable=SC2086
           timeout --signal=SIGTERM 1500 python -m pytest $files -q -n auto --dist loadfile --timeout=300 --junitxml=test-results/server-shard-${{ matrix.shard }}.xml
       - name: Upload test results
-        # always() so a FAILING run still uploads its junit — but only when the tests
-        # actually ran, or a gated-out run would try to upload a directory that was
-        # never created.
-        if: always() && needs.changes.outputs.py == 'true'
+        # !cancelled() so a FAILING run still uploads its junit — but not a cancelled
+        # one, whose killed reporter leaves a truncated/0-byte report (#1768) — and
+        # only when the tests actually ran, or a gated-out run would try to upload a
+        # directory that was never created.
+        if: ${{ !cancelled() && needs.changes.outputs.py == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-python-server-shard-${{ matrix.shard }}
@@ -278,7 +279,7 @@ jobs:
         if: needs.changes.outputs.web == 'true'
         run: npm run test -- --reporter=default --reporter=junit --outputFile=test-results/vitest.xml
       - name: Upload test results
-        if: always() && needs.changes.outputs.web == 'true'
+        if: ${{ !cancelled() && needs.changes.outputs.web == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-vitest
@@ -329,7 +330,7 @@ jobs:
       - name: E2E tests
         run: npx playwright test
       - name: Upload test results
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-e2e
