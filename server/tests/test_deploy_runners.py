@@ -590,3 +590,138 @@ def test_the_retry_happens_exactly_once():
     assert "merge failed" in (st.error or "") and "package-lock" in (st.error or "")
     assert len([c for c in calls if "merge" in c]) == 2
     assert len([c for c in calls if "checkout" in c]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Untracked-file collision on a runner (#2323): an untracked file that collides with a
+# path newly tracked upstream also wedges `git merge --ff-only`, but with a DIFFERENT
+# git message and a DIFFERENT remedy (delete, not restore) from the dirty-tracked-file
+# case above. The edge handles this via steps._clear_incoming_untracked_collisions;
+# RunnerDeploy._clear_untracked_collisions is its ssh-batched mirror.
+# --------------------------------------------------------------------------- #
+
+UNTRACKED_MERGE_STDERR = (
+    "error: The following untracked working tree files would be overwritten by merge:\n"
+    "\tweb/dist/index.html\n"
+    "Please move or remove them before you merge.\n"
+    "Aborting\n"
+)
+
+
+def _untracked_merge_recorder(calls, *, fail_merges=1, removed=("web/dist/index.html",)):
+    """Fails the first *fail_merges* `git merge` calls with UNTRACKED_MERGE_STDERR; the
+    single `bash -c` sweep call reports *removed* as NUL-separated stdout."""
+    seen = {"merge": 0}
+
+    def run(argv, **kw):
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
+        calls.append(list(argv))
+        if "bash" in argv and "-c" in argv:
+            out = "".join(p + "\0" for p in removed)
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+        if "merge" in argv:
+            seen["merge"] += 1
+            if seen["merge"] <= fail_merges:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr=UNTRACKED_MERGE_STDERR)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    return run
+
+
+def test_untracked_collision_is_swept_and_the_merge_retried_once():
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_untracked_merge_recorder(calls),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done" and st.error is None and st.moved
+    repo = ROCKY.repo_path
+    assert calls[0] == SSH + ["git", "-C", repo, "fetch", "--quiet", "origin"]
+    assert calls[1] == SSH + ["git", "-C", repo, "merge", "--ff-only", "abc1234"]
+    assert calls[2][:6] == SSH + ["bash", "-c"]
+    assert len(calls[2]) == 7  # SSH (4) + ["bash", "-c"] (2) + the quoted script (1)
+    script = calls[2][6]
+    assert repo in script and "abc1234" in script and "ls-files" in script
+    assert calls[3] == SSH + ["git", "-C", repo, "merge", "--ff-only", "abc1234"]
+    assert calls[4] == SSH + ["sync"]
+
+
+def test_untracked_collision_that_cannot_be_cleared_fails_the_runner():
+    """The sweep found nothing tracked at target_sha among the untracked files — the
+    stderr was recognised but there is nothing safe to remove, so fail immediately
+    rather than retrying a merge that will fail identically."""
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_untracked_merge_recorder(calls, removed=()),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "failed" and st.step == "merge"
+    assert "merge failed" in (st.error or "")
+    assert len([c for c in calls if "merge" in c]) == 1
+
+
+def test_untracked_collision_retry_happens_exactly_once():
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_untracked_merge_recorder(calls, fail_merges=99),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "failed" and st.step == "merge"
+    assert len([c for c in calls if "merge" in c]) == 2
+    assert len([c for c in calls if "bash" in c and "-c" in c]) == 1
+
+
+def test_untracked_sweep_script_only_removes_paths_tracked_at_target_sha():
+    """End-to-end against a real git repo (no ssh, no mocks): the sweep script is
+    exactly what would run remotely, minus the ssh transport. Proves the script itself
+    — not just the argv wiring — clears the collision and leaves unrelated untracked
+    state (including a path containing a space) alone.
+    """
+    import os
+    import shlex
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        repo = os.path.join(d, "r")
+        os.makedirs(repo)
+        run = lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True, **kw)  # noqa: E731
+        run(["git", "init", "-q", repo])
+        run(["git", "-C", repo, "config", "user.email", "a@b"])
+        run(["git", "-C", repo, "config", "user.name", "n"])
+        open(os.path.join(repo, "f"), "w").write("x")
+        run(["git", "-C", repo, "add", "f"])
+        run(["git", "-C", repo, "commit", "-qm", "1"])
+        run(["git", "-C", repo, "checkout", "-qb", "up"])
+        os.makedirs(os.path.join(repo, "web", "dist"))
+        open(os.path.join(repo, "web", "dist", "index.html"), "w").write("new")
+        open(os.path.join(repo, "we ird.txt"), "w").write("new")
+        run(["git", "-C", repo, "add", "-A"])
+        run(["git", "-C", repo, "commit", "-qm", "2"])
+        sha = run(["git", "-C", repo, "rev-parse", "up"]).stdout.strip()
+        run(["git", "-C", repo, "checkout", "-q", "master"])
+
+        os.makedirs(os.path.join(repo, "web", "dist"), exist_ok=True)
+        open(os.path.join(repo, "web", "dist", "index.html"), "w").write("local")
+        open(os.path.join(repo, "we ird.txt"), "w").write("local")
+        open(os.path.join(repo, "unrelated.log"), "w").write("keep me")
+
+        m = run(["git", "-C", repo, "merge", "--ff-only", sha])
+        assert m.returncode != 0
+        assert R.local_change_collisions((m.stderr or "").strip()) == []
+        assert R._UNTRACKED_MERGE_MARKER in m.stderr
+
+        script = R._UNTRACKED_CLEAN_SCRIPT.format(repo=repo, rev=sha)
+        joined = " ".join(["bash", "-c", shlex.quote(script)])
+        sweep = subprocess.run(["bash", "-c", joined], capture_output=True, text=True)
+        removed = [p for p in sweep.stdout.split("\0") if p]
+        assert sorted(removed) == sorted(["web/dist/index.html", "we ird.txt"])
+        assert os.path.exists(os.path.join(repo, "unrelated.log"))
+
+        m2 = run(["git", "-C", repo, "merge", "--ff-only", sha])
+        assert m2.returncode == 0

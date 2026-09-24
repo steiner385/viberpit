@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -120,10 +121,10 @@ def local_change_collisions(stderr: str) -> list[str]:
     no equivalent.
 
     Only this one git message is recognised. The untracked-file variant reads almost the
-    same but its remedy is DELETING files, not restoring them — that one is
-    ``steps._clear_incoming_untracked_collisions``'s, and conflating them here would let a
-    failed merge quietly delete a runner's untracked state. That half is still unhandled
-    on the runner path — tracked in #2323.
+    same but its remedy is DELETING files, not restoring them — conflating them here would
+    let a failed merge quietly delete a runner's untracked state. That variant is handled
+    separately by ``RunnerDeploy._clear_untracked_collisions`` (#2323), which sweeps and
+    deletes remotely instead of parsing paths out of this stderr.
 
     Returns [] — recover nothing — if ANY named path fails ``SSH_REL_PATH_RE``. These
     paths go back out in ssh argv, which ssh joins into a remote shell line; a path git
@@ -144,6 +145,25 @@ def local_change_collisions(stderr: str) -> list[str]:
     if not paths or not all(SSH_REL_PATH_RE.match(p) for p in paths):
         return []
     return paths
+
+
+_UNTRACKED_MERGE_MARKER = "untracked working tree files would be overwritten"
+
+# Remote-side mirror of steps._clear_incoming_untracked_collisions, run as ONE ssh call
+# rather than one `cat-file -e` round trip per untracked path (the edge's version pays
+# that cost as a local subprocess; over ssh it would be one network round trip each).
+# {repo} and {rev} are embedded directly — both are validated (SSH_REPO_RE / _SHA_RE)
+# by every caller before this template is formatted, so neither can carry shell
+# metacharacters. $p is never interpolated into the script text: it flows through the
+# shell's own `read`, so a path containing quotes or a colon cannot escape the "$p"
+# argument it is read into.
+_UNTRACKED_CLEAN_SCRIPT = (
+    'git -C {repo} ls-files --others --exclude-standard -z | '
+    'while IFS= read -r -d "" p; do '
+    'if git -C {repo} cat-file -e {rev}:"$p" 2>/dev/null; then '
+    'git -C {repo} clean -f -q -- "$p"; printf "%s\\0" "$p"; '
+    'fi; done'
+)
 
 
 def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str]]]:
@@ -252,26 +272,50 @@ class RunnerDeploy:
         argv = ["ssh", *SSH_OPTS, ssh_host, *remote]
         return await asyncio.to_thread(self._run, argv, capture_output=True, text=True)
 
-    async def _merge(self, repo_path: str, remote: list[str]) -> None:
+    async def _clear_untracked_collisions(self, repo_path: str, rev: str) -> list[str]:
+        """Remote mirror of ``steps._clear_incoming_untracked_collisions``: sweep the
+        checkout's untracked files, delete only those tracked at *rev*, and hand back
+        what was removed. Runs as a single ssh call — see ``_UNTRACKED_CLEAN_SCRIPT``.
+        """
+        script = _UNTRACKED_CLEAN_SCRIPT.format(repo=repo_path, rev=rev)
+        r = await self._ssh_raw(["bash", "-c", shlex.quote(script)])
+        if r.returncode != 0:
+            return []
+        return [p for p in (r.stdout or "").split("\0") if p]
+
+    async def _merge(self, repo_path: str, remote: list[str], target_sha: str) -> None:
         """The `merge` step, with one recovery for a dirty checkout.
 
-        Exactly one retry, and only after restoring exactly the tracked paths git named
-        (`git checkout -- <paths>`): those files are either upstream content or
-        regenerable, and the merge about to run installs the canonical version of every
-        one of them. Anything else dirty in the tree is left alone and still fails the
-        runner loudly — matching ``runner_sync``'s stance that an operator's work in a
-        checkout is not ours to discard.
+        Exactly one retry, and only after clearing exactly what git named as the
+        collision:
+
+        * tracked paths locally modified — restored with `git checkout -- <paths>`, since
+          the merge about to run installs the canonical version of every one of them;
+        * untracked paths that collide with a path newly tracked at *target_sha* — deleted
+          via ``_clear_untracked_collisions`` (#2323), since the merge installs the
+          tracked version in their place.
+
+        Anything else dirty in the tree is left alone and still fails the runner loudly —
+        matching ``runner_sync``'s stance that an operator's work in a checkout is not
+        ours to discard.
         """
         r = await self._ssh_raw(remote)
         if r.returncode == 0:
             return
         detail = (r.stderr or r.stdout or "").strip()
         paths = local_change_collisions(detail)
-        if not paths:
+        if paths:
+            log.warning("runner %s: checkout dirty, restoring %s and retrying the merge once",
+                        self.target.name, ", ".join(paths))
+            await self._ssh("restore", ["git", "-C", repo_path, "checkout", "--", *paths])
+        elif _UNTRACKED_MERGE_MARKER in detail:
+            removed = await self._clear_untracked_collisions(repo_path, target_sha)
+            if not removed:
+                raise RuntimeError(f"merge failed (rc={r.returncode}): {detail[:500]}")
+            log.warning("runner %s: untracked-file collision, removed %s and retrying the "
+                        "merge once", self.target.name, ", ".join(removed))
+        else:
             raise RuntimeError(f"merge failed (rc={r.returncode}): {detail[:500]}")
-        log.warning("runner %s: checkout dirty, restoring %s and retrying the merge once",
-                    self.target.name, ", ".join(paths))
-        await self._ssh("restore", ["git", "-C", repo_path, "checkout", "--", *paths])
         r2 = await self._ssh_raw(remote)
         if r2.returncode != 0:
             detail2 = (r2.stderr or r2.stdout or "").strip()[:500]
@@ -401,7 +445,7 @@ class RunnerDeploy:
                                                            deps_changed=deps_changed):
                     self._mark(step=step)
                     if step == "merge":
-                        await self._merge(repo_path, remote)
+                        await self._merge(repo_path, remote, target_sha)
                         self.progress.moved = True
                     else:
                         await self._ssh(step, remote)
