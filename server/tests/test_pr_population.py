@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from ccswitch import gitrepos
+import server.github.pr_population as pop
 from server.github.pr_population import PrPopulationPoller
 
 
@@ -102,7 +102,7 @@ def test_github_5xx_logs_info_not_a_warning(caplog):
     the old way re-mints the same non-actionable auto-error issue on a schedule
     — #1681 was 600+ occurrences of exactly that in a day."""
     def qfn(repo: str) -> dict:
-        raise gitrepos.GhError("gh: HTTP 502")
+        raise pop.gitrepos.GhError("gh: HTTP 502")
 
     p = PrPopulationPoller(query_fn=qfn)
     with caplog.at_level(logging.DEBUG):
@@ -119,7 +119,7 @@ def test_non_5xx_failure_still_warns(caplog):
     """The demotion is specific to a GitHub 5xx — any other target-specific
     failure keeps reporting at WARNING with repo= exactly as before."""
     def qfn(repo: str) -> dict:
-        raise gitrepos.GhError("gh: not found (HTTP 404)")
+        raise pop.gitrepos.GhError("gh: not found (HTTP 404)")
 
     p = PrPopulationPoller(query_fn=qfn)
     with caplog.at_level(logging.DEBUG):

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ccswitch import gitrepos
+import server.github.pr_population as pop
 from server.github.api_budget import PriorityGate
 from server.github.pr_poller import PrStatusPoller
 from server.github.pr_population import PrPopulationPoller
@@ -75,7 +75,7 @@ def test_eta_5xx_logs_info_not_a_warning(tmp_path, caplog):
     store = _build_db(tmp_path / "ph.db")
 
     def eta_qfn(prs):
-        raise gitrepos.GhError("gh: HTTP 502")
+        raise pop.gitrepos.GhError("gh: HTTP 502")
 
     p = PrPopulationPoller(
         query_fn=lambda repo: _pop_resp(42),

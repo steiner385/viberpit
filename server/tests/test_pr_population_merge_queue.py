@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 import server.github.pr_population as pop
-from ccswitch import gitrepos
 from server.github.merge_queue import QueueEntry, parse_merge_queue_response
 from server.github.pr_population import PrPopulationPoller, _default_merge_queue_query
 
@@ -93,7 +92,7 @@ async def test_merge_queue_5xx_logs_info_not_a_warning(caplog):
         return {"data": {"repo": {"pullRequests": {"nodes": []}, "deployments": {"nodes": []}}}}
 
     def mqfn(repos):
-        raise gitrepos.GhError("gh: HTTP 503")
+        raise pop.gitrepos.GhError("gh: HTTP 503")
 
     async def sink(by_repo, captured_at):
         return None
