@@ -185,6 +185,13 @@ def _acct(led: dict, name: str) -> dict:
 # re-hammers the endpoint through its rate-limit window and the 429 never clears.
 _USAGE_BACKOFF_BASE_SEC = 60.0
 _USAGE_BACKOFF_CAP_SEC = 900.0
+#: The delay already saturates at the cap by fails=5 (60 * 2**4 = 960s > 900s),
+#: so nothing above this needs to be representable. Clamping the *stored* count
+#: here (not just the delay) keeps ``2 ** (fails - 1)`` from ever growing past
+#: what a float can hold (~2**1024) for an account that never recovers — an
+#: unbounded count got there in production and raised OverflowError on every
+#: subsequent failure (#1866).
+_USAGE_BACKOFF_MAX_FAILS = 32
 
 
 def note_usage_fetch_failure(led: dict, name: str, now_ts: float) -> float:
@@ -195,7 +202,7 @@ def note_usage_fetch_failure(led: dict, name: str, now_ts: float) -> float:
     launcher — shares one cooldown per account.
     """
     acct = _acct(led, name)
-    fails = int(acct.get("usageFetchFails", 0)) + 1
+    fails = min(int(acct.get("usageFetchFails", 0)) + 1, _USAGE_BACKOFF_MAX_FAILS)
     acct["usageFetchFails"] = fails
     delay = min(_USAGE_BACKOFF_BASE_SEC * (2 ** (fails - 1)), _USAGE_BACKOFF_CAP_SEC)
     acct["usageFetchCooldownUntil"] = now_ts + delay
