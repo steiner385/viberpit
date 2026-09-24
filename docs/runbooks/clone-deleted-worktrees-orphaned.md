@@ -26,9 +26,20 @@ Each line is one clone the host's worktrees depend on:
 cairnea/KinDash: clone MISSING at ~/GitHub/.ccswitch/clones/cairnea/KinDash — 61 worktree(s), 61 broken
 ```
 
-The daemon reports the same condition on its own: the worktree janitor emits one CRITICAL line per
-sweep naming the missing clone (`worktree-janitor: orphaned=61 worktree(s) reference missing
-clone(s) …`), and the count appears in every sweep's summary as `orphaned=N`.
+The daemon reports the same condition on its own: the worktree janitor emits one line per sweep
+(`worktree-janitor: orphaned=61 worktree(s) reference a missing shared clone …`), and the count
+appears in every sweep's summary as `orphaned=N orphaned_active=N`.
+
+The **level tells you which of the two shapes you have** (#2143), because the janitor never removes
+an orphan and so nothing here ever clears one on its own:
+
+| Level | Means | Urgency |
+|---|---|---|
+| `CRITICAL` | `orphaned_active>0` — at least one orphaned worktree was written to inside the last 24 h, i.e. a session is hitting the break right now | Recover now (step 2) |
+| `WARNING` | every orphan has sat untouched for over 24 h — a standing cleanup backlog | Clear it when convenient: step 2, or salvage the working files and delete the dirs |
+
+A single active orphan re-arms the CRITICAL for the whole set, so an outage is never hidden inside
+a stale backlog.
 
 ## 2. Recover
 

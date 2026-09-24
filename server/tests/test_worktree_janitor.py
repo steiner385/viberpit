@@ -47,6 +47,7 @@ def _cp(returncode=0, stdout="", stderr=""):
 
 NOW = 1_700_000_000.0
 OLD = 90_000.0   # 25 h — old enough
+YOUNG = 3_600.0  # 1 h — inside min_age, i.e. still being worked in
 
 
 class TestSweepSkips:
@@ -637,11 +638,14 @@ class TestOrphanedWorktrees:
         """A managed clone path under *base* — one spelling of the clones base."""
         return base / ".ccswitch" / "clones" / rel
 
-    def _orphan(self, tmp_path, name="orphan1", *, live=False):
-        wt = _make_wt(tmp_path, name, OLD, NOW)
+    def _orphan(self, tmp_path, name="orphan1", *, age=OLD):
+        wt = _make_wt(tmp_path, name, age, NOW)
         clone = self._clone(tmp_path)
         (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/{name}\n")
-        return wt
+        # Re-aged AFTER the pointer write, which bumps the dir's mtime to the
+        # real wall clock: the sweep now reads that mtime to tell an outage
+        # from a backlog, so leaving it unset made every fixture read "active".
+        return _age(wt, age, NOW)
 
     def test_orphan_is_counted_and_never_removed(self, tmp_path):
         self._orphan(tmp_path)
@@ -662,7 +666,7 @@ class TestOrphanedWorktrees:
     def test_orphan_alert_is_one_aggregated_critical(self, tmp_path, caplog):
         import logging
         for i in range(3):
-            self._orphan(tmp_path, f"orphan{i}")
+            self._orphan(tmp_path, f"orphan{i}", age=YOUNG)
         with caplog.at_level(logging.CRITICAL, logger=_MOD):
             counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["orphaned"] == 3
@@ -670,6 +674,54 @@ class TestOrphanedWorktrees:
         assert len(criticals) == 1
         assert "orphaned=3" in criticals[0].getMessage()
         assert "ccswitch clones repair" in criticals[0].getMessage()
+
+    def test_one_active_orphan_keeps_the_whole_set_critical(self, tmp_path, caplog):
+        """A clone that went away under a working session is the outage.
+
+        This is the 2026-09-03 shape the CRITICAL was written for: 61 worktrees
+        orphaned by one deletion, sessions blocked the moment it happened.  One
+        active orphan is enough — an outage hidden inside a stale backlog is
+        exactly what the split must not do.
+        """
+        import logging
+        self._orphan(tmp_path, "fresh", age=YOUNG)
+        self._orphan(tmp_path, "stale", age=OLD)
+        with caplog.at_level(logging.INFO, logger=_MOD):
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 2
+        assert counts["orphaned_active"] == 1
+        criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(criticals) == 1
+        assert "orphaned=2" in criticals[0].getMessage()
+        # Not both levels for one condition — that would file it twice.
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_stale_only_orphans_alert_at_warning_not_critical(self, tmp_path, caplog):
+        """#2143: a standing cleanup backlog is not a fleet-wide outage.
+
+        The janitor never removes an orphan by design (#1003), so an orphan set
+        nobody acts on is permanent — rocky re-fired the identical CRITICAL on
+        every sweep and every daemon start for four days over four worktrees
+        abandoned twenty days earlier.  CRITICAL at any count made an unattended
+        chore indistinguishable from sessions being blocked right now, which is
+        the one thing the level is there to say.  ``_emit_unmanaged_orphan_alert``
+        next door already draws this exact line.
+        """
+        import logging
+        for i in range(4):
+            self._orphan(tmp_path, f"orphan{i}", age=OLD)
+        with caplog.at_level(logging.INFO, logger=_MOD):
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 4
+        assert counts["orphaned_active"] == 0
+        assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "orphaned=4" in msg
+        # Still the remedy the count is actionable through — demoting the level
+        # must not cost the operator the command that clears it.
+        assert "ccswitch clones repair" in msg
 
     def test_orphan_alert_is_one_triage_fingerprint(self, tmp_path, caplog):
         """#1992: the clone paths must stay out of the CRITICAL text.
@@ -682,20 +734,20 @@ class TestOrphanedWorktrees:
         import logging
         from server.obs.error_signature import normalize
 
-        def _critical_for(sub, clones):
+        def _alert_for(sub, clones, age):
             base = tmp_path / sub
             paths = []
             for i, clone in enumerate(clones):
-                wt = _make_wt(base, f"wt{i}", OLD, NOW)
+                wt = _make_wt(base, f"wt{i}", age, NOW)
                 path = self._clone(base, clone)
                 paths.append(str(path))
                 (wt / ".git").write_text(f"gitdir: {path}/.git/worktrees/wt{i}\n")
-                _age(wt, OLD, NOW)
+                _age(wt, age, NOW)
             caplog.clear()
-            with caplog.at_level(logging.CRITICAL, logger=_MOD):
+            with caplog.at_level(logging.WARNING, logger=_MOD):
                 sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
             msg = next(r.getMessage() for r in caplog.records
-                       if r.levelno == logging.CRITICAL)
+                       if r.levelno >= logging.WARNING)
             # Asserted directly, not only through ``normalize``: that truncates
             # at 200 chars, so a path appended to an already-long message would
             # be masked by the truncation rather than by the fix.
@@ -704,9 +756,12 @@ class TestOrphanedWorktrees:
             assert "/clones/" not in msg, msg
             return msg
 
-        a = _critical_for("rocky", ["cairnea/kindash", "cairnea/KinDash"])
-        b = _critical_for("dobby", ["steiner385/viberpit"])
-        assert normalize(a) == normalize(b)
+        # Both severities the split can produce: the rule is a property of any
+        # record the error sink captures, not of the CRITICAL branch alone.
+        for age in (YOUNG, OLD):
+            a = _alert_for(f"rocky{age:.0f}", ["cairnea/kindash", "cairnea/KinDash"], age)
+            b = _alert_for(f"dobby{age:.0f}", ["steiner385/viberpit"], age)
+            assert normalize(a) == normalize(b)
 
     def test_orphan_clone_paths_are_journalled_at_info(self, tmp_path, caplog):
         """The paths still reach the journal — just below the triage threshold."""
