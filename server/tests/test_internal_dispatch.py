@@ -69,6 +69,24 @@ async def test_domain_refusal_reconstructs_all_accounts_busy():
 
 
 @pytest.mark.asyncio
+async def test_domain_refusal_reconstructs_no_host_available():
+    """#2209: the exact refusal in the auto-error traceback. It used to surface as a
+    bare DaemonError that no ``except NoHostAvailable`` could match."""
+    from server.sessions.fleet_router import NoHostAvailable
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"error": {
+            "type": "NoHostAvailable",
+            "message": "no enabled, healthy host with capacity; refusing to run "
+                       "in-process to avoid a split-brain over the shared database",
+        }})
+
+    with pytest.raises(NoHostAvailable) as ei:
+        await create_via_edge(port=8787, transport=_transport(handler), name="x")
+    assert "no enabled, healthy host with capacity" in str(ei.value)
+
+
+@pytest.mark.asyncio
 async def test_certify_posts_session_id_with_internal_token():
     seen: list[httpx.Request] = []
 

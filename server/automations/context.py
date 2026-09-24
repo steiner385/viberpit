@@ -740,9 +740,11 @@ class AutomationContext:
         *engine* is an already-resolved answer from ``launch_plan``, for a caller
         that needed it to build the seed prompt; leave it unset and this resolves
         it. Returns ``None`` without spawning when the origin's engine policy
-        refuses the launch, or when the resolved engine/permission-mode pair
+        refuses the launch, when the resolved engine/permission-mode pair
         could not complete an automation's contract (see
-        ``unattended_launch_blocker``). Every caller must treat ``None`` as
+        ``unattended_launch_blocker``), or when the fleet has no capacity right now
+        (``NoHostAvailable`` — logged as an "info" event, not raised: the caller's
+        own schedule retries next tick). Every caller must treat ``None`` as
         "no session exists" and release only a proven unstarted claim.
 
         With ``ownership_token``, the create boundary joins only the operation's
@@ -801,8 +803,22 @@ class AutomationContext:
             return None
         if ownership_token is not None:
             create_kwargs["ownership_token"] = ownership_token
-        rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
-                                         **create_kwargs)
+        from server.sessions.fleet_router import NoHostAvailable
+        try:
+            rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
+                                             **create_kwargs)
+        except NoHostAvailable as exc:
+            # The fleet is momentarily saturated — routine and self-healing (the
+            # automation's own schedule retries next tick regardless), not a code
+            # defect. Left uncaught, this is the ONE shared spawn path every
+            # automation uses, so it escaped as a raw exception all the way to each
+            # caller's outer `except Exception`, which logs at WARNING and files an
+            # auto-error for a condition that clears itself (#2209). `emit("info", …)`
+            # records it without routing through notify_event's warn/error channel.
+            await self.emit("info", f"spawn deferred for {origin_ref}: {exc}",
+                            kind="spawn_deferred", target=origin_ref,
+                            detail={"reason": "fleet_at_capacity"})
+            return None
         await self.emit("info", f"spawned session for {origin_ref}",
                         kind="spawned", target=origin_ref,
                         session_id=getattr(rec, "id", None), detail=detail)
