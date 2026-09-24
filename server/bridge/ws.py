@@ -771,7 +771,6 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # propagate would crash the WS handler, closing the socket and making
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).
-                log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
                 # StaleOwnership out of the automation execution fence (bare locally, or
                 # DaemonError(err_type="StaleOwnership") over the fleet RPC boundary)
                 # means this session's tracked GitHub target was legitimately
@@ -781,7 +780,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # test_reassign_stale_ownership.py).
                 stale_ownership = isinstance(exc, StaleOwnership) or (
                     isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")
-                if stale_ownership:
+                if not stale_ownership:
+                    log.warning("ws.attach: ensure_driver failed for %s", session_id,
+                                exc_info=True)
+                else:
+                    # An expected, fully handled terminal state: INFO, no traceback. A
+                    # WARNING auto-files an issue on every attach of such a session (#2174).
+                    log.info("ws.attach: session %s ownership stale (%s); not resumable",
+                             session_id, exc)
                     # This resume attempt IS live evidence the tracked item resolved —
                     # stronger and more immediate than the periodic sweep
                     # (_recheck_stuck_complete_sessions_once), and possibly the first

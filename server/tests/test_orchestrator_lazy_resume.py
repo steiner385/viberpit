@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from unittest.mock import patch
 
+import pytest
 
 from ccswitch.selector import Picked
 from server.db import init_db, db_session
@@ -209,6 +211,80 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
         f"engine_session_id must still point at the intact transcript, got {persisted!r}"
     )
     assert orch.get_session(session_id).engine_session_id == good_csid
+
+
+def _run_resume_failure(tmp_path, caplog, exc: Exception, *, with_transcript: bool):
+    """Resume a session whose start() raises ``exc`` for every resume value; return
+    (raised, resume_calls, WARNING+ records from the orchestrator logger)."""
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+    cwd = str(tmp_path)
+    session_id = "s-resume-failure"
+    csid = "csid-resume-failure"
+    resume_calls = []
+
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
+        resume_calls.append(resume)
+        c = FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+        async def _boom():
+            raise exc
+        c.__aenter__ = lambda: _boom()
+        return c
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="t", account_name="acct1",
+                engine_session_id=csid, status="idle", cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        transcript_dir = cfg_dir / "projects" / orch.project_dir_name(cwd)
+        transcript_dir.mkdir(parents=True)
+        if with_transcript:
+            (transcript_dir / f"{csid}.jsonl").write_text('{"type":"user"}\n')
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            try:
+                await orch.ensure_driver(session_id)
+            except Exception as raised:
+                return raised
+        return None
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        raised = asyncio.run(_run())
+    warnings = [r for r in caplog.records
+                if r.name == "server.sessions.orchestrator" and r.levelno >= logging.WARNING]
+    return raised, resume_calls, warnings
+
+
+@pytest.mark.parametrize("with_transcript", [True, False])
+def test_ensure_driver_stale_ownership_resume_is_info_and_never_starts_fresh(
+        tmp_path, caplog, with_transcript):
+    """StaleOwnership from the automation fence (#2174) means the session's target was
+    transferred to a successor operation — a known terminal state, not a resume-handle
+    fault. It must propagate unchanged (ws.py / _reassign classify it), must not fall
+    back to a fresh driver (that would hit the same fence and orphan the transcript),
+    and must not WARN: a WARNING auto-files an issue on every attach."""
+    from server.automations.ownership import StaleOwnership
+    raised, resume_calls, warnings = _run_resume_failure(
+        tmp_path, caplog, StaleOwnership("operation no longer owns its targets"),
+        with_transcript=with_transcript)
+    assert isinstance(raised, StaleOwnership), raised
+    assert resume_calls == ["csid-resume-failure"], resume_calls
+    assert not warnings, [(r.levelno, r.getMessage()) for r in warnings]
+
+
+def test_ensure_driver_generic_resume_failure_with_transcript_still_warns(tmp_path, caplog):
+    raised, resume_calls, warnings = _run_resume_failure(
+        tmp_path, caplog, RuntimeError("Command failed with exit code 1"),
+        with_transcript=True)
+    assert isinstance(raised, RuntimeError), raised
+    assert resume_calls == ["csid-resume-failure"], resume_calls
+    assert any("NOT starting fresh" in r.getMessage() for r in warnings), warnings
 
 
 # -----------------------------------------------------------------------

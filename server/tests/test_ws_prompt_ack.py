@@ -291,3 +291,33 @@ def test_a_resume_that_raises_files_exactly_one_warning(ws_env, caplog):  # noqa
     assert len(warnings) == 1, [(r.levelno, r.getMessage()) for r in warnings]
     assert "ensure_driver failed" in warnings[0].getMessage()
     assert _resume_events(caplog), "the failed resume must still be measured"
+
+
+def test_a_stale_ownership_resume_is_not_a_warning(ws_env, caplog):  # noqa: F811
+    """StaleOwnership out of ``ensure_driver`` is the automation fence refusing a
+    session whose target was transferred (e.g. its PR merged) — an expected terminal
+    state the SESSION_OWNERSHIP_STALE banner already handles. At WARNING it auto-filed
+    an error-triage issue on every attach of such a session (#2174)."""
+    from server.automations.ownership import StaleOwnership
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "stale-ownership-log-level")
+    sid = session.id
+
+    async def _boom(_sid, *_a, **_k):
+        raise StaleOwnership("operation no longer owns its targets")
+    orch.ensure_driver = _boom  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": sid, "text": "hi"}))
+            frames = _drain_events(
+                ws, until=lambda f: f.get("type") == "promptAck" and f.get("stage") == "failed")
+
+    codes = [f.get("code") for f in frames if f.get("type") == "error"]
+    assert "SESSION_OWNERSHIP_STALE" in codes, codes
+    warnings = [r for r in caplog.records
+                if r.name == "server.bridge.ws" and r.levelno >= logging.WARNING]
+    assert not warnings, [(r.levelno, r.getMessage()) for r in warnings]
+    assert any("ownership stale" in r.getMessage() for r in caplog.records
+               if r.name == "server.bridge.ws"), "the refusal must still be logged at INFO"
