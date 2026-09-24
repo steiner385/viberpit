@@ -55,14 +55,22 @@ export function RowStatus({ status, error }: RowStatusProps) {
     return () => { clearTimeout(on); clearTimeout(off) }
   }, [status])
 
+  // The `role="status"` span is ALWAYS mounted, empty or not (#2032
+  // deferred-minor): a live region that pops into existence already carrying
+  // its text is exactly the case NVDA/VoiceOver most often miss, because
+  // nothing was there yet for the AT to have registered as a live region —
+  // mounting it once and only ever mutating its text content is what makes
+  // the announcement reliable.
+  let text = ''
+  let tone = 'text-ink-muted'
   if (status === 'pending') {
-    return <span role="status" className="text-xs text-ink-muted">Saving…</span>
+    text = 'Saving…'
+  } else if (status === 'error') {
+    text = `Failed: ${extractMutationErrorMessage(error)}`
+    tone = 'text-danger'
+  } else if (showSaved) {
+    text = 'Saved'
+    tone = 'text-success'
   }
-  if (status === 'error') {
-    return <span role="status" className="text-xs text-danger">Failed: {extractMutationErrorMessage(error)}</span>
-  }
-  if (showSaved) {
-    return <span role="status" className="text-xs text-success">Saved</span>
-  }
-  return null
+  return <span role="status" className={`text-xs ${tone}`}>{text}</span>
 }

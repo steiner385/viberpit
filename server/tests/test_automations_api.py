@@ -472,7 +472,8 @@ def test_patch_partial_config_keeps_the_other_stored_keys():
         assert r.status_code == 200, r.text
         r = c.patch("/api/automations/capacity-governor", headers=H, json={"config": {"push_level": "max"}})
         assert r.status_code == 200, r.text
-        assert r.json()["config"] == {"push_level": "max", "sessions_per_account": 3}
+        assert r.json()["config"] == {"push_level": "max", "sessions_per_account": 3,
+                                       "hysteresis_ticks": 2}
 
 
 def test_patch_runner_ceiling_above_the_global_cap_is_422():

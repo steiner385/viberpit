@@ -180,7 +180,7 @@ issue = 1374
 # tests/test_cli.py::TestLintCommands test needs its own `from ccswitch import
 # cli` like every other test class in that file — the package name is not
 # renameable (this category's own reason for existing).
-ceiling = 1291
+ceiling = 1289
 
 [[allow]]
 id = "constitution"
