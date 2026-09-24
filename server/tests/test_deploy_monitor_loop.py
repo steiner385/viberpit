@@ -280,6 +280,31 @@ def test_closed_not_planned_mutes_until_recovery():
     assert h.state() is None and not h.gh.closes()   # already closed by the human
 
 
+def test_not_planned_close_records_closed_sha_so_unmute_needs_new_evidence():
+    """#2104 sibling of #1878: the ``not_planned`` branch used to leave
+    ``closed_sha`` at None, so the re-file gate (``d.sha != closed_sha``)
+    was unconditionally true the instant an operator unmuted — filing a
+    "[regression]" for the exact sha just closed as not planned, with no
+    new deploy evidence. It must behave like the ``completed`` branch:
+    record the sha, and only a genuinely new sha re-files."""
+    h = Harness()
+    h.tick()
+    h.gh.closed = {101: "not_planned"}
+    h.now = T0 + timedelta(hours=1)
+    h.tick()
+    assert h.state()["muted"] is True and h.state()["closed_sha"] == "a" * 40
+    assert asyncio.run(h.loop.action_result(KEY, "unmute")) == ("unmuted", None)
+    assert h.state()["muted"] is False
+    h.now = T0 + timedelta(hours=2)
+    h.tick()  # same sha still failing — no new evidence, must not re-file
+    assert len(h.gh.creates()) == 1
+    h.deployments = {REPO: [_dep(sha="b" * 40), _dep()]}
+    h.now = T0 + timedelta(hours=3)
+    h.tick()  # a genuinely new sha — this IS new evidence
+    assert len(h.gh.creates()) == 2
+    assert any(e["kind"] == "regressed" for e in h.ctx.events)
+
+
 def test_closed_completed_regresses_only_on_a_new_sha():
     h = Harness()
     h.tick()

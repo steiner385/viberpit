@@ -128,6 +128,28 @@ def test_transient_failures_never_accumulate_toward_a_park():
     assert journal.failure_count(db, M1.key()) == 1
 
 
+def test_failure_count_resets_after_a_successful_apply():
+    """#2104 sibling of #1878: ``Mutation.key()`` legitimately recurs when an
+    item returns to a prior Status/Stage/Score, so two failures separated by a
+    successful apply of the exact same value are not "failed twice" — the
+    intervening success already proved the mutation works. Without the reset,
+    a value that fails, later applies cleanly, then fails again months later
+    would park permanently on the strength of a failure the success disproved.
+    """
+    db = _db()
+    (rid1,) = journal.record_pending(db, [M1], batch_id="b1", now=T, dry_run=False)
+    journal.mark_failed(db, rid1, "boom", T)
+    assert journal.failure_count(db, M1.key()) == 1
+    (rid2,) = journal.record_pending(db, [M1], batch_id="b2",
+                                     now=T + timedelta(days=1), dry_run=False)
+    journal.mark_applied(db, [rid2], T + timedelta(days=1))
+    assert journal.failure_count(db, M1.key()) == 0
+    (rid3,) = journal.record_pending(db, [M1], batch_id="b3",
+                                     now=T + timedelta(days=30), dry_run=False)
+    journal.mark_failed(db, rid3, "boom again", T + timedelta(days=30))
+    assert journal.failure_count(db, M1.key()) == 1   # not 2 — the old failure predates the success
+
+
 def test_park_and_interrupted_recovery():
     db = _db()
     ids = journal.record_pending(db, [M1, M2], batch_id="b2", now=T, dry_run=False)

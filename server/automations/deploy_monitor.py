@@ -387,6 +387,12 @@ class DeployMonitorLoop:
             if reason == "not_planned":
                 state["muted"] = True
                 state["issue_closed"] = True
+                # Same marker the else branch advances: without it closed_sha
+                # stays None, so the re-file gate at L464 (`d.sha !=
+                # closed_sha`) is unconditionally true the moment an operator
+                # unmutes, and it re-files a "[regression]" for the exact sha
+                # just closed as not planned — no new deploy evidence needed.
+                state["closed_sha"] = state.get("sha")
                 await self._ctx.emit("info", f"#{state['issue_number']} closed as not planned — "
                                      f"{key} muted until it recovers", kind="muted", target=key)
             else:

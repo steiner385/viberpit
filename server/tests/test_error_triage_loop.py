@@ -259,6 +259,22 @@ def test_stale_warning_burst_is_reset_for_resolved_rows_too(tmp_path):
     _run(body, tmp_path)
 
 
+def test_stale_warning_burst_is_reset_for_muted_rows_too(tmp_path):
+    """errsink.py keeps incrementing count_since_filed on every flush regardless
+    of status, including muted rows (#2104, sibling of #1878). Without muted in
+    this reset's status set, a muted WARNING burst never ages out — it just
+    grows, ready to replay in full the moment someone unmutes it."""
+    async def body():
+        await _seed(fingerprint="mut", level="WARNING", status="muted",
+                    muted_by="operator", count_since_filed=2,
+                    last_seen_at=NOW - timedelta(hours=30))
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert (await _row("mut")).count_since_filed == 0
+        assert gh.creates == []
+    _run(body, tmp_path)
+
+
 def test_closed_not_planned_mutes_forever(tmp_path):
     async def body():
         await _seed(status="filed", issue_number=42, filed_at=NOW - timedelta(days=2),
