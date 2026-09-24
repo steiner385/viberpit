@@ -88,3 +88,52 @@ def test_file_mode_is_owner_only(led_home):
     with ledger.locked_ledger() as led:
         led["accounts"]["a"] = {}
     assert oct(os.stat(paths.ledger_path()).st_mode)[-3:] == "600"
+
+
+# --- transient mount errors on lock acquisition (#2291) -----------------------------
+#
+# rocky's account store is an sshfs mount; a connection blip surfaces as EPERM from
+# `open()` on the healthy lock file. One skipped sweep per blip was filing four
+# separate auto-error issues, so lock acquisition retries briefly before giving up.
+
+
+def _fail_lock_opens(monkeypatch, n: int, err: int):
+    """Make the first *n* opens of the lock file raise ``OSError(err)``."""
+    real_open = open
+    calls = {"n": 0}
+
+    def flaky(file, *a, **kw):
+        if str(file).endswith(".lock"):
+            calls["n"] += 1
+            if calls["n"] <= n:
+                raise OSError(err, os.strerror(err), str(file))
+        return real_open(file, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    monkeypatch.setattr(ledger.time, "sleep", lambda _s: None)
+    return calls
+
+
+def test_lock_open_retries_a_transient_eperm(led_home, monkeypatch):
+    import errno
+    calls = _fail_lock_opens(monkeypatch, 2, errno.EPERM)
+    with ledger.locked_ledger() as led:
+        led["accounts"]["a"] = {"ok": True}
+    assert calls["n"] == 3
+    assert ledger.read_ledger()["accounts"]["a"] == {"ok": True}
+
+
+def test_lock_open_reraises_once_the_budget_is_spent(led_home, monkeypatch):
+    import errno
+    calls = _fail_lock_opens(monkeypatch, 99, errno.EPERM)
+    with pytest.raises(PermissionError), ledger.locked_ledger():
+        pass
+    assert calls["n"] == len(ledger._OPEN_RETRY_DELAYS_S) + 1
+
+
+def test_lock_open_does_not_retry_a_real_permission_error(led_home, monkeypatch):
+    import errno
+    calls = _fail_lock_opens(monkeypatch, 99, errno.EACCES)
+    with pytest.raises(PermissionError), ledger.locked_ledger():
+        pass
+    assert calls["n"] == 1
