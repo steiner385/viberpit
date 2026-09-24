@@ -82,7 +82,7 @@ async def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
 
     import claude_agent_sdk
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
-    monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("VIBERPIT_SUGGEST_MODEL", "claude-haiku-4-5")
 
     await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     opts = captured["options"]
@@ -106,7 +106,7 @@ async def test_real_suggestion_factory_empty_model_env_uses_account_default(monk
 
     import claude_agent_sdk
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
-    monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "")
+    monkeypatch.setenv("VIBERPIT_SUGGEST_MODEL", "")
 
     await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     assert captured["options"].model is None

@@ -10,7 +10,7 @@ record an artifact for a session that was never created.
 Section 5 is the enablement gate for #1265/#1266. Both ceilings are now
 ``codex_allowed``, and the tests there pin what that does and does not grant:
 the engine becomes *selectable* on these origins, while three further gates —
-the policy default, ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``, and the
+the policy default, ``VIBERPIT_CODEX_AUTOMATIONS_ENABLED``, and the
 network-egress opt-in from #1263 — all still ship off, so nothing runs on Codex
 until an operator turns each of them on deliberately.
 """
@@ -661,7 +661,7 @@ def test_widening_the_ceiling_moves_no_traffic_by_itself(origin):
 @pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
 def test_the_kill_switch_clamps_an_opted_in_sdlc_origin_back_to_claude(origin):
     """Gate 2 of 3: even an explicit ``{"engine": "codex"}`` config resolves to
-    Claude while ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED`` is off. ``codex_allowed``
+    Claude while ``VIBERPIT_CODEX_AUTOMATIONS_ENABLED`` is off. ``codex_allowed``
     (unlike ``codex_only``) has Claude acceptance evidence to fall back on, so
     the switch downgrades rather than refusing."""
     from server.automations.engine_policy import resolve_engine

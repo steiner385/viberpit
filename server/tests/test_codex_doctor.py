@@ -484,8 +484,8 @@ def test_mtls_fails_when_the_loader_refuses_the_configuration() -> None:
     doctor reports that refusal rather than re-deriving it."""
     def load() -> AuthorityClientTLSFiles:
         raise AuthorityConfigError(
-            "CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY must not be the same key as "
-            "CCSWITCH_SESSIOND_CLIENT_KEY"
+            "VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY must not be the same key as "
+            "VIBERPIT_SESSIOND_CLIENT_KEY"
         )
 
     result = doctor.check_mtls_identity(load, configured=True, enabled=True)

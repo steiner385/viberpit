@@ -58,7 +58,7 @@ def _seed_and_list(tmp_path, *, status: str) -> dict:
 
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/sessions", headers=_IDENT)
         assert resp.status_code == 200, resp.text

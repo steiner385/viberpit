@@ -273,12 +273,12 @@ def probe_mutations() -> None:  # noqa: C901 - spike probe, deliberate length
 
 def pat_token() -> str:
     import os
-    if os.environ.get("CCSWITCH_GH_PROJECT_TOKEN"):
-        return os.environ["CCSWITCH_GH_PROJECT_TOKEN"]
+    if os.environ.get("VIBERPIT_GH_PROJECT_TOKEN"):
+        return os.environ["VIBERPIT_GH_PROJECT_TOKEN"]
     for line in open("/etc/ccswitch/daemon.env"):
-        if line.strip().startswith("CCSWITCH_GH_PROJECT_TOKEN="):
+        if line.strip().startswith("VIBERPIT_GH_PROJECT_TOKEN="):
             return line.strip().split("=", 1)[1]
-    raise SystemExit("CCSWITCH_GH_PROJECT_TOKEN not in daemon.env")
+    raise SystemExit("VIBERPIT_GH_PROJECT_TOKEN not in daemon.env")
 
 
 def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length

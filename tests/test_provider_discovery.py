@@ -10,7 +10,7 @@ def _mk_copilot(name):
     (d / "credentials.json").write_text("{}")
 
 def test_union_discovery_and_provider_of(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))  # paths.root() honors this
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))  # paths.root() honors this
     _mk_anthropic(tmp_path, "work")
     _mk_copilot("copilot1")
     assert copilot.copilot_account_names() == ["copilot1"]
@@ -32,7 +32,7 @@ def test_colliding_name_resolves_to_one_account(tmp_path, monkeypatch):
     ``provider_of`` gave (Copilot wins), so an existing dual-artefact install
     launches exactly as it did before.
     """
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))  # paths.root() honors this
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))  # paths.root() honors this
     _mk_anthropic(tmp_path, "dup")
     _mk_copilot("dup")
 

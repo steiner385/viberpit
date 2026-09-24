@@ -63,9 +63,9 @@ def test_send_queue_is_never_smaller_than_the_ring(monkeypatch, ring_env):
     default must drag the queue up with it).
     """
     if ring_env is not None:
-        monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", ring_env)
+        monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", ring_env)
     # Even an explicit tiny env override must not drop below the ring.
-    monkeypatch.setenv("CCSWITCH_IPC_SEND_QUEUE", "8")
+    monkeypatch.setenv("VIBERPIT_IPC_SEND_QUEUE", "8")
     app = create_daemon_app()
     assert app.state.sendq_max >= app.state.replay_maxlen
 
@@ -78,8 +78,8 @@ async def test_full_ring_replay_delivers_every_event_without_dropping(monkeypatc
     on replay, dropped the subscriber, and closed the socket — the edge then reconnected
     and re-replayed indefinitely, so no live event ever got through.
     """
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "50")  # ring holds 50
-    monkeypatch.setenv("CCSWITCH_IPC_SEND_QUEUE", "8")      # < ring: pre-fix, replay overflows
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "50")  # ring holds 50
+    monkeypatch.setenv("VIBERPIT_IPC_SEND_QUEUE", "8")      # < ring: pre-fix, replay overflows
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(50):
@@ -96,7 +96,7 @@ async def test_full_ring_replay_delivers_every_event_without_dropping(monkeypatc
 
 @pytest.mark.asyncio
 async def test_buffer_is_bounded(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "4")
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(6):
@@ -256,7 +256,7 @@ async def test_end_to_end_gap_closed_and_anchored():
 @pytest.mark.asyncio
 async def test_publish_counts_overflow_without_per_event_warning(monkeypatch, caplog):
     # Issue #185: benign ring eviction is COUNTED, not warned per event (log-flood guard).
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         with caplog.at_level(_logging.WARNING):

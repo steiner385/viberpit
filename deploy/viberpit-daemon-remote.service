@@ -71,7 +71,7 @@ KillMode=mixed
 # the main reason for offloading sessions here in the first place.
 MemoryHigh=24G
 # Shared with every `codex app-server` this runner supervises (one per ACCOUNT,
-# ref-counted and idle-reaped after CCSWITCH_CODEX_IDLE_GRACE_S).
+# ref-counted and idle-reaped after VIBERPIT_CODEX_IDLE_GRACE_S).
 MemoryMax=28G
 # TasksMax counts threads: this daemon owns every live claude session plus its MCP
 # fleet, Xvfb and thread pools. MemoryMax is the real backstop.

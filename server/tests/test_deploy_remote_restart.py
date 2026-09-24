@@ -1,6 +1,6 @@
 """restart_edge: the edge restart is LOCAL and edge-only. Runner restarts live in
 server.deploy.runners (test_deploy_runners.py) — the ssh branch that used to live here
-(CCSWITCH_DAEMON_SSH_HOST) is gone, and steps must never build an ssh command again."""
+(VIBERPIT_DAEMON_SSH_HOST) is gone, and steps must never build an ssh command again."""
 from server.deploy import steps
 
 
@@ -19,7 +19,7 @@ def _recorder(calls):
 
 
 def test_restart_edge_restarts_only_the_edge_unit(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")   # must be ignored now
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@rocky")   # must be ignored now
     calls: list[list[str]] = []
     units = steps.restart_edge(run=_recorder(calls))
     assert calls == [["sudo", "systemctl", "restart", "viberpit.service"]]
@@ -43,7 +43,7 @@ def test_rollback_to_resets_edge_and_restarts_local_daemon_when_changed(tmp_path
 
 def test_remote_runners_configured_reads_the_fleet_not_the_env(monkeypatch):
     from server.deploy.runners import RunnerTarget
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@rocky")
     local = RunnerTarget(name="dobby", endpoint="https://d", enabled=True, healthy=True,
                          ssh_host=None, repo_path=None)
     remote = RunnerTarget(name="rocky", endpoint="https://r", enabled=True, healthy=True,

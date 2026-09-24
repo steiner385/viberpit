@@ -133,9 +133,9 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="runner_sync")
     p.add_argument("--repo", default=os.getcwd())
     args = p.parse_args(argv)
-    db_url = os.environ.get("CCSWITCH_DB_URL", "")
+    db_url = os.environ.get("VIBERPIT_DB_URL", "")
     if not db_url:
-        log.error("runner_sync: CCSWITCH_DB_URL unset — cannot reconcile")
+        log.error("runner_sync: VIBERPIT_DB_URL unset — cannot reconcile")
         return 0
     try:
         outcome = sync(args.repo, deployed_sha=read_deployed_sha(db_url))

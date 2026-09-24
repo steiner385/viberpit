@@ -48,7 +48,7 @@ class _FakeOrch:
 
 
 def test_gather_usages_isolates_hang_and_error_and_is_concurrent(monkeypatch, tmp_path):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     orch = _FakeOrch({"ok": "ok", "slow": "hang", "bad": "raise"})
 
     async def go():
@@ -79,7 +79,7 @@ def test_safe_usage_returns_value_on_success():
 
 
 def test_safe_usage_timeout_returns_none(monkeypatch, tmp_path):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     orch = _FakeOrch({"slow": "hang"})
     got, stale_as_of = asyncio.run(accounts_api._safe_usage(orch, "slow", timeout=0.05))
     assert got is None

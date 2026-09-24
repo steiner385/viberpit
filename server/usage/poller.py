@@ -82,7 +82,7 @@ class UsagePoller:
         # ONLY this pool — it can no longer starve the shared executor that the daemon's
         # control path (DB writes, /healthz-adjacent work) depends on, which is how a
         # usage stall could wedge the whole daemon (incident 2026-07-02).
-        self._executor_workers = int(os.environ.get("CCSWITCH_USAGE_POLLER_WORKERS", "4"))
+        self._executor_workers = int(os.environ.get("VIBERPIT_USAGE_POLLER_WORKERS", "4"))
         self._executor: ThreadPoolExecutor | None = None
 
     # ------------------------------------------------------------------

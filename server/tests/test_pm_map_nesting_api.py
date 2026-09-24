@@ -45,8 +45,8 @@ def test_map_initiative_nodes_carry_their_parent():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from fastapi.testclient import TestClient
             from server.app import create_app
             from server.sessions.orchestrator import SessionOrchestrator
@@ -86,8 +86,8 @@ def test_project_health_surfaces_governance_status():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from fastapi.testclient import TestClient
             from server.app import create_app
             from server.sessions.orchestrator import SessionOrchestrator
@@ -135,8 +135,8 @@ def test_leaves_of_a_program_lists_the_phases_leaf_issue_not_the_sub_epic():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
         asyncio.run(_seed(db_url))
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from fastapi.testclient import TestClient
             from server.app import create_app
             from server.sessions.orchestrator import SessionOrchestrator

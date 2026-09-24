@@ -42,9 +42,9 @@ _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 log = logging.getLogger(__name__)
 
 # DIAGNOSTIC (temporary): gate the per-emit status trace. Off by default — set
-# CCSWITCH_STATUS_TRACE=1 to capture the raw derived status + its input signals
+# VIBERPIT_STATUS_TRACE=1 to capture the raw derived status + its input signals
 # when chasing false-"Ready" reports. Remove with the trace itself once settled.
-_STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
+_STATUS_TRACE = os.environ.get("VIBERPIT_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
 
 # Events that reconstruct a turn's transcript — the only ones retained in the
 # in-progress-turn buffer and replayed to a late subscriber. Control/ephemeral
@@ -649,7 +649,7 @@ class ClaudeAgentDriver:
         # it, to tell a genuine idle/done from a "Ready" the UI fell back to. Logs
         # the inputs to derive_status plus the staleness clock the stall watchdog
         # uses, so a session that looks idle while monitoring is identifiable.
-        # Gated by CCSWITCH_STATUS_TRACE (off by default — fires on every emit).
+        # Gated by VIBERPIT_STATUS_TRACE (off by default — fires on every emit).
         # Remove once the false-"Ready" question is settled.
         if _STATUS_TRACE:
             log.info(

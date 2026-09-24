@@ -517,8 +517,8 @@ def _client(orch):
 
     @contextmanager
     def _ctx():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-                                     "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+                                     "VIBERPIT_DEV": "1", "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             real = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=real)
             app.state.sessions = orch
@@ -698,9 +698,9 @@ def test_backlog_announce_posts_linking_comment(tmp_path, monkeypatch):
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
     async def go():
-        monkeypatch.setenv("CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'cmt.db'}")
-        _os.environ["CCSWITCH_DEV"] = "1"
-        await init_db(db_url=_os.environ["CCSWITCH_DB_URL"])
+        monkeypatch.setenv("VIBERPIT_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'cmt.db'}")
+        _os.environ["VIBERPIT_DEV"] = "1"
+        await init_db(db_url=_os.environ["VIBERPIT_DB_URL"])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         gh = CommentTrackingGh()
         orch._gh_run = gh

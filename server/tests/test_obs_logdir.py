@@ -21,7 +21,7 @@ from server.obs import logdir
 ROOT = Path(__file__).resolve().parents[2]
 #: The one env override these tests drive. Hoisted so the legacy spelling appears
 #: once in this file (scripts/brand_ratchet.py, #1591).
-LOG_DIR_ENV = "CCSWITCH_LOG_DIR"
+LOG_DIR_ENV = "VIBERPIT_LOG_DIR"
 
 
 @pytest.fixture(autouse=True)

@@ -432,7 +432,7 @@ async def test_offline_runner_is_reported_not_failed():
 async def test_empty_fleet_adds_a_warning():
     """An empty fan-out and a successful one are indistinguishable in the phase state, so a
     deploy that reached NOBODY reported green. The usual cause is a hand-run
-    `python -m server.deploy --once` without CCSWITCH_DB_URL: the registry lookup lands on
+    `python -m server.deploy --once` without VIBERPIT_DB_URL: the registry lookup lands on
     an empty default DB and every runner is left on the old code."""
     g = FakeGit("old0000000", "new1111111", ["server/x.py"])
     s, _ = make_steps(changed=["server/x.py"])
@@ -440,7 +440,7 @@ async def test_empty_fleet_adds_a_warning():
     c = make_controller(g, s, runners=(r, rc))
     st = await c.deploy_once()
     assert st.error is None and st.phases["runners"] == "done"
-    assert any("no enabled fleet hosts" in w and "CCSWITCH_DB_URL" in w for w in st.warnings), \
+    assert any("no enabled fleet hosts" in w and "VIBERPIT_DB_URL" in w for w in st.warnings), \
         st.warnings
 
 

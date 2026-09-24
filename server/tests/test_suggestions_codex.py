@@ -120,7 +120,7 @@ CONTEXT = "User: fix the bug\n\nAssistant: done, ran the tests."
 
 @pytest.mark.asyncio
 async def test_disabled_by_default_never_touches_the_manager(tmp_path, monkeypatch):
-    monkeypatch.delenv("CCSWITCH_CODEX_SUGGEST_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_CODEX_SUGGEST_ENABLED", raising=False)
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[ev.TextDelta(turn_id="t1", text='["Run tests"]'),
                                          ev.TurnEnd(turn_id="t1")])
@@ -135,7 +135,7 @@ async def test_disabled_by_default_never_touches_the_manager(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_no_codex_manager_wired_is_empty_even_when_flag_is_on(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     factory = _FakeCodexFactory(events=[ev.TurnEnd(turn_id="t1")])
     orch = _orch(tmp_path, codex=None, factory=factory)
 
@@ -145,7 +145,7 @@ async def test_no_codex_manager_wired_is_empty_even_when_flag_is_on(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_blank_context_never_spawns_a_thread(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[ev.TurnEnd(turn_id="t1")])
     orch = _orch(tmp_path, codex=codex, factory=factory)
@@ -156,7 +156,7 @@ async def test_blank_context_never_spawns_a_thread(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_happy_path_parses_suggestions_and_tears_down_cleanly(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[
         ev.TextDelta(turn_id="t1", text='["Run the tests", '),
@@ -179,7 +179,7 @@ async def test_happy_path_parses_suggestions_and_tears_down_cleanly(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_permission_requests_are_auto_denied(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[
         ev.PermissionRequest(perm_id="p1", turn_id="t1", tool="shell",
@@ -198,7 +198,7 @@ async def test_permission_requests_are_auto_denied(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_non_success_turn_outcome_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[
         ev.TextDelta(turn_id="t1", text="partial"),
@@ -214,7 +214,7 @@ async def test_non_success_turn_outcome_returns_empty(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unparseable_reply_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[
         ev.TextDelta(turn_id="t1", text="not json"),
@@ -227,7 +227,7 @@ async def test_unparseable_reply_returns_empty(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_failure_is_fail_open_and_never_attaches(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
     codex = _FakeCodexManager()
     factory = _FakeCodexFactory(events=[], fail_start=True)
     orch = _orch(tmp_path, codex=codex, factory=factory)
@@ -241,8 +241,8 @@ async def test_start_failure_is_fail_open_and_never_attaches(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_timeout_is_fail_open_and_still_tears_down(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_SUGGEST_ENABLED", "true")
-    monkeypatch.setenv("CCSWITCH_SUGGEST_CODEX_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("VIBERPIT_CODEX_SUGGEST_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_SUGGEST_CODEX_TIMEOUT_S", "0.05")
     codex = _FakeCodexManager()
 
     class _HungFactory(_FakeCodexFactory):

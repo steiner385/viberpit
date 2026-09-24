@@ -17,7 +17,7 @@ from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_
 
 log = logging.getLogger("ccswitch.dispatch")
 
-REFINE_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_REFINE_PROMPT_TIMEOUT_S", "20"))
+REFINE_TIMEOUT_S: float = float(os.environ.get("VIBERPIT_REFINE_PROMPT_TIMEOUT_S", "20"))
 
 _REFINE_SYSTEM = (
     "You are a prompt engineer for a coding-agent fleet. "

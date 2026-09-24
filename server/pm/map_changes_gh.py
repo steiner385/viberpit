@@ -10,7 +10,7 @@ sessions) is never mutated. Branch, PR and content reads are REST.
 Auth (R8b-3): the GitHub App installation token for the repo's owner first;
 when GitHub answers ``Resource not accessible by integration`` (the App lacks
 ``contents:write`` / ``pull_requests:write``) the call is retried with the
-classic PAT ``CCSWITCH_GH_PROJECT_TOKEN`` and the instance sticks with it;
+classic PAT ``VIBERPIT_GH_PROJECT_TOKEN`` and the instance sticks with it;
 with neither, ambient ``gh`` credentials."""
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class GhWrite:
         self.repo = repo
         self._run = run
         self._app = app_token(repo)
-        self._pat = env.get("CCSWITCH_GH_PROJECT_TOKEN") or None
+        self._pat = env.get("VIBERPIT_GH_PROJECT_TOKEN") or None
         self._use_pat = False
 
     # -- plumbing -------------------------------------------------------------

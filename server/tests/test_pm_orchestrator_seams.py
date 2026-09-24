@@ -59,8 +59,8 @@ async def _seed(db_url: str) -> str:
 def db_env():
     with tempfile.TemporaryDirectory() as tmp:
         url = f"sqlite+aiosqlite:///{tmp}/t.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             yield url
 
 
@@ -1842,7 +1842,7 @@ async def test_reconcile_mutate_returns_payload_with_per_alias_errors():
         return _gh(_PARTIAL, 1, "gh: Validation failed: this dependency would create a cycle")
 
     orch._gh_run = gh_run
-    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+    with patch.dict(os.environ, {"VIBERPIT_GH_PROJECT_TOKEN": "tok-pat"}):
         payload = await orch._pm_reconcile_mutate("steiner385", "mutation { m0: … }")
     assert payload["errors"][0]["path"] == ["m1"]
     assert payload["data"]["m0"]["issue"]["id"] == "I_1"
@@ -1853,7 +1853,7 @@ async def test_reconcile_mutate_returns_payload_with_per_alias_errors():
 async def test_reconcile_mutate_still_raises_on_transport_failure():
     orch = _bare_orch()
     orch._gh_run = lambda args, token=None: _gh("", 1, "gh: HTTP 502 Bad Gateway")
-    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+    with patch.dict(os.environ, {"VIBERPIT_GH_PROJECT_TOKEN": "tok-pat"}):
         with pytest.raises(RuntimeError, match="502"):
             await orch._pm_reconcile_mutate("steiner385", "mutation { m0: … }")
 
@@ -1864,7 +1864,7 @@ async def test_mirror_read_seam_stays_strict_on_graphql_errors():
     to the mirror (node → null), so the read seams must not swallow it."""
     orch = _bare_orch()
     orch._gh_run = lambda args, token=None: _gh(_PARTIAL, 1, "gh: Validation failed")
-    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+    with patch.dict(os.environ, {"VIBERPIT_GH_PROJECT_TOKEN": "tok-pat"}):
         with pytest.raises(RuntimeError):
             await orch._pm_sync_fetch_projects("steiner385", "query { … }")
     with pytest.raises(RuntimeError):

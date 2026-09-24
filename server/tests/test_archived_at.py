@@ -31,7 +31,7 @@ def test_archive_session_sets_archived_at(tmp_path):
     cwd.mkdir()
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             async with db_session() as db:
                 db.add(DbSession(

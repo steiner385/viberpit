@@ -35,7 +35,7 @@ def _client():
 
     with temp_env(), tempfile.TemporaryDirectory() as d:
         db_url = f"sqlite+aiosqlite:///{Path(d) / 'settings.db'}"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}):
             orch = SessionOrchestrator(poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
@@ -477,8 +477,8 @@ def test_effective_global_cap_derives_from_enabled_host_caps():
 def test_managed_lists_the_capacity_env_flags():
     with _client() as client:
         keys = {m["key"] for m in client.get("/api/settings", headers=IDENTITY_HEADERS).json()["managed"]}
-    for env in ("CCSWITCH_TEST_SLOT_CAP", "CCSWITCH_CHILD_SESSION_CAP",
-                "CCSWITCH_STT_MAX_CONCURRENT", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED"):
+    for env in ("VIBERPIT_TEST_SLOT_CAP", "VIBERPIT_CHILD_SESSION_CAP",
+                "VIBERPIT_STT_MAX_CONCURRENT", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED"):
         assert env in keys, env
 
 
@@ -539,9 +539,9 @@ def test_get_settings_exposes_effective_defaults_and_accepted_modes(tmp_path):
     # janitor at whatever the configured repo root says (#1014).
     repo_root = str(tmp_path / "repos")
     with temp_env(), patch.dict(os.environ, {
-        "CCSWITCH_MODEL_APPROVAL_ACTION": "block",
-        "CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable,opus",
-        "CCSWITCH_REPO_ROOT": repo_root,
+        "VIBERPIT_MODEL_APPROVAL_ACTION": "block",
+        "VIBERPIT_MODEL_APPROVAL_DENYLIST": "fable,opus",
+        "VIBERPIT_REPO_ROOT": repo_root,
     }):
         with _client() as client:
             data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
@@ -561,27 +561,27 @@ def test_get_settings_managed_is_an_allowlist_with_no_secrets():
     from server.version import running_git_sha
 
     # running_git_sha() is resolved once and cached for the process's life
-    # (see server/version.py); clear it so this test's CCSWITCH_GIT_SHA override
+    # (see server/version.py); clear it so this test's VIBERPIT_GIT_SHA override
     # is actually observed, and clear it again after so later tests aren't stuck
     # with this test's value.
     running_git_sha.cache_clear()
     try:
         with temp_env(), patch.dict(os.environ, {
-            "CCSWITCH_SELF_MODEL_SWITCH_CAP": "7",
-            "CCSWITCH_MASTER_KEY": "sekrit",
-            "CCSWITCH_GIT_SHA": "abc1234",
-            "CCSWITCH_HOST_NAME": "rocky",
+            "VIBERPIT_SELF_MODEL_SWITCH_CAP": "7",
+            "VIBERPIT_MASTER_KEY": "sekrit",
+            "VIBERPIT_GIT_SHA": "abc1234",
+            "VIBERPIT_HOST_NAME": "rocky",
         }):
             with _client() as client:
                 data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
     finally:
         running_git_sha.cache_clear()
     keys = [m["key"] for m in data["managed"]]
-    assert "CCSWITCH_MASTER_KEY" not in keys
-    assert "CCSWITCH_TAILNET_ALLOWLIST" not in keys
+    assert "VIBERPIT_MASTER_KEY" not in keys
+    assert "VIBERPIT_TAILNET_ALLOWLIST" not in keys
     by_key = {m["key"]: m for m in data["managed"]}
-    assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["value"] == 7
-    assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["description"]
+    assert by_key["VIBERPIT_SELF_MODEL_SWITCH_CAP"]["value"] == 7
+    assert by_key["VIBERPIT_SELF_MODEL_SWITCH_CAP"]["description"]
     assert data["about"] == {"gitSha": "abc1234", "hostName": "rocky"}
 
 
@@ -595,8 +595,8 @@ def test_get_settings_about_falls_back_to_shared_identity_helpers():
     running_git_sha.cache_clear()
     try:
         with temp_env(), patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CCSWITCH_HOST_NAME", None)
-            os.environ.pop("CCSWITCH_GIT_SHA", None)
+            os.environ.pop("VIBERPIT_HOST_NAME", None)
+            os.environ.pop("VIBERPIT_GIT_SHA", None)
             with _client() as client:
                 data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
             expected_host = self_host_name()

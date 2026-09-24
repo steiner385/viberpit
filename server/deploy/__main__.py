@@ -19,7 +19,7 @@ def _daemon_enabled() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "serve":
         from server.deploy import serve as _serve
@@ -35,8 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once:
         p.error("only --once is supported in Plan 1")
 
-    host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")
-    port = os.environ.get("CCSWITCH_PORT", "8787")
+    host = os.environ.get("VIBERPIT_HOST", "127.0.0.1")
+    port = os.environ.get("VIBERPIT_PORT", "8787")
     health_url = f"http://{host}:{port}/healthz"
     venv_python = args.venv_python or os.path.join(args.repo, ".venv", "bin", "python")
     daemon_enabled = (args.daemon_enabled == "true") if args.daemon_enabled else _daemon_enabled()
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         # The runners phase reads the fleet registry, so the engine must exist on THIS
         # loop (an asyncpg pool is loop-bound).
         from server.db import init_db
-        await init_db(db_url=os.environ.get("CCSWITCH_DB_URL"))
+        await init_db(db_url=os.environ.get("VIBERPIT_DB_URL"))
         return await controller.deploy_once()
 
     status = asyncio.run(_run())

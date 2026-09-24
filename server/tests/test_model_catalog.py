@@ -149,7 +149,7 @@ def test_catalog_uses_discovered_list_when_binary_found(monkeypatch, tmp_path):
     binary = tmp_path / "claude"
     discovered = ["sonnet", "opus", "haiku", "opusplan"]
     _make_binary(binary, discovered)
-    monkeypatch.setenv("CCSWITCH_CLAUDE_BIN", str(binary))
+    monkeypatch.setenv("VIBERPIT_CLAUDE_BIN", str(binary))
     monkeypatch.setattr(shutil, "which", lambda _: str(binary))
     monkeypatch.setattr(mc, "_cache", None)
     cat = mc.catalog()
@@ -171,7 +171,7 @@ def test_live_aliases_probe_uses_shared_resolver(monkeypatch, tmp_path):
 
 
 def test_catalog_falls_back_to_static_when_binary_not_found(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CLAUDE_BIN", "/nonexistent/claude")
+    monkeypatch.setenv("VIBERPIT_CLAUDE_BIN", "/nonexistent/claude")
     monkeypatch.setattr(shutil, "which", lambda _: None)
     monkeypatch.setattr(mc, "_cache", None)
     cat = mc.catalog()

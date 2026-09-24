@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def root() -> Path:
-    return Path(os.environ.get("CCSWITCH_HOME", str(Path.home() / ".claude-accounts")))
+    return Path(os.environ.get("VIBERPIT_HOME", str(Path.home() / ".claude-accounts")))
 
 
 def ensure_root() -> Path:
@@ -114,7 +114,7 @@ def reauth_chrome_profile_dir() -> Path:
     the reauth flow copies its source into a throwaway profile, so pointing it at
     the everyday profile puts unrelated cookies and saved passwords a single
     missed cleanup away from disk (#1105). Using the everyday profile is opt-in
-    via ``CCSWITCH_CHROME_PROFILE``.
+    via ``VIBERPIT_CHROME_PROFILE``.
     """
     return root() / "chrome-profile" / "Default"
 
@@ -122,11 +122,11 @@ def reauth_chrome_profile_dir() -> Path:
 def archive_dir() -> Path:
     """Directory where archived session working directories are stored.
 
-    Override with CCSWITCH_ARCHIVE_HOME to store archives on a separate
+    Override with VIBERPIT_ARCHIVE_HOME to store archives on a separate
     filesystem (e.g. a larger/slower drive) from live session data.
-    Defaults to $CCSWITCH_HOME/archive.
+    Defaults to $VIBERPIT_HOME/archive.
     """
-    env = os.environ.get("CCSWITCH_ARCHIVE_HOME")
+    env = os.environ.get("VIBERPIT_ARCHIVE_HOME")
     d = Path(env) if env else root() / "archive"
     d.mkdir(parents=True, exist_ok=True)
     return d

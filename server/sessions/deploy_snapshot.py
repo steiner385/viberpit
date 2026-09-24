@@ -6,7 +6,7 @@ from server.hostpaths import DEPLOY_SNAPSHOT_PATH as DEFAULT_PATH
 
 
 def snapshot_path() -> str:
-    return os.environ.get("CCSWITCH_DEPLOY_SNAPSHOT", DEFAULT_PATH)
+    return os.environ.get("VIBERPIT_DEPLOY_SNAPSHOT", DEFAULT_PATH)
 
 
 def write_snapshot(live: list[dict], *, path: str | None = None) -> str:

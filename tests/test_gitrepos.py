@@ -693,7 +693,7 @@ class GitTokenProviderTests(unittest.TestCase):
         gitrepos.set_token_provider(lambda owner: "ghs_tok123")
         env = gitrepos._git_env("acme")
         assert env is not None
-        self.assertEqual(env["CCSWITCH_GIT_TOKEN"], "ghs_tok123")
+        self.assertEqual(env["VIBERPIT_GIT_TOKEN"], "ghs_tok123")
         # Two entries: clear the ambient helper list, then install ours.
         self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
@@ -702,7 +702,7 @@ class GitTokenProviderTests(unittest.TestCase):
         self.assertIn("x-access-token", env["GIT_CONFIG_VALUE_1"])
 
     def test_helper_value_does_not_embed_the_token(self) -> None:
-        # The helper reads the token from CCSWITCH_GIT_TOKEN at call time; baking
+        # The helper reads the token from VIBERPIT_GIT_TOKEN at call time; baking
         # it into the config value would leak it anywhere config is echoed.
         gitrepos.set_token_provider(lambda owner: "ghs_secret")
         env = gitrepos._git_env("acme")
@@ -801,7 +801,7 @@ class GitEnvForRemoteTests(unittest.TestCase):
         env = gitrepos.git_env_for_remote("https://github.com/cairnea/KinDash.git")
         assert env is not None
         self.assertEqual(seen, ["cairnea"])
-        self.assertEqual(env["CCSWITCH_GIT_TOKEN"], "ghs_tok")
+        self.assertEqual(env["VIBERPIT_GIT_TOKEN"], "ghs_tok")
 
     def test_non_github_remote_gets_ambient_env(self) -> None:
         gitrepos.set_token_provider(lambda owner: "ghs_tok")

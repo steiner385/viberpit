@@ -50,7 +50,7 @@ def test_snapshot_failed_is_unknown_not_fresh():
 # Threshold knobs. These are read inside the session serializer (every session,
 # every request, with no try/except above it) and at the top of the daemon's
 # heartbeat loop, so a typo'd override must fall back — never raise. A raw
-# float() here used to mean CCSWITCH_HOST_DEAD_AFTER_S=300s 500s the whole
+# float() here used to mean VIBERPIT_HOST_DEAD_AFTER_S=300s 500s the whole
 # sessions page, and a bad interval killed the heartbeat task after one beat.
 # --------------------------------------------------------------------------- #
 

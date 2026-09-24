@@ -7,7 +7,7 @@ Tests:
   404 — unknown session: 404 not found
 
 Auth approach: mirror test_adopt_api.py — real SessionOrchestrator + fake SDK,
-CCSWITCH_TAILNET_ALLOWLIST="" accepts any identity, send Tailscale-User-Login header.
+VIBERPIT_TAILNET_ALLOWLIST="" accepts any identity, send Tailscale-User-Login header.
 TestClient (sync, lifespan-aware) runs init_db() before the route's get_db() is hit.
 app.state.sessions is replaced after create_app() with a lightweight fake so
 the route tests don't need a live driver.
@@ -26,9 +26,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

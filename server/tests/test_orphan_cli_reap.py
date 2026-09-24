@@ -145,7 +145,7 @@ def test_enumeration_failure_never_breaks_the_boot_path():
 
 
 def test_reap_terminates_only_the_orphans(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_REAP_ORPHAN_CLIS", raising=False)
+    monkeypatch.delenv("VIBERPIT_REAP_ORPHAN_CLIS", raising=False)
     killed: list[int] = []
     procs = [
         _daemon(),
@@ -163,7 +163,7 @@ def test_reap_terminates_only_the_orphans(monkeypatch):
 
 def test_a_process_that_already_exited_is_not_reported_as_reaped(monkeypatch):
     """terminate_process_tree returns False for a pid that is already gone."""
-    monkeypatch.delenv("CCSWITCH_REAP_ORPHAN_CLIS", raising=False)
+    monkeypatch.delenv("VIBERPIT_REAP_ORPHAN_CLIS", raising=False)
     reaped = orphan_cli.reap_orphans(
         KNOWN, self_pid=DAEMON_PID, proc_lister=lambda: [_sdk(4041937, ppid=1)],
         account_cfg=_account_cfg, terminate=lambda pid: False)
@@ -171,7 +171,7 @@ def test_a_process_that_already_exited_is_not_reported_as_reaped(monkeypatch):
 
 
 def test_one_failed_kill_does_not_stop_the_sweep(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_REAP_ORPHAN_CLIS", raising=False)
+    monkeypatch.delenv("VIBERPIT_REAP_ORPHAN_CLIS", raising=False)
     killed: list[int] = []
 
     def flaky(pid):
@@ -188,7 +188,7 @@ def test_one_failed_kill_does_not_stop_the_sweep(monkeypatch):
 
 
 def test_kill_switch_disables_the_reap(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_REAP_ORPHAN_CLIS", "false")
+    monkeypatch.setenv("VIBERPIT_REAP_ORPHAN_CLIS", "false")
     killed: list[int] = []
     reaped = orphan_cli.reap_orphans(
         KNOWN, self_pid=DAEMON_PID, proc_lister=lambda: [_sdk(4041937, ppid=1)],

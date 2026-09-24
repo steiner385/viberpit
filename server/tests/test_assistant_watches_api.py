@@ -28,7 +28,7 @@ def _client(env=None):
 
     with temp_env(), tempfile.TemporaryDirectory() as d:
         db_url = f"sqlite+aiosqlite:///{Path(d) / 'watches.db'}"
-        full_env = {"CCSWITCH_DB_URL": db_url, **(env or {})}
+        full_env = {"VIBERPIT_DB_URL": db_url, **(env or {})}
         with patch.dict(os.environ, full_env):
             orch = SessionOrchestrator(poll_interval=9999.0)
             app = create_app(orchestrator=orch)
@@ -186,7 +186,7 @@ def test_delete_watch_404_for_someone_elses_watch():
 
 
 def test_watch_cap_is_per_identity():
-    with _client(env={"CCSWITCH_ASSISTANT_WATCH_MAX_PER_IDENTITY": "2"}) as c:
+    with _client(env={"VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY": "2"}) as c:
         for i in range(2):
             r = c.post("/api/assistant/watches",
                        json={"kind": "automation", "target": f"job-{i}", "condition": "error"},

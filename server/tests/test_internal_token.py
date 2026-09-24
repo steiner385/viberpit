@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from server.auth.internal_token import PREFIX, mint_token, verify_token
 
-_ENV = {"CCSWITCH_SESSION_SECRET": "x" * 32}
+_ENV = {"VIBERPIT_SESSION_SECRET": "x" * 32}
 
 
 def test_mint_verify_roundtrip():

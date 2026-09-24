@@ -20,9 +20,9 @@ from server.app import create_app
 from server.assistant.token import mint_user_token
 from server.tests.test_ws import _IDENTITY_HEADERS, _PermissionFakeClient, ws_env  # noqa: F401
 
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "", "CCSWITCH_SESSION_SECRET": "x" * 32,
-        "CCSWITCH_ASSISTANT_EXTERNAL_TOKENS": "true"}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_SESSION_SECRET": "x" * 32,
+        "VIBERPIT_ASSISTANT_EXTERNAL_TOKENS": "true"}
 
 
 def _client():
@@ -118,7 +118,7 @@ def test_unknown_token_id_is_rejected():
 
 def test_feature_flag_off_rejects_token():
     env = dict(_ENV)
-    env["CCSWITCH_ASSISTANT_EXTERNAL_TOKENS"] = "false"
+    env["VIBERPIT_ASSISTANT_EXTERNAL_TOKENS"] = "false"
     with patch.dict(os.environ, env):
         with _client() as c:
             tok = _mint_and_insert(c, "u@example.com", "act")
@@ -138,7 +138,7 @@ def test_tailscale_identity_path_is_unaffected():
 
 
 def test_permission_answered_over_ccas2_socket_is_audited_via_cli(ws_env, monkeypatch):  # noqa: F811 — pytest fixture
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_EXTERNAL_TOKENS", "true")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_EXTERNAL_TOKENS", "true")
     _app, orch, client = ws_env([], client_cls=_PermissionFakeClient)
     session = client.portal.call(
         lambda: orch.create_session("test-cli-perm", identity="cli-user@example.com")

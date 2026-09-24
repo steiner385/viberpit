@@ -12,7 +12,7 @@ The manifest replaces that inference with a declaration.
 Writer rule
 -----------
 **One writer.** Dobby/the primary host owns ``accounts.json``; a runner
-(``CCSWITCH_DAEMON_ROLE=worker``) only ever READS the snapshot. This is the
+(``VIBERPIT_DAEMON_ROLE=worker``) only ever READS the snapshot. This is the
 opposite of ``ledger.json``, which every host writes and whose known failure mode
 is a lost update across an sshfs/NFS mount — acceptable for a usage cache, not for
 identity. A worker that finds no manifest imports one **in memory** and logs; it
@@ -150,10 +150,10 @@ def _iso(dt: datetime | None) -> str | None:
 def is_manifest_writer() -> bool:
     """True on the host that owns ``accounts.json``.
 
-    Reuses the existing per-host role switch (``CCSWITCH_DAEMON_ROLE``, default
+    Reuses the existing per-host role switch (``VIBERPIT_DAEMON_ROLE``, default
     ``primary``) rather than inventing a second notion of "am I dobby?".
     """
-    return os.environ.get("CCSWITCH_DAEMON_ROLE", "primary").strip().lower() != "worker"
+    return os.environ.get("VIBERPIT_DAEMON_ROLE", "primary").strip().lower() != "worker"
 
 
 @dataclass(frozen=True)
@@ -357,7 +357,7 @@ def locked_manifest() -> Iterator[Manifest]:
     """
     if not is_manifest_writer():
         raise ManifestNotWritable(
-            "this host is a runner (CCSWITCH_DAEMON_ROLE=worker); accounts.json "
+            "this host is a runner (VIBERPIT_DAEMON_ROLE=worker); accounts.json "
             "has a single writer (the primary host)")
     root = paths.ensure_root()
     path = paths.accounts_manifest_path()

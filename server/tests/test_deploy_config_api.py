@@ -1,6 +1,6 @@
 """Route tests: GET/PUT /api/pipeline/deploy-config (SPEC §3 env config).
 
-Auth mirrors test_api_pipeline_repos.py: create_app() with CCSWITCH_DEV=1 and
+Auth mirrors test_api_pipeline_repos.py: create_app() with VIBERPIT_DEV=1 and
 an empty allowlist so any identity passes; Tailscale-User-Login header
 authenticates. A real orchestrator is used (methods hit the DB directly), with a
 temp-file DB so the seed connection and the request connection share state.
@@ -26,9 +26,9 @@ _H = {"Tailscale-User-Login": "testuser@example.com"}
 def _db_env(tmp_path):
     url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     env = {
-        "CCSWITCH_DB_URL": url,
-        "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "",
+        "VIBERPIT_DB_URL": url,
+        "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "",
     }
     with patch.dict(os.environ, env):
         # Fresh per-test DB under tmp_path — explicit url, no wiping (#728).

@@ -26,9 +26,9 @@ class StartBody(BaseModel):
 
 
 def _poll_interval() -> float:
-    """Detect-loop poll cadence in seconds — CCSWITCH_DEPLOY_POLL_INTERVAL or 30s."""
+    """Detect-loop poll cadence in seconds — VIBERPIT_DEPLOY_POLL_INTERVAL or 30s."""
     try:
-        return float(os.environ.get("CCSWITCH_DEPLOY_POLL_INTERVAL", "30"))
+        return float(os.environ.get("VIBERPIT_DEPLOY_POLL_INTERVAL", "30"))
     except ValueError:
         return 30.0
 
@@ -78,7 +78,7 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
         # was built on another loop. Tests pass no init_db_url and touch no DB.
         # None → this caller wants no DB at all (the tests). An empty string → init, and
         # let init_db fall back to settings.db_url, matching `python -m server.deploy
-        # --once`. Production passes os.environ.get("CCSWITCH_DB_URL", ""), so an unset
+        # --once`. Production passes os.environ.get("VIBERPIT_DB_URL", ""), so an unset
         # env var still initialises rather than silently leaving the runners phase and
         # record_deploy without an engine.
         if init_db_url is not None:

@@ -161,7 +161,7 @@ async def _codex_pr_doctor_ctx(tmp_path, db_name, monkeypatch, *, config=None):
                           config=config or {"engine": "codex"}))
     monkeypatch.setattr(registry.get("pr-doctor"), "engine_policy",
                         EnginePolicy.CODEX_ALLOWED, raising=False)
-    monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_AUTOMATIONS_ENABLED", "true")
     return AutomationContext("pr-doctor", create_session=_fake_create_session)
 
 
@@ -236,7 +236,7 @@ async def _init_codex_pr_doctor_db(tmp_path, monkeypatch, db_name="orch.db"):
                           config={"engine": "codex"}))
     monkeypatch.setattr(registry.get("pr-doctor"), "engine_policy",
                         EnginePolicy.CODEX_ALLOWED, raising=False)
-    monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_AUTOMATIONS_ENABLED", "true")
 
     monkeypatch.setattr("server.automations.context.resolve_permission_mode",
                         lambda kwargs: "acceptEdits")

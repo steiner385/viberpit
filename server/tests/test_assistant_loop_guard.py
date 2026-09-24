@@ -36,7 +36,7 @@ GUARDED_ORCH_METHODS = (
     # an assistant "turn" answers a question the user asked BEFORE the restart, and
     # nothing is watching the drawer at daemon boot to read the answer.
     "_recover_undelivered_prompts",  # rehydrate's initial-prompt re-send
-    "auto_resume_interrupted",      # CCSWITCH_AUTO_RESUME_ON_RESTART sweep
+    "auto_resume_interrupted",      # VIBERPIT_AUTO_RESUME_ON_RESTART sweep
     "_rearm_session",               # pending_rearm / pending_prompt replay (both callers)
     "list_sessions",                # the dashboard list
 )

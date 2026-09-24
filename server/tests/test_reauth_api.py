@@ -33,7 +33,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -100,7 +100,7 @@ class FakeReauthManager:
 # ---------------------------------------------------------------------------
 
 def _seed_slot(name: str) -> None:
-    """Write a minimal credential file so the slot exists (uses active CCSWITCH_HOME)."""
+    """Write a minimal credential file so the slot exists (uses active VIBERPIT_HOME)."""
     from ccswitch import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
@@ -116,7 +116,7 @@ def _make_client(reauth_manager: FakeReauthManager | None = None) -> TestClient:
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
 
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
             # None is what the real usage_for returned here anyway (the seeded
@@ -142,7 +142,7 @@ def test_reauth_start_returns_202_with_state():
     fake_rm = FakeReauthManager()
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -165,7 +165,7 @@ def test_reauth_start_409_when_busy():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -185,7 +185,7 @@ def test_reauth_start_503_when_no_key():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -201,7 +201,7 @@ def test_reauth_start_404_dotted_name():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -217,7 +217,7 @@ def test_reauth_start_404_unknown_account():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -240,7 +240,7 @@ def test_reauth_get_status():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get(
@@ -260,7 +260,7 @@ def test_reauth_get_status_404_unknown():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get(
@@ -276,7 +276,7 @@ def test_reauth_get_status_404_dotted_name():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get(
@@ -299,7 +299,7 @@ def test_reauth_cancel():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -317,7 +317,7 @@ def test_reauth_cancel_404_unknown():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -333,7 +333,7 @@ def test_reauth_cancel_404_dotted_name():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -378,7 +378,7 @@ def test_refresh_404_dotted_name():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -394,7 +394,7 @@ def test_delete_404_dotted_name():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.delete(
@@ -410,7 +410,7 @@ def test_patch_404_dotted_name_via_name_guard():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.patch(
@@ -428,7 +428,7 @@ def test_reauth_requires_auth():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post("/api/accounts/primary/reauth")
@@ -442,7 +442,7 @@ def test_reauth_status_returns_vnc_session():
     fake_rm._state = ReauthState(state="running", vnc_session="__reauth__")
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get("/api/accounts/primary/reauth", headers=IDENTITY_HEADERS)
@@ -462,7 +462,7 @@ def test_reauth_submit_code_returns_state():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -482,7 +482,7 @@ def test_reauth_submit_code_404_unknown():
     fake_rm = FakeReauthManager()
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -504,7 +504,7 @@ def test_reauth_start_always_uses_setup_token_mode():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -522,7 +522,7 @@ def test_reauth_start_ignores_a_stray_mode_query_param():
 
     with temp_env():
         _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(

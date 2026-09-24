@@ -20,7 +20,7 @@ def _client(tmp_path):
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    ctx = patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url})
+    ctx = patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url})
     return app, ctx
 
 

@@ -100,15 +100,15 @@ assistant mutation does not make subsequent harness cleanup safe.
   handlers each call exactly **one ViberPit HTTP API endpoint** over loopback
   (`server/assistant/client.py`) — "tool = endpoint", no business logic in the tool layer. One
   thread exists per user identity, lives on the primary fleet host, is hidden from the session
-  list, is capacity-exempt, and is torn down after `CCSWITCH_ASSISTANT_IDLE_S` (default 900s) of
+  list, is capacity-exempt, and is torn down after `VIBERPIT_ASSISTANT_IDLE_S` (default 900s) of
   inactivity, resuming from its persisted CLI transcript on reopen.
-- **Kill switch** — `CCSWITCH_ASSISTANT_ENABLED` (default `true` as of the Phase 4 launch, #1186;
+- **Kill switch** — `VIBERPIT_ASSISTANT_ENABLED` (default `true` as of the Phase 4 launch, #1186;
   `AppSettings.assistant_enabled` overrides it per deployment). Setting it `false` makes
   `POST /api/assistant/session` return 404 and the drawer show its disabled placeholder — it stops
   **new** threads; a thread already running keeps its driver until the idle reap
-  (`CCSWITCH_ASSISTANT_IDLE_S`) ends it (spec §8).
+  (`VIBERPIT_ASSISTANT_IDLE_S`) ends it (spec §8).
 - **Engine-neutral, with two different boundaries** — the drawer is not architecturally
-  Claude-only. `CCSWITCH_ASSISTANT_ENGINE` (default `claude_code`) selects the overlay via
+  Claude-only. `VIBERPIT_ASSISTANT_ENGINE` (default `claude_code`) selects the overlay via
   `assistant_overlay_for` (`server/assistant/options.py`), and the two overlays are deliberately
   siblings rather than one parameterised thing, because they reach the same property by opposite
   mechanisms. Claude **subtracts**: `tools=[]` plus a `disallowed_tools` denylist removes the
@@ -205,7 +205,7 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
     "viberpit": {
       "command": "ccswitch",
       "args": ["mcp", "--url", "https://ccswitch.tailnet.ts.net"],
-      "env": { "CCSWITCH_ASSISTANT_TOKEN": "ccas2:…" }
+      "env": { "VIBERPIT_ASSISTANT_TOKEN": "ccas2:…" }
     }
   }
 }
@@ -214,11 +214,11 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
 - **Authentication** — a user-scoped `ccas2:` token, minted from a signed-in browser session with
   `POST /api/assistant/tokens {"scope": "read"|"act", "ttlDays": N, "label": "…"}` (returned once;
   `GET`/`DELETE /api/assistant/tokens[/{id}]` list and revoke — there is no Settings UI for them
-  yet), revocable and expiring, read from `$CCSWITCH_ASSISTANT_TOKEN`
+  yet), revocable and expiring, read from `$VIBERPIT_ASSISTANT_TOKEN`
   (rename the variable with `--token-env`). Every call is re-checked at the edge by
   `IdentityMiddleware` against the token's scope and the route allowlist, so the bridge grants no
   authority the token doesn't already carry: a `read`-scope token can only ever issue `GET`s, and
-  `CCSWITCH_ASSISTANT_EXTERNAL_TOKENS=false` turns the whole path off server-side.
+  `VIBERPIT_ASSISTANT_EXTERNAL_TOKENS=false` turns the whole path off server-side.
 - **Read-only by default** — only `ToolClass.READ` tools are served. `--allow-mutations` adds the
   mutating ones, and they then run **immediately**: nothing on this path shows the human the
   permission card the drawer would, so the calling client is the only place a human can intervene.
@@ -238,7 +238,7 @@ and prints the answer — a one-shot alternative to `mcp` for a shell script or 
 wants a text answer, not a live tool connection.
 
 ```
-CCSWITCH_ASSISTANT_TOKEN=ccas2:… ccswitch ask "Which sessions need my attention?"
+VIBERPIT_ASSISTANT_TOKEN=ccas2:… ccswitch ask "Which sessions need my attention?"
 ```
 
 It creates or resumes the caller's assistant thread (`POST /api/assistant/session`), attaches over

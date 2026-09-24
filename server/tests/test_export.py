@@ -113,7 +113,7 @@ class TestExportEndpoints:
     def test_export_md_download(self, tmp_path):
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid, _ = _make_app(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
         assert r.status_code == 200, r.text
@@ -126,7 +126,7 @@ class TestExportEndpoints:
         transcript must appear in the Markdown (B1)."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid, _ = _make_app(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
         assert r.status_code == 200, r.text
@@ -136,7 +136,7 @@ class TestExportEndpoints:
     def test_export_jsonl_raw_download(self, tmp_path):
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid, _ = _make_app(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(f"/api/sessions/{sid}/export.jsonl", headers=_IDENT)
         assert r.status_code == 200, r.text
@@ -149,7 +149,7 @@ class TestExportEndpoints:
     def test_export_missing_transcript_404(self, tmp_path):
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, _, no_transcript_id = _make_app(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 f"/api/sessions/{no_transcript_id}/export.md",
@@ -185,7 +185,7 @@ class TestExportReplayCeiling:
         monkeypatch.setattr(replay_mod, "replay_window", self._slow_replay(3600))
         monkeypatch.setattr(orch_mod, "TRANSCRIPT_EXPORT_CEILING_S", 0.2)
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
 
@@ -217,7 +217,7 @@ class TestExportReplayCeiling:
         monkeypatch.setattr(orch_mod, "_TRANSCRIPT_WINDOW_CEILING_S", 0.1)
         monkeypatch.setattr(orch_mod, "TRANSCRIPT_EXPORT_CEILING_S", 30.0)
 
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
 

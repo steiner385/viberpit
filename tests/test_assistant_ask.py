@@ -192,9 +192,9 @@ def test_ws_url_swaps_scheme():
 
 
 def test_cli_requires_a_token(monkeypatch, capsys):
-    monkeypatch.delenv("CCSWITCH_ASSISTANT_TOKEN", raising=False)
+    monkeypatch.delenv("VIBERPIT_ASSISTANT_TOKEN", raising=False)
     assert cli.main(["ask", "hi", "--url", "http://127.0.0.1:1"]) == 2
-    assert "CCSWITCH_ASSISTANT_TOKEN" in capsys.readouterr().err
+    assert "VIBERPIT_ASSISTANT_TOKEN" in capsys.readouterr().err
 
 
 def test_cli_reads_the_named_token_env_var(monkeypatch, capsys):

@@ -76,7 +76,7 @@ class SdlcIntake:
     # chain on the real binary, opt-in so CI never spends OpenAI quota).
     #
     # `codex_allowed` grants the option, not the traffic: `default_engine` still
-    # answers Claude, and both the `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` kill
+    # answers Claude, and both the `VIBERPIT_CODEX_AUTOMATIONS_ENABLED` kill
     # switch and #1263's network-egress opt-in ship off, so three further
     # deliberate operator steps stand between this line and an unattended Codex
     # intent session.

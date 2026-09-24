@@ -42,8 +42,8 @@ def _client_with_archives(archived_session_ids: list[str]):
         old_archive.mkdir()
 
         env_patch = {
-            "CCSWITCH_DB_URL": db_url,
-            "CCSWITCH_HOME": str(tmp),
+            "VIBERPIT_DB_URL": db_url,
+            "VIBERPIT_HOME": str(tmp),
         }
         with patch.dict(os.environ, env_patch):
             # Seed DB rows + create on-disk dirs in old_archive
@@ -128,7 +128,7 @@ def test_put_archive_home_no_op_when_same_path():
 
 
 def test_put_archive_home_clear_moves_sessions_to_default():
-    """PUT {archiveHome: ''} moves sessions to the default archive path ($CCSWITCH_HOME/archive)."""
+    """PUT {archiveHome: ''} moves sessions to the default archive path ($VIBERPIT_HOME/archive)."""
     session_ids = ["cccc0001-0000-0000-0000-000000000001"]
 
     with _client_with_archives(session_ids) as (client, tmp, old_archive):

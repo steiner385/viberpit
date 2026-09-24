@@ -250,14 +250,14 @@ def test_identical_context_dedupes_generation():
 
 
 def test_orchestrator_disabled_by_env(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_SUGGESTIONS", "0")
+    monkeypatch.setenv("VIBERPIT_SUGGESTIONS", "0")
     from server.sessions.orchestrator import SessionOrchestrator
     orch = SessionOrchestrator(sdk_factory=_factory([]))
     assert orch._suggester is None
 
 
 def test_orchestrator_enabled_by_default(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_SUGGESTIONS", raising=False)
+    monkeypatch.delenv("VIBERPIT_SUGGESTIONS", raising=False)
     from server.sessions.orchestrator import SessionOrchestrator
     orch = SessionOrchestrator(sdk_factory=_factory([]))
     assert orch._suggester is not None

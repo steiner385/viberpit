@@ -17,7 +17,7 @@ from .selector import at_ceiling, binding_window, usage_known
 
 
 def _claude_cmd(cfg) -> list[str]:
-    return shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
+    return shlex.split(os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin))
 
 
 def spawn_claude(cmd: list[str], env: dict):
@@ -98,7 +98,7 @@ def _binding_pct(u):
 
 
 def main(argv: list[str] | None = None) -> int:
-    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     parser = argparse.ArgumentParser(prog="ccmax", add_help=False)
     parser.add_argument("--confirm-switch", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=None)

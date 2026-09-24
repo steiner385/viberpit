@@ -22,7 +22,7 @@ def test_edge_lifespan_starts_and_stops_the_loop_lag_watchdog(tmp_path):
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/api/health", headers=_IDENT).status_code == 200
         assert isinstance(app.state.loop_lag, LoopLagWatchdog)

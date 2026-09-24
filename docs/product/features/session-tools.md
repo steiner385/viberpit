@@ -51,7 +51,7 @@ nine tools:
 | `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
 | `propose_decision` | SIGNAL | options (2–6 × {key, label, detail?}), recommended_key, rationale | Parks this session's issue on a PRODUCT DECISION only a person can take: draft the options, name the one you recommend, say why. The person picks one in the Inbox (spec 2026-09-18 §6). |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
-| `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `CCSWITCH_CHILD_SESSIONS_ENABLED`, capped by `CCSWITCH_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
+| `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `VIBERPIT_CHILD_SESSIONS_ENABLED`, capped by `VIBERPIT_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
@@ -65,7 +65,7 @@ surface works identically on any fleet host, including rocky.
 
 **Success metrics** — a session can answer "how was I dispatched" and file a feedback row without
 leaving its own turn; `server/tests/test_session_tools_real_binary.py` (gated on
-`CCSWITCH_TEST_CLAUDE_MCP=1`) verifies against the real `claude` binary, per Constitution III, that
+`VIBERPIT_TEST_CLAUDE_MCP=1`) verifies against the real `claude` binary, per Constitution III, that
 a project's own `.mcp.json` servers and `viberpit` coexist and `report_feedback` raises no prompt.
 
 **Non-goals (Phase 1)** — filing to GitHub (Phase 2's automation, shipped since — see below), an
@@ -264,7 +264,7 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
 *taught* changed with this migration; the harness's ability to *read* either one did not.
 
 **Notes** —
-- **Kill switch** — `CCSWITCH_SESSION_TOOLS_ENABLED` (default `true`); off drops the overlay at the
+- **Kill switch** — `VIBERPIT_SESSION_TOOLS_ENABLED` (default `true`); off drops the overlay at the
   next session build (no in-flight session is torn down) and, with it, the four signalling tools —
   at which point every session falls back to marker instructions, exactly as a Codex session does.
   There is no separate kill switch for the signalling tools alone (spec §10): this migration is

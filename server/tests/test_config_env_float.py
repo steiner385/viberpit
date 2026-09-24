@@ -11,46 +11,46 @@ from server.config import env_float
 
 
 def test_missing_returns_default(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_TEST_FLOAT", raising=False)
-    assert env_float("CCSWITCH_TEST_FLOAT", 7.5) == 7.5
+    monkeypatch.delenv("VIBERPIT_TEST_FLOAT", raising=False)
+    assert env_float("VIBERPIT_TEST_FLOAT", 7.5) == 7.5
 
 
 def test_valid_value_is_honoured(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", "2.5")
-    assert env_float("CCSWITCH_TEST_FLOAT", 7.5) == 2.5
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", "2.5")
+    assert env_float("VIBERPIT_TEST_FLOAT", 7.5) == 2.5
 
 
 @pytest.mark.parametrize("bad", ["", "abc", "1,5", "10s", " "])
 def test_malformed_falls_back_to_default_instead_of_crashing(monkeypatch, bad):
     """A typo'd override must never crash daemon startup."""
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", bad)
-    assert env_float("CCSWITCH_TEST_FLOAT", 7.5) == 7.5
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", bad)
+    assert env_float("VIBERPIT_TEST_FLOAT", 7.5) == 7.5
 
 
 @pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
 def test_non_finite_falls_back_to_default(monkeypatch, bad):
     """float() accepts these, but a NaN/inf timeout is nonsense downstream."""
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", bad)
-    assert env_float("CCSWITCH_TEST_FLOAT", 7.5) == 7.5
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", bad)
+    assert env_float("VIBERPIT_TEST_FLOAT", 7.5) == 7.5
 
 
 def test_below_minimum_falls_back_to_default(monkeypatch):
     """The whole point of the clamp: a 0 ceiling would make wait_for fire
     instantly and turn every transcript into an empty one."""
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", "0")
-    assert env_float("CCSWITCH_TEST_FLOAT", 10.0, minimum=0.1) == 10.0
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", "-5")
-    assert env_float("CCSWITCH_TEST_FLOAT", 10.0, minimum=0.1) == 10.0
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", "0")
+    assert env_float("VIBERPIT_TEST_FLOAT", 10.0, minimum=0.1) == 10.0
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", "-5")
+    assert env_float("VIBERPIT_TEST_FLOAT", 10.0, minimum=0.1) == 10.0
 
 
 def test_at_minimum_is_accepted(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", "0.1")
-    assert env_float("CCSWITCH_TEST_FLOAT", 10.0, minimum=0.1) == 0.1
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", "0.1")
+    assert env_float("VIBERPIT_TEST_FLOAT", 10.0, minimum=0.1) == 0.1
 
 
 def test_negative_allowed_when_no_minimum_given(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TEST_FLOAT", "-5")
-    assert env_float("CCSWITCH_TEST_FLOAT", 10.0) == -5.0
+    monkeypatch.setenv("VIBERPIT_TEST_FLOAT", "-5")
+    assert env_float("VIBERPIT_TEST_FLOAT", 10.0) == -5.0
 
 
 def test_no_production_module_keeps_a_private_copy():

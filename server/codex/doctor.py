@@ -197,14 +197,14 @@ def check_external_auth(*, enabled: bool, external_auth_enabled: bool) -> Doctor
     if not enabled:
         return DoctorResult(
             DoctorCheck.EXTERNAL_AUTH, DoctorOutcome.SKIPPED, "codex_disabled",
-            detail="CCSWITCH_CODEX_ENABLED is false",
+            detail="VIBERPIT_CODEX_ENABLED is false",
         )
     if not external_auth_enabled:
         return DoctorResult(
             DoctorCheck.EXTERNAL_AUTH, DoctorOutcome.FAIL, "external_auth_disabled",
             detail=(
-                "CCSWITCH_CODEX_ENABLED is true but "
-                "CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED is false; runners carry no "
+                "VIBERPIT_CODEX_ENABLED is true but "
+                "VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED is false; runners carry no "
                 "credential, so no Codex session can authenticate"
             ),
         )
@@ -257,7 +257,7 @@ def check_binary(availability: CodexAvailability | None) -> DoctorResult:
             DoctorCheck.BINARY, DoctorOutcome.WARN, "version_drift_accepted",
             detail=(
                 "this binary does not match the pinned Codex version and is running "
-                "only because CCSWITCH_CODEX_SUPPORTED_VERSIONS admits it"
+                "only because VIBERPIT_CODEX_SUPPORTED_VERSIONS admits it"
             ),
             facts={**facts, "acceptedDrift": list(availability.accepted_drift.reason_codes())},
         )
@@ -270,11 +270,11 @@ def check_binary(availability: CodexAvailability | None) -> DoctorResult:
 
 
 _UNAVAILABLE_DETAIL: Final[dict[CodexUnavailableReason, str]] = {
-    CodexUnavailableReason.DISABLED: "CCSWITCH_CODEX_ENABLED is false",
+    CodexUnavailableReason.DISABLED: "VIBERPIT_CODEX_ENABLED is false",
     CodexUnavailableReason.EXTERNAL_AUTH_DISABLED:
-        "CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED is false",
+        "VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED is false",
     CodexUnavailableReason.BINARY_NOT_FOUND:
-        "the configured Codex binary (CCSWITCH_CODEX_BIN) is not installed or not "
+        "the configured Codex binary (VIBERPIT_CODEX_BIN) is not installed or not "
         "executable; see scripts/fetch-codex.sh",
     CodexUnavailableReason.VERSION_PROBE_FAILED:
         "`codex --version` could not be executed",
@@ -303,7 +303,7 @@ def check_runtime_home(
     if not enabled:
         return DoctorResult(
             DoctorCheck.RUNTIME_HOME, DoctorOutcome.SKIPPED, "codex_disabled",
-            detail="CCSWITCH_CODEX_ENABLED is false",
+            detail="VIBERPIT_CODEX_ENABLED is false",
         )
 
     path = Path(os.path.expanduser(str(base)))
@@ -401,13 +401,13 @@ async def check_authority(
     if not enabled:
         return DoctorResult(
             DoctorCheck.AUTHORITY, DoctorOutcome.SKIPPED, "codex_disabled",
-            detail="CCSWITCH_CODEX_ENABLED is false",
+            detail="VIBERPIT_CODEX_ENABLED is false",
         )
     if not configured or health is None:
         return DoctorResult(
             DoctorCheck.AUTHORITY, DoctorOutcome.FAIL, "unconfigured",
             detail=(
-                "CCSWITCH_CODEX_AUTHORITY_ENDPOINT is unset; Codex is enabled but "
+                "VIBERPIT_CODEX_AUTHORITY_ENDPOINT is unset; Codex is enabled but "
                 "this host has no credential authority to obtain tokens from"
             ),
         )
@@ -450,7 +450,7 @@ async def check_authority(
             detail=(
                 "the authorization projection lease has lapsed; the authority stops "
                 "issuing until the edge renews it "
-                "(CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S must be below the lease)"
+                "(VIBERPIT_CODEX_AUTH_SYNC_INTERVAL_S must be below the lease)"
             ),
             facts=facts,
         )
@@ -477,13 +477,13 @@ def check_mtls_identity(
     and a key shared with the session daemon (``assert_distinct_from_sessiond``).
     The doctor adds the three things it does not look at: the key's file mode, the
     certificate's validity window, and the subject CN — which is the identity the
-    authority matches against ``CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST``, and is
+    authority matches against ``VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST``, and is
     by far the most common thing to get wrong when onboarding a runner.
     """
     if not enabled:
         return DoctorResult(
             DoctorCheck.MTLS_IDENTITY, DoctorOutcome.SKIPPED, "codex_disabled",
-            detail="CCSWITCH_CODEX_ENABLED is false",
+            detail="VIBERPIT_CODEX_ENABLED is false",
         )
     if not configured or load_files is None:
         return DoctorResult(
@@ -592,7 +592,7 @@ def check_manifest(load_entries: ManifestLoader, *, enabled: bool) -> DoctorResu
     if not enabled:
         return DoctorResult(
             DoctorCheck.MANIFEST, DoctorOutcome.SKIPPED, "codex_disabled",
-            detail="CCSWITCH_CODEX_ENABLED is false",
+            detail="VIBERPIT_CODEX_ENABLED is false",
         )
 
     try:

@@ -9,7 +9,7 @@ Documentation=https://github.com/steiner385/viberpit
 Type=oneshot
 User=tony
 SyslogIdentifier=viberpit-health
-# Optional: CCSWITCH_ALERT_WEBHOOK (ntfy/webhook URL) + threshold overrides.
+# Optional: VIBERPIT_ALERT_WEBHOOK (ntfy/webhook URL) + threshold overrides.
 EnvironmentFile=-/etc/viberpit/viberpit.env
 # On the host this is rewritten to the live deploy worktree path
 # (/home/tony/GitHub/viberpit-deploy/scripts/...), matching how

@@ -14,17 +14,17 @@ _TEST_KEY_B64 = base64.b64encode(_TEST_KEY_BYTES).decode("ascii")
 
 
 def _with_key(func):
-    """Decorator: run test with CCSWITCH_MASTER_KEY set to _TEST_KEY_B64."""
+    """Decorator: run test with VIBERPIT_MASTER_KEY set to _TEST_KEY_B64."""
     def wrapper(self, *args, **kwargs):
-        old = os.environ.get("CCSWITCH_MASTER_KEY")
-        os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        old = os.environ.get("VIBERPIT_MASTER_KEY")
+        os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
         try:
             return func(self, *args, **kwargs)
         finally:
             if old is None:
-                os.environ.pop("CCSWITCH_MASTER_KEY", None)
+                os.environ.pop("VIBERPIT_MASTER_KEY", None)
             else:
-                os.environ["CCSWITCH_MASTER_KEY"] = old
+                os.environ["VIBERPIT_MASTER_KEY"] = old
     return wrapper
 
 
@@ -32,8 +32,8 @@ class TestCryptoModule(unittest.TestCase):
     """Unit tests for crypto.py primitives."""
 
     def _clear_key(self):
-        """Ensure CCSWITCH_MASTER_KEY is unset and secret-tool returns nothing."""
-        os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        """Ensure VIBERPIT_MASTER_KEY is unset and secret-tool returns nothing."""
+        os.environ.pop("VIBERPIT_MASTER_KEY", None)
 
     # ------------------------------------------------------------------
     # import safety — module import must not raise even without cryptography
@@ -63,7 +63,7 @@ class TestCryptoModule(unittest.TestCase):
             self.assertIsNone(master_key())
 
     def test_master_key_malformed_base64_returns_none(self):
-        os.environ["CCSWITCH_MASTER_KEY"] = "not-valid-base64!!!"
+        os.environ["VIBERPIT_MASTER_KEY"] = "not-valid-base64!!!"
         try:
             from ccswitch.crypto import master_key
             # malformed → _decode_key returns None
@@ -71,19 +71,19 @@ class TestCryptoModule(unittest.TestCase):
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 self.assertIsNone(master_key())
         finally:
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
 
     def test_master_key_wrong_length_returns_none(self):
         # 16 bytes ≠ 32
         short = base64.b64encode(b"x" * 16).decode()
-        os.environ["CCSWITCH_MASTER_KEY"] = short
+        os.environ["VIBERPIT_MASTER_KEY"] = short
         try:
             from ccswitch.crypto import master_key
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 self.assertIsNone(master_key())
         finally:
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
 
     @_with_key
     def test_key_available_true_when_key_set(self):
@@ -239,7 +239,7 @@ class TestCryptoModule(unittest.TestCase):
         import os as _os
         from pathlib import Path
         from ccswitch import crypto, paths
-        _os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        _os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
         try:
             with tempfile.TemporaryDirectory() as d:
                 with mock.patch.object(paths, "store_dir", return_value=Path(d)):
@@ -250,23 +250,23 @@ class TestCryptoModule(unittest.TestCase):
                     # and read decrypts it (no keyring involved)
                     assert crypto.read_oauth_token("secondary") == "sk-ant-oat01-FILE"
         finally:
-            _os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            _os.environ.pop("VIBERPIT_MASTER_KEY", None)
 
     def test_oauth_token_env_override_wins(self):
         import os as _os
         from ccswitch import crypto
-        _os.environ["CCSWITCH_OAT_SECONDARY"] = "sk-ant-oat01-ENV"
+        _os.environ["VIBERPIT_OAT_SECONDARY"] = "sk-ant-oat01-ENV"
         try:
             assert crypto.read_oauth_token("secondary") == "sk-ant-oat01-ENV"
         finally:
-            _os.environ.pop("CCSWITCH_OAT_SECONDARY", None)
+            _os.environ.pop("VIBERPIT_OAT_SECONDARY", None)
 
     def test_oauth_token_missing_returns_none(self):
         import tempfile
         import os as _os
         from pathlib import Path
         from ccswitch import crypto, paths
-        _os.environ.pop("CCSWITCH_OAT_GHOST", None)
+        _os.environ.pop("VIBERPIT_OAT_GHOST", None)
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(paths, "store_dir", return_value=Path(d)):
                 # no env, no file; keyring lookup fails (mock secret-tool absent)
@@ -306,7 +306,7 @@ class TestReadWriteCredentials(unittest.TestCase):
 
     def test_write_credentials_plaintext_when_no_key(self):
         with temp_env():
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 from ccswitch import paths
@@ -403,7 +403,7 @@ class TestCryptoCLI(unittest.TestCase):
 
     def test_crypto_status_no_key(self):
         with temp_env():
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
             from ccswitch.cli import main
             with mock.patch("subprocess.run") as m:
@@ -427,7 +427,7 @@ class TestCryptoCLI(unittest.TestCase):
 
     def test_crypto_init_stores_key(self):
         with temp_env():
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
             from ccswitch.cli import main
             with mock.patch("subprocess.run") as m:
@@ -505,7 +505,7 @@ class TestCryptoCLI(unittest.TestCase):
 
     def test_crypto_migrate_refuses_without_key(self):
         with temp_env():
-            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
             from ccswitch.cli import main
             with mock.patch("subprocess.run") as m:

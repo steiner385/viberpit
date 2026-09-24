@@ -61,7 +61,7 @@ def _app_with_orch(d):
     with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
          patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
          patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
-         patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"}):
+         patch.dict(os.environ, {"VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"}):
         (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
         from server.sessions.orchestrator import SessionOrchestrator
         from server.app import create_app

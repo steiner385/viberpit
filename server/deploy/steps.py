@@ -437,7 +437,7 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
 
 # ssh treats a leading '-' in a positional argument as an OPTION, not a hostname (there is
 # no "--" end-of-options convention that helps: ssh has no way to say "the next arg is
-# definitely the host"). An unvalidated CCSWITCH_DAEMON_SSH_HOST could therefore smuggle
+# definitely the host"). An unvalidated VIBERPIT_DAEMON_SSH_HOST could therefore smuggle
 # arbitrary ssh flags — e.g. "-oProxyCommand=...|sh" — into a sudo-privileged deploy command.
 # Require the optional user and the host to each START with an alphanumeric so a leading
 # '-' (or any other flag-introducing character) is structurally impossible.

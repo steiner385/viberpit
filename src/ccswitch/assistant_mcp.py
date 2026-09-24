@@ -28,7 +28,7 @@ from . import brand
 _P = brand.CLI_NAME
 
 DEFAULT_URL = "http://127.0.0.1:8787"
-DEFAULT_TOKEN_ENV = "CCSWITCH_ASSISTANT_TOKEN"
+DEFAULT_TOKEN_ENV = "VIBERPIT_ASSISTANT_TOKEN"
 
 _NEEDS_SERVER_EXTRA = (
     f"{_P} mcp: the assistant tool table needs the server extra — "

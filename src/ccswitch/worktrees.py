@@ -110,13 +110,13 @@ def check_disk_headroom(
     Checks BOTH bytes and inodes: the 2026-07-21 incident was inode
     exhaustion with 24 GB of bytes free, invisible to byte-only checks.
     Filesystems without inode accounting (f_files == 0, e.g. btrfs) skip
-    the inode check. Overridable via CCSWITCH_MIN_FREE_BYTES /
-    CCSWITCH_MIN_FREE_INODES.
+    the inode check. Overridable via VIBERPIT_MIN_FREE_BYTES /
+    VIBERPIT_MIN_FREE_INODES.
     """
     if min_free_bytes is None:
-        min_free_bytes = int(os.environ.get("CCSWITCH_MIN_FREE_BYTES", _MIN_FREE_BYTES_DEFAULT))
+        min_free_bytes = int(os.environ.get("VIBERPIT_MIN_FREE_BYTES", _MIN_FREE_BYTES_DEFAULT))
     if min_free_inodes is None:
-        min_free_inodes = int(os.environ.get("CCSWITCH_MIN_FREE_INODES", _MIN_FREE_INODES_DEFAULT))
+        min_free_inodes = int(os.environ.get("VIBERPIT_MIN_FREE_INODES", _MIN_FREE_INODES_DEFAULT))
     st = os.statvfs(path)
     free_bytes = st.f_frsize * st.f_bavail
     if free_bytes < min_free_bytes:

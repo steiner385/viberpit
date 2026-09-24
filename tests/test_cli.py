@@ -146,17 +146,17 @@ class TestClonesCommands(unittest.TestCase):
 
         from ccswitch import cli
 
-        old = os.environ.get("CCSWITCH_REPO_ROOT")
-        os.environ["CCSWITCH_REPO_ROOT"] = str(self.root)
+        old = os.environ.get("VIBERPIT_REPO_ROOT")
+        os.environ["VIBERPIT_REPO_ROOT"] = str(self.root)
         buf = io.StringIO()
         try:
             with temp_env(), redirect_stdout(buf):
                 rc = cli.main(argv)
         finally:
             if old is None:
-                os.environ.pop("CCSWITCH_REPO_ROOT", None)
+                os.environ.pop("VIBERPIT_REPO_ROOT", None)
             else:
-                os.environ["CCSWITCH_REPO_ROOT"] = old
+                os.environ["VIBERPIT_REPO_ROOT"] = old
         return rc, buf.getvalue()
 
     def test_doctor_reports_missing_clone_and_exits_nonzero(self):
@@ -218,7 +218,7 @@ class TestCliReauth(unittest.TestCase):
     def test_no_key_refuses_without_starting_the_exchange(self):
         from ccswitch import cli, setup_token_oauth
 
-        os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        os.environ.pop("VIBERPIT_MASTER_KEY", None)
         with temp_env():
             with mock.patch.object(setup_token_oauth, "begin") as begin:
                 rc = cli.main(["reauth", "primary"])
@@ -231,8 +231,8 @@ class TestCliReauth(unittest.TestCase):
 
         from ccswitch import cli, setup_token_oauth
 
-        old = os.environ.get("CCSWITCH_MASTER_KEY")
-        os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        old = os.environ.get("VIBERPIT_MASTER_KEY")
+        os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
         challenge = setup_token_oauth.SetupTokenChallenge(
             authorize_url="https://claude.com/cai/oauth/authorize?x=1", verifier="v", state="STATE")
         try:
@@ -247,9 +247,9 @@ class TestCliReauth(unittest.TestCase):
                         rc = cli.main(["reauth", "primary"])
         finally:
             if old is None:
-                os.environ.pop("CCSWITCH_MASTER_KEY", None)
+                os.environ.pop("VIBERPIT_MASTER_KEY", None)
             else:
-                os.environ["CCSWITCH_MASTER_KEY"] = old
+                os.environ["VIBERPIT_MASTER_KEY"] = old
 
         self.assertEqual(rc, 0)
         exchange.assert_called_once_with("AUTHCODE#STATE", challenge)
@@ -261,8 +261,8 @@ class TestCliReauth(unittest.TestCase):
     def test_invalid_code_does_not_store_anything(self):
         from ccswitch import cli, setup_token_oauth
 
-        old = os.environ.get("CCSWITCH_MASTER_KEY")
-        os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        old = os.environ.get("VIBERPIT_MASTER_KEY")
+        os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
         challenge = setup_token_oauth.SetupTokenChallenge(
             authorize_url="https://claude.com/cai/oauth/authorize?x=1", verifier="v", state="STATE")
         try:
@@ -276,9 +276,9 @@ class TestCliReauth(unittest.TestCase):
                     rc = cli.main(["reauth", "primary"])
         finally:
             if old is None:
-                os.environ.pop("CCSWITCH_MASTER_KEY", None)
+                os.environ.pop("VIBERPIT_MASTER_KEY", None)
             else:
-                os.environ["CCSWITCH_MASTER_KEY"] = old
+                os.environ["VIBERPIT_MASTER_KEY"] = old
 
         self.assertEqual(rc, 1)
         store.assert_not_called()

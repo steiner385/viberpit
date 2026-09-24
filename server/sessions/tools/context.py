@@ -25,7 +25,7 @@ class SessionToolContext:
     #: (``AgentCapabilities.durable_tool_surface``). False → Codex, which loses its
     #: declared tools on `thread/resume` and keeps the markers instead.
     signalling_tools: bool = False
-    #: Child sessions are enabled on this host (``CCSWITCH_CHILD_SESSIONS_ENABLED``) —
+    #: Child sessions are enabled on this host (``VIBERPIT_CHILD_SESSIONS_ENABLED``) —
     #: with `signalling_tools`, the mount predicate for `dispatch_session`.
     child_sessions: bool = False
     #: Bound by the orchestrator to ``dispatch_child_session(parent_id, identity=…)``;

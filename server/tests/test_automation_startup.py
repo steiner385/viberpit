@@ -16,8 +16,8 @@ def test_startup_creates_pr_doctor_row():
     from server.tests.fakes.fake_factory import fake_sdk_factory
     from sqlalchemy import select as _sa_select
 
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-                                 "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+                                 "VIBERPIT_DEV": "1", "VIBERPIT_TAILNET_ALLOWLIST": ""}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         app = create_app(orchestrator=orch)
         with TestClient(app) as _client:  # context-manager triggers lifespan startup

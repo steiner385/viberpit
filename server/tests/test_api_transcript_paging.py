@@ -67,7 +67,7 @@ class TestTranscriptPaging:
         """?before=10&limit=5 returns earliestTurn, totalTurns, and 5 turns' events."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 f"/api/sessions/{sid}/transcript?before=10&limit=5",
@@ -85,7 +85,7 @@ class TestTranscriptPaging:
         with the 'events' key preserved plus additive paging metadata."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 f"/api/sessions/{sid}/transcript",
@@ -105,7 +105,7 @@ class TestTranscriptPaging:
         """?limit=N alone → the last N turns plus correct paging metadata."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 f"/api/sessions/{sid}/transcript?limit=5",
@@ -122,7 +122,7 @@ class TestTranscriptPaging:
         """Unknown session_id returns 404."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, _sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
              TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 "/api/sessions/does-not-exist/transcript?before=5",

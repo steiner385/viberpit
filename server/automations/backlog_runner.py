@@ -43,7 +43,7 @@ _DAY_SECONDS = 24 * 3600
 # worktree collision, a slot that frees a tick later), so the first retry is
 # quick and the delay only stretches for a target that keeps failing (#666).
 SPAWN_BACKOFF_SCHEDULE_S = (60.0, 300.0)    # cooldown after the 1st, 2nd consecutive failure
-SPAWN_BACKOFF_MAX_DEFAULT_S = 900.0         # 3rd+ failure cooldown (CCSWITCH_BACKLOG_MAX_BACKOFF_S)
+SPAWN_BACKOFF_MAX_DEFAULT_S = 900.0         # 3rd+ failure cooldown (VIBERPIT_BACKLOG_MAX_BACKOFF_S)
 SPAWN_CIRCUIT_THRESHOLD = 3         # consecutive failures (any cause) that open the breaker
 SPAWN_CIRCUIT_COOLDOWN_S = 1800.0   # breaker-open duration before a half-open probe
 # Grouping-optimizer damping: after a failed plan refresh, retry after a SHORT
@@ -56,9 +56,9 @@ GROUP_REFRESH_BACKOFF_S = 120.0
 
 def _max_spawn_backoff_s() -> float:
     """The 3rd+-consecutive-failure per-target cooldown ceiling, overridable via
-    ``CCSWITCH_BACKLOG_MAX_BACKOFF_S`` (seconds). A non-positive or unparseable
+    ``VIBERPIT_BACKLOG_MAX_BACKOFF_S`` (seconds). A non-positive or unparseable
     value falls back to the default."""
-    raw = os.environ.get("CCSWITCH_BACKLOG_MAX_BACKOFF_S")
+    raw = os.environ.get("VIBERPIT_BACKLOG_MAX_BACKOFF_S")
     if raw:
         try:
             val = float(raw)
@@ -72,7 +72,7 @@ def _max_spawn_backoff_s() -> float:
 def _spawn_backoff_delay(consecutive_failures: int) -> float:
     """Per-target cooldown for the Nth consecutive spawn failure: 60s, 300s,
     then the (configurable) max for the 3rd and beyond. Every tier is clamped by
-    the max so a low ``CCSWITCH_BACKLOG_MAX_BACKOFF_S`` still caps the ramp."""
+    the max so a low ``VIBERPIT_BACKLOG_MAX_BACKOFF_S`` still caps the ramp."""
     cap = _max_spawn_backoff_s()
     if 1 <= consecutive_failures <= len(SPAWN_BACKOFF_SCHEDULE_S):
         return min(SPAWN_BACKOFF_SCHEDULE_S[consecutive_failures - 1], cap)
@@ -286,7 +286,7 @@ class BacklogRunner:
     # is explicitly NOT covered here; the owner reviewed that gap and accepted
     # it to widen this ceiling now rather than block on it (#1264). Two
     # independent gates still stand between this and a live Codex launch:
-    # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch),
+    # VIBERPIT_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch),
     # this automation's own `engine` config opt-in (default "claude").
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [

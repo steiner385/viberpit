@@ -6,7 +6,7 @@ def test_restart_edge_restarts_only_the_edge_unit(monkeypatch):
     """restart_edge is edge-only now — runner (daemon) restarts, local and remote, are owned
     by server.deploy.runners and run BEFORE it. The env var that used to steer restart_units'
     daemon branch must have no effect here at all."""
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@rocky")
     order = []
     def run(cmd, **kw):
         if "show" in cmd:
@@ -65,7 +65,7 @@ def test_remote_runners_configured_reads_the_fleet(monkeypatch):
     """A REMOTE runner is present iff the fleet has an enabled host with an ssh_host — the
     registry, not an env var, is the one source of truth for topology now."""
     from server.deploy.runners import RunnerTarget
-    monkeypatch.delenv("CCSWITCH_DAEMON_SSH_HOST", raising=False)
+    monkeypatch.delenv("VIBERPIT_DAEMON_SSH_HOST", raising=False)
     local = RunnerTarget(name="dobby", endpoint="https://d", enabled=True, healthy=True,
                          ssh_host=None, repo_path=None)
     remote = RunnerTarget(name="rocky", endpoint="https://r", enabled=True, healthy=True,

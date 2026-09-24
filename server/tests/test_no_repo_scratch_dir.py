@@ -49,9 +49,9 @@ def test_no_repo_session_cwd_is_scratch_dir_not_server_cwd(tmp_path):
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -109,9 +109,9 @@ def test_close_session_removes_scratch_dir(tmp_path):
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -164,9 +164,9 @@ def test_close_session_never_removes_paths_outside_scratch_base(tmp_path):
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")

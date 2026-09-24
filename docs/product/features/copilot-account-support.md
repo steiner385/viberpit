@@ -35,7 +35,7 @@ launch against a supervised localhost translating proxy rather than via `CLAUDE_
 **Success metrics** — (unknown — needs owner input). Grounded candidates: a Copilot account can be
 added via device-flow and run sessions end-to-end; its usage ranks in rotation alongside Anthropic
 accounts without special-casing the selector; proxy health-gate and idle-teardown behave (health via
-`GET /usage`, idle teardown after `CCSWITCH_COPILOT_IDLE_GRACE_S`).
+`GET /usage`, idle teardown after `VIBERPIT_COPILOT_IDLE_GRACE_S`).
 
 **Non-goals** — Being a supported/ToS-clean path: routing Claude sessions through the Copilot API may
 violate GitHub's or Anthropic's terms (see Notes). Anthropic-style suggestions/auto-summaries on
@@ -44,8 +44,8 @@ single ~monthly premium allowance instead.
 
 **Notes** —
 - **Experimental, ToS caveat.** State is `live` (the code path ships) but the capability is gated:
-  `CCSWITCH_ENABLE_COPILOT=true` must be set and the `whtsky/copilot2api` proxy binary installed
-  (`bash scripts/fetch-copilot-proxy.sh`, or `CCSWITCH_COPILOT_PROXY_BIN=/path`). Routing Claude
+  `VIBERPIT_ENABLE_COPILOT=true` must be set and the `whtsky/copilot2api` proxy binary installed
+  (`bash scripts/fetch-copilot-proxy.sh`, or `VIBERPIT_COPILOT_PROXY_BIN=/path`). Routing Claude
   through the Copilot API may violate GitHub's ToS or Anthropic's usage policies — provided for
   personal experimentation; users own compliance (CLAUDE.md § Copilot).
 - Provider constant + usage mapping live in `src/ccswitch/copilot.py` (single source of truth):

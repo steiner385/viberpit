@@ -59,7 +59,7 @@ scratch root is local disk, never the mount.
 
 Fail-open everywhere: any error returns *config_dir* unchanged, which is exactly today's
 behaviour. A helper call is best-effort and must never be crashed by this optimisation.
-Kill switch: ``CCSWITCH_HELPER_SCRATCH_CONFIG=false``.
+Kill switch: ``VIBERPIT_HELPER_SCRATCH_CONFIG=false``.
 """
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def _enabled() -> bool:
-    return os.environ.get("CCSWITCH_HELPER_SCRATCH_CONFIG", "true").strip().lower() not in (
+    return os.environ.get("VIBERPIT_HELPER_SCRATCH_CONFIG", "true").strip().lower() not in (
         "0", "false", "no", "off",
     )
 
@@ -110,10 +110,10 @@ def _enabled() -> bool:
 def scratch_root() -> Path:
     """Host-local root for scratch config dirs.
 
-    ``CCSWITCH_HELPER_SCRATCH_ROOT`` overrides (tests, and hosts whose ``~/.cache`` is
+    ``VIBERPIT_HELPER_SCRATCH_ROOT`` overrides (tests, and hosts whose ``~/.cache`` is
     itself shared). Must resolve OUTSIDE the account store, or the whole point is lost.
     """
-    env = os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT", "").strip()
+    env = os.environ.get("VIBERPIT_HELPER_SCRATCH_ROOT", "").strip()
     return Path(env) if env else Path.home() / ".cache" / "ccswitch" / "helper-cfg"
 
 

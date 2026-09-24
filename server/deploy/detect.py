@@ -181,7 +181,7 @@ def compute_pending(repo: str, *, git_mod=_git, ci_fn: Callable[[str], str] = _s
 
 class DetectLoop:
     # Default poll cadence for the notify-only origin/master check. Tunable via
-    # CCSWITCH_DEPLOY_POLL_INTERVAL (read at the construction site in app.py). 30s
+    # VIBERPIT_DEPLOY_POLL_INTERVAL (read at the construction site in app.py). 30s
     # keeps the pending-deploy banner snappy after a merge; the per-tick cost is one
     # cheap `git fetch` + one `gh api` CI check (well under the rate limit).
     def __init__(self, repo: str, *, interval_s: float = 30.0,

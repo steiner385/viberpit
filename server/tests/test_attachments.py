@@ -60,7 +60,7 @@ def test_sniff_rejects_non_image():
 
 def test_storage_path_is_content_addressed():
     import hashlib
-    with patch.dict(os.environ, {"CCSWITCH_HOME": "/tmp/ccx"}):
+    with patch.dict(os.environ, {"VIBERPIT_HOME": "/tmp/ccx"}):
         sha = hashlib.sha256(PNG).hexdigest()
         p = A.storage_path(sha, "image/png")
         assert p.name == f"{sha}.png"
@@ -84,7 +84,7 @@ def test_resolve_and_bind_binds_and_caps_at_five(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             ids = []
             async with db_session() as db:
@@ -117,7 +117,7 @@ def test_resolve_and_bind_skips_unknown_ids(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             async with db_session() as db:
                 out = await A.resolve_and_bind(db, "sessA", "t", ["ghost1", "ghost2"])
@@ -130,7 +130,7 @@ def test_sweep_orphans_removes_old_unbound(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             old = datetime.now(timezone.utc) - timedelta(days=3)
             recent = datetime.now(timezone.utc)
@@ -162,7 +162,7 @@ def test_delete_for_session_dedup_aware_unlink(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             # Two rows, SAME bytes/sha, bound to DIFFERENT sessions (dedup).
             async with db_session() as db:

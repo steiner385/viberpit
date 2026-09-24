@@ -60,8 +60,8 @@ class RecordingSession:
 
 @pytest.fixture(autouse=True)
 def _identity_env(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com")
-    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "alice@example.com")
+    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
 
 
 def _app(engine, **kw) -> TestClient:

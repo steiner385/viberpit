@@ -26,7 +26,7 @@ from ccswitch import ledger, paths
 
 @pytest.fixture()
 def led_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     return tmp_path
 
 

@@ -15,7 +15,7 @@ def shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home" / "store").mkdir(parents=True)
     # Sanity: shared_base() must resolve to our tmp dir, not ~/.claude.
     assert paths.shared_base() == base

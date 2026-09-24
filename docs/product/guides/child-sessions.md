@@ -18,7 +18,7 @@ sub-task independently, the model dispatches it as a child session instead.
 
 `dispatch_session(name, prompt, model?, permission_mode?)` — `ToolClass.MUTATION` on the
 session tool surface (`server/sessions/tools/`). Mounted only on the durable surface (Claude)
-and only while `CCSWITCH_CHILD_SESSIONS_ENABLED` is on. Like every MUTATION tool of our own
+and only while `VIBERPIT_CHILD_SESSIONS_ENABLED` is on. Like every MUTATION tool of our own
 MCP server, it raises a permission card in **every** session mode — full-auto included —
 until the user grants "always allow" for it (`PermissionRegistry.request` checks our own
 tools before the full-auto shortcut). An unattended full-auto parent therefore parks on an
@@ -26,8 +26,8 @@ tools before the full-auto shortcut). An unattended full-auto parent therefore p
 dispatches go through. The handler makes ONE call, `SessionOrchestrator.dispatch_child_session`,
 which:
 
-- refuses over the cap (`CCSWITCH_CHILD_SESSION_CAP`, default 3 live children per parent) or
-  beyond the depth (`CCSWITCH_CHILD_SESSION_MAX_DEPTH`, default 2) — the refusal comes back as
+- refuses over the cap (`VIBERPIT_CHILD_SESSION_CAP`, default 3 live children per parent) or
+  beyond the depth (`VIBERPIT_CHILD_SESSION_MAX_DEPTH`, default 2) — the refusal comes back as
   the tool result, nothing is created;
 - narrows the requested permission mode to the parent's (`permissions.narrowest`; a child never
   runs wider than its parent);

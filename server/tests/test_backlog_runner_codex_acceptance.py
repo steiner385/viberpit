@@ -156,7 +156,7 @@ async def _codex_runner_ctx(tmp_path, db_name, monkeypatch, *, mode="full-auto")
                           config={"engine": "codex"}))
     monkeypatch.setattr(registry.get("backlog-runner"), "engine_policy",
                         EnginePolicy.CODEX_ALLOWED, raising=False)
-    monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_CODEX_AUTOMATIONS_ENABLED", "true")
     ctx = AutomationContext("backlog-runner", create_session=_fake_create_session)
     return ctx
 

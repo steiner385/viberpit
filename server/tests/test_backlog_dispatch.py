@@ -38,8 +38,8 @@ def isolated_identity(monkeypatch):
 async def dispatch_orch(tmp_path, monkeypatch):
     """SessionOrchestrator with mocked backlog seams — no network, no LLM."""
     db_url = f"sqlite+aiosqlite:///{tmp_path}/test.db"
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                  "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                  "VIBERPIT_TAILNET_ALLOWLIST": ""}):
         from server.sessions.orchestrator import SessionOrchestrator
         from server.tests.fakes.fake_factory import fake_sdk_factory
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -146,8 +146,8 @@ async def test_dispatch_ref_not_in_candidates_uses_fallback_repo(dispatch_orch):
 def _api_client(monkeypatch_orch=None):
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
-                                      "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                      "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             from fastapi.testclient import TestClient
             from server.app import create_app
             from server.sessions.orchestrator import SessionOrchestrator

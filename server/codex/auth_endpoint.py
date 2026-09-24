@@ -2,7 +2,7 @@
 
 Deliberately a sibling of :mod:`server.ipc.paths` and :mod:`server.ipc.tls` rather
 than a reuse of them. The session daemon's key material and its
-``CCSWITCH_SESSIOND_*`` variables address a *different* trust domain: the daemon
+``VIBERPIT_SESSIOND_*`` variables address a *different* trust domain: the daemon
 runs as the session user and its client key is held by the edge. The authority
 runs as ``ccswitch-auth`` and holds ChatGPT refresh tokens, so an operator who
 leaks the daemon's client key must not thereby be able to ask the authority for
@@ -77,7 +77,7 @@ def _require(value: str | None, what: str) -> str:
 
 
 def state_dir() -> Path:
-    return Path(os.environ.get("CCSWITCH_CODEX_AUTHORITY_STATE_DIR") or DEFAULT_STATE_DIR)
+    return Path(os.environ.get("VIBERPIT_CODEX_AUTHORITY_STATE_DIR") or DEFAULT_STATE_DIR)
 
 
 def _endpoint(raw: str | None, what: str) -> Endpoint:
@@ -98,16 +98,16 @@ def _endpoint(raw: str | None, what: str) -> Endpoint:
 def listen_endpoint() -> Endpoint:
     """Where the authority binds. ``https://host:port`` only, never a socket."""
     return _endpoint(
-        os.environ.get("CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT"),
-        "CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT",
+        os.environ.get("VIBERPIT_CODEX_AUTHORITY_LISTEN_ENDPOINT"),
+        "VIBERPIT_CODEX_AUTHORITY_LISTEN_ENDPOINT",
     )
 
 
 def connect_endpoint() -> Endpoint:
     """Where a client (edge or runner) reaches the authority."""
     return _endpoint(
-        os.environ.get("CCSWITCH_CODEX_AUTHORITY_ENDPOINT"),
-        "CCSWITCH_CODEX_AUTHORITY_ENDPOINT",
+        os.environ.get("VIBERPIT_CODEX_AUTHORITY_ENDPOINT"),
+        "VIBERPIT_CODEX_AUTHORITY_ENDPOINT",
     )
 
 
@@ -119,44 +119,44 @@ def authority_configured() -> bool:
     configuration error on every boot. Once it is true, every other loader here is
     strict.
     """
-    return bool(os.environ.get("CCSWITCH_CODEX_AUTHORITY_ENDPOINT"))
+    return bool(os.environ.get("VIBERPIT_CODEX_AUTHORITY_ENDPOINT"))
 
 
 def authority_tls_files() -> AuthorityTLSFiles:
     files = AuthorityTLSFiles(
         cert=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_TLS_CERT"),
-            "CCSWITCH_CODEX_AUTHORITY_TLS_CERT",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_TLS_CERT"),
+            "VIBERPIT_CODEX_AUTHORITY_TLS_CERT",
         ),
         key=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_TLS_KEY"),
-            "CCSWITCH_CODEX_AUTHORITY_TLS_KEY",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_TLS_KEY"),
+            "VIBERPIT_CODEX_AUTHORITY_TLS_KEY",
         ),
         client_ca=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA"),
-            "CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_TLS_CLIENT_CA"),
+            "VIBERPIT_CODEX_AUTHORITY_TLS_CLIENT_CA",
         ),
     )
-    assert_distinct_from_sessiond(files.key, "CCSWITCH_CODEX_AUTHORITY_TLS_KEY")
+    assert_distinct_from_sessiond(files.key, "VIBERPIT_CODEX_AUTHORITY_TLS_KEY")
     return files
 
 
 def authority_client_tls_files() -> AuthorityClientTLSFiles:
     files = AuthorityClientTLSFiles(
         cert=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT"),
-            "CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT"),
+            "VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT",
         ),
         key=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY"),
-            "CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY"),
+            "VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY",
         ),
         ca=_require(
-            os.environ.get("CCSWITCH_CODEX_AUTHORITY_CLIENT_CA"),
-            "CCSWITCH_CODEX_AUTHORITY_CLIENT_CA",
+            os.environ.get("VIBERPIT_CODEX_AUTHORITY_CLIENT_CA"),
+            "VIBERPIT_CODEX_AUTHORITY_CLIENT_CA",
         ),
     )
-    assert_distinct_from_sessiond(files.key, "CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY")
+    assert_distinct_from_sessiond(files.key, "VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY")
     return files
 
 
@@ -170,8 +170,8 @@ def assert_distinct_from_sessiond(key_path: str, what: str) -> None:
     """
     resolved = os.path.realpath(key_path)
     for var in (
-        "CCSWITCH_SESSIOND_TLS_KEY",
-        "CCSWITCH_SESSIOND_CLIENT_KEY",
+        "VIBERPIT_SESSIOND_TLS_KEY",
+        "VIBERPIT_SESSIOND_CLIENT_KEY",
     ):
         other = os.environ.get(var)
         if other and os.path.realpath(other) == resolved:
@@ -190,25 +190,25 @@ def client_allowlist() -> frozenset[str]:
     peers are already inside the tailnet; it is not defensible for the one service
     that hands out ChatGPT access tokens.
     """
-    raw = os.environ.get("CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST") or ""
+    raw = os.environ.get("VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST") or ""
     items = frozenset(part.strip() for part in raw.split(",") if part.strip())
     if not items:
         raise AuthorityConfigError(
             "the codex credential authority requires a non-empty "
-            "CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST"
+            "VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST"
         )
     return items
 
 
 def refresh_deadline_s() -> float:
     return _positive_float(
-        "CCSWITCH_CODEX_AUTH_REFRESH_DEADLINE_S", DEFAULT_REFRESH_DEADLINE_S
+        "VIBERPIT_CODEX_AUTH_REFRESH_DEADLINE_S", DEFAULT_REFRESH_DEADLINE_S
     )
 
 
 def admin_deadline_s() -> float:
     return _positive_float(
-        "CCSWITCH_CODEX_AUTH_ADMIN_DEADLINE_S", DEFAULT_ADMIN_DEADLINE_S
+        "VIBERPIT_CODEX_AUTH_ADMIN_DEADLINE_S", DEFAULT_ADMIN_DEADLINE_S
     )
 
 

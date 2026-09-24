@@ -5,8 +5,8 @@ import pytest
 
 def test_session_tools_flags_default(monkeypatch):
     from server.config import Settings
-    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
-    monkeypatch.delenv("CCSWITCH_SESSION_FEEDBACK_CAP", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_FEEDBACK_CAP", raising=False)
     s = Settings()
     assert s.session_tools_enabled is True
     assert s.session_feedback_cap == 3
@@ -14,8 +14,8 @@ def test_session_tools_flags_default(monkeypatch):
 
 def test_session_tools_flags_from_env(monkeypatch):
     from server.config import Settings
-    monkeypatch.setenv("CCSWITCH_SESSION_TOOLS_ENABLED", "false")
-    monkeypatch.setenv("CCSWITCH_SESSION_FEEDBACK_CAP", "7")
+    monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_SESSION_FEEDBACK_CAP", "7")
     s = Settings()
     assert s.session_tools_enabled is False
     assert s.session_feedback_cap == 7

@@ -96,7 +96,7 @@ def test_unarchive_auto_stages_and_persists_seed(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(
                 cwd=str(tmp_path / "cwd"), repo="o/r", archived_by="autopilot",
@@ -124,7 +124,7 @@ def test_unarchive_user_archive_seeds_nothing(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(cwd=str(tmp_path / "cwd"), archived_by="user")])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

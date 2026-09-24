@@ -38,7 +38,7 @@ from server.tests.test_reauth_api import (
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -49,7 +49,7 @@ def test_add_start_returns_202_with_state():
     """POST /api/accounts/add returns 202 and the running state for a fresh name."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -69,7 +69,7 @@ def test_add_start_409_when_slot_exists():
     fake_rm = FakeReauthManager()
     with temp_env():
         _seed_slot("existing")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -86,7 +86,7 @@ def test_add_start_400_invalid_name():
     """POST /api/accounts/add returns 400 for a malformed / path-traversal name."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -103,7 +103,7 @@ def test_add_start_400_invalid_name_has_human_message():
     specific guidance instead of a generic 'Something went wrong' toast."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -122,7 +122,7 @@ def test_add_start_400_dotted_name():
     """POST /api/accounts/add returns 400 for a hidden-file (dot-prefixed) name."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -142,7 +142,7 @@ def test_add_start_409_when_busy():
     fake_rm.holding_started_at = time.time() - 30
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -161,7 +161,7 @@ def test_add_start_503_when_no_key():
     fake_rm.raise_no_key = True
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post(
@@ -177,7 +177,7 @@ def test_add_start_requires_auth():
     """POST /api/accounts/add without an identity header returns 401."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post("/api/accounts/add", json={"name": "newacct"})
@@ -199,7 +199,7 @@ def test_add_status_returns_global_state():
     fake_rm._state = ReauthState(state="running", identity="me@x.com", started_at=time.time())
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get("/api/accounts/add", headers=IDENTITY_HEADERS)
@@ -214,7 +214,7 @@ def test_add_status_requires_auth():
     """GET /api/accounts/add without an identity header returns 401."""
     fake_rm = FakeReauthManager()
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.get("/api/accounts/add")
@@ -233,7 +233,7 @@ def test_add_cancel_returns_idle():
     fake_rm._state = ReauthState(state="running", identity="me@x.com", started_at=time.time())
 
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(fake_rm)
         with client:
             resp = client.post("/api/accounts/add/cancel", headers=IDENTITY_HEADERS)

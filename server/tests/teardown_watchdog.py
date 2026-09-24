@@ -21,7 +21,7 @@ consistent. If the loop doesn't run it within a short grace (loop blocked in
 sync code), the dump happens cross-thread instead, best-effort.
 
 Wiring: ``server/tests/conftest.py`` wraps ``TestClient.__exit__`` so every
-TestClient in the suite is covered. Tune via ``CCSWITCH_TEARDOWN_WATCHDOG_S``
+TestClient in the suite is covered. Tune via ``VIBERPIT_TEARDOWN_WATCHDOG_S``
 (default 45 — far under pytest-timeout's 300, far over any healthy teardown).
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ from typing import Any, TextIO
 from server.aio import format_task_dump
 
 DEFAULT_TIMEOUT_S = 45.0
-_ENV_VAR = "CCSWITCH_TEARDOWN_WATCHDOG_S"
+_ENV_VAR = "VIBERPIT_TEARDOWN_WATCHDOG_S"
 
 
 class TeardownWatchdog:

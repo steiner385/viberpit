@@ -173,7 +173,7 @@ async def test_setup_session_overlay_sets_signalling_tools_from_the_engine_capab
 
     monkeypatch.setattr("server.sessions.tools.server.build_session_server",
                         fake_build_session_server)
-    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "true")
 
     orch = _bare_orchestrator(
         AgentCapabilities(durable_tool_surface=True, self_model_switch=True))
@@ -202,7 +202,7 @@ async def test_setup_session_overlay_withholds_signalling_tools_without_the_capa
 
     monkeypatch.setattr("server.sessions.tools.server.build_session_server",
                         fake_build_session_server)
-    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "true")
 
     orch = _bare_orchestrator(AgentCapabilities())
     await orch._setup_session_overlay("s1", identity="u@x", engine="claude_code")
@@ -229,7 +229,7 @@ async def test_setup_session_overlay_withholds_self_model_switch_when_settings_d
 
     monkeypatch.setattr("server.sessions.tools.server.build_session_server",
                         fake_build_session_server)
-    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "false")
 
     orch = _bare_orchestrator(
         AgentCapabilities(durable_tool_surface=True, self_model_switch=True))

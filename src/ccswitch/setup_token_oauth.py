@@ -44,7 +44,7 @@ FALLBACK_SCOPE = "user:inference"
 # Deploy-free override (edge env). Pins the scope without shipping a revert, and
 # covers the one failure mode the exchange-time fallback cannot see: a refusal on
 # the *authorize* page, where the user never gets a code to submit.
-SCOPE_ENV = "CCSWITCH_SETUP_TOKEN_SCOPE"
+SCOPE_ENV = "VIBERPIT_SETUP_TOKEN_SCOPE"
 # Mimic the binary's exchange client (captured: axios/1.15.2) for WAF/Cloudflare friendliness.
 _USER_AGENT = "axios/1.15.2"
 # Captured: claude requests a 1-year token lifetime in the exchange body. Required.

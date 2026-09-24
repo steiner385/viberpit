@@ -102,7 +102,7 @@ def _validate_env_overrides(overrides: dict | None) -> None:
 # degrades to "unknown" (None) rather than blocking the dashboard or bubbling a
 # raw ReadTimeout into an unhandled 500 (the GET /api/accounts wedge, incident
 # 2026-07-02). Overridable for tests / tuning.
-USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"))
+USAGE_FETCH_TIMEOUT = float(os.environ.get("VIBERPIT_USAGE_FETCH_TIMEOUT", "3.0"))
 
 # How old a ledger entry may be and still be served as a LABELLED stale
 # fallback when the fresh path fails (RPC deadline, daemon down, or the fetch
@@ -110,13 +110,13 @@ USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"
 # this deployment, each one rendering "unavailable" while minutes-old usage
 # sat in ledger.json. Past this cap the data is old enough to mislead — serve
 # None instead. Overridable for tests / tuning.
-STALE_USAGE_MAX_AGE_SEC = float(os.environ.get("CCSWITCH_USAGE_STALE_MAX_AGE_SEC", "3600"))
+STALE_USAGE_MAX_AGE_SEC = float(os.environ.get("VIBERPIT_USAGE_STALE_MAX_AGE_SEC", "3600"))
 
 # A forced Copilot refresh may have to START the proxy (spawn + health gate,
 # up to CopilotProxyManager.ready_timeout_s) before it can read /usage, so it
 # gets a longer deadline than a plain usage read.
 PROCESS_QUOTA_REFRESH_TIMEOUT = float(
-    os.environ.get("CCSWITCH_PROCESS_QUOTA_REFRESH_TIMEOUT", "20"))
+    os.environ.get("VIBERPIT_PROCESS_QUOTA_REFRESH_TIMEOUT", "20"))
 
 
 def _local_cached_usage(name: str):

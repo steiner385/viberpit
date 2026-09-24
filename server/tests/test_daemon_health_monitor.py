@@ -20,7 +20,7 @@ from server.sessions.daemon_health import DaemonHealthMonitor, epoch_started_at_
 def _isolate_watchdog_file(tmp_path, monkeypatch):
     # Point the watchdog last-restart lookup at an empty dir so a real
     # /var/lib/ccswitch/health/last-restart on the host can't leak into snapshots.
-    monkeypatch.setenv("CCSWITCH_HEALTH_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HEALTH_STATE_DIR", str(tmp_path))
 
 
 def _epoch(start_ms: int, pid: int = 1234, suffix: str = "abcd1234") -> str:

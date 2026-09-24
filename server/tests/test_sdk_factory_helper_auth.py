@@ -92,7 +92,7 @@ async def test_helper_factories_spawn_against_a_host_local_config_dir(monkeypatc
     dozens of times an hour on rocky — each a fresh cold read of dobby's ``.claude.json``
     through a stale attribute cache, and each able to "repair" it back to defaults.
     """
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     monkeypatch.setattr(aa, "oauth_env_for", lambda account: {})
     cfg = tmp_path / "cfg" / "primary"
     cfg.mkdir(parents=True)

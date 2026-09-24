@@ -3,7 +3,7 @@
 `Tailscale-User-Login` is stamped by the `tailscale serve` proxy. Its backend hop is
 sourced from the host's OWN tailnet interface address, not loopback (#2134) — so a
 genuinely stamped header can arrive with the peer set to loopback, to one of this
-node's own tailscale addresses, or to an address in CCSWITCH_TRUSTED_PROXY_IPS. Any
+node's own tailscale addresses, or to an address in VIBERPIT_TRUSTED_PROXY_IPS. Any
 other caller presenting that header is asserting an identity it was never given, so
 the header must be ignored unless the peer is trusted.
 
@@ -59,9 +59,9 @@ def _no_tailscale_binary(cmd, **kwargs):
 @pytest.fixture(autouse=True)
 def _locked_down(monkeypatch):
     """Deployed posture: an allowlist is set and LAN-open mode is off."""
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", IDENTITY)
-    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "false")
-    monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", IDENTITY)
+    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "false")
+    monkeypatch.delenv("VIBERPIT_TRUSTED_PROXY_IPS", raising=False)
     # `tailscale whois` shells out to the host daemon; stub it so these tests exercise
     # the header-trust decision rather than the machine's real tailnet membership.
     monkeypatch.setattr("server.auth.identity._whois_identity", lambda request: None)
@@ -91,13 +91,13 @@ def test_alternate_header_name_from_untrusted_peer_is_rejected():
 
 
 def test_header_from_configured_trusted_proxy_is_accepted(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "10.4.4.4, 10.5.5.5")
+    monkeypatch.setenv("VIBERPIT_TRUSTED_PROXY_IPS", "10.4.4.4, 10.5.5.5")
     assert verify_identity(_http(CONFIGURED_PROXY, Tailscale_User_Login=IDENTITY)) == IDENTITY
 
 
 def test_header_from_this_nodes_own_tailscale_ip_is_accepted(monkeypatch):
     """`tailscale serve`'s backend hop presents as the host's own tailnet IP (#2134),
-    with no CCSWITCH_TRUSTED_PROXY_IPS entry required."""
+    with no VIBERPIT_TRUSTED_PROXY_IPS entry required."""
     monkeypatch.setattr(
         "server.auth.identity._self_tailscale_ips",
         lambda: frozenset({ipaddress.ip_address(SELF_TAILSCALE_IP[0])}),
@@ -116,7 +116,7 @@ def test_header_from_an_untrusted_peer_that_merely_resembles_a_self_ip_is_reject
 
 def test_untrusted_header_is_ignored_not_fatal_in_lan_open_mode(monkeypatch):
     """LAN-open admits the caller as a guest — it must not inherit the spoofed identity."""
-    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "true")
+    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "true")
     assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) == OPEN_LAN_IDENTITY
 
 
@@ -161,7 +161,7 @@ def test_ipv4_mapped_loopback_is_trusted():
 
 
 def test_trusted_proxy_list_accepts_a_cidr_range(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "10.0.0.0/24")
+    monkeypatch.setenv("VIBERPIT_TRUSTED_PROXY_IPS", "10.0.0.0/24")
     assert verify_identity(_http(("10.0.0.77", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
     assert verify_identity(_http(("10.0.1.77", 5), Tailscale_User_Login=IDENTITY)) is None
 
@@ -172,13 +172,13 @@ def test_unparseable_peer_host_is_not_trusted():
 
 
 def test_malformed_entry_in_the_proxy_list_is_skipped_not_fatal(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "not-an-ip, 10.0.0.0/24")
+    monkeypatch.setenv("VIBERPIT_TRUSTED_PROXY_IPS", "not-an-ip, 10.0.0.0/24")
     assert verify_identity(_http(("10.0.0.77", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
 
 
 # --- _self_tailscale_ips (#2134): resolves this node's own tailnet addresses so a
 # `tailscale serve` backend hop, which presents as that address rather than loopback,
-# is trusted without per-host CCSWITCH_TRUSTED_PROXY_IPS config. ------------------------
+# is trusted without per-host VIBERPIT_TRUSTED_PROXY_IPS config. ------------------------
 
 
 class _FakeCompletedProcess:

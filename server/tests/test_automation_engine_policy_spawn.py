@@ -42,7 +42,7 @@ async def _spawn_with(tmp_path, db_name, *, policy, config=None, automations_ena
         db.add(Automation(id="pr-doctor", enabled=True, mode="fix", config=config or {}))
     monkeypatch.setattr(registry.get("pr-doctor"), "engine_policy", policy,
                         raising=False)
-    monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED",
+    monkeypatch.setenv("VIBERPIT_CODEX_AUTOMATIONS_ENABLED",
                        "true" if automations_enabled else "false")
     ctx = AutomationContext("pr-doctor", create_session=_fake_create_session)
     rec = await ctx.spawn_session(origin_ref="a/b#1", name="auto", **spawn_kwargs)
@@ -125,7 +125,7 @@ def test_an_unregistered_origin_is_unaudited_and_gets_claude(tmp_path, monkeypat
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'eng_e.db'}")
         async with db_session() as db:
             db.add(Automation(id="ad-hoc-origin", enabled=True))
-        monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "true")
+        monkeypatch.setenv("VIBERPIT_CODEX_AUTOMATIONS_ENABLED", "true")
         ctx = AutomationContext("ad-hoc-origin", create_session=_fake_create_session)
         rec = await ctx.spawn_session(origin_ref="x#1", name="auto")
         assert rec.launch_kwargs["engine"] is AgentEngine.CLAUDE_CODE
@@ -148,8 +148,8 @@ def _client():
     from server.tests.fakes.fake_factory import fake_sdk_factory
     with tempfile.TemporaryDirectory() as tmp:
         with patch.dict(os.environ, {
-                "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/test.db",
-                "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+                "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp}/test.db",
+                "VIBERPIT_DEV": "1", "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             app = create_app(orchestrator=SessionOrchestrator(
                 sdk_factory=fake_sdk_factory()))
             with TestClient(app, raise_server_exceptions=False) as c:

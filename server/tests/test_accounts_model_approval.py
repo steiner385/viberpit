@@ -36,7 +36,7 @@ def _make_client():
     # never suppresses the startup sweep. Without a fake, that sweep runs the real
     # CLI-core usage_for() against the seeded slots on a detached thread
     # pool that stop() tears down with wait=False, so the fetch outlives the
-    # TestClient. The CLI-core paths root() reads CCSWITCH_HOME at call time, so the
+    # TestClient. The CLI-core paths root() reads VIBERPIT_HOME at call time, so the
     # straggler then writes ledger/slot state into the NEXT test's temp_env while
     # rmtree is deleting it — "OSError: [Errno 39] Directory not empty" (#1647).
     from server.sessions.orchestrator import SessionOrchestrator
@@ -59,7 +59,7 @@ def test_set_account_model_approval_action_allow():
     """PATCH sets modelApprovalAction=allow; response reflects it."""
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -77,7 +77,7 @@ def test_set_account_model_approval_action_block():
     """PATCH sets modelApprovalAction=block; response reflects it."""
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -95,7 +95,7 @@ def test_set_account_model_approval_action_require_approval():
     """PATCH sets modelApprovalAction=require_approval; response reflects it."""
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -113,7 +113,7 @@ def test_set_account_model_approval_action_invalid_rejected():
     """PATCH with an invalid modelApprovalAction returns 400 or 422."""
     with temp_env():
         _seed_slot("dave")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -129,7 +129,7 @@ def test_clear_account_model_approval_action_with_null():
     """PATCH with null modelApprovalAction clears the per-account override."""
     with temp_env():
         _seed_slot("eve")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             # First set it
@@ -154,7 +154,7 @@ def test_account_defaults_always_includes_model_approval_action_key():
     """accountDefaults always has a modelApprovalAction key (even when unset)."""
     with temp_env():
         _seed_slot("frank")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             # A plain GET /api/accounts includes the key

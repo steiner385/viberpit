@@ -18,7 +18,7 @@ from ccswitch import paths
 
 
 def _make_client(tmp_home, monkeypatch, *, state: ReauthState):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_home))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_home))
     # Two real credential slots so _check_name_and_slot passes for both accounts.
     for name in ("acctA", "acctB"):
         paths.slot_path(name).parent.mkdir(parents=True, exist_ok=True)

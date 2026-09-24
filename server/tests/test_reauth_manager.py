@@ -162,7 +162,7 @@ async def test_prepare_reauth_profile_runs_off_the_event_loop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runner_forwards_configured_extension_ids(monkeypatch):
-    """CCSWITCH_REAUTH_EXTENSIONS reaches prepare_reauth_profile(extension_ids=...);
+    """VIBERPIT_REAUTH_EXTENSIONS reaches prepare_reauth_profile(extension_ids=...);
     unset → None so the core default (1Password) applies."""
     seen = []
 
@@ -175,13 +175,13 @@ async def test_runner_forwards_configured_extension_ids(monkeypatch):
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
-    monkeypatch.setenv("CCSWITCH_REAUTH_EXTENSIONS", "aaaa,bbbb")
+    monkeypatch.setenv("VIBERPIT_REAUTH_EXTENSIONS", "aaaa,bbbb")
     mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
     await mgr.start("primary", "me@example.com")
     await asyncio.sleep(0.05)
     assert seen == [["aaaa", "bbbb"]]
 
-    monkeypatch.delenv("CCSWITCH_REAUTH_EXTENSIONS")
+    monkeypatch.delenv("VIBERPIT_REAUTH_EXTENSIONS")
     mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
     await mgr.start("primary", "me@example.com")
     await asyncio.sleep(0.05)
@@ -198,9 +198,9 @@ async def test_runner_carries_no_cookies_or_passwords_by_default(monkeypatch):
         seen.append({"profile": profile, **kw})
         return "/tmp/reauth-tmp-cookies"
 
-    monkeypatch.delenv("CCSWITCH_CHROME_PROFILE", raising=False)
-    monkeypatch.delenv("CCSWITCH_REAUTH_COOKIE_HOSTS", raising=False)
-    monkeypatch.delenv("CCSWITCH_REAUTH_COPY_LOGIN_DATA", raising=False)
+    monkeypatch.delenv("VIBERPIT_CHROME_PROFILE", raising=False)
+    monkeypatch.delenv("VIBERPIT_REAUTH_COOKIE_HOSTS", raising=False)
+    monkeypatch.delenv("VIBERPIT_REAUTH_COPY_LOGIN_DATA", raising=False)
     monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", fake_prepare)
     monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
@@ -231,8 +231,8 @@ async def test_runner_forwards_configured_cookie_hosts_and_login_data(monkeypatc
     monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
-    monkeypatch.setenv("CCSWITCH_REAUTH_COOKIE_HOSTS", "google.com, example.com")
-    monkeypatch.setenv("CCSWITCH_REAUTH_COPY_LOGIN_DATA", "true")
+    monkeypatch.setenv("VIBERPIT_REAUTH_COOKIE_HOSTS", "google.com, example.com")
+    monkeypatch.setenv("VIBERPIT_REAUTH_COPY_LOGIN_DATA", "true")
 
     mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
     await mgr.start("primary", "me@example.com")
@@ -246,7 +246,7 @@ async def test_runner_forwards_configured_cookie_hosts_and_login_data(monkeypatc
 async def test_runner_cleans_the_profile_when_the_display_fails(tmp_path, monkeypatch):
     """#1106: a virtual display that fails to start is the exact shape that left
     profile copies on disk — the profile must be removed on that path too."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
     from ccswitch.paths import reauth_tmp_dir
 
@@ -424,7 +424,7 @@ def test_sweep_stale_removes_old_dirs(tmp_path, monkeypatch):
     """sweep_stale() removes dirs older than 600s and leaves fresh ones."""
     import os, time
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
     from ccswitch.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
@@ -452,7 +452,7 @@ def test_sweep_stale_covers_capture_dirs(tmp_path, monkeypatch):
     (a SIGKILLed run never reaches capture_login's finally), so they must age out too."""
     import os, time
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     from ccswitch.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
@@ -473,7 +473,7 @@ def test_sweep_stale_spares_the_in_flight_profile(tmp_path, monkeypatch):
     """A login that outlives the TTL must not have its profile swept out from under it."""
     import os, time
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     from ccswitch.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
@@ -495,7 +495,7 @@ def test_start_sweeps_before_creating_a_new_profile(tmp_path, monkeypatch):
     Each start() reclaims aged leftovers first."""
     import os, time
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     from ccswitch.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
@@ -610,7 +610,7 @@ def test_cancel_kills_via_launcher_pid_file(tmp_path, monkeypatch):
 def test_sweep_stale_removes_symlinks(tmp_path, monkeypatch):
     """sweep_stale() removes symlinks without following them."""
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
     from ccswitch.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
@@ -1080,7 +1080,7 @@ async def test_cancel_cleans_up_temp_profile(tmp_path, monkeypatch):
     The runner's finally block cannot fire while asyncio.to_thread is blocked,
     so the state machine's terminal transition must drive the cleanup.
     """
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
     from ccswitch.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
@@ -1115,7 +1115,7 @@ async def test_cancel_cleans_up_temp_profile(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_timeout_cleans_up_temp_profile(tmp_path, monkeypatch):
     """_run() timeout must remove the temp profile directory."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
     from ccswitch.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()

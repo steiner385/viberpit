@@ -31,7 +31,7 @@ def test_consumers_alias_hostpaths(monkeypatch):
     assert ipc_paths.DEFAULT_SOCKET_PATH is hostpaths.SESSIOND_SOCKET
     # The controller socket is resolved in ONE place (server.deploy.client) for both the
     # controller's serve() and the edge's client; the default must still be hostpaths'.
-    monkeypatch.delenv("CCSWITCH_DEPLOY_SOCKET", raising=False)
+    monkeypatch.delenv("VIBERPIT_DEPLOY_SOCKET", raising=False)
     assert serve.deploy_socket() == hostpaths.DEPLOY_SOCKET
     assert serve.DEFAULT_DEPLOY_STATUS_PATH is hostpaths.DEPLOY_STATUS_PATH
     assert deploy_snapshot.DEFAULT_PATH is hostpaths.DEPLOY_SNAPSHOT_PATH

@@ -38,13 +38,13 @@ LivenessState = Literal["fresh", "stale", "unreachable", "dead", "unknown"]
 # stop (constitution VI; see server/tests/test_config_env_float.py).
 #
 # Routing through ``env_float`` also makes a typo'd override survivable rather than
-# fatal: a raw ``float()`` on ``CCSWITCH_HOST_DEAD_AFTER_S=300s`` raises, and these
+# fatal: a raw ``float()`` on ``VIBERPIT_HOST_DEAD_AFTER_S=300s`` raises, and these
 # values are read inside the session serializer and at the top of the heartbeat loop
 # — a 500 on the whole sessions page, and a daemon that beats once and then never
 # again (which, once Phase 4 adoption lands, becomes a false takeover of a live host).
-HEARTBEAT_INTERVAL_ENV = "CCSWITCH_HOST_HEARTBEAT_INTERVAL_S"
+HEARTBEAT_INTERVAL_ENV = "VIBERPIT_HOST_HEARTBEAT_INTERVAL_S"
 HEARTBEAT_INTERVAL_DEFAULT_S = 10.0
-DEAD_AFTER_ENV = "CCSWITCH_HOST_DEAD_AFTER_S"
+DEAD_AFTER_ENV = "VIBERPIT_HOST_DEAD_AFTER_S"
 DEAD_AFTER_DEFAULT_S = 300.0
 
 

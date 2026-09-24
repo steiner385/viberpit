@@ -144,7 +144,7 @@ def sanitize_patch(body: dict, fields_set: set[str] | None = None) -> dict:
 
     ssh_host / repo_path land in the argv of a sudo-capable ssh command, so they
     are validated with the SAME patterns the deploy controller applies to
-    CCSWITCH_DAEMON_SSH_HOST / _REPO (``server.deploy.steps``) — a value that
+    VIBERPIT_DAEMON_SSH_HOST / _REPO (``server.deploy.steps``) — a value that
     could smuggle an ssh option (``-oProxyCommand=…``) or shell metacharacters
     is rejected with 400, never stored.
     """

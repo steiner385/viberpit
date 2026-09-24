@@ -239,13 +239,13 @@ class DeployController:
             targets = await self._runners.load_runner_targets()
             if not targets:
                 # An empty fan-out is indistinguishable from a successful one in the phase
-                # state, and the usual cause is an unset CCSWITCH_DB_URL in a hand-run
+                # state, and the usual cause is an unset VIBERPIT_DB_URL in a hand-run
                 # `python -m server.deploy --once` (docs/runbooks/rocky-session-host.md §5):
                 # the registry lookup lands on an empty default DB and every runner is
                 # silently left on the old code while the deploy reports green.
                 self.status.warnings.append(
                     "runners: no enabled fleet hosts found — nothing was fanned out "
-                    "(is CCSWITCH_DB_URL pointing at the fleet database?)")
+                    "(is VIBERPIT_DB_URL pointing at the fleet database?)")
             results = await self._runners.deploy_runners(
                 targets, target_sha=remote, daemon_changed=daemon_changed,
                 deps_changed=deps_changed, local_name=self._local_name,

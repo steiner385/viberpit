@@ -30,7 +30,7 @@ def _client():
 
     with temp_env(), tempfile.TemporaryDirectory() as d:
         db_url = f"sqlite+aiosqlite:///{Path(d) / 'settings.db'}"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}):
             orch = SessionOrchestrator(poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
@@ -205,7 +205,7 @@ def test_put_assistant_operator_tools_round_trips():
 
 
 def test_put_null_assistant_operator_tools_clears_stored_value():
-    """Explicit null clears back to the CCSWITCH_ASSISTANT_OPERATOR_TOOLS env fallback."""
+    """Explicit null clears back to the VIBERPIT_ASSISTANT_OPERATOR_TOOLS env fallback."""
     with _client() as client:
         client.put(
             "/api/settings",

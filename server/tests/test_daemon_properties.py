@@ -156,8 +156,8 @@ def test_turn_open_resume_invariants(events):
 async def _drive_replay(events: list[dict], maxlen: int, since):
     """Publish `events` to a real daemon (ring capped at `maxlen`), then subscribe a real
     WS at `since` and return the frames received (bounded)."""
-    prev = os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER")
-    os.environ["CCSWITCH_IPC_REPLAY_BUFFER"] = str(maxlen)
+    prev = os.environ.get("VIBERPIT_IPC_REPLAY_BUFFER")
+    os.environ["VIBERPIT_IPC_REPLAY_BUFFER"] = str(maxlen)
     try:
         app = create_daemon_app()
         stream = "s1"
@@ -188,9 +188,9 @@ async def _drive_replay(events: list[dict], maxlen: int, since):
             return frames, delivered, gap, oldest, since
     finally:
         if prev is None:
-            os.environ.pop("CCSWITCH_IPC_REPLAY_BUFFER", None)
+            os.environ.pop("VIBERPIT_IPC_REPLAY_BUFFER", None)
         else:
-            os.environ["CCSWITCH_IPC_REPLAY_BUFFER"] = prev
+            os.environ["VIBERPIT_IPC_REPLAY_BUFFER"] = prev
 
 
 @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])

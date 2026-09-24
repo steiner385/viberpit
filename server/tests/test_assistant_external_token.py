@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 from server.app import create_app
 from server.assistant.token import UserClaims, mint_user_token, verify_user_token
 
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "", "CCSWITCH_SESSION_SECRET": "x" * 32,
-        "CCSWITCH_ASSISTANT_EXTERNAL_TOKENS": "true"}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_SESSION_SECRET": "x" * 32,
+        "VIBERPIT_ASSISTANT_EXTERNAL_TOKENS": "true"}
 
 
 def test_mint_verify_roundtrip():
@@ -113,7 +113,7 @@ def test_unknown_token_id_returns_401():
 
 def test_feature_flag_off_returns_401():
     env = dict(_ENV)
-    env["CCSWITCH_ASSISTANT_EXTERNAL_TOKENS"] = "false"
+    env["VIBERPIT_ASSISTANT_EXTERNAL_TOKENS"] = "false"
     with patch.dict(os.environ, env):
         with _client() as c:
             tok = _mint_and_insert(c, "u@example.com", "act")

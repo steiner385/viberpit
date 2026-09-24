@@ -14,25 +14,25 @@ support this model; version <new> or newer is required". Pinning the SDK's
 ``cli_path`` to the auto-updating system ``claude`` keeps sessions current and in
 lockstep with the picker's probe.
 
-Resolution mirrors ``ccswitch.launcher.claude_argv``: honor ``CCSWITCH_CLAUDE_BIN``
+Resolution mirrors ``ccswitch.launcher.claude_argv``: honor ``VIBERPIT_CLAUDE_BIN``
 (a full command whose first token is the executable), else the bare name
 ``"claude"`` resolved on ``PATH`` — and then, unlike the launcher, the native
 installer's well-known locations (``~/.local/bin/claude``, the newest
 ``~/.local/share/claude/versions/*``). The daemon runs under systemd with a minimal
 PATH that lacks ``~/.local/bin``; without the fallback, every host needs a hand-added
-``PATH``/``CCSWITCH_CLAUDE_BIN`` line in its unit env file, and the one host that
+``PATH``/``VIBERPIT_CLAUDE_BIN`` line in its unit env file, and the one host that
 lacks it silently runs the stale bundled CLI (dobby, 2026-09-03).
 
 **Failure modes made loud, not silent.** Two ways the pin silently degraded to the
 stale bundled CLI — and 400d sessions "from time to time" — are guarded here:
 
-1. *Nothing resolves* (``claude`` not on the daemon's ``PATH``, ``CCSWITCH_CLAUDE_BIN``
+1. *Nothing resolves* (``claude`` not on the daemon's ``PATH``, ``VIBERPIT_CLAUDE_BIN``
    unset/invalid) → we log a one-shot WARNING instead of returning ``None`` quietly.
 2. *A resolvable-but-stale binary* (e.g. a pinned ``~/.local/bin/claude`` older than
    the SDK's own bundled CLI) → pinning it is strictly worse than the fallback, so we
    refuse it (return ``None`` → SDK uses its newer bundled CLI) and log an ERROR. The
    floor is the bundled CLI's own version, so it self-maintains as the SDK upgrades;
-   ``CCSWITCH_CLAUDE_MIN_VERSION`` overrides it when the API needs higher than both.
+   ``VIBERPIT_CLAUDE_MIN_VERSION`` overrides it when the API needs higher than both.
 
 An *unprobeable* version is never rejected — that preserves today's "trust whatever
 resolves" behavior for a binary that may well be current.
@@ -113,9 +113,9 @@ def _bundled_version() -> Version | None:
 
 
 def _min_version() -> Version | None:
-    """The floor a pinned binary must meet: ``CCSWITCH_CLAUDE_MIN_VERSION`` if set
+    """The floor a pinned binary must meet: ``VIBERPIT_CLAUDE_MIN_VERSION`` if set
     and parseable, else the SDK's bundled CLI version (self-maintaining)."""
-    raw = os.environ.get("CCSWITCH_CLAUDE_MIN_VERSION")
+    raw = os.environ.get("VIBERPIT_CLAUDE_MIN_VERSION")
     if raw:
         parsed = _parse_version(raw)
         if parsed:
@@ -162,7 +162,7 @@ def resolve_claude_bin() -> str | None:
     """Absolute path to the system ``claude`` executable, or ``None`` if none is
     usable.
 
-    Resolution order: ``CCSWITCH_CLAUDE_BIN`` (first token) → ``claude`` on PATH →
+    Resolution order: ``VIBERPIT_CLAUDE_BIN`` (first token) → ``claude`` on PATH →
     the native installer's well-known locations (``_well_known_candidates``). The
     explicit/PATH forms stay authoritative so an operator override is never shadowed.
 
@@ -172,7 +172,7 @@ def resolve_claude_bin() -> str | None:
     ``None`` paths log loudly (once) so the degradation is visible before a session
     400s mid-turn.
     """
-    raw = os.environ.get("CCSWITCH_CLAUDE_BIN") or "claude"
+    raw = os.environ.get("VIBERPIT_CLAUDE_BIN") or "claude"
     parts = shlex.split(raw)
     exe = parts[0] if parts else "claude"
     candidate = shutil.which(exe)
@@ -192,10 +192,10 @@ def resolve_claude_bin() -> str | None:
         _warn_once(
             "not-found",
             logging.WARNING,
-            "claude_bin: no system `claude` resolved (CCSWITCH_CLAUDE_BIN unset/invalid, "
+            "claude_bin: no system `claude` resolved (VIBERPIT_CLAUDE_BIN unset/invalid, "
             "`claude` not on PATH, and none of the native installer's well-known "
             "locations exist); the SDK will fall back to its stale bundled CLI, which "
-            "may 400 on newer models. Install claude or set CCSWITCH_CLAUDE_BIN.",
+            "may 400 on newer models. Install claude or set VIBERPIT_CLAUDE_BIN.",
         )
         return None
 
@@ -211,7 +211,7 @@ def resolve_claude_bin() -> str | None:
                 logging.ERROR,
                 "claude_bin: resolved %s is version %s, below the required floor %s; "
                 "refusing to pin it (the SDK's newer bundled CLI will be used instead). "
-                "Run `claude update` or point CCSWITCH_CLAUDE_BIN at a current binary.",
+                "Run `claude update` or point VIBERPIT_CLAUDE_BIN at a current binary.",
                 candidate,
                 ".".join(map(str, version)),
                 ".".join(map(str, floor)),

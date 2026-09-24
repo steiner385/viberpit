@@ -1,5 +1,5 @@
 """Constitution III: verify against the real `claude` binary. Gated on
-CCSWITCH_TEST_CLAUDE_MCP=1 (needs the system claude + a logged-in account)."""
+VIBERPIT_TEST_CLAUDE_MCP=1 (needs the system claude + a logged-in account)."""
 from __future__ import annotations
 
 import json
@@ -7,8 +7,8 @@ import os
 
 import pytest
 
-pytestmark = pytest.mark.skipif(os.environ.get("CCSWITCH_TEST_CLAUDE_MCP") != "1",
-                                reason="set CCSWITCH_TEST_CLAUDE_MCP=1 to run against the real claude binary")
+pytestmark = pytest.mark.skipif(os.environ.get("VIBERPIT_TEST_CLAUDE_MCP") != "1",
+                                reason="set VIBERPIT_TEST_CLAUDE_MCP=1 to run against the real claude binary")
 
 
 @pytest.mark.asyncio

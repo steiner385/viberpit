@@ -117,7 +117,7 @@ async def daemon_lifespan(app, orchestrator):
     from server.obs.asyncgen_finalize import install_asyncgen_finalize_reporter
     install_asyncgen_finalize_reporter()
 
-    db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    db_url = os.environ.get("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
     from server.obs.errsink import get_error_sink
@@ -213,9 +213,9 @@ async def daemon_lifespan(app, orchestrator):
     app.state.loop_lag = LoopLagWatchdog(
         # Opt-in until the ThreadStallTracer proves itself under load (#792): the
         # old faulthandler dumper segfaulted the daemon and had to be disabled in
-        # prod. Set CCSWITCH_LOOP_STALL_DUMP_S to a positive value to enable.
-        dump_after=env_float("CCSWITCH_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
-        dump_path=os.environ.get("CCSWITCH_LOOP_STALL_DUMP_PATH") or None,
+        # prod. Set VIBERPIT_LOOP_STALL_DUMP_S to a positive value to enable.
+        dump_after=env_float("VIBERPIT_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
+        dump_path=os.environ.get("VIBERPIT_LOOP_STALL_DUMP_PATH") or None,
     )
     app.state.loop_lag_task = supervise(
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),

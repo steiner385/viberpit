@@ -61,11 +61,11 @@ def _create_on(tmp_path, *, role: str, host_name: str):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'host_stamp.db'}"
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_DAEMON_ROLE": role,
-        "CCSWITCH_HOST_NAME": host_name,
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_DAEMON_ROLE": role,
+        "VIBERPIT_HOST_NAME": host_name,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -124,8 +124,8 @@ def test_queued_record_carries_host_and_created_at(monkeypatch, role):
 
     from server.sessions import orchestrator as mod
 
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", role)
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "h-test")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", role)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "h-test")
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
 
     captured: dict = {}

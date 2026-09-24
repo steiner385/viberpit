@@ -21,7 +21,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 @pytest.fixture(autouse=True)
 def _fresh_db(isolated_db):
-    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    """Per-test DB (#728): several tests here exit their VIBERPIT_DB_URL patch
     before `with client:`, so the app lifespan resolves the AMBIENT env var at
     init_db time — without this fixture that was the worker-shared session DB,
     coupling these files to whatever ran (or leaked a writer) before them."""
@@ -55,7 +55,7 @@ def _make_client(usage_fn=None):
 def test_patch_enabled_disables_and_returns_state():
     with temp_env():
         _seed_slot("alice")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch(
@@ -73,7 +73,7 @@ def test_patch_enabled_disables_and_returns_state():
 def test_patch_enabled_reenables():
     with temp_env():
         _seed_slot("bob")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             client.patch("/api/accounts/bob/enabled",
@@ -90,7 +90,7 @@ def test_patch_enabled_persists_to_ledger():
     the account (selector-skip behavior itself is covered in test_pick_account_detailed)."""
     with temp_env():
         _seed_slot("carol")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             client.patch("/api/accounts/carol/enabled",
@@ -102,7 +102,7 @@ def test_patch_enabled_persists_to_ledger():
 
 def test_patch_enabled_404_for_unknown():
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch("/api/accounts/nope/enabled",
@@ -113,7 +113,7 @@ def test_patch_enabled_404_for_unknown():
 def test_patch_enabled_requires_auth():
     with temp_env():
         _seed_slot("dave")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.patch("/api/accounts/dave/enabled",
@@ -124,7 +124,7 @@ def test_patch_enabled_requires_auth():
 def test_get_accounts_includes_enabled_default_true():
     with temp_env():
         _seed_slot("eve")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client()
         with client:
             response = client.get("/api/accounts", headers=IDENTITY_HEADERS)
@@ -150,7 +150,7 @@ def test_get_accounts_never_ranks_disabled_account():
     with temp_env():
         _seed_slot("dead")
         _seed_slot("live")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             client = _make_client(usage_fn=usage_fn)
         with client:
             client.patch("/api/accounts/dead/enabled",

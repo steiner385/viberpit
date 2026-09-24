@@ -1345,7 +1345,7 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
 
     Mirrors ``build_copilot_proxy_manager``. Returning ``None`` — rather than a
     manager that raises — is what makes the feature flag fail-closed: with
-    ``CCSWITCH_CODEX_ENABLED`` false, the orchestrator's Codex hooks are wired to
+    ``VIBERPIT_CODEX_ENABLED`` false, the orchestrator's Codex hooks are wired to
     nothing and no other engine's behaviour changes.
 
     Credentials come from the ChatGPT credential authority

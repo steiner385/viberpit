@@ -57,7 +57,7 @@ AUTO_MODEL_POOL: list[str] = TIER_ORDER
 # or pathologically slow assessment must fail open to the account default, never
 # hang the spawn (issue #567). Override via env for ops tuning.
 ASSESS_MODEL_TIMEOUT_S: float = float(
-    os.environ.get("CCSWITCH_ASSESS_MODEL_TIMEOUT_S", "30"))
+    os.environ.get("VIBERPIT_ASSESS_MODEL_TIMEOUT_S", "30"))
 
 # The `default_model` dropdown contents: "auto" + every alias the binary's
 # /model picker offers (ALIASES already leads with "default"). Deriving from

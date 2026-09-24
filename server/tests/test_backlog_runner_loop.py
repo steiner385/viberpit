@@ -2651,24 +2651,24 @@ def test_spawn_backoff_delay_schedule(monkeypatch):
     for the 3rd+ consecutive failure, every tier clamped by the max (#666)."""
     from server.automations import backlog_runner as br
 
-    monkeypatch.delenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", raising=False)
+    monkeypatch.delenv("VIBERPIT_BACKLOG_MAX_BACKOFF_S", raising=False)
     assert br._spawn_backoff_delay(1) == 60.0
     assert br._spawn_backoff_delay(2) == 300.0
     assert br._spawn_backoff_delay(3) == 900.0     # default max
     assert br._spawn_backoff_delay(4) == 900.0     # plateaus at the max
     assert br._spawn_backoff_delay(10) == 900.0
 
-    # CCSWITCH_BACKLOG_MAX_BACKOFF_S overrides the 3rd+ tier and clamps earlier
+    # VIBERPIT_BACKLOG_MAX_BACKOFF_S overrides the 3rd+ tier and clamps earlier
     # tiers that would exceed it.
-    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "120")
+    monkeypatch.setenv("VIBERPIT_BACKLOG_MAX_BACKOFF_S", "120")
     assert br._spawn_backoff_delay(1) == 60.0      # below the cap — unchanged
     assert br._spawn_backoff_delay(2) == 120.0     # 300s tier clamped to the cap
     assert br._spawn_backoff_delay(3) == 120.0
 
     # A bogus / non-positive override falls back to the default, never 0.
-    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "not-a-number")
+    monkeypatch.setenv("VIBERPIT_BACKLOG_MAX_BACKOFF_S", "not-a-number")
     assert br._spawn_backoff_delay(3) == 900.0
-    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "0")
+    monkeypatch.setenv("VIBERPIT_BACKLOG_MAX_BACKOFF_S", "0")
     assert br._spawn_backoff_delay(3) == 900.0
 
 

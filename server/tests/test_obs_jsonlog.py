@@ -109,7 +109,7 @@ def test_pool_cancelled_filter_passes_records_without_exc_info():
 def test_configure_logging_installs_pool_cancelled_filter(monkeypatch, tmp_path):
     import server.obs.jsonlog as jl
     monkeypatch.setattr(jl, "_configured", False)
-    monkeypatch.setenv("CCSWITCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_LOG_DIR", str(tmp_path))
     root = logging.getLogger()
     pool_logger = logging.getLogger("sqlalchemy.pool")
     saved_handlers = root.handlers[:]
@@ -132,7 +132,7 @@ def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
     import logging as _logging
     import server.obs.jsonlog as jl
     monkeypatch.setattr(jl, "_configured", False)
-    monkeypatch.setenv("CCSWITCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_LOG_DIR", str(tmp_path))
     root = _logging.getLogger()
     saved = root.handlers[:]
     saved_level = root.level

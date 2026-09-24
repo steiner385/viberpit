@@ -26,9 +26,9 @@ from server.sessions import scratch_config
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """A stand-in account store + a host-local scratch root, both under tmp_path."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "accounts"))
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
-    monkeypatch.delenv("CCSWITCH_HELPER_SCRATCH_CONFIG", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "accounts"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.delenv("VIBERPIT_HELPER_SCRATCH_CONFIG", raising=False)
     cfg = tmp_path / "accounts" / "cfg" / "alpha"
     cfg.mkdir(parents=True)
     (cfg / CLAUDE_JSON_NAME).write_text(json.dumps({
@@ -118,16 +118,16 @@ def test_two_accounts_never_share_a_scratch_dir(store, tmp_path):
 
 
 def test_kill_switch_and_fail_open_paths_return_the_input_unchanged(store, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_CONFIG", "false")
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_CONFIG", "false")
     assert scratch_config.helper_config_dir(str(store)) == str(store)
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_CONFIG", "true")
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_CONFIG", "true")
     assert scratch_config.helper_config_dir("") == ""
     assert scratch_config.helper_config_dir("/nope/not/a/dir") == "/nope/not/a/dir"
 
 
 def test_a_scratch_root_inside_the_account_store_is_refused(store, monkeypatch):
     """Isolating into the very store we are isolating from would be a silent no-op."""
-    monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(store.parent / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(store.parent / "scratch"))
     assert scratch_config.helper_config_dir(str(store)) == str(store)
 
 

@@ -58,7 +58,7 @@ __all__ = ["OrphanCli", "discover_orphans", "reap_orphans", "reap_enabled"]
 # Kill switch. Reaping is ON by default — a surviving CLI is an unattributable
 # writer with commit access, which is strictly worse than a session that has to be
 # resumed — but an operator debugging a live orphan needs a way to keep it.
-_REAP_ENV = "CCSWITCH_REAP_ORPHAN_CLIS"
+_REAP_ENV = "VIBERPIT_REAP_ORPHAN_CLIS"
 
 
 def reap_enabled() -> bool:

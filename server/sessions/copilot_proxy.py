@@ -29,13 +29,13 @@ def resolve_copilot_proxy() -> str | None:
     """Vendored-path override first, then vendored install, then PATH.
 
     Resolution order:
-      1. ``CCSWITCH_COPILOT_PROXY_BIN`` env var (explicit override)
+      1. ``VIBERPIT_COPILOT_PROXY_BIN`` env var (explicit override)
       2. ``~/.local/lib/ccswitch/copilot2api`` (installed by scripts/fetch-copilot-proxy.sh)
       3. ``shutil.which("copilot2api")`` (user-managed install on PATH)
 
     Returns None (feature-disabled) when the binary is absent on all paths.
     """
-    override = os.environ.get("CCSWITCH_COPILOT_PROXY_BIN")
+    override = os.environ.get("VIBERPIT_COPILOT_PROXY_BIN")
     if override and os.path.exists(override):
         return override
     if os.path.isfile(_VENDORED_PATH) and os.access(_VENDORED_PATH, os.X_OK):
@@ -300,7 +300,7 @@ def build_copilot_proxy_manager(settings) -> "CopilotProxyManager | None":
     if resolve_copilot_proxy() is None:
         log.warning(
             "copilot: ENABLED but %s binary not found — feature disabled. "
-            "Set CCSWITCH_COPILOT_PROXY_BIN or install the pinned release.",
+            "Set VIBERPIT_COPILOT_PROXY_BIN or install the pinned release.",
             PROXY_EXE,
         )
         return None

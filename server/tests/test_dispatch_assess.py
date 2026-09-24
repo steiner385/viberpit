@@ -5,7 +5,7 @@ their results. Both are best-effort; the endpoint is tested here via:
   - Patched assess_model / refine_prompt (no real SDK calls, injected via
     unittest.mock.patch on the fully-qualified names the router imports).
   - TestClient with a valid Tailscale-User-Login identity header (conftest
-    already sets CCSWITCH_DEV=1 + empty allowlist, so any identity passes).
+    already sets VIBERPIT_DEV=1 + empty allowlist, so any identity passes).
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _make_client() -> TestClient:
     from server.tests.fakes.fake_factory import fake_sdk_factory
     from server.app import create_app
 
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
             poll_interval=9999.0,
@@ -159,7 +159,7 @@ def test_assess_no_identity_401():
 
     Patches verify_identity where the middleware imports it from, simulating
     a request with no recognizable Tailscale identity and bypassing any
-    dev-machine-specific fallback (CCSWITCH_ALLOW_UNAUTHENTICATED, tailscale
+    dev-machine-specific fallback (VIBERPIT_ALLOW_UNAUTHENTICATED, tailscale
     whois, etc.) that would mask the 401 in local environments.
     """
     client = _make_client()
@@ -364,7 +364,7 @@ def _make_client_with_codex(factory):
         AgentEngine.CLAUDE_CODE: _ClaudeFactory(),
         AgentEngine.CODEX: factory,
     })
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
             poll_interval=9999.0,
@@ -393,7 +393,7 @@ def test_assess_falls_back_to_native_codex_when_no_anthropic_account():
             patch("server.api.dispatch.assess_model", new=AsyncMock(return_value=None)),
             patch("server.api.dispatch.refine_prompt", new=AsyncMock(return_value=None)),
             patch("server.api.dispatch.pick_helper_openai_account", return_value="codex-bot"),
-            patch.dict(os.environ, {"CCSWITCH_CODEX_REFINE_ENABLED": "true"}),
+            patch.dict(os.environ, {"VIBERPIT_CODEX_REFINE_ENABLED": "true"}),
         ):
             resp = client.post(
                 "/api/dispatch/assess",
@@ -423,7 +423,7 @@ def test_assess_never_falls_back_when_anthropic_already_refined():
                 new=AsyncMock(return_value="Refined via Claude."),
             ),
             patch("server.api.dispatch.pick_helper_openai_account") as picker,
-            patch.dict(os.environ, {"CCSWITCH_CODEX_REFINE_ENABLED": "true"}),
+            patch.dict(os.environ, {"VIBERPIT_CODEX_REFINE_ENABLED": "true"}),
         ):
             resp = client.post(
                 "/api/dispatch/assess",

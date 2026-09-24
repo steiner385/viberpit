@@ -118,10 +118,10 @@ async def test_calling_a_withheld_mutation_is_an_error():
 def test_cli_requires_a_token(monkeypatch, capsys):
     from ccswitch import cli
 
-    monkeypatch.delenv("CCSWITCH_ASSISTANT_TOKEN", raising=False)
+    monkeypatch.delenv("VIBERPIT_ASSISTANT_TOKEN", raising=False)
     assert cli.main(["mcp", "--url", "http://127.0.0.1:1"]) == 2
     err = capsys.readouterr().err
-    assert "CCSWITCH_ASSISTANT_TOKEN" in err
+    assert "VIBERPIT_ASSISTANT_TOKEN" in err
 
 
 def test_cli_reads_the_named_token_env_var(monkeypatch, capsys):
@@ -165,7 +165,7 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     repo_root = str(Path(__file__).resolve().parents[1])   # `server` package lives here
     env = {**os.environ,
            "PYTHONPATH": os.pathsep.join([src_root, repo_root]),
-           "CCSWITCH_ASSISTANT_TOKEN": "ccas2:smoke"}
+           "VIBERPIT_ASSISTANT_TOKEN": "ccas2:smoke"}
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
@@ -239,7 +239,7 @@ def test_cli_serves_and_banners_on_stderr(monkeypatch, capsys):
         served["base_url"] = str(api._client.base_url)
         await api.aclose()
 
-    monkeypatch.setenv("CCSWITCH_ASSISTANT_TOKEN", "ccas2:tok")
+    monkeypatch.setenv("VIBERPIT_ASSISTANT_TOKEN", "ccas2:tok")
     monkeypatch.setattr(assistant_mcp, "serve", fake_serve)
     assert cli.main(["mcp", "--url", "http://edge:8787", "--allow-mutations"]) == 0
 

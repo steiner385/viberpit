@@ -6,7 +6,7 @@ Create Date: 2026-08-21
 
 Adds one nullable column (``archive_root``) to the ``sessions`` table. ``archive_home``
 is a PLACEMENT setting (which disk archives live on) while being archived is a LIFECYCLE
-fact about a session; fusing the two meant that repointing CCSWITCH_ARCHIVE_HOME at a
+fact about a session; fusing the two meant that repointing VIBERPIT_ARCHIVE_HOME at a
 different disk retroactively changed where every past archive was believed to live, and
 unarchive silently recreated an empty cwd instead of restoring the work.
 

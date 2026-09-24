@@ -139,20 +139,20 @@ def _run(
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
-        "CCSWITCH_HEALTH_STATE_DIR": str(tmp_path / "health-state"),
-        "CCSWITCH_LEDGER": str(tmp_path / "no-such-ledger.json"),
-        "CCSWITCH_HEALTH_REPO_ROOT": str(tmp_path),
-        "CCSWITCH_HEALTH_PYTHON": str(bindir / "health-python"),
-        "CCSWITCH_SESSIOND_CLIENT_CERT": str(certs / "client.crt"),
-        "CCSWITCH_SESSIOND_CLIENT_KEY": str(certs / "client.key"),
-        "CCSWITCH_SESSIOND_CLIENT_CA": str(certs / "ca.crt"),
+        "VIBERPIT_HEALTH_STATE_DIR": str(tmp_path / "health-state"),
+        "VIBERPIT_LEDGER": str(tmp_path / "no-such-ledger.json"),
+        "VIBERPIT_HEALTH_REPO_ROOT": str(tmp_path),
+        "VIBERPIT_HEALTH_PYTHON": str(bindir / "health-python"),
+        "VIBERPIT_SESSIOND_CLIENT_CERT": str(certs / "client.crt"),
+        "VIBERPIT_SESSIOND_CLIENT_KEY": str(certs / "client.key"),
+        "VIBERPIT_SESSIOND_CLIENT_CA": str(certs / "ca.crt"),
         # Keep failure-path retries/sleeps short so tests stay fast.
-        "CCSWITCH_PROBE_RETRIES": "1",
-        "CCSWITCH_PROBE_TIMEOUT": "2",
-        "CCSWITCH_DRAIN_WAIT": "1",
-        "CCSWITCH_RESTART_COOLDOWN": "1",
-        "CCSWITCH_STARTUP_GRACE": "0",
-        "CCSWITCH_DISK_WARN_PCT": "101",
+        "VIBERPIT_PROBE_RETRIES": "1",
+        "VIBERPIT_PROBE_TIMEOUT": "2",
+        "VIBERPIT_DRAIN_WAIT": "1",
+        "VIBERPIT_RESTART_COOLDOWN": "1",
+        "VIBERPIT_STARTUP_GRACE": "0",
+        "VIBERPIT_DISK_WARN_PCT": "101",
         **script_env,
     }
     return subprocess.run(
@@ -171,10 +171,10 @@ def test_local_https_fleet_runner_is_not_split_brain(tmp_path: Path) -> None:
     bindir, state = _make_shims(
         tmp_path,
         unit_active=True,
-        unit_environment=f"CCSWITCH_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
+        unit_environment=f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
         https_healthz_ok=True,
     )
-    proc = _run(tmp_path, bindir, script_env={"CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS})
+    proc = _run(tmp_path, bindir, script_env={"VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS})
     assert "ALERT[split-brain]" not in proc.stdout
     assert _calls(state, "sudo-calls") == "", "healthy fleet runner must not be restarted"
 
@@ -184,11 +184,11 @@ def test_wedge_probe_targets_the_daemon_https_bind_not_the_uds(tmp_path: Path) -
     probe what the daemon's own unit env says it binds (here via its EnvironmentFile=),
     or it restarts a healthy daemon forever."""
     env_file = tmp_path / "daemon.env"
-    env_file.write_text(f'CCSWITCH_SESSIOND_ENDPOINT="{LOCAL_HTTPS}"\n')
+    env_file.write_text(f'VIBERPIT_SESSIOND_ENDPOINT="{LOCAL_HTTPS}"\n')
     bindir, state = _make_shims(
         tmp_path, unit_active=True, unit_env_file=env_file, https_healthz_ok=True
     )
-    proc = _run(tmp_path, bindir, script_env={"CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS})
+    proc = _run(tmp_path, bindir, script_env={"VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS})
     curl_calls = _calls(state, "curl-calls")
     assert f"{LOCAL_HTTPS}/healthz" in curl_calls, "watchdog must probe the https bind"
     assert "--unix-socket" not in curl_calls, "no UDS exists for an https-bound daemon"
@@ -203,10 +203,10 @@ def test_wedge_restart_still_fires_when_the_https_daemon_is_unresponsive(
     bindir, state = _make_shims(
         tmp_path,
         unit_active=True,
-        unit_environment=f"CCSWITCH_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
+        unit_environment=f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
         https_healthz_ok=False,
     )
-    proc = _run(tmp_path, bindir, script_env={"CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS})
+    proc = _run(tmp_path, bindir, script_env={"VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS})
     assert "systemctl restart viberpit-daemon.service" in _calls(state, "sudo-calls")
     assert "ALERT[daemon-wedged]" in proc.stdout
 
@@ -277,8 +277,8 @@ def test_remote_endpoint_with_unregistered_local_daemon_still_alerts(
         tmp_path,
         bindir,
         script_env={
-            "CCSWITCH_SESSIOND_ENDPOINT": REMOTE_HTTPS,
-            "CCSWITCH_DB_URL": "sqlite+aiosqlite:///unused.db",
+            "VIBERPIT_SESSIOND_ENDPOINT": REMOTE_HTTPS,
+            "VIBERPIT_DB_URL": "sqlite+aiosqlite:///unused.db",
         },
     )
     assert "ALERT[split-brain]" in proc.stdout
@@ -299,8 +299,8 @@ def test_registered_enabled_fleet_host_suppresses_split_brain(tmp_path: Path) ->
         tmp_path,
         bindir,
         script_env={
-            "CCSWITCH_SESSIOND_ENDPOINT": REMOTE_HTTPS,
-            "CCSWITCH_DB_URL": "sqlite+aiosqlite:///unused.db",
+            "VIBERPIT_SESSIOND_ENDPOINT": REMOTE_HTTPS,
+            "VIBERPIT_DB_URL": "sqlite+aiosqlite:///unused.db",
         },
     )
     assert "ALERT[split-brain]" not in proc.stdout
@@ -309,12 +309,12 @@ def test_registered_enabled_fleet_host_suppresses_split_brain(tmp_path: Path) ->
 def test_local_daemon_skips_ssh_mount_checks(tmp_path: Path) -> None:
     """5c/5d assume a remote daemon host with sshfs mounts. With the daemon local there
     is no SSH hop and no sshfs to go stale — the script must not SSH anywhere (the old
-    CCSWITCH_DAEMON_SSH_HOST may still point at a decommissioned host) nor emit mount
+    VIBERPIT_DAEMON_SSH_HOST may still point at a decommissioned host) nor emit mount
     alerts for what are now plain local directories."""
     bindir, state = _make_shims(
         tmp_path,
         unit_active=True,
-        unit_environment=f"CCSWITCH_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
+        unit_environment=f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
         https_healthz_ok=True,
     )
     # A local listener stands in for Postgres so the local DB probe passes.
@@ -327,10 +327,10 @@ def test_local_daemon_skips_ssh_mount_checks(tmp_path: Path) -> None:
             tmp_path,
             bindir,
             script_env={
-                "CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS,
-                "CCSWITCH_DAEMON_SSH_HOST": "decommissioned-host",
-                "CCSWITCH_HEALTH_REMOTE_PG_HOST": "127.0.0.1",
-                "CCSWITCH_HEALTH_REMOTE_PG_PORT": str(port),
+                "VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS,
+                "VIBERPIT_DAEMON_SSH_HOST": "decommissioned-host",
+                "VIBERPIT_HEALTH_REMOTE_PG_HOST": "127.0.0.1",
+                "VIBERPIT_HEALTH_REMOTE_PG_PORT": str(port),
             },
         )
     finally:
@@ -347,7 +347,7 @@ def test_local_daemon_db_check_runs_locally(tmp_path: Path) -> None:
     bindir, state = _make_shims(
         tmp_path,
         unit_active=True,
-        unit_environment=f"CCSWITCH_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
+        unit_environment=f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}",
         https_healthz_ok=True,
     )
     # An ephemeral port we bound and immediately closed — guaranteed refused.
@@ -359,10 +359,10 @@ def test_local_daemon_db_check_runs_locally(tmp_path: Path) -> None:
         tmp_path,
         bindir,
         script_env={
-            "CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS,
-            "CCSWITCH_DAEMON_SSH_HOST": "decommissioned-host",
-            "CCSWITCH_HEALTH_REMOTE_PG_HOST": "127.0.0.1",
-            "CCSWITCH_HEALTH_REMOTE_PG_PORT": str(dead_port),
+            "VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS,
+            "VIBERPIT_DAEMON_SSH_HOST": "decommissioned-host",
+            "VIBERPIT_HEALTH_REMOTE_PG_HOST": "127.0.0.1",
+            "VIBERPIT_HEALTH_REMOTE_PG_PORT": str(dead_port),
         },
     )
     assert _calls(state, "ssh-calls") == ""
@@ -389,7 +389,7 @@ def test_split_brain_message_still_documented_for_operators() -> None:
 
 def _quiet_local_daemon_env(tmp_path: Path) -> dict[str, str]:
     """Script env with sections 1-5 inert, so a test isolates section 6."""
-    return {"CCSWITCH_MEM_WARN_BYTES": "999999999999"}
+    return {"VIBERPIT_MEM_WARN_BYTES": "999999999999"}
 
 
 def test_torn_reads_on_this_host_raise_an_alert(tmp_path):

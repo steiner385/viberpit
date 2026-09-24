@@ -34,7 +34,7 @@ def _run(tmp_path, coro_fn):
     # Truly unset the two model-approval env vars (don't set to ""; that would
     # be picked up as the configured value and override the Settings defaults).
     saved = {}
-    for key in ("CCSWITCH_MODEL_APPROVAL_ACTION", "CCSWITCH_MODEL_APPROVAL_DENYLIST"):
+    for key in ("VIBERPIT_MODEL_APPROVAL_ACTION", "VIBERPIT_MODEL_APPROVAL_DENYLIST"):
         if key in os.environ:
             saved[key] = os.environ.pop(key)
     try:

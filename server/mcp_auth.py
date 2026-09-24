@@ -275,7 +275,7 @@ def _clean(raw: bytes) -> str:
 
 def _claude_argv() -> list[str]:
     cfg = load_config()
-    return shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
+    return shlex.split(os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin))
 
 
 def resolve_login_key(server: str) -> str:

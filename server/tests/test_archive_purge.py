@@ -73,7 +73,7 @@ def test_purge_oldest_archived_deletes_oldest_first(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 _archived(0, archived_at=_BASE + timedelta(hours=0)),  # oldest
@@ -94,7 +94,7 @@ def test_purge_oldest_archived_zero_is_noop(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived(0, archived_at=_BASE)])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -111,7 +111,7 @@ def test_purge_oldest_archived_null_archived_at_falls_back_to_created_at(tmp_pat
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 # No archived_at, but created earliest → should be picked first.
@@ -136,7 +136,7 @@ def test_purge_detaches_dispatch_outcomes_instead_of_blocking_delete(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived(0, archived_at=_BASE, origin="automation")])
             from server.db.models import DispatchOutcome
@@ -159,7 +159,7 @@ def test_purge_prioritizes_automation_over_human(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 # Human session archived first (oldest timestamp) — must survive.
@@ -185,7 +185,7 @@ def test_purge_human_purged_when_no_automation_left(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 _archived(0, archived_at=_BASE + timedelta(hours=0), origin=None),  # oldest
@@ -215,7 +215,7 @@ def test_enforce_archive_limit_trims_to_cap(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _set_max(2)
             await _seed([
@@ -235,7 +235,7 @@ def test_enforce_archive_limit_noop_when_unset(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 _archived(i, archived_at=_BASE + timedelta(hours=i)) for i in range(3)
@@ -254,7 +254,7 @@ def test_enforce_archive_limit_noop_when_under_cap(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _set_max(10)
             await _seed([
@@ -280,7 +280,7 @@ def test_archive_session_enforces_cap(tmp_path):
     cwd = tmp_path / "fresh_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             cwd.mkdir()
             await init_db(db_url=db_url)
             await _set_max(1)
@@ -357,7 +357,7 @@ def test_purge_skips_poison_after_strikes_and_reclaims_others(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             # "poison" is the oldest, so it is selected first every sweep.
             await _seed([
@@ -400,7 +400,7 @@ def test_purge_keeps_row_when_archive_rmtree_fails_then_poisons(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             arch_root = tmp_path / "arch"
             (arch_root / "arch0").mkdir(parents=True)  # the (undeletable) archive dir
@@ -430,7 +430,7 @@ def test_purge_success_clears_prior_strikes(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived(0, archived_at=_BASE)])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

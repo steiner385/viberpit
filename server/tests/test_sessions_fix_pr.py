@@ -6,7 +6,7 @@ Tests:
   422 — request_pr_fix returns "not_actionable": 422 with code in detail
 
 Auth approach: mirrors test_send_prompt_route.py — real SessionOrchestrator +
-fake SDK, CCSWITCH_TAILNET_ALLOWLIST="" accepts any identity, send
+fake SDK, VIBERPIT_TAILNET_ALLOWLIST="" accepts any identity, send
 Tailscale-User-Login header. TestClient (sync, lifespan-aware) + fake sessions
 facade replacing app.state.sessions after create_app().
 """
@@ -24,9 +24,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

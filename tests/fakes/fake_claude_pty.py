@@ -2,8 +2,8 @@
 """Fake interactive claude process for PTY-manager testing.
 
 Env vars:
-  CCSWITCH_FAKE_IDLE_AFTER  seconds of no-input before going silent (default 0 = never idle)
-  CCSWITCH_FAKE_EXIT_ON     input line that causes exit 0 (default "/quit")
+  VIBERPIT_FAKE_IDLE_AFTER  seconds of no-input before going silent (default 0 = never idle)
+  VIBERPIT_FAKE_EXIT_ON     input line that causes exit 0 (default "/quit")
 """
 import os
 import sys
@@ -19,8 +19,8 @@ def write(line: str) -> None:
 
 
 def main() -> None:
-    idle_after = float(os.environ.get("CCSWITCH_FAKE_IDLE_AFTER", "0") or "0")
-    exit_on = os.environ.get("CCSWITCH_FAKE_EXIT_ON", "/quit")
+    idle_after = float(os.environ.get("VIBERPIT_FAKE_IDLE_AFTER", "0") or "0")
+    exit_on = os.environ.get("VIBERPIT_FAKE_EXIT_ON", "/quit")
 
     write("fake-claude ready")
 

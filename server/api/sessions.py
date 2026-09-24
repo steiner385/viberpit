@@ -67,7 +67,7 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _require_adoption_enabled() -> None:
-    """Sunset gate: adoption is off unless CCSWITCH_ENABLE_ADOPTION is set."""
+    """Sunset gate: adoption is off unless VIBERPIT_ENABLE_ADOPTION is set."""
     if not get_settings().enable_adoption:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
@@ -402,7 +402,7 @@ async def _session_is_archived(orch, session_id: str) -> bool:
 # inherent to the fix: any outer bound reintroduces the cancellation being removed. If a
 # whole-response budget is ever needed it has to come from the daemon side (an RPC that
 # answers or gives up), not from an asyncio timer on the edge.
-ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
+ENRICH_FETCH_TIMEOUT = float(os.environ.get("VIBERPIT_ENRICH_FETCH_TIMEOUT", "3.0"))
 
 # A daemon-connectivity blip (ConnectTimeout, PoolTimeout, ...) makes every page poll
 # during the blip fail the same batched RPC, so a single multi-minute outage turns into

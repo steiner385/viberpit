@@ -96,7 +96,7 @@ sudo openssl req -x509 -newkey rsa:2048 -nodes -keyout client-ca.key -out client
      -subj "/CN=ccswitch-codex-auth-client-ca" -days 3650
 
 # 3. The listener's server cert. The SAN must match how callers REACH it
-#    (CCSWITCH_CODEX_AUTHORITY_ENDPOINT) — use the tailnet name, never a LAN name.
+#    (VIBERPIT_CODEX_AUTHORITY_ENDPOINT) — use the tailnet name, never a LAN name.
 sudo openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr \
      -subj "/CN=ccswitch-codex-auth"
 printf 'subjectAltName=DNS:dobby.tail0dd570.ts.net,DNS:dobby\n' | sudo tee san.cnf >/dev/null
@@ -123,7 +123,7 @@ sudo openssl x509 -req -in "${ROLE//:/-}.csr" -CA client-ca.pem -CAkey client-ca
 
 Copy `<role>.pem`, `<role>.key` (**0600, owned by the caller's user**) and
 `server-ca.pem` to the caller, then add the CN to
-`CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST` and restart the authority. An empty
+`VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST` and restart the authority. An empty
 allowlist is a startup error here, not "permissive" — this is the one service that
 hands out ChatGPT access tokens.
 
@@ -165,18 +165,18 @@ sudo install -d -m 0750 -o tony -g tony /etc/viberpit/codex-auth
 # copy codex-runner-<host>.pem/.key (0600, owned by tony) and server-ca.pem here
 
 # 3. Daemon env — /etc/viberpit/viberpit.env on this host
-CCSWITCH_CODEX_BIN=/home/tony/.local/lib/ccswitch/codex
-CCSWITCH_CODEX_AUTHORITY_ENDPOINT=https://dobby.tail0dd570.ts.net:8442
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/codex-runner-<host>.pem
-CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/codex-runner-<host>.key
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
+VIBERPIT_CODEX_BIN=/home/tony/.local/lib/ccswitch/codex
+VIBERPIT_CODEX_AUTHORITY_ENDPOINT=https://dobby.tail0dd570.ts.net:8442
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/codex-runner-<host>.pem
+VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/codex-runner-<host>.key
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
 # Leave BOTH launch flags false until the launch bar in § 8 has passed.
-CCSWITCH_CODEX_ENABLED=false
-CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=false
+VIBERPIT_CODEX_ENABLED=false
+VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED=false
 
 # 4. Add this host's CN to the authority allowlist and restart the AUTHORITY.
 # 5. Check the whole boundary before restarting the daemon:
-sudo -u tony CCSWITCH_CODEX_ENABLED=true CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=true \
+sudo -u tony VIBERPIT_CODEX_ENABLED=true VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED=true \
      /home/tony/GitHub/viberpit/.venv/bin/python -m server.codex.doctor
 ```
 
@@ -289,7 +289,7 @@ A runner ahead of the edge is caught rather than tolerated: the edge compares th
 runner's observed `contractSha256` against its own pin and reports
 `contract_hash_mismatch` with `dispatchable: false`.
 
-`CCSWITCH_CODEX_SUPPORTED_VERSIONS` widens the accepted **version label** only. It
+`VIBERPIT_CODEX_SUPPORTED_VERSIONS` widens the accepted **version label** only. It
 can never waive a schema-contract change, and a binary it admits is logged as
 `codex.process.version_drift_accepted` and surfaced by the doctor as
 `version_drift_accepted`. It is a bridge across a rollout, not a place to live.
@@ -305,7 +305,7 @@ Copilot sessions.
 ```bash
 # Kill switch — one runner. Live Codex sessions end; Claude sessions are untouched.
 # In /etc/viberpit/viberpit.env on that host:
-CCSWITCH_CODEX_ENABLED=false
+VIBERPIT_CODEX_ENABLED=false
 sudo systemctl restart viberpit-daemon.service     # drains in-flight turns first
 
 # Kill switch — whole fleet, without touching any daemon. Stopping the authority
@@ -317,10 +317,10 @@ git -C <checkout> checkout <previous-sha> -- server/codex/schema.py scripts/code
 bash scripts/fetch-codex.sh
 ```
 
-Turning `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` off while `CCSWITCH_CODEX_ENABLED`
+Turning `VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED` off while `VIBERPIT_CODEX_ENABLED`
 stays on is **not** a supported state — it advertises an engine that cannot
 authenticate. The doctor reports it as a FAIL, and `probe_availability` disables
-Codex anyway. Turn off `CCSWITCH_CODEX_ENABLED`.
+Codex anyway. Turn off `VIBERPIT_CODEX_ENABLED`.
 
 ---
 
@@ -377,13 +377,13 @@ there, it distinguishes an edge problem from a runner problem in one step.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Authority exits 3 at start | another authority holds the state lock | find and stop it; there is no failover |
-| Authority refuses to start, complains about a key | `CCSWITCH_CODEX_AUTHORITY_*_KEY` is a session-daemon key | mint authority-specific material (§ 2) |
+| Authority refuses to start, complains about a key | `VIBERPIT_CODEX_AUTHORITY_*_KEY` is a session-daemon key | mint authority-specific material (§ 2) |
 | `doctor: mtls_identity/tls_material_unusable` | missing, unreadable, or shared-with-sessiond material | § 2 |
-| `doctor: authority/unreachable` | listener down, SAN mismatch, or CN not in the allowlist | check the SAN matches `CCSWITCH_CODEX_AUTHORITY_ENDPOINT` |
+| `doctor: authority/unreachable` | listener down, SAN mismatch, or CN not in the allowlist | check the SAN matches `VIBERPIT_CODEX_AUTHORITY_ENDPOINT` |
 | `doctor: runtime_home/network_filesystem` | `XDG_STATE_HOME` resolves onto a FUSE/NFS mount | confirm the unit's `Environment=XDG_STATE_HOME=%S/viberpit/state` is installed and `daemon-reload`ed |
 | Runner start refused, "credential cache appeared" | a runner is holding `auth.json` | do not work around it — this is the invariant; find what wrote it |
 | Envelopes rejected after a restore | the generation counter was rewound | § 5; bump past the generation runners are fencing on |
-| `sync_lease_lapsed` | the edge stopped renewing the authorization projection | `CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S` must be **below** `_LEASE_S` |
+| `sync_lease_lapsed` | the edge stopped renewing the authorization projection | `VIBERPIT_CODEX_AUTH_SYNC_INTERVAL_S` must be **below** `_LEASE_S` |
 
 ---
 

@@ -28,7 +28,7 @@ async def _collect(ws, n, timeout=2):
 
 @pytest.mark.asyncio
 async def test_publish_tracks_buffer_stats(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         for i in range(5):  # seq 0..4; buffer holds 2 → 3 oldest dropped
@@ -42,7 +42,7 @@ async def test_publish_tracks_buffer_stats(monkeypatch):
 @pytest.mark.asyncio
 async def test_ring_drop_does_not_warn_per_event(monkeypatch, caplog):
     """Benign ring eviction must not emit a per-event WARNING (log-flood guard)."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         with caplog.at_level(_logging.WARNING):
@@ -54,7 +54,7 @@ async def test_ring_drop_does_not_warn_per_event(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_subscribe_emits_gap_frame_when_anchor_evicted(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(5):  # seq 0..4; retained = seq 3,4
@@ -78,7 +78,7 @@ async def test_client_delivers_gap_sentinel_to_subscribers(monkeypatch):
     (issue #185), not merely log it — so the consumer (RemoteDriver → ws._forward_live)
     can resync the desynced view from disk. Previously the gap was log-only, leaving the
     in-session transcript silently behind durable storage after a ring eviction."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(5):  # seq 0..4; retained = seq 3,4 (oldest = 3)
@@ -97,7 +97,7 @@ async def test_client_delivers_gap_sentinel_to_subscribers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_gap_frame_when_anchor_within_buffer(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "4")
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(3):  # seq 0,1,2 all retained
@@ -120,7 +120,7 @@ async def test_no_gap_frame_when_anchor_within_buffer(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ring_covers_true_when_anchor_within_window(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "8")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         for i in range(5):  # seq 0..4 all retained (oldest=0, head=4)
@@ -133,7 +133,7 @@ async def test_ring_covers_true_when_anchor_within_window(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ring_covers_false_when_anchor_evicted(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         for i in range(5):  # seq 0..4; retained = 3,4 (oldest=3)
@@ -151,7 +151,7 @@ async def test_ring_covers_false_when_anchor_ahead_of_head(monkeypatch):
     """Epoch-reset guard: a browser srcSeq cursor can only exceed head after a daemon
     restart (per-process seq space resets to 0). Its stale high cursor must NOT be treated
     as covered by the fresh low ring — else a catch-up would resume past every real event."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "8")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         for i in range(3):  # seq 0..2 (head=2)
@@ -164,7 +164,7 @@ async def test_ring_covers_false_when_anchor_ahead_of_head(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ring_covers_false_for_fresh_or_empty(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "8")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         rc = app.state.ring_covers
@@ -179,7 +179,7 @@ async def test_ring_covers_stream_start_anchor(monkeypatch):
     """``since=-1`` is the open-turn resupply anchor of a FIRST-turn session
     (resume_since = turn_start_seq - 1 with the user event at seq 0): covered iff the
     ring still retains seq 0 — i.e. nothing was ever evicted from this stream."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "4")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         rc = app.state.ring_covers
@@ -194,7 +194,7 @@ async def test_ring_covers_stream_start_anchor(monkeypatch):
 @pytest.mark.asyncio
 async def test_no_gap_frame_on_fresh_subscribe(monkeypatch):
     """since=-1 (or None) is a fresh attach, never a gap even if events were dropped."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app) as sock:
         for i in range(5):

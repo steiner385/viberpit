@@ -1,4 +1,4 @@
-"""CCSWITCH_DAEMON_SSH_HOST/_REPO used to be the deploy path; now they only seed the
+"""VIBERPIT_DAEMON_SSH_HOST/_REPO used to be the deploy path; now they only seed the
 matching Host row's ssh_host/repo_path once, so an existing install keeps working."""
 import asyncio
 from sqlalchemy import select as sa_select
@@ -9,8 +9,8 @@ def test_seed_fills_null_ssh_columns_only(tmp_path, monkeypatch):
     from server.db.models import Host
     from server.app import seed_host_ssh_from_env
 
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_REPO", "/home/tony/GitHub/ccswitch")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_REPO", "/home/tony/GitHub/ccswitch")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 's.db'}")
@@ -34,8 +34,8 @@ def test_seed_never_overwrites_a_partially_configured_host(tmp_path, monkeypatch
     from server.db.models import Host
     from server.app import seed_host_ssh_from_env
 
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_REPO", "/home/tony/GitHub/ccswitch")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@rocky")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_REPO", "/home/tony/GitHub/ccswitch")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'p.db'}")
@@ -55,8 +55,8 @@ def test_seed_is_noop_without_env_or_matching_host(tmp_path, monkeypatch):
     from server.db.models import Host
     from server.app import seed_host_ssh_from_env
 
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@ghost")
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_REPO", "/srv/cc")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_HOST", "tony@ghost")
+    monkeypatch.setenv("VIBERPIT_DAEMON_SSH_REPO", "/srv/cc")
 
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'n.db'}")

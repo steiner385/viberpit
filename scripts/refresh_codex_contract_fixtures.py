@@ -41,7 +41,7 @@ if str(_REPO_ROOT) not in sys.path:
 from server.codex import schema  # noqa: E402 -- repo root added for direct execution
 from server.codex.schema import contains_unexpected_secret_shape  # noqa: E402
 
-CODEX_BIN_ENV = "CCSWITCH_CODEX_BIN"
+CODEX_BIN_ENV = "VIBERPIT_CODEX_BIN"
 FIXTURE_PARENT = _REPO_ROOT / "server" / "tests" / "fixtures" / "codex_app_server"
 
 

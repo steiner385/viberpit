@@ -39,7 +39,7 @@ def test_db_columns_exist():
 
 @pytest.mark.asyncio
 async def test_record_audit_via(isolated_db):
-    # `isolated_db` points CCSWITCH_DB_URL at a fresh per-test file and inits it;
+    # `isolated_db` points VIBERPIT_DB_URL at a fresh per-test file and inits it;
     # sessions come from the normal `db_session()` factory.
     from server.db import db_session
     async with db_session() as db:

@@ -46,7 +46,7 @@ def _api() -> Any:
 
 @pytest.fixture
 def overlay(tmp_path, monkeypatch) -> oc.CodexAssistantOverlay:
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "cchome"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
     return oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol")
 
 

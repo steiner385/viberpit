@@ -34,7 +34,7 @@ async def test_spawn_mounts_only_mcp_servers(isolated_db, tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_flag_off_mounts_nothing(isolated_db, tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_SESSION_TOOLS_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
     clients: list[FakeSDKClient] = []
     overlays: list = []
     orch, patches = await _boot_orch(tmp_path, monkeypatch,
@@ -145,7 +145,7 @@ async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch
     from server.sessions.orchestrator import SessionOrchestrator
     from server.sessions.tools.codex import CodexSessionTools
 
-    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._overlays = {}
     orch._records = {"s1": SimpleNamespace(id="s1", name="n", repo="o/n", branch="b",
@@ -159,7 +159,7 @@ async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch
     assert {s.name for s in surface.dynamic_tools} == {"session_context",
                                                        "report_feedback"}
     # And the same fence as the Claude branch: the flag off registers nothing.
-    monkeypatch.setenv("CCSWITCH_SESSION_TOOLS_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
     await orch._setup_session_overlay("s1", identity="u@x", engine="codex")
     assert "s1" not in orch._overlays
 
@@ -170,10 +170,10 @@ def test_append_string_carries_the_instruction_when_enabled(monkeypatch):
     it (task-8: exactly one way to signal)."""
     from server.sessions.claude_sdk_factory import _build_append_string
     from server.sessions.completion import marker_instructions
-    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
-    monkeypatch.delenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", raising=False)
     enabled = _build_append_string()
     assert "session_context" in enabled and "mark_complete" in enabled
     assert "<!--" not in enabled
-    monkeypatch.setenv("CCSWITCH_SESSION_TOOLS_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
     assert _build_append_string() == marker_instructions(self_model_switch=True)

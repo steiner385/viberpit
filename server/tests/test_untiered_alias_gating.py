@@ -6,7 +6,7 @@ entirely, no matter what the denylist said. `best` can resolve to the most expen
 model available, which is precisely what an operator would want to gate.
 
 A denylist entry now matches EITHER the model's tier OR its bare alias, so
-`CCSWITCH_MODEL_APPROVAL_DENYLIST=fable,best` gates both.
+`VIBERPIT_MODEL_APPROVAL_DENYLIST=fable,best` gates both.
 """
 import pytest
 

@@ -513,7 +513,7 @@ class CredentialAuthority:
         so that a vendor code path that falls back to ``~`` cannot write the
         authority user's real home, and ``PATH``/``TERM`` are the least a CLI needs.
         Nothing else is inherited — an authority subprocess has no business seeing
-        ``CCSWITCH_*``, ``ANTHROPIC_*``, or proxy variables.
+        ``VIBERPIT_*``, ``ANTHROPIC_*``, or proxy variables.
         """
         return {
             "CODEX_HOME": str(home),

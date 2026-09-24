@@ -17,9 +17,9 @@ from pathlib import Path
 # Production isolation — redirect ALL ViberPit state to a per-session temp dir #
 # BEFORE any test module is collected.                                         #
 #                                                                              #
-# `paths.root()` reads CCSWITCH_HOME and `server.config.Settings` reads        #
-# CCSWITCH_DB_URL lazily, BOTH defaulting to the REAL ~/.claude-accounts when  #
-# unset. Only ~20 of ~80 test files set CCSWITCH_HOME themselves, so the rest  #
+# `paths.root()` reads VIBERPIT_HOME and `server.config.Settings` reads        #
+# VIBERPIT_DB_URL lazily, BOTH defaulting to the REAL ~/.claude-accounts when  #
+# unset. Only ~20 of ~80 test files set VIBERPIT_HOME themselves, so the rest  #
 # silently resolved to the live store: reading/writing the real ledger.json    #
 # and ccswitch.db. That is how a reauth test stamped `needs-reauth` onto the   #
 # real `primary` account and how phantom `alpha`/`dave` rows reached prod.     #
@@ -27,7 +27,7 @@ from pathlib import Path
 # Setting both env vars here — at import, before collection — makes production #
 # UNREACHABLE by default: the value any test sees at session start is a temp   #
 # dir, never the real store. Tests that need their own isolated home still     #
-# override CCSWITCH_HOME via `patch.dict()` within their own scope (and even   #
+# override VIBERPIT_HOME via `patch.dict()` within their own scope (and even   #
 # their restore falls back to this temp dir, not to ~/.claude-accounts).       #
 #                                                                              #
 # Each var is redirected independently iff it is unset or points at the real   #
@@ -37,9 +37,9 @@ _REAL_HOME = (Path.home() / ".claude-accounts").resolve()
 
 
 def _db_is_production(db: str | None) -> bool:
-    """True if ``db`` (a CCSWITCH_DB_URL) could be the PRODUCTION database.
+    """True if ``db`` (a VIBERPIT_DB_URL) could be the PRODUCTION database.
 
-    The redirect below rewrites CCSWITCH_DB_URL to a throwaway SQLite file
+    The redirect below rewrites VIBERPIT_DB_URL to a throwaway SQLite file
     whenever this returns True, so it must err on the side of "yes, prod".
 
     - ``None`` — unset; ``server.config.Settings`` would default to the real
@@ -66,12 +66,12 @@ def _db_is_production(db: str | None) -> bool:
 
 
 def _archive_home_is_production(archive: str | None) -> bool:
-    """True if ``archive`` (a CCSWITCH_ARCHIVE_HOME) is a production location.
+    """True if ``archive`` (a VIBERPIT_ARCHIVE_HOME) is a production location.
 
     ``paths.archive_dir()`` reads this env var and, when unset, falls back to
-    ``$CCSWITCH_HOME/archive``. A dev/deploy shell exports it at the real
+    ``$VIBERPIT_HOME/archive``. A dev/deploy shell exports it at the real
     archive disk (e.g. ``/mnt/hdd-storage/ccswitch-archives``); inherited into
-    a test process it overrides the per-test ``$CCSWITCH_HOME/archive`` and
+    a test process it overrides the per-test ``$VIBERPIT_HOME/archive`` and
     points archive/unarchive at the live archive tree. A test's OWN isolated
     archive lives under the system temp dir (``tmp_path``), so treat anything
     outside it as production. Unset is fine — it means "use the fallback".
@@ -81,10 +81,21 @@ def _archive_home_is_production(archive: str | None) -> bool:
     return not str(Path(archive).resolve()).startswith(tempfile.gettempdir())
 
 
+def _first_set(*names: str) -> str | None:
+    """The first of ``names`` (prefix priority order) that is actually set."""
+    return next((os.environ[n] for n in names if n in os.environ), None)
+
+
 def _redirect_state_off_production():
-    home = os.environ.get("CCSWITCH_HOME")
-    db = os.environ.get("CCSWITCH_DB_URL")
-    archive = os.environ.get("CCSWITCH_ARCHIVE_HOME")
+    # This module body runs at collection, before `import server` has ever run
+    # the entrypoint mirror (server/__init__.py) — so a value present under only
+    # one prefix is not yet mirrored to the other. Read both prefixes ourselves,
+    # and when we redirect, set both, so a read of either name downstream (this
+    # function's own _first_set() calls below, or the real mirror once it does
+    # run) sees the safe value.
+    home = _first_set("VIBERPIT_HOME", "CCSWITCH_HOME")
+    db = _first_set("VIBERPIT_DB_URL", "CCSWITCH_DB_URL")
+    archive = _first_set("VIBERPIT_ARCHIVE_HOME", "CCSWITCH_ARCHIVE_HOME")
     # The startup janitor uses repo_root, independently of the account store.
     # Its empty test session registry cannot protect real sessions' worktrees.
     # Fence both prefixes: a later entrypoint mirror must not restore a live root.
@@ -115,16 +126,18 @@ def _redirect_state_off_production():
         for name in unsafe_repo_vars:
             os.environ[name] = repo_root
     if home_is_prod:
-        os.environ["CCSWITCH_HOME"] = str(session_home)
+        for name in ("VIBERPIT_HOME", "CCSWITCH_HOME"):
+            os.environ[name] = str(session_home)
     if db_is_prod:
-        os.environ["CCSWITCH_DB_URL"] = (
-            f"sqlite+aiosqlite:///{session_home / 'ccswitch.db'}"
-        )
+        db_url = f"sqlite+aiosqlite:///{session_home / 'ccswitch.db'}"
+        for name in ("VIBERPIT_DB_URL", "CCSWITCH_DB_URL"):
+            os.environ[name] = db_url
     if archive_is_prod:
         # Unset (not redirect): archive_dir() then falls back to
-        # $CCSWITCH_HOME/archive, tracking each test's own (isolated)
-        # CCSWITCH_HOME, which per-test patch.dict overrides freely.
-        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
+        # $VIBERPIT_HOME/archive, tracking each test's own (isolated)
+        # VIBERPIT_HOME, which per-test patch.dict overrides freely.
+        for name in ("VIBERPIT_ARCHIVE_HOME", "CCSWITCH_ARCHIVE_HOME"):
+            os.environ.pop(name, None)
 
 
 _redirect_state_off_production()
@@ -133,7 +146,7 @@ _redirect_state_off_production()
 # --------------------------------------------------------------------------- #
 # A real sessiond endpoint on the dev/deploy box must not leak into tests.    #
 #                                                                              #
-# create_app() (server/app.py) treats CCSWITCH_SESSIOND_ENDPOINT or _SOCKET   #
+# create_app() (server/app.py) treats VIBERPIT_SESSIOND_ENDPOINT or _SOCKET   #
 # as an explicit request for remote mode and reads it BEFORE ever probing     #
 # DEFAULT_SOCKET_PATH — the _no_ambient_session_daemon fixture below patches  #
 # only that probe, so it can't help once an explicit endpoint is set. A host  #
@@ -147,12 +160,12 @@ _redirect_state_off_production()
 # unrelated files the one time it went unnoticed (2026-09-23).               #
 #                                                                              #
 # env_compat.mirror_legacy_env() (server/__init__.py, run before this module  #
-# body) has already copied CCSWITCH_* <-> VIBERPIT_* once per process, so     #
-# clearing only one prefix leaves the mirror's copy behind under the other    #
-# name — pop both. A test that wants real remote mode sets these itself       #
-# (monkeypatch/patch.dict, scoped to that test), same as isolated_db does for #
-# CCSWITCH_DB_URL, so this eager pop never needs a module-prefix exemption    #
-# list the way _no_ambient_session_daemon does.                               #
+# body) has already copied the legacy prefix onto the current one once per    #
+# process, so clearing only one prefix leaves the mirror's copy behind under   #
+# the other name — pop both. A test that wants real remote mode sets these     #
+# itself (monkeypatch/patch.dict, scoped to that test), same as isolated_db    #
+# does for VIBERPIT_DB_URL, so this eager pop never needs a module-prefix      #
+# exemption list the way _no_ambient_session_daemon does.                     #
 # --------------------------------------------------------------------------- #
 _SESSIOND_VAR_SUFFIXES = (
     "SESSIOND_ENDPOINT", "SESSIOND_SOCKET", "SESSIOND_HOST", "SESSIOND_PORT",
@@ -182,26 +195,26 @@ _no_ambient_remote_daemon_config()
 # Anchor it under the system temp dir; test_helper_scratch_config.py          #
 # monkeypatches its own per-test value on top.                                #
 # --------------------------------------------------------------------------- #
-if not os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT"):
+if not os.environ.get("VIBERPIT_HELPER_SCRATCH_ROOT"):
     _scratch_root = Path(tempfile.mkdtemp(prefix="viberpit-tests-scratch-"))
     atexit.register(shutil.rmtree, _scratch_root, ignore_errors=True)
-    os.environ["CCSWITCH_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
+    os.environ["VIBERPIT_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
 
 
 # --------------------------------------------------------------------------- #
 # Auth env must not leak from the dev machine into tests.                      #
 #                                                                              #
-# A developer box runs with CCSWITCH_TAILNET_ALLOWLIST set to the owner's own  #
-# identity (and a non-loopback CCSWITCH_HOST). get_settings() reads both fresh  #
+# A developer box runs with VIBERPIT_TAILNET_ALLOWLIST set to the owner's own  #
+# identity (and a non-loopback VIBERPIT_HOST). get_settings() reads both fresh  #
 # (uncached), so verify_identity() rejects the tests' synthetic identities      #
 # (e.g. wstest@example.com) — WS/HTTP handshakes close 1008/401 — and the boot  #
 # gate refuses an empty allowlist on a non-loopback bind. The suite then passes #
 # in CI (env unset) but fails locally. Establish the same permissive baseline   #
-# ~25 test files already set individually: CCSWITCH_DEV=1 + empty allowlist =    #
+# ~25 test files already set individually: VIBERPIT_DEV=1 + empty allowlist =    #
 # "any identity passes". Tests that exercise the allowlist / boot gate override  #
 # this explicitly via monkeypatch / patch.dict(clear=True).                      #
-os.environ["CCSWITCH_TAILNET_ALLOWLIST"] = ""
-os.environ["CCSWITCH_DEV"] = "1"
+os.environ["VIBERPIT_TAILNET_ALLOWLIST"] = ""
+os.environ["VIBERPIT_DEV"] = "1"
 
 
 # --------------------------------------------------------------------------- #
@@ -252,7 +265,7 @@ _starlette_testclient.TestClient.__init__ = (  # type: ignore[method-assign]
 # them breaks tests that probe a real socket they serve themselves            #
 # (test_remote_default). Redirecting only the default path leaves the real    #
 # functions intact for any explicit endpoint a test provides. Tests that      #
-# exercise remote mode set CCSWITCH_SESSIOND_SOCKET explicitly, bypassing     #
+# exercise remote mode set VIBERPIT_SESSIOND_SOCKET explicitly, bypassing     #
 # the default-path branch entirely.                                           #
 import pytest
 
@@ -345,7 +358,7 @@ def _reset_self_tailscale_ips_cache():
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
 
-    Bare ``await init_db()`` re-resolves CCSWITCH_DB_URL on every call (settings
+    Bare ``await init_db()`` re-resolves VIBERPIT_DB_URL on every call (settings
     are uncached), so tests that relied on it shared the per-session redirect DB
     above with every other bare caller on their worker — visible rows depended
     on which files ran before them. Pointing the env var at a private file makes
@@ -358,7 +371,7 @@ def isolated_db(tmp_path, monkeypatch):
     from server.db import init_db
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    monkeypatch.setenv("VIBERPIT_DB_URL", url)
     asyncio.run(init_db(url))
     return url
 
@@ -379,10 +392,10 @@ def pytest_configure(config):
 # Real-store write guard — structural fix for the recurring phantom "alpha"    #
 # account leak (PR #98, and the test-store-leak trap that kept reappearing).   #
 #                                                                              #
-# `paths.slot_path()` reads CCSWITCH_HOME lazily at call time, defaulting to   #
+# `paths.slot_path()` reads VIBERPIT_HOME lazily at call time, defaulting to   #
 # the user's REAL ~/.claude-accounts. A test that seeds a credential via       #
 # `write_json_secure(paths.slot_path(name), ...)` BEFORE entering its          #
-# `with patch.dict(os.environ, {"CCSWITCH_HOME": tmp})` block writes a fake    #
+# `with patch.dict(os.environ, {"VIBERPIT_HOME": tmp})` block writes a fake    #
 # `*.cred.json` into the real store. Account discovery globs                   #
 # `store/*.cred.json`, so the live usage poller then picks it up, fails auth,  #
 # and stamps needs-reauth into the real ledger — a phantom account that        #
@@ -410,10 +423,10 @@ def _install_real_store_write_guard():
             raise RuntimeError(
                 f"Test attempted to write {resolved} under the REAL account store "
                 f"{_REAL_STORE}.\n"
-                "CCSWITCH_HOME is unset or not pointed at a temp dir, "
+                "VIBERPIT_HOME is unset or not pointed at a temp dir, "
                 "so this write would leak a phantom account into ~/.claude-accounts "
                 "(see PR #98 / the test-store-leak trap).\nMove the seeding INSIDE the "
-                "`with patch.dict(os.environ, {'CCSWITCH_HOME': tmp}):` block (or use "
+                "`with patch.dict(os.environ, {'VIBERPIT_HOME': tmp}):` block (or use "
                 "temp_env()) so paths.slot_path() resolves to the temp store."
             )
         return _orig(path, data)
@@ -589,7 +602,7 @@ def _no_real_worktree_access():
 # Durable in-memory test DBs — structural fix for the recurring test_ws.py     #
 # "no such table: sessions" flake (red CI on PRs #188/#192/#197/#200).         #
 #                                                                              #
-# ~20 test files point CCSWITCH_DB_URL at `sqlite+aiosqlite:///:memory:`.      #
+# ~20 test files point VIBERPIT_DB_URL at `sqlite+aiosqlite:///:memory:`.      #
 # SQLAlchemy maps a `:memory:` SQLite URL to a StaticPool, so the ENTIRE DB    #
 # lives inside one connection: when that connection closes — engine dispose /  #
 # GC on app-lifespan shutdown, or replacement by the next test's init_db() —   #
@@ -830,7 +843,7 @@ _install_no_real_sdk_spawn_guard()
 # portal while it is still healthy, arm a threading.Timer, and if teardown     #
 # overruns ~45s dump every asyncio task (name + coroutine await-chain frames)  #
 # to the real stderr so the hang names its culprit. Happy path: timer          #
-# cancelled, zero overhead. Tune via CCSWITCH_TEARDOWN_WATCHDOG_S.             #
+# cancelled, zero overhead. Tune via VIBERPIT_TEARDOWN_WATCHDOG_S.             #
 # --------------------------------------------------------------------------- #
 def _install_testclient_teardown_watchdog():
     import asyncio as _asyncio
@@ -928,11 +941,11 @@ import pytest_asyncio
 
 @pytest.fixture(scope="session")
 def pg_url() -> str:
-    """CCSWITCH_TEST_PG_URL, guarded against ever pointing at production.
+    """VIBERPIT_TEST_PG_URL, guarded against ever pointing at production.
 
     pg_engine (below) unconditionally drop_all's this database. A cutover
     operator's shell can plausibly hold BOTH the production $PG_URL and
-    CCSWITCH_TEST_PG_URL at once (see docs/runbooks/postgres-cutover.md) — one
+    VIBERPIT_TEST_PG_URL at once (see docs/runbooks/postgres-cutover.md) — one
     wrong export and a stray test run would drop the production schema. This
     contradicts the "Production isolation" guarantee at the top of this file,
     so it is enforced the same way: fail fast, before any connection is made,
@@ -942,17 +955,17 @@ def pg_url() -> str:
     to proceed unless the *database name* in the URL contains "test". This
     does not require the database to exist or be reachable.
     """
-    url = os.environ.get("CCSWITCH_TEST_PG_URL")
+    url = os.environ.get("VIBERPIT_TEST_PG_URL")
     if not url:
-        pytest.skip("CCSWITCH_TEST_PG_URL not set")
+        pytest.skip("VIBERPIT_TEST_PG_URL not set")
     from urllib.parse import urlsplit
     db_name = urlsplit(url).path.lstrip("/")
     if "test" not in db_name.lower():
         pytest.fail(
-            f"CCSWITCH_TEST_PG_URL targets database {db_name!r}, which does not "
+            f"VIBERPIT_TEST_PG_URL targets database {db_name!r}, which does not "
             f"contain 'test'. Refusing to run: pg_engine unconditionally "
             f"drop_all's this database, and this fixture must never be pointed "
-            f"at a production database. Point CCSWITCH_TEST_PG_URL at a "
+            f"at a production database. Point VIBERPIT_TEST_PG_URL at a "
             f"database whose name contains 'test' (e.g. 'ccswitch_test').")
     return url
 

@@ -24,10 +24,10 @@ def app_client(tmp_path):
     (shared_base / "projects").mkdir()
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DEV": "1",
     })
 
     with env_patch:

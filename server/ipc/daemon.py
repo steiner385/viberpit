@@ -48,8 +48,8 @@ def create_daemon_app() -> FastAPI:
     # trade-off: the ring is PER LIVE STREAM and holds at most _maxlen (seq, event) tuples;
     # at ~1–2 KB per normalized event that is roughly 8–16 MB per busy session at the cap,
     # and far less typically (idle streams hold only their turn tail). Bounded and evicted
-    # oldest-first, so it never grows without limit. Override with CCSWITCH_IPC_REPLAY_BUFFER.
-    _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "8192"))
+    # oldest-first, so it never grows without limit. Override with VIBERPIT_IPC_REPLAY_BUFFER.
+    _maxlen = int(os.environ.get("VIBERPIT_IPC_REPLAY_BUFFER", "8192"))
     app.state.buffers = {}   # stream -> deque[(seq, event)]
     app.state.seqs = {}      # stream -> last assigned seq (int)
     # Turn-boundary tracking for in-progress-turn replay: the seq of the current
@@ -259,7 +259,7 @@ def create_daemon_app() -> FastAPI:
     # In remote mode there is exactly one `/events` consumer (the edge reader), so the
     # larger queue is negligible memory.
     _sendq_max = max(
-        int(os.environ.get("CCSWITCH_IPC_SEND_QUEUE", "1024")),
+        int(os.environ.get("VIBERPIT_IPC_SEND_QUEUE", "1024")),
         _maxlen + 1024,  # ring depth + one live burst of headroom
     )
     app.state.replay_maxlen = _maxlen   # exposed for the invariant test + ops visibility

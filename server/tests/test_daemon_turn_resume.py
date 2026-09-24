@@ -136,7 +136,7 @@ def test_open_turn_evicted_from_ring_reports_closed_and_resumes_from_head(monkey
     purposes (edge replays the FULL disk transcript) and resume from head (no
     GAP, no heal loop). The publish-time turn state itself stays open — the real
     turnEnd still closes it."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "4")
     app = create_daemon_app()
 
     async def run():
@@ -167,7 +167,7 @@ def test_open_turn_still_retained_by_small_ring_keeps_anchor(monkeypatch):
     (even as the ring's OLDEST entry), the turn stays droppable/anchored — the
     subscribe-time GAP test (since + 1 < oldest) does not fire at
     since = turn_start_seq - 1 when oldest == turn_start_seq."""
-    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    monkeypatch.setenv("VIBERPIT_IPC_REPLAY_BUFFER", "4")
     app = create_daemon_app()
 
     async def run():

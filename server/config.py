@@ -26,7 +26,7 @@ def env_float(name: str, default: float, *, minimum: float | None = None) -> flo
     A typo'd override must not crash daemon startup, and a syntactically valid but
     nonsensical one must not be honoured: a non-numeric, NaN/inf, or below-``minimum``
     value falls back to *default*. That clamp is load-bearing for timeouts —
-    ``CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S=0`` would otherwise make the ceiling fire
+    ``VIBERPIT_TRANSCRIPT_WINDOW_CEILING_S=0`` would otherwise make the ceiling fire
     instantly and turn every transcript into an empty one.
     """
     raw = os.environ.get(name)
@@ -75,98 +75,98 @@ try:
             mirror_legacy_env()
             super().__init__(**kwargs)
 
-        host: str = Field(default="127.0.0.1", alias="CCSWITCH_HOST")
-        port: int = Field(default=8787, alias="CCSWITCH_PORT")
+        host: str = Field(default="127.0.0.1", alias="VIBERPIT_HOST")
+        port: int = Field(default=8787, alias="VIBERPIT_PORT")
         db_url: str = Field(
             default_factory=lambda: (
                 f"sqlite+aiosqlite:///{Path.home() / '.claude-accounts' / 'ccswitch.db'}"
             ),
-            alias="CCSWITCH_DB_URL",
+            alias="VIBERPIT_DB_URL",
         )
-        master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
-        session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
-        tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
+        master_key: str | None = Field(default=None, alias="VIBERPIT_MASTER_KEY")
+        session_secret: str | None = Field(default=None, alias="VIBERPIT_SESSION_SECRET")
+        tailnet_allowlist: str = Field(default="", alias="VIBERPIT_TAILNET_ALLOWLIST")
         # Peers entitled to ASSERT an identity via the Tailscale-User-Login header.
         # Loopback is always trusted (the `tailscale serve` proxy reaches the edge
         # there); this adds addresses for any other front-end that stamps the header,
         # e.g. a container gateway. Empty = loopback only.
-        trusted_proxy_ips: str = Field(default="", alias="CCSWITCH_TRUSTED_PROXY_IPS")
+        trusted_proxy_ips: str = Field(default="", alias="VIBERPIT_TRUSTED_PROXY_IPS")
         # Opt-in LAN-open mode: admit clients that present NO Tailscale identity as a
         # synthetic guest instead of 401'ing them. Defaults OFF so the deployed,
         # Tailscale-fronted posture stays locked down — only flip it on a trusted,
         # isolated network where the LAN itself is the trust boundary (issue: dobby.local).
         allow_unauthenticated: bool = Field(
-            default=False, alias="CCSWITCH_ALLOW_UNAUTHENTICATED")
-        github_app_id: int | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_ID")
+            default=False, alias="VIBERPIT_ALLOW_UNAUTHENTICATED")
+        github_app_id: int | None = Field(default=None, alias="VIBERPIT_GITHUB_APP_ID")
         github_app_installation_id: int | None = Field(
-            default=None, alias="CCSWITCH_GITHUB_APP_INSTALLATION_ID")
+            default=None, alias="VIBERPIT_GITHUB_APP_INSTALLATION_ID")
         github_app_private_key_path: str | None = Field(
-            default=None, alias="CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH")
+            default=None, alias="VIBERPIT_GITHUB_APP_PRIVATE_KEY_PATH")
         repo_root: str = Field(
             default_factory=lambda: str(Path.home() / "GitHub"),
-            alias="CCSWITCH_REPO_ROOT",
+            alias="VIBERPIT_REPO_ROOT",
         )
-        reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
-        reauth_virtual_display: bool = Field(default=True, alias="CCSWITCH_REAUTH_VIRTUAL_DISPLAY")
+        reauth_display: str = Field(default=":0", alias="VIBERPIT_REAUTH_DISPLAY")
+        reauth_virtual_display: bool = Field(default=True, alias="VIBERPIT_REAUTH_VIRTUAL_DISPLAY")
         # Source profile the reauth flow copies from. Defaults to a dedicated,
         # ViberPit-owned profile — pointing this at the operator's everyday
         # ~/.config/google-chrome/Default is opt-in, because everything under it is
         # one missed cleanup away from sitting in reauth-tmp (#1105).
         chrome_profile: str = Field(
             default_factory=lambda: str(_reauth_chrome_profile_default()),
-            alias="CCSWITCH_CHROME_PROFILE",
+            alias="VIBERPIT_CHROME_PROFILE",
         )
         # Extension ids carried into the temp login profile (comma list). Unset → the
         # core default (1Password, ccswitch.auth_login.REAUTH_EXTENSION_IDS); set but
         # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
-        reauth_extension_ids: str | None = Field(default=None, alias="CCSWITCH_REAUTH_EXTENSIONS")
+        reauth_extension_ids: str | None = Field(default=None, alias="VIBERPIT_REAUTH_EXTENSIONS")
         # Domains whose cookies are carried into the temp login profile (comma list).
         # Unset → the core default (ccswitch.auth_login.REAUTH_COOKIE_HOSTS, empty);
         # set but empty → carry none. Setting e.g. "google.com" re-presents that
         # session from a throwaway profile — see the warning on REAUTH_COOKIE_HOSTS.
         reauth_cookie_hosts: str | None = Field(
-            default=None, alias="CCSWITCH_REAUTH_COOKIE_HOSTS")
+            default=None, alias="VIBERPIT_REAUTH_COOKIE_HOSTS")
         # Copy the source profile's saved-password database into the temp profile.
         # An OAuth login never needs it; off by default (#1105).
         reauth_copy_login_data: bool = Field(
-            default=False, alias="CCSWITCH_REAUTH_COPY_LOGIN_DATA")
+            default=False, alias="VIBERPIT_REAUTH_COPY_LOGIN_DATA")
         # A human doing a fresh Google login on a cold browser can take several
         # minutes; the timeout must outlast that or it tears down the localhost
         # callback listener mid-login (zombie consent page).
-        reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
-        enable_xvfb: bool = Field(default=False, alias="CCSWITCH_ENABLE_XVFB")
+        reauth_timeout_s: float = Field(default=900.0, alias="VIBERPIT_REAUTH_TIMEOUT_S")
+        enable_xvfb: bool = Field(default=False, alias="VIBERPIT_ENABLE_XVFB")
         # Route a session's GUI to the host's real X display when the requesting
         # client sits on that host (tailscale whois node == self_host_name()).
         # Gated at spawn time on the X socket actually existing, so a headless
         # worker never sees a native session. Design:
         # docs/superpowers/specs/2026-09-06-native-display-routing-design.md
-        native_display_enabled: bool = Field(default=True, alias="CCSWITCH_NATIVE_DISPLAY_ENABLED")
-        native_display: str = Field(default=":0", alias="CCSWITCH_NATIVE_DISPLAY")
-        enable_adoption: bool = Field(default=False, alias="CCSWITCH_ENABLE_ADOPTION")
-        display_start: int = Field(default=100, alias="CCSWITCH_DISPLAY_START")
-        display_count: int = Field(default=12, alias="CCSWITCH_DISPLAY_COUNT")
-        max_browsers: int = Field(default=6, alias="CCSWITCH_MAX_BROWSERS")
-        vnc_port_base: int = Field(default=6100, alias="CCSWITCH_VNC_PORT_BASE")
-        xvfb_resolution: str = Field(default="1280x800x24", alias="CCSWITCH_XVFB_RESOLUTION")
+        native_display_enabled: bool = Field(default=True, alias="VIBERPIT_NATIVE_DISPLAY_ENABLED")
+        native_display: str = Field(default=":0", alias="VIBERPIT_NATIVE_DISPLAY")
+        enable_adoption: bool = Field(default=False, alias="VIBERPIT_ENABLE_ADOPTION")
+        display_start: int = Field(default=100, alias="VIBERPIT_DISPLAY_START")
+        display_count: int = Field(default=12, alias="VIBERPIT_DISPLAY_COUNT")
+        max_browsers: int = Field(default=6, alias="VIBERPIT_MAX_BROWSERS")
+        vnc_port_base: int = Field(default=6100, alias="VIBERPIT_VNC_PORT_BASE")
+        xvfb_resolution: str = Field(default="1280x800x24", alias="VIBERPIT_XVFB_RESOLUTION")
         # Pass --no-sandbox to the managed Chromium. A conscious security downgrade for
         # hosts where kernel.apparmor_restrict_unprivileged_userns=1 would otherwise FATAL
         # it at startup (quickstart §8b); keep OFF unless the host requires it (issue #136).
-        chromium_no_sandbox: bool = Field(default=False, alias="CCSWITCH_CHROMIUM_NO_SANDBOX")
+        chromium_no_sandbox: bool = Field(default=False, alias="VIBERPIT_CHROMIUM_NO_SANDBOX")
         # Grace window (s) after spawning a managed browser before reporting success, so a
         # startup-FATAL launch isn't counted as live. 0 disables the check.
-        browser_liveness_s: float = Field(default=0.3, alias="CCSWITCH_BROWSER_LIVENESS_S")
-        vnc_idle_timeout_s: float = Field(default=1800.0, alias="CCSWITCH_VNC_IDLE_TIMEOUT_S")
-        enable_copilot: bool = Field(default=False, alias="CCSWITCH_ENABLE_COPILOT")
-        copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
-        copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
-        copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
+        browser_liveness_s: float = Field(default=0.3, alias="VIBERPIT_BROWSER_LIVENESS_S")
+        vnc_idle_timeout_s: float = Field(default=1800.0, alias="VIBERPIT_VNC_IDLE_TIMEOUT_S")
+        enable_copilot: bool = Field(default=False, alias="VIBERPIT_ENABLE_COPILOT")
+        copilot_port_base: int = Field(default=4142, alias="VIBERPIT_COPILOT_PORT_BASE")
+        copilot_port_count: int = Field(default=8, alias="VIBERPIT_COPILOT_PORT_COUNT")
+        copilot_idle_grace_s: float = Field(default=300.0, alias="VIBERPIT_COPILOT_IDLE_GRACE_S")
         # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
         # launch flag, and absence or incompatibility must disable Codex ONLY. The
         # external-token API is the experimental app-server surface runners use to
         # authenticate without holding a credential, so it is gated separately.
-        codex_enabled: bool = Field(default=False, alias="CCSWITCH_CODEX_ENABLED")
+        codex_enabled: bool = Field(default=False, alias="VIBERPIT_CODEX_ENABLED")
         codex_external_auth_enabled: bool = Field(
-            default=False, alias="CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED")
+            default=False, alias="VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED")
         # Automation parity (Phase 7). Separate from `codex_enabled` because an
         # INTERACTIVE Codex session has a human watching it, while an automation
         # session runs unattended in full-auto with git/gh/pytest — so enabling
@@ -174,37 +174,37 @@ try:
         # forces every `codex_allowed` origin back to Claude without an operator
         # having to unwind each origin's config (server/automations/engine_policy.py).
         codex_automations_enabled: bool = Field(
-            default=False, alias="CCSWITCH_CODEX_AUTOMATIONS_ENABLED")
-        codex_bin: str = Field(default="codex", alias="CCSWITCH_CODEX_BIN")
+            default=False, alias="VIBERPIT_CODEX_AUTOMATIONS_ENABLED")
+        codex_bin: str = Field(default="codex", alias="VIBERPIT_CODEX_BIN")
         # Comma list of `codex --version` strings an operator has verified beyond
         # the pin in server/codex/schema.py. It WIDENS the pinned set; it can never
         # remove the version this code was written against.
         codex_supported_versions: str = Field(
-            default="", alias="CCSWITCH_CODEX_SUPPORTED_VERSIONS")
-        codex_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_CODEX_IDLE_GRACE_S")
+            default="", alias="VIBERPIT_CODEX_SUPPORTED_VERSIONS")
+        codex_idle_grace_s: float = Field(default=300.0, alias="VIBERPIT_CODEX_IDLE_GRACE_S")
         # How long the edge's authorization projection stays valid at the credential
         # authority, and how often the edge renews it. The authority stops issuing
         # when the lease lapses, so `interval < lease` is not a tuning preference —
         # a single missed renewal must not take Codex down.
         codex_auth_sync_lease_s: float = Field(
-            default=900.0, alias="CCSWITCH_CODEX_AUTH_SYNC_LEASE_S")
+            default=900.0, alias="VIBERPIT_CODEX_AUTH_SYNC_LEASE_S")
         codex_auth_sync_interval_s: float = Field(
-            default=300.0, alias="CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S")
+            default=300.0, alias="VIBERPIT_CODEX_AUTH_SYNC_INTERVAL_S")
         # Cache lifetimes for the per-account Codex `model/list` and
         # `account/rateLimits/read` answers. Both are cheap to re-fetch and both are
         # per (account, CLI version), so these are short.
         codex_model_cache_s: float = Field(
-            default=300.0, alias="CCSWITCH_CODEX_MODEL_CACHE_S")
+            default=300.0, alias="VIBERPIT_CODEX_MODEL_CACHE_S")
         codex_quota_cache_s: float = Field(
-            default=60.0, alias="CCSWITCH_CODEX_QUOTA_CACHE_S")
+            default=60.0, alias="VIBERPIT_CODEX_QUOTA_CACHE_S")
         # Server-side dictation (server/stt): off by default; needs the `stt` extra.
-        enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
-        stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
-        stt_cpu_threads: int = Field(default=4, alias="CCSWITCH_STT_CPU_THREADS")
-        stt_tick_s: float = Field(default=1.0, alias="CCSWITCH_STT_TICK_S")
-        stt_max_concurrent: int = Field(default=3, alias="CCSWITCH_STT_MAX_CONCURRENT")
-        stt_max_session_s: float = Field(default=600.0, alias="CCSWITCH_STT_MAX_SESSION_S")
-        log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
+        enable_stt: bool = Field(default=False, alias="VIBERPIT_ENABLE_STT")
+        stt_model: str = Field(default="base.en", alias="VIBERPIT_STT_MODEL")
+        stt_cpu_threads: int = Field(default=4, alias="VIBERPIT_STT_CPU_THREADS")
+        stt_tick_s: float = Field(default=1.0, alias="VIBERPIT_STT_TICK_S")
+        stt_max_concurrent: int = Field(default=3, alias="VIBERPIT_STT_MAX_CONCURRENT")
+        stt_max_session_s: float = Field(default=600.0, alias="VIBERPIT_STT_MAX_SESSION_S")
+        log_level: str = Field(default="INFO", alias="VIBERPIT_LOG_LEVEL")
         # Per-HOST by construction — see server/obs/logdir.py. The old default asked
         # `os.access("/var/log", os.W_OK)` (the parent, root-owned, so always false
         # under User=tony) and fell through to the sshfs-shared account store, where
@@ -212,12 +212,12 @@ try:
         # No os.environ.get() here: pydantic-settings reads the alias itself and only
         # calls default_factory when the var is ABSENT, so an env read would be dead
         # code. The dataclass fallback below has no alias machinery and needs one.
-        log_dir: str = Field(default_factory=default_log_dir, alias="CCSWITCH_LOG_DIR")
-        client_log_level: str = Field(default="warn", alias="CCSWITCH_CLIENT_LOG_LEVEL")
+        log_dir: str = Field(default_factory=default_log_dir, alias="VIBERPIT_LOG_DIR")
+        client_log_level: str = Field(default="warn", alias="VIBERPIT_CLIENT_LOG_LEVEL")
         # Override the directory used for archived session working directories.
-        # Defaults to $CCSWITCH_HOME/archive. Set to a path on a larger/slower
+        # Defaults to $VIBERPIT_HOME/archive. Set to a path on a larger/slower
         # drive to keep live session data and archives on separate filesystems.
-        archive_home: str | None = Field(default=None, alias="CCSWITCH_ARCHIVE_HOME")
+        archive_home: str | None = Field(default=None, alias="VIBERPIT_ARCHIVE_HOME")
         # Comma-separated name=endpoint pairs seeded into the host registry on startup
         # (insert-if-absent by name; existing rows are never overwritten, so operator
         # changes via the Fleet UI survive restarts).
@@ -228,31 +228,31 @@ try:
         # out to every row here (server/deploy/runners.py), reaching each host over its
         # registered ``ssh_host``. Production therefore sets this to rocky ONLY, in
         # the out-of-band /etc/ccswitch/ccswitch.env:
-        #   CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443
+        #   VIBERPIT_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443
         # Adding dobby (…,dobby=https://dobby:9443) is a supported but currently-unenabled
         # two-host expansion (fleet plan Task 13); the ranking/routing code is already
         # N-host, so this is a config flip, not a code change.
-        fleet_hosts: str = Field(default="", alias="CCSWITCH_FLEET_HOSTS")
+        fleet_hosts: str = Field(default="", alias="VIBERPIT_FLEET_HOSTS")
         # Model-approval gate. Which model TIERS require human approval (comma list,
         # matched via model_catalog.model_tier), and the action a gated tier triggers.
         # Overridable per-install by AppSettings and per-account by the ledger; this is
         # the ops-level default (see server/sessions/model_policy.resolve_model_policy).
         model_approval_action: str = Field(
-            default="require_approval", alias="CCSWITCH_MODEL_APPROVAL_ACTION")
+            default="require_approval", alias="VIBERPIT_MODEL_APPROVAL_ACTION")
         model_approval_denylist: str = Field(
-            default="fable", alias="CCSWITCH_MODEL_APPROVAL_DENYLIST")
+            default="fable", alias="VIBERPIT_MODEL_APPROVAL_DENYLIST")
         # Self-directed model switching: whether sessions are told they may request a
         # model change (and whether a marker found in output is acted on at all).
         self_model_switch_enabled: bool = Field(
-            default=True, alias="CCSWITCH_SELF_MODEL_SWITCH_ENABLED")
+            default=True, alias="VIBERPIT_SELF_MODEL_SWITCH_ENABLED")
         # How many model switches one session may auto-apply before further requests
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
-            default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+            default=3, alias="VIBERPIT_SELF_MODEL_SWITCH_CAP")
         # Roadmap auto-execution (spec 2026-09-14 D9): process-wide kill switch. Off
         # forces every product's risk tolerance to `cautious` without touching any policy.
         # New settings take the VIBERPIT_ prefix (#1591); mirror_legacy_env() fills it from
-        # CCSWITCH_ on hosts still on the old one.
+        # VIBERPIT_ on hosts still on the old one.
         gate_autoresolve_enabled: bool = Field(
             default=True, alias="VIBERPIT_GATE_AUTORESOLVE_ENABLED")
         # Capacity Governor (spec 2026-09-19 §6, D10): process-wide kill switch for
@@ -273,49 +273,49 @@ try:
         # Per-session in-process MCP surface for coding sessions (session tools spec §3).
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
-            default=True, alias="CCSWITCH_SESSION_TOOLS_ENABLED")
+            default=True, alias="VIBERPIT_SESSION_TOOLS_ENABLED")
         # How many report_feedback rows one session may file (spec §4). Further reports
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
-            default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
+            default=3, alias="VIBERPIT_SESSION_FEEDBACK_CAP")
         # Child sessions (spec 2026-09-11-child-session-dispatch §4.7): a Claude session
         # may spawn linked child sessions through the `dispatch_session` tool. Off = the
         # tool is not mounted and the orchestrator refuses a dispatch.
         child_sessions_enabled: bool = Field(
-            default=True, alias="CCSWITCH_CHILD_SESSIONS_ENABLED")
+            default=True, alias="VIBERPIT_CHILD_SESSIONS_ENABLED")
         # Live (not complete/done/ended/archived) children one parent may have at once.
-        child_session_cap: int = Field(default=3, alias="CCSWITCH_CHILD_SESSION_CAP")
+        child_session_cap: int = Field(default=3, alias="VIBERPIT_CHILD_SESSION_CAP")
         # Deepest nesting: 1 = children only, 2 = grandchildren, …
         child_session_max_depth: int = Field(
-            default=2, alias="CCSWITCH_CHILD_SESSION_MAX_DEPTH")
+            default=2, alias="VIBERPIT_CHILD_SESSION_MAX_DEPTH")
         # Error-triage capture (spec 2026-09-07): install the WARNING+ log sink that
         # feeds error_signatures. Off = configure_logging() installs no handler.
         error_sink_enabled: bool = Field(
-            default=True, alias="CCSWITCH_ERROR_SINK_ENABLED")
+            default=True, alias="VIBERPIT_ERROR_SINK_ENABLED")
         # Verification-phase test-run slot cap (#822): max sessions per host that
         # may simultaneously hold a "running the full server suite" slot. Keeps a
         # Backlog Runner burst from piling up N concurrent full pytest runs (the
         # 2026-08-29 exit-137 incident, #821/#822). Fail-open by design — see
         # server/sessions/test_run_slots.py and server/api/test_slots.py.
-        test_slot_cap: int = Field(default=1, alias="CCSWITCH_TEST_SLOT_CAP")
+        test_slot_cap: int = Field(default=1, alias="VIBERPIT_TEST_SLOT_CAP")
         # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
         # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
         # Defaults off — Phase B lands the schema/read-side before any write path.
         gh_reconcile_enabled: bool = Field(
-            default=False, alias="CCSWITCH_GH_RECONCILE_ENABLED")
+            default=False, alias="VIBERPIT_GH_RECONCILE_ENABLED")
         # AI assistant (docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.11).
         # On by default as of the Phase 4 launch (#1076); AppSettings.assistant_enabled overrides.
-        assistant_enabled: bool = Field(default=True, alias="CCSWITCH_ASSISTANT_ENABLED")
-        assistant_model: str = Field(default="sonnet", alias="CCSWITCH_ASSISTANT_MODEL")
-        assistant_idle_s: float = Field(default=900.0, alias="CCSWITCH_ASSISTANT_IDLE_S")
-        assistant_max_turns: int = Field(default=30, alias="CCSWITCH_ASSISTANT_MAX_TURNS")
+        assistant_enabled: bool = Field(default=True, alias="VIBERPIT_ASSISTANT_ENABLED")
+        assistant_model: str = Field(default="sonnet", alias="VIBERPIT_ASSISTANT_MODEL")
+        assistant_idle_s: float = Field(default=900.0, alias="VIBERPIT_ASSISTANT_IDLE_S")
+        assistant_max_turns: int = Field(default=30, alias="VIBERPIT_ASSISTANT_MAX_TURNS")
         assistant_max_prompts_per_hour: int = Field(
-            default=120, alias="CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR")
+            default=120, alias="VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR")
         # Operator tier (v2 spec §7, decision B1): deploy start, host upgrade, account
         # refresh/enable and re-auth kick-off. Default OFF — the blast radius is why
         # they were excluded from v1 — and AppSettings.assistant_operator_tools overrides.
         assistant_operator_tools: bool = Field(
-            default=False, alias="CCSWITCH_ASSISTANT_OPERATOR_TOOLS")
+            default=False, alias="VIBERPIT_ASSISTANT_OPERATOR_TOOLS")
         # Which engine the drawer runs on (#1321/#1290). Default Claude: the Codex
         # overlay is implemented and unit-tested, but "the drawer's boundary holds
         # against the real app-server" has only been verified by the Task 9.4 spike,
@@ -323,21 +323,21 @@ try:
         # constitution I (gate experimental vendor surfaces) and III (verify against
         # the real binary before claiming parity).
         assistant_engine: str = Field(
-            default="claude_code", alias="CCSWITCH_ASSISTANT_ENGINE")
+            default="claude_code", alias="VIBERPIT_ASSISTANT_ENGINE")
         # User-scoped external `ccas2:` bearer tokens (v2 spec §5/§7, Pack O/X, Task 9.5):
         # lets an external client (e.g. `ccswitch mcp`) reach the edge over the tailnet
         # without a browser session. Default OFF — same blast-radius reasoning as the
         # operator tier above; assistant_token_max_days caps how long a minted token
         # may live regardless of the ttlDays the caller requests.
         assistant_external_tokens: bool = Field(
-            default=False, alias="CCSWITCH_ASSISTANT_EXTERNAL_TOKENS")
+            default=False, alias="VIBERPIT_ASSISTANT_EXTERNAL_TOKENS")
         assistant_token_max_days: int = Field(
-            default=90, alias="CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS")
+            default=90, alias="VIBERPIT_ASSISTANT_TOKEN_MAX_DAYS")
         # Proactive watches (v2 spec §4.7, Task 8.3): a per-identity cap on live
         # `NotificationRule` rows created via `watch()`, so a runaway loop can't spam
         # the notification table. Counted against the identity's `assistant` channel.
         assistant_watch_max_per_identity: int = Field(
-            default=20, alias="CCSWITCH_ASSISTANT_WATCH_MAX_PER_IDENTITY")
+            default=20, alias="VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -363,7 +363,7 @@ try:
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:
-            """Return {name: endpoint} parsed from CCSWITCH_FLEET_HOSTS.
+            """Return {name: endpoint} parsed from VIBERPIT_FLEET_HOSTS.
 
             Splits on the first '=' only so endpoints containing '=' (query strings,
             base64) are preserved correctly.
@@ -389,192 +389,192 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
     @dataclasses.dataclass
     class Settings:  # type: ignore[no-redef]
         host: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_HOST", "127.0.0.1")
+            default_factory=lambda: os.environ.get("VIBERPIT_HOST", "127.0.0.1")
         )
         port: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_PORT", "8787"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_PORT", "8787"))
         )
         db_url: str = dataclasses.field(
             default_factory=lambda: os.environ.get(
-                "CCSWITCH_DB_URL",
+                "VIBERPIT_DB_URL",
                 f"sqlite+aiosqlite:///{Path.home() / '.claude-accounts' / 'ccswitch.db'}",
             )
         )
         master_key: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_MASTER_KEY")
+            default_factory=lambda: os.environ.get("VIBERPIT_MASTER_KEY")
         )
         session_secret: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_SESSION_SECRET")
+            default_factory=lambda: os.environ.get("VIBERPIT_SESSION_SECRET")
         )
         tailnet_allowlist: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")
+            default_factory=lambda: os.environ.get("VIBERPIT_TAILNET_ALLOWLIST", "")
         )
         trusted_proxy_ips: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_TRUSTED_PROXY_IPS", "")
+            default_factory=lambda: os.environ.get("VIBERPIT_TRUSTED_PROXY_IPS", "")
         )
         allow_unauthenticated: bool = dataclasses.field(
             default_factory=lambda: os.environ.get(
-                "CCSWITCH_ALLOW_UNAUTHENTICATED", "false").lower() in ("1", "true", "yes", "on")
+                "VIBERPIT_ALLOW_UNAUTHENTICATED", "false").lower() in ("1", "true", "yes", "on")
         )
         github_app_id: int | None = dataclasses.field(
             default_factory=lambda: (
-                int(os.environ["CCSWITCH_GITHUB_APP_ID"])
-                if os.environ.get("CCSWITCH_GITHUB_APP_ID") else None))
+                int(os.environ["VIBERPIT_GITHUB_APP_ID"])
+                if os.environ.get("VIBERPIT_GITHUB_APP_ID") else None))
         github_app_installation_id: int | None = dataclasses.field(
             default_factory=lambda: (
-                int(os.environ["CCSWITCH_GITHUB_APP_INSTALLATION_ID"])
-                if os.environ.get("CCSWITCH_GITHUB_APP_INSTALLATION_ID") else None))
+                int(os.environ["VIBERPIT_GITHUB_APP_INSTALLATION_ID"])
+                if os.environ.get("VIBERPIT_GITHUB_APP_INSTALLATION_ID") else None))
         github_app_private_key_path: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH"))
+            default_factory=lambda: os.environ.get("VIBERPIT_GITHUB_APP_PRIVATE_KEY_PATH"))
         repo_root: str = dataclasses.field(
             default_factory=lambda: os.environ.get(
-                "CCSWITCH_REPO_ROOT",
+                "VIBERPIT_REPO_ROOT",
                 str(Path.home() / "GitHub"),
             )
         )
         reauth_display: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_DISPLAY", ":0")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_DISPLAY", ":0")
         )
         reauth_virtual_display: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
         )
         chrome_profile: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(_reauth_chrome_profile_default())
+            default_factory=lambda: os.environ.get("VIBERPIT_CHROME_PROFILE") or str(_reauth_chrome_profile_default())
         )
         reauth_extension_ids: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_EXTENSIONS")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_EXTENSIONS")
         )
         reauth_cookie_hosts: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_COOKIE_HOSTS")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_COOKIE_HOSTS")
         )
         reauth_copy_login_data: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_COPY_LOGIN_DATA", "false").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_COPY_LOGIN_DATA", "false").lower() in ("1", "true", "yes", "on")
         )
         reauth_timeout_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_REAUTH_TIMEOUT_S", "900"))
         )
         enable_xvfb: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
         )
         native_display_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY_ENABLED", "true").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_DISPLAY_ENABLED", "true").lower() in ("1","true","yes","on")
         )
         native_display: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY", ":0")
+            default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_DISPLAY", ":0")
         )
         enable_adoption: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")
         )
         display_start: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_DISPLAY_START", "100"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_DISPLAY_START", "100"))
         )
         display_count: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_DISPLAY_COUNT", "12"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_DISPLAY_COUNT", "12"))
         )
         max_browsers: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_MAX_BROWSERS", "6"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_MAX_BROWSERS", "6"))
         )
         vnc_port_base: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_VNC_PORT_BASE", "6100"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_VNC_PORT_BASE", "6100"))
         )
         xvfb_resolution: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_XVFB_RESOLUTION", "1280x800x24")
+            default_factory=lambda: os.environ.get("VIBERPIT_XVFB_RESOLUTION", "1280x800x24")
         )
         chromium_no_sandbox: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CHROMIUM_NO_SANDBOX", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_CHROMIUM_NO_SANDBOX", "false").lower() in ("1","true","yes","on")
         )
         browser_liveness_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_BROWSER_LIVENESS_S", "0.3"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_BROWSER_LIVENESS_S", "0.3"))
         )
         vnc_idle_timeout_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_VNC_IDLE_TIMEOUT_S", "1800"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_VNC_IDLE_TIMEOUT_S", "1800"))
         )
         enable_copilot: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_COPILOT", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_COPILOT", "false").lower() in ("1","true","yes","on")
         )
         copilot_port_base: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_COPILOT_PORT_BASE", "4142"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_COPILOT_PORT_BASE", "4142"))
         )
         copilot_port_count: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_COPILOT_PORT_COUNT", "8"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_COPILOT_PORT_COUNT", "8"))
         )
         copilot_idle_grace_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_COPILOT_IDLE_GRACE_S", "300.0"))
         )
         codex_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")
         )
         codex_external_auth_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED", "false").lower() in ("1","true","yes","on")
         )
         codex_automations_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_CODEX_AUTOMATIONS_ENABLED", "false").lower() in ("1","true","yes","on")
         )
         codex_bin: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_BIN", "codex")
+            default_factory=lambda: os.environ.get("VIBERPIT_CODEX_BIN", "codex")
         )
         codex_supported_versions: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_SUPPORTED_VERSIONS", "")
+            default_factory=lambda: os.environ.get("VIBERPIT_CODEX_SUPPORTED_VERSIONS", "")
         )
         codex_idle_grace_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_IDLE_GRACE_S", "300.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_CODEX_IDLE_GRACE_S", "300.0"))
         )
         codex_auth_sync_lease_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_AUTH_SYNC_LEASE_S", "900.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_CODEX_AUTH_SYNC_LEASE_S", "900.0"))
         )
         codex_auth_sync_interval_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S", "300.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_CODEX_AUTH_SYNC_INTERVAL_S", "300.0"))
         )
         codex_model_cache_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_MODEL_CACHE_S", "300.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_CODEX_MODEL_CACHE_S", "300.0"))
         )
         codex_quota_cache_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_QUOTA_CACHE_S", "60.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_CODEX_QUOTA_CACHE_S", "60.0"))
         )
         enable_stt: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_STT", "false").lower() in ("1","true","yes","on")
         )
         stt_model: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_STT_MODEL", "base.en")
+            default_factory=lambda: os.environ.get("VIBERPIT_STT_MODEL", "base.en")
         )
         stt_cpu_threads: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_CPU_THREADS", "4"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_STT_CPU_THREADS", "4"))
         )
         stt_tick_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_TICK_S", "1.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_STT_TICK_S", "1.0"))
         )
         stt_max_concurrent: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_MAX_CONCURRENT", "3"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_STT_MAX_CONCURRENT", "3"))
         )
         stt_max_session_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_MAX_SESSION_S", "600.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_STT_MAX_SESSION_S", "600.0"))
         )
         log_level: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")
+            default_factory=lambda: os.environ.get("VIBERPIT_LOG_LEVEL", "INFO")
         )
         log_dir: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR") or default_log_dir()
+            default_factory=lambda: os.environ.get("VIBERPIT_LOG_DIR") or default_log_dir()
         )
         client_log_level: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CLIENT_LOG_LEVEL", "warn")
+            default_factory=lambda: os.environ.get("VIBERPIT_CLIENT_LOG_LEVEL", "warn")
         )
         archive_home: str | None = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ARCHIVE_HOME")
+            default_factory=lambda: os.environ.get("VIBERPIT_ARCHIVE_HOME")
         )
         fleet_hosts: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_FLEET_HOSTS", "")
+            default_factory=lambda: os.environ.get("VIBERPIT_FLEET_HOSTS", "")
         )
         model_approval_action: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_ACTION", "require_approval")
+            default_factory=lambda: os.environ.get("VIBERPIT_MODEL_APPROVAL_ACTION", "require_approval")
         )
         model_approval_denylist: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_DENYLIST", "fable")
+            default_factory=lambda: os.environ.get("VIBERPIT_MODEL_APPROVAL_DENYLIST", "fable")
         )
         self_model_switch_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true").lower() in ("1","true","yes","on")
+            default_factory=lambda: os.environ.get("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "true").lower() in ("1","true","yes","on")
         )
         self_model_switch_cap: int = dataclasses.field(
-            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+            default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
         )
         gate_autoresolve_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -586,58 +586,58 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_tools_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_feedback_cap: int = dataclasses.field(
-            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
+            default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
         )
         child_sessions_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CHILD_SESSIONS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_CHILD_SESSIONS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         child_session_cap: int = dataclasses.field(
-            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_CHILD_SESSION_CAP", "")) and v.isdigit() else 3
+            default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_CAP", "")) and v.isdigit() else 3
         )
         child_session_max_depth: int = dataclasses.field(
-            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_CHILD_SESSION_MAX_DEPTH", "")) and v.isdigit() else 2
+            default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_MAX_DEPTH", "")) and v.isdigit() else 2
         )
         error_sink_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ERROR_SINK_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ERROR_SINK_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         test_slot_cap: int = dataclasses.field(
-            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_TEST_SLOT_CAP", "")) and v.isdigit() else 1
+            default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_TEST_SLOT_CAP", "")) and v.isdigit() else 1
         )
         gh_reconcile_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
         )
         assistant_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ASSISTANT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         assistant_model: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_MODEL", "sonnet")
+            default_factory=lambda: os.environ.get("VIBERPIT_ASSISTANT_MODEL", "sonnet")
         )
         assistant_idle_s: float = dataclasses.field(
-            default_factory=lambda: float(os.environ.get("CCSWITCH_ASSISTANT_IDLE_S", "900.0"))
+            default_factory=lambda: float(os.environ.get("VIBERPIT_ASSISTANT_IDLE_S", "900.0"))
         )
         assistant_max_turns: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_TURNS", "30"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_ASSISTANT_MAX_TURNS", "30"))
         )
         assistant_max_prompts_per_hour: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR", "120"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR", "120"))
         )
         assistant_operator_tools: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_OPERATOR_TOOLS", "false").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ASSISTANT_OPERATOR_TOOLS", "false").lower() in ("1", "true", "yes", "on")
         )
         assistant_engine: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENGINE", "claude_code")
+            default_factory=lambda: os.environ.get("VIBERPIT_ASSISTANT_ENGINE", "claude_code")
         )
         assistant_external_tokens: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_EXTERNAL_TOKENS", "false").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_ASSISTANT_EXTERNAL_TOKENS", "false").lower() in ("1", "true", "yes", "on")
         )
         assistant_token_max_days: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS", "90"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_ASSISTANT_TOKEN_MAX_DAYS", "90"))
         )
         assistant_watch_max_per_identity: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_WATCH_MAX_PER_IDENTITY", "20"))
+            default_factory=lambda: int(os.environ.get("VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY", "20"))
         )
 
         @property
@@ -680,8 +680,8 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
 
 # File-only config: the webhook URL for outbound push notifications (ntfy / generic).
 # Never web-writable; never logged in full.
-PUSH_WEBHOOK_URL: str | None = (os.environ.get("CCSWITCH_PUSH_WEBHOOK_URL") or "").strip() or None
+PUSH_WEBHOOK_URL: str | None = (os.environ.get("VIBERPIT_PUSH_WEBHOOK_URL") or "").strip() or None
 
-VAPID_PRIVATE_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PRIVATE_KEY") or "").strip() or None
-VAPID_PUBLIC_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PUBLIC_KEY") or "").strip() or None
-VAPID_SUBJECT: str = (os.environ.get("CCSWITCH_VAPID_SUBJECT") or "").strip() or f"mailto:{brand.SLUG}@localhost"
+VAPID_PRIVATE_KEY: str | None = (os.environ.get("VIBERPIT_VAPID_PRIVATE_KEY") or "").strip() or None
+VAPID_PUBLIC_KEY: str | None = (os.environ.get("VIBERPIT_VAPID_PUBLIC_KEY") or "").strip() or None
+VAPID_SUBJECT: str = (os.environ.get("VIBERPIT_VAPID_SUBJECT") or "").strip() or f"mailto:{brand.SLUG}@localhost"

@@ -480,10 +480,10 @@ async def main(argv: "list[str] | None" = None) -> int:
                         help="report only; do not unarchive premature sessions")
     args = parser.parse_args(argv)
 
-    db_url = os.environ.get("CCSWITCH_DB_URL")
+    db_url = os.environ.get("VIBERPIT_DB_URL")
     if not db_url:
         print(
-            "error: CCSWITCH_DB_URL must be set to the daemon's database URL "
+            "error: VIBERPIT_DB_URL must be set to the daemon's database URL "
             "(the audit reads archived sessions from it).",
             file=sys.stderr,
         )

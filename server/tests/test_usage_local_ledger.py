@@ -70,7 +70,7 @@ def test_local_read_failure_falls_back_not_raises(monkeypatch):
 def test_rpc_timeout_degrades_to_stale_ledger_or_none(monkeypatch, tmp_path):
     """A hung RPC falls back to the stale ledger reading, or None with no ledger."""
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
 
     class Slow:
         async def usage(self, name):
@@ -86,7 +86,7 @@ def test_rpc_timeout_serves_labelled_stale_usage_when_ledger_has_one(monkeypatch
     from ccswitch import ledger
 
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     fetched_at = datetime.now(timezone.utc)
     with ledger.locked_ledger() as led:
         led["accounts"]["e"] = {"usage": {
@@ -116,7 +116,7 @@ def test_real_local_read_returns_a_usage_object(tmp_path, monkeypatch):
 
     from ccswitch import ledger
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     now = datetime.now(timezone.utc).isoformat()
     with ledger.locked_ledger() as led:
         led["accounts"]["acct"] = {"usage": {

@@ -49,7 +49,7 @@ def _api() -> Any:
 
 @pytest.fixture
 def overlay(tmp_path, monkeypatch) -> oc.CodexAssistantOverlay:
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     return oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol")
 
 
@@ -117,7 +117,7 @@ def test_a_spec_serializes_as_a_function_dynamic_tool(overlay):
 
 
 def test_operator_tools_change_both_the_table_and_the_prompt_line(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     off = oc.assistant_codex_options(api=_api(), model="m", operator=False)
     on = oc.assistant_codex_options(api=_api(), model="m", operator=True)
     assert {s.name for s in off.dynamic_tools} < {s.name for s in on.dynamic_tools}
@@ -162,7 +162,7 @@ def test_the_cwd_is_outside_any_repository(overlay):
 
 
 def test_a_cwd_that_would_inherit_agents_md_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     (tmp_path / "home" / "AGENTS.md").write_text("# leak me\n")
     with pytest.raises(oc.AssistantCodexUnsafeCwd):
@@ -263,7 +263,7 @@ def test_the_selector_returns_the_claude_dict_for_claude():
 
 
 def test_the_selector_returns_the_codex_overlay_for_codex(tmp_path, monkeypatch):
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     overlay = assistant_overlay_for(
         AgentEngine.CODEX, api=_Api(), server=None, max_turns=30, model="gpt-5.6-sol")
     assert isinstance(overlay, oc.CodexAssistantOverlay)

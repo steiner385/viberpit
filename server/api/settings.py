@@ -40,22 +40,22 @@ _MAX_ARCHIVED_CEILING = 100_000
 # not named here is never sent, so secrets and allowlists cannot leak by accident.
 # (config attribute, env var name, one-sentence description)
 _MANAGED: tuple[tuple[str, str, str], ...] = (
-    ("allow_unauthenticated", "CCSWITCH_ALLOW_UNAUTHENTICATED", "Admit clients with no Tailscale identity as a guest"),
-    ("enable_adoption", "CCSWITCH_ENABLE_ADOPTION", f"Allow adopting sessions started outside {brand.NAME}"),
-    ("enable_copilot", "CCSWITCH_ENABLE_COPILOT", "Enable GitHub Copilot accounts"),
-    ("enable_xvfb", "CCSWITCH_ENABLE_XVFB", "Virtual displays for browser-using sessions"),
-    ("self_model_switch_enabled", "CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
-    ("self_model_switch_cap", "CCSWITCH_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
-    ("session_tools_enabled", "CCSWITCH_SESSION_TOOLS_ENABLED", f"Coding sessions get the {brand.NAME} MCP tools (session_context, report_feedback)"),
-    ("session_feedback_cap", "CCSWITCH_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
-    ("error_sink_enabled", "CCSWITCH_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
-    ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
+    ("allow_unauthenticated", "VIBERPIT_ALLOW_UNAUTHENTICATED", "Admit clients with no Tailscale identity as a guest"),
+    ("enable_adoption", "VIBERPIT_ENABLE_ADOPTION", f"Allow adopting sessions started outside {brand.NAME}"),
+    ("enable_copilot", "VIBERPIT_ENABLE_COPILOT", "Enable GitHub Copilot accounts"),
+    ("enable_xvfb", "VIBERPIT_ENABLE_XVFB", "Virtual displays for browser-using sessions"),
+    ("self_model_switch_enabled", "VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
+    ("self_model_switch_cap", "VIBERPIT_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
+    ("session_tools_enabled", "VIBERPIT_SESSION_TOOLS_ENABLED", f"Coding sessions get the {brand.NAME} MCP tools (session_context, report_feedback)"),
+    ("session_feedback_cap", "VIBERPIT_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
+    ("error_sink_enabled", "VIBERPIT_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
+    ("gh_reconcile_enabled", "VIBERPIT_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
     ("capacity_governor_enabled", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "Capacity governor may apply its plan (act mode)"),
-    ("test_slot_cap", "CCSWITCH_TEST_SLOT_CAP", "Full test-suite runs one host may carry at once"),
-    ("child_session_cap", "CCSWITCH_CHILD_SESSION_CAP", "Live child sessions one parent session may hold"),
-    ("stt_max_concurrent", "CCSWITCH_STT_MAX_CONCURRENT", "Concurrent server-side dictation streams"),
-    ("log_level", "CCSWITCH_LOG_LEVEL", "Server log level"),
-    ("client_log_level", "CCSWITCH_CLIENT_LOG_LEVEL", "Browser log level"),
+    ("test_slot_cap", "VIBERPIT_TEST_SLOT_CAP", "Full test-suite runs one host may carry at once"),
+    ("child_session_cap", "VIBERPIT_CHILD_SESSION_CAP", "Live child sessions one parent session may hold"),
+    ("stt_max_concurrent", "VIBERPIT_STT_MAX_CONCURRENT", "Concurrent server-side dictation streams"),
+    ("log_level", "VIBERPIT_LOG_LEVEL", "Server log level"),
+    ("client_log_level", "VIBERPIT_CLIENT_LOG_LEVEL", "Browser log level"),
 )
 
 
@@ -109,12 +109,12 @@ class SettingsBody(BaseModel):
     modelApprovalAction: str | None = None
     modelApprovalDenylist: str | None = None
     # Assistant launch (spec §4.11). Uses model_fields_set like the model-approval
-    # pair above: explicit null clears back to the CCSWITCH_ASSISTANT_ENABLED /
-    # CCSWITCH_ASSISTANT_MODEL env fallback, omitted leaves the stored value alone.
+    # pair above: explicit null clears back to the VIBERPIT_ASSISTANT_ENABLED /
+    # VIBERPIT_ASSISTANT_MODEL env fallback, omitted leaves the stored value alone.
     assistantEnabled: bool | None = None
     assistantModel: str | None = None
     # Operator tier (v2 spec B1). Same three-state contract; null clears back to
-    # CCSWITCH_ASSISTANT_OPERATOR_TOOLS, which is false.
+    # VIBERPIT_ASSISTANT_OPERATOR_TOOLS, which is false.
     assistantOperatorTools: bool | None = None
 
 

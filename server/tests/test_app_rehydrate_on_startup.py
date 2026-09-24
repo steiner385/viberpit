@@ -28,7 +28,7 @@ def test_startup_rehydrates_sessions_into_list(tmp_path):
 
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/sessions", headers=_IDENT)
         assert resp.status_code == 200, resp.text
@@ -51,7 +51,7 @@ def test_rehydrate_normalizes_condensing_to_idle(tmp_path):
 
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     app = create_app(orchestrator=orch)
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/sessions", headers=_IDENT)
         assert resp.status_code == 200, resp.text
@@ -68,7 +68,7 @@ def test_rehydrate_error_does_not_brick_startup(tmp_path):
 
     app = create_app(orchestrator=orch)
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+    with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
          TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/api/health", headers=_IDENT)
         assert resp.status_code == 200, resp.text

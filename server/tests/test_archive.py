@@ -56,7 +56,7 @@ async def _drain_bg(orch: SessionOrchestrator) -> None:
 
 
 def _make_orch(tmp_path: Path) -> tuple[str, str, SessionOrchestrator]:
-    """Return (db_url, archive_base, orchestrator) wired to a temp CCSWITCH_HOME."""
+    """Return (db_url, archive_base, orchestrator) wired to a temp VIBERPIT_HOME."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     archive_base = str(tmp_path / "archive")
     return db_url, archive_base, SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -76,8 +76,8 @@ def test_archive_leaves_cwd_in_place_and_sets_db_status(tmp_path):
     (cwd / "work.txt").write_text("some work")
 
     async def run():
-        # Point CCSWITCH_HOME at tmp so archive_dir() lands inside tmp_path.
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        # Point VIBERPIT_HOME at tmp so archive_dir() lands inside tmp_path.
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s1", name="S1", account_name="acct1",
@@ -116,7 +116,7 @@ def test_archive_missing_cwd_still_marks_archived(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s2", name="S2", account_name="acct1",
@@ -148,7 +148,7 @@ def test_archive_removes_from_records_and_drivers(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s3", name="S3", account_name="acct1",
@@ -274,7 +274,7 @@ def test_unarchive_new_style_flips_status_in_place(tmp_path):
     cwd = tmp_path / "inplace_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             cwd.mkdir()
             (cwd / "work.txt").write_text("still here")
 
@@ -311,7 +311,7 @@ def test_unarchive_moves_folder_back_and_sets_idle(tmp_path):
     original_cwd = tmp_path / "my_session_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             # Simulate an already-archived session: archive folder exists, original is gone.
             archive_path = tmp_path / "archive" / "s10"
             archive_path.mkdir(parents=True)
@@ -360,7 +360,7 @@ def test_unarchive_missing_archive_folder_raises(tmp_path):
     original_cwd = tmp_path / "regen_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             # No archive folder present.
             await init_db(db_url=db_url)
             await _seed([
@@ -381,7 +381,7 @@ def test_unarchive_returns_none_for_unknown_session(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             return await orch.unarchive("does-not-exist")
@@ -395,7 +395,7 @@ def test_unarchive_reappears_in_list_sessions(tmp_path):
     original_cwd = tmp_path / "comeback_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             # Create archive folder
             archive_path = tmp_path / "archive" / "s12"
             archive_path.mkdir(parents=True)
@@ -428,7 +428,7 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             # Create archive folder with content.
             archive_path = tmp_path / "archive" / "s20"
             archive_path.mkdir(parents=True)
@@ -469,7 +469,7 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     cwd = tmp_path / ".ccswitch" / "worktrees" / "live_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             cwd.mkdir(parents=True)
             (cwd / "work.txt").write_text("live work")
 
@@ -520,7 +520,7 @@ def test_permanent_delete_new_style_removes_worktree(tmp_path):
     cwd = tmp_path / ".ccswitch" / "worktrees" / "s30"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             cwd.mkdir(parents=True)
             (cwd / "work.txt").write_text("reclaim me")
 
@@ -554,7 +554,7 @@ def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
     cwd = tmp_path / "users_real_checkout"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             cwd.mkdir()
             (cwd / "precious.txt").write_text("do not delete")
 
@@ -625,7 +625,7 @@ def test_permanent_delete_returns_false_for_unknown(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             return await orch.permanent_delete("no-such-session")
@@ -645,7 +645,7 @@ def test_permanent_delete_containment_guard(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             # A valid DB row but its candidate path resolves to the archive_dir itself,
             # which is not strictly INSIDE it (relative_to fails for parent == base).
             # We simulate by crafting a session id that is a real uuid so the DB
@@ -682,7 +682,7 @@ def test_transcript_events_returns_replayed_events(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="t1", name="T1", account_name="acc1",
@@ -716,7 +716,7 @@ def test_transcript_events_returns_empty_when_no_transcript(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             # Session with no engine_session_id → can't glob a transcript.
             await _seed([
@@ -742,7 +742,7 @@ def test_resolve_transcript_path_without_credential_slot(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="g1", name="Ghost", account_name="ghost_account",
@@ -773,7 +773,7 @@ def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
     original_cwd = tmp_path / "oom_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             archive_path = tmp_path / "archive" / "s_oom"
             archive_path.mkdir(parents=True)
             (archive_path / "data.txt").write_text("data")
@@ -800,7 +800,7 @@ def test_unarchive_error_message_names_real_mountpoint(tmp_path):
     original_cwd = tmp_path / "oom_cwd"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             archive_path = tmp_path / "archive" / "s_oom"
             archive_path.mkdir(parents=True)
             (archive_path / "data.txt").write_text("data")
@@ -836,8 +836,8 @@ def test_permanent_delete_uses_stored_archive_root_not_current_home(tmp_path):
 
     async def run():
         # Current archive home points at new_root; the session lives under old_root.
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
-                                     "CCSWITCH_ARCHIVE_HOME": str(new_root)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path),
+                                     "VIBERPIT_ARCHIVE_HOME": str(new_root)}):
             new_root.mkdir(parents=True)
             archive_path = old_root / "s21"
             archive_path.mkdir(parents=True)

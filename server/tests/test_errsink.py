@@ -196,7 +196,7 @@ def test_configure_logging_installs_sink_once(monkeypatch):
     root = logging.getLogger()
     before = list(root.handlers)
     monkeypatch.setattr(jsonlog, "_configured", False)
-    monkeypatch.delenv("CCSWITCH_ERROR_SINK_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_ERROR_SINK_ENABLED", raising=False)
     errsink.reset_for_tests()
     try:
         jsonlog.configure_logging(process="daemon")
@@ -216,7 +216,7 @@ def test_configure_logging_respects_kill_switch(monkeypatch):
     root = logging.getLogger()
     before = list(root.handlers)
     monkeypatch.setattr(jsonlog, "_configured", False)
-    monkeypatch.setenv("CCSWITCH_ERROR_SINK_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_ERROR_SINK_ENABLED", "false")
     errsink.reset_for_tests()
     try:
         jsonlog.configure_logging()
@@ -231,9 +231,9 @@ def test_edge_lifespan_runs_the_flusher(monkeypatch, tmp_path):
     """The edge lifespan starts the sink's flusher after init_db and stops it on shutdown."""
     from fastapi.testclient import TestClient
     from server.obs import errsink, jsonlog
-    monkeypatch.setenv("CCSWITCH_DEV", "1")
-    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
-    monkeypatch.setenv("CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}")
+    monkeypatch.setenv("VIBERPIT_DEV", "1")
+    monkeypatch.delenv("VIBERPIT_TAILNET_ALLOWLIST", raising=False)
+    monkeypatch.setenv("VIBERPIT_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}")
     monkeypatch.setattr(jsonlog, "_configured", False)
     root = logging.getLogger()
     before = list(root.handlers)

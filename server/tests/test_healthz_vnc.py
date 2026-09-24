@@ -19,9 +19,9 @@ def _client(tmp_path):
     from server.app import create_app
 
     env = {
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-        "CCSWITCH_HOME": str(tmp_path),
-        "CCSWITCH_DEV": "1",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_HOME": str(tmp_path),
+        "VIBERPIT_DEV": "1",
     }
     with patch.dict(os.environ, env):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)

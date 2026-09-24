@@ -21,13 +21,13 @@ def test_once_returns_1_on_error(monkeypatch):
 def test_deploy_socket_default(monkeypatch):
     from server import hostpaths
     from server.deploy import serve
-    monkeypatch.delenv("CCSWITCH_DEPLOY_SOCKET", raising=False)
+    monkeypatch.delenv("VIBERPIT_DEPLOY_SOCKET", raising=False)
     assert serve.deploy_socket() == hostpaths.DEPLOY_SOCKET
 
 
 def test_deploy_socket_env_override(monkeypatch):
     from server.deploy import serve
-    monkeypatch.setenv("CCSWITCH_DEPLOY_SOCKET", "/tmp/x.sock")
+    monkeypatch.setenv("VIBERPIT_DEPLOY_SOCKET", "/tmp/x.sock")
     assert serve.deploy_socket() == "/tmp/x.sock"
 
 

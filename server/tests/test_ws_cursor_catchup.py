@@ -611,9 +611,9 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
     daemon.start()
     daemon2 = None
     env = {
-        "CCSWITCH_SESSIOND_SOCKET": sock,
-        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
-        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+        "VIBERPIT_SESSIOND_SOCKET": sock,
+        "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
+        "VIBERPIT_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
     }
     try:
         with mock.patch.dict(os.environ, env):

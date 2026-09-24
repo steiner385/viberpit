@@ -36,8 +36,8 @@ _CANNED_STATUS = {
 _CANNED_CANCEL = {"state": "idle"}
 
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
 }
 
 

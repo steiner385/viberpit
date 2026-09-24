@@ -31,7 +31,7 @@ def _write_raw_slot(name: str, blob: dict) -> None:
 def test_ensure_valid_token_raises_autherror_not_keyerror(tmp_path, monkeypatch, blob):
     """A non-fresh blob lacking refreshToken raises AuthError (the canonical
     'needs reauth' signal), never a KeyError."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _write_raw_slot("primary", blob)
     with pytest.raises(oauth.AuthError):
         accounts.ensure_valid_token("primary")
@@ -40,7 +40,7 @@ def test_ensure_valid_token_raises_autherror_not_keyerror(tmp_path, monkeypatch,
 def test_usage_for_marks_needs_reauth_on_missing_refresh_token(tmp_path, monkeypatch):
     """usage_for must degrade an unrefreshable account to needs-reauth + None,
     exactly as it does for a genuine AuthError — not raise."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _write_raw_slot("primary", {})  # the exact incident shape
     result = accounts.usage_for("primary")
     assert result is None

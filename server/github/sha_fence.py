@@ -65,7 +65,7 @@ def _remote() -> str:
 async def daemon_matches_origin_master(*, ttl_s: float = 60.0) -> bool:
     """True iff ``running_git_sha()`` is a prefix of the remote's master sha.
 
-    ``running_git_sha()`` is short (or an injected ``CCSWITCH_GIT_SHA``), so the comparison is a
+    ``running_git_sha()`` is short (or an injected ``VIBERPIT_GIT_SHA``), so the comparison is a
     prefix test against the full 40-char remote sha; a too-short local sha (``< 7`` chars) would
     make that prefix test meaninglessly permissive and is refused. Any error from the network
     call fails closed. Cached for *ttl_s* seconds — this is a real remote round-trip and the

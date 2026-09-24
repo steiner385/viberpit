@@ -30,7 +30,7 @@ from server.codex.catalog import CodexModelCatalog, ModelOption  # noqa: E402
 from server.sessions.engine import AgentEngine  # noqa: E402
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1"}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1"}
 
 _MODELS = (
     ModelOption(

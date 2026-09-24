@@ -21,7 +21,7 @@ _STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIK
 
 # Extensions carried into the temp login profile. 1Password by default: with its
 # files + state copied, the user unlocks with the master password inside the reauth
-# window instead of typing credentials by hand. Override: CCSWITCH_REAUTH_EXTENSIONS.
+# window instead of typing credentials by hand. Override: VIBERPIT_REAUTH_EXTENSIONS.
 REAUTH_EXTENSION_IDS: tuple[str, ...] = ("aeblfdkhhhdcdjpifhhbdiojplfjncoa",)
 
 # Registrable domains whose cookies are carried into the temp login profile, as an
@@ -33,7 +33,7 @@ REAUTH_EXTENSION_IDS: tuple[str, ...] = ("aeblfdkhhhdcdjpifhhbdiojplfjncoa",)
 # exactly the shape session-risk heuristics score as a hijack — and the observed
 # result was their unrelated Google session being invalidated. An allowlist also
 # fails safe: a domain nobody enumerated is dropped, where the old `%claude%`
-# denylist carried it over. Opt in per domain with CCSWITCH_REAUTH_COOKIE_HOSTS.
+# denylist carried it over. Opt in per domain with VIBERPIT_REAUTH_COOKIE_HOSTS.
 REAUTH_COOKIE_HOSTS: tuple[str, ...] = ()
 
 
@@ -317,7 +317,7 @@ def capture_login(
         cfg = load_config()
 
         claude_cmd: list[str] = shlex.split(
-            os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin)
+            os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin)
         )
     else:
         claude_cmd = list(claude_bin)

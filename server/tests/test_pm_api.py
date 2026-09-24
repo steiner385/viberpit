@@ -38,9 +38,9 @@ def _client():
     # (_no_ambient_remote_daemon_config) so create_app() stays in-process.
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                     "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=orch)
             with TestClient(app, raise_server_exceptions=False) as c:
@@ -482,21 +482,21 @@ def _client_with_stubbed_seams():
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
     _clear = [
-        "CCSWITCH_SESSIOND_ENDPOINT",
-        "CCSWITCH_SESSIOND_SOCKET",
-        "CCSWITCH_SESSIOND_HOST",
-        "CCSWITCH_SESSIOND_PORT",
-        "CCSWITCH_SESSIOND_CLIENT_CERT",
-        "CCSWITCH_SESSIOND_CLIENT_KEY",
-        "CCSWITCH_SESSIOND_CA",
+        "VIBERPIT_SESSIOND_ENDPOINT",
+        "VIBERPIT_SESSIOND_SOCKET",
+        "VIBERPIT_SESSIOND_HOST",
+        "VIBERPIT_SESSIOND_PORT",
+        "VIBERPIT_SESSIOND_CLIENT_CERT",
+        "VIBERPIT_SESSIOND_CLIENT_KEY",
+        "VIBERPIT_SESSIOND_CA",
     ]
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
         saved = {k: os.environ.pop(k, None) for k in _clear}
         try:
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
-                                         "CCSWITCH_DEV": "1",
-                                         "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                         "VIBERPIT_DEV": "1",
+                                         "VIBERPIT_TAILNET_ALLOWLIST": ""}):
                 orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
 
                 async def _fake_spawn_map(slug, **_kwargs):

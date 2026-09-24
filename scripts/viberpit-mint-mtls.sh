@@ -8,7 +8,7 @@
 # Use the TAILNET identity, not a LAN name: `rocky` resolves to a LAN address via mDNS,
 # so a cert minted for rocky.lan would silently describe the wrong path.
 #
-# The CA pair is installed into $CCSWITCH_TLS_DIR (default /etc/viberpit/tls; existing legacy root is retained), not just
+# The CA pair is installed into $VIBERPIT_TLS_DIR (default /etc/viberpit/tls; existing legacy root is retained), not just
 # the outdir: every future host onboarding needs ca.key, and the original fleet mint
 # left it behind in an ephemeral outdir (issue #841). If a CA already exists there this
 # script refuses to run — a re-mint creates a NEW CA the rest of the fleet does not
@@ -33,13 +33,13 @@ for existing in "$TLS_DIR"/ca*.pem "$TLS_DIR"/ca*.key; do
   echo "refusing to mint: $existing exists — this fleet already has a CA." >&2
   echo "A fresh CA would not be trusted by the existing edge/hosts. Sign the new host's" >&2
   echo "cert with the existing CA (onboarding runbook, Step 3 Option A), or point" >&2
-  echo "CCSWITCH_TLS_DIR at another directory for a genuinely separate fleet." >&2
+  echo "VIBERPIT_TLS_DIR at another directory for a genuinely separate fleet." >&2
   exit 1
 done
 
 mkdir -p "$TLS_DIR" 2>/dev/null || true
 if [ ! -d "$TLS_DIR" ] || [ ! -w "$TLS_DIR" ]; then
-  echo "cannot write $TLS_DIR — run with sudo (or set CCSWITCH_TLS_DIR to a durable dir)." >&2
+  echo "cannot write $TLS_DIR — run with sudo (or set VIBERPIT_TLS_DIR to a durable dir)." >&2
   echo "The CA key must land somewhere durable, not just the outdir: losing ca.key makes" >&2
   echo "every future host onboarding impossible (issue #841)." >&2
   exit 1
@@ -56,7 +56,7 @@ openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out server.pem -days 825 \
   -extfile <(printf "subjectAltName=DNS:%s,IP:%s" "$DNS" "$IP") 2>/dev/null
 
-# CN=edge is what CCSWITCH_SESSIOND_CLIENT_ALLOWLIST pins against, narrowing trust
+# CN=edge is what VIBERPIT_SESSIOND_CLIENT_ALLOWLIST pins against, narrowing trust
 # from "any CA-signed client" to this one client.
 openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr \
   -subj "/CN=edge" 2>/dev/null

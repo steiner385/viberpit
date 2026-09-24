@@ -279,7 +279,7 @@ _SUGGEST_AUTH_FAIL_BACKOFF_S: float = 60.0
 # refine_prompt_codex's REFINE_TIMEOUT_S: never unbounded, since a wedged
 # turn must not hold the helper thread (and the app-server slot it occupies)
 # open forever.
-_SUGGEST_CODEX_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_SUGGEST_CODEX_TIMEOUT_S", "20"))
+_SUGGEST_CODEX_TIMEOUT_S: float = float(os.environ.get("VIBERPIT_SUGGEST_CODEX_TIMEOUT_S", "20"))
 
 # Rate-limit window for _default_title_fn's give-up WARNING (see below). Same account-keyed
 # monotonic-deadline shape as _SUGGEST_AUTH_FAIL_BACKOFF_S above, but scoped to the log line
@@ -543,7 +543,7 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 #
 # minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
 # turn EVERY transcript into an empty one — fall back to the default instead.
-_TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
+_TRANSCRIPT_WINDOW_CEILING_S = env_float("VIBERPIT_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
 
 # Replay and pause both re-enter from polling loops — titling/summary sweeps for the
 # first, the stuck-session sweep for the second — so an unfixable session repeats its
@@ -568,7 +568,7 @@ _STOP_DRIVER_CLOSE_TIMEOUT_S = 10.0
 # deliberate, user-initiated download — the user is already waiting on a file — so it
 # gets its own, larger ceiling. Blowing even this is surfaced as a 504 by the caller,
 # never as a successful empty document (a silent empty export is worse than a slow one).
-TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 120.0, minimum=0.1)
+TRANSCRIPT_EXPORT_CEILING_S = env_float("VIBERPIT_TRANSCRIPT_EXPORT_CEILING_S", 120.0, minimum=0.1)
 
 # Ceiling on how long ensure_driver waits for an in-flight completion-driver release
 # before it gives up and builds the replacement driver anyway. That wait exists to
@@ -578,13 +578,13 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 
 # unbounded wait would let one stuck teardown wedge every attach in the process.
 # minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
 # race protection entirely — fall back to the default instead.
-DRIVER_RELEASE_WAIT_S = env_float("CCSWITCH_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
+DRIVER_RELEASE_WAIT_S = env_float("VIBERPIT_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
 # How long ensure_driver waits for an IN-FLIGHT spawn of the same session before
 # giving up (asyncio.TimeoutError → the bridge's SESSION_RESUME_TIMEOUT hint). A
 # spawn is driver.start() — the SDK subprocess plus its MCP fleet — normally a few
 # seconds; on a saturated box it can be far longer, and building a second driver
 # meanwhile is never the right answer. Stays under the bridge's 90 s attach deadline.
-SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
+SPAWN_WAIT_S = env_float("VIBERPIT_SPAWN_WAIT_S", 60.0, minimum=1.0)
 
 # ---------------------------------------------------------------------------
 # Daemon identity + host-partitioned session ownership (#852)
@@ -594,21 +594,21 @@ SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
 # take it over (fenced). Renewal cadence is TTL/5. Same-host re-acquisition ignores
 # staleness entirely (systemd guarantees one daemon per host), so a crash restart
 # of the real primary is never delayed by this.
-PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
+PRIMARY_LEASE_TTL_S = env_float("VIBERPIT_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
 
 # How stale a PER-SESSION lease's heartbeat may be before a different host may claim
 # that session (#1379). Deliberately far shorter than the primary lease: this one is
 # only held while a driver is actually live, it is released the moment the driver
 # goes away, and the TTL is the worst-case delay before a genuinely dead host's
 # sessions can be picked up elsewhere. Renewal cadence is TTL/5.
-SESSION_LEASE_TTL_S = env_float("CCSWITCH_SESSION_LEASE_TTL_S", 120.0, minimum=10.0)
+SESSION_LEASE_TTL_S = env_float("VIBERPIT_SESSION_LEASE_TTL_S", 120.0, minimum=10.0)
 
 # Kill switch for the per-session lease gate. When false the lease is still taken and
 # renewed (so the DB shows who believes it owns what) but a LOSS no longer blocks a
 # driver build — the pre-#1379 behaviour, kept reachable for an operator who has to
 # force a takeover without waiting out the TTL.
 def session_lease_enforced() -> bool:
-    return os.environ.get("CCSWITCH_SESSION_LEASE_ENFORCE", "").strip().lower() \
+    return os.environ.get("VIBERPIT_SESSION_LEASE_ENFORCE", "").strip().lower() \
         not in {"0", "false", "no", "off"}
 
 
@@ -649,7 +649,7 @@ def _limiting_window(usage, ceiling: float, model: str | None = None):
 
 
 def daemon_role() -> str:
-    """Return this daemon's role from ``CCSWITCH_DAEMON_ROLE``.
+    """Return this daemon's role from ``VIBERPIT_DAEMON_ROLE``.
 
     ``primary`` (the default) runs every background loop and owns fleet-global
     automation; ``worker`` serves dispatched sessions only (#840). Any other
@@ -657,10 +657,10 @@ def daemon_role() -> str:
     fleet on a typo, and silently becoming ``worker`` would quietly stop every
     automation — both are worse than a loud failed boot.
     """
-    role = os.environ.get("CCSWITCH_DAEMON_ROLE", "primary").strip().lower()
+    role = os.environ.get("VIBERPIT_DAEMON_ROLE", "primary").strip().lower()
     if role not in ("primary", "worker"):
         raise ValueError(
-            f"CCSWITCH_DAEMON_ROLE={role!r} — expected 'primary' or 'worker'"
+            f"VIBERPIT_DAEMON_ROLE={role!r} — expected 'primary' or 'worker'"
         )
     return role
 
@@ -797,11 +797,11 @@ class SessionOrchestrator:
         # what keeps the feature fail-closed: the two lifecycle hooks below become
         # no-ops and no other engine's behaviour changes.
         self._codex = codex
-        if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
+        if os.environ.get("VIBERPIT_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
             self._suggester = SuggestionService(suggestion_factory or real_suggestion_factory)
-        if os.environ.get("CCSWITCH_SUMMARIES", "1") == "0":
+        if os.environ.get("VIBERPIT_SUMMARIES", "1") == "0":
             self._summarizer = None
         else:
             self._summarizer = SummaryService(summary_factory or real_summary_factory)
@@ -1124,7 +1124,7 @@ class SessionOrchestrator:
         # ``gitrepos.app_token_for_repo`` after import does nothing and a test
         # would silently mint a real installation token (reading the App's
         # private key, signing a JWT, calling api.github.com) and capture the
-        # host's real ``CCSWITCH_GH_PROJECT_TOKEN``.
+        # host's real ``VIBERPIT_GH_PROJECT_TOKEN``.
         self._gh_token_provider = gitrepos.app_token_for_repo
         self._gh_env: Mapping[str, str] = os.environ
         # Backlog Runner control loop. Every I/O seam is now the real Plan-B
@@ -2224,7 +2224,7 @@ class SessionOrchestrator:
                 raise RuntimeError(
                     f"primary lease {held} — another primary daemon is alive. "
                     f"Exactly one daemon in the fleet may run as primary: set "
-                    f"CCSWITCH_DAEMON_ROLE=worker on this host ({me!r}) or stop "
+                    f"VIBERPIT_DAEMON_ROLE=worker on this host ({me!r}) or stop "
                     f"the other daemon first."
                 )
             self._lease_fence = fence
@@ -2278,7 +2278,7 @@ class SessionOrchestrator:
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
         )
         # Assistant idle-reap sweep (spec §4.7): closes the driver of any AI-drawer
-        # session idle past CCSWITCH_ASSISTANT_IDLE_S, keeping the row for
+        # session idle past VIBERPIT_ASSISTANT_IDLE_S, keeping the row for
         # resume-on-reopen. Per-host local cleanup like the janitor above — an
         # assistant's live driver only exists in the `_drivers` of the daemon that
         # spawned it, so every host (primary or worker) must run its own sweep.
@@ -2410,7 +2410,7 @@ class SessionOrchestrator:
         fresh each beat and only ever set at boot. So the row's holder decides
         everything: our own host name means one daemon, not two, so a WARNING;
         any other host is the #852 split-brain the CRITICAL exists for, logged
-        every beat until an operator fixes ``CCSWITCH_DAEMON_ROLE`` — this loop
+        every beat until an operator fixes ``VIBERPIT_DAEMON_ROLE`` — this loop
         does not self-demote (stopping live automation loops mid-flight has its
         own failure modes).
         """
@@ -2440,7 +2440,7 @@ class SessionOrchestrator:
         log.critical(
             "primary-lease: LOST (fenced takeover by %r) — TWO primary "
             "daemons are configured. This daemon keeps running but the "
-            "fleet is double-driven until CCSWITCH_DAEMON_ROLE is fixed "
+            "fleet is double-driven until VIBERPIT_DAEMON_ROLE is fixed "
             "on one host and that daemon restarts.",
             holder if holder is not None else "<released>",
         )
@@ -4688,7 +4688,7 @@ class SessionOrchestrator:
         (``self._engine_registry`` + ``CodexRunnerManager``) — no separate
         subprocess/protocol code, no parallel orchestration stack.
 
-        Gated on ``CCSWITCH_CODEX_REFINE_ENABLED`` (default off): unlike the Claude
+        Gated on ``VIBERPIT_CODEX_REFINE_ENABLED`` (default off): unlike the Claude
         path, this has not been verified against a live ``codex`` binary/account, and
         constitution Principle III forbids claiming vendor parity from assumptions.
         Flip the flag once verified end-to-end.
@@ -4708,7 +4708,7 @@ class SessionOrchestrator:
         """
         if self._codex is None:
             return None
-        if os.environ.get("CCSWITCH_CODEX_REFINE_ENABLED", "false").lower() not in (
+        if os.environ.get("VIBERPIT_CODEX_REFINE_ENABLED", "false").lower() not in (
             "1", "true", "yes",
         ):
             return None
@@ -4761,14 +4761,14 @@ class SessionOrchestrator:
         account for a Claude-side dispatch), *account* here is always the
         session's own account — this generates suggestions FOR that session.
 
-        Gated on ``CCSWITCH_CODEX_SUGGEST_ENABLED`` (default off): unlike the
+        Gated on ``VIBERPIT_CODEX_SUGGEST_ENABLED`` (default off): unlike the
         Claude path, this has not been verified against a live ``codex``
         binary/account, and constitution Principle III forbids claiming vendor
         parity from assumptions. Flip the flag once verified end-to-end.
         """
         if self._codex is None:
             return []
-        if os.environ.get("CCSWITCH_CODEX_SUGGEST_ENABLED", "false").lower() not in (
+        if os.environ.get("VIBERPIT_CODEX_SUGGEST_ENABLED", "false").lower() not in (
             "1", "true", "yes",
         ):
             return []
@@ -5494,7 +5494,7 @@ class SessionOrchestrator:
         if rec is None:
             return
         # The assistant has no worktree to reclaim and no dashboard card to clear; its
-        # lifetime is the idle reap (CCSWITCH_ASSISTANT_IDLE_S), not completion.
+        # lifetime is the idle reap (VIBERPIT_ASSISTANT_IDLE_S), not completion.
         if is_assistant(rec):
             return
         # A human unarchived this session → honor the sticky opt-out and never re-archive it.
@@ -8393,7 +8393,7 @@ class SessionOrchestrator:
         """Owner-aware GraphQL call for the Projects v2 mirror and reconciler.
 
         Token resolution order (injected via child env only — never logged):
-        1. ``CCSWITCH_GH_PROJECT_TOKEN`` — a classic PAT with ``project``+``repo``
+        1. ``VIBERPIT_GH_PROJECT_TOKEN`` — a classic PAT with ``project``+``repo``
            scopes; the only credential verified against user-owned Projects v2
            (GitHub Apps have no user-level Projects permission; Phase 0 addendum
            2026-09-03).  Used for ALL owners when set.
@@ -8407,7 +8407,7 @@ class SessionOrchestrator:
         per-alias verdicts back."""
         from server.github import app_auth
         from server.pm.gh_mutations import payload_from_gh
-        token: str | None = os.environ.get("CCSWITCH_GH_PROJECT_TOKEN") or None
+        token: str | None = os.environ.get("VIBERPIT_GH_PROJECT_TOKEN") or None
         if token is None:
             token = await asyncio.to_thread(app_auth.token_for_owner, owner)
         args = ["api", "graphql", "-f", f"query={query}"]
@@ -9402,7 +9402,7 @@ class SessionOrchestrator:
 
     @staticmethod
     def _gh_reconcile_kill_switch() -> bool:
-        """CCSWITCH_GH_RECONCILE_ENABLED, re-read from settings every cycle.
+        """VIBERPIT_GH_RECONCILE_ENABLED, re-read from settings every cycle.
 
         Re-reading is not the same as picking up an edit: the value comes from the
         daemon's process environment (systemd env file), so flipping the kill switch
@@ -13524,7 +13524,7 @@ class SessionOrchestrator:
         ``CodexRunnerManager``) — no separate subprocess/protocol code, no parallel
         orchestration stack.
 
-        Gated on ``CCSWITCH_CODEX_GOAL_ENABLED`` (default off): unlike the Claude
+        Gated on ``VIBERPIT_CODEX_GOAL_ENABLED`` (default off): unlike the Claude
         path, this has not been verified against a live ``codex`` binary/account, and
         constitution Principle III forbids claiming vendor parity from assumptions.
         Flip the flag once verified end-to-end.
@@ -13535,7 +13535,7 @@ class SessionOrchestrator:
         """
         if self._codex is None:
             return None
-        if os.environ.get("CCSWITCH_CODEX_GOAL_ENABLED", "false").lower() not in (
+        if os.environ.get("VIBERPIT_CODEX_GOAL_ENABLED", "false").lower() not in (
             "1", "true", "yes",
         ):
             return None
@@ -14021,7 +14021,7 @@ class SessionOrchestrator:
             # Idempotent re-calls must not reset a prior boot's count to 0.
             self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
             return 0
-        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+        sem = asyncio.Semaphore(int(os.environ.get("VIBERPIT_REARM_CONCURRENCY", "3")))
 
         async def _one(sid: str, snap: list | None, prompt: str | None) -> bool:
             async with sem:
@@ -15262,7 +15262,7 @@ class SessionOrchestrator:
             self._publish_event({"type": "updatePending"})
             timeout = (
                 selfclear_sec if selfclear_sec is not None
-                else float(os.environ.get("CCSWITCH_DRAIN_SELFCLEAR_SEC", "600"))
+                else float(os.environ.get("VIBERPIT_DRAIN_SELFCLEAR_SEC", "600"))
             )
             self._drain_timer = asyncio.create_task(
                 self._drain_selfclear(timeout), name="drain-selfclear")
@@ -15872,10 +15872,10 @@ class SessionOrchestrator:
 
     async def auto_resume_interrupted(self) -> int:
         """Opt-in: resume every eligible restart-interrupted session on startup.
-        Off unless CCSWITCH_AUTO_RESUME_ON_RESTART is truthy. Bounded by
-        CCSWITCH_REARM_CONCURRENCY. Run AFTER rearm so replayed pending_prompt
+        Off unless VIBERPIT_AUTO_RESUME_ON_RESTART is truthy. Bounded by
+        VIBERPIT_REARM_CONCURRENCY. Run AFTER rearm so replayed pending_prompt
         sessions are already un-interrupted and skip naturally."""
-        if not self._env_truthy("CCSWITCH_AUTO_RESUME_ON_RESTART"):
+        if not self._env_truthy("VIBERPIT_AUTO_RESUME_ON_RESTART"):
             return 0
         # Assistants excluded for the same reason as _recover_undelivered_prompts: an
         # assistant "turn" is an answer to something the user asked before the restart,
@@ -15886,7 +15886,7 @@ class SessionOrchestrator:
                     and not is_assistant(rec) and self._resume_eligible(rec) is None]
         if not eligible:
             return 0
-        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+        sem = asyncio.Semaphore(int(os.environ.get("VIBERPIT_REARM_CONCURRENCY", "3")))
 
         async def _one(sid: str) -> bool:
             async with sem:
@@ -16334,7 +16334,7 @@ class SessionOrchestrator:
     ) -> dict:
         """Move archived session dirs old_home→new_home on the DAEMON's filesystem.
 
-        The archive dirs live under the daemon's CCSWITCH_HOME, so the moves must
+        The archive dirs live under the daemon's VIBERPIT_HOME, so the moves must
         run on the daemon host — on the edge src.exists() is always False and the
         migration silently no-ops (issue #709, finding 5). archived_ids come from
         the (shared) DB; only the filesystem move is host-specific. Path defaults
@@ -19414,7 +19414,7 @@ class SessionOrchestrator:
         return val or (self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub"))
 
     async def _effective_archive_home(self) -> "Path":
-        """DB AppSettings.archive_home → CCSWITCH_ARCHIVE_HOME env → default fallback.
+        """DB AppSettings.archive_home → VIBERPIT_ARCHIVE_HOME env → default fallback.
 
         Reads the runtime-settable archive directory from the settings singleton.
         Falls back to the env-var/default path from archive_dir() if not set in DB.

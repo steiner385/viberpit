@@ -526,15 +526,15 @@ def test_build_refuses_when_the_experimental_surface_is_disabled():
 
 
 def test_build_refuses_when_no_authority_endpoint_is_configured(monkeypatch):
-    monkeypatch.delenv("CCSWITCH_CODEX_AUTHORITY_ENDPOINT", raising=False)
+    monkeypatch.delenv("VIBERPIT_CODEX_AUTHORITY_ENDPOINT", raising=False)
     with pytest.raises(ExternalAuthUnavailable) as exc:
         build_external_auth_provider(_settings(codex_external_auth_enabled=True))
     assert "AUTHORITY_ENDPOINT" in str(exc.value)
 
 
 def test_build_refuses_when_the_mtls_material_is_incomplete(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_CODEX_AUTHORITY_ENDPOINT", "https://dobby:8443")
-    monkeypatch.delenv("CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT", raising=False)
+    monkeypatch.setenv("VIBERPIT_CODEX_AUTHORITY_ENDPOINT", "https://dobby:8443")
+    monkeypatch.delenv("VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT", raising=False)
     with pytest.raises(ExternalAuthUnavailable):
         build_external_auth_provider(_settings(codex_external_auth_enabled=True))
 
@@ -555,7 +555,7 @@ def test_build_codex_manager_returns_none_rather_than_managed_auth(monkeypatch):
         )
 
     monkeypatch.setattr(proc, "probe_availability", _available)
-    monkeypatch.delenv("CCSWITCH_CODEX_AUTHORITY_ENDPOINT", raising=False)
+    monkeypatch.delenv("VIBERPIT_CODEX_AUTHORITY_ENDPOINT", raising=False)
     settings = _settings(
         codex_enabled=True,
         codex_external_auth_enabled=True,

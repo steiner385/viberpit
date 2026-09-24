@@ -16,7 +16,7 @@ from server.db.models import AppSettings
 @pytest.mark.asyncio
 async def test_enabled_env_then_settings_override(isolated_db):
     from server.db import db_session
-    with patch.dict(os.environ, {"CCSWITCH_ASSISTANT_ENABLED": "false"}):
+    with patch.dict(os.environ, {"VIBERPIT_ASSISTANT_ENABLED": "false"}):
         async with db_session() as db:
             assert await assistant_enabled(db) is False
             db.add(AppSettings(id="singleton", assistant_enabled=True))
@@ -27,7 +27,7 @@ async def test_enabled_env_then_settings_override(isolated_db):
 @pytest.mark.asyncio
 async def test_model_default_sonnet(isolated_db, monkeypatch):
     from server.db import db_session
-    monkeypatch.delenv("CCSWITCH_ASSISTANT_MODEL", raising=False)
+    monkeypatch.delenv("VIBERPIT_ASSISTANT_MODEL", raising=False)
     async with db_session() as db:
         assert await assistant_model(db) == "sonnet"
 
@@ -38,7 +38,7 @@ async def test_model_default_sonnet(isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_operator_tools_default_off(isolated_db, monkeypatch):
     from server.db import db_session
-    monkeypatch.delenv("CCSWITCH_ASSISTANT_OPERATOR_TOOLS", raising=False)
+    monkeypatch.delenv("VIBERPIT_ASSISTANT_OPERATOR_TOOLS", raising=False)
     async with db_session() as db:
         assert await operator_tools_enabled(db) is False
 
@@ -46,7 +46,7 @@ async def test_operator_tools_default_off(isolated_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_operator_tools_env_then_settings_override(isolated_db):
     from server.db import db_session
-    with patch.dict(os.environ, {"CCSWITCH_ASSISTANT_OPERATOR_TOOLS": "true"}):
+    with patch.dict(os.environ, {"VIBERPIT_ASSISTANT_OPERATOR_TOOLS": "true"}):
         async with db_session() as db:
             assert await operator_tools_enabled(db) is True
             # An explicit stored False beats the env's True: the switch in Settings is

@@ -101,9 +101,9 @@ def spawn_env(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 't.db'}"
     from ccswitch.selector import Picked
     patches = [
-        patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path / "home"),
-                                "CLAUDE_CONFIG_DIR": str(shared), "CCSWITCH_DB_URL": db_url,
-                                "CCSWITCH_HOST_NAME": "dobby"}),
+        patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path / "home"),
+                                "CLAUDE_CONFIG_DIR": str(shared), "VIBERPIT_DB_URL": db_url,
+                                "VIBERPIT_HOST_NAME": "dobby"}),
         patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
         patch("server.sessions.orchestrator.configdir.trust_project"),
         patch("server.sessions.orchestrator.select_account", return_value=Picked("acct")),

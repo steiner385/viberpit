@@ -14,11 +14,11 @@ def test_default_socket_path_and_env_override():
     from server import hostpaths
     assert DEFAULT_SOCKET_PATH == hostpaths.SESSIOND_SOCKET
     with mock.patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("CCSWITCH_SESSIOND_SOCKET", None)
-        os.environ.pop("CCSWITCH_SESSIOND_ENDPOINT", None)
+        os.environ.pop("VIBERPIT_SESSIOND_SOCKET", None)
+        os.environ.pop("VIBERPIT_SESSIOND_ENDPOINT", None)
         assert sessiond_endpoint().path == DEFAULT_SOCKET_PATH
-    with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_SOCKET": "/tmp/x.sock"}):
-        os.environ.pop("CCSWITCH_SESSIOND_ENDPOINT", None)
+    with mock.patch.dict(os.environ, {"VIBERPIT_SESSIOND_SOCKET": "/tmp/x.sock"}):
+        os.environ.pop("VIBERPIT_SESSIOND_ENDPOINT", None)
         assert sessiond_endpoint().path == "/tmp/x.sock"
 
 

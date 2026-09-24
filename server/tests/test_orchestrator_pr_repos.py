@@ -24,7 +24,7 @@ def orch_with_db(tmp_path):
         await init_db(db_url=db_url)
 
     with __import__("unittest.mock", fromlist=["patch"]).patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": db_url}
+        os.environ, {"VIBERPIT_DB_URL": db_url}
     ):
         asyncio.run(_setup())
 

@@ -19,7 +19,7 @@ def shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     # A representative config: settings + a skill + a command.
     (base / "settings.json").write_text('{"enabledPlugins": {}}')
     (base / "skills" / "foo").mkdir(parents=True)
@@ -68,7 +68,7 @@ def test_create_and_list_snapshot(shared: Path):
 
 def test_snapshot_dir_missing_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-such-base"))
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     meta = snapshots.create_snapshot()
     assert meta["fileCount"] == 0
 

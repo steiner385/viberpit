@@ -79,7 +79,7 @@ workers (the primary is the sole refresher to avoid racing shared token files).
   checkout goes stale (rocky sat on a two-day-old SHA). This runs fetch → ff-only merge → editable
   pip → `sync` → `sudo -n systemctl restart` over SSH per registry host on demand, then verifies the
   daemon's `/info` reports the target SHA. Progress is polled via `GET /api/fleet/hosts`.
-- **Worker-role separation**: `CCSWITCH_DAEMON_ROLE` selects `primary` (all background loops:
+- **Worker-role separation**: `VIBERPIT_DAEMON_ROLE` selects `primary` (all background loops:
   poller, rotation monitor, autopilot, deploy watcher, lease heartbeat) vs `worker` (serves
   dispatched sessions only, never refreshes tokens). See KNOWN GAPS.
 

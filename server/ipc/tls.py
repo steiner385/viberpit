@@ -26,8 +26,8 @@ def peer_identities(cert: dict) -> set[str]:
 
 
 def client_allowlist() -> frozenset[str] | None:
-    """Parse CCSWITCH_SESSIOND_CLIENT_ALLOWLIST. None when unset/blank (permissive)."""
-    raw = os.environ.get("CCSWITCH_SESSIOND_CLIENT_ALLOWLIST")
+    """Parse VIBERPIT_SESSIOND_CLIENT_ALLOWLIST. None when unset/blank (permissive)."""
+    raw = os.environ.get("VIBERPIT_SESSIOND_CLIENT_ALLOWLIST")
     if not raw:
         return None
     items = {p.strip() for p in raw.split(",") if p.strip()}
@@ -66,17 +66,17 @@ def _require(path: str | None, what: str) -> str:
 
 def daemon_tls_files() -> DaemonTLSFiles:
     return DaemonTLSFiles(
-        cert=_require(os.environ.get("CCSWITCH_SESSIOND_TLS_CERT"), "CCSWITCH_SESSIOND_TLS_CERT"),
-        key=_require(os.environ.get("CCSWITCH_SESSIOND_TLS_KEY"), "CCSWITCH_SESSIOND_TLS_KEY"),
-        ca=_require(os.environ.get("CCSWITCH_SESSIOND_TLS_CA"), "CCSWITCH_SESSIOND_TLS_CA"),
+        cert=_require(os.environ.get("VIBERPIT_SESSIOND_TLS_CERT"), "VIBERPIT_SESSIOND_TLS_CERT"),
+        key=_require(os.environ.get("VIBERPIT_SESSIOND_TLS_KEY"), "VIBERPIT_SESSIOND_TLS_KEY"),
+        ca=_require(os.environ.get("VIBERPIT_SESSIOND_TLS_CA"), "VIBERPIT_SESSIOND_TLS_CA"),
     )
 
 
 def client_tls_files() -> ClientTLSFiles:
     return ClientTLSFiles(
-        cert=_require(os.environ.get("CCSWITCH_SESSIOND_CLIENT_CERT"), "CCSWITCH_SESSIOND_CLIENT_CERT"),
-        key=_require(os.environ.get("CCSWITCH_SESSIOND_CLIENT_KEY"), "CCSWITCH_SESSIOND_CLIENT_KEY"),
-        ca=_require(os.environ.get("CCSWITCH_SESSIOND_CLIENT_CA"), "CCSWITCH_SESSIOND_CLIENT_CA"),
+        cert=_require(os.environ.get("VIBERPIT_SESSIOND_CLIENT_CERT"), "VIBERPIT_SESSIOND_CLIENT_CERT"),
+        key=_require(os.environ.get("VIBERPIT_SESSIOND_CLIENT_KEY"), "VIBERPIT_SESSIOND_CLIENT_KEY"),
+        ca=_require(os.environ.get("VIBERPIT_SESSIOND_CLIENT_CA"), "VIBERPIT_SESSIOND_CLIENT_CA"),
     )
 
 

@@ -120,9 +120,9 @@ def test_notice_escapes_model_authored_angle_brackets():
 
 def test_settings_knobs_read_env():
     from server.config import get_settings
-    with patch.dict(os.environ, {"CCSWITCH_CHILD_SESSIONS_ENABLED": "false",
-                                 "CCSWITCH_CHILD_SESSION_CAP": "5",
-                                 "CCSWITCH_CHILD_SESSION_MAX_DEPTH": "1"}):
+    with patch.dict(os.environ, {"VIBERPIT_CHILD_SESSIONS_ENABLED": "false",
+                                 "VIBERPIT_CHILD_SESSION_CAP": "5",
+                                 "VIBERPIT_CHILD_SESSION_MAX_DEPTH": "1"}):
         s = get_settings()
         assert s.child_sessions_enabled is False
         assert s.child_session_cap == 5 and s.child_session_max_depth == 1

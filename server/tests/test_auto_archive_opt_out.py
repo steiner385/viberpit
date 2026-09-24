@@ -53,7 +53,7 @@ def test_unarchive_sets_sticky_opt_out(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(cwd=str(tmp_path / "cwd"))])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -74,7 +74,7 @@ def test_reversing_auto_archive_records_heuristic(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(
                 cwd=str(tmp_path / "cwd"), repo="o/r", archived_by="autopilot",
@@ -106,7 +106,7 @@ def test_reversing_user_archive_records_no_heuristic(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(cwd=str(tmp_path / "cwd"), archived_by="user")])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -124,7 +124,7 @@ def test_reversal_hint_summarizes_repo_scoped_events(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             # Two reversals in o/r, one in other/repo.
@@ -151,7 +151,7 @@ def test_get_context_stamps_opt_out_and_hint(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
-        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             from server.sessions.engine import AgentEngine

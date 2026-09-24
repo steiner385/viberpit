@@ -189,8 +189,8 @@ def test_both_engines_compose_the_instruction_through_one_helper(monkeypatch):
                                            self_model_switch=False)
     assert with_read_tools.startswith(f"{base}\n\n")
     assert "session_context" in with_read_tools and "mark_complete" not in with_read_tools
-    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
-    monkeypatch.delenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", raising=False)
     # Claude's `durable_tool_surface` is True, so its append is the tools paragraph
     # ALONE — no marker survives alongside the tools that replace it.
     assert "mark_complete" in _build_append_string()

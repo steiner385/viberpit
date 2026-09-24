@@ -545,7 +545,7 @@ async def test_tool_call_is_audited(tmp_path, monkeypatch):
     from server.db.models import AuditEvent
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'audit.db'}"
-    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    monkeypatch.setenv("VIBERPIT_DB_URL", url)
     await init_db(url)
 
     api = AssistantApi(base_url="http://127.0.0.1:1", token="ccas1:x", session_id="asst-1",
@@ -575,7 +575,7 @@ async def test_failed_tool_call_is_audited_as_not_ok(tmp_path, monkeypatch):
     from server.db.models import AuditEvent
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'audit_err.db'}"
-    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    monkeypatch.setenv("VIBERPIT_DB_URL", url)
     await init_db(url)
 
     api = AssistantApi(

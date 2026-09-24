@@ -47,9 +47,9 @@ def ws_env_ip(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")

@@ -28,11 +28,11 @@ log = logging.getLogger("server.sessions.replay")
 # Bound at IMPORT time: an env override must be set before this module is imported.
 # In-process (tests) the only way to change it is to patch the constant, or pass
 # ``budget_s=`` to _find_subagent_meta_files.
-_SUBAGENT_SCAN_BUDGET_S = env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0, minimum=0.001)
+_SUBAGENT_SCAN_BUDGET_S = env_float("VIBERPIT_SUBAGENT_SCAN_BUDGET_S", 1.0, minimum=0.001)
 
 # Sub-agent sidecar locations change only when a sub-agent starts or finishes, so a
 # short TTL removes the repeat cost of reattach / scrollback paging without going stale.
-_SUBAGENT_CACHE_TTL_S = env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0, minimum=0.0)
+_SUBAGENT_CACHE_TTL_S = env_float("VIBERPIT_SUBAGENT_CACHE_TTL_S", 30.0, minimum=0.0)
 
 # INVARIANT — the cache key INCLUDES `preferred`, and must keep including it.
 #

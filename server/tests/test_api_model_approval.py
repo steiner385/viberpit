@@ -68,11 +68,11 @@ def _make_harness(tmp_path: Path, extra_env: dict | None = None):
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env = {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
-        "CCSWITCH_MODEL_APPROVAL_ACTION": "require_approval",
-        "CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable",
+        "VIBERPIT_DB_URL": db_url,
+        "VIBERPIT_MODEL_APPROVAL_ACTION": "require_approval",
+        "VIBERPIT_MODEL_APPROVAL_DENYLIST": "fable",
     }
     if extra_env:
         env.update(extra_env)
@@ -192,7 +192,7 @@ def test_unknown_session_404(tmp_path):
 
 def test_create_session_blocked_returns_409(tmp_path):
     """POST /api/sessions with a blocked model → 409 (ModelBlockedError→409)."""
-    with _api(tmp_path, extra_env={"CCSWITCH_MODEL_APPROVAL_ACTION": "block"}) as client:
+    with _api(tmp_path, extra_env={"VIBERPIT_MODEL_APPROVAL_ACTION": "block"}) as client:
         r = client.post(
             "/api/sessions", json={"name": "blocked", "model": "fable"},
             headers=IDENTITY_HEADERS)

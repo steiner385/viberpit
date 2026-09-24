@@ -139,12 +139,12 @@ _security_warned = False
 
 
 async def seed_host_ssh_from_env() -> None:
-    """One-time bridge from the retired CCSWITCH_DAEMON_SSH_HOST/_REPO deploy path: when
+    """One-time bridge from the retired VIBERPIT_DAEMON_SSH_HOST/_REPO deploy path: when
     both are set and a Host row is named after the ssh host's hostname part with NULL
     ssh_host/repo_path, fill them in so the fan-out can reach it without a UI edit.
     Values already set are never overwritten (the registry is the source of truth)."""
-    ssh_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST", "").strip()
-    repo = os.environ.get("CCSWITCH_DAEMON_SSH_REPO", "").strip()
+    ssh_host = os.environ.get("VIBERPIT_DAEMON_SSH_HOST", "").strip()
+    repo = os.environ.get("VIBERPIT_DAEMON_SSH_REPO", "").strip()
     if not ssh_host or not repo:
         return
     from server.deploy.steps import SSH_HOST_RE, SSH_REPO_RE
@@ -190,20 +190,20 @@ async def _lifespan(app: FastAPI):
 
     # F1: the identity header is only trustworthy behind `tailscale serve` on a
     # loopback bind.  Hard-fail if neither an allowlist nor a loopback host is set
-    # (unless the operator explicitly opts out with CCSWITCH_DEV=1).
+    # (unless the operator explicitly opts out with VIBERPIT_DEV=1).
     import logging as _logging
 
     from server.config import get_settings as _get_settings
 
     _s = _get_settings()
     _is_loopback = _s.host in ("127.0.0.1", "localhost", "::1")
-    _is_dev = os.environ.get("CCSWITCH_DEV") == "1"
+    _is_dev = os.environ.get("VIBERPIT_DEV") == "1"
 
     if not _s.tailnet_allowlist_items and not _is_loopback:
         if not _is_dev:
             raise RuntimeError(
                 "refusing to start: empty tailnet_allowlist on a non-loopback bind "
-                "(set CCSWITCH_DEV=1 to override, or set CCSWITCH_TAILNET_ALLOWLIST)."
+                "(set VIBERPIT_DEV=1 to override, or set VIBERPIT_TAILNET_ALLOWLIST)."
             )
         global _security_warned
         if not _security_warned:
@@ -212,11 +212,11 @@ async def _lifespan(app: FastAPI):
                 "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
                 "Tailscale-User-Login header is trusted unconditionally — only safe "
                 "behind `tailscale serve` (which sets/strips it). Set "
-                "CCSWITCH_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
+                "VIBERPIT_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
                 _s.host,
             )
 
-    db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    db_url = os.environ.get("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
     # Error-triage capture: the sink itself was installed by configure_logging();
@@ -226,7 +226,7 @@ async def _lifespan(app: FastAPI):
     if _error_sink is not None:
         _error_sink.start()
 
-    # Seed fleet hosts declared in CCSWITCH_FLEET_HOSTS (insert-if-absent by name).
+    # Seed fleet hosts declared in VIBERPIT_FLEET_HOSTS (insert-if-absent by name).
     # Runs before ensure_default_host so a declared fleet is already present when
     # ensure_default_host checks whether the table is operator-managed.
     _fleet_map = _s.fleet_hosts_map
@@ -241,7 +241,7 @@ async def _lifespan(app: FastAPI):
                 if _exists is None:
                     _db.add(_Host(name=_name, endpoint=_ep, enabled=True))
         _logging.getLogger("server").info(
-            "fleet: seeded %d host(s) from CCSWITCH_FLEET_HOSTS", len(_fleet_map))
+            "fleet: seeded %d host(s) from VIBERPIT_FLEET_HOSTS", len(_fleet_map))
 
     await seed_host_ssh_from_env()
 
@@ -400,9 +400,9 @@ async def _lifespan(app: FastAPI):
     app.state.loop_lag = LoopLagWatchdog(
         # Opt-in until the ThreadStallTracer proves itself under load (#792): the
         # old faulthandler dumper segfaulted the daemon and had to be disabled in
-        # prod. Set CCSWITCH_LOOP_STALL_DUMP_S to a positive value to enable.
-        dump_after=env_float("CCSWITCH_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
-        dump_path=os.environ.get("CCSWITCH_LOOP_STALL_DUMP_PATH") or None,
+        # prod. Set VIBERPIT_LOOP_STALL_DUMP_S to a positive value to enable.
+        dump_after=env_float("VIBERPIT_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
+        dump_path=os.environ.get("VIBERPIT_LOOP_STALL_DUMP_PATH") or None,
     )
     app.state.loop_lag_task = _supervise(
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
@@ -667,8 +667,8 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title=brand.NAME, version="0.1.0", lifespan=_lifespan)
 
-    # Attach the session facade. CCSWITCH_SESSIOND_ENDPOINT (https/unix URL) or the
-    # legacy CCSWITCH_SESSIOND_SOCKET selects remote mode: the edge drives an
+    # Attach the session facade. VIBERPIT_SESSIOND_ENDPOINT (https/unix URL) or the
+    # legacy VIBERPIT_SESSIOND_SOCKET selects remote mode: the edge drives an
     # orchestrator living in the session daemon over TCP+mTLS or a Unix socket.
     # An explicitly injected orchestrator always wins (in-process), so tests that
     # pass one are unaffected.
@@ -676,8 +676,8 @@ def create_app(
 
     from server.ipc.paths import DEFAULT_SOCKET_PATH, Endpoint, sessiond_endpoint
 
-    explicit = bool(os.environ.get("CCSWITCH_SESSIOND_ENDPOINT")
-                    or os.environ.get("CCSWITCH_SESSIOND_SOCKET"))
+    explicit = bool(os.environ.get("VIBERPIT_SESSIOND_ENDPOINT")
+                    or os.environ.get("VIBERPIT_SESSIOND_SOCKET"))
     endpoint = None
     app.state.daemon_protocol = None
     if orchestrator is None:

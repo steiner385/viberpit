@@ -142,7 +142,7 @@ class ReauthManager:
 
         prepare_reauth_profile(chrome_profile, extension_ids=settings.reauth_extension_id_items)
           → env_extra {BROWSER: realpath(launcher), DISPLAY: reauth_display,
-                       CCSWITCH_REAUTH_PROFILE: temp}
+                       VIBERPIT_REAUTH_PROFILE: temp}
           → asyncio.to_thread(capture_login, name, env_extra=...)
           → finally: cleanup_reauth_profile(temp)
         """
@@ -194,7 +194,7 @@ class ReauthManager:
                     spec = await x11.start_display(REAUTH_DISPLAY_KEY)
                 env_extra = {
                     "BROWSER": launcher_real,
-                    "CCSWITCH_REAUTH_PROFILE": temp,
+                    "VIBERPIT_REAUTH_PROFILE": temp,
                 }
                 if spec is not None:
                     env_extra["DISPLAY"] = f":{spec.lease.display}"

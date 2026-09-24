@@ -57,7 +57,7 @@ def helper_cwd() -> str:
     """Working directory for every stateless one-shot helper call.
 
     A dedicated scratch directory (``~/.cache/ccswitch/helper-cwd``, or
-    ``CCSWITCH_HELPER_CWD``), created on demand — never the daemon's own cwd and never
+    ``VIBERPIT_HELPER_CWD``), created on demand — never the daemon's own cwd and never
     a session's worktree. Claude Code treats the working directory as a project: it
     loads that directory's ``CLAUDE.md`` into the call and files the call's transcript
     under ``~/.claude/projects/<cwd>``. Verified live 2026-09-11: the decider and
@@ -68,7 +68,7 @@ def helper_cwd() -> str:
     they were the operator's own sessions. Sibling of :func:`pick_helper_config_dir`:
     that picks WHO the helper runs as, this picks WHERE.
     """
-    env = os.environ.get("CCSWITCH_HELPER_CWD")
+    env = os.environ.get("VIBERPIT_HELPER_CWD")
     path = Path(env) if env else Path.home() / ".cache" / "ccswitch" / "helper-cwd"
     try:
         path.mkdir(parents=True, exist_ok=True)

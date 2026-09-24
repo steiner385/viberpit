@@ -6,13 +6,13 @@ server/; throwaway verification harness whose output is pasted into the PR body.
 
 Requires an explicitly disposable, isolated dev edge, daemon and DB with stable
 unlimited archive retention (maxArchivedSessions=null). Never run on a shared fleet.
-Requires a running dev edge (CCSWITCH_DEV=1, a tailnet allowlist that admits
-the identity below, CCSWITCH_ASSISTANT_ENABLED=true) and the SAME
-CCSWITCH_DB_URL the edge is using, so this script can read back the audit
+Requires a running dev edge (VIBERPIT_DEV=1, a tailnet allowlist that admits
+the identity below, VIBERPIT_ASSISTANT_ENABLED=true) and the SAME
+VIBERPIT_DB_URL the edge is using, so this script can read back the audit
 trail the edge wrote.
 
 Usage:
-    CCSWITCH_DB_URL=<the edge's DB url> python scripts/smoke_assistant.py --disposable-environment
+    VIBERPIT_DB_URL=<the edge's DB url> python scripts/smoke_assistant.py --disposable-environment
     [--base-url http://127.0.0.1:8787] [--identity smoke@ccswitch.local]
 
 Steps:
@@ -108,7 +108,7 @@ async def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8787")
     parser.add_argument("--identity", default="smoke@ccswitch.local")
     parser.add_argument("--db-url", default=None,
-                         help="Defaults to $CCSWITCH_DB_URL — must match the edge's DB.")
+                         help="Defaults to $VIBERPIT_DB_URL — must match the edge's DB.")
     parser.add_argument("--disposable-environment", action="store_true",
                         help="Acknowledge a dedicated disposable edge, daemon and DB with "
                              "stable unlimited archive retention; never a shared fleet.")
@@ -119,9 +119,9 @@ async def main() -> int:
         return 2
 
     import os
-    db_url = args.db_url or os.environ.get("CCSWITCH_DB_URL")
+    db_url = args.db_url or os.environ.get("VIBERPIT_DB_URL")
     if not db_url:
-        print("CCSWITCH_DB_URL (or --db-url) is required — must match the running edge's DB",
+        print("VIBERPIT_DB_URL (or --db-url) is required — must match the running edge's DB",
               file=sys.stderr)
         return 2
 

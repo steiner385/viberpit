@@ -29,7 +29,7 @@ def shared_base(tmp_path):
     """A throwaway shared Claude home; paths.shared_base() reads CLAUDE_CONFIG_DIR."""
     base = tmp_path / "dot-claude"
     base.mkdir()
-    env = {"CLAUDE_CONFIG_DIR": str(base), "CCSWITCH_HOME": str(tmp_path / "store")}
+    env = {"CLAUDE_CONFIG_DIR": str(base), "VIBERPIT_HOME": str(tmp_path / "store")}
     with patch.dict(os.environ, env):
         os.environ.pop("ANTHROPIC_MODEL", None)
         yield base

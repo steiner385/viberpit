@@ -31,7 +31,7 @@ this doc, not the other way around.
                                │
   ┌─────────────────── dobby (100.102.11.121) ────────────────────┐
   │  viberpit.service (edge, :8787)                                │
-  │    │ CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
+  │    │ VIBERPIT_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
   │    │ client cert/key/CA in /etc/viberpit/tls/                  │
   │  Postgres :5432 — listen_addresses = localhost,100.102.11.121  │
   │    pg_hba: host ccswitch ccswitch 100.69.70.109/32 scram-sha-256
@@ -95,7 +95,7 @@ Expected:
 
 **If the no-cert case ever returns JSON (succeeds), mTLS is not being enforced on rocky's daemon.
 Treat this as a security incident, not a config quirk** — stop and investigate
-`CCSWITCH_SESSIOND_TLS_CA` / `CCSWITCH_SESSIOND_CLIENT_ALLOWLIST` on rocky before doing anything
+`VIBERPIT_SESSIOND_TLS_CA` / `VIBERPIT_SESSIOND_CLIENT_ALLOWLIST` on rocky before doing anything
 else with the daemon.
 
 ## 4. Mount health
@@ -173,7 +173,7 @@ ssh tony@rocky 'find /var/lib/viberpit/state/ccswitch/codex -name auth.json'   #
 ssh tony@rocky 'cd /home/tony/GitHub/viberpit && .venv/bin/python -m server.codex.doctor'
 ```
 
-Rocky is a **worker** (`CCSWITCH_DAEMON_ROLE`), and Codex changes nothing about
+Rocky is a **worker** (`VIBERPIT_DAEMON_ROLE`), and Codex changes nothing about
 that: it obtains short-lived envelopes from dobby's credential authority over
 mutual TLS as `codex-runner:rocky` and never holds a refresh token. Full procedure
 in `docs/runbooks/codex-credential-authority.md`.
@@ -219,14 +219,14 @@ set -a; source /etc/viberpit/viberpit.env; set +a
 python -m server.deploy --once
 ```
 
-The `runners` phase reads the fleet registry from `CCSWITCH_DB_URL`. Unset, the lookup lands
+The `runners` phase reads the fleet registry from `VIBERPIT_DB_URL`. Unset, the lookup lands
 on an empty default database and the deploy **silently fans out to nobody** while reporting
 green — every runner is left on the old code. The tell is the warning
 `runners: no enabled fleet hosts found — nothing was fanned out`; if you see it, you almost
 certainly forgot the `source`.
 
 The deploy records the deployed sha in the `deploy_state` table once the edge is healthy.
-`CCSWITCH_DAEMON_SSH_HOST` / `CCSWITCH_DAEMON_SSH_REPO` are no longer read by the deploy;
+`VIBERPIT_DAEMON_SSH_HOST` / `VIBERPIT_DAEMON_SSH_REPO` are no longer read by the deploy;
 they only seed the matching host's `ssh_host` / `repo_path` once at edge startup. Set those
 two fields in the Fleet UI for every remote runner (the deploy fails loudly with
 `unconfigured` for an online runner without them).
@@ -287,10 +287,10 @@ Summary of the fleet CA state (since 2026-08-30, issue #841):
   (`/etc/viberpit/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
   `ca-bundle.pem` (original `ca.pem` + `ca2.pem`), so old and new certs coexist.
 - **Client-cert renewal** (`CN=edge`): every daemon verifies it against its
-  `CCSWITCH_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
+  `VIBERPIT_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
   key, which is intact at `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby (a **root-only**
   directory: a non-root search reports permission denied/nothing — it is NOT lost), or first point
-  every daemon's `CCSWITCH_SESSIOND_TLS_CA` at a ca.pem+ca2.pem bundle and sign with ca2.
+  every daemon's `VIBERPIT_SESSIOND_TLS_CA` at a ca.pem+ca2.pem bundle and sign with ca2.
 
 Distribute renewed material and clean up:
 
@@ -324,9 +324,9 @@ sudo systemctl enable --now viberpit-daemon.service
 systemctl is-active viberpit-daemon.service   # expect: active
 
 # 3. Point the edge back at the local Unix socket — edit /etc/viberpit/viberpit.env:
-#      comment out CCSWITCH_SESSIOND_ENDPOINT and the CCSWITCH_SESSIOND_CLIENT_* lines
-#      uncomment (or add) CCSWITCH_SESSIOND_SOCKET=/run/viberpit/sessiond.sock
-#      also comment out CCSWITCH_DAEMON_SSH_HOST so future deploys restart the local unit
+#      comment out VIBERPIT_SESSIOND_ENDPOINT and the VIBERPIT_SESSIOND_CLIENT_* lines
+#      uncomment (or add) VIBERPIT_SESSIOND_SOCKET=/run/viberpit/sessiond.sock
+#      also comment out VIBERPIT_DAEMON_SSH_HOST so future deploys restart the local unit
 sudo -e /etc/viberpit/viberpit.env
 
 # 4. Also flip the systemd drop-in that pins the edge's daemon endpoint back to the socket.
@@ -344,8 +344,8 @@ pgrep -af "claude_agent_sdk/_bundled/claude"   # start a test session, confirm i
 ```
 
 To go back to rocky afterward, reverse steps 2-4 (disable+stop dobby's daemon, restore the
-`CCSWITCH_SESSIOND_ENDPOINT`/client-cert lines and `CCSWITCH_DAEMON_SSH_HOST`, restore
-`remote.conf`'s `Environment=CCSWITCH_SESSIOND_ENDPOINT=...`) and confirm with §2/§3 that sessions
+`VIBERPIT_SESSIOND_ENDPOINT`/client-cert lines and `VIBERPIT_DAEMON_SSH_HOST`, restore
+`remote.conf`'s `Environment=VIBERPIT_SESSIOND_ENDPOINT=...`) and confirm with §2/§3 that sessions
 land on rocky again and mTLS is enforced.
 
 ## 8. Known limitations
@@ -358,7 +358,7 @@ directly rather than going through a daemon RPC:
 | Feature | What you will SEE | Not a bug — known gap |
 |---|---|---|
 | **Adopt session** (`GET /api/sessions/adoptable`) | The adoptable-candidates list is empty, even when an untracked `claude` process is genuinely running on rocky — because it scans the edge (dobby) host's `/proc`, not rocky's. | Yes — `list_adoptable` needs a daemon RPC mirroring the one `POST /adopt` already uses correctly. |
-| **Archive-home migration** (Settings → change archive home) | Save reports success ("0 failed"), but no files actually move. Archived session directories live under rocky's `CCSWITCH_HOME`, and the migration's `shutil.move` runs on the edge (dobby), where the source paths never exist. | Yes — silent no-op, not a crash. |
+| **Archive-home migration** (Settings → change archive home) | Save reports success ("0 failed"), but no files actually move. Archived session directories live under rocky's `VIBERPIT_HOME`, and the migration's `shutil.move` runs on the edge (dobby), where the source paths never exist. | Yes — silent no-op, not a crash. |
 | **Repo picker "cloned" badge** | Always shows as *not cloned*, even for repos genuinely cloned on rocky by an earlier session (`ensure_clone` is lazy/idempotent, so a session still works — the badge is just wrong). | Yes — cosmetic; the `.exists()` check runs against dobby's `.ccswitch/clones`, not rocky's. |
 
 If you see anything **other** than the specific symptom described above for these three features
@@ -373,35 +373,35 @@ it as one.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `curl: certificate does not match the server name` (or similar SAN error) from the edge to the daemon | Server cert SAN doesn't match `CCSWITCH_SESSIOND_ENDPOINT`'s host — e.g. cert minted for `rocky.lan` while the endpoint uses `rocky.tail0dd570.ts.net` | Re-mint with `scripts/viberpit-mint-mtls.sh <outdir> rocky.tail0dd570.ts.net 100.69.70.109` (§6); verify the SAN before distributing |
+| `curl: certificate does not match the server name` (or similar SAN error) from the edge to the daemon | Server cert SAN doesn't match `VIBERPIT_SESSIOND_ENDPOINT`'s host — e.g. cert minted for `rocky.lan` while the endpoint uses `rocky.tail0dd570.ts.net` | Re-mint with `scripts/viberpit-mint-mtls.sh <outdir> rocky.tail0dd570.ts.net 100.69.70.109` (§6); verify the SAN before distributing |
 | Edge refuses to attach to rocky's daemon / RPC calls fail after a deploy | Protocol-version mismatch — dobby and rocky are running different commits | Compare `curl .../info`'s `"protocol"` field against `python -c "from server.ipc import protocol; print(protocol.PROTOCOL_VERSION)"` on both hosts; they must match. Fix by deploying rocky to the same SHA as dobby (§5 — daemon first, then edge) |
 | New sessions fail with reauth/credential errors for accounts that are otherwise fine; or sessions on rocky run with the wrong/old skillset | An sshfs mount dropped | §4 — check `findmnt -t fuse.sshfs` on rocky, remount both, restart the daemon |
 | Sessions double-spawn, or the UI shows "Ready" for a session that's actually mid-turn | Both `viberpit-daemon.service` units are active at once — split-brain over one database (the 2026-06-23 incident) | `systemctl is-active viberpit-daemon.service` on **both** hosts — exactly one must be `active`. Stop and `disable` (not just stop) the one that shouldn't be running |
 | Rocky's daemon won't start, or is up but can't reach Postgres | Tailscale is down on rocky — the unit declares `Requires=tailscaled.service`, and the DB is only reachable over the tailnet (no LAN listener) | `ssh tony@rocky 'systemctl status tailscaled.service viberpit-daemon.service'`; fix tailscale first, the daemon unit will follow via its `Requires=` |
-| Rocky's daemon logs Postgres auth/connection failures specifically (not a tailnet-down symptom) | `pg_hba.conf` on dobby only allows `100.69.70.109/32` for role `ccswitch`/db `ccswitch` — a password change, IP change (if rocky's tailnet IP is ever reassigned), or role/db typo will be rejected | Confirm rocky's current tailnet IP (`tailscale ip -4` on rocky) matches the `pg_hba` entry on dobby; confirm `CCSWITCH_DB_URL` in rocky's `/etc/viberpit/viberpit.env` matches the role/password/db name dobby's Postgres actually has |
-| The mTLS no-cert curl (§3) unexpectedly returns JSON | mTLS is not enforced — `CCSWITCH_SESSIOND_TLS_CA` misconfigured, or the daemon isn't requiring client certs | Treat as a security incident (§3). Check rocky's `viberpit.env` TLS vars and `server/ipc/tls.py`'s `CERT_REQUIRED` wiring before touching anything else |
+| Rocky's daemon logs Postgres auth/connection failures specifically (not a tailnet-down symptom) | `pg_hba.conf` on dobby only allows `100.69.70.109/32` for role `ccswitch`/db `ccswitch` — a password change, IP change (if rocky's tailnet IP is ever reassigned), or role/db typo will be rejected | Confirm rocky's current tailnet IP (`tailscale ip -4` on rocky) matches the `pg_hba` entry on dobby; confirm `VIBERPIT_DB_URL` in rocky's `/etc/viberpit/viberpit.env` matches the role/password/db name dobby's Postgres actually has |
+| The mTLS no-cert curl (§3) unexpectedly returns JSON | mTLS is not enforced — `VIBERPIT_SESSIOND_TLS_CA` misconfigured, or the daemon isn't requiring client certs | Treat as a security incident (§3). Check rocky's `viberpit.env` TLS vars and `server/ipc/tls.py`'s `CERT_REQUIRED` wiring before touching anything else |
 
 ## Reference: live config (as of the 2026-08-20 cutover)
 
 Rocky's `/etc/viberpit/viberpit.env` (secrets redacted):
 ```
-CCSWITCH_DB_URL=postgresql+asyncpg://ccswitch:<redacted>@100.102.11.121:5432/ccswitch
-CCSWITCH_MASTER_KEY=<redacted>
-CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
-CCSWITCH_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
-CCSWITCH_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
-CCSWITCH_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
-CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge
-CCSWITCH_ENABLE_XVFB=true
+VIBERPIT_DB_URL=postgresql+asyncpg://ccswitch:<redacted>@100.102.11.121:5432/ccswitch
+VIBERPIT_MASTER_KEY=<redacted>
+VIBERPIT_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
+VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
+VIBERPIT_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
+VIBERPIT_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
+VIBERPIT_SESSIOND_CLIENT_ALLOWLIST=edge
+VIBERPIT_ENABLE_XVFB=true
 ```
 
 Dobby's `/etc/viberpit/viberpit.env` additions for the cutover (secrets redacted):
 ```
-CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
-CCSWITCH_SESSIOND_CLIENT_CERT=/etc/viberpit/tls/client.pem
-CCSWITCH_SESSIOND_CLIENT_KEY=/etc/viberpit/tls/client.key
-CCSWITCH_SESSIOND_CLIENT_CA=/etc/viberpit/tls/ca.pem
-CCSWITCH_DAEMON_SSH_HOST=tony@rocky
+VIBERPIT_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
+VIBERPIT_SESSIOND_CLIENT_CERT=/etc/viberpit/tls/client.pem
+VIBERPIT_SESSIOND_CLIENT_KEY=/etc/viberpit/tls/client.key
+VIBERPIT_SESSIOND_CLIENT_CA=/etc/viberpit/tls/ca.pem
+VIBERPIT_DAEMON_SSH_HOST=tony@rocky
 ```
 
 `deploy/viberpit-daemon-remote.service` is installed on rocky as `/etc/systemd/system/viberpit-daemon.service`

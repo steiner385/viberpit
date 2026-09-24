@@ -26,10 +26,10 @@ interface GeneralDraft {
   maxArchived: string
   // Unlike modelApprovalAction/Denylist (SessionDefaultsSection), there is no server
   // "effective default" surfaced for these two, so the draft treats a null server
-  // value as the CCSWITCH_ASSISTANT_ENABLED launch default (on) — a plain switch, not
+  // value as the VIBERPIT_ASSISTANT_ENABLED launch default (on) — a plain switch, not
   // a tri-state "server default" control.
   assistantEnabled: boolean
-  // '' = server default (CCSWITCH_ASSISTANT_MODEL); payload turns it back into null.
+  // '' = server default (VIBERPIT_ASSISTANT_MODEL); payload turns it back into null.
   assistantModel: string
   // Operator tier. Null coalesces to FALSE, not true like assistantEnabled above: this
   // one is opt-in by design (spec v2 B1), so an unset server value must render as off.

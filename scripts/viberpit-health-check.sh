@@ -12,16 +12,16 @@
 #   2. EARLY WARNING: alert on low disk, account needs-reauth, or daemon memory near the
 #      MemoryMax ceiling — the three conditions that silently broke prior deploys.
 #
-# Alerts always go to the journal; if CCSWITCH_ALERT_WEBHOOK is set (e.g. an ntfy topic
+# Alerts always go to the journal; if VIBERPIT_ALERT_WEBHOOK is set (e.g. an ntfy topic
 # URL) they are also POSTed there, de-duplicated so a standing condition pings ~every 30m
 # rather than every 60s.
 #
 # --- Remote-daemon mode (cross-host deployments, e.g. dobby edge + rocky daemon) ------
 # Sections 1-4 above only ever look at THIS host (unix socket + local systemd unit), so
-# once the daemon moves to another host over mTLS (CCSWITCH_SESSIOND_ENDPOINT=https://...)
+# once the daemon moves to another host over mTLS (VIBERPIT_SESSIOND_ENDPOINT=https://...)
 # they go permanently quiet — "not our job" — and the watchdog is blind to a real outage.
-# When a remote https daemon endpoint is configured (CCSWITCH_DAEMON_ENDPOINT, or reusing
-# the edge's own CCSWITCH_SESSIOND_ENDPOINT — see server/ipc/paths.py), section 5 adds:
+# When a remote https daemon endpoint is configured (VIBERPIT_DAEMON_ENDPOINT, or reusing
+# the edge's own VIBERPIT_SESSIOND_ENDPOINT — see server/ipc/paths.py), section 5 adds:
 #   5a. Remote daemon reachability — GET /info over mTLS with the edge's client cert/key/CA.
 #       Alerted, never auto-restarted: a restart across SSH is a bigger decision than the
 #       local wedge-restart in section 1. NOTE: this used to say "systemd Restart=always
@@ -81,8 +81,8 @@ ALERT_WEBHOOK="${VIBERPIT_ALERT_WEBHOOK:-${CCSWITCH_ALERT_WEBHOOK:-}}"
 STATE_DIR="${VIBERPIT_HEALTH_STATE_DIR:-${CCSWITCH_HEALTH_STATE_DIR:-$STATE_ROOT/health}}"
 
 # --- Remote-daemon mode config (all opt-in; empty DAEMON_ENDPOINT == section 5 is a no-op) --
-# CCSWITCH_DAEMON_ENDPOINT is health-check-specific; falls back to the edge's own
-# CCSWITCH_SESSIOND_ENDPOINT (server/ipc/paths.py's sessiond_endpoint()) since a cross-host
+# VIBERPIT_DAEMON_ENDPOINT is health-check-specific; falls back to the edge's own
+# VIBERPIT_SESSIOND_ENDPOINT (server/ipc/paths.py's sessiond_endpoint()) since a cross-host
 # install already sets that for the edge process and EnvironmentFile= sources the same file
 # here. Only an https:// value turns remote mode on — unix:// / unset stays local-only.
 DAEMON_ENDPOINT="${VIBERPIT_DAEMON_ENDPOINT:-${CCSWITCH_DAEMON_ENDPOINT:-${VIBERPIT_SESSIOND_ENDPOINT:-${CCSWITCH_SESSIOND_ENDPOINT:-}}}}"
@@ -94,7 +94,7 @@ CLIENT_CA="${VIBERPIT_SESSIOND_CLIENT_CA:-${CCSWITCH_SESSIOND_CLIENT_CA:-}}"
 # sshfs cutover's three mounts — account store, shared ~/.claude, archive volume).
 REMOTE_MOUNTS="${VIBERPIT_HEALTH_REMOTE_MOUNTS:-${CCSWITCH_HEALTH_REMOTE_MOUNTS:-/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage}}"
 # Database host:port as reachable FROM the daemon host — deliberately separate from
-# CCSWITCH_DB_URL, whose host is typically 127.0.0.1 (the edge's own loopback to a
+# VIBERPIT_DB_URL, whose host is typically 127.0.0.1 (the edge's own loopback to a
 # same-host Postgres), which is meaningless from a remote daemon host.
 REMOTE_PG_HOST="${VIBERPIT_HEALTH_REMOTE_PG_HOST:-${CCSWITCH_HEALTH_REMOTE_PG_HOST:-100.102.11.121}}"
 REMOTE_PG_PORT="${VIBERPIT_HEALTH_REMOTE_PG_PORT:-${CCSWITCH_HEALTH_REMOTE_PG_PORT:-5432}}"
@@ -151,9 +151,11 @@ daemon_unit_env() {  # daemon_unit_env VAR — VAR's value in ${DAEMON_UNIT}'s e
   printf '%s' "$val"
 }
 
-LOCAL_BIND=$(daemon_unit_env CCSWITCH_SESSIOND_ENDPOINT)
+LOCAL_BIND=$(daemon_unit_env VIBERPIT_SESSIOND_ENDPOINT)
+[ -z "$LOCAL_BIND" ] && LOCAL_BIND=$(daemon_unit_env CCSWITCH_SESSIOND_ENDPOINT)
 if [ -z "$LOCAL_BIND" ]; then
-  LOCAL_BIND=$(daemon_unit_env CCSWITCH_SESSIOND_SOCKET)
+  LOCAL_BIND=$(daemon_unit_env VIBERPIT_SESSIOND_SOCKET)
+  [ -z "$LOCAL_BIND" ] && LOCAL_BIND=$(daemon_unit_env CCSWITCH_SESSIOND_SOCKET)
   if [ -n "$LOCAL_BIND" ] && [[ "$LOCAL_BIND" != *://* ]]; then LOCAL_BIND="unix://$LOCAL_BIND"; fi
 fi
 [ -z "$LOCAL_BIND" ] && LOCAL_BIND="unix://$SOCK"   # pre-fleet default: the well-known UDS
@@ -189,7 +191,7 @@ fi
 
 # A deliberately onboarded local fleet runner is registered + enabled in the hosts
 # table (#807); ask the shared DB via the checkout's venv. Any failure to read the
-# registry (no CCSWITCH_DB_URL, DB down, missing deps) returns non-zero so the
+# registry (no VIBERPIT_DB_URL, DB down, missing deps) returns non-zero so the
 # split-brain guard fails CLOSED — it keeps its teeth when we cannot tell.
 local_daemon_is_registered_fleet_host() {
   [ -n "${VIBERPIT_DB_URL:-${CCSWITCH_DB_URL:-}}" ] || return 1
@@ -284,7 +286,7 @@ systemctl is-active --quiet ${DAEMON_UNIT} && LOCAL_DAEMON_ACTIVE=1
 
 if [ "$PROBE_POSSIBLE" -eq 0 ]; then
   if [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
-    alert local-daemon-unprobeable "local daemon binds $LOCAL_BIND but CCSWITCH_SESSIOND_CLIENT_CERT/KEY/CA are incomplete in the health-check env — wedge watchdog is blind (and deliberately NOT restarting on a probe it cannot run)"
+    alert local-daemon-unprobeable "local daemon binds $LOCAL_BIND but VIBERPIT_SESSIOND_CLIENT_CERT/KEY/CA are incomplete in the health-check env — wedge watchdog is blind (and deliberately NOT restarting on a probe it cannot run)"
   else
     clear_alert local-daemon-unprobeable
   fi
@@ -381,7 +383,7 @@ if [[ "$DAEMON_ENDPOINT" == https://* ]]; then
       sleep 2
     done
   else
-    log "remote daemon endpoint set but CCSWITCH_SESSIOND_CLIENT_CERT/KEY/CA incomplete — cannot probe"
+    log "remote daemon endpoint set but VIBERPIT_SESSIOND_CLIENT_CERT/KEY/CA incomplete — cannot probe"
   fi
 
   if [ "$remote_healthy" -eq 1 ]; then
@@ -419,7 +421,7 @@ except Exception:
   #
   # Both assume the daemon host is REMOTE, reached over SSH, with sshfs mounts back to
   # this host. With the daemon local (#839) there is no SSH hop (the configured
-  # CCSWITCH_DAEMON_SSH_HOST may even point at a decommissioned host) and nothing sshfs
+  # VIBERPIT_DAEMON_SSH_HOST may even point at a decommissioned host) and nothing sshfs
   # to go stale — the stores are plain local directories owned by the disk check in
   # section 2. The DB probe keeps its value, run from this host directly.
   if [ "$DAEMON_IS_LOCAL" -eq 1 ]; then
@@ -473,7 +475,7 @@ REMOTE_SCRIPT
       done
     fi
   else
-    log "remote daemon endpoint set but CCSWITCH_DAEMON_SSH_HOST unset — skipping mount + DB TCP checks"
+    log "remote daemon endpoint set but VIBERPIT_DAEMON_SSH_HOST unset — skipping mount + DB TCP checks"
   fi
 fi
 

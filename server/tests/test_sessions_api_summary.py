@@ -41,9 +41,9 @@ def test_record_to_dict_summary_defaults_empty():
 
 _H = {"Tailscale-User-Login": "testuser@example.com"}
 _ENV = {
-    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-    "CCSWITCH_DEV": "1",
-    "CCSWITCH_TAILNET_ALLOWLIST": "",
+    "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "VIBERPIT_DEV": "1",
+    "VIBERPIT_TAILNET_ALLOWLIST": "",
 }
 
 

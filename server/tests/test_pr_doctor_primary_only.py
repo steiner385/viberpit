@@ -55,8 +55,8 @@ def _record_gh(monkeypatch, orch, calls):
 
 def test_worker_sweep_takes_no_pr_doctor_action(monkeypatch, tmp_path):
     """The regression. Same orchestrator + enabled automation + actionable PR as
-    the primary case below — only CCSWITCH_DAEMON_ROLE differs."""
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    the primary case below — only VIBERPIT_DAEMON_ROLE differs."""
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
 
     async def run():
         await _init_pr_doctor_db(tmp_path)
@@ -79,7 +79,7 @@ def test_worker_sweep_takes_no_pr_doctor_action(monkeypatch, tmp_path):
 def test_primary_sweep_still_acts(monkeypatch, tmp_path):
     """The mirror: the gate must not disable PR Doctor outright. Without this,
     ``return`` at the top of the sweep would pass the worker test forever."""
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
 
     async def run():
         await _init_pr_doctor_db(tmp_path)
@@ -106,7 +106,7 @@ def test_primary_sweep_still_acts(monkeypatch, tmp_path):
 def test_worker_on_pr_change_takes_no_pr_doctor_action(monkeypatch, tmp_path):
     """The other entry point: a passing→failing transition on a worker must not
     reach ``_pr_doctor_step`` or emit onto the pr-doctor activity feed."""
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
 
     async def run():
         import server.sessions.orchestrator as orch_mod
@@ -144,7 +144,7 @@ def test_worker_still_pushes_its_own_sessions_pr_broke_alert(monkeypatch, tmp_pa
     and not the primary's, so the worker is the only daemon that can raise it.
     Skipping the whole callback on a worker (or never wiring ``set_on_change``)
     would silently drop every worker session's "PR broke" notification."""
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
 
     async def run():
         import server.sessions.orchestrator as orch_mod
@@ -181,9 +181,9 @@ def test_drives_fleet_automations_tracks_the_daemon_role(monkeypatch):
     its guard instead of inventing a parallel role check."""
     from server.sessions.orchestrator import drives_fleet_automations
 
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
     assert drives_fleet_automations() is True
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "primary")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "primary")
     assert drives_fleet_automations() is True
-    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
     assert drives_fleet_automations() is False

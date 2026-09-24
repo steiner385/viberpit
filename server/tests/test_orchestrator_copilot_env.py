@@ -48,7 +48,7 @@ class FakeCopilotProxy:
 def _make_copilot_home(tmp_path: Path, account: str) -> Path:
     """Create a COMPLETE copilot token-dir so provider_of(account) == 'copilot'.
 
-    paths.copilot_token_dir(name) == CCSWITCH_HOME / 'store' / 'copilot' / name
+    paths.copilot_token_dir(name) == VIBERPIT_HOME / 'store' / 'copilot' / name
 
     ``credentials.json`` matters: it is what ``copilot_auth`` writes when the
     device flow succeeds, and what ``copilot.copilot_account_names()`` has always
@@ -88,7 +88,7 @@ def test_factory_closure_injects_copilot_env(tmp_path):
         return _Fake()
 
     proxy = FakeCopilotProxy()
-    with patch.dict(os.environ, {"CCSWITCH_HOME": str(store_home)}):
+    with patch.dict(os.environ, {"VIBERPIT_HOME": str(store_home)}):
         orch = SessionOrchestrator(sdk_factory=recording_factory, copilot=proxy)
         # Seed a minimal SessionRecord so _oat_env can find the account
         sid = "test-sid-001"
@@ -146,9 +146,9 @@ async def test_create_session_calls_ensure(tmp_path):
     from server.db import init_db
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base_dir),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -191,7 +191,7 @@ async def test_latest_suggestions_skipped_for_copilot(tmp_path):
     store_home = _make_copilot_home(tmp_path, account)
 
     proxy = FakeCopilotProxy()
-    with patch.dict(os.environ, {"CCSWITCH_HOME": str(store_home)}):
+    with patch.dict(os.environ, {"VIBERPIT_HOME": str(store_home)}):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-002"
         orch._records[sid] = SessionRecord(
@@ -238,9 +238,9 @@ async def test_create_session_start_failure_leaves_no_record(tmp_path):
     from server.db import init_db
 
     env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
+        "VIBERPIT_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base_dir),
-        "CCSWITCH_DB_URL": db_url,
+        "VIBERPIT_DB_URL": db_url,
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -277,7 +277,7 @@ async def test_latest_summary_skipped_for_copilot(tmp_path):
     store_home = _make_copilot_home(tmp_path, account)
 
     proxy = FakeCopilotProxy()
-    with patch.dict(os.environ, {"CCSWITCH_HOME": str(store_home)}):
+    with patch.dict(os.environ, {"VIBERPIT_HOME": str(store_home)}):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-003"
         orch._records[sid] = SessionRecord(

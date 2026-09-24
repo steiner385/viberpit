@@ -64,12 +64,12 @@ def parse_endpoint(raw: str) -> Endpoint:
 
 
 def sessiond_endpoint() -> Endpoint:
-    """Resolve the daemon endpoint: CCSWITCH_SESSIOND_ENDPOINT, else the legacy
-    CCSWITCH_SESSIOND_SOCKET (bare path → unix://), else the well-known default."""
-    raw = os.environ.get("CCSWITCH_SESSIOND_ENDPOINT")
+    """Resolve the daemon endpoint: VIBERPIT_SESSIOND_ENDPOINT, else the legacy
+    VIBERPIT_SESSIOND_SOCKET (bare path → unix://), else the well-known default."""
+    raw = os.environ.get("VIBERPIT_SESSIOND_ENDPOINT")
     if raw:
         return parse_endpoint(raw)
-    sock = os.environ.get("CCSWITCH_SESSIOND_SOCKET")
+    sock = os.environ.get("VIBERPIT_SESSIOND_SOCKET")
     if sock:
         return parse_endpoint(sock if "://" in sock else f"unix://{sock}")
     return Endpoint("unix", path=DEFAULT_SOCKET_PATH)

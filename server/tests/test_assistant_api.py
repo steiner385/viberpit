@@ -14,9 +14,9 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 _H = {"Tailscale-User-Login": "u@example.com"}
-_ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
-        "CCSWITCH_TAILNET_ALLOWLIST": "", "CCSWITCH_SESSION_SECRET": "x" * 32,
-        "CCSWITCH_ASSISTANT_ENABLED": "true"}
+_ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
+        "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_SESSION_SECRET": "x" * 32,
+        "VIBERPIT_ASSISTANT_ENABLED": "true"}
 
 
 def _seed_account(name: str) -> None:
@@ -47,7 +47,7 @@ def _client(tmp_path, env=None):
     cfg_dir = tmp_path / "cfg" / "alpha"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / ".claude.json").write_text("{}")
-    full_env = {**_ENV, "CCSWITCH_HOME": str(tmp_path / "store"),
+    full_env = {**_ENV, "VIBERPIT_HOME": str(tmp_path / "store"),
                 "CLAUDE_CONFIG_DIR": str(shared), **(env or {})}
     with patch.dict(os.environ, full_env):
         _seed_account("alpha")
@@ -66,7 +66,7 @@ def _client(tmp_path, env=None):
 
 
 def test_disabled_is_404(tmp_path):
-    with _client(tmp_path, {"CCSWITCH_ASSISTANT_ENABLED": "false"}) as c:
+    with _client(tmp_path, {"VIBERPIT_ASSISTANT_ENABLED": "false"}) as c:
         assert c.get("/api/assistant/status", headers=_H).json()["enabled"] is False
         r = c.post("/api/assistant/session", json={}, headers=_H)
         assert r.status_code == 404 and r.json()["error"]["code"] == "ASSISTANT_DISABLED"
@@ -78,7 +78,7 @@ def test_status_reports_operator_tools_off_by_default(tmp_path):
 
 
 def test_status_reports_operator_tools_on_via_env(tmp_path):
-    with _client(tmp_path, {"CCSWITCH_ASSISTANT_OPERATOR_TOOLS": "true"}) as c:
+    with _client(tmp_path, {"VIBERPIT_ASSISTANT_OPERATOR_TOOLS": "true"}) as c:
         assert c.get("/api/assistant/status", headers=_H).json()["operatorTools"] is True
 
 
@@ -102,7 +102,7 @@ def test_a_codex_drawer_is_refused_rather_than_downgraded(tmp_path):
     # A host with no Codex runner must answer 409, never fall back to Claude: the
     # two engines have different overlays, so substituting one silently would
     # answer a question the operator did not ask.
-    with _client(tmp_path, {"CCSWITCH_ASSISTANT_ENGINE": "codex"}) as c:
+    with _client(tmp_path, {"VIBERPIT_ASSISTANT_ENGINE": "codex"}) as c:
         r = c.post("/api/assistant/session", json={}, headers=_H)
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "ASSISTANT_ENGINE_UNAVAILABLE"
@@ -182,7 +182,7 @@ def test_resume_threads_the_callers_identity(tmp_path):
 
 
 def test_gated_model_is_400(tmp_path):
-    with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
+    with _client(tmp_path, {"VIBERPIT_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         r = c.post("/api/assistant/session", json={"model": "fable"}, headers=_H)
         assert r.status_code == 400 and r.json()["error"]["code"] == "MODEL_GATED"
 
@@ -191,7 +191,7 @@ def test_switching_the_assistant_to_a_gated_model_is_400_not_a_parked_hold(tmp_p
     """The drawer's model picker posts to the ordinary session model route. For the
     assistant kind a gated tier must be REFUSED, not parked: the approval card that
     clears a hold renders inside the drawer that the hold just silenced."""
-    with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
+    with _client(tmp_path, {"VIBERPIT_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
         r = c.post(f"/api/sessions/{sid}/model", json={"model": "fable"}, headers=_H)
         assert r.status_code == 400
@@ -204,7 +204,7 @@ def test_switching_the_assistant_to_a_gated_model_is_400_not_a_parked_hold(tmp_p
 
 
 def test_switching_the_assistant_to_an_allowed_model_still_works(tmp_path):
-    with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
+    with _client(tmp_path, {"VIBERPIT_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
         r = c.post(f"/api/sessions/{sid}/model", json={"model": "opus"}, headers=_H)
         assert r.status_code == 200, r.text

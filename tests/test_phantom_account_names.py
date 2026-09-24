@@ -37,7 +37,7 @@ def _mk_copilot(name):
 
 def test_stray_dot_cred_json_is_not_an_account(tmp_path, monkeypatch):
     """A bare `.cred.json` must not enumerate as an account named ''."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_anthropic("work")
     # The exact artefact seen in production: a 2-byte `{}` written by a
     # sync_back() that was handed an empty account name.
@@ -50,7 +50,7 @@ def test_stray_dot_cred_json_is_not_an_account(tmp_path, monkeypatch):
 
 def test_dot_and_dotdot_slots_are_not_accounts(tmp_path, monkeypatch):
     """`..cred.json` / `...cred.json` alias the store root the same way."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_anthropic("work")
     (paths.store_dir() / "..cred.json").write_text("{}")
     (paths.store_dir() / "...cred.json").write_text("{}")
@@ -69,7 +69,7 @@ def test_provider_of_blank_name_is_not_copilot(tmp_path, monkeypatch):
     """
     from ccswitch.account_registry import UnknownAccountError
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_copilot("copilot1")
     assert paths.copilot_store_dir().exists()
 
@@ -88,7 +88,7 @@ def test_provider_of_unknown_name_does_not_fall_back_to_anthropic(tmp_path, monk
     """
     from ccswitch.account_registry import UnknownAccountError
 
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_anthropic("work")
 
     with pytest.raises(UnknownAccountError):
@@ -101,7 +101,7 @@ def test_provider_of_unknown_name_does_not_fall_back_to_anthropic(tmp_path, monk
 
 def test_provider_of_still_detects_real_copilot_accounts(tmp_path, monkeypatch):
     """The guard must not blind provider_of to genuine Copilot accounts."""
-    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_copilot("copilot1")
     _mk_anthropic("work")
 

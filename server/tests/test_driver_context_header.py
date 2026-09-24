@@ -39,7 +39,7 @@ def test_context_header_renders_a_host_and_only_on_a_page_change(monkeypatch):
     pinned to the primary — so the attribute spec §4.5 shows was dead in every topology.
     It reads `self_host_name()` now, which is always a string.
     """
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
 
     async def run():
         d = _driver("ctx1")
