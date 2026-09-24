@@ -12,11 +12,11 @@ import time
 import unittest
 from unittest import mock
 
+from ccswitch import accounts, crypto, ledger, oauth, paths, selector
 from tests.helpers import temp_env, usage
 
 
 def _seed_account(name, expires_in_ms=10_000_000):
-    from ccswitch import paths
     from ccswitch.creds import write_json_secure
     now_ms = int(time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
@@ -28,7 +28,6 @@ def _seed_account(name, expires_in_ms=10_000_000):
 
 def _cooldown(name):
     """Read the account's backoff fields straight from the ledger file."""
-    from ccswitch import paths
     path = paths.ledger_path()
     if not path.exists():
         return None, None
@@ -38,7 +37,6 @@ def _cooldown(name):
 
 
 def _expire_cooldown(name):
-    from ccswitch import ledger
     with ledger.locked_ledger() as led:
         led["accounts"][name]["usageFetchCooldownUntil"] = time.time() - 1
 
@@ -46,7 +44,6 @@ def _expire_cooldown(name):
 class TestUsageFetchBackoff(unittest.TestCase):
     def test_failed_fetch_sets_cooldown_and_skips_network(self):
         with temp_env():
-            from ccswitch import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(
                     oauth, "fetch_usage",
@@ -63,7 +60,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
 
     def test_cooldown_expiry_allows_refetch(self):
         with temp_env():
-            from ccswitch import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(
                     oauth, "fetch_usage",
@@ -75,7 +71,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
 
     def test_backoff_grows_exponentially_and_caps(self):
         with temp_env():
-            from ccswitch import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(
                     oauth, "fetch_usage",
@@ -87,7 +82,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 self.assertEqual(fails, 2)
                 self.assertAlmostEqual(until - time.time(), 120.0, delta=5.0)
                 # Drive the count high: the delay must clamp to the 900s cap.
-                from ccswitch import ledger
                 with ledger.locked_ledger() as led:
                     led["accounts"]["alpha"]["usageFetchFails"] = 50
                 _expire_cooldown("alpha")
@@ -97,7 +91,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
 
     def test_success_clears_backoff(self):
         with temp_env():
-            from ccswitch import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(
                     oauth, "fetch_usage",
@@ -126,7 +119,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         profile endpoint, which refuses a scope-less token explicitly.
         """
         with temp_env():
-            from ccswitch import accounts, crypto, oauth
             from ccswitch.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
             with mock.patch.object(
@@ -163,7 +155,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         account whose credential is fine — the wrong instruction.
         """
         with temp_env():
-            from ccswitch import accounts, crypto, oauth
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(oauth, "refresh_access_token",
                                    side_effect=oauth.AuthError("dead")), \
@@ -189,7 +180,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         scoped setup-token backing off from a 429 is handled, not an anomaly (#1773).
         """
         with temp_env():
-            from ccswitch import accounts, crypto, oauth
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(oauth, "refresh_access_token",
                                    side_effect=oauth.AuthError("dead")), \
@@ -207,7 +197,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         """If the scope oracle itself cannot answer (network, 5xx), we do not know —
         and 'do not know' is a backoff, never a permanent UNSUPPORTED verdict."""
         with temp_env():
-            from ccswitch import accounts, crypto, oauth, paths
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(oauth, "refresh_access_token",
                                    side_effect=oauth.AuthError("dead")), \
@@ -229,7 +218,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         regress: an account with unreadable quota must not be scored as if it had
         headroom.
         """
-        from ccswitch import selector
         from ccswitch.quota import UNSUPPORTED, unknown_snapshot
         from datetime import datetime, timezone
         snap = unknown_snapshot("anthropic", fetched_at=datetime.now(timezone.utc),
@@ -240,7 +228,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
     def test_needs_reauth_flip_backs_off_token_endpoint(self):
         """Dead refresh token, no setup token: don't re-refresh every call."""
         with temp_env():
-            from ccswitch import accounts, crypto, oauth
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(
                     oauth, "refresh_access_token",
@@ -253,7 +240,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
     def test_mark_reauthenticated_clears_backoff(self):
         """Re-auth must not leave the account usage-dark for the cooldown tail."""
         with temp_env():
-            from ccswitch import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(
                     oauth, "fetch_usage",
@@ -275,7 +261,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
         ledger already holds a runaway value from before the fix.
         """
         with temp_env():
-            from ccswitch import ledger
             with ledger.locked_ledger() as led:
                 led["accounts"]["alpha"] = {"usageFetchFails": 2000}
             with ledger.locked_ledger() as led:
@@ -288,7 +273,6 @@ class TestUsageFetchBackoff(unittest.TestCase):
     def test_fresh_cache_still_served_during_cooldown(self):
         """A cooldown must never mask a fresh cached value (cache wins first)."""
         with temp_env():
-            from ccswitch import accounts, ledger, oauth
             _seed_account("alpha")
             with mock.patch.object(oauth, "fetch_usage", return_value=usage(session=42.0)):
                 accounts.usage_for("alpha")  # populates the ledger cache
@@ -315,14 +299,12 @@ class TestTransientUsageLogLevel(unittest.TestCase):
     """A handled throttle logs at INFO: WARNING is the auto-error filing floor (#1638)."""
 
     def _levels(self, **usage_kw):
-        from ccswitch import accounts
         with self.assertLogs("ccswitch.accounts", level="INFO") as cm:
             self.assertIsNone(accounts.usage_for("alpha", **usage_kw))
         return [r.levelname for r in cm.records if r.getMessage().startswith("usage_for(alpha")]
 
     def test_usage_endpoint_429_logs_info(self):
         with temp_env():
-            from ccswitch import oauth
             _seed_account("alpha")
             with mock.patch.object(oauth, "fetch_usage",
                                    side_effect=oauth.UsageError("usage endpoint returned 429")):
@@ -330,7 +312,6 @@ class TestTransientUsageLogLevel(unittest.TestCase):
 
     def test_transient_refresh_error_logs_info(self):
         with temp_env():
-            from ccswitch import oauth
             _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
             with mock.patch.object(oauth, "refresh_access_token",
                                    side_effect=oauth.TransientError("token endpoint returned 429")):
@@ -338,7 +319,6 @@ class TestTransientUsageLogLevel(unittest.TestCase):
 
     def test_live_session_429_logs_info_but_401_stays_warning(self):
         with temp_env():
-            from ccswitch import oauth
             _seed_account("alpha")
             with mock.patch.object(oauth, "fetch_usage",
                                    side_effect=oauth.UsageError("usage endpoint returned 429")), \
