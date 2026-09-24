@@ -21148,7 +21148,35 @@ def _rmtree_best_effort(path: str) -> str | None:
     # means something (the top-level fstat/open, or a genuinely undeletable entry) kept
     # it around without raising. os.path.exists itself swallows OSError -> False.
     if os.path.exists(path):
+        detail = _describe_blocking_entry(path)
+        if detail:
+            return f"path still present after rmtree: {path} ({detail})"
         return f"path still present after rmtree: {path}"
+    return None
+
+
+def _describe_blocking_entry(path: str) -> str | None:
+    """Best-effort: name one surviving entry under *path* and, if it's foreign-owned,
+    say so — so the log line explains itself instead of sending someone to the host
+    to `find -not -user` by hand (#2062, where a root-owned __pycache__ left by a
+    stray ``sudo`` run inside a session silently blocked every purge retry). Never
+    raises: this only enriches an already-logged warning, it must not be able to turn
+    a successful-enough delete into a new failure path.
+    """
+    try:
+        my_uid = os.getuid()
+        for root, dirs, files in os.walk(path):
+            for name in dirs + files:
+                entry = os.path.join(root, name)
+                try:
+                    st = os.stat(entry, follow_symlinks=False)
+                except OSError:
+                    continue
+                if st.st_uid != my_uid:
+                    return (f"e.g. {entry} is owned by uid {st.st_uid}, "
+                            f"not this daemon's uid {my_uid}")
+    except OSError:
+        return None
     return None
 
 
