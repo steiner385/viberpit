@@ -4531,8 +4531,23 @@ class SessionOrchestrator:
             auto_archive_opt_out_reason = (
                 auto_archive_opt_out_reason
                 or getattr(_prior, "auto_archive_opt_out_reason", None))
+            # rename_session() and set_account_pin() write straight to the in-memory
+            # record + DB row (their own targeted UPDATEs, no queue-entry touch) when
+            # called on a QUEUED session, so the row is already correct but `name` /
+            # `name_is_auto` here are still whatever _enqueue_session captured into the
+            # queue entry's `params` at enqueue time. Left alone, this fresh
+            # _pre_record would silently revert a manual rename (and re-arm the
+            # opportunistic auto-namer over it, since name_is_auto reverts to True too)
+            # and drop an account pin the instant the slot frees (#1645).
+            if preexisting_row and _prior is not None:
+                if getattr(_prior, "name", None):
+                    name = _prior.name
+                if getattr(_prior, "name_is_auto", None) is not None:
+                    name_is_auto = _prior.name_is_auto
+            account_pinned = bool(getattr(_prior, "account_pinned", False))
             _pre_record = SessionRecord(
                 id=session_id, name=name, account=account,
+                account_pinned=account_pinned,
                 autopilot_paused=autopilot_paused,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                 engine=selected_engine,
