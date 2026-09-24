@@ -17,6 +17,14 @@ expected operational behaviour, not a signal anything is wrong, but throttling
 alone still let the *first* occurrence of each 6h window through at WARNING —
 indistinguishable from a real outage in the error sink. Those reconnects log at
 INFO instead.
+
+A third variant has the same cause but a different exception shape (#1743): the
+*next* reconnect attempt after a SERVICE_RESTART close can land while the new
+daemon process is still starting up, so `websockets` raises a bare
+`TimeoutError("timed out during opening handshake")` instead of a clean close.
+That also logs at INFO. A same-typed `TimeoutError` from a hang on an
+already-established connection ("timed out while closing connection") is a
+real-problem shape and must keep warning.
 """
 from __future__ import annotations
 
@@ -130,6 +138,53 @@ async def test_service_restart_close_reconnect_logs_at_info_not_warning(
     assert records, "the reconnect is still logged somewhere"
     assert records[0].levelno == logging.INFO
     assert not any(r.levelno == logging.WARNING for r in records)
+
+
+@pytest.mark.asyncio
+async def test_opening_handshake_timeout_reconnect_logs_at_info_not_warning(
+        tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            TimeoutError("timed out during opening handshake")),
+    )
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(
+                _wait_for_n_records(caplog, _ws_error_records, 1), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    assert records, "the reconnect is still logged somewhere"
+    assert records[0].levelno == logging.INFO
+    assert not any(r.levelno == logging.WARNING for r in records)
+
+
+@pytest.mark.asyncio
+async def test_closing_connection_timeout_reconnect_still_warns(
+        tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            TimeoutError("timed out while closing connection")),
+    )
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(
+                _wait_for_n_records(caplog, _ws_error_records, 1), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    assert records, "the reconnect is still logged somewhere"
+    assert records[0].levelno == logging.WARNING
 
 
 async def _wait_for_n_records(caplog, selector, n: int) -> None:
