@@ -217,3 +217,32 @@ def test_gate_does_not_swallow_a_real_prose_question():
             query_fn=_spy_query('{"open_question": true}', calls))
     assert asyncio.run(run()) is True
     assert len(calls) == 1
+
+
+# --------------------------------------- an org-denied account is decoded (#1912)
+
+def test_org_denied_failure_logs_the_cause_and_bars_the_account(caplog):
+    """#1912: the classify failure logged only the SDK's opaque "returned an
+    error result: success" — seven records, no cause. The failure now names the
+    classified kind and the CLI's own sentence, and the org-denied account is
+    barred from helper duty, so the next completion does not call it again."""
+    import logging
+
+    from server.tests.fakes.helper_streams import OPAQUE_SDK_ERROR, org_denied_query
+
+    calls: list = []
+
+    async def run():
+        return [await oq.completion_awaits_user(
+            strip_markers(PROD_TAIL_FOLLOWUP), config_dir="/cfg/org-denied",
+            query_fn=org_denied_query(calls)) for _ in range(2)]
+
+    with caplog.at_level(logging.WARNING, logger="server.sessions.open_question"):
+        assert asyncio.run(run()) == [True, True]  # the heuristic's verdict stands
+    failed = [r.getMessage() for r in caplog.records
+              if r.name == "server.sessions.open_question"]
+    assert len(failed) == 1
+    assert "kind=auth_forbidden" in failed[0]
+    assert "organization has disabled" in failed[0]
+    assert failed[0] != f"open_question.classify failed: {OPAQUE_SDK_ERROR}"
+    assert len(calls) == 1  # the second call was skipped: account barred

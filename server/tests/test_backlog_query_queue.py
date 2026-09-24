@@ -381,6 +381,45 @@ def test_refresh_groups_groups_the_queue_pool(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_refresh_groups_runs_on_a_verified_helper_identity(tmp_path, monkeypatch):
+    """Quota-healthy is not helper-ready (#1845/#1846): the grouping call used the
+    healthy account's config dir unverified, so an org-denied account answered
+    every refresh with the opaque "error result: success". The dir now comes from
+    ``_autopilot_helper_config_dir`` (the verified helper identity), and with no
+    healthy account from the helper picker rather than the daemon's empty env."""
+    async def run():
+        await _init(tmp_path, "groups-identity.db")
+        await _seed_product("viberpit", "o/r")
+        await _seed_item("o/r", 1, score=5.0)
+        orch = _orch_with_ctx()
+        healthy: list = ["acct-a"]
+
+        async def _healthy():
+            return healthy[0]
+        orch._backlog_healthy_account = _healthy
+        orch._autopilot_helper_config_dir = lambda acct: f"/verified/{acct}"
+        monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir",
+                            lambda: "/picked")
+        dirs: list = []
+
+        async def _propose(cands, config, _config_dir=None):
+            dirs.append(_config_dir)
+            return ParsedPlan(groups=[])
+
+        async def _store(groups, cands, *, degraded=False):
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        await orch._backlog_refresh_groups(_config())
+        healthy[0] = None
+        await orch._backlog_refresh_groups(_config())
+        assert dirs == ["/verified/acct-a", "/picked"]
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # Evidence dispatch: family on the candidate, evidence out of the model's pool  #
 # --------------------------------------------------------------------------- #

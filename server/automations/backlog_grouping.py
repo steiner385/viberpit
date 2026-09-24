@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, Final
 
 from server.sessions.account_auth import helper_env
-from server.sessions.helper_call import helper_cwd
+from server.sessions.helper_call import helper_cwd, run_helper_call
 from server.sessions.claude_bin import cli_path_kwargs
 from server.time_iso import iso_utc
 
@@ -315,7 +315,9 @@ async def propose_groups(
     Returns the validated plan (see :func:`parse_group_plan`), ``degraded`` when
     the model answered with nothing parseable (logged here, the one place the
     raw reply is in hand), and raises :class:`GroupingModelError` when the model
-    call ITSELF fails, carrying the SDK's message — the caller treats that as a
+    call ITSELF fails or is skipped (breaker open, account barred), carrying
+    :meth:`HelperOutcome.describe` — classified kind plus the CLI's own words,
+    never just the SDK's opaque exception — the caller treats that as a
     refresh failure and backs off, so a broken SDK never stores an empty plan
     over a real backlog. Tests inject ``_query_fn``; the conftest guard makes an
     un-injected call raise so no test ever reaches the real model.
@@ -342,20 +344,33 @@ async def propose_groups(
             effort=GROUPING_EFFORT,
             **(await asyncio.to_thread(cli_path_kwargs)),
         )
-        text_parts: list[str] = []
-        async for msg in query_fn(prompt=_grouping_prompt(candidates, max_k),
-                                  options=options):
-            content = getattr(msg, "content", None)
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                t = getattr(block, "text", None)
-                if isinstance(t, str):
-                    text_parts.append(t)
-        raw = "".join(text_parts).strip()
     except Exception as exc:
-        log.warning("backlog_grouping: model call failed: %s", exc)
         raise GroupingModelError(str(exc)) from exc
+    # Through the shared helper wrapper like every other one-shot call: it reads
+    # the real cause off the stream (the bare exception is the opaque "returned
+    # an error result: success"), and an org-denied account is barred rather
+    # than re-called every refresh (#1845/#1846). No log here — the runner's
+    # ``group_refresh_failed`` is the one record of a failed refresh.
+    prompt = _grouping_prompt(candidates, max_k)
+    outcome = await run_helper_call(
+        lambda: query_fn(prompt=prompt, options=options),
+        # One retry, not the default three: each attempt is a ~170k-token Sonnet
+        # call, and a failed refresh already backs off and keeps its plan.
+        subsystem="backlog_grouping", account_key=config_dir, retries=1)
+    if outcome.skipped:
+        raise GroupingModelError(f"call skipped: {outcome.skip_reason}")
+    if outcome.error is not None:
+        raise GroupingModelError(outcome.describe()) from outcome.error
+    text_parts: list[str] = []
+    for msg in outcome.messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            t = getattr(block, "text", None)
+            if isinstance(t, str):
+                text_parts.append(t)
+    raw = "".join(text_parts).strip()
     plan = parse_group_plan(raw, candidates, max_k)
     if plan.degraded:
         log.warning(

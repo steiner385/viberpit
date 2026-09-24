@@ -294,6 +294,53 @@ async def test_propose_groups_model_failure_raises_with_the_models_error():
         await propose_groups(C, {"max_issues_per_pr": 2}, _query_fn=_query)
 
 
+@pytest.mark.asyncio
+async def test_propose_groups_org_denial_is_decoded_and_logged_once(caplog):
+    """#1845/#1846: one failed refresh filed TWO auto-error issues (ten records
+    each, same minutes) — ``propose_groups`` logged "model call failed" and the
+    runner logged ``group_refresh_failed`` for the same exception — and both
+    carried only the SDK's opaque "returned an error result: success". The call
+    now rides ``run_helper_call``: the error names the classified kind and the
+    CLI's own sentence, and ``propose_groups`` logs nothing, leaving the runner's
+    record the only one."""
+    import logging
+
+    from server.automations.backlog_grouping import GroupingModelError
+    from server.sessions.helper_call import reset_breakers
+    from server.tests.fakes.helper_streams import org_denied_query
+
+    reset_breakers()
+    with caplog.at_level(logging.WARNING, logger="server.automations.backlog_grouping"), \
+            pytest.raises(GroupingModelError) as err:
+        await propose_groups(C, {"max_issues_per_pr": 2}, _config_dir="/cfg/org-denied",
+                             _query_fn=org_denied_query())
+    assert "kind=auth_forbidden" in str(err.value)
+    assert "organization has disabled" in str(err.value)
+    assert not [r for r in caplog.records
+                if r.name == "server.automations.backlog_grouping"]
+
+
+@pytest.mark.asyncio
+async def test_propose_groups_skips_an_authorization_blocked_account():
+    """An org-denied account is barred from every helper subsystem (#1820); the
+    grouping call used to bypass that bar and hit the dead account on every
+    refresh. A skipped call is still a failed refresh (the runner backs off and
+    keeps its plan), named as such."""
+    from server.automations.backlog_grouping import GroupingModelError
+    from server.sessions.helper_call import reset_breakers
+    from server.tests.fakes.helper_streams import org_denied_query
+
+    reset_breakers()
+    calls: list = []
+    for _ in range(2):
+        with pytest.raises(GroupingModelError) as err:
+            await propose_groups(C, {"max_issues_per_pr": 2},
+                                 _config_dir="/cfg/org-denied",
+                                 _query_fn=org_denied_query(calls))
+    assert "account-blocked" in str(err.value)
+    assert len(calls) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Plan store roundtrip (real SQLite)                                           #
 # --------------------------------------------------------------------------- #
