@@ -63,6 +63,35 @@ def parse_endpoint(raw: str) -> Endpoint:
     raise ValueError(f"unsupported daemon endpoint: {raw!r}")
 
 
+#: Hosts whose daemon is this process's own, reached over TCP rather than the socket.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def endpoint_host_name(ep: Endpoint) -> str:
+    """The ``hosts.name`` the daemon at *ep* answers to.
+
+    Callers that hold only an endpoint (``DaemonClient``) still need the fleet NAME to
+    ask ``host_upgrade`` whether that host is being restarted on purpose. Deriving it
+    here keeps one rule instead of a name threaded through every construction site.
+
+    A unix socket or a loopback address is this host by definition, so it resolves
+    through ``self_host_name`` — which is also what the deploy controller uses for its
+    own ``local_name``, so the two agree on what to call dobby. Anything else is a
+    worker, named for the first label of its endpoint: that is exactly how
+    auto-registered hosts are named (the first label of the tailnet MagicDNS name —
+    see ``server.hostname.self_host_name``).
+
+    A host renamed via ``VIBERPIT_HOST_NAME`` so that it no longer matches its endpoint
+    simply fails to match a deploy and reports its restarts at WARNING — the same
+    degradation ``self_host_name``'s own docstring warns about, and the safe direction.
+    """
+    from server.hostname import self_host_name
+
+    if ep.is_unix or (ep.host or "") in _LOOPBACK:
+        return self_host_name()
+    return (ep.host or "").split(".")[0]
+
+
 def sessiond_endpoint() -> Endpoint:
     """Resolve the daemon endpoint: VIBERPIT_SESSIOND_ENDPOINT, else the legacy
     VIBERPIT_SESSIOND_SOCKET (bare path → unix://), else the well-known default."""
