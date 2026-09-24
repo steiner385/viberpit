@@ -354,6 +354,19 @@ def _reset_self_tailscale_ips_cache():
     identity.reset_self_ips_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_untrusted_identity_header_throttle():
+    # Fourth instance of the same hazard: server.auth.identity throttles the
+    # untrusted-identity-header WARNING per peer IP (#1483) so one misconfigured
+    # peer's flood doesn't bury the auto-error sink. Left un-reset, an earlier
+    # test's peer would still be inside the window when a LATER test asserts the
+    # same peer's first occurrence warns.
+    from server.auth import identity
+    identity._UNTRUSTED_IDENTITY_HEADER_LOG.clear()
+    yield
+    identity._UNTRUSTED_IDENTITY_HEADER_LOG.clear()
+
+
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
