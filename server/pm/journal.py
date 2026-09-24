@@ -84,14 +84,25 @@ def state_of(row: GhWriteJournal) -> str:
 
 
 def failure_count(db: Session, mutation_id: str) -> int:
-    """How many times this mutation has failed *on its own merits*.
+    """How many times this mutation has failed *on its own merits* since its
+    most recent successful apply.
 
     Drives the park-on-second-failure rule, so it deliberately excludes failures
     that carry no verdict about the mutation: ``INTERRUPTED`` (we crashed before
-    hearing back) and ``TRANSIENT_PREFIX`` (the whole GraphQL document failed)."""
+    hearing back) and ``TRANSIENT_PREFIX`` (the whole GraphQL document failed).
+
+    Scoped to failures after the last success (#2104, sibling of #1878): a
+    success is also a verdict about the mutation. ``Mutation.key()`` — (kind,
+    target_node_id, field, new_value) — legitimately recurs whenever an item
+    returns to a prior Status/Stage/Score, so without this scoping two failures
+    separated by months, with a successful apply of the exact same value in
+    between, would still park the mutation permanently on the strength of
+    failures the intervening success already disproved."""
     rows = db.scalars(select(GhWriteJournal).where(GhWriteJournal.mutation_id == mutation_id)).all()
+    since = max((r.updated_at for r in rows if r.applied), default=None)
     return sum(1 for r in rows if state_of(r) == "failed" and r.error != INTERRUPTED
-               and not (r.error or "").startswith(TRANSIENT_PREFIX))
+               and not (r.error or "").startswith(TRANSIENT_PREFIX)
+               and (since is None or r.updated_at > since))
 
 
 def is_parked(db: Session, mutation_id: str) -> bool:

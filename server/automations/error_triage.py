@@ -263,12 +263,15 @@ class ErrorTriageLoop:
         from server.db.models import ErrorSignature as ES
         cutoff = now - timedelta(hours=int(config.get("warning_window_h", 24)))
         async with db_session() as db:
-            # Both states that _file_candidates can file from: a quiet burst
-            # ages out whether the fingerprint has never been filed or was
-            # filed and closed. Otherwise post-close stragglers accumulate
-            # indefinitely and eventually re-file a correctly closed issue.
+            # observed/resolved are the states _file_candidates can file from: a
+            # quiet burst ages out whether the fingerprint has never been filed
+            # or was filed and closed, or post-close stragglers would eventually
+            # re-file a correctly closed issue. muted is included too: the sink
+            # keeps incrementing count_since_filed while muted (errsink.py), so
+            # without this a muted WARNING burst never ages out — it just grows,
+            # ready to replay in full the moment someone unmutes it.
             await db.execute(update(ES).where(
-                ES.status.in_(("observed", "resolved")), ES.level == "WARNING",
+                ES.status.in_(("observed", "resolved", "muted")), ES.level == "WARNING",
                 ES.last_seen_at < cutoff, ES.count_since_filed > 0
             ).values(count_since_filed=0))
 
@@ -442,9 +445,22 @@ class ErrorTriageLoop:
                     status="muted", muted_at=now, muted_by="operator"))
                 return "muted", None
             if kind == "unmute":
-                back = "filed" if row.issue_number else "observed"
+                # A github:not_planned mute means the linked issue is closed —
+                # unmuting must land on "resolved" (new occurrences file a fresh
+                # regression), never "filed" (which would post a recurrence
+                # comment onto an issue a human deliberately closed as not
+                # planned). An operator mute always comes from "filed" (see
+                # actionable_items), so issue_number alone still decides there.
+                if row.muted_by == "github:not_planned":
+                    back = "resolved"
+                else:
+                    back = "filed" if row.issue_number else "observed"
+                # Same house rule as a close (#1878): the mute window's backlog
+                # is why the row was muted, not evidence it recurred since — drop
+                # it so unmuting starts watching fresh instead of immediately
+                # re-filing or re-commenting the whole muted-period count.
                 await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
-                    status=back, muted_at=None, muted_by=None))
+                    status=back, muted_at=None, muted_by=None, count_since_filed=0))
                 return "unmuted", None
             if kind != "file_now":
                 return "failed", None

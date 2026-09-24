@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from sqlalchemy import update
+
 from server.automations.context import AutomationContext
-from server.db import init_db
+from server.db import db_session, init_db
+from server.db.models import ErrorSignature as ES
 from server.tests.test_error_triage_loop import NOW, FakeGh, _loop, _row, _seed
 
 
@@ -78,6 +81,41 @@ def test_mute_and_unmute(tmp_path):
         assert await loop.action("b", "unmute") == "unmuted"
         assert (await _row("b")).status == "filed"  # still has an issue → back to filed
         assert await loop.action("a", "bogus") == "failed"
+    _run(body, tmp_path)
+
+
+def test_unmute_drops_the_mute_window_backlog(tmp_path):
+    async def body():
+        await _seed(fingerprint="a", status="filed", issue_number=7,
+                    count_since_filed=0)
+        loop = _loop(AutomationContext("error-triage"), FakeGh())
+        assert await loop.action("a", "mute") == "muted"
+        # Activity while muted must not replay in full the moment it is unmuted
+        # (#2104, sibling of #1878): the sink keeps incrementing count_since_filed
+        # for muted rows even though no one is watching for it to file/comment.
+        async with db_session() as db:
+            await db.execute(update(ES).where(ES.fingerprint == "a")
+                             .values(count_since_filed=50))
+        assert await loop.action("a", "unmute") == "unmuted"
+        row = await _row("a")
+        assert row.status == "filed" and row.count_since_filed == 0
+    _run(body, tmp_path)
+
+
+def test_unmute_after_not_planned_close_goes_to_resolved_not_filed(tmp_path):
+    async def body():
+        # A github:not_planned mute leaves issue_number set on a CLOSED issue
+        # (see _sync_issue_states). Unmuting must not land on "filed" — that
+        # would post a recurrence comment onto an issue a human deliberately
+        # closed as not planned. It must land on "resolved" so new occurrences
+        # file a fresh regression instead (#2104, sibling of #1878).
+        await _seed(fingerprint="np", status="muted", issue_number=42,
+                    muted_by="github:not_planned", count_since_filed=99)
+        loop = _loop(AutomationContext("error-triage"), FakeGh())
+        assert await loop.action("np", "unmute") == "unmuted"
+        row = await _row("np")
+        assert row.status == "resolved" and row.count_since_filed == 0
+        assert row.muted_by is None and row.muted_at is None
     _run(body, tmp_path)
 
 
