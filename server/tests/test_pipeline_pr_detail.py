@@ -79,6 +79,20 @@ def test_get_pr_detail_404_when_orchestrator_returns_none():
     assert resp.status_code == 404
 
 
+def test_get_pr_detail_502_with_reason_when_repo_sync_is_failing():
+    """A repo whose population refresh is failing has no cache to find the PR in, so
+    "not found" would be a lie — say why instead of a bare, reasonless 404 (the
+    cairnea/KinDash#16934 symptom)."""
+    client, fake = _make_client()
+    fake.pr_detail_result = {"pr_not_synced": True, "syncError": "gh: HTTP 504"}
+    with patch.dict(os.environ, _ENV), client:
+        resp = client.get("/api/prs/cairnea/KinDash/16934", headers=_H)
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert "cairnea/KinDash" in detail
+    assert "gh: HTTP 504" in detail
+
+
 def test_get_pr_detail_does_not_shadow_the_list_route():
     """GET /api/prs (no path segments) must still hit list_prs, not pr_detail."""
     client, fake = _make_client()
@@ -160,3 +174,30 @@ async def test_pr_detail_degrades_to_empty_when_live_fetch_fails():
     result = await orch.pr_detail("o/r", 1)
     assert result["number"] == 1
     assert result["checks"] == [] and result["reviews"] == [] and result["mergeable"] is None
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_flags_sync_failure_instead_of_none():
+    """Not in the cache AND the repo's last refresh failed → the marker dict the
+    route turns into a 502, not None (which it would 404)."""
+    orch = _orch()
+    orch.all_prs = AsyncMock(return_value=[])
+    orch._pr_population._last_error["o/r"] = "gh: HTTP 504"
+    assert await orch.pr_detail("o/r", 999) == {
+        "pr_not_synced": True, "syncError": "gh: HTTP 504"}
+    # A different, healthy repo is still a plain not-found.
+    assert await orch.pr_detail("o/healthy", 999) is None
+
+
+@pytest.mark.asyncio
+async def test_all_repos_stage_models_includes_repo_that_never_synced():
+    """A watched repo that has never fetched successfully has no population entry,
+    so it used to have no StageModel either — invisible on /pipeline. It now shows
+    up empty, carrying the reason."""
+    orch = _orch()
+    orch._pr_population._last_error["cairnea/KinDash"] = "gh: HTTP 504"
+    models = await orch.all_repos_stage_models()
+    m = models["cairnea/KinDash"]
+    assert m.nodes == ()
+    assert m.sync_error == "gh: HTTP 504"
+    assert m.to_dict()["syncError"] == "gh: HTTP 504"

@@ -61,11 +61,19 @@ async def pr_detail(
     _identity: str = Depends(current_identity),
 ) -> dict:
     orch = request.app.state.sessions
-    result = orch.pr_detail(f"{owner}/{name}", number)
+    repo = f"{owner}/{name}"
+    result = orch.pr_detail(repo, number)
     if inspect.isawaitable(result):
         result = await result
     if result is None:
         raise HTTPException(status_code=404, detail="PR not found")
+    if result.get("pr_not_synced"):
+        # The repo's population refresh is failing, so "not in the cache" is not
+        # evidence the PR doesn't exist. Say why, instead of a bare 404.
+        raise HTTPException(
+            status_code=502,
+            detail=f"PR sync for {repo} is failing: {result.get('syncError') or 'unknown error'}",
+        )
     return result
 
 

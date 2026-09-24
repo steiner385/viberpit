@@ -306,13 +306,17 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
     return "query {\n" + "\n".join(blocks) + "\n}"
 
 
-def build_population_query(repo: str, merged_since: str) -> str:
-    """One GraphQL doc: all OPEN PRs (incl. drafts) in a ``repo:`` block, recent
-    deployments + environments in a SEPARATE ``deploys:`` block, plus a search()
-    for PRs merged on/after ``merged_since`` (ISO date). Splitting the deploy
-    fields into their own aliased repository block keeps a forbidden Deployments/
-    Environments App permission from null-propagating away the PR population;
-    ``_default_query`` folds ``deploys`` back into ``data.repo`` for the parser.
+def build_population_open_query(repo: str) -> str:
+    """One GraphQL doc: all OPEN PRs (incl. drafts) in a ``repo:`` block, plus
+    recent deployments + environments in a SEPARATE ``deploys:`` block.
+    Splitting the deploy fields into their own aliased repository block keeps
+    a forbidden Deployments/Environments App permission from null-propagating
+    away the PR population; ``_default_query`` folds ``deploys`` back into
+    ``data.repo`` for the parser.
+
+    Issued as its OWN ``gh api graphql`` call — see
+    :func:`build_population_merged_query` for why this is split from the
+    merged-PR search rather than one combined document.
 
     Strings are JSON-encoded so a repo/owner/name can't break the literal.
     NOTE: deployments are capped at first:30 across ALL environments — on a
@@ -322,7 +326,6 @@ def build_population_query(repo: str, merged_since: str) -> str:
     envs and re-fetch them via ``build_env_deployments_query``.
     """
     owner, _, name = repo.partition("/")
-    merged_q = f"repo:{repo} is:pr is:merged merged:>={merged_since}"
     return (
         "query {\n"
         f"  repo: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
@@ -342,6 +345,29 @@ def build_population_query(repo: str, merged_since: str) -> str:
         f"    }}\n"
         f"    environments(first: 100) {{ nodes {{ name }} }}\n"
         f"  }}\n"
+        "}"
+    )
+
+
+def build_population_merged_query(repo: str, merged_since: str) -> str:
+    """One GraphQL doc: a search() for PRs merged on/after ``merged_since``
+    (ISO date), in its own request.
+
+    This used to be bundled into the same document as
+    :func:`build_population_open_query` (open PRs + deploys). Both blocks
+    select the full, expensive ``_PR_NODE_FIELDS`` (up to 100 changed files
+    plus up to 100 check contexts) — the OPEN block for up to 100 PRs, this
+    one for up to 50 more. For a repo with enough PRs and big enough diffs
+    (verified live against ``cairnea/KinDash``: 46 open PRs, each block alone
+    ~5-8s), the combined single document's execution time exceeds GitHub's
+    edge timeout and the whole request 504s — with NO usable data, which
+    silently emptied that repo from the pipeline board every poll cycle.
+    Issuing this as a second, separate ``gh api graphql`` call keeps each
+    request comfortably under budget.
+    """
+    merged_q = f"repo:{repo} is:pr is:merged merged:>={merged_since}"
+    return (
+        "query {\n"
         f"  merged: search(query: {json.dumps(merged_q)}, type: ISSUE, first: 50) {{\n"
         f"    nodes {{ ... on PullRequest {{ {_PR_NODE_FIELDS} }} }}\n"
         f"  }}\n"

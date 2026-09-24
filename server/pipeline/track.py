@@ -37,13 +37,23 @@ class StageNode:
 class StageModel:
     repo: str
     nodes: tuple[StageNode, ...]
+    # Set (with empty ``nodes``) for a watched repo whose PR population has
+    # never once fetched successfully — the repo still appears on the board
+    # instead of being silently absent, with a reason instead of nothing
+    # (issue: cairnea/KinDash — every poll 504'd, so it had no StageModel at
+    # all and just never showed up on /pipeline). None for a healthy repo.
+    sync_error: str | None = None
 
     def to_dict(self) -> dict:
-        return {"repo": self.repo, "nodes": [n.to_dict() for n in self.nodes]}
+        d = {"repo": self.repo, "nodes": [n.to_dict() for n in self.nodes]}
+        if self.sync_error is not None:
+            d["syncError"] = self.sync_error
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "StageModel":
-        return cls(repo=d["repo"], nodes=tuple(StageNode.from_dict(n) for n in d.get("nodes", [])))
+        return cls(repo=d["repo"], nodes=tuple(StageNode.from_dict(n) for n in d.get("nodes", [])),
+                   sync_error=d.get("syncError"))
 
 
 @dataclass(frozen=True)

@@ -545,6 +545,10 @@ export interface StageNode {
 export interface StageModel {
   repo: string
   nodes: StageNode[]
+  /** Set (with empty `nodes`) when this repo's PR population has never once
+   *  fetched successfully — the repo still appears with a reason instead of
+   *  being silently absent from the board. */
+  syncError?: string
 }
 
 export interface PipelinePr extends PullRequestInfo {

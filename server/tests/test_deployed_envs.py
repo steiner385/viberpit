@@ -1,6 +1,6 @@
 from server.github.pr_status import (
     PullRequestInfo, _active_deploy_dates, _is_deployed_envs, _to_info,
-    build_population_query,
+    build_population_open_query,
 )
 
 
@@ -67,6 +67,6 @@ def test_to_info_admin_production_does_not_satisfy_deployed():
 
 
 def test_population_query_unfiltered_deployments_with_latest_environment():
-    q = build_population_query("o/r", "2026-06-20")
+    q = build_population_open_query("o/r")
     assert "latestEnvironment" in q
     assert 'environments: ["production"]' not in q

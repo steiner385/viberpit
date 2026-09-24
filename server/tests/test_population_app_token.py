@@ -67,7 +67,8 @@ def test_default_query_supplements_evicted_envs(monkeypatch):
 
     monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
     resp = P._default_query("cairnea/KinDash", retention_days=7)
-    assert len(calls) == 2
+    # open query, env-supplement re-fetch, merged-PR search: 3 separate gh calls.
+    assert len(calls) == 3
     envs = [d["latestEnvironment"]
             for d in resp["data"]["repo"]["deployments"]["nodes"]]
     assert "kindash / production" in envs
@@ -86,7 +87,8 @@ def test_default_query_no_supplement_when_all_envs_active(monkeypatch):
 
     monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
     P._default_query("cairnea/KinDash", retention_days=7)
-    assert len(calls) == 1
+    # open query + merged-PR search; no env-supplement re-fetch needed.
+    assert len(calls) == 2
 
 
 def test_default_query_supplement_failure_keeps_main_response(monkeypatch):
@@ -107,7 +109,9 @@ def test_default_query_supplement_failure_keeps_main_response(monkeypatch):
 
     monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
     resp = P._default_query("cairnea/KinDash", retention_days=7)
-    assert len(calls) == 2
+    # open query, failed env-supplement re-fetch, failed merged-PR search — all
+    # three attempted; the two best-effort failures never take down the main response.
+    assert len(calls) == 3
     assert resp["data"]["repo"]["environments"]["nodes"]  # main intact
 
 
@@ -136,3 +140,39 @@ def test_default_query_tolerates_forbidden_deploys(monkeypatch):
     from server.github.pr_status import parse_population_response
     out = parse_population_response(resp, "steiner385/viberpit")
     assert [p.number for p in out] == [811]
+
+
+def test_default_query_never_combines_open_and_merged_in_one_call(monkeypatch):
+    """Regression: cairnea/KinDash disappeared from the pipeline board because the
+    open-PR block and the merged-PR search used to share ONE GraphQL document —
+    both select the full, expensive node fields (files + check contexts), and for
+    a repo with enough open PRs and big enough diffs the combined document's
+    execution time exceeded GitHub's edge timeout: every poll got back a 504 with
+    no usable data at all (verified live against cairnea/KinDash: reproduced 3/3).
+
+    This fake models exactly that failure mode — a query containing BOTH an open
+    `pullRequests(states: OPEN` block and a `merged: search(` block 504s; either
+    one alone succeeds — so this test fails the moment the two are ever
+    recombined into a single request, not just today."""
+    monkeypatch.setattr(P.app_auth, "token_for_owner", lambda owner: "tok")
+    open_pr = {"number": 16934, "url": "u", "title": "t", "state": "OPEN",
+               "isDraft": False, "updatedAt": "2026-09-24T10:00:00Z"}
+
+    def fake_run(args, token=None, input=None):
+        query = " ".join(args)
+        combined = "pullRequests(states: OPEN" in query and "merged: search(" in query
+        if combined:
+            class R: returncode = 1; stdout = ""; stderr = "gh: HTTP 504"
+            return R()
+        if "pullRequests(states: OPEN" in query:
+            out = json.dumps({"data": {"repo": {"pullRequests": {"nodes": [open_pr]}}}})
+        else:
+            out = json.dumps({"data": {"merged": {"nodes": []}}})
+        class R: returncode = 0; stdout = out; stderr = ""
+        return R()
+
+    monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
+    resp = P._default_query("cairnea/KinDash", retention_days=7)
+    from server.github.pr_status import parse_population_response
+    out = parse_population_response(resp, "cairnea/KinDash")
+    assert [p.number for p in out] == [16934]
