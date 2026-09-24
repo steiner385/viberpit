@@ -95,4 +95,39 @@ describe('handleMutationError forwarding', () => {
     handleMutationError(err, { options: {} } as never)
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('server fail'), expect.objectContaining({ stack: expect.any(String) }))
   })
+
+  // The level decides whether Error Triage files a GitHub issue, so a deliberate
+  // server refusal must never reach the logger at error/warn. See #2253.
+  it.each([400, 403, 404, 409, 422, 499])('logs a deliberate %i refusal at info, not error', (status) => {
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const errorSpy = vi.spyOn(clientLogger, 'error')
+    const err = new ApiRequestError(status, { detail: { message: 'all accounts at/above usage ceiling' } })
+    handleMutationError(err, fakeMutation())
+    expect(infoSpy).toHaveBeenCalledWith(
+      'mutation: all accounts at/above usage ceiling',
+      expect.objectContaining({ stack: expect.any(String) }),
+    )
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([500, 502, 503])('still logs a server-fault %i at error', (status) => {
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const errorSpy = vi.spyOn(clientLogger, 'error')
+    handleMutationError(new ApiRequestError(status, { detail: { message: 'server fail' } }), fakeMutation())
+    expect(errorSpy).toHaveBeenCalledWith('mutation: server fail', expect.objectContaining({ stack: expect.any(String) }))
+    expect(infoSpy).not.toHaveBeenCalled()
+  })
+
+  it('logs a non-ApiRequestError throw at error — that is a real client bug', () => {
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const errorSpy = vi.spyOn(clientLogger, 'error')
+    handleMutationError(new TypeError('Failed to fetch'), fakeMutation())
+    expect(errorSpy).toHaveBeenCalledWith(`mutation: ${MUTATION_ERROR_FALLBACK}`, expect.objectContaining({ stack: expect.any(String) }))
+    expect(infoSpy).not.toHaveBeenCalled()
+  })
+
+  it('still toasts a 4xx refusal — only the log level changes', () => {
+    handleMutationError(new ApiRequestError(409, { detail: { message: 'all accounts at/above usage ceiling' } }), fakeMutation())
+    expect(toast.error).toHaveBeenCalledWith('all accounts at/above usage ceiling')
+  })
 })

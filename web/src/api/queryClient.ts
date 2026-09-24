@@ -35,15 +35,28 @@ export function extractMutationErrorMessage(
   return fallback
 }
 
+/**
+ * A 4xx is the server deliberately refusing — every account over its usage ceiling,
+ * a double-accepted proposal, a tier-gated model. The user already sees it as a toast
+ * or inline message, and the client is not at fault, so it logs at `info`: kept for
+ * debugging, below the ingest floor, never filed as an auto-error issue. Anything else
+ * (5xx, a network failure, a non-`ApiRequestError` throw) is a real defect and stays at
+ * `error`. Server-side state behind a refusal belongs in *server* logs at the point of
+ * refusal, not in the client's echo of the response.
+ */
+function isDeliberateRefusal(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.status >= 400 && error.status < 500
+}
+
 /** Global MutationCache.onError handler: log to clientLogger, then toast unless the mutation opts out. */
 export function handleMutationError(
   error: unknown,
   mutation: Mutation<unknown, unknown, unknown>,
 ): void {
   const message = extractMutationErrorMessage(error)
-  clientLogger.error(`mutation: ${message}`, {
-    stack: error instanceof Error ? (error.stack ?? String(error)) : String(error),
-  })
+  const extra = { stack: error instanceof Error ? (error.stack ?? String(error)) : String(error) }
+  if (isDeliberateRefusal(error)) clientLogger.info(`mutation: ${message}`, extra)
+  else clientLogger.error(`mutation: ${message}`, extra)
   if (mutation.options.meta?.suppressErrorToast) return
   toast.error(message)
 }
