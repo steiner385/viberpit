@@ -291,6 +291,20 @@ _EXPECTED_RECONNECT_CODES = frozenset({websockets.CloseCode.SERVICE_RESTART})
 #: being INFO unconditionally.
 _EXPECTED_RECONNECT_TIMEOUT_MESSAGE = "timed out during opening handshake"
 
+#: A third sibling of the same restart window (#1725): a daemon busy draining
+#: on shutdown can stop servicing WS control frames before it gets to the
+#: clean SERVICE_RESTART close, so `websockets`' own keepalive ping never
+#: gets a pong and it self-closes the *established* connection locally with
+#: code 1011 (INTERNAL_ERROR) — no close frame is received from the daemon
+#: (`rcvd is None`). Matched by code AND reason, not code alone: 1011 is
+#: also the generic "something went wrong" code an app can send for a real
+#: internal error, so a bare code check would swallow those too. Like the
+#: handshake timeout above (and unlike the unconditional SERVICE_RESTART
+#: close), this rides the grace window rather than being INFO
+#: unconditionally — a daemon truly wedged with a stuck event loop would
+#: fail every keepalive ping the same way forever.
+_KEEPALIVE_PING_TIMEOUT_REASON = "keepalive ping timeout"
+
 
 def _is_expected_reconnect(exc: Exception) -> bool:
     if not isinstance(exc, websockets.ConnectionClosed):
@@ -301,21 +315,36 @@ def _is_expected_reconnect(exc: Exception) -> bool:
     )
 
 
+def _is_keepalive_ping_timeout(exc: Exception) -> bool:
+    if not isinstance(exc, websockets.ConnectionClosed):
+        return False
+    return (
+        exc.rcvd is None
+        and exc.sent is not None
+        and exc.sent.code == websockets.CloseCode.INTERNAL_ERROR
+        and exc.sent.reason == _KEEPALIVE_PING_TIMEOUT_REASON
+    )
+
+
 def _is_transient_connect_failure(exc: Exception) -> bool:
-    """A connect attempt that failed the way a restarting or briefly slow daemon fails."""
+    """A reconnect attempt that failed the way a restarting or briefly slow daemon fails."""
     if isinstance(exc, TimeoutError):
         return str(exc) == _EXPECTED_RECONNECT_TIMEOUT_MESSAGE
-    return isinstance(exc, ConnectionRefusedError)
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    return _is_keepalive_ping_timeout(exc)
 
 
 #: How long the events link may stay down before a transient connect failure is
 #: WARNING. A single failed attempt that the next retry heals — an opening-
 #: handshake timeout over the tailnet, a refused connect while a restarted daemon
-#: is still binding — is not an outage, yet each one filed as an auto-error
-#: (#1742: seven "timed out during opening handshake" records, every one followed
-#: by a clean reconnect). The backoff caps at 2s, so a minute is ~30 attempts:
-#: long enough to ride out a daemon restart, short enough that a daemon that is
-#: genuinely down (#1506) still reports within the minute.
+#: is still binding, a keepalive ping timeout on an established connection while
+#: the daemon is busy draining — is not an outage, yet each one filed as an
+#: auto-error (#1742: seven "timed out during opening handshake" records, every
+#: one followed by a clean reconnect; #1725: the keepalive-ping-timeout sibling).
+#: The backoff caps at 2s, so a minute is ~30 attempts: long enough to ride out a
+#: daemon restart, short enough that a daemon that is genuinely down (#1506)
+#: still reports within the minute.
 _RECONNECT_WARN_AFTER_S = 60.0
 
 

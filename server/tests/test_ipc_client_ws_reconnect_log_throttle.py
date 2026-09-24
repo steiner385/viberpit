@@ -26,11 +26,19 @@ A same-typed `TimeoutError` from a hang on an already-established connection
 ("timed out while closing connection") is a real-problem shape and must keep
 warning.
 
-The same handshake timeout, or a refused connect, is also the transient blip
-(#1742) that the very next retry heals. Neither is an outage while it is brief,
-so these connect failures log at INFO until the link has been down for
-``_RECONNECT_WARN_AFTER_S``; only a sustained outage — including a daemon wedged
-in startup that times out forever — escalates to WARNING.
+A fourth variant (#1725): a daemon busy draining on shutdown can stop
+servicing WS control frames before it gets to the clean SERVICE_RESTART close,
+so `websockets`' own keepalive ping never gets a pong and it self-closes the
+established connection locally with code 1011 (INTERNAL_ERROR), reason
+"keepalive ping timeout" — no close frame is received from the daemon. A 1011
+close with any other reason is a real internal error and must keep warning.
+
+The same handshake timeout, refused connect, or keepalive ping timeout is also
+the transient blip (#1742) that the very next retry heals. None of these is an
+outage while it is brief, so these failures log at INFO until the link has
+been down for ``_RECONNECT_WARN_AFTER_S``; only a sustained outage — including
+a daemon wedged in startup, or with a stuck event loop, that fails the same
+way forever — escalates to WARNING.
 """
 from __future__ import annotations
 
@@ -177,6 +185,62 @@ async def test_opening_handshake_timeout_inside_the_grace_window_logs_at_info(
     assert not any(r.levelno >= logging.WARNING for r in records)
 
 
+def _keepalive_ping_timeout_close() -> websockets.ConnectionClosed:
+    close = websockets.frames.Close(
+        websockets.CloseCode.INTERNAL_ERROR, "keepalive ping timeout")
+    return websockets.ConnectionClosed(None, close, rcvd_then_sent=None)
+
+
+@pytest.mark.asyncio
+async def test_keepalive_ping_timeout_inside_the_grace_window_logs_at_info(
+        tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            _keepalive_ping_timeout_close()),
+    )
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(
+                _wait_for_n_records(caplog, _ws_error_records, 3), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    assert records[0].levelno == logging.INFO
+    assert not any(r.levelno >= logging.WARNING for r in records)
+
+
+@pytest.mark.asyncio
+async def test_internal_error_close_with_a_different_reason_still_warns(
+        tmp_path, caplog, monkeypatch):
+    """A 1011 close is only expected for the keepalive-ping-timeout reason —
+    matching the code alone would also swallow a genuine internal error."""
+    close = websockets.frames.Close(
+        websockets.CloseCode.INTERNAL_ERROR, "unhandled exception in handler")
+    monkeypatch.setattr(
+        ipc_client, "daemon_ws_connect",
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
+            websockets.ConnectionClosed(None, close, rcvd_then_sent=None)),
+    )
+
+    client = DaemonClient(str(tmp_path / "nonexistent.sock"))
+    try:
+        with caplog.at_level(logging.DEBUG, logger="server.ipc.client"):
+            client.subscribe("s1")
+            await asyncio.wait_for(
+                _wait_for_n_records(caplog, _ws_error_records, 1), timeout=5)
+    finally:
+        await client.aclose()
+
+    records = _ws_error_records(caplog)
+    assert records, "the reconnect is still logged somewhere"
+    assert records[0].levelno == logging.WARNING
+
+
 @pytest.mark.asyncio
 async def test_closing_connection_timeout_reconnect_still_warns(
         tmp_path, caplog, monkeypatch):
@@ -231,7 +295,8 @@ async def test_outage_past_the_grace_window_escalates_to_warning(
 def test_reconnect_log_level_policy(monkeypatch):
     monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 60.0)
     for blip in (TimeoutError("timed out during opening handshake"),
-                 ConnectionRefusedError("connection refused")):
+                 ConnectionRefusedError("connection refused"),
+                 _keepalive_ping_timeout_close()):
         assert ipc_client._reconnect_log_level(blip, 0.0) == logging.INFO
         assert ipc_client._reconnect_log_level(blip, 59.9) == logging.INFO
         assert ipc_client._reconnect_log_level(blip, 60.0) == logging.WARNING
@@ -241,6 +306,12 @@ def test_reconnect_log_level_policy(monkeypatch):
     # A hang on an established connection is never a connect blip (#1743).
     hang = TimeoutError("timed out while closing connection")
     assert ipc_client._reconnect_log_level(hang, 0.0) == logging.WARNING
+    # 1011 is also the generic "internal error" code — only the specific
+    # keepalive-ping-timeout reason is an expected restart artifact (#1725).
+    other_internal_error = websockets.frames.Close(
+        websockets.CloseCode.INTERNAL_ERROR, "unhandled exception in handler")
+    bad = websockets.ConnectionClosed(None, other_internal_error, rcvd_then_sent=None)
+    assert ipc_client._reconnect_log_level(bad, 0.0) == logging.WARNING
 
 
 async def _wait_for_n_records(caplog, selector, n: int) -> None:
