@@ -11740,6 +11740,13 @@ class SessionOrchestrator:
                 continue  # local context/actions cannot govern a fleet mirror
             if is_assistant(rec):
                 continue   # the assistant is the operator's aide, not governed work
+            if rec.paused_reason in _TERMINAL_PAUSE_REASONS:
+                # Settled forever — see _TERMINAL_PAUSE_REASONS. The rotation monitor
+                # (_restart_driverless) and the stuck-session sweep both learned this
+                # the hard way (#1767): omitting the check here let a session parked
+                # `automation_ownership_stale` get re-nudged into the identical
+                # StaleOwnership every tick, forever (2026-09-24).
+                continue
             if rec.status not in ACTIONABLE_STATUSES:
                 continue
             if self._turn_restart_in_flight(sid):
@@ -12063,6 +12070,7 @@ class SessionOrchestrator:
         never be approved without passing the guardrails (TOCTOU safety)."""
         from server.sessions.types import SYSTEM_IDENTITY
         from server.automations.autopilot_policy import matches_denylist
+        from server.automations.ownership import StaleOwnership
         act = decision.action
         if act in ("escalate", "complete", "skip"):
             return False
@@ -12077,31 +12085,47 @@ class SessionOrchestrator:
             return False  # ownership may have changed while the decider awaited
         stuck = ctx.stuck if ctx is not None else {}
         ok = False
-        if act in ("approve", "deny") and stuck.get("perm_id"):
-            # Defense-in-depth: re-check the exact perm being approved against the
-            # deny-list right before resolving, so an approve can never slip a
-            # destructive command through even if the payload changed shape.
-            if act == "approve" and matches_denylist(
-                    stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
-                return False
-            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
-                return False
-            ok = bool(self.resolve_permission(
-                session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
-        elif act == "answer" and stuck.get("question_id") is not None:
-            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
-                return False
-            opts = stuck.get("options") or []
-            idx = decision.answer_index or 0
-            selected = [opts[idx]] if 0 <= idx < len(opts) else []
-            ok = bool(await self.answer_question(
-                session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
-        elif act == "nudge" and decision.prompt:
-            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
-                return False
-            ok = (await self.send_prompt(
-                session_id, decision.prompt,
-                origin={"kind": "autopilot"})) == "sent"
+        try:
+            if act in ("approve", "deny") and stuck.get("perm_id"):
+                # Defense-in-depth: re-check the exact perm being approved against the
+                # deny-list right before resolving, so an approve can never slip a
+                # destructive command through even if the payload changed shape.
+                if act == "approve" and matches_denylist(
+                        stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
+                    return False
+                if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                    return False
+                ok = bool(self.resolve_permission(
+                    session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
+            elif act == "answer" and stuck.get("question_id") is not None:
+                if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                    return False
+                opts = stuck.get("options") or []
+                idx = decision.answer_index or 0
+                selected = [opts[idx]] if 0 <= idx < len(opts) else []
+                ok = bool(await self.answer_question(
+                    session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
+            elif act == "nudge" and decision.prompt:
+                if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                    return False
+                ok = (await self.send_prompt(
+                    session_id, decision.prompt,
+                    origin={"kind": "autopilot"})) == "sent"
+        except StaleOwnership:
+            # ensure_driver's automation fence found this session's tracked GitHub
+            # target already transferred/released elsewhere (its PR merged and
+            # backlog-runner closed the claim out) — the same terminal condition
+            # `_reassign` parks as `automation_ownership_stale`. Uncaught, this
+            # crashed the tick (`autopilot.session_failed`) and NOTHING marked the
+            # session so it would stop being offered to autopilot again: unlike the
+            # rotation monitor and the stuck-session sweep (both of which explicitly
+            # skip a `_TERMINAL_PAUSE_REASONS` session — see `_restart_driverless`),
+            # `_autopilot_list_governed` never consulted `paused_reason` at all, so
+            # every tick re-nudged the same session into the same dead end forever
+            # (2026-09-24, three sessions stuck retrying since a manual unarchive
+            # put them back in rotation after their PR had already merged).
+            await self._pause_session(rec, reason="automation_ownership_stale")
+            return False
         if ok:
             await self._autopilot_mark_assisted(session_id)
         return ok
