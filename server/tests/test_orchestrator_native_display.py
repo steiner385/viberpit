@@ -159,6 +159,60 @@ async def test_remote_client_gets_virtual(spawn_env):
         await orch.stop()
 
 
+def _dispatch_ctx(orch):
+    """The path a backlog-runner dispatch takes: AutomationContext.spawn_session
+    bound to the orchestrator's own create_session. No creating browser, so no
+    client_node."""
+    from server.automations.context import AutomationContext
+    return AutomationContext("backlog-runner", create_session=orch.create_session)
+
+
+@pytest.mark.asyncio
+async def test_dispatched_session_gets_native_on_a_desktop_host(spawn_env):
+    """#1899: a backlog-runner session has no creating browser, so locality can never
+    be proven — it used to fall through to a pooled Xvfb the user at the seat could
+    not see. On a host whose desktop is up it now lands on the seat."""
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await _dispatch_ctx(orch).spawn_session(
+            origin_ref="o/r#1", account="acct", name="backlog o/r#1")
+        assert rec.display_mode == "native"
+        assert x11.started == []
+        assert orch._display_env(rec.id) == {"DISPLAY": ":0"}
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_dispatched_session_without_a_desktop_stays_virtual(spawn_env):
+    """The default is a request, not a demand: a host with no desktop still leases Xvfb."""
+    x11 = FakeX11()
+    orch = await _orch(spawn_env, x11, FakeNative(available=False))
+    try:
+        rec = await _dispatch_ctx(orch).spawn_session(
+            origin_ref="o/r#1", account="acct", name="backlog o/r#1")
+        assert rec.display_mode == "virtual"
+        assert x11.started == [rec.id]
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_browser_session_with_unknown_locality_stays_virtual(spawn_env):
+    """The guard for why the fix is NOT in resolve_display_mode: a browser request whose
+    locality could not be resolved (client_node None — e.g. behind `tailscale serve`)
+    is possibly remote, and must keep the documented safe default."""
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session("n", account="acct")
+        assert rec.display_mode == "virtual"
+        assert x11.started == [rec.id]
+    finally:
+        await orch.stop()
+
+
 @pytest.mark.asyncio
 async def test_explicit_virtual_from_local_client(spawn_env):
     x11, native = FakeX11(), FakeNative()

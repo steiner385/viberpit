@@ -791,6 +791,19 @@ class AutomationContext:
         # pytest), which acceptEdits still gates — so it would stall just the same.
         mode = resolve_permission_mode(create_kwargs)
         create_kwargs["permission_mode"] = mode
+        # An automation dispatch has no creating browser, so client_node is always
+        # None — resolve_display_mode's locality proof can never fire for it, and
+        # every automation session fell back to a pooled Xvfb display even when
+        # dispatched on a runner sitting at an attended desktop (#1899). Unlike a
+        # browser session (where None means "locality unknown, possibly remote" —
+        # e.g. behind `tailscale serve` fronting, see
+        # docs/product/features/remote-desktop-vnc-x11.md), None here always means
+        # "no browser, ever" — a request-level "native" needs no locality proof
+        # (display_policy.resolve_display_mode), so this is safe without touching
+        # that shared decision. ``native_available`` still gates it per-host: a
+        # runner with no desktop attached still gets virtual. A caller that already
+        # has an opinion (none does today) keeps it.
+        create_kwargs.setdefault("display", "native")
         # Last gate before the session exists: the engine/mode pair has to be able
         # to produce the one output an automation has (a pushed branch and a PR).
         # Refusing here costs nothing; discovering it at `git push` costs the whole
