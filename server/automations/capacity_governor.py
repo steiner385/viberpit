@@ -88,6 +88,12 @@ class CapacityGovernorLoop:
                 await self._ctx.emit("warn", f"capacity readout failed: {exc}; keeping the previous plan",
                                      kind="plan_stale")
             return
+        # Read→write window (#2040): the floors inside `plan_capacity` use the
+        # in-flight counts of THIS readout snapshot, so a claim reserved between the
+        # snapshot and `_write_plan` is not floored until the next tick. Held claims
+        # are immune regardless (Ruling 20: admission never refuses a claim that
+        # already holds its slot), so the only effect is one tick of a cosmetic plan
+        # row; re-read the target states just before the write if that ever matters.
         previous = plan_from_dict(await self._read_plan())
         plan = plan_capacity(readout_to_inputs(readout), push_level=config.get("push_level", "steady"),
                              sessions_per_account=int(config.get("sessions_per_account") or 2),

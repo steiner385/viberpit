@@ -102,7 +102,7 @@ def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str,
               "sessionsPerAccount": sessions_per_account, "accountCap": account_cap,
               "hostFree": min(host_free, UNBOUNDED), "globalFree": global_free,
               "runnerCeiling": inputs.runner_ceiling, "runnerInFlight": inputs.runner_in_flight,
-              "floor": inputs.runner_in_flight, "rawFleet": raw_fleet}
+              "rawFleet": raw_fleet}
     # Never below the runner's own in-flight count — the fleet-layer twin of
     # `_split`'s per-product floor (fix round 2, N2). Without this, a live
     # plan can compute e.g. fleet 0 when every account is at its reserve
@@ -113,6 +113,13 @@ def _fleet(inputs: CapacityInputs, sessions_per_account: int) -> tuple[int, str,
     # `_automation_before_execution` raises StaleOwnership on the refusal.
     # `limiting` is left naming the layer that WOULD have bound (unfloored) —
     # the floor is a safety clamp on the number, not a change of cause.
+    # `floor` is only emitted when it actually changed the number (deferred-now,
+    # #2040): `"floor": inputs.runner_in_flight` unconditionally made every plan
+    # carry a floor value even when `rawFleet` already cleared it, which reads as
+    # "the floor is always binding" to any consumer that doesn't also compare it
+    # against `rawFleet` itself.
+    if raw_fleet < inputs.runner_in_flight:
+        budget["floor"] = inputs.runner_in_flight
     return max(raw_fleet, inputs.runner_in_flight), limiting, budget
 
 
@@ -167,6 +174,13 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     budget["pipeline"] = {p.slug: {"open": p.pipeline, "cap": p.pipeline_cap}
                           for p in inputs.products if p.pipeline_cap is not None}
     ordered = product_order(inputs.products)
+    # `fleet` is floored at ALL of the runner's in-flight claims, but `_split` only
+    # deducts the claims of products it plans (`working`): a claim on an off
+    # product, or a pre-flip one with no product at all, holds fleet capacity
+    # without being subtracted, so the per-product caps can sum to more than the
+    # fleet by that count. Deliberately left optimistic (#2040): admission's own
+    # runner-ceiling gate (`runner_ceiling_full`) still binds every NEW claim
+    # against the true fleet count, so the surplus is never actually spawned.
     proposed = _split(fleet, ordered)
     reasons: list[str] = []
     floored = budget["rawFleet"] < inputs.runner_in_flight

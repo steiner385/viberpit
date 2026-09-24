@@ -25,13 +25,20 @@ log = logging.getLogger(__name__)
 #: is still true — the governor loop stalled or died without clearing the flag.
 PLAN_MAX_AGE_S = 600
 
+#: How far into the future ``computedAt`` may read and still count as live —
+#: ordinary clock skew between the writer and this reader, not a real window.
+CLOCK_SKEW_TOLERANCE_S = 60
+
 
 def plan_is_live(plan: dict | None, *, now: datetime, enabled: bool, max_age_s: int = PLAN_MAX_AGE_S) -> bool:
     """Whether ``plan`` should govern this tick: truthy, ``applied`` is exactly
-    ``True``, the governor is enabled, and ``computedAt`` parses to within
-    ``max_age_s`` of ``now``. A naive ``computedAt`` is assumed UTC (the store
-    always writes timezone-aware ISO strings; a naive one is defensive only).
-    Never raises — an unparseable or wrong-shaped plan just reads as not live.
+    ``True``, the governor is enabled, and ``computedAt`` is no more than
+    ``max_age_s`` in the past and no more than ``CLOCK_SKEW_TOLERANCE_S`` in the
+    future of ``now`` — an ASYMMETRIC window, not a distance from ``now`` in
+    either direction (see the ``age`` comment below). A naive ``computedAt`` is
+    assumed UTC (the store always writes timezone-aware ISO strings; a naive one
+    is defensive only). Never raises — an unparseable or wrong-shaped plan just
+    reads as not live.
     """
     if not enabled or not plan:
         return False
@@ -54,10 +61,17 @@ def plan_is_live(plan: dict | None, *, now: datetime, enabled: bool, max_age_s: 
     # the future (clock skew between the writer and this reader, or a corrupt
     # `computedAt`) as equally live as one that many minutes old, which is
     # backwards — a plan from the future was never actually computed against
-    # the world this reader sees. A small negative tolerance (60s) absorbs
-    # ordinary clock skew without opening the same hole `abs()` did.
+    # the world this reader sees. `CLOCK_SKEW_TOLERANCE_S` absorbs ordinary
+    # clock skew without opening the same hole `abs()` did.
     age = (at - computed).total_seconds()
-    return -60 <= age <= max_age_s
+    if age < -CLOCK_SKEW_TOLERANCE_S:
+        # INFO, not WARNING: every read seam calls this every tick, and a WARNING
+        # is an auto-error filing decision — a persistent skew would fan out.
+        log.info("capacity_apply.plan_from_the_future: computedAt=%s is %.1fs ahead of now=%s "
+                 "(tolerance %ss); plan is not live", computed_at, -age, at.isoformat(),
+                 CLOCK_SKEW_TOLERANCE_S)
+        return False
+    return age <= max_age_s
 
 
 def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -> dict[str, dict | None]:

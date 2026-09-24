@@ -142,6 +142,21 @@ def test_fleet_never_drops_below_the_runners_own_in_flight():
     assert any("floored" in r for r in plan.reasons)
 
 
+def test_budget_floor_is_emitted_only_when_it_changed_the_number():
+    """#2040: `budget.floor` used to be present on every plan, so a plan whose
+    `rawFleet` already cleared the runner's in-flight count still read as if a
+    floor were binding. It is now emitted only when `rawFleet < floor`."""
+    unfloored = plan_capacity(_inputs(runner_in_flight=1), push_level="steady")
+    assert unfloored.budget["rawFleet"] >= 1
+    assert "floor" not in unfloored.budget
+
+    floored = plan_capacity(_inputs(accounts=(
+        _acct("a1", available=False), _acct("a2", available=False),
+    ), runner_in_flight=2), push_level="steady")
+    assert floored.budget["rawFleet"] < 2
+    assert floored.budget["floor"] == 2
+
+
 def test_off_products_and_empty_backlogs_get_nothing():
     i = _inputs(products=(
         _prod("kindash", 1, 50, dispatch="off"),

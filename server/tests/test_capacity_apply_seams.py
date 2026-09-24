@@ -332,19 +332,19 @@ def test_admission_end_to_end_the_floored_planner_never_starves_an_in_flight_cla
 # or a plan whose fleet ceiling is literally 0.                              #
 # --------------------------------------------------------------------------- #
 
-async def _seed_occupied_claim(repo: str, slug: str, *, max_in_flight: int) -> None:
+async def _seed_occupied_claim(repo: str, slug: str, *, max_in_flight: int, token: str) -> None:
     await _seed(slug, repo, policy={"dispatch": "auto", "max_in_flight": max_in_flight})
     async with db_session() as db:
         db.add(AutomationTargetState(automation_id="backlog-runner", target=f"{repo}#1",
-                                      state={"product": slug, "ownership_token": "tok"}))
+                                      state={"product": slug, "ownership_token": token}))
         await db.flush()
 
 
-async def _decide_occupied(repo: str, slug: str):
+async def _decide_occupied(repo: str, slug: str, *, token: str):
     snapshot = await gather_implementation_snapshot([repo], requested_product=slug)
     decision, _ = snapshot.decide(
         repo, requested_product=slug, trigger="automatic", effect="dispatch",
-        existing_slot=True, existing_token="tok")
+        existing_slot=True, existing_token=token)
     return decision
 
 
@@ -360,6 +360,16 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         own ``max_in_flight`` is set below the actual in-flight count here);
     (c) the kill switch is off (same fallback as (b));
     (d) the plan is live and applied but ``fleetConcurrency: 0``.
+
+    (a)-(c) seed ``max_in_flight=0`` against the 1 in-flight claim, not 1:
+    the PRE-Ruling-20 code merely decremented ``count`` by 1 for an occupied
+    claim (``count - int(occupied and count > 0) >= cap``), so a cap of 1
+    against 1 in-flight claim already read as permitted before this fix and
+    would not have caught a regression back to that decrement — a cap of 0
+    still refuses under the old decrement (``1 - 1 = 0 >= 0``) and only
+    passes under Ruling 20's full bypass (deferred-now 1, #2040). Each
+    scenario also uses its own ownership token so a decision for one repo can
+    never accidentally match another's occupied claim.
     """
     async def run():
         await _init(tmp_path, "seams_occupied_claim.db")
@@ -367,30 +377,30 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
         await _set_runner_row(mode="on", config={"max_concurrent": 6, "max_spawns_per_day": 10})
 
         # (a) product absent from a live plan's perProduct.
-        await _seed_occupied_claim("o/a", "product-a", max_in_flight=1)
+        await _seed_occupied_claim("o/a", "product-a", max_in_flight=0, token="tok-a")
         await write_plan(_plan({"other-product": 3}))
-        decision = await _decide_occupied("o/a", "product-a")
+        decision = await _decide_occupied("o/a", "product-a", token="tok-a")
         assert decision.permitted, decision.constraints
         assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
 
         # (b) plan is stale (11 minutes old) — falls back to the stored
-        # policy, whose max_in_flight (1) is already below the 1 in-flight
+        # policy, whose max_in_flight (0) is already below the 1 in-flight
         # claim seeded above but is never even evaluated because the claim
         # is occupied.
-        await _seed_occupied_claim("o/b", "product-b", max_in_flight=1)
+        await _seed_occupied_claim("o/b", "product-b", max_in_flight=0, token="tok-b")
         await write_plan(_plan({"product-b": 1}))
         await _backdate_plan(11)
-        decision = await _decide_occupied("o/b", "product-b")
+        decision = await _decide_occupied("o/b", "product-b", token="tok-b")
         assert decision.permitted, decision.constraints
         assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
 
         # (c) kill switch off — same fallback as (b), live plan ignored.
-        await _seed_occupied_claim("o/c", "product-c", max_in_flight=1)
+        await _seed_occupied_claim("o/c", "product-c", max_in_flight=0, token="tok-c")
         await write_plan(_plan({"product-c": 1}))
         monkeypatch.setenv("VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "false")
-        decision = await _decide_occupied("o/c", "product-c")
+        decision = await _decide_occupied("o/c", "product-c", token="tok-c")
         assert decision.permitted, decision.constraints
         assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
@@ -398,12 +408,43 @@ def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_capacity(tmp
 
         # (d) live, applied plan with fleetConcurrency literally 0 — the
         # global ceiling every new claim would be refused under.
-        await _seed_occupied_claim("o/d", "product-d", max_in_flight=5)
+        await _seed_occupied_claim("o/d", "product-d", max_in_flight=5, token="tok-d")
         await write_plan(_plan({"product-d": 5}, fleet=0))
-        decision = await _decide_occupied("o/d", "product-d")
+        decision = await _decide_occupied("o/d", "product-d", token="tok-d")
         assert decision.permitted, decision.constraints
         assert all(c.code not in {"product_capacity_full", "runner_ceiling_full"}
                    for c in decision.constraints)
+
+    asyncio.run(run())
+
+
+def test_admission_end_to_end_an_occupied_claim_is_never_refused_on_daily_budget(tmp_path, monkeypatch):
+    """D8 for the third ceiling (deferred-now 2, #2040): the caller's
+    ``existing_token in accounting`` decrement only relieves a claim still inside
+    the rolling 24h window it was counted in. A claim re-validated after that
+    window rolled over on a day whose budget is already spent (modelled here as
+    ``max_spawns_per_day: 0`` with an empty accounting, i.e. the claim's own
+    entry has lapsed) used to raise ``daily_budget_full`` and so StaleOwnership
+    on a session that was already running."""
+    async def run():
+        await _init(tmp_path, "seams_occupied_daily_budget.db")
+        _identity(monkeypatch)
+        await _set_runner_row(mode="on", config={"max_concurrent": 6, "max_spawns_per_day": 0})
+        await _seed_occupied_claim("o/e", "product-e", max_in_flight=5, token="tok-e")
+
+        decision = await _decide_occupied("o/e", "product-e", token="tok-e")
+        assert decision.permitted, decision.constraints
+        states = {c.code: c.state for c in decision.constraints}
+        assert states["daily_budget_held"] == "permitted"
+        assert "daily_budget_full" not in states
+
+        # D8 exempts a claim that already holds its slot, never admission itself:
+        # the same spent day still refuses a claim that does not.
+        snapshot = await gather_implementation_snapshot(["o/e"], requested_product="product-e")
+        new_claim, _ = snapshot.decide(
+            "o/e", requested_product="product-e", trigger="automatic", effect="dispatch")
+        assert not new_claim.permitted
+        assert "daily_budget_full" in {c.code for c in new_claim.constraints}
 
     asyncio.run(run())
 
@@ -459,6 +500,42 @@ def test_load_policies_matches_policies_by_slug_on_quiescent_data(tmp_path):
         assert via_load_policies == via_policies_by_slug
         assert via_load_policies["auto-product"]["max_in_flight"] == 3
         assert via_load_policies["pinned-product"]["max_in_flight"] == 5
+
+    asyncio.run(run())
+
+
+def test_live_plan_async_reads_on_the_callers_session_and_never_raises(tmp_path, monkeypatch):
+    """#2040: `load_policies` used to open a nested `db_session()` for the plan read
+    inside the caller's session. `live_plan_async(db)` reads on the caller's own
+    session, applies the same liveness rule as `live_plan`, and never raises."""
+    async def run():
+        await _init(tmp_path, "seams_live_plan_async.db")
+        from server.automations import capacity_store
+
+        assert await capacity_store.live_plan() is None
+        async with db_session() as db:
+            assert await capacity_store.live_plan_async(db) is None  # no row
+
+        await write_plan(_plan({"auto-product": 3}))
+
+        def no_nested_session(*a, **kw):
+            raise AssertionError("live_plan_async must not open its own db_session()")
+
+        async with db_session() as db:
+            with monkeypatch.context() as scoped:
+                scoped.setattr(capacity_store, "db_session", no_nested_session)
+                live = await capacity_store.live_plan_async(db)
+        assert live is not None and live["perProduct"] == {"auto-product": 3}
+
+        await _backdate_plan(11)
+        async with db_session() as db:
+            assert await capacity_store.live_plan_async(db) is None  # stale
+
+        class BrokenSession:
+            async def get(self, *args, **kwargs):
+                raise RuntimeError("db exploded")
+
+        assert await capacity_store.live_plan_async(BrokenSession()) is None  # type: ignore[arg-type]
 
     asyncio.run(run())
 

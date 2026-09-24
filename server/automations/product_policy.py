@@ -64,7 +64,10 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 surface="capacity",
                 help="This product's concurrent runner sessions: a hard cap while Cap mode is "
                      "pinned, the fallback while auto and no plan exists. 0 pauses issue "
-                     "dispatch without losing the rest of its policy."),
+                     "dispatch without losing the rest of its policy — but it pauses only NEW "
+                     "claims: a session already holding its slot is never interrupted by a cap "
+                     "that dropped under it (D8), so tapping an outstanding proposal or letting "
+                     "a waiting-account retry through still runs."),
     ConfigField(key="capacity_mode", label="Cap mode", type="enum", default="auto",
                 choices=["auto", "pinned"], surface="capacity",
                 help="auto: the capacity governor sets this product's cap from the fleet's "
@@ -316,12 +319,11 @@ def policy_for_product(policies: "dict[str, dict]", product: "str | None") -> di
 async def load_policies(db: AsyncSession) -> dict[str, dict]:
     """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same
     reading, same capacity-governor overlay, no second rule (fix round 1, F5).
-    ``live_plan()`` opens its own session (it has no sync/async session to
-    share, unlike ``policies_by_slug``'s ``live_plan_sync(db)``), read before
-    the query on the session this function was given."""
+    The plan is read on the caller's own session (``live_plan_async``), like
+    ``policies_by_slug``'s ``live_plan_sync(db)``."""
     from server.automations.capacity_apply import apply_product_plan
-    from server.automations.capacity_store import live_plan
-    plan = await live_plan()
+    from server.automations.capacity_store import live_plan_async
+    plan = await live_plan_async(db)
     rows = (await db.execute(select(Project.slug, Project.automation_policy))).all()
     policies = {slug: policy for slug, policy in rows if slug is not None}
     return {slug: effective_policy(raw) for slug, raw in apply_product_plan(policies, plan).items()}
@@ -491,7 +493,12 @@ def decide_implementation(
     # global_cap_full in the readout.
     capacity("runner_ceiling", global_count, global_cap, occupied=existing_slot)
     capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot)
-    capacity("daily_budget", daily_count, daily_cap)
+    # `occupied=existing_slot` here too (deferred-now 2, #2040): the caller's own
+    # `existing_token in accounting` decrement only exempts a claim still inside
+    # the rolling 24h window it was counted in — a claim re-validated after that
+    # window rolls over would otherwise be refused by `daily_budget_full` despite
+    # already holding its slot, the same D8 violation the other two ceilings fixed.
+    capacity("daily_budget", daily_count, daily_cap, occupied=existing_slot)
     # Spec 2026-09-20 D13: open, unmerged automation PRs vs the product's pipeline
     # cap. Blank cap = unlimited: nothing is emitted. `occupied` keeps governor-spec
     # D8 — a claim that already holds its slot is never refused by a cap — but the
