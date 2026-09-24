@@ -45,6 +45,14 @@ class _FakeCtx:
 _FIXED_EPOCH = 1700000000.0
 
 
+async def _fake_record(results, mode):
+    """Stand-in for persist_findings: mirrors its contract without a DB."""
+    premature = [r["id"] for r in results if r["bucket"] == "premature"]
+    return {"to_unarchive": premature if mode == "auto_reopen" else [],
+            "opened": len(premature), "resolved": 0, "reopened": 0,
+            "open_total": len(premature) if mode == "propose" else 0}
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -68,6 +76,7 @@ def test_tick_disabled_does_nothing():
             gh_num_fn=None,
             unarchive_fn=unarchive_fn,
             clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record,
         )
         await loop.tick()
 
@@ -88,7 +97,7 @@ def test_tick_enabled_premature_unarchives():
         unarchive_fn = AsyncMock(return_value=None)
 
         async def read_config():
-            return ("act", {"window_days": 7})
+            return ("auto_reopen", {"window_days": 7})
 
         # gh_fn returns an open, unarmed, non-draft PR -> premature bucket
         gh_fn = _gh_returning(_pr(state="OPEN", auto_merge=False))
@@ -102,6 +111,7 @@ def test_tick_enabled_premature_unarchives():
             gh_num_fn=None,
             unarchive_fn=unarchive_fn,
             clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record,
         )
         await loop.tick()
 
@@ -128,7 +138,7 @@ def test_tick_enabled_legit_not_unarchived():
         unarchive_fn = AsyncMock(return_value=None)
 
         async def read_config():
-            return ("act", {"window_days": 7})
+            return ("auto_reopen", {"window_days": 7})
 
         # merged PR -> legit bucket
         gh_fn = _gh_returning(_pr(state="MERGED"))
@@ -142,6 +152,7 @@ def test_tick_enabled_legit_not_unarchived():
             gh_num_fn=None,
             unarchive_fn=unarchive_fn,
             clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record,
         )
         await loop.tick()
 
@@ -165,7 +176,7 @@ def test_tick_enabled_merge_queued_not_unarchived():
         unarchive_fn = AsyncMock(return_value=None)
 
         async def read_config():
-            return ("act", {"window_days": 7})
+            return ("auto_reopen", {"window_days": 7})
 
         # open + mergeQueueEntry non-null -> in_merge_queue=True -> armed -> legit
         gh_fn = _gh_returning(_pr(state="OPEN", auto_merge=False, merge_queue=True))
@@ -179,6 +190,7 @@ def test_tick_enabled_merge_queued_not_unarchived():
             gh_num_fn=None,
             unarchive_fn=unarchive_fn,
             clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record,
         )
         await loop.tick()
 
@@ -199,7 +211,7 @@ def test_tick_enabled_no_rows_skips_emit():
         unarchive_fn = AsyncMock()
 
         async def read_config():
-            return ("act", {"window_days": 7})
+            return ("auto_reopen", {"window_days": 7})
 
         from server.automations.archive_audit import ArchiveAuditLoop
         loop = ArchiveAuditLoop(
@@ -210,6 +222,7 @@ def test_tick_enabled_no_rows_skips_emit():
             gh_num_fn=None,
             unarchive_fn=unarchive_fn,
             clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record,
         )
         await loop.tick()
 
@@ -229,12 +242,13 @@ def test_tick_publishes_status_counts_for_card():
         unarchive_fn = AsyncMock()
 
         async def read_config():
-            return ("act", {"window_days": 7})
+            return ("auto_reopen", {"window_days": 7})
 
         loop = ArchiveAuditLoop(
             ctx, read_config=read_config, list_rows=list_rows,
             gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
-            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH)
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record)
         await loop.tick()
 
         unarchive_fn.assert_awaited_once_with("sess-prem")
@@ -251,3 +265,43 @@ def test_archive_audit_registered_in_registry():
     """The automation must be registered so the daemon builds/starts its loop."""
     from server.automations.registry import registry
     assert "archive-audit" in {a.id for a in registry.all()}
+
+
+def test_tick_propose_files_a_finding_and_never_unarchives():
+    """The default mode: a premature completion becomes a review finding, and NOTHING
+    is reopened — the human decides (#1611 decision 6)."""
+    async def run():
+        from server.automations.archive_audit import ArchiveAudit, ArchiveAuditLoop
+        ctx = _FakeCtx()
+        unarchive_fn = AsyncMock()
+
+        async def read_config():
+            return ("propose", {"window_days": 7})
+
+        loop = ArchiveAuditLoop(
+            ctx, read_config=read_config,
+            list_rows=AsyncMock(return_value=[_row("sess-prem", "fix ci")]),
+            gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record)
+        await loop.tick()
+
+        unarchive_fn.assert_not_called()
+        detail = ctx.emit.call_args.kwargs["detail"]
+        assert detail["unarchived"] == [] and detail["findings"]["opened"] == 1
+        st = ArchiveAudit().status(ctx)
+        # An outstanding finding is a HUMAN wait, not a failure and not "idle".
+        assert st.waiting_reason == "human" and st.level == "warn"
+        assert st.counts["open_findings"] == 1
+
+    asyncio.run(run())
+
+
+def test_default_mode_is_propose_and_legacy_act_is_not_consent_to_auto_reopen():
+    """An enabled row with no mode, or one still carrying the retired pre-#1611 "act"
+    (auto-unarchive), resolves to propose — never to auto_reopen."""
+    from server.automations.archive_audit import ArchiveAudit
+    from server.automations.base import retired_modes_of
+    assert ArchiveAudit.modes == ("off", "propose", "auto_reopen")
+    assert retired_modes_of(ArchiveAudit()) == {"act": "propose"}
+    assert "act" not in ArchiveAudit.modes

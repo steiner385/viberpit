@@ -237,6 +237,19 @@ def retired_config_keys_of(automation: Any) -> tuple[str, ...]:
     return tuple(getattr(automation, "retired_config_keys", ()) or ())
 
 
+def retired_modes_of(automation: Any) -> dict[str, str]:
+    """Stored mode strings *automation* retired, mapped to the mode they now mean.
+
+    A retired mode is NOT a member of ``modes``, so a persisted row still carrying it
+    would otherwise read as an unknown value (the UI's ``<select>`` shows nothing
+    selected; the loops fall back to ``default_mode``). One accessor so the loops' read
+    path and the API list payload agree on what a stale row means. Only for a rename or
+    narrowing where the old string must NOT keep its old authority — see Archive Audit's
+    pre-#1611 ``act`` (auto-unarchive), which now reads as ``propose``.
+    """
+    return dict(getattr(automation, "retired_modes", None) or {})
+
+
 def operator_triggered(automation: Any) -> bool:
     """Whether *automation* has no control loop — see ``Automation.modes``.
 

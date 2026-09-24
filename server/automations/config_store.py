@@ -31,7 +31,7 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
-from .base import retired_config_keys_of, validate_config
+from .base import retired_config_keys_of, retired_modes_of, validate_config
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ async def read_automation_config(automation: Any, *,
         config = validate_config(schema, {}, retired=retired)
     if not enabled:
         return "off", config
+    mode = retired_modes_of(automation).get(mode, mode) if mode is not None else None
     if mode is not None and mode in modes:
         return mode, config
     return default_mode or "off", config

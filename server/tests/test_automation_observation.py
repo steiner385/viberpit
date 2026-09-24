@@ -36,11 +36,12 @@ async def test_archive_empty_refresh_then_failure_and_disabled_tick():
     from server.automations.archive_audit import ArchiveAuditLoop
 
     ctx = SimpleNamespace(emit=AsyncMock())
-    config = AsyncMock(return_value=("act", {}))
+    config = AsyncMock(return_value=("propose", {}))
     rows = AsyncMock(return_value=[])
     loop = ArchiveAuditLoop(ctx, read_config=config, list_rows=rows,
                             gh_fn=lambda *_: [], gh_num_fn=None,
-                            unarchive_fn=AsyncMock(), clock=lambda: 1000000)
+                            unarchive_fn=AsyncMock(), clock=lambda: 1000000,
+                            record_findings_fn=AsyncMock(return_value={}))
     await loop.tick()
     assert ctx.archive_audit_counts["total"] == 0
     first = ctx.observed_at
@@ -54,7 +55,7 @@ async def test_archive_empty_refresh_then_failure_and_disabled_tick():
     await loop.tick()
     assert observed_status(ctx, AutomationStatus("idle")).to_dict() == failed
     rows.side_effect = None
-    config.return_value = ("act", {})
+    config.return_value = ("propose", {})
     await loop.tick()
     assert ctx.last_refresh_failed_at is None
 

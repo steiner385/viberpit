@@ -29,9 +29,14 @@ class ArchiveAudit:
     id = "archive-audit"
     name = "Archive Audit"
     work_class = "maintenance"
-    description = ("Re-audits recently archived sessions against the completion bar and "
-                   "auto-unarchives ones archived prematurely (no merged/armed PR).")
-    modes: tuple[str, ...] = ("off", "act")
+    description = ("Re-audits recently archived sessions against the completion bar. "
+                   "Files a review finding for a premature completion by default; "
+                   "automatic reopening is an explicit opt-in.")
+    modes: tuple[str, ...] = ("off", "propose", "auto_reopen")
+    # Pre-#1611 the one active mode was "act" = auto-unarchive. That is not consent to the
+    # new explicit auto_reopen opt-in (decision of record 6), so a stored "act" reads as
+    # propose (review finding, nothing reopened).
+    retired_modes: dict[str, str] = {"act": "propose"}
     # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
     # acceptance evidence, so it launches Claude only. Widening it is a
     # reviewable one-line change gated on its acceptance suite passing.
@@ -47,6 +52,13 @@ class ArchiveAudit:
             return AutomationStatus(text="idle", level="idle")
         unarchived = counts.get("unarchived", 0)
         total = counts.get("total", 0)
+        open_findings = counts.get("open_findings", 0)
+        # An outstanding review finding is a human wait, regardless of whether this
+        # tick itself unarchived anything (auto_reopen mode still opens a finding).
+        if open_findings:
+            return AutomationStatus(
+                text=f"{open_findings} archived completion(s) awaiting review",
+                level="warn", counts=counts, waiting_reason="human")
         if unarchived:
             level = "active"
             text = f"unarchived {unarchived} of {total} recent sessions"
@@ -65,7 +77,8 @@ class ArchiveAuditLoop:
     """Restart-safe, non-reentrant periodic re-audit loop. Every I/O dependency is
     injected. Per tick: loads recently-archived rows, classifies them via run_audit
     (dry_run=True, offloaded to a thread so gh subprocess calls never block the loop),
-    then async-unarchives the premature ones and emits a summary."""
+    then persists a durable review finding for each premature session (Phase 4, #1611)
+    and — only in ``auto_reopen`` mode — async-unarchives them, then emits a summary."""
 
     def __init__(self, ctx, *,
                  read_config: Callable[[], Awaitable[tuple[str, dict]]],
@@ -73,7 +86,8 @@ class ArchiveAuditLoop:
                  gh_fn: Callable[[str, str], list[dict]],
                  gh_num_fn: "Callable[[str, int], dict | None] | None",
                  unarchive_fn: Callable[[str], Awaitable[None]],
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float],
+                 record_findings_fn: "Callable[[list[dict], str], Awaitable[dict]]") -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_rows = list_rows
@@ -81,6 +95,7 @@ class ArchiveAuditLoop:
         self._gh_num_fn = gh_num_fn
         self._unarchive_fn = unarchive_fn
         self._clock = clock
+        self._record_findings_fn = record_findings_fn
         self._lock = asyncio.Lock()
 
     async def tick(self) -> None:
@@ -112,29 +127,39 @@ class ArchiveAuditLoop:
                 dry_run=True, gh_num_fn=gh_num_fn))
 
         results = await asyncio.to_thread(_classify)
-        premature = [r for r in results if r["bucket"] == "premature"]
+        # Persists one durable finding per premature session (dedup, self-resolve, never
+        # resurrect a decided finding — see persist_findings). In 'propose' mode nothing
+        # is returned to unarchive; a human decides via the action provider. In
+        # 'auto_reopen' mode a fresh/still-open finding is marked reopened and its
+        # session id comes back here to actually unarchive.
+        outcome = await self._record_findings_fn(results, mode)
+        to_unarchive = outcome.get("to_unarchive", [])
         unarchived = []
-        for r in premature:
+        for sid in to_unarchive:
             try:
-                await self._unarchive_fn(r["id"])
-                unarchived.append(r["id"])
+                await self._unarchive_fn(sid)
+                unarchived.append(sid)
             except Exception:
-                log.warning("archive_audit loop unarchive failed sid=%s", r["id"], exc_info=True)
+                log.warning("archive_audit loop unarchive failed sid=%s", sid, exc_info=True)
         from collections import Counter
         counts = Counter(r["bucket"] for r in results)
+        open_findings = outcome.get("open_total", 0)
         # Publish counts on the ctx so ArchiveAudit.status() reflects the last run
-        # (mirrors CicdDoctorLoop). status() reads 'total' and 'unarchived'.
+        # (mirrors CicdDoctorLoop). status() reads 'total', 'unarchived', 'open_findings'.
         publish_observation(self._ctx, "archive_audit_counts", {
-            "total": len(rows), "unarchived": len(unarchived),
+            "total": len(rows), "unarchived": len(unarchived), "open_findings": open_findings,
             **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
-        }, degraded=bool(counts.get("ambiguous") or len(unarchived) < len(premature)))
+        }, degraded=bool(counts.get("ambiguous") or len(unarchived) < len(to_unarchive)))
         if not rows:
             return
+        summary = (f"unarchived {len(unarchived)} premature" if mode == "auto_reopen"
+                  else f"{outcome.get('opened', 0)} new review finding(s), "
+                       f"{open_findings} awaiting a decision")
         await self._ctx.emit(
             "info",
-            f"re-audit: {len(rows)} recent archives — unarchived {len(unarchived)} premature",
+            f"re-audit: {len(rows)} recent archives — {summary}",
             kind="audit",
-            detail={"counts": dict(counts), "unarchived": unarchived})
+            detail={"counts": dict(counts), "unarchived": unarchived, "findings": outcome})
 
 GhFn = Callable[[str, str], list[dict]]              # (repo, branch) -> raw PR dicts
 GhNumFn = Callable[[str, int], "dict | None"]        # (repo, number) -> raw PR dict or None
@@ -293,7 +318,7 @@ async def run_audit(
         except Exception as exc:
             log.warning("archive_audit gh failed sid=%s: %s", sid, exc)
             results.append({"id": sid, "bucket": "ambiguous", "reason": f"gh error: {exc}",
-                            "goal": row.get("goal", ""), "action": "none"})
+                            "goal": row.get("goal", ""), "action": "none", "repo": row.get("repo")})
             continue
         bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts,
                                     row.get("pr_resolution"),
@@ -310,8 +335,66 @@ async def run_audit(
         elif bucket == "premature":
             action = "would-unarchive"
         results.append({"id": sid, "bucket": bucket, "reason": verdict.reason,
-                        "goal": row.get("goal", ""), "action": action})
+                        "goal": row.get("goal", ""), "action": action, "repo": row.get("repo")})
     return results
+
+
+async def persist_findings(session_factory, results: list[dict], mode: str) -> dict:
+    """Upsert one ``ArchiveReviewFinding`` per PREMATURE session (Phase 4, #1611), dedup
+    by ``session_id``. Returns ``{to_unarchive, opened, resolved, reopened, open_total}``.
+
+    ``propose`` mode: an ``open`` finding is created or refreshed, nothing is returned to
+    unarchive — a human decides via the action provider (retain/reopen).
+
+    ``auto_reopen`` mode: a fresh or still-``open`` finding is immediately marked
+    ``reopened`` and its session id comes back in ``to_unarchive`` — reopening is still
+    ONE recorded decision, just made by the automation instead of a human.
+
+    Either mode: a finding already ``retained``/``reopened`` is a durable human (or prior
+    automatic) decision and is NEVER resurrected, even if the session is (still, again)
+    premature this tick. An ``open`` finding whose session no longer classifies premature
+    self-resolves — the condition it flagged cleared on its own."""
+    from sqlalchemy import func, select as sa_select
+
+    from server.db.clock import naive_utc_now
+    from server.db.models import ArchiveReviewFinding
+
+    now = naive_utc_now()
+    premature = {r["id"]: r for r in results if r["bucket"] == "premature"}
+    to_unarchive: list[str] = []
+    opened = resolved = reopened = 0
+    async with session_factory() as db:
+        rows = (await db.execute(sa_select(ArchiveReviewFinding))).scalars().all()
+        by_session = {r.session_id: r for r in rows}
+        for sid, r in premature.items():
+            row = by_session.get(sid)
+            if row is None:
+                row = ArchiveReviewFinding(session_id=sid, status="open", first_seen_at=now)
+                db.add(row)
+                opened += 1
+            row.repo, row.goal = r.get("repo"), r.get("goal", "")
+            row.bucket, row.reason = r["bucket"], r.get("reason")
+            row.last_seen_at = now
+            if row.status in (None, "open"):
+                if mode == "auto_reopen":
+                    row.status, row.decided_at, row.decided_by = (
+                        "reopened", now, "archive-audit (auto_reopen mode)")
+                    to_unarchive.append(sid)
+                    reopened += 1
+                # 'propose': stays open — a human decides.
+            # else: 'retained'/'reopened' already decided — leave it alone.
+        for row in rows:
+            if row.status == "open" and row.session_id not in premature:
+                row.status, row.decided_at, row.decided_by = (
+                    "resolved", now, "archive-audit (self-resolved)")
+                resolved += 1
+        await db.flush()
+        open_total = (await db.execute(
+            sa_select(func.count()).select_from(ArchiveReviewFinding)
+            .where(ArchiveReviewFinding.status == "open"))).scalar_one()
+        await db.commit()
+    return {"to_unarchive": to_unarchive, "opened": opened, "resolved": resolved,
+            "reopened": reopened, "open_total": open_total}
 
 
 def format_report(results: list[dict]) -> str:
