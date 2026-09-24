@@ -243,6 +243,28 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 accounts.usage_for("alpha")  # cooldown cleared → real fetch
                 self.assertEqual(fu.call_count, 2)
 
+    def test_backoff_survives_an_already_huge_fail_count(self):
+        """A fail count that has grown past ~1024 must not overflow float math.
+
+        ``2 ** (fails - 1)`` is an arbitrary-precision int, but multiplying it by
+        the float base forces a float conversion — and Python's float tops out
+        around 2**1024, so an account stuck failing forever (never reaching
+        ``clear_usage_fetch_backoff``) eventually raises OverflowError on every
+        subsequent failure (#1866). The stored fail count must stay clamped well
+        below that so the computation can never get there again, even if the
+        ledger already holds a runaway value from before the fix.
+        """
+        with temp_env():
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                led["accounts"]["alpha"] = {"usageFetchFails": 2000}
+            with ledger.locked_ledger() as led:
+                delay = ledger.note_usage_fetch_failure(led, "alpha", time.time())
+            self.assertEqual(delay, 900.0)
+            fails, until = _cooldown("alpha")
+            self.assertLess(fails, 1024)
+            self.assertAlmostEqual(until - time.time(), 900.0, delta=5.0)
+
     def test_fresh_cache_still_served_during_cooldown(self):
         """A cooldown must never mask a fresh cached value (cache wins first)."""
         with temp_env():
