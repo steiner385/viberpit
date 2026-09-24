@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 from server.automations import archive_audit as aa
@@ -342,6 +343,47 @@ def test_real_gh_num_returns_none_on_error(monkeypatch):
 
     monkeypatch.setattr(aa.gitrepos, "_run_gh", boom)
     assert aa._real_gh_num("o/r", 42) is None
+
+
+_NOT_A_PR = "gh: Could not resolve to a PullRequest with the number of 1010."
+
+
+def _warnings(caplog):
+    return [r for r in caplog.records
+            if r.name == aa.log.name and r.levelno >= logging.WARNING]
+
+
+def test_real_gh_num_not_a_pr_nonzero_is_not_a_warning(monkeypatch, caplog):
+    """A goal's `#N` is often an issue, not a PR (#1907/#1908/#2026): gh exits non-zero
+    with "Could not resolve to a PullRequest". That is the normal answer for an issue
+    ref, re-probed every tick — it must return None without filing an auto-error."""
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(returncode=1, stderr=_NOT_A_PR))
+    with caplog.at_level(logging.DEBUG, logger=aa.log.name):
+        assert aa._real_gh_num("steiner385/viberpit", 1010) is None
+    assert _warnings(caplog) == []
+
+
+def test_real_gh_num_not_a_pr_graphql_error_is_not_a_warning(monkeypatch, caplog):
+    """Same classification when gh exits 0 but the body carries the NOT_FOUND error."""
+    sample = json.dumps({"data": {"repository": {"pullRequest": None}}, "errors": [{
+        "type": "NOT_FOUND", "path": ["repository", "pullRequest"],
+        "message": "Could not resolve to a PullRequest with the number of 1010."}]})
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample))
+    with caplog.at_level(logging.DEBUG, logger=aa.log.name):
+        assert aa._real_gh_num("steiner385/viberpit", 1010) is None
+    assert _warnings(caplog) == []
+
+
+def test_real_gh_num_real_failures_still_warn(monkeypatch, caplog):
+    """Control: auth / network failures and a missing *repository* (the #913 stale-
+    credential shape) keep WARNING, so the not-a-PR guard provably does not swallow them."""
+    for stderr in ("HTTP 401: Bad credentials", "dial tcp: i/o timeout",
+                   "gh: Could not resolve to a Repository with the name 'o/r'."):
+        caplog.clear()
+        monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(returncode=1, stderr=stderr))
+        with caplog.at_level(logging.DEBUG, logger=aa.log.name):
+            assert aa._real_gh_num("o/r", 42) is None
+        assert len(_warnings(caplog)) == 1, stderr
 
 
 # ---------------------------------------------------------------------------
