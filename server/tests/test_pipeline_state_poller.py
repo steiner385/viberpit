@@ -162,6 +162,38 @@ async def test_daemon_unavailable_is_a_throttled_warning_not_an_error(caplog):
 
 
 @pytest.mark.asyncio
+async def test_daemon_connect_timeout_is_a_throttled_warning_not_an_error(caplog):
+    """#1726: a TLS-connect timeout to the daemon (httpx.ConnectTimeout) reaches the
+    poller as ``DaemonTimeout`` — a *subclass* of DaemonUnavailable — and filed 48
+    ERROR records with full httpx tracebacks. It is the same expected transient as
+    an outright connect failure and must take the same throttled-WARNING path."""
+    import logging
+
+    import httpx
+
+    import server.pipeline.state_poller as mod
+    from server.ipc.client import DaemonTimeout
+
+    mod._DAEMON_UNAVAILABLE_LOG.clear()
+
+    async def builder():
+        try:
+            raise httpx.ConnectTimeout("")
+        except httpx.ConnectTimeout as exc:
+            raise DaemonTimeout(f"sessions.list timed out: {exc}") from exc
+
+    poller = PipelineStatePoller(builder)
+    with caplog.at_level(logging.DEBUG, logger="server.pipeline.state_poller"):
+        await poller.poll_once()
+        await poller.poll_once()
+
+    records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+    assert all(r.exc_info is None for r in records)
+    assert poller.snapshot() is None  # nothing published; loop survives
+
+
+@pytest.mark.asyncio
 async def test_unexpected_builder_error_still_logs_at_error(caplog):
     """Only the daemon-unreachable transient is demoted; a real bug keeps its
     ERROR + traceback so it is still filed."""
