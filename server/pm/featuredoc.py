@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS
+from server.db.models import FEATURE_EVIDENCE_KINDS, FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS
 
 #: Branch-safe capability slug. Lives here because it is part of the doc
 #: convention — ``map_changes_ops`` imports it rather than defining a second one.
@@ -84,6 +84,14 @@ class FeatureLinkRef:
 
 
 @dataclass(frozen=True)
+class FeatureEvidenceRef:
+    """One repo path the doc cites (#2162). *path* is repo-relative and may be
+    a directory (trailing ``/``) or a glob (``docs/sdlc/epic-*/plan.md``)."""
+    kind: str
+    path: str
+
+
+@dataclass(frozen=True)
 class FeatureDoc:
     slug: str
     title: str
@@ -92,6 +100,7 @@ class FeatureDoc:
     body: str
     parent: str | None = None
     labels: tuple[str, ...] = ()
+    evidence: tuple[FeatureEvidenceRef, ...] = ()
 
 
 def _title_from_body(body: str) -> str:
@@ -128,6 +137,40 @@ def _slug_from_path(path: str | None) -> str:
         return ""
     stem = path.rsplit("/", 1)[-1].removesuffix(".md").strip()
     return stem if SLUG_RE.match(stem) else ""
+
+
+def _evidence_paths(raw: object) -> list[str]:
+    """Repo paths from one evidence value: a list, or a lone string. Leading
+    ``./``/``/`` is spelling, not meaning; anything that is not a non-empty
+    scalar is skipped rather than failing the doc."""
+    items = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, (dict, list)) or item is None:
+            continue
+        p = str(item).strip()
+        while p.startswith("./"):
+            p = p[2:]
+        p = p.lstrip("/")
+        if p:
+            out.append(p)
+    return out
+
+
+def _parse_evidence(meta: dict) -> tuple[FeatureEvidenceRef, ...]:
+    """Top-level ``code:``/``tests:``/``specs:``/``adrs:`` lists, plus the same
+    keys inside an archaeology-style ``links: {code: [...], prs: [...]}`` dict —
+    that dict is unambiguous about what its ``code`` list is, so it is indexed
+    rather than dropped (#2162). ``prs`` and other keys carry no repo path."""
+    sources = [meta]
+    if isinstance(meta.get("links"), dict):
+        sources.append(meta["links"])
+    seen: dict[tuple[str, str], None] = {}
+    for src in sources:
+        for kind in FEATURE_EVIDENCE_KINDS:
+            for p in _evidence_paths(src.get(kind)):
+                seen.setdefault((kind, p), None)
+    return tuple(FeatureEvidenceRef(kind=k, path=p) for k, p in seen)
 
 
 def parse_feature_doc(text: str, *, path: str | None = None) -> FeatureDoc:
@@ -185,9 +228,10 @@ def parse_feature_doc(text: str, *, path: str | None = None) -> FeatureDoc:
 
     links: list[FeatureLinkRef] = []
     raw_links = meta.get("links")
-    # Tolerate an archaeology-style evidence dict (links: {code: [...], prs: [...]})
-    # or any non-list value: skip the whole field rather than discarding the doc.
-    # Only a proper list is iterated; malformed individual items are also skipped.
+    # An archaeology-style evidence dict (links: {code: [...], prs: [...]}) or
+    # any non-list value yields no feature links — its evidence keys are read by
+    # _parse_evidence instead. Only a proper list is iterated here; malformed
+    # individual items are also skipped.
     if isinstance(raw_links, list):
         for item in raw_links:
             if not isinstance(item, dict):
@@ -206,7 +250,7 @@ def parse_feature_doc(text: str, *, path: str | None = None) -> FeatureDoc:
 
     return FeatureDoc(
         slug=slug, title=title, state=state, links=tuple(links), body=body, parent=parent or None,
-        labels=labels,
+        labels=labels, evidence=_parse_evidence(meta),
     )
 
 
@@ -221,5 +265,9 @@ def serialize_feature_doc(doc: FeatureDoc) -> str:
             {"kind": link.kind, "project": link.project, "feature": link.feature}
             for link in doc.links
         ]
+    for kind in FEATURE_EVIDENCE_KINDS:
+        paths = [e.path for e in doc.evidence if e.kind == kind]
+        if paths:
+            meta[kind] = paths
     front = yaml.safe_dump(meta, sort_keys=False).strip()
     return f"---\n{front}\n---\n{doc.body}"

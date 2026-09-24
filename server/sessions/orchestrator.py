@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from server.automations.backlog_grouping import RefreshSummary
     from datetime import datetime
 
+    from server.pm.evidence import PathResolution
+
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.automations.model_pick import SpawnModelChoice
@@ -1219,6 +1221,8 @@ class SessionOrchestrator:
         # injected-seam mold as the SDLC loops; GitHub I/O rides the gh seam.
         from server.automations.pm_sync import PmSyncLoop
         self._pm_sync_ctx = AutomationContext("pm-sync")
+        # repo -> (inputs key, resolution): `_pm_sync_resolve_evidence_paths`.
+        self._pm_evidence_cache: dict[str, tuple[tuple, dict[str, PathResolution]]] = {}
         self._pm_sync_loop = PmSyncLoop(
             self._pm_sync_ctx,
             read_config=self._pm_sync_read_config,
@@ -1235,6 +1239,7 @@ class SessionOrchestrator:
             save_constitution_status=self._pm_sync_save_constitution_status,
             read_map_changes=self._pm_sync_read_map_changes,
             refresh_map_changes=self._pm_sync_refresh_map_changes,
+            resolve_evidence_paths=self._pm_sync_resolve_evidence_paths,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -8819,6 +8824,59 @@ class SessionOrchestrator:
             return FeatureDocsRead(sha=sha, docs=out)
 
         return await _read()
+
+    async def _pm_sync_resolve_evidence_paths(
+        self, repo: str, sha: str, paths: list[str], timed: set[str],
+    ) -> "dict[str, PathResolution]":
+        """Resolve feature-doc evidence paths against the tree at *sha* (#2162)
+        in the shared clone ``_pm_sync_read_feature_docs`` just fetched: one
+        ``ls-tree`` for existence (matching rules in ``server/pm/evidence.py``),
+        plus one ``git log -1`` per present path in *timed*. The answer is a pure
+        function of its inputs, so it is cached per repo and only recomputed
+        when the default branch (or the cited set) moves — the pm-sync tick is
+        frequent and most ticks see an unchanged head."""
+        from datetime import datetime, timezone
+
+        from server.pm.evidence import PathResolution, matches
+
+        key = (sha, tuple(sorted(paths)), tuple(sorted(timed)))
+        cached = self._pm_evidence_cache.get(repo)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        def _resolve() -> "dict[str, PathResolution]":
+            import subprocess
+            clone = gitrepos.ensure_clone(
+                repo_root, repo, f"https://github.com/{repo}.git")
+            ls = subprocess.run(
+                ["git", "-C", clone, "ls-tree", "-r", "-z", "--name-only", sha],
+                capture_output=True, text=True, timeout=60)
+            if ls.returncode != 0:
+                raise RuntimeError(
+                    f"pm_sync.resolve_evidence_paths: ls-tree failed for {repo}: "
+                    f"{(ls.stderr or '').strip()[:200]}")
+            tree = [p for p in ls.stdout.split("\0") if p]
+            out: dict[str, PathResolution] = {}
+            for path in paths:
+                exists = bool(matches(path, tree))
+                when: datetime | None = None
+                if exists and path in timed:
+                    # `:(top)` pins the pathspec to the repo root and keeps a
+                    # path that starts with `:` from being read as magic.
+                    lg = subprocess.run(
+                        ["git", "-C", clone, "log", "-1", "--format=%ct", sha,
+                         "--", f":(top){path}"],
+                        capture_output=True, text=True, timeout=30)
+                    stamp = lg.stdout.strip() if lg.returncode == 0 else ""
+                    if stamp.isdigit():
+                        when = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+                out[path] = PathResolution(exists=exists, last_commit_at=when)
+            return out
+
+        repo_root = await self._effective_repo_root()
+        result = await asyncio.to_thread(_resolve)
+        self._pm_evidence_cache[repo] = (key, result)
+        return result
 
     _PM_SYNC_CONSTITUTION_PATH = ".specify/memory/constitution.md"
 

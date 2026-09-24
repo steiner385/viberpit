@@ -378,6 +378,14 @@ export interface UnindexedDoc {
   error: string
 }
 
+/** A path a capability's `code:`/`tests:`/`specs:`/`adrs:` frontmatter cites
+ *  that no longer exists on the default branch (#2162). */
+export interface DanglingEvidence {
+  capability: string
+  kind: string
+  path: string
+}
+
 export interface ProjectHealth {
   unparentedCapabilities: string[]
   unlinkedInitiatives: string[]
@@ -385,6 +393,10 @@ export interface ProjectHealth {
   staleInbox: number
   unindexedDocs: UnindexedDoc[]
   governance: string | null
+  danglingEvidence: DanglingEvidence[]
+  untestedCapabilities: string[]
+  codeWithoutSpecs: string[]
+  stateBehindSpec: string[]
   generatedAt: string
 }
 

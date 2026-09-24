@@ -27,7 +27,7 @@ import logging
 from sqlalchemy import delete, func, select
 
 from server.db import db_session
-from server.db.models import Feature, FeatureLink, Project
+from server.db.models import Feature, FeatureEvidence, FeatureLink, Project
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 from .feature_index import FeatureIndexPlan, FeatureRowView
@@ -94,6 +94,10 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
             row.pr_number = up.pr_number
             row.pr_url = up.pr_url
             row.route_labels = list(up.labels) or None
+            if up.doc_committed_at is not None:
+                # None = this read could not tell (the edge's GitHub-API read);
+                # keep the last clone-backed answer rather than erasing it.
+                row.doc_committed_at = up.doc_committed_at
         for slug in plan.orphan_slugs:
             row = (await db.execute(
                 select(Feature).where(
@@ -114,6 +118,28 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
                 continue
             parent = mine.get(up.parent_slug) if up.parent_slug else None
             row.parent_feature_id = parent.id if parent is not None else None
+
+        # Evidence (#2162): rewritten per upserted feature — the doc is truth —
+        # but a path this pass left unresolved inherits its last resolution, so
+        # an edge resync (no clone) does not blank what the daemon learned.
+        up_ids = [mine[up.slug].id for up in plan.upserts if up.slug in mine]
+        if up_ids:
+            prior = {(e.feature_id, e.kind, e.path): e for e in (await db.execute(
+                select(FeatureEvidence).where(
+                    FeatureEvidence.feature_id.in_(up_ids)))).scalars().all()}
+            await db.execute(delete(FeatureEvidence).where(
+                FeatureEvidence.feature_id.in_(up_ids)))
+            for up in plan.upserts:
+                feat = mine.get(up.slug)
+                if feat is None:
+                    continue
+                for ev in up.evidence:
+                    old = prior.get((feat.id, ev.kind, ev.path))
+                    missing, when = ev.missing, ev.last_commit_at
+                    if missing is None and old is not None:
+                        missing, when = old.missing, old.last_commit_at
+                    db.add(FeatureEvidence(feature_id=feat.id, kind=ev.kind, path=ev.path,
+                                           missing=missing, last_commit_at=when))
 
         # Links: rewrite every outgoing edge of this project's features.
         src_ids = [f.id for f in mine.values()]

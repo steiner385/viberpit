@@ -13,10 +13,23 @@ from dataclasses import dataclass
 from ccswitch import brand
 from ccswitch.engines import AgentEngine
 
-from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS
+from server.db.models import (
+    FEATURE_EVIDENCE_KINDS, FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS)
 from server.sessions.completion import commit_trailer
 
 from .fenced_json import FencedJsonError, extract_fenced_json
+
+#: Frontmatter lines for a doc's evidence (#2162), shared by every prompt that
+#: writes a feature doc. pm-sync indexes these keys into ``feature_evidence``,
+#: resolves each path against the default branch, and roadmap health flags
+#: dangling paths, live capabilities with no ``tests:``, and ``code:`` with no
+#: ``specs:`` — none of which it can do for a path written in prose.
+EVIDENCE_FRONTMATTER_HELP = (
+    "  code:  [<repo paths implementing it — files, `dir/`, or globs>]  # optional\n"
+    "  tests: [<repo paths of the tests that prove it>]  # optional\n"
+    "  specs: [<repo paths of its spec/plan docs>]  # optional\n"
+    "  adrs:  [<repo paths of the decision records governing it>]  # optional\n"
+)
 
 # One place defining the feature-doc directory + path (single source of truth,
 # mirrors sdlc.prompts.SDLC_DOCS_DIR / artifact_path). The map-synthesis session
@@ -187,18 +200,21 @@ def build_map_synthesis_prompt(
             f"{(suggestion or 'new-feature')}.md` using the outcome-driven "
             "template (Problem / Target users / Desired outcome / Success "
             "metrics / Non-goals / Notes / Evidence). Justify it with the "
-            "driving item numbers and relevant file paths in the Evidence "
-            "section. Do NOT re-run whole-repo archaeology.\n\n"
+            "driving item numbers in the Evidence section and the relevant file "
+            "paths in the `code`/`tests`/`specs`/`adrs` frontmatter. Do NOT re-run whole-repo archaeology.\n\n"
             "The doc uses YAML frontmatter with fields:\n"
             "  slug: <kebab-case-identifier>\n"
             "  title: <human name>\n"
             "  state: <lifecycle state>\n"
             "  parent: <slug of the parent capability; omit on a top-level capability>\n"
             "  labels: [<GitHub labels whose issues ALWAYS belong here, e.g. bot-filed>]  # optional\n"
-            "  links: [feature-to-feature only; optional]\n\n"
+            "  links: [feature-to-feature only; optional]\n"
+            + EVIDENCE_FRONTMATTER_HELP + "\n"
             "Never invent other frontmatter keys (`area`, `owner`, `category`): the "
-            "indexer reads slug/title/state/parent/labels/links and silently ignores "
-            "the rest. The body starts, before `## Problem`, with ONE sentence stating "
+            "indexer reads slug/title/state/parent/labels/links/"
+            + "/".join(FEATURE_EVIDENCE_KINDS) + " and silently ignores "
+            "the rest. Cite repo paths in the evidence keys, not in body prose — "
+            "only the keys are checked for paths that have since moved. The body starts, before `## Problem`, with ONE sentence stating "
             "the outcome this capability delivers — the roadmap shows that sentence as "
             "the summary.\n\n"
             # NOT "propose-only": in this repo that term means "a human merges"
@@ -273,9 +289,11 @@ def build_map_synthesis_prompt(
         "  links:  # optional — feature-to-feature relationships ONLY\n"
         f"    - kind: <one of {list(FEATURE_LINK_KINDS)}>\n"
         "      project: <repo-slug>\n"
-        "      feature: <feature-slug>\n\n"
+        "      feature: <feature-slug>\n"
+        + EVIDENCE_FRONTMATTER_HELP + "\n"
         "Never invent other frontmatter keys (`area`, `owner`, `category`): the "
-        "indexer reads slug/title/state/parent/labels/links and silently ignores "
+        "indexer reads slug/title/state/parent/labels/links/"
+        + "/".join(FEATURE_EVIDENCE_KINDS) + " and silently ignores "
         "the rest, so a grouping written anywhere else does not exist.\n"
         "Top-level capabilities are the product's standing areas (a family-facing "
         "feature area, a quality bar such as accessibility or security, or the "
@@ -285,8 +303,10 @@ def build_map_synthesis_prompt(
         "proposed capability of their own.\n"
         "The body starts, before `## Problem`, with ONE sentence stating the outcome "
         "this capability delivers — the roadmap shows that sentence as the summary.\n\n"
-        "IMPORTANT: do NOT put code paths or PR numbers in `links`. "
-        "All code/PR evidence belongs in the **Evidence** body section.\n\n"
+        "IMPORTANT: do NOT put code paths or PR numbers in `links`. Repo paths "
+        "go in the `code`/`tests`/`specs`/`adrs` frontmatter lists — pm-sync "
+        "checks each still exists; PR/issue numbers go in the **Evidence** body "
+        "section.\n\n"
         "The body uses the outcome-driven template:\n"
         "- **Problem** — the concrete pain this capability addresses.\n"
         "- **Target users** — who relies on it.\n"
@@ -294,8 +314,8 @@ def build_map_synthesis_prompt(
         "- **Success metrics** — how you would measure it.\n"
         "- **Non-goals** — what it deliberately excludes.\n"
         "- **Notes** — anything else worth capturing.\n"
-        "- **Evidence** — file paths and representative issue/PR numbers that "
-        "justify this capability's existence.\n"
+        "- **Evidence** — representative issue/PR numbers that justify this "
+        "capability's existence (file paths go in the evidence frontmatter).\n"
         "\n"
         "IMPORTANT — frontmatter `links` rules:\n"
         "  • `links` is ONLY for feature-to-feature relationships. It must be a\n"
@@ -305,7 +325,8 @@ def build_map_synthesis_prompt(
         "        - kind: powered_by\n"
         "          feature: message-queue\n"
         "  • NEVER put code paths, file paths, or PR numbers in `links`. Those\n"
-        "    are EVIDENCE — they belong in the doc body's **Evidence** section.\n"
+        "    are EVIDENCE — paths go in the `code`/`tests`/`specs`/`adrs`\n"
+        "    frontmatter lists, PR numbers in the body's **Evidence** section.\n"
         "  • If there are no feature-to-feature relationships, omit `links`\n"
         "    entirely (do not write `links: {}` or `links: {code: ..., prs: ...}`).\n"
         "Fill only what evidence supports; mark gaps explicitly as "

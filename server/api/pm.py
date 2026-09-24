@@ -30,6 +30,7 @@ from server.db.models import (
     WORK_ITEM_TRIAGE_STATES,
     DecisionProposal,
     Feature,
+    FeatureEvidence,
     GhProject,
     GhProjectItem,
     Initiative,
@@ -325,12 +326,18 @@ async def _project_detail_dict(db, p: Project) -> dict:
 async def project_health(slug: str, _identity: str = Depends(current_identity),
                          db=Depends(get_db)) -> dict:
     """Roadmap drift for one product (5S plan, Sustain): loose capabilities,
-    initiatives with no capability, stale `proposed` leaves, old inbox items."""
+    initiatives with no capability, stale `proposed` leaves, old inbox items,
+    and capability evidence gaps (#2162): dangling cited paths, live
+    capabilities with no tests, code with no spec, state older than its spec."""
     p = await _load_project(db, slug)
     feats = (await db.execute(select(Feature).where(
         Feature.project_id == p.id, Feature.orphaned.isnot(True)))).scalars().all()
     slug_by_id = {f.id: f.slug for f in feats}
     caps = [(f.slug, slug_by_id.get(f.parent_feature_id), f.state, f.updated_at) for f in feats]
+    evidence = [(slug_by_id[e.feature_id], e.kind or "", e.path or "", e.missing, e.last_commit_at)
+                for e in (await db.execute(select(FeatureEvidence).where(
+                    FeatureEvidence.feature_id.in_(list(slug_by_id))))).scalars().all()
+                ] if slug_by_id else []
     inits = (await db.execute(select(Initiative).where(Initiative.project_id == p.id))).scalars().all()
     ids = [i.id for i in inits]
     link_counts: dict[str, int] = {}
@@ -357,12 +364,18 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
                        initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
                                     i.stage == "done" or i.status == "done") for i in inits],
                        proposals=props, now=now, unindexed_docs=unindexed,
-                       governance=p.constitution_status)
+                       governance=p.constitution_status, evidence=evidence,
+                       doc_committed={f.slug: f.doc_committed_at for f in feats})
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
             "unindexedDocs": [{"path": path, "error": error} for path, error in h.unindexed_docs],
             "governance": h.governance,
+            "danglingEvidence": [{"capability": c, "kind": k, "path": path}
+                                 for c, k, path in h.dangling_evidence],
+            "untestedCapabilities": list(h.untested_capabilities),
+            "codeWithoutSpecs": list(h.code_without_specs),
+            "stateBehindSpec": list(h.state_behind_spec),
             "generatedAt": now.isoformat()}
 
 
