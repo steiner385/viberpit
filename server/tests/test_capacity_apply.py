@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from server.automations.capacity_apply import (
+    CLOCK_SKEW_TOLERANCE_S,
     PLAN_MAX_AGE_S,
     apply_fleet_plan,
     apply_product_plan,
@@ -97,6 +98,32 @@ def test_plan_is_live_true_when_computed_30_seconds_in_the_future():
     computed = NOW + timedelta(seconds=30)
     plan = _plan(computedAt=computed.isoformat())
     assert plan_is_live(plan, now=NOW, enabled=True) is True
+
+
+def test_plan_is_live_skew_tolerance_boundary_is_the_named_constant():
+    """The tolerance is `CLOCK_SKEW_TOLERANCE_S`, not an inline literal: exactly at
+    it the plan is live, one second past it the plan is not."""
+    at_edge = _plan(computedAt=(NOW + timedelta(seconds=CLOCK_SKEW_TOLERANCE_S)).isoformat())
+    past_edge = _plan(computedAt=(NOW + timedelta(seconds=CLOCK_SKEW_TOLERANCE_S + 1)).isoformat())
+    assert plan_is_live(at_edge, now=NOW, enabled=True) is True
+    assert plan_is_live(past_edge, now=NOW, enabled=True) is False
+
+
+def test_plan_is_live_logs_when_skew_beyond_tolerance_disables_the_plan(caplog):
+    """A plan from the future silently reading as not-live left an operator
+    with a governor in `act` that changed nothing and said nothing (#2040)."""
+    plan = _plan(computedAt=(NOW + timedelta(seconds=CLOCK_SKEW_TOLERANCE_S + 30)).isoformat())
+    with caplog.at_level("INFO", logger="server.automations.capacity_apply"):
+        assert plan_is_live(plan, now=NOW, enabled=True) is False
+    assert any("plan_from_the_future" in r.getMessage() for r in caplog.records)
+
+
+def test_plan_is_live_does_not_log_for_an_ordinary_stale_or_fresh_plan(caplog):
+    with caplog.at_level("INFO", logger="server.automations.capacity_apply"):
+        assert plan_is_live(_plan(), now=NOW, enabled=True) is True
+        stale = _plan(computedAt=(NOW - timedelta(seconds=PLAN_MAX_AGE_S + 1)).isoformat())
+        assert plan_is_live(stale, now=NOW, enabled=True) is False
+    assert not caplog.records
 
 
 # --- apply_product_plan -------------------------------------------------

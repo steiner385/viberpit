@@ -1,6 +1,6 @@
 """Read/write the capacity governor's single plan row (spec 2026-09-19 §4).
 
-``live_plan`` / ``live_plan_sync`` are the ONE way a read seam (queue loader,
+``live_plan`` / ``live_plan_async`` / ``live_plan_sync`` are the ONE way a read seam (queue loader,
 dispatch tap, fleet config) fetches a plan to overlay — they apply
 ``capacity_apply.plan_is_live`` so a stale or disabled plan silently returns
 ``None`` (no overlay) rather than every caller re-deriving "is this plan
@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from server.config import get_settings
@@ -46,35 +47,49 @@ def read_plan_sync(db: Session) -> dict | None:
     return None if row is None else _to_dict(row)
 
 
+def _live_or_none(plan: dict | None) -> dict | None:
+    from server.automations.capacity_apply import plan_is_live
+    enabled = bool(get_settings().capacity_governor_enabled)
+    return plan if plan_is_live(plan, now=datetime.now(timezone.utc), enabled=enabled) else None
+
+
 async def live_plan() -> dict | None:
     """The current plan, or ``None`` if it is not live (spec §6.3/D3/D5/§6.4).
 
     Never raises: every read seam calls this unconditionally on its own path
     (admission, the queue loader, fleet config), so a DB hiccup here must
     degrade to "no plan" — the pre-governor behaviour — rather than taking the
-    caller down with it (fix round 1, F2)."""
-    from server.automations.capacity_apply import plan_is_live
+    caller down with it (fix round 1, F2). Opens its own session; a caller that
+    already holds one uses ``live_plan_async`` instead."""
     try:
         plan = await read_plan()
     except Exception:
         log.warning("capacity_store.plan_read_failed", exc_info=True)
         return None
-    enabled = bool(get_settings().capacity_governor_enabled)
-    now = datetime.now(timezone.utc)
-    return plan if plan_is_live(plan, now=now, enabled=enabled) else None
+    return _live_or_none(plan)
+
+
+async def live_plan_async(db: AsyncSession) -> dict | None:
+    """``live_plan`` on the caller's own async session (the twin of
+    ``live_plan_sync``), so ``load_policies`` reads the plan and the policies on
+    one session instead of nesting a second ``db_session()``. Never raises."""
+    try:
+        row = await db.get(CapacityPlanRow, PLAN_ID)
+        plan = None if row is None else _to_dict(row)
+    except Exception:
+        log.warning("capacity_store.plan_read_failed", exc_info=True)
+        return None
+    return _live_or_none(plan)
 
 
 def live_plan_sync(db: Session) -> dict | None:
     """Sync-session counterpart of ``live_plan``. Never raises (see above)."""
-    from server.automations.capacity_apply import plan_is_live
     try:
         plan = read_plan_sync(db)
     except Exception:
         log.warning("capacity_store.plan_read_failed", exc_info=True)
         return None
-    enabled = bool(get_settings().capacity_governor_enabled)
-    now = datetime.now(timezone.utc)
-    return plan if plan_is_live(plan, now=now, enabled=enabled) else None
+    return _live_or_none(plan)
 
 
 async def write_plan(plan: dict) -> None:

@@ -42,7 +42,8 @@ LAYER_OF_CODE = {"product_capacity_full": "product", "product_pipeline_full": "p
                  # that doesn't filter by state) maps it to the same layer as
                  # its `_full` sibling rather than the "product" default.
                  "runner_ceiling_held": "runner", "product_capacity_held": "product",
-                 "product_pipeline_held": "product", "pr_doctor_priority_held": "product"}
+                 "product_pipeline_held": "product", "pr_doctor_priority_held": "product",
+                 "daily_budget_held": "runner"}
 
 
 def _layer_for(code: str) -> str:

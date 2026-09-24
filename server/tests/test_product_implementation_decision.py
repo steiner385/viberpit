@@ -87,10 +87,14 @@ def test_manual_does_not_bypass_caps(changes):
 def test_existing_proposal_counts_once_and_a_new_claim_still_needs_headroom():
     assert decision(global_count=2, product_count=1, existing_slot=True).permitted
     assert not decision(global_count=2, product_count=1).permitted
-    # `daily_budget` has no `occupied` exemption (not a per-slot ceiling; it
-    # is not part of Ruling 20's "already holds its slot" guarantee), so it
-    # still refuses regardless of `existing_slot`.
-    assert decision(daily_count=10, existing_slot=True).state == "refused"
+    # `daily_budget` gets the same `occupied` exemption as the other two
+    # ceilings (deferred-now 2, #2040): the caller's `existing_token in
+    # accounting` decrement only relieves a claim still inside the rolling
+    # 24h window it was counted in, and a claim revalidated after that window
+    # rolled over on a spent day is exactly the "already holds its slot,
+    # never killed by admission" case D8 exists for.
+    assert decision(daily_count=10, existing_slot=True).permitted
+    assert decision(daily_count=10).state == "refused"
 
 
 def test_ruling_20_an_occupied_claim_is_never_refused_on_capacity():
@@ -113,9 +117,17 @@ def test_ruling_20_an_occupied_claim_is_never_refused_on_capacity():
     assert occupied_over_cap.permitted
     assert any(c.code == "product_capacity_held" for c in occupied_over_cap.constraints)
 
+    occupied_over_daily_budget = decision(daily_count=10, daily_cap=0, existing_slot=True)
+    assert occupied_over_daily_budget.permitted
+    assert any(c.code == "daily_budget_held" for c in occupied_over_daily_budget.constraints)
+
     new_claim_paused = decision(global_cap=0, existing_slot=False)
     assert new_claim_paused.state == "refused"
     assert any(c.code == "runner_ceiling_full" for c in new_claim_paused.constraints)
+
+    new_claim_over_daily_budget = decision(daily_count=10, daily_cap=0, existing_slot=False)
+    assert new_claim_over_daily_budget.state == "refused"
+    assert any(c.code == "daily_budget_full" for c in new_claim_over_daily_budget.constraints)
 
     new_claim_product_paused = decision(
         policy={"dispatch": "auto", "max_in_flight": 0}, existing_slot=False)
