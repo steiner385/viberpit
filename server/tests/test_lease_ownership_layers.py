@@ -159,9 +159,9 @@ def _denials(caplog):
 
 @pytest.mark.asyncio
 async def test_a_repeated_refusal_is_logged_once(refusing, caplog):
-    """The retry loops re-enter on a cadence; one warning per attempt is what filed
+    """The retry loops re-enter on a cadence; one line per attempt is what filed
     an auto-error issue with 199 occurrences for a single stuck session (#1778)."""
-    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
         for _ in range(5):
             assert await refusing._claim_session("s1", why="resume") is False
     assert len(_denials(caplog)) == 1
@@ -170,7 +170,7 @@ async def test_a_repeated_refusal_is_logged_once(refusing, caplog):
 @pytest.mark.asyncio
 async def test_a_new_holder_is_logged_again(refusing, caplog):
     """De-duplication must never hide a CHANGE — a different holder is new news."""
-    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
         await refusing._claim_session("s1", why="resume")
         refusing.lease_state.holder = "vega"
         await refusing._claim_session("s1", why="resume")
@@ -181,7 +181,7 @@ async def test_a_new_holder_is_logged_again(refusing, caplog):
 async def test_both_layers_are_distinct_news(refusing, caplog):
     """Layer 1 and the lease answer different questions, so a refusal that moves
     from one to the other is a fact worth a line of its own."""
-    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
         await refusing._claim_session("s1", why="resume")          # lease
         refusing._records["s1"] = _record("s1", "rocky", "idle")
         await refusing._claim_session("s1", why="resume")          # foreign stamp
@@ -191,7 +191,7 @@ async def test_both_layers_are_distinct_news(refusing, caplog):
 
 @pytest.mark.asyncio
 async def test_refusals_are_deduped_per_session(refusing, caplog):
-    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
         await refusing._claim_session("s1", why="resume")
         await refusing._claim_session("s2", why="resume")
         await refusing._claim_session("s1", why="resume")
@@ -199,9 +199,9 @@ async def test_refusals_are_deduped_per_session(refusing, caplog):
 
 
 @pytest.mark.asyncio
-async def test_a_successful_claim_re_arms_the_warning(refusing, caplog, monkeypatch):
+async def test_a_successful_claim_re_arms_the_report(refusing, caplog, monkeypatch):
     """A claim that wins means the standoff is over; a LATER refusal is news again."""
-    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
         await refusing._claim_session("s1", why="resume")
 
         async def with_fence(session_id, holder, *, ttl_s):
@@ -216,6 +216,19 @@ async def test_a_successful_claim_re_arms_the_warning(refusing, caplog, monkeypa
         monkeypatch.setattr(session_lease, "acquire", no_fence)
         await refusing._claim_session("s1", why="resume")
     assert len(_denials(caplog)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_lease_refusal_never_reaches_warning(refusing, caplog):
+    """A live twin holding the lease is the fence doing its job (#1379), not a fault:
+    every WARNING auto-files an issue, so the refusal must journal at INFO (#1785)."""
+    with caplog.at_level(logging.DEBUG, logger="server.sessions.orchestrator"):
+        for _ in range(3):
+            assert await refusing._claim_session("s1", why="resume") is False
+    refusals = [r for r in caplog.records if "refusing to resume" in r.getMessage()]
+    assert refusals, "the refusal must still be journaled"
+    assert [r for r in refusals if r.levelno >= logging.WARNING] == []
+    assert [r.levelno for r in _denials(caplog)] == [logging.INFO]
 
 
 @pytest.fixture
