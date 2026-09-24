@@ -41,6 +41,14 @@ under load — five clean journal-days turned into 5–7 crashes/day the moment 
 shipped. The pure-Python tracer snapshots ``sys._current_frames()`` and formats
 with ``traceback.format_stack()``; both run under the GIL, so no frame is ever
 read mid-mutation. See ``ThreadStallTracer`` for the tradeoff this costs.
+
+Level is a separate decision from reporting (#1514). WARNING is what the error
+sink files as an issue, and the daemon overshoots by ~1s many times a day under
+ordinary load; filing those produced tickets with no stack to act on. So a stall
+is reported from ``warn_after`` but is a WARNING only from ``alert_after`` —
+by default the stack-dump threshold, so every filed stall has a dump beside it.
+The two levels throttle independently, so a routine INFO line can never spend
+the window a real stall needs.
 """
 import asyncio
 import logging
@@ -169,12 +177,22 @@ def _build_stall_tracer(dump_path: str | None):
     return ThreadStallTracer(file=sys.stderr)
 
 
+class _Throttle:
+    """One level's quiet window, and what it swallowed since its last line."""
+
+    def __init__(self) -> None:
+        self.last_at: float | None = None
+        self.suppressed = 0
+        self.suppressed_peak = 0.0
+
+
 class LoopLagWatchdog:
     def __init__(
         self,
         interval: float = 1.0,
         warn_after: float = 0.5,
         warn_every: float = 60.0,
+        alert_after: float | None = None,
         dump_after: float | None = None,
         dump_path: str | None = None,
         _log=None,
@@ -184,6 +202,9 @@ class LoopLagWatchdog:
         self.interval = interval
         self.warn_after = warn_after
         self.warn_every = warn_every
+        # Stalls in [warn_after, alert_after) log at INFO; None keeps every
+        # reported stall a WARNING.
+        self.alert_after = alert_after
         self.peak_lag_s = 0.0
         self._log = _log if _log is not None else _default_log
         self._clock = _clock if _clock is not None else time.monotonic
@@ -196,10 +217,7 @@ class LoopLagWatchdog:
             self._tracer = _tracer if _tracer is not None else _build_stall_tracer(dump_path)
         else:
             self._tracer = None
-        # Throttle state: when we last emitted, and what we swallowed since.
-        self._last_warn_at: float | None = None
-        self._suppressed = 0
-        self._suppressed_peak = 0.0
+        self._throttles = {logging.INFO: _Throttle(), logging.WARNING: _Throttle()}
 
     def _arm_tracer(self) -> None:
         """(Re)arm the deadman switch for the next interval, if enabled."""
@@ -223,12 +241,15 @@ class LoopLagWatchdog:
         if lag < self.warn_after:
             return
 
+        routine = self.alert_after is not None and lag < self.alert_after
+        level = logging.INFO if routine else logging.WARNING
+        t = self._throttles[level]
         now = self._clock()
-        if self._last_warn_at is not None and (now - self._last_warn_at) < self.warn_every:
+        if t.last_at is not None and (now - t.last_at) < self.warn_every:
             # Inside the quiet window: count it, remember the worst, stay silent.
-            self._suppressed += 1
-            if lag > self._suppressed_peak:
-                self._suppressed_peak = lag
+            t.suppressed += 1
+            if lag > t.suppressed_peak:
+                t.suppressed_peak = lag
             return
 
         # One field shape every time — ``suppressed`` is 0 rather than absent when
@@ -236,19 +257,19 @@ class LoopLagWatchdog:
         # tell two record variants apart to answer "how bad, how often".
         emit_event(
             self._log,
-            logging.WARNING,
+            level,
             "loop_lag.stall",
             {
                 "lag_s": round(lag, 2),
                 "interval_s": round(self.interval, 2),
-                "suppressed": self._suppressed,
-                "suppressed_peak_s": round(self._suppressed_peak, 2),
-                "since_last_warning_s": round(now - (self._last_warn_at or now), 1),
+                "suppressed": t.suppressed,
+                "suppressed_peak_s": round(t.suppressed_peak, 2),
+                "since_last_warning_s": round(now - (t.last_at or now), 1),
             },
         )
-        self._last_warn_at = now
-        self._suppressed = 0
-        self._suppressed_peak = 0.0
+        t.last_at = now
+        t.suppressed = 0
+        t.suppressed_peak = 0.0
 
     async def run(self) -> None:
         self._arm_tracer()
@@ -281,9 +302,13 @@ def watchdog_from_env(**kwargs) -> LoopLagWatchdog:
 
     ``VIBERPIT_LOOP_STALL_DUMP_S`` sets the stall-dump threshold (``0`` turns the
     dump off); ``VIBERPIT_LOOP_STALL_DUMP_PATH`` sends it to a file instead of the
-    journal. One factory, so the two processes cannot drift on the default.
+    journal. ``VIBERPIT_LOOP_LAG_WARN_S`` is the lag at which a stall becomes a
+    WARNING (an auto-error issue); shorter overshoot logs at INFO. It defaults to
+    the dump threshold so a filed stall comes with a stack (#1514). One factory,
+    so the two processes cannot drift on the defaults.
     """
     return LoopLagWatchdog(
+        alert_after=env_float("VIBERPIT_LOOP_LAG_WARN_S", DEFAULT_STALL_DUMP_S, minimum=0.0),
         dump_after=env_float("VIBERPIT_LOOP_STALL_DUMP_S", DEFAULT_STALL_DUMP_S, minimum=0.0),
         dump_path=os.environ.get("VIBERPIT_LOOP_STALL_DUMP_PATH") or None,
         **kwargs,
