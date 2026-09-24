@@ -96,10 +96,19 @@ async def run() -> int:
     finally:
         # Order matters on the way down too: stop accepting first, so no new call
         # can start a login while we are cancelling the ones already running.
-        await server.aclose()
-        await authority.aclose()
-        lock.release()
-        log_event(logger, logging.INFO, "codex.auth.stopped")
+        # Each release hangs off a `finally` enclosing every await above it, so a
+        # cancellation landing in either aclose() unwinds THROUGH the rest instead
+        # of past them (#2048): a skipped lock.release() leaves authority.lock held
+        # and the next start dies with exit 3. lock.release() never suspends —
+        # load-bearing: that is why a redelivered cancellation cannot skip it.
+        try:
+            try:
+                await server.aclose()
+            finally:
+                await authority.aclose()
+        finally:
+            lock.release()
+            log_event(logger, logging.INFO, "codex.auth.stopped")
     return 0
 
 
