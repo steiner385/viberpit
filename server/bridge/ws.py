@@ -1663,8 +1663,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # assistant drawer against a thread whose row was stamped for
                 # another host). Terminal, like the browser's own "stalled": the
                 # text was never handed to a driver and is not retried here.
-                log.warning("ws.prompt: wake failed, prompt not delivered session=%s",
-                            session_id)
+                #
+                # INFO, not WARNING: _resume_driver_or_error and _ensure_live's
+                # ws.session.resume event already logged the real reason at WARNING
+                # (both WARNING+, so both feed error-triage). This line adds no new
+                # diagnostic beyond "prompt not delivered" — logging it at WARNING
+                # too just double/triple-files the SAME incident as separate
+                # auto-error issues (#1783 alongside #1784's ws.session.resume).
+                log.info("ws.prompt: wake failed, prompt not delivered session=%s",
+                         session_id)
                 await _send({"type": "promptAck", "sessionId": session_id,
                              "stage": "failed"})
                 return
