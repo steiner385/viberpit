@@ -28,7 +28,7 @@ def _bare_orch(events, *, status="done"):
     orch._registry = None
     orch.pending_questions = lambda sid: []
 
-    async def fake_window(session_id, *, before=None, limit=20):
+    async def fake_window(session_id, *, before=None, limit=20, **_):
         return ReplayWindow(events=events, earliest_turn=0, total_turns=1)
     orch.transcript_window = fake_window
     return orch

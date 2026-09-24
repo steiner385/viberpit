@@ -346,7 +346,7 @@ def test_get_context_populates_transcript_tail(tmp_path):
         orch._registry = None  # no driver → no pending perms
         orch.pending_questions = lambda sid: []
 
-        async def fake_window(session_id, *, before=None, limit=20):
+        async def fake_window(session_id, *, before=None, limit=20, **_):
             return ReplayWindow(events=[
                 UserMessage(turn_id="t1", text="Please implement issue #10282"),
                 ToolCall(turn_id="t1", tool_id="x", name="Bash",
@@ -378,7 +378,7 @@ def test_get_context_tail_empty_on_window_failure(tmp_path):
         orch._registry = None
         orch.pending_questions = lambda sid: []
 
-        async def boom(session_id, *, before=None, limit=20):
+        async def boom(session_id, *, before=None, limit=20, **_):
             raise RuntimeError("transcript unreadable")
         orch.transcript_window = boom
 
@@ -427,7 +427,7 @@ def test_get_context_reports_seconds_since_human(tmp_path):
         orch._registry = None
         orch.pending_questions = lambda sid: []
 
-        async def boom(session_id, *, before=None, limit=20):
+        async def boom(session_id, *, before=None, limit=20, **_):
             raise RuntimeError("transcript unreadable")
         orch.transcript_window = boom
 
@@ -450,7 +450,7 @@ def test_get_context_none_when_never_touched(tmp_path):
         orch._registry = None
         orch.pending_questions = lambda sid: []
 
-        async def boom(session_id, *, before=None, limit=20):
+        async def boom(session_id, *, before=None, limit=20, **_):
             raise RuntimeError("transcript unreadable")
         orch.transcript_window = boom
 
@@ -487,7 +487,7 @@ def test_get_context_populates_fleet_context(tmp_path):
         orch._registry = None
         orch.pending_questions = lambda sid: []
 
-        async def no_window(session_id, *, before=None, limit=20):
+        async def no_window(session_id, *, before=None, limit=20, **_):
             return None
         orch.transcript_window = no_window
 
@@ -510,7 +510,7 @@ def test_get_context_fleet_degrades_to_none(tmp_path):
         orch._registry = None
         orch.pending_questions = lambda sid: []
 
-        async def no_window(session_id, *, before=None, limit=20):
+        async def no_window(session_id, *, before=None, limit=20, **_):
             return None
         orch.transcript_window = no_window
 
