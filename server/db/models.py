@@ -1451,6 +1451,10 @@ class InitiativeArtifact(Base):
     pr_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    #: Set only when the prompt was NOT seeded from the normal committed
+    #: upstream file — e.g. ``"owner/repo#42"`` for an epic-adoption initiative's
+    #: spec stage, which has no ``intent.md`` to read (#2159). None otherwise.
+    upstream_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     #: When the synthesizer armed GitHub auto-merge on ``pr_number`` (spec
     #: 2026-09-14 §6). Nullable so ``_reconcile_columns`` adds it on both
     #: dialects; its ONLY job is idempotence — a set value means the loop has

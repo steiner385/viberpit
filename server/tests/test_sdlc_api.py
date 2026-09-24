@@ -189,6 +189,56 @@ def test_get_detail_includes_chain_and_action():
                 assert body["nextAction"] == {"type": "await_approval", "kind": "intent"}
 
 
+def test_get_detail_serializes_the_artifacts_upstream_ref():
+    """An artifact whose prompt was substituted (epic-adoption spec stage, no
+    intent.md — #2159) carries that provenance to the initiative detail
+    response as ``upstreamRef``, so the page can show where the spec came
+    from; an artifact seeded normally serializes it as ``None``."""
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(
+                slug="dark-mode",
+                repo="steiner385/viberpit",
+                title="Dark mode",
+                stage="plan",
+                status="proposed",
+                origin="epic-adoption",
+            )
+            db.add(ini)
+            await db.flush()
+            db.add(InitiativeArtifact(
+                initiative_id=ini.id,
+                kind="spec",
+                repo_path="docs/sdlc/dark-mode/spec.md",
+                upstream_ref="steiner385/viberpit#42",
+            ))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url,
+                                     "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+                assert r.status_code == 200, r.text
+                artifacts = r.json()["artifacts"]
+                assert len(artifacts) == 1
+                assert artifacts[0]["upstreamRef"] == "steiner385/viberpit#42"
+
+
 def test_advance_moves_stage_and_activates():
     """POST advance: intake→design, status=='active'; advancing a done initiative → 409."""
     with _client() as c:

@@ -381,7 +381,8 @@ class SdlcSynthesizerLoop:
                             initiative_id=ini["id"], kind=action.kind,
                             repo_path=artifact_path(slug, action.kind),
                             session_id=getattr(rec, "id", None),
-                            model=getattr(rec, "model", None))
+                            model=getattr(rec, "model", None),
+                            upstream_ref=getattr(rec, "upstream_ref", None))
                         await self._set_status(ini["id"], "awaiting_human")
                         await self._emit_proposed(slug, action.kind, rec)
                         counts["proposed"] += 1
