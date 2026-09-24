@@ -108,9 +108,18 @@ class RecoveryState:
     def record_stall(self, session_id: str, *, now: float) -> None:
         self._stalls[session_id] += 1
 
+    def stall_streak(self, session_id: str) -> int:
+        """Consecutive stall-watchdog interrupts recorded for *session_id*.
+
+        The watchdog logs this so one line says whether the previous interrupt landed:
+        streak 1 is the first-line recovery that usually works, a growing streak is a
+        turn the control channel is not clearing (#1718).
+        """
+        return self._stalls.get(session_id, 0)
+
     def stall_cap_reached(self, session_id: str, *, now: float) -> bool:
         """True if *session_id* has already stalled ``stall_cap`` times in a row."""
-        return self._stalls.get(session_id, 0) >= self._stall_cap
+        return self.stall_streak(session_id) >= self._stall_cap
 
     def clear_stalls(self, session_id: str) -> None:
         """Reset the consecutive-stall streak once a turn is seen to genuinely resolve."""

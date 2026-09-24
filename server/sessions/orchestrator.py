@@ -117,7 +117,7 @@ from server.sessions.selection import (  # noqa: F401
 from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
-from server.obs.context import log_event, PROC_EPOCH
+from server.obs.context import bind_session, log_event, PROC_EPOCH
 from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
@@ -17705,79 +17705,107 @@ class SessionOrchestrator:
         # no SDK progress for STALL_TIMEOUT; do not chase IPC drops for that symptom.
         quarantined = self._recovery.quarantined(now=now)
         for sid, driver in list(self._drivers.items()):
-            # A live turn (`turn_active`) is the obvious wedge candidate. But an
-            # interrupt that the SDK ignored leaves a ZOMBIE: `interrupt()` flips
-            # `turn_active` False, yet the drain never completes (`drain_alive`) because
-            # the subprocess is genuinely hung mid-compaction. Both need watching; only a
-            # turn that is neither active nor still draining is truly idle.
-            active = driver.turn_active
-            zombie = (not active) and driver.drain_alive
-            if not active and not zombie:
-                # Turn genuinely resolved (not just quiet between resends) — a fresh
-                # wedge later starts its escalation streak over, not mid-cap.
-                self._recovery.clear_stalls(sid)
-                self._stall_diag_logged.pop(sid, None)
-                continue
-            # A turn whose silence is attributable to API throttling — the driver is
-            # backing off, or its account is in recovery quarantine (recently 429'd) —
-            # is alive, not wedged. Give it the extended timeout before treating the
-            # gap as a hang; past that longer window a genuine hang is still caught.
-            # Issue #185: throttled turns were interrupted as "Turn failed" under load.
-            throttled = driver.in_api_backoff or driver.account in quarantined
-            timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
-            elapsed = now - driver.last_progress_at
-            if elapsed <= timeout:
-                # Observability only, no action: a turn can go fully silent (no SDK
-                # event at all) well before STALL_TIMEOUT trips, with no local error
-                # and no stream-death signature in the journal (2026-09-22, session
-                # 808f63fc — a single large Write's model generation hung for
-                # minutes). Log the live await chain once per silence episode, well
-                # ahead of the timeout, so the NEXT occurrence has real evidence
-                # instead of just "no progress for N seconds" after the fact.
-                diag = getattr(driver, "diagnostic_snapshot", None)
-                if (elapsed >= STALL_DIAG_THRESHOLD_S and diag is not None
-                        and self._stall_diag_logged.get(sid) != driver.last_progress_at):
-                    self._stall_diag_logged[sid] = driver.last_progress_at
-                    log.info("stall watchdog: silent %.0fs (timeout=%.0fs) session=%s\n%s",
-                             elapsed, timeout, sid, diag())
-                continue
-            if driver.awaiting_user_input:
-                # Blocked on a permission / plan / question — waiting on the human,
-                # not wedged. Interrupting here is the spurious "[Request interrupted
-                # by user]" users see when they take a while to answer.
-                continue
-            if self._recovery.stall_cap_reached(sid, now=now):
-                # Interrupts aren't landing (the cap of in-window attempts is spent and
-                # the turn is still wedged) — escalate to a recompose-in-place rather
-                # than abandon it. Bounded by crash_cap (shared with process-crash
-                # recovery; both rebuild the driver on the same account, resume, and
-                # resend the last prompt) so a turn that keeps wedging ultimately pauses
-                # to needs_attention instead of looping forever.
-                record = self._records.get(sid)
-                if record is None:
+            # Every record this body emits is stamped with the sid by ContextFilter
+            # (server/obs/jsonlog.py), which reads the contextvar bind_session sets —
+            # so the journal is queryable by session and, for the WARNING rungs below,
+            # the error sink fills in the filed issue's "Sessions" row. `extra=
+            # {"session_id": sid}` does NOT work here: ContextFilter overwrites that
+            # attribute from the contextvar, which is why #1718 was filed reading
+            # "Sessions | —" with the sid sitting in plain sight in its own message.
+            with bind_session(sid):
+                # A live turn (`turn_active`) is the obvious wedge candidate. But an
+                # interrupt that the SDK ignored leaves a ZOMBIE: `interrupt()` flips
+                # `turn_active` False, yet the drain never completes (`drain_alive`) because
+                # the subprocess is genuinely hung mid-compaction. Both need watching; only a
+                # turn that is neither active nor still draining is truly idle.
+                active = driver.turn_active
+                zombie = (not active) and driver.drain_alive
+                if not active and not zombie:
+                    # Turn genuinely resolved (not just quiet between resends) — a fresh
+                    # wedge later starts its escalation streak over, not mid-cap.
+                    self._recovery.clear_stalls(sid)
+                    self._stall_diag_logged.pop(sid, None)
                     continue
-                if self._recovery.crash_cap_reached(sid, now=now):
-                    log.warning("stall watchdog: recompose cap reached, pausing session=%s", sid)
-                    await self._pause_session(record, reason="stall_cap")
-                else:
-                    self._recovery.record_crash(sid, now=now)
-                    log.warning("stall watchdog: recomposing wedged turn session=%s", sid)
-                    await self._reassign(record, record.account, reason="stall_recompose")
-                continue
-            self._recovery.record_stall(sid, now=now)
-            log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
-            # Bounded: a CLI that ignores the control channel otherwise parks this
-            # tick for the SDK's 60 s and skips every later driver's stall check (and
-            # the disabled-account sweep). If it doesn't land, the stall cap above
-            # escalates to a recompose on a later tick.
-            #
-            # keep_queue: this is not the user's Stop. Prompts typed while the turn
-            # sat wedged are exactly what the user wants run next; the settling turn
-            # drains them. Without it the watchdog destroyed the user's queued
-            # "continue" and left a stale chip in the queue strip (2026-09-16).
-            await bounded_wait(driver.interrupt(keep_queue=True),
-                               timeout=_DRIVER_CONTROL_TIMEOUT_S,
-                               phase=f"stall.interrupt:{sid}")
+                # A turn whose silence is attributable to API throttling — the driver is
+                # backing off, or its account is in recovery quarantine (recently 429'd) —
+                # is alive, not wedged. Give it the extended timeout before treating the
+                # gap as a hang; past that longer window a genuine hang is still caught.
+                # Issue #185: throttled turns were interrupted as "Turn failed" under load.
+                throttled = driver.in_api_backoff or driver.account in quarantined
+                timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
+                elapsed = now - driver.last_progress_at
+                if elapsed <= timeout:
+                    # Observability only, no action: a turn can go fully silent (no SDK
+                    # event at all) well before STALL_TIMEOUT trips, with no local error
+                    # and no stream-death signature in the journal (2026-09-22, session
+                    # 808f63fc — a single large Write's model generation hung for
+                    # minutes). Log the live await chain once per silence episode, well
+                    # ahead of the timeout, so the NEXT occurrence has real evidence
+                    # instead of just "no progress for N seconds" after the fact.
+                    diag = getattr(driver, "diagnostic_snapshot", None)
+                    if (elapsed >= STALL_DIAG_THRESHOLD_S and diag is not None
+                            and self._stall_diag_logged.get(sid) != driver.last_progress_at):
+                        self._stall_diag_logged[sid] = driver.last_progress_at
+                        log.info("stall watchdog: silent %.0fs (timeout=%.0fs) session=%s\n%s",
+                                 elapsed, timeout, sid, diag())
+                    continue
+                if driver.awaiting_user_input:
+                    # Blocked on a permission / plan / question — waiting on the human,
+                    # not wedged. Interrupting here is the spurious "[Request interrupted
+                    # by user]" users see when they take a while to answer.
+                    continue
+                if self._recovery.stall_cap_reached(sid, now=now):
+                    # Interrupts aren't landing (the cap of in-window attempts is spent and
+                    # the turn is still wedged) — escalate to a recompose-in-place rather
+                    # than abandon it. Bounded by crash_cap (shared with process-crash
+                    # recovery; both rebuild the driver on the same account, resume, and
+                    # resend the last prompt) so a turn that keeps wedging ultimately pauses
+                    # to needs_attention instead of looping forever.
+                    #
+                    # WARNING from here down, INFO for the plain interrupt below: these two
+                    # rungs are the ones a human has to act on (a recompose loses the turn's
+                    # in-flight work; the pause parks the session in needs_attention), so
+                    # these are what the error sink should file.
+                    record = self._records.get(sid)
+                    if record is None:
+                        continue
+                    if self._recovery.crash_cap_reached(sid, now=now):
+                        log.warning("stall watchdog: recompose cap reached, pausing session=%s", sid)
+                        await self._pause_session(record, reason="stall_cap")
+                    else:
+                        self._recovery.record_crash(sid, now=now)
+                        log.warning("stall watchdog: recomposing wedged turn session=%s", sid)
+                        await self._reassign(record, record.account, reason="stall_recompose")
+                    continue
+                self._recovery.record_stall(sid, now=now)
+                # INFO, not WARNING: this is the watchdog's first-line automatic recovery,
+                # and it usually works (11 of the 17 sessions interrupted on rocky over
+                # 2026-09-14..23 were interrupted once and settled). At WARNING the error
+                # sink filed it as an auto-error — 45 occurrences of "the watchdog did its
+                # job", with nothing for anyone to fix (#1718). This module already logs
+                # recovery actions at INFO (`disabled_account_sweep: rotating`,
+                # `rotation.restart_driverless`, `reassign.complete`) and escalates to
+                # WARNING only once recovery fails, which is the ladder above.
+                #
+                # The fields are the ones an investigation actually needs: elapsed against
+                # the timeout in force separates a throttled turn (900 s) from a plain hang
+                # (300 s), and the streak says whether earlier interrupts landed.
+                log.info("stall watchdog: interrupting wedged turn — silent %.0fs "
+                         "(timeout=%.0fs, throttled=%s, streak=%d) session=%s",
+                         elapsed, timeout, throttled,
+                         self._recovery.stall_streak(sid), sid)
+                # Bounded: a CLI that ignores the control channel otherwise parks this
+                # tick for the SDK's 60 s and skips every later driver's stall check (and
+                # the disabled-account sweep). If it doesn't land, the stall cap above
+                # escalates to a recompose on a later tick.
+                #
+                # keep_queue: this is not the user's Stop. Prompts typed while the turn
+                # sat wedged are exactly what the user wants run next; the settling turn
+                # drains them. Without it the watchdog destroyed the user's queued
+                # "continue" and left a stale chip in the queue strip (2026-09-16).
+                await bounded_wait(driver.interrupt(keep_queue=True),
+                                   timeout=_DRIVER_CONTROL_TIMEOUT_S,
+                                   phase=f"stall.interrupt:{sid}")
 
     async def _check_disabled_account_sessions(self) -> None:
         """Rotate any live sessions off accounts that have been disabled.
