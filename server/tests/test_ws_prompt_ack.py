@@ -152,6 +152,64 @@ def test_a_failed_wake_acks_the_prompt_as_failed(ws_env):
     assert err_idx < failed_idx, [f.get("type") for f in frames]
 
 
+class _NoRecheckSeam:
+    """Stands in for `app.state.sessions` in production shape: edge -> FleetOrchestrator
+    -> RemoteOrchestrator. `recheck_stuck_complete_session` is a daemon-local,
+    in-memory-record read with no RPC wiring, so RemoteOrchestrator has no such
+    method AND (unlike `InProcessOrchestratorAdapter`, which forwards it through its
+    OWN defensive `getattr(self._orch, name, None)`) no generic `__getattr__`
+    fallback either — plain attribute lookup on it raises AttributeError. Wrapping
+    the real (dev-path) orchestrator and blocking just this one name reproduces that
+    gap without hand-rolling the rest of FleetOrchestrator's surface."""
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        if name == "recheck_stuck_complete_session":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
+def test_a_failed_wake_from_stale_ownership_still_acks_failed_without_the_recheck_seam(
+        ws_env):  # noqa: F811
+    """StaleOwnership's fire-and-forget ``recheck_stuck_complete_session`` call used
+    to be reached as a bare, unguarded attribute access. In production ``orchestrator``
+    is a FleetOrchestrator whose primary is a RemoteOrchestrator with no such method
+    and no generic ``__getattr__`` fallback (unlike ``InProcessOrchestratorAdapter``,
+    the dev/CI path, which already defends this one internally — see
+    ``server/sessions/facade.py`` — which is exactly why this bug shipped invisibly:
+    every existing test in this file runs through the adapter and can't see it). The
+    resulting AttributeError fired from INSIDE the except block that was supposed to
+    send the SESSION_OWNERSHIP_STALE banner and let ``_handle_prompt`` ack the prompt
+    as ``failed``; it escaped both, got swallowed by ``_work_chain``'s catch-all, and
+    the browser's optimistic "resuming" pill never got corrected — it spun on
+    "Sent — waking…" forever (dobby, 2026-09-24, three sessions whose PRs had already
+    merged)."""
+    from server.automations.ownership import StaleOwnership
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "stale-ownership-no-seam")
+    sid = session.id
+    _app.state.sessions = _NoRecheckSeam(_app.state.sessions)
+
+    async def _boom(_sid, *_a, **_k):
+        raise StaleOwnership("operation no longer owns its targets")
+    orch.ensure_driver = _boom  # type: ignore[method-assign]
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": sid, "text": "hello"}))
+        frames = _drain_events(
+            ws, until=lambda f: f.get("type") == "promptAck" and f.get("stage") == "failed")
+
+    stages = [f["stage"] for f in _acks(frames)]
+    assert stages and stages[0] == "resuming", stages
+    assert stages[-1] == "failed", (
+        f"a StaleOwnership wake failure with no recheck seam left the prompt "
+        f"stuck in flight instead of acking it failed; acks={stages!r}")
+    codes = [f.get("code") for f in frames if f.get("type") == "error"]
+    assert "SESSION_OWNERSHIP_STALE" in codes, codes
+
+
 def test_a_failed_wake_does_not_log_a_second_warning(ws_env, caplog):  # noqa: F811
     """A failed wake already gets a WARNING with the real reason from
     ``_resume_driver_or_error`` (e.g. SESSION_NOT_FOUND / SESSION_START_FAILED),

@@ -789,11 +789,26 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # StaleOwnership before ever exhausting its nudge cap. Fire on both
                     # the manual and silent-auto attach paths: fire-and-forget, and it
                     # must never block or fail the banner/replay below either way.
-                    supervise(
-                        asyncio.create_task(
-                            orchestrator.recheck_stuck_complete_session(session_id),
-                            name=f"stale-ownership-recheck-{session_id}"),
-                        name=f"stale-ownership-recheck-{session_id}")
+                    #
+                    # `orchestrator` is `app.state.sessions`, which in production is a
+                    # FleetOrchestrator whose primary is a RemoteOrchestrator — and
+                    # `recheck_stuck_complete_session` has no RPC wiring (it reads the
+                    # daemon's own in-memory `_records`), so FleetOrchestrator's
+                    # __getattr__ fallback raises a bare AttributeError. That happened
+                    # to be raised INSIDE this except block, past the point where the
+                    # ownership-stale/reauth banner and the caller's promptAck "failed"
+                    # get sent — so it escaped this handler entirely and the client's
+                    # optimistic "resuming" pill was never corrected (2026-09-24, three
+                    # sessions stuck reading "Sent — waking…" forever). getattr's
+                    # 3-arg form absorbs that AttributeError the same way the periodic
+                    # sweep already treats a missing seam as a no-op best-effort.
+                    recheck = getattr(orchestrator, "recheck_stuck_complete_session", None)
+                    if recheck is not None:
+                        supervise(
+                            asyncio.create_task(
+                                recheck(session_id),
+                                name=f"stale-ownership-recheck-{session_id}"),
+                            name=f"stale-ownership-recheck-{session_id}")
                 if not auto:
                     if stale_ownership:
                         # Not an account problem and not retryable, so it must not get
