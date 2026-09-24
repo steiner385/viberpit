@@ -122,7 +122,9 @@ export function BrowserTab({ sessionId, statusState, initialState, displayMode, 
     c.on('connect', () => setState('connected'))
     c.on('reconnecting', () => setState('reconnecting'))
     c.on('disconnect', (s) => setState(s))
-    if (canvasRef.current) c.connect(canvasRef.current)
+    // `connect` awaits the noVNC chunk (#1411); the cleanup below is what
+    // cancels an in-flight attach, so there is nothing to wait for here.
+    if (canvasRef.current) void c.connect(canvasRef.current)
     return () => c.disconnect()
   }, [sessionId, initialState, native])
 

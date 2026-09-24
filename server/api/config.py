@@ -111,6 +111,10 @@ async def get_config(_identity: str = Depends(current_identity)) -> dict:
         # True only when the flag is on AND the `stt` extra is importable, so the UI
         # never offers a mic engine the edge cannot actually run.
         "sttEnabled": bool(settings.enable_stt and stt_available()),
+        # Field Core Web Vitals collection (#1411). The browser reads this before
+        # it installs any PerformanceObserver, so turning the flag off stops the
+        # measurement at the source as well as at the ingest.
+        "webVitalsEnabled": bool(settings.web_vitals_enabled),
         # Per-engine offerability + capabilities. The browser renders the Agent
         # selector and every engine-conditional control from THIS, so a runner that
         # cannot start Codex is never offered as a Codex choice.

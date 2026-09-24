@@ -1,0 +1,12 @@
+{
+  "//": "Lab bundle budget (#1411). Enforced by `npm run budget` after `npm run build`, in CI's frontend job. `entryJs` is the entry chunk — the number the audit quoted. `initialJs` is everything index.html makes the browser fetch before first paint (entry + modulepreloads), which is the honest one: splitting a page out of the entry can shrink entryJs while the browser still downloads the same bytes. All figures are gzip kB, level 6. Ceilings only go DOWN: run `npm run budget -- --update` to bank a shrink. Raising one is a deliberate, reviewable edit — say why in the commit message.",
+  "targetsKb": {
+    "entryJs": 250,
+    "initialJs": 250
+  },
+  "ceilingsKb": {
+    "entryJs": 149.6,
+    "initialJs": 268.7,
+    "initialCss": 14.9
+  }
+}

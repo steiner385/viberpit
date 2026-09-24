@@ -47,6 +47,7 @@ import { Overlays } from './regions/Overlays'
 import { PageHost } from './regions/PageHost'
 import { PromptDock } from './regions/PromptDock'
 import { TopBar } from './regions/TopBar'
+import { WebVitalsCollector } from '@/obs/WebVitalsCollector'
 
 /**
  * `AppShell` — one shell for every layout mode, replacing the `Dashboard` /
@@ -396,6 +397,13 @@ function AppShellInner() {
 
       {shows('app.overlays') && <Overlays />}
       {workspace.dialogs}
+      {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
+          because a field vitals sample is attributed to a route and a width
+          tier, and both of those are router/`useViewport` state that only
+          exists below here (#1411). Not in the region matrix: it has no
+          geometry, and a kiosk display is the load least worth going
+          unmeasured. */}
+      <WebVitalsCollector />
     </div>
   )
 }

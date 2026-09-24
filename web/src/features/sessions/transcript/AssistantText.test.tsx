@@ -1,20 +1,32 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { beforeAll, describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { AssistantText } from './AssistantText'
+import { prefetchMarkdown } from './markdownChunk'
 
 vi.mock('highlight.js/styles/github-dark.css', () => ({}))
+
+
+// The markdown renderer is loaded lazily (#1411). In the browser that is a chunk
+// fetch; in vitest it is a module TRANSFORM of react-markdown + highlight.js +
+// KaTeX, which under a loaded worker can take longer than findBy's default
+// timeout. Warming it once here means these tests assert on rendering, not on
+// how busy the machine is — the same call the transcript makes on mount.
+beforeAll(() => prefetchMarkdown())
 
 describe('AssistantText', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('renders Markdown while streaming', () => {
+  // `<Markdown>` defers its renderer (#1411): the source text is on screen
+  // synchronously, the rendered form one microtask later — hence findBy.
+  it('renders Markdown while streaming', async () => {
     render(<AssistantText text="**bold** text" streaming={true} />)
-    expect(screen.getByText('bold').tagName).toBe('STRONG')
+    expect((await screen.findByText('bold')).tagName).toBe('STRONG')
   })
 
-  it('keeps streamed Markdown formatting', () => {
+  it('keeps streamed Markdown formatting', async () => {
     render(<AssistantText text="**bold**" streaming={true} />)
     // Streaming and settled text share the renderer.
+    await screen.findByText('bold')
     expect(document.querySelector('strong')).not.toBeNull()
   })
 

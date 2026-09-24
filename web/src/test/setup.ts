@@ -1,4 +1,21 @@
 import '@testing-library/jest-dom'
+import { configure } from '@testing-library/dom'
+
+/**
+ * `findBy*`/`waitFor` get 5s instead of testing-library's default 1s.
+ *
+ * The app code-splits its heavy surfaces (#1411): the Roadmap / Delivery /
+ * Pipeline / Settings routes, the transcript markdown renderer, the VNC viewer.
+ * In a browser that is a chunk fetch measured in tens of milliseconds. In vitest
+ * there is no bundle — the "fetch" is a first-time module TRANSFORM of, say,
+ * react-markdown plus highlight.js plus KaTeX, and how long that takes depends
+ * on how many workers are competing for the machine. At 1s the suite was green
+ * alone and red under `--pool=threads` load, which is a flake, not a signal:
+ * the assertion was about what renders, and it was failing on how busy the box
+ * was. 5s is still far below vitest's own per-test timeout, so a genuinely
+ * never-arriving element still fails the test rather than hanging the run.
+ */
+configure({ asyncUtilTimeout: 5_000 })
 
 // Everything below is DOM-only. It is guarded so a file that opts out of jsdom with
 // `// @vitest-environment node` still gets a working setup instead of a

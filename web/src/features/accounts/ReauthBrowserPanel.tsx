@@ -1,4 +1,4 @@
-import { BrowserTab } from '@/features/sessions/browser/BrowserTab'
+import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
 
 /** In-page VNC viewer for the reauth browser, pointed at the backend-reported session key.
  *
@@ -9,7 +9,7 @@ import { BrowserTab } from '@/features/sessions/browser/BrowserTab'
 export function ReauthBrowserPanel({ vncSession }: { vncSession: string }) {
   return (
     <div className="mt-2 h-[72vh] max-h-[88vh] min-h-[22.5rem] w-full max-w-full resize overflow-hidden rounded-md border">
-      <BrowserTab sessionId={vncSession} statusState="working" />
+      <DeferredBrowserTab sessionId={vncSession} statusState="working" />
     </div>
   )
 }

@@ -104,7 +104,8 @@ describe('SessionBody — Browser tab gating', () => {
       expect(screen.getByRole('tab', { name: /browser/i })).toBeInTheDocument()
     })
     await userEvent.click(screen.getByRole('tab', { name: /browser/i }))
-    expect(screen.getByTestId('browser-tab-stub')).toBeInTheDocument()
+    // The viewer is loaded lazily (#1411), so it arrives a microtask after the click.
+    expect(await screen.findByTestId('browser-tab-stub')).toBeInTheDocument()
   })
 
   it('hides Browser tab when /api/x11/metrics returns {enabled: false}', async () => {

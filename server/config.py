@@ -214,6 +214,16 @@ try:
         # code. The dataclass fallback below has no alias machinery and needs one.
         log_dir: str = Field(default_factory=default_log_dir, alias="VIBERPIT_LOG_DIR")
         client_log_level: str = Field(default="warn", alias="VIBERPIT_CLIENT_LOG_LEVEL")
+        # Field Core Web Vitals (#1411). On by default: the targets in the issue are
+        # stated as field p75s, and a collector nobody remembers to switch on measures
+        # nothing. The kill switch is here for the case where the ingest itself is the
+        # problem — it stops the browser collecting AND the endpoint accepting.
+        web_vitals_enabled: bool = Field(default=True, alias="VIBERPIT_WEB_VITALS_ENABLED")
+        # How long a raw sample is kept. p75s are read over hours or days, never
+        # months, and this table takes ~5 rows per page load, so the retention window
+        # is what keeps it bounded (pruned opportunistically on ingest).
+        web_vitals_retention_days: int = Field(
+            default=30, alias="VIBERPIT_WEB_VITALS_RETENTION_DAYS")
         # Override the directory used for archived session working directories.
         # Defaults to $VIBERPIT_HOME/archive. Set to a path on a larger/slower
         # drive to keep live session data and archives on separate filesystems.
@@ -557,6 +567,13 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         client_log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_CLIENT_LOG_LEVEL", "warn")
+        )
+        web_vitals_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get(
+                "VIBERPIT_WEB_VITALS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        web_vitals_retention_days: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("VIBERPIT_WEB_VITALS_RETENTION_DAYS", "30"))
         )
         archive_home: str | None = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_ARCHIVE_HOME")

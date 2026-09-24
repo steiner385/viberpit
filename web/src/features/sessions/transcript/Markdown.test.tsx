@@ -1,51 +1,36 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { Markdown } from './Markdown'
+import { prefetchMarkdown } from './markdownChunk'
 
-vi.mock('./MermaidDiagram', () => ({
-  MermaidDiagram: ({ source }: { source: string }) => <figure aria-label="Mermaid diagram">{source}</figure>,
-}))
-
-describe('Markdown', () => {
-  it('renders Mermaid fences as diagrams, but keeps inline Mermaid text and other fences as code', () => {
-    const { container } = render(<Markdown>{'```mermaid\ngraph TD; A-->B\n```\n\n`mermaid`\n\n```text\nplain code\n```'}</Markdown>)
-    expect(screen.getByRole('figure', { name: 'Mermaid diagram' })).toHaveTextContent('graph TD; A-->B')
-    expect(container.querySelector('pre code')).toHaveTextContent('plain code')
-    expect(screen.getByText('mermaid').tagName).toBe('CODE')
+// The lazy BOUNDARY (#1411), not the renderer — `MarkdownDoc.test.tsx` owns the
+// plugin chain. What matters here is that deferring ~240kB of renderer never
+// costs the reader the text itself.
+//
+// Deliberately NOT warmed with `prefetchMarkdown()` in a `beforeAll`, unlike the
+// consumer suites: the cold path IS the thing under test here.
+describe('Markdown (lazy boundary)', () => {
+  it('shows the source text immediately, before the renderer chunk lands', () => {
+    render(<Markdown>{'See the **guide**.'}</Markdown>)
+    // Synchronously, on the very first frame: no spinner, no empty box.
+    expect(screen.getByText('See the **guide**.')).toBeInTheDocument()
   })
 
-  it('keeps streaming Mermaid source readable until the block settles', () => {
-    const { rerender } = render(<Markdown streaming>{'```mermaid\ngraph TD; A-->'}</Markdown>)
+  it('upgrades to rendered markdown once the chunk resolves', async () => {
+    render(<Markdown>{'See the **guide**.'}</Markdown>)
+    expect((await screen.findByText('guide')).tagName).toBe('STRONG')
+  })
+
+  it('passes `streaming` through to the renderer', async () => {
+    // A streaming mermaid fence stays readable as code rather than rendering.
+    await prefetchMarkdown()
+    render(<Markdown streaming>{'```mermaid\ngraph TD; A-->'}</Markdown>)
+    expect(await screen.findByText(/graph TD/)).toBeInTheDocument()
     expect(screen.queryByRole('figure')).toBeNull()
-    expect(screen.getByText('graph TD; A-->')).toBeInTheDocument()
-    rerender(<Markdown>{'```mermaid\ngraph TD; A-->B\n```'}</Markdown>)
-    expect(screen.getByRole('figure')).toBeInTheDocument()
   })
 
-  it('renders CommonMark, GFM, images, and footnotes with working local anchors', () => {
-    const { container } = render(<Markdown>{'# Heading\n\n**bold** *italic* ~~gone~~\n\n> quote\n\n1. first\n   - nested\n\n- [x] done\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n![alt](https://example.com/image.png)\n\nA note[^1].\n\n[^1]: Footnote\n\n---'}</Markdown>)
-    expect(screen.getByRole('heading', { name: 'Heading' })).toBeInTheDocument()
-    for (const tag of ['strong', 'em', 'del', 'blockquote', 'ol', 'ul', 'table', 'hr']) expect(container.querySelector(tag)).not.toBeNull()
-    expect(screen.getByRole('checkbox')).toBeChecked()
-    expect(screen.getByRole('checkbox')).toBeDisabled()
-    expect(screen.getByRole('img', { name: 'alt' })).toBeInTheDocument()
-    const ref = container.querySelector('a[data-footnote-ref]')!
-    expect(ref).not.toHaveAttribute('target')
-    expect(container.querySelector(`[id="${ref.getAttribute('aria-describedby')}"]`)).not.toBeNull()
-    expect(container.querySelector(`[id="${ref.getAttribute('href')!.slice(1)}"]`)).not.toBeNull()
-  })
-
-  it('renders inline and display math', () => {
-    const { container } = render(<Markdown>{'Inline $x^2$\n\n$$\nx + y = z\n$$'}</Markdown>)
-    expect(container.querySelectorAll('.katex')).toHaveLength(2)
-    expect(container.querySelector('.katex-display')).not.toBeNull()
-  })
-
-  it('renders safe HTML and strips executable HTML and unsafe links', () => {
-    const { container } = render(<Markdown>{'<details><summary>More</summary><kbd>Enter</kbd><sup>2</sup></details>\n\n<script>alert(1)</script><iframe src="https://evil.example"></iframe><img src="x" onerror="alert(1)">\n\n[bad](javascript:alert%281%29)'}</Markdown>)
-    expect(screen.getByText('More').tagName).toBe('SUMMARY')
-    expect(screen.getByText('Enter').tagName).toBe('KBD')
-    expect(container.querySelector('script, iframe, [onerror]')).toBeNull()
-    expect(screen.getByText('bad')).not.toHaveAttribute('href', expect.stringContaining('javascript:'))
+  it('prefetchMarkdown never rejects, even called twice', async () => {
+    await expect(prefetchMarkdown()).resolves.toBeUndefined()
+    await expect(prefetchMarkdown()).resolves.toBeUndefined()
   })
 })

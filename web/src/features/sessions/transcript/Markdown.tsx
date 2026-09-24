@@ -1,76 +1,39 @@
-import { useId, useMemo } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import rehypeRaw from 'rehype-raw'
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
-import 'katex/dist/katex.min.css'
-import { MermaidDiagram } from './MermaidDiagram'
-import 'highlight.js/styles/github-dark.css'
-import { isFilePathRef } from './filePathRef'
-import { CopyablePath } from './CopyablePath'
+import { Suspense, lazy } from 'react'
+import { loadMarkdownDoc } from './markdownChunk'
+
+/**
+ * The transcript's markdown renderer, loaded off the critical path (#1411).
+ *
+ * `MarkdownDoc` is the real implementation and by far the heaviest thing in the
+ * app after the HEIC decoder: react-markdown, the remark/rehype chain,
+ * highlight.js and KaTeX come to ~240kB gzip. None of it is needed to render the
+ * sessions list, the welcome pane, Roadmap, Delivery or Settings — only a
+ * transcript uses it — yet a static import put all of it in the preloaded set
+ * that every page load fetches before it can paint. Splitting it here is what
+ * took the initial payload from 484kB to 256kB gzip.
+ *
+ * ## The fallback is the source text, not a spinner
+ *
+ * A transcript is prose that is already in hand; the chunk only changes how it
+ * is FORMATTED. So while it loads, the same text renders as plain text in the
+ * same box — the message is readable immediately and sharpens into rendered
+ * markdown, rather than the user watching a placeholder where their answer
+ * should be. It also keeps the layout shift small: the fallback occupies roughly
+ * the height the rendered version will, and CLS is one of the three numbers
+ * #1411 is trying to hold down.
+ *
+ * In practice the fallback is rarely seen at all: `prefetchMarkdown()`
+ * (`./markdownChunk`) runs when a transcript mounts, so the chunk is usually
+ * warm before the first message arrives.
+ */
+const MarkdownDoc = lazy(() => loadMarkdownDoc().then((m) => ({ default: m.MarkdownDoc })))
 
 interface Props { children: string; streaming?: boolean }
 
-// Shared markdown renderer for assistant transcript content (prose and insight
-// callouts). Centralizes the plugin set, the safe-link policy, and clickable
-// file-path code spans.
 export function Markdown({ children, streaming = false }: Props) {
-  // Sanitized IDs are unique across messages; local links follow the same prefix.
-  const idPrefix = `markdown-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-`
-  const schema = {
-    ...defaultSchema,
-    clobberPrefix: idPrefix,
-    attributes: {
-      ...defaultSchema.attributes,
-      code: [['className', /^language-./, 'math-inline', 'math-display']],
-    },
-  }
-  // Stable component identities preserve mounted diagrams when transcript
-  // measurement or live updates rerender this message.
-  const components = useMemo<Components>(() => ({
-    // Open links in a new tab and sever the opener relationship so a
-    // session link can't navigate the transcript tab away or reach
-    // window.opener.
-    a: ({ node, ...props }) => {
-      void node // hast node — drop it rather than forward to the DOM
-      const local = props.href?.startsWith('#')
-      return <a {...props} href={local ? `#${idPrefix}${props.href!.slice(1)}` : props.href}
-        target={local ? undefined : '_blank'} rel="noopener noreferrer" />
-    },
-    pre: ({ node, children, ...props }) => {
-      const code = node?.children[0]
-      if (!streaming && code?.type === 'element' && code.tagName === 'code'
-        && Array.isArray(code.properties.className) && code.properties.className.includes('language-mermaid')) {
-        const source = code.children.map((child) => child.type === 'text' ? child.value : '').join('')
-        return <MermaidDiagram source={source} />
-      }
-      return <pre {...props}>{children}</pre>
-    },
-    // Make path-like INLINE code spans clickable to copy. Fenced blocks
-    // arrive as highlighted element arrays (not a string), so the
-    // typeof guard restricts this to inline code only — no `inline`
-    // prop exists in react-markdown v10.
-    code: ({ node, children, ...props }) => {
-      void node
-      if (typeof children === 'string' && isFilePathRef(children)) {
-        return <CopyablePath text={children} />
-      }
-      return <code {...props}>{children}</code>
-    },
-  }), [idPrefix, streaming])
   return (
-    <div className="markdown max-w-none text-ink">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        // Sanitize author HTML before trusted math/highlighting generate markup.
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, schema], rehypeKatex, rehypeHighlight]}
-        components={components}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <Suspense fallback={<div className="whitespace-pre-wrap break-words">{children}</div>}>
+      <MarkdownDoc streaming={streaming}>{children}</MarkdownDoc>
+    </Suspense>
   )
 }
