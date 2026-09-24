@@ -408,6 +408,15 @@ def test_rename_pins_name_is_auto_false(tmp_path):
     assert is_auto is False
 
 
+async def _persist_done_and_title(orch, sid):
+    """Persist `done`, then await the turn-end auto-name task it spawns off the
+    status pump (#2180) so the test can assert on the adopted title."""
+    await orch._persist_status(sid, "done")
+    pending = [t for t in getattr(orch, "_bg_tasks", ())
+               if t.get_name() == f"auto_name:{sid}"]
+    await asyncio.gather(*pending)
+
+
 def test_auto_name_applied_on_done(tmp_path):
     transcript = tmp_path / "claude-s1.jsonl"
     transcript.write_text('{"ai-title": "Fix the login bug"}\n')
@@ -415,7 +424,7 @@ def test_auto_name_applied_on_done(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)
         orch.transcript_path = lambda sid: str(transcript)
-        await orch._persist_status("s1", "done")
+        await _persist_done_and_title(orch, "s1")
         return orch.record("s1").name
     assert asyncio.run(run()) == "Fix the login bug"
 
@@ -427,7 +436,7 @@ def test_auto_name_not_applied_when_manual(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path, name="Hand Picked", name_is_auto=False)
         orch.transcript_path = lambda sid: str(transcript)
-        await orch._persist_status("s1", "done")
+        await _persist_done_and_title(orch, "s1")
         return orch.record("s1").name
     assert asyncio.run(run()) == "Hand Picked"
 
@@ -440,7 +449,7 @@ def test_auto_name_emits_title_event_to_live_header(tmp_path):
         orch = await _build_orch(tmp_path)
         orch.transcript_path = lambda sid: str(transcript)
         drv = _attach_stub_driver(orch, "s1")
-        await orch._persist_status("s1", "done")
+        await _persist_done_and_title(orch, "s1")
         events = []
         while not drv._events.empty():
             events.append(drv._events.get_nowait())
@@ -462,10 +471,10 @@ def test_auto_name_idempotent_no_event_when_unchanged(tmp_path):
         orch = await _build_orch(tmp_path)
         orch.transcript_path = lambda sid: str(transcript)
         drv = _attach_stub_driver(orch, "s1")
-        await orch._persist_status("s1", "done")   # adopts → 1 event
+        await _persist_done_and_title(orch, "s1")   # adopts → 1 event
         while not drv._events.empty():
             drv._events.get_nowait()
-        await orch._persist_status("s1", "done")   # same title → no event
+        await _persist_done_and_title(orch, "s1")   # same title → no event
         return drv._events.empty()
 
     assert asyncio.run(run()) is True
@@ -490,7 +499,7 @@ def test_auto_name_does_not_clobber_manual_rename_during_read(tmp_path, monkeypa
 
         monkeypatch.setattr(orch_mod, "read_ai_title_from_file", fake_read)
 
-        await orch._persist_status("s1", "done")
+        await _persist_done_and_title(orch, "s1")
         rec = orch.record("s1")
         return rec.name, rec.name_is_auto
 

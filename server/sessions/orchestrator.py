@@ -890,6 +890,8 @@ class SessionOrchestrator:
         # the extracted turn context (str) instead — see generate_suggestions_codex (#1281).
         self._detached_suggestions: dict[str, tuple[float | str, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
+        # Sessions with an auto-name (Haiku title) query in flight — see _auto_name_once.
+        self._auto_name_inflight: set[str] = set()
         # Backoff after a give-up-for-no-auth attempt: account -> monotonic deadline before
         # which a re-spawn is skipped. Keyed by account (not session_id): "this account has
         # no usable credential" is a per-account fact, so all sessions sharing an account
@@ -5501,7 +5503,12 @@ class SessionOrchestrator:
                                               if rec is not None else False)})
         await self._maybe_push(session_id, status)
         if completed_turn:
-            await self._maybe_apply_auto_name(session_id)
+            # Off the pump (#2180), like _persist_sub_agents above: the fallback title
+            # runs a Haiku `claude -p` helper whose SDK teardown can take ~10s, longer
+            # than driver.close()'s 5s cancel grace — awaited inline, stopping the
+            # driver at a turn boundary abandoned the pump with a CRITICAL.
+            self._spawn(self._auto_name_once(session_id),
+                        name=f"auto_name:{session_id}")
         # A `complete` session still holds a live `claude` process until something
         # releases it — historically only auto-archive did, which has two
         # independent failure modes (autopilot outages; the sticky manual-unarchive
@@ -13881,6 +13888,26 @@ class SessionOrchestrator:
             driver.emit(ev.Title(title=title, source=source))
         log.info("session.auto_name id=%s title=%r source=%s", session_id, title, source)
 
+    async def _auto_name_once(self, session_id: str) -> None:
+        """``_maybe_apply_auto_name`` with a per-session in-flight guard. Never raises.
+
+        The turn-end trigger runs it as a background task (#2180), so it can overlap
+        a ``_titling_sweep`` pass on the same session; the guard keeps the two from
+        each running a Haiku query — the later caller just skips.
+        """
+        inflight = getattr(self, "_auto_name_inflight", None)
+        if inflight is None:
+            inflight = self._auto_name_inflight = set()
+        if session_id in inflight:
+            return
+        inflight.add(session_id)
+        try:
+            await self._maybe_apply_auto_name(session_id)
+        except Exception:  # best-effort: a failed title must never surface
+            log.warning("auto-name failed for %s", session_id, exc_info=True)
+        finally:
+            inflight.discard(session_id)
+
     async def _titling_sweep(self) -> None:
         """One titling pass: refresh the auto-name of every active, still-auto session
         THIS daemon owns.
@@ -13903,10 +13930,7 @@ class SessionOrchestrator:
                 continue
             if not self._owns_record(rec, enabled_hosts):
                 continue
-            try:
-                await self._maybe_apply_auto_name(sid)
-            except Exception:  # never let one session break the sweep
-                log.warning("titling sweep failed for %s", sid, exc_info=True)
+            await self._auto_name_once(sid)   # never raises: one session can't break the sweep
 
     async def _titling_monitor(self) -> None:
         """Background loop: sweep titles every ``self._titling_interval`` seconds."""
