@@ -19728,7 +19728,7 @@ class SessionOrchestrator:
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
             "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d "
             "evicted_dirty=%d evicted_dirty_unstashed=%d evict_failed=%d "
-            "orphaned=%d "
+            "orphaned=%d orphaned_active=%d "
             "orphaned_unmanaged=%d kept_stray=%d pruned_empty=%d",
             counts["scanned"], counts["removed"], counts["kept_live"],
             counts["kept_young"], counts["kept_dirty"],
@@ -19736,6 +19736,7 @@ class SessionOrchestrator:
             counts.get("evicted_dirty", 0),
             counts.get("evicted_dirty_unstashed", 0),
             counts.get("evict_failed", 0), counts.get("orphaned", 0),
+            counts.get("orphaned_active", 0),
             counts.get("orphaned_unmanaged", 0),
             counts.get("kept_stray", 0), counts.get("pruned_empty", 0),
         )

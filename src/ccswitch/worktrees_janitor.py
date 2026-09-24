@@ -26,6 +26,11 @@ Safety invariants
   ``keep_stray``/``kept_stray=N`` split used for strays (#1652): a varying
   path in a WARNING+ record survives ``error_signature.normalize`` and mints
   a fresh auto-error fingerprint per host and path (#1642, #1663, #1992).
+* An orphaned worktree (its shared clone is gone) is named, never reaped
+  (#1003).  Because nothing here ever clears one, the alert is CRITICAL only
+  while a worktree in the set is still being worked in; a set nobody has
+  touched for ``min_age`` is a standing cleanup backlog and gets the same
+  WARNING every other non-settling chore in this module gets (#2143).
 * Every eviction outcome is reported *after* the removal is attempted, so a
   discard is only ever claimed once it happened (#1664).  A removal git
   refuses is ``evict_failed`` — the one keep reason that never settles, since
@@ -206,13 +211,16 @@ def sweep_orphaned_worktrees(
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
       ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``,
       ``evicted_dirty_unstashed``, ``evict_failed``, ``orphaned``,
-      ``orphaned_unmanaged``, ``kept_stray``, ``pruned_empty``
+      ``orphaned_active``, ``orphaned_unmanaged``, ``kept_stray``,
+      ``pruned_empty``
 
     **Orphans**: a worktree whose shared clone is gone is counted, never
     removed (#1003).  ``orphaned`` is the recoverable shape — the clone sits
     under the clones base, so ``clones repair`` can re-clone it;
     ``orphaned_unmanaged`` points outside it and nothing here can restore it
-    (#1992).
+    (#1992).  ``orphaned_active`` is the subset of ``orphaned`` touched inside
+    ``min_age``, which is what decides the alert's severity (#2143) — see
+    :func:`_orphan_is_active`.
     """
     import time as _time
 
@@ -231,6 +239,7 @@ def sweep_orphaned_worktrees(
         "evicted_dirty_unstashed": 0,
         "evict_failed": 0,
         "orphaned": 0,
+        "orphaned_active": 0,
         "orphaned_unmanaged": 0,
         "kept_stray": 0,
         "pruned_empty": 0,
@@ -258,6 +267,8 @@ def sweep_orphaned_worktrees(
                 # checkout never is (#1992).
                 if clone_is_repairable(repo_root, missing_clone):
                     counts["orphaned"] += 1
+                    if _orphan_is_active(wt_path, now, min_age):
+                        counts["orphaned_active"] += 1
                     orphan_clones[missing_clone] = orphan_clones.get(missing_clone, 0) + 1
                 else:
                     counts["orphaned_unmanaged"] += 1
@@ -312,7 +323,7 @@ def sweep_orphaned_worktrees(
     _emit_dirty_alerts(counts["kept_dirty"])
     _journal_orphan_clones(orphan_clones)
     _journal_orphan_clones(unmanaged_clones)
-    _emit_orphan_alert(counts["orphaned"])
+    _emit_orphan_alert(counts["orphaned"], counts["orphaned_active"])
     _emit_unmanaged_orphan_alert(counts["orphaned_unmanaged"])
     _emit_stray_alert(counts["kept_stray"])
     _emit_unstashed_eviction_alert(counts["evicted_dirty_unstashed"])
@@ -406,24 +417,67 @@ def _journal_orphan_clones(clones: dict[str, int]) -> None:
                  clone, clones[clone])
 
 
-def _emit_orphan_alert(orphaned: int) -> None:
-    """Name a deleted shared clone loudly, with the command that recovers it.
+def _orphan_is_active(wt_path: Path, now: float, min_age: float) -> bool:
+    """Whether this orphan is a break somebody is hitting *now* (#2143).
 
-    One CRITICAL line per sweep rather than per worktree: the 2026-09-03
-    incident orphaned 61 worktrees on one host from a single deletion, and 61
-    identical lines would bury the one fact that matters.
+    Decided on mtime rather than ``live_cwds`` membership, even though the
+    sweep already holds that set: the orchestrator folds archived sessions'
+    cwds into it (#921), so membership answers "does a row still point here",
+    not "is anyone working here" — the opposite of what the severity needs.
+    ``min_age`` is the module's existing boundary for "old enough to judge",
+    needs nothing from the DB, and self-corrects in both directions: the moment
+    a session writes into a stale orphan the next sweep escalates it again.
 
-    The text carries no paths, only the count, so error triage normalises every
+    A dir that cannot be stat'd counts as active.  Under-reporting a live
+    outage is the worse error, and it is the same conservative default the
+    sweep applies everywhere else.
+    """
+    try:
+        return now - wt_path.stat().st_mtime < min_age
+    except OSError:
+        return True
+
+
+def _emit_orphan_alert(orphaned: int, active: int) -> None:
+    """Name a deleted shared clone, at the severity its explanation earns.
+
+    One line per sweep rather than per worktree: the 2026-09-03 incident
+    orphaned 61 worktrees on one host from a single deletion, and 61 identical
+    lines would bury the one fact that matters.
+
+    CRITICAL only while at least one of them is still being worked in.  The
+    janitor never removes an orphan by design (#1003), so an orphan set nobody
+    acts on is *permanent* — rocky re-fired the identical CRITICAL on every
+    sweep and every daemon start for four days over four worktrees abandoned
+    twenty days earlier (#2143).  Alerting at the same level for both made an
+    unattended cleanup backlog indistinguishable from sessions being blocked
+    right now, which is the one distinction the level exists to draw.
+    ``_emit_unmanaged_orphan_alert`` right next door already reserves CRITICAL
+    the same way.  Demoting costs nothing an operator needs: the count, the
+    remedy and the paths are unchanged, and a single active orphan re-arms the
+    CRITICAL for the whole set, so an outage can never hide inside a backlog.
+
+    Either text carries no paths, only counts, so error triage normalises every
     host and clone set to a single fingerprint — quoting the missing-clone list
     filed ONE condition as three auto-error issues (#1642, #1663, #1992).  The
     paths are in the ``orphaned_clone path=`` INFO lines of the same sweep.
     """
     if not orphaned:
         return
-    log.critical(
-        "worktree-janitor: orphaned=%d worktree(s) reference a missing shared clone "
-        "— working files are intact; recover with `%s clones repair` (the clone "
-        "paths are in this sweep's orphaned_clone lines)",
+    if active:
+        log.critical(
+            "worktree-janitor: orphaned=%d worktree(s) reference a missing shared "
+            "clone, %d of them in active use — working files are intact; recover "
+            "with `%s clones repair` (the clone paths are in this sweep's "
+            "orphaned_clone lines)",
+            orphaned, active, brand.CLI_NAME,
+        )
+        return
+    log.warning(
+        "worktree-janitor: orphaned=%d abandoned worktree(s) reference a missing "
+        "shared clone — none is in active use and the working files are intact; "
+        "clear the backlog with `%s clones repair`, or salvage and delete them "
+        "(the clone paths are in this sweep's orphaned_clone lines)",
         orphaned, brand.CLI_NAME,
     )
 
