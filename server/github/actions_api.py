@@ -7,7 +7,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import subprocess
+import time
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
@@ -127,8 +129,31 @@ def list_jobs(repo: str, run_id: int, *, run=None) -> list[dict]:
     return out
 
 
+#: gh's wording for a GitHub-side server error (``gh: HTTP 503``). Transient by
+#: definition — the request reached GitHub and GitHub failed it — so the artifact
+#: download retries it instead of dropping that shard's results for good (#1839).
+_RE_GH_5XX = re.compile(r"\bHTTP 5\d\d\b")
+
+#: Pauses before each artifact-download retry, seconds. Short and bounded: the
+#: fetch runs in a worker thread inside a 900 s doctor tick.
+_ARTIFACT_RETRY_DELAYS_S = (2.0, 5.0)
+
+
+def _fetch_artifact_zip(run_bytes, args: list[str], sleep) -> bytes:
+    """``run_bytes(args)``, retrying a GitHub 5xx per :data:`_ARTIFACT_RETRY_DELAYS_S`.
+    Any other failure, or a 5xx that outlives the retries, propagates."""
+    for delay in _ARTIFACT_RETRY_DELAYS_S:
+        try:
+            return run_bytes(args)
+        except gitrepos.GhError as exc:
+            if not _RE_GH_5XX.search(str(exc)):
+                raise
+            sleep(delay)
+    return run_bytes(args)
+
+
 def junit_artifacts(repo: str, run_id: int, *, run=None,
-                    run_bytes=None) -> list[tuple[str, bytes]]:
+                    run_bytes=None, sleep=time.sleep) -> list[tuple[str, bytes]]:
     """(artifact name, xml bytes) for every junit-* artifact of the run.
     Contract: Plan A names all JUnit artifacts with the junit- prefix."""
     run = run or _run_gh_for(repo)
@@ -139,12 +164,19 @@ def junit_artifacts(repo: str, run_id: int, *, run=None,
         if not str(a.get("name", "")).startswith("junit") or a.get("expired"):
             continue
         try:
-            blob = run_bytes(["api", f"repos/{repo}/actions/artifacts/{a['id']}/zip"])
+            blob = _fetch_artifact_zip(
+                run_bytes, ["api", f"repos/{repo}/actions/artifacts/{a['id']}/zip"], sleep)
             with zipfile.ZipFile(io.BytesIO(blob)) as z:
                 for member in z.namelist():
                     if member.endswith(".xml"):
                         out.append((a["name"], z.read(member)))
         except Exception as exc:
+            if isinstance(exc, gitrepos.GhError) and _RE_GH_5XX.search(str(exc)):
+                # GitHub's outage, not ours: nothing here to fix, so not an
+                # auto-error issue (#1839). The run still ingests without it.
+                log.info("cicd.artifact_fetch_unavailable repo=%s run=%s artifact=%s: %s",
+                         repo, run_id, a.get("name"), exc)
+                continue
             log_gh_failure(log, str(exc),
                            "cicd.artifact_fetch_failed repo='%s' run=%s artifact='%s'",
                            repo, run_id, a.get("name"), exc_info=True)
