@@ -450,6 +450,12 @@ SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-
 SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# A repo-RELATIVE path that lands in ssh argv (runners._merge restores the tracked files a
+# dirty checkout's aborted merge named). Same threat model as SSH_REPO_RE — ssh joins argv
+# into one remote shell line — so: no leading '-' (option smuggling), no shell
+# metacharacters or whitespace, no absolute path, and no '..' segment escaping the repo.
+SSH_REL_PATH_RE = re.compile(r"^(?!\.\.?(?:/|$))[A-Za-z0-9._][A-Za-z0-9._-]*"
+                             r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9._-]+)*$")
 
 
 

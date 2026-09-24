@@ -477,3 +477,116 @@ def test_close_events_precedes_the_restart():
     assert ("run", "viberpit-daemon.service") in timeline
     assert timeline.index(("rpc", "close_events_connections")) < \
         timeline.index(("run", "viberpit-daemon.service"))
+
+
+# --------------------------------------------------------------------------- #
+# Dirty runner checkout (rocky, 2026-09-20 → 09-24): `git merge --ff-only` aborts when a TRACKED file the
+# merge would overwrite is locally modified. The edge repo is guarded by
+# steps.guard_working_tree; a runner checkout had no equivalent, so one stray
+# `npm install` rewriting web/package-lock.json wedged every upgrade of that host.
+# --------------------------------------------------------------------------- #
+
+DIRTY_MERGE_STDERR = (
+    "error: Your local changes to the following files would be overwritten by merge:\n"
+    "\tweb/package-lock.json\n"
+    "Please commit your changes or stash them before you merge.\n"
+    "Aborting\n"
+)
+
+
+def test_local_change_collisions_parses_the_paths_git_names():
+    assert R.local_change_collisions(DIRTY_MERGE_STDERR) == ["web/package-lock.json"]
+    two = ("error: Your local changes to the following files would be overwritten by merge:\n"
+           "\tweb/package-lock.json\n\tserver/deploy/steps.py\n"
+           "Please commit your changes or stash them before you merge.\nAborting\n")
+    assert R.local_change_collisions(two) == ["web/package-lock.json", "server/deploy/steps.py"]
+
+
+def test_local_change_collisions_ignores_unrelated_failures():
+    # The untracked-file variant is a DIFFERENT git message with a different remedy
+    # (deleting files, not restoring them) — steps._clear_incoming_untracked_collisions
+    # owns that one. Recovering it here would silently delete a runner's untracked state.
+    assert R.local_change_collisions(
+        "error: The following untracked working tree files would be overwritten by merge:\n"
+        "\tweb/dist/index.html\nPlease move or remove them.\nAborting\n") == []
+    assert R.local_change_collisions("fatal: not a git repository") == []
+    assert R.local_change_collisions("") == []
+
+
+def test_local_change_collisions_refuses_every_path_when_one_is_unsafe():
+    """These paths land in ssh argv, which ssh joins into a remote SHELL line.
+
+    A path git cannot have produced means the stderr is not the message we think it is —
+    recover nothing rather than reason about which half is trustworthy (constitution IV).
+    """
+    for bad in ("web/pkg.json; rm -rf /", "-oProxyCommand=x", "../../etc/passwd",
+                "web/$(whoami).json", "web/a b.json"):
+        stderr = ("error: Your local changes to the following files would be overwritten "
+                  f"by merge:\n\tweb/package-lock.json\n\t{bad}\n"
+                  "Please commit your changes or stash them before you merge.\nAborting\n")
+        assert R.local_change_collisions(stderr) == [], bad
+
+
+def _merge_recorder(calls, *, merge_stderr, fail_merges=1):
+    """Fails the first *fail_merges* `git merge` calls with *merge_stderr*."""
+    seen = {"merge": 0}
+
+    def run(argv, **kw):
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
+        calls.append(list(argv))
+        if "merge" in argv:
+            seen["merge"] += 1
+            if seen["merge"] <= fail_merges:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr=merge_stderr)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    return run
+
+
+def test_dirty_checkout_is_restored_and_the_merge_retried_once():
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_merge_recorder(calls, merge_stderr=DIRTY_MERGE_STDERR),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done" and st.error is None and st.moved
+    repo = ROCKY.repo_path
+    assert calls == [
+        SSH + ["git", "-C", repo, "fetch", "--quiet", "origin"],
+        SSH + ["git", "-C", repo, "merge", "--ff-only", "abc1234"],
+        SSH + ["git", "-C", repo, "checkout", "--", "web/package-lock.json"],
+        SSH + ["git", "-C", repo, "merge", "--ff-only", "abc1234"],
+        SSH + ["sync"],
+    ]
+
+
+def test_an_unrelated_merge_failure_is_never_recovered():
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_merge_recorder(calls, merge_stderr="fatal: refusing to merge "
+                                                                "unrelated histories"),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "failed" and st.step == "merge"
+    assert "unrelated histories" in (st.error or "")
+    assert not any("checkout" in c for c in calls)
+
+
+def test_the_retry_happens_exactly_once():
+    """A merge that keeps failing after the restore fails the runner — no retry loop."""
+    calls: list = []
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby",
+                        run=_merge_recorder(calls, merge_stderr=DIRTY_MERGE_STDERR,
+                                            fail_merges=99),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "failed" and st.step == "merge"
+    assert "merge failed" in (st.error or "") and "package-lock" in (st.error or "")
+    assert len([c for c in calls if "merge" in c]) == 2
+    assert len([c for c in calls if "checkout" in c]) == 1
