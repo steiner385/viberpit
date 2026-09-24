@@ -134,6 +134,10 @@ class PullRequestInfo:
     # any changed-file path under .github/workflows/ (files page-1, first 100;
     # PRs with >100 files may under-report — same page-1 cap as plotroom) (§4)
     touches_workflows: bool = False
+    # True when the PR has at least one changed file and every changed-file path
+    # (files page-1, first 100) is under docs/ — a spec/plan-only PR merging does
+    # not mean the implementation landed (#1756).
+    docs_only: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -168,6 +172,7 @@ class PullRequestInfo:
             "auto_merge_enabled": self.auto_merge_enabled,
             "in_merge_queue": self.in_merge_queue,
             "touches_workflows": self.touches_workflows,
+            "docs_only": self.docs_only,
         }
 
     @classmethod
@@ -205,6 +210,7 @@ class PullRequestInfo:
             auto_merge_enabled=d.get("auto_merge_enabled", False),
             in_merge_queue=d.get("in_merge_queue", False),
             touches_workflows=d.get("touches_workflows", False),
+            docs_only=d.get("docs_only", False),
         )
 
 
@@ -664,6 +670,17 @@ def _touches_workflows(pr: dict) -> bool:
     )
 
 
+def _is_docs_only(pr: dict) -> bool:
+    """True when the PR has at least one changed file and every changed-file path
+    is under docs/ (#1756). Reads the ``files(first: 100)`` GraphQL page only,
+    same page-1 cap as ``_touches_workflows``.
+    """
+    nodes = ((pr.get("files") or {}).get("nodes")) or []
+    paths = [n["path"] for n in nodes
+             if isinstance(n, dict) and isinstance(n.get("path"), str)]
+    return bool(paths) and all(p.startswith("docs/") for p in paths)
+
+
 def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
     checks = _classify_checks(_rollup_state(pr))
@@ -696,6 +713,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         auto_merge_enabled=pr.get("autoMergeRequest") is not None,
         in_merge_queue=pr.get("mergeQueueEntry") is not None,
         touches_workflows=_touches_workflows(pr),
+        docs_only=_is_docs_only(pr),
     )
 
 

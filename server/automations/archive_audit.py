@@ -162,6 +162,18 @@ def referenced_pr_numbers(goal: str, initial_prompt: str | None) -> list[int]:
     return sorted(nums)
 
 
+def archived_pr_numbers(archive_context: "dict | None") -> list[int]:
+    """PR numbers already known at archive time, from the ``pr_state`` snapshot
+    written by ``SessionOrchestrator._auto_archive_completed``/``_autopilot_archive``
+    (``PrFacts.to_prompt()``). Seeding ``ref_numbers`` from this closes the gap where
+    a PR lived on a branch the session never recorded in ``authored_branches`` — the
+    live poller found it via the population cache, but the retro audit otherwise has
+    no fallback (issue #1756)."""
+    ctx = archive_context or {}
+    pr_state = ctx.get("pr_state") or {}
+    return sorted({int(p["number"]) for p in pr_state.get("prs") or [] if "number" in p})
+
+
 def _pr_fact_from_gh(d: dict) -> PrFact:
     """Map one GraphQL PR node to a PrFact. GraphQL states are UPPERCASE
     (OPEN/MERGED/CLOSED); autoMergeRequest is non-null when auto-merge is armed;
@@ -173,8 +185,12 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
     The check rollup (commit.statusCheckRollup.state) flows into PrFact.checks via the
     same _classify_checks SoT the live poller uses, so the audit gates an armed-but-red
     PR identically to the live path (issue #635).
+
+    The changed-file paths (files page-1) flow into PrFact.is_docs_only via the same
+    _is_docs_only SoT the live poller uses, so a spec/plan-only merged PR does not
+    read as a landed implementation here either (issue #1756).
     """
-    from server.github.pr_status import _classify_checks
+    from server.github.pr_status import _classify_checks, _is_docs_only
     state = str(d.get("state", "")).lower()
     is_draft = bool(d.get("isDraft", False))
     if state == "open" and is_draft:
@@ -185,7 +201,8 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
                   auto_merge_enabled=d.get("autoMergeRequest") is not None,
                   in_merge_queue=d.get("mergeQueueEntry") is not None,
                   url=str(d.get("url", "")),
-                  checks=_classify_checks(rollup.get("state") if rollup else None))
+                  checks=_classify_checks(rollup.get("state") if rollup else None),
+                  is_docs_only=_is_docs_only(d))
 
 
 def build_pr_facts(
@@ -266,7 +283,8 @@ async def run_audit(
         branches = list(row.get("authored_branches") or [])
         if row.get("branch"):
             branches.append(row["branch"])
-        ref_numbers = referenced_pr_numbers(row.get("goal", ""), row.get("initial_prompt"))
+        ref_numbers = sorted(set(referenced_pr_numbers(row.get("goal", ""), row.get("initial_prompt")))
+                            | set(archived_pr_numbers(row.get("archive_context"))))
         try:
             facts = build_pr_facts(
                 row.get("repo"), branches, gh_fn,
@@ -319,7 +337,8 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         "repository(owner:$o,name:$n){pullRequests(headRefName:$br,first:20,"
         "states:[OPEN,CLOSED,MERGED]){nodes{"
         "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
-        "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}"
+        "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
+        "files(first:100){nodes{path}}}}}}"
     )
     try:
         # Authenticate as the owner's App installation, not the ambient gh user
@@ -360,7 +379,8 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
         "query($o:String!,$n:String!,$num:Int!){"
         "repository(owner:$o,name:$n){pullRequest(number:$num){"
         "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
-        "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}"
+        "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
+        "files(first:100){nodes{path}}}}}"
     )
     try:
         # Same App-auth fix as _real_gh (issue #913): a stale ambient credential
@@ -400,7 +420,8 @@ def _archived_row_to_dict(row) -> dict:
             "goal": goal, "goal_source": source,
             "initial_prompt": row.initial_prompt,
             "pr_resolution": getattr(row, "pr_resolution", None),
-            "pr_resolution_source": getattr(row, "pr_resolution_source", None)}
+            "pr_resolution_source": getattr(row, "pr_resolution_source", None),
+            "archive_context": getattr(row, "archive_context", None)}
 
 
 async def load_archived_rows(session_factory) -> list[dict]:
