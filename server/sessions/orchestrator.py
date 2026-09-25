@@ -18556,7 +18556,14 @@ class SessionOrchestrator:
                 return {n for n, _ in ccswitch_accounts.all_accounts()
                         if not _ledger.is_account_enabled(led, n)}
 
-        disabled = await asyncio.to_thread(_read_disabled)
+        try:
+            disabled = await asyncio.to_thread(_read_disabled)
+        except OSError as exc:
+            # The ledger lives on the shared accounts mount; a one-off EIO/ESTALE there
+            # (#1945) is not a fault. This sweep re-runs every 30 s and is idempotent, so
+            # the next tick is the recovery — INFO, because WARNING+ files an issue.
+            log.info("disabled_account_sweep: ledger unreadable (%s); retrying next tick", exc)
+            return
         if not disabled:
             return
         enabled_hosts = await self._enabled_host_names()
