@@ -1,7 +1,7 @@
 """``error_signatures.repo`` (#1963).
 
-Revision ID: 0068_error_signature_repo
-Revises: 0067_archive_review_finding
+Revision ID: 0071_error_signature_repo
+Revises: 0070_persona
 
 The repo an ``ErrorSignature``'s ``issue_number`` was filed into (error-triage's
 ``target_repo`` at file time), not the fingerprint's origin. Issue numbers are
@@ -20,8 +20,8 @@ revision is the reviewable record of that change.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0068_error_signature_repo"
-down_revision = "0067_archive_review_finding"
+revision = "0071_error_signature_repo"
+down_revision = "0070_persona"
 branch_labels = None
 depends_on = None
 
