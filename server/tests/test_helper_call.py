@@ -127,8 +127,10 @@ def test_circuit_opens_after_five_consecutive_other_failures():
 def test_half_open_trial_after_cooldown_closes_on_success():
     clock = Clock()
     _, sleep = _sleeps_recorded()
-    fail = _stream_factory(raise_exc=RuntimeError("Rate limit 429"))
-    # One 429 opens the lane immediately.
+    # auth_401 opens its lane immediately like rate_limit does, but (unlike
+    # rate_limit, since #2410) is not an account-wide block, so the lane's own
+    # 60s cooldown is what gates the next call — the thing under test here.
+    fail = _stream_factory(raise_exc=RuntimeError("API Error: 401 invalid authentication"))
     asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/acct1",
                                 _now=clock, _sleep=sleep))
     assert asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/acct1",
@@ -144,7 +146,10 @@ def test_half_open_trial_after_cooldown_closes_on_success():
 def test_lanes_are_isolated_per_account_and_subsystem():
     clock = Clock()
     _, sleep = _sleeps_recorded()
-    fail = _stream_factory(raise_exc=RuntimeError("429 rate limit"))
+    # auth_401, not rate_limit: since #2410 a rate limit bars the whole account
+    # (see the rate-limit block tests below), so it is the wrong failure kind to
+    # demonstrate plain per-(subsystem, account) lane isolation with.
+    fail = _stream_factory(raise_exc=RuntimeError("401 invalid authentication"))
     asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/bad",
                                 _now=clock, _sleep=sleep))
     # A different account's lane is unaffected.
@@ -288,6 +293,132 @@ def test_the_account_block_expires_so_a_restored_account_recovers():
     assert out.skipped is False and out.error is None
 
 
+# --------------------------------------------------------------------------- #
+# Account-wide rate-limit block (#2410).                                       #
+#                                                                              #
+# Live 2026-09-25: an account hit its WEEKLY limit; only the per-(subsystem,   #
+# account) lane opened (60s cooldown), so every call more than 60s after the   #
+# last one re-picked the same exhausted account and failed again — logging a   #
+# fresh WARNING each time until the weekly reset, days away. Other accounts    #
+# with headroom were never tried.                                              #
+# --------------------------------------------------------------------------- #
+
+def _rate_limited_stream(*, counter=None):
+    # "rate_limit" (the classifier's own marker text) plus the CLI's real-world
+    # weekly-limit sentence from #2410's report.
+    return _stream_factory(
+        raise_exc=RuntimeError(
+            "rate_limit | You've hit your weekly limit · resets 2am (America/New_York)"),
+        counter=counter)
+
+
+def test_rate_limit_bars_the_whole_account_so_pickers_fail_over(monkeypatch):
+    import contextlib
+
+    from ccswitch import ledger as _ledger
+
+    @contextlib.contextmanager
+    def _healthy_ledger():
+        yield {}
+    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr(_ledger, "locked_ledger", _healthy_ledger)
+    monkeypatch.setattr(_ledger, "is_account_enabled", lambda led, name: True)
+    monkeypatch.setattr(_ledger, "get_status", lambda led, name: "ok")
+
+    _, sleep = _sleeps_recorded()
+    asyncio.run(run_helper_call(_rate_limited_stream(), subsystem="assess_model",
+                                account_key="/cfg/limited", _sleep=sleep))
+    assert helper_call.is_account_helper_ready("limited") is False
+    assert helper_call.is_account_helper_ready("other") is True
+
+
+def test_rate_limit_two_calls_61s_apart_fail_over_to_a_second_account():
+    """The #2410 repro: a call more than the lane's 60s cooldown after the first
+    failure must NOT re-pick the same rate-limited account — only the (much
+    longer) account-wide block, not the lane, may still be gating it."""
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    counter = {"n": 0}
+    fail = _rate_limited_stream(counter=counter)
+    asyncio.run(run_helper_call(fail, subsystem="assess_model", account_key="/cfg/acct1",
+                                _now=clock, _sleep=sleep))
+    assert counter["n"] == 1
+    clock.advance(61)  # past the lane's 60s cooldown — the OLD bug re-tried here
+    out = asyncio.run(run_helper_call(fail, subsystem="assess_model", account_key="/cfg/acct1",
+                                      _now=clock, _sleep=sleep))
+    assert out.skipped is True and out.skip_reason == "account-blocked"
+    assert counter["n"] == 1   # the stream was never invoked a second time
+
+
+def test_rate_limit_block_falls_back_to_a_bounded_ttl_with_no_cached_reset():
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    # No account named "acct1" is registered anywhere in this test, so
+    # _account_name_for_cfg_dir finds nothing and the block must fall back to
+    # _RATE_LIMIT_BLOCK_S rather than blocking forever or not at all.
+    asyncio.run(run_helper_call(_rate_limited_stream(), subsystem="test",
+                                account_key="/cfg/acct1", _now=clock, _sleep=sleep))
+    clock.advance(helper_call._RATE_LIMIT_BLOCK_S - 1)
+    assert helper_call.is_helper_account_blocked("/cfg/acct1", _now=clock) is True
+    clock.advance(2)
+    assert helper_call.is_helper_account_blocked("/cfg/acct1", _now=clock) is False
+
+
+def test_rate_limit_block_uses_the_ledger_cached_reset_time(monkeypatch):
+    import contextlib
+    from datetime import datetime, timedelta, timezone
+
+    from ccswitch import ledger as _ledger
+    from ccswitch.quota import anthropic_snapshot
+
+    # _reset_deadline_s measures against REAL wall-clock time (the deadline is a
+    # UTC timestamp from the provider, not something the monotonic test clock
+    # can stand in for), so resets_at must be anchored to actual now.
+    now_utc = datetime.now(timezone.utc)
+    resets_at = now_utc + timedelta(hours=3)   # well short of the 1800s TTL fallback
+    snapshot = anthropic_snapshot(0.0, None, 100.0, resets_at, False, fetched_at=now_utc)
+
+    @contextlib.contextmanager
+    def _ledger_cm():
+        yield {}
+    from ccswitch import accounts as _accts
+    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr(_accts, "all_accounts", lambda: [("acct1", "anthropic")])
+    monkeypatch.setattr(_ledger, "locked_ledger", _ledger_cm)
+    monkeypatch.setattr(_ledger, "stale_usage",
+                        lambda led, name, now, max_age: (snapshot, now_utc))
+
+    deadline_s = helper_call._reset_deadline_s("acct1")
+    assert deadline_s is not None and abs(deadline_s - 3 * 3600) < 5
+
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    asyncio.run(run_helper_call(_rate_limited_stream(), subsystem="test",
+                                account_key="/cfg/acct1", _now=clock, _sleep=sleep))
+    clock.advance(deadline_s - 1)
+    assert helper_call.is_helper_account_blocked("/cfg/acct1", _now=clock) is True
+    clock.advance(2)
+    assert helper_call.is_helper_account_blocked("/cfg/acct1", _now=clock) is False
+
+
+def test_rate_limit_logs_one_warning_per_block_not_per_call(caplog):
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    fail = _rate_limited_stream()
+    with caplog.at_level("WARNING", logger=helper_call.log.name):
+        asyncio.run(run_helper_call(fail, subsystem="assess_model", account_key="/cfg/acct1",
+                                    _now=clock, _sleep=sleep))
+        # Further calls within the block are skipped before any stream is made
+        # and must not add another WARNING (#2410: this repeated every ~60s).
+        for _ in range(3):
+            out = asyncio.run(run_helper_call(fail, subsystem="assess_model",
+                                              account_key="/cfg/acct1",
+                                              _now=clock, _sleep=sleep))
+            assert out.skipped is True and out.skip_reason == "account-blocked"
+    rate_limit_warnings = [r for r in caplog.records if "rate-limited" in r.getMessage()]
+    assert len(rate_limit_warnings) == 1
+
+
 def test_a_partial_model_reply_is_never_mistaken_for_an_error_detail():
     # Only error-shaped text feeds the classifier and the log: a normal assistant
     # reply that happens to mention 401 must not be read as an auth failure, and
@@ -360,9 +491,12 @@ def test_no_stateless_helper_runs_in_the_daemon_cwd():
 def test_skip_reason_tells_a_cooled_lane_from_a_barred_account():
     clock = Clock()
     _, sleep = _sleeps_recorded()
-    fail = _stream_factory(raise_exc=RuntimeError("Rate limit 429"))
-    asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/limited",
-                                _now=clock, _sleep=sleep))
+    # Five "other" failures open only the lane (below _FAIL_THRESHOLD's kinds
+    # that open immediately, and not a kind that bars the account).
+    fail = _stream_factory(raise_exc=RuntimeError("boom"))
+    for _ in range(5):
+        asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/limited",
+                                    _now=clock, _sleep=sleep))
     out = asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/limited",
                                       _now=clock, _sleep=sleep))
     assert (out.skipped, out.skip_reason) == (True, "circuit-open")
