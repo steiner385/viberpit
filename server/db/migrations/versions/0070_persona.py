@@ -1,8 +1,8 @@
 """Persona layer in the planning spine (issue #2164): personas + persona_features
 tables, and features.persona_slugs.
 
-Revision ID: 0068_persona
-Revises: 0067_archive_review_finding
+Revision ID: 0070_persona
+Revises: 0069_archive_review_finding_auto_reopen_failed
 
 Nothing runs `alembic upgrade` at deploy time: `create_all` creates the two new
 tables and `_reconcile_columns` ALTER-ADDs the nullable `persona_slugs` column
@@ -11,8 +11,8 @@ on both dialects. This revision is the reviewable record of that change.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0068_persona"
-down_revision = "0067_archive_review_finding"
+revision = "0070_persona"
+down_revision = "0069_archive_review_finding_auto_reopen_failed"
 branch_labels = None
 depends_on = None
 
