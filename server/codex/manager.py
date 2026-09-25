@@ -164,6 +164,13 @@ DEFAULT_MAX_RESTARTS: Final = 3
 DEFAULT_BACKOFF_BASE_S: Final = 0.5
 DEFAULT_BACKOFF_MAX_S: Final = 30.0
 DEFAULT_HEALTHY_UPTIME_S: Final = 60.0
+#: Minimum wait before ANY respawn into the same ``CODEX_HOME``. The exponential
+#: ladder alone starts at ~0.25-0.75s, and #2484 caught replacements spawned that
+#: fast dying clean in 0.6-1.7s without writing a single line of codex-cli's own
+#: trace log -- a startup race against the just-exited process's SQLite/WAL state
+#: in the reused home. Each such death also burned one of ``max_restarts``, so a
+#: burst came one fast failure short of giving the account up entirely.
+DEFAULT_RESPAWN_FLOOR_S: Final = 5.0
 DEFAULT_STOP_TIMEOUT_S: Final = 5.0
 #: Bound on the login handshake so a wedged authority cannot hold the account lock.
 DEFAULT_LOGIN_TIMEOUT_S: Final = 30.0
@@ -323,6 +330,7 @@ class CodexRunnerManager:
         backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
         backoff_max_s: float = DEFAULT_BACKOFF_MAX_S,
         healthy_uptime_s: float = DEFAULT_HEALTHY_UPTIME_S,
+        respawn_floor_s: float = DEFAULT_RESPAWN_FLOOR_S,
         stop_timeout_s: float = DEFAULT_STOP_TIMEOUT_S,
         login_timeout_s: float = DEFAULT_LOGIN_TIMEOUT_S,
         exit_grace_s: float = DEFAULT_EXIT_GRACE_S,
@@ -344,6 +352,7 @@ class CodexRunnerManager:
         self._backoff_base_s = max(0.0, backoff_base_s)
         self._backoff_max_s = max(0.0, backoff_max_s)
         self._healthy_uptime_s = healthy_uptime_s
+        self._respawn_floor_s = max(0.0, respawn_floor_s)
         self._stop_timeout_s = stop_timeout_s
         self._exit_grace_s = max(0.0, exit_grace_s)
         self._login_timeout_s = login_timeout_s
@@ -1209,11 +1218,17 @@ class CodexRunnerManager:
             return True
 
     def _backoff_delay(self, attempt: int) -> float:
-        """Exponential backoff with jitter, clamped to ``backoff_max_s``."""
+        """Exponential backoff with jitter, clamped to ``backoff_max_s``.
+
+        Never below ``respawn_floor_s``: every attempt respawns into the same
+        ``CODEX_HOME``, so the floor bounds how hard a replacement can race the
+        previous generation's on-disk state (#2484).
+        """
         raw = self._backoff_base_s * (2 ** max(0, attempt - 1))
         raw = min(raw, self._backoff_max_s) if self._backoff_max_s else raw
         jittered = raw * (0.5 + self._jitter())
-        return min(jittered, self._backoff_max_s) if self._backoff_max_s else jittered
+        delay = min(jittered, self._backoff_max_s) if self._backoff_max_s else jittered
+        return max(delay, self._respawn_floor_s)
 
     async def _give_up(self, runner: _Runner, detail: str) -> None:
         """Stop trying. Codex for this account is off until something calls ensure."""

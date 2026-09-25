@@ -107,6 +107,7 @@ def _manager(**kw):
     kw.setdefault("idle_grace_s", 60.0)
     kw.setdefault("backoff_base_s", 0.0)
     kw.setdefault("backoff_max_s", 0.0)
+    kw.setdefault("respawn_floor_s", 0.0)
     kw.setdefault("exit_grace_s", 0.05)
     manager = mgr_mod.CodexRunnerManager(process_factory=factory, **kw)
     return manager, spawned
@@ -736,6 +737,43 @@ def test_backoff_is_capped():
         await manager.stop_all()
 
     asyncio.run(go())
+
+
+def test_every_respawn_waits_at_least_the_floor():
+    """#2484: the ladder's first rungs (~0.25-1s) respawned into the same
+    CODEX_HOME fast enough that replacements died clean before codex-cli logged
+    a line. The floor holds early rungs up without flattening later ones."""
+
+    async def go():
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        manager, spawned = _manager(
+            max_restarts=5, backoff_base_s=0.5, backoff_max_s=30.0,
+            respawn_floor_s=5.0, jitter=lambda: 0.5, sleep=sleep,
+        )
+        await manager.ensure("a")
+        for _ in range(5):
+            spawned[-1].crash()
+            await manager.wait_settled("a", timeout=2.0)
+        assert slept == [5.0, 5.0, 5.0, 5.0, 8.0]
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_respawn_floor_defaults_on():
+    manager, _ = _manager()
+    default = mgr_mod.CodexRunnerManager(
+        availability=_availability(),
+        codex_home_base=Path("/tmp/viberpit-codex-test"),
+        credential_supplier=_credentials,
+    )
+    assert mgr_mod.DEFAULT_RESPAWN_FLOOR_S >= 5.0
+    assert default._backoff_delay(1) >= mgr_mod.DEFAULT_RESPAWN_FLOOR_S
+    assert manager._backoff_delay(1) == 0.0
 
 
 def test_a_long_healthy_run_resets_the_restart_budget():
