@@ -150,3 +150,39 @@ async def test_a_spent_recompose_budget_pauses_at_warning(watchdog_logs, monkeyp
     assert [r.getMessage() for r in warnings] == [
         f"stall watchdog: recompose cap reached, pausing session={SID}"]
     assert getattr(warnings[0], "session_id", None) == SID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [OSError(5, "Input/output error"), FileNotFoundError(2, "gone")])
+async def test_a_transient_ledger_read_error_in_the_disabled_sweep_is_not_an_error(
+        watchdog_logs, monkeypatch, exc):
+    """#1945: a one-off EIO on the shared ~/.claude-accounts mount escaped the sweep and
+    the stall loop's catch-all filed it via ``log.exception``. The sweep re-runs every
+    30 s and is idempotent, so the next tick is the recovery — INFO, not an issue."""
+    from ccswitch import ledger
+
+    def _boom():
+        raise exc
+
+    monkeypatch.setattr(ledger, "locked_ledger", _boom)
+    o = _orch(_Driver())
+
+    await o._check_disabled_account_sessions()
+
+    assert [r.message for r in watchdog_logs.records if r.levelno >= logging.WARNING] == []
+    assert any("disabled_account_sweep" in r.getMessage() and r.levelno == logging.INFO
+               for r in watchdog_logs.records)
+
+
+@pytest.mark.asyncio
+async def test_a_non_io_ledger_error_still_propagates(monkeypatch):
+    from ccswitch import ledger
+
+    def _boom():
+        raise ValueError("ledger.json is not JSON")
+
+    monkeypatch.setattr(ledger, "locked_ledger", _boom)
+    o = _orch(_Driver())
+
+    with pytest.raises(ValueError):
+        await o._check_disabled_account_sessions()
