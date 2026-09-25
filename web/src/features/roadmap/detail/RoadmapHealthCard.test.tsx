@@ -171,4 +171,27 @@ describe('RoadmapHealthCard', () => {
     expect(screen.getByRole('link', { name: 'old-init' }))
       .toHaveAttribute('href', '/initiatives/old-init')
   })
+
+  it('lists unlinked personas, linking each back to its capability (#2164)', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [],
+        governance: null,
+        danglingEvidence: [],
+        untestedCapabilities: [],
+        codeWithoutSpecs: [],
+        stateBehindSpec: [],
+        unlinkedPersonas: [{ capability: 'chores', persona: 'ghost' }],
+        generatedAt: 'x',
+      },
+    })
+    mount()
+    expect(screen.getByText(/1 capability cites an unindexed persona/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ghost' }))
+      .toHaveAttribute('href', '/roadmap/kindash/capabilities/chores')
+  })
 })
