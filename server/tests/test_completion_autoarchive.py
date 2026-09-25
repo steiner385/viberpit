@@ -92,9 +92,12 @@ def _merged_pr():
 
 
 async def _drain():
-    # Let the scheduled _auto_archive_completed task run to completion.
-    for _ in range(4):
-        await asyncio.sleep(0)
+    # Let the scheduled _auto_archive_completed task run to completion. Wait on the
+    # tasks rather than counting loop ticks: the transcript read is a real
+    # asyncio.to_thread hop (#2356), which no fixed number of sleep(0)s covers.
+    others = {t for t in asyncio.all_tasks() if t is not asyncio.current_task()}
+    if others:
+        await asyncio.wait(others, timeout=5)
 
 
 def test_human_complete_with_armed_pr_is_archived():

@@ -152,3 +152,53 @@ def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
                 root.removeHandler(h)
         root.handlers[:] = saved
         root.setLevel(saved_level)
+
+
+def test_file_sink_writes_on_a_listener_thread_not_the_caller(monkeypatch, tmp_path):
+    """#2356: RotatingFileHandler.emit stats the file (shouldRollover) and writes on
+    the caller's thread, so a log.* on the event loop stalled it whenever the log dir's
+    filesystem was slow. The caller must only format and enqueue; the file handler runs
+    on the listener thread. Context ids and tracebacks must still reach the JSON line."""
+    import threading
+
+    import server.obs.jsonlog as jl
+    from server.obs import errsink
+    monkeypatch.setattr(jl, "_configured", False)
+    monkeypatch.setenv("VIBERPIT_LOG_DIR", str(tmp_path))
+    root = logging.getLogger()
+    saved, saved_level = root.handlers[:], root.level
+    emit_threads: list[str] = []
+    real_emit = logging.handlers.RotatingFileHandler.emit
+
+    def _spy(self, record):
+        emit_threads.append(threading.current_thread().name)
+        return real_emit(self, record)
+
+    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", _spy)
+    try:
+        jl.configure_logging()
+        added = [h for h in root.handlers if h not in saved]
+        queued = [h for h in added if isinstance(h, jl._QueuedFileHandler)]
+        assert len(queued) == 1
+        with bind_session("sess-2356"):
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                logging.getLogger("t2356").error("file sink check", exc_info=True)
+        for h in added:
+            h.close()           # stops the listener, draining the queue
+            root.removeHandler(h)
+        assert emit_threads and threading.main_thread().name not in emit_threads
+        lines = [json.loads(ln) for ln in
+                 (tmp_path / "viberpit-edge.jsonl").read_text().splitlines()]
+        rec = next(r for r in lines if r["msg"] == "file sink check")
+        assert rec["session_id"] == "sess-2356"
+        assert "ValueError: boom" in rec["exc"]
+    finally:
+        errsink.reset_for_tests()
+        for h in root.handlers[:]:
+            if h not in saved:
+                h.close()
+                root.removeHandler(h)
+        root.handlers[:] = saved
+        root.setLevel(saved_level)

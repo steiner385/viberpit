@@ -101,6 +101,40 @@ class JSONFormatter(logging.Formatter):
         return redact_text(line)
 
 
+class _QueuedFileHandler(logging.handlers.QueueHandler):
+    """Hand records to a ``QueueListener`` thread that owns the rotating file (#2356).
+
+    ``RotatingFileHandler.emit`` stats the file (``shouldRollover`` → ``os.path.exists``)
+    and writes it on the CALLER's thread, so any ``log.*`` on the event loop blocked the
+    loop for as long as the log dir's filesystem was slow — two of the #1913 stall dumps
+    were exactly that frame. Here the caller only formats (JSON + redaction, pure CPU)
+    and enqueues; every filesystem call happens on the listener thread.
+
+    Formatting stays on the caller's side on purpose: ``prepare()`` drops ``exc_info``,
+    so the traceback must be rendered into the JSON ``exc`` field before the hand-off.
+    The file handler behind the queue therefore writes the pre-rendered line verbatim.
+    ``close()`` stops the listener (draining the queue) and closes the file, so a caller
+    that just closes handlers it added — tests, atexit — leaves no thread behind.
+    """
+
+    def __init__(self, target: logging.Handler) -> None:
+        import queue
+        q: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+        super().__init__(q)
+        self.target = target
+        target.setFormatter(logging.Formatter("%(message)s"))
+        listener = logging.handlers.QueueListener(q, target)
+        listener.start()
+        self._listener: logging.handlers.QueueListener | None = listener
+
+    def close(self) -> None:
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.stop()
+            self.target.close()
+        super().close()
+
+
 _configured = False
 # Which process this is ("edge" | "daemon"); set by configure_logging(). The error
 # sink (errsink.py) tags every captured signature with it.
@@ -149,16 +183,22 @@ def configure_logging(*, process: str = "edge") -> None:
     if log_dir:
         try:
             Path(log_dir).mkdir(parents=True, exist_ok=True)
-            file_handler = logging.handlers.RotatingFileHandler(
+            rotating = logging.handlers.RotatingFileHandler(
                 # Unique per (host, process) — see log_file_name's docstring.
                 Path(log_dir) / log_file_name(PROCESS),
                 maxBytes=_MAX_BYTES,
                 backupCount=_BACKUP_COUNT,
                 encoding="utf-8",
             )
+            # The file I/O runs on a listener thread, never the event loop (#2356).
+            # The context filter and formatter sit on the queue side: contextvars
+            # are only readable on the thread that logged.
+            file_handler = _QueuedFileHandler(rotating)
             file_handler.setFormatter(fmt)
             file_handler.addFilter(ctx)
             root.addHandler(file_handler)
+            import atexit
+            atexit.register(file_handler.close)
         except OSError as exc:
             root.warning("jsonlog: log dir %s unwritable (%s); stdout-only", log_dir, exc)
 

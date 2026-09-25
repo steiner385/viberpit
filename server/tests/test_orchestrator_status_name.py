@@ -259,6 +259,104 @@ def test_persist_status_parked_prose_ask_is_narrowed_by_the_classifier(
     assert seen and "your call" in seen[0], "the classifier must judge the prose itself"
 
 
+def test_persist_status_parked_judge_timeout_falls_back_to_the_floor(tmp_path, monkeypatch):
+    """A judge that outlives its budget must not hold the pump (#2396): the floor
+    already said True, so the timeout writes handed_back, the same as a helper outage,
+    and the orphaned judge is cancelled rather than left running a Haiku query."""
+    import server.sessions.open_question as oq_mod
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_PARKED_JUDGE_TIMEOUT_S", 0.05)
+    judge_cancelled = asyncio.Event()
+
+    async def _slow(text, **kw):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            judge_cancelled.set()
+            raise
+        return False
+
+    monkeypatch.setattr(oq_mod, "completion_awaits_user", _slow)
+
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
+        await asyncio.wait_for(orch._persist_status("s1", "done"), timeout=5)
+        await asyncio.wait_for(judge_cancelled.wait(), timeout=1)
+        return orch.record("s1").status
+
+    assert asyncio.run(run()) == "handed_back"
+
+
+def test_cancelled_pump_unwinds_without_waiting_on_the_parked_judge(tmp_path, monkeypatch):
+    """#2396: driver.close() cancels the pump mid-judge. The SDK teardown of a
+    cancelled Haiku query can take ~10 s, longer than the 5 s cancel grace, so the
+    pump must not wait for the judge to unwind. Here the judge ignores its first
+    cancel for far longer than the test allows; the pump must still finish at once."""
+    import server.sessions.open_question as oq_mod
+    judge_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _wedged(text, **kw):
+        judge_started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await release.wait()   # a slow SDK transport.close()
+            raise
+        return False
+
+    monkeypatch.setattr(oq_mod, "completion_awaits_user", _wedged)
+
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
+        pump = asyncio.create_task(orch._persist_status("s1", "done"))
+        await asyncio.wait_for(judge_started.wait(), timeout=5)
+        pump.cancel()
+        done, _ = await asyncio.wait({pump}, timeout=1)
+        release.set()
+        return bool(done) and pump.cancelled()
+
+    assert asyncio.run(run()) is True
+
+
+def test_parked_judge_is_skipped_below_the_floor(tmp_path, monkeypatch):
+    """No floor hit, no task: a clean parked completion never spawns a judge."""
+    seen: list[str] = []
+    _stub_classifier(monkeypatch, True, seen)
+
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        return await orch._parked_prose_awaits_user("s1", "All done, PR is merged.")
+
+    assert asyncio.run(run()) is False
+    assert seen == []
+
+
+def test_last_assistant_prose_reads_the_transcript_off_the_loop(tmp_path):
+    """#2356: the path lookup and the whole-file read both stat the account store;
+    on a slow mount either one stalled the event loop, so both run in a worker thread."""
+    import threading
+    threads: list[str] = []
+
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        loop_thread = threading.current_thread().name
+
+        def _path(sid):
+            threads.append(threading.current_thread().name)
+            return str(_parked_asking_transcript(tmp_path))
+
+        orch.transcript_path = _path
+        text = await orch._last_assistant_prose("s1")
+        return loop_thread, text
+
+    loop_thread, text = asyncio.run(run())
+    assert "Inline Execution" in text
+    assert threads and threads[0] != loop_thread
+
+
 def _killed_only_transcript(tmp_path):
     """A transcript whose only background poller was killed by a deploy → NOT parked
     (killed tasks are dead, re-armed under a new id), so is_parked() is False."""
