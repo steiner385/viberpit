@@ -311,6 +311,39 @@ class CloneDoctorTests(unittest.TestCase):
         self.assertTrue(outside.exists())
 
 
+class LegacyNamespaceTests(unittest.TestCase):
+    """#1373: a repo root that already had the legacy dot-dir keeps its tree there,
+    and the doctor must still see it after the brand dot-dir appears beside it."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.root = self.base / "GitHub"
+        (self.root / ".ccswitch").mkdir(parents=True)
+        self.remote = self.base / "remote.git"
+        _make_remote(self.remote)
+        self.clone = Path(gitrepos.ensure_clone(str(self.root), "cairnea/KinDash", str(self.remote)))
+        info = worktrees.create_worktree(str(self.clone), None, "2a158cb3", str(self.root))
+        self.wt = Path(info.path)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_legacy_tree_is_created_and_scanned_in_place(self) -> None:
+        self.assertEqual(self.clone, self.root / ".ccswitch" / "clones" / "cairnea" / "KinDash")
+        self.assertTrue(str(self.wt).startswith(str(self.root / ".ccswitch" / "worktrees")))
+        (self.root / ".viberpit").mkdir()  # the brand dot-dir appears out-of-band
+        links = clone_doctor.scan_worktree_links(str(self.root))
+        self.assertEqual([link.path for link in links], [str(self.wt)])
+        self.assertEqual(
+            clone_doctor.name_with_owner_for(str(self.root), self.clone), "cairnea/KinDash")
+        self.assertEqual(
+            clone_doctor.referencing_worktrees(str(self.root), self.clone), [str(self.wt)])
+        with self.assertRaises(clone_doctor.CloneInUseError):
+            clone_doctor.remove_clone(str(self.root), self.clone, reason="test")
+        self.assertTrue(self.clone.is_dir())
+
+
 def _rmtree(path: Path) -> None:
     """Delete a clone the way the incident did — straight rmtree, no guard."""
     import shutil

@@ -69,6 +69,18 @@ class TestSweepSkips:
         counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["scanned"] == 0
 
+    def test_scans_both_namespace_spellings(self, tmp_path):
+        """#1373: a root holding both dot-dirs (the brand one created out-of-band)
+        must not hide the legacy tree's worktrees from the janitor."""
+        legacy = _make_wt(tmp_path, "old1", OLD, NOW)
+        fresh = tmp_path / ".viberpit" / "worktrees" / "KinDash" / "new1"
+        fresh.mkdir(parents=True)
+        _age(fresh, OLD, NOW)
+        live = frozenset([str(legacy.resolve()), str(fresh.resolve())])
+        counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW)
+        assert counts["scanned"] == 2
+        assert counts["kept_live"] == 2
+
     def test_empty_worktrees_dir(self, tmp_path):
         (tmp_path / ".ccswitch" / "worktrees").mkdir(parents=True)
         counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)

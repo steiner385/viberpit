@@ -40,3 +40,10 @@ export function mcpToolStem(fullToolName: string): string | undefined {
   }
   return undefined
 }
+
+/**
+ * Per-repo namespace dot-dirs a session cwd can sit under (clones, worktrees,
+ * scratch). Emitted spelling first; the legacy one is matched permanently, since
+ * a repo root that already had it keeps using it. Mirrors `brand.REPO_NAMESPACES`.
+ */
+export const REPO_NAMESPACES = ['.viberpit', '.ccswitch'] as const

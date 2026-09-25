@@ -46,14 +46,14 @@ class CloneTests(unittest.TestCase):
     def test_clone_path_layout(self) -> None:
         p = gitrepos.clone_path(str(self.root), "cairnea/KinDash")
         self.assertEqual(
-            p, self.root / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+            p, self.root / ".viberpit" / "clones" / "cairnea" / "KinDash"
         )
 
     def test_clone_path_reuses_an_existing_case_variant(self) -> None:
         # GitHub names are case-insensitive, so a lowercase name_with_owner must
         # resolve onto the clone the host's worktrees already point at rather
         # than creating a second, unreferenced clone of the same repo (#1003).
-        existing = self.root / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+        existing = self.root / ".viberpit" / "clones" / "cairnea" / "KinDash"
         existing.mkdir(parents=True)
         self.assertEqual(gitrepos.clone_path(str(self.root), "cairnea/kindash"), existing)
         self.assertEqual(gitrepos.clone_path(str(self.root), "CAIRNEA/KinDash"), existing)
@@ -61,7 +61,7 @@ class CloneTests(unittest.TestCase):
     def test_clone_path_uses_given_case_when_nothing_on_disk(self) -> None:
         self.assertEqual(
             gitrepos.clone_path(str(self.root), "cairnea/kindash"),
-            self.root / ".ccswitch" / "clones" / "cairnea" / "kindash",
+            self.root / ".viberpit" / "clones" / "cairnea" / "kindash",
         )
 
     def test_is_clone_path_matches_only_the_clones_subtree(self) -> None:
@@ -90,7 +90,7 @@ class CloneTests(unittest.TestCase):
 
     def test_ensure_clone_creates_detached_clone(self) -> None:
         dest = gitrepos.ensure_clone(str(self.root), "acme/widget", self.url)
-        expected = self.root / ".ccswitch" / "clones" / "acme" / "widget"
+        expected = self.root / ".viberpit" / "clones" / "acme" / "widget"
         self.assertEqual(Path(dest), expected)
         self.assertTrue((expected / ".git").exists())
         # HEAD is detached — symbolic-ref fails on a detached head.

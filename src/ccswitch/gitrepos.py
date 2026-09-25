@@ -2,10 +2,11 @@
 
 ViberPit must NEVER touch the user's real ``~/GitHub`` checkouts.  All git
 activity it performs — clones AND worktrees — lives under
-``<repo_root>/.ccswitch/``:
+``<repo_root>/<namespace>/`` (:func:`paths.repo_namespace` — the brand dot-dir,
+or the legacy one on a root that only has that, #1373):
 
-  * clones:    ``<repo_root>/.ccswitch/clones/<owner>/<name>``
-  * worktrees: ``<repo_root>/.ccswitch/worktrees/<name>/<session>`` (see
+  * clones:    ``<repo_root>/<namespace>/clones/<owner>/<name>``
+  * worktrees: ``<repo_root>/<namespace>/worktrees/<name>/<session>`` (see
     :mod:`worktrees`)
 
 The "New session" repo picker lists the GitHub repos the user's ``gh``
@@ -41,7 +42,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import gh_credential
+from . import brand, gh_credential, paths
 
 log = logging.getLogger(__name__)
 
@@ -304,13 +305,19 @@ def clear_stale_credentials(name_with_owner: str) -> bool:
 
 
 def clones_base(repo_root: str) -> Path:
-    """ViberPit-owned root for all clones, under the user's repo root."""
-    return Path(repo_root).expanduser() / ".ccswitch" / "clones"
+    """ViberPit-owned root NEW clones are created under, below the user's repo root."""
+    return paths.repo_namespace_dir(repo_root) / "clones"
 
 
-# The two trailing segments of ``clones_base`` (the managed dot-dir, then
-# ``clones``), derived from it so the pair can never drift from the real layout.
-_CLONES_SEGMENTS: tuple[str, ...] = clones_base("/").relative_to("/").parts
+def clones_bases(repo_root: str) -> tuple[Path, ...]:
+    """Every clones root a reader must consider — both namespace spellings (#1373)."""
+    return tuple(ns / "clones" for ns in paths.repo_namespace_dirs(repo_root))
+
+
+# The two trailing segments of a clones base (a managed dot-dir, then ``clones``),
+# one pair per namespace spelling.
+_CLONES_SEGMENTS: tuple[tuple[str, ...], ...] = tuple(
+    (ns, "clones") for ns in brand.REPO_NAMESPACES)
 
 
 def is_clone_path(path: str) -> bool:
@@ -328,8 +335,11 @@ def is_clone_path(path: str) -> bool:
     2026-09-08 KinDash incident: one purged queued row took 77 worktrees with it).
     """
     parts = Path(path).parts
-    n = len(_CLONES_SEGMENTS)
-    return any(parts[i:i + n] == _CLONES_SEGMENTS for i in range(len(parts) - n + 1))
+    return any(
+        parts[i:i + len(segs)] == segs
+        for segs in _CLONES_SEGMENTS
+        for i in range(len(parts) - len(segs) + 1)
+    )
 
 
 # GitHub owner/repo names are [A-Za-z0-9._-]; anything else in a clone path
@@ -373,6 +383,11 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
     already reference instead of creating a second, unreferenced clone of the
     same repo (#1003). With nothing on disk the given case is used verbatim.
 
+    An existing clone under EITHER namespace spelling is reused (resolved one
+    first); only a repo with no clone anywhere gets a new path, under
+    :func:`clones_base` — so a repo root that gains the brand dot-dir never
+    re-clones a repo its live worktrees already point into (#1373).
+
     Raises:
         ValueError: if ``name_with_owner`` is not ``<owner>/<name>`` or either
             component is not a legal GitHub name.
@@ -384,9 +399,14 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
         if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
             raise ValueError(
                 f"illegal clone path component {part!r} in {name_with_owner!r}")
+    for base in clones_bases(repo_root):
+        owner_dir = _existing_case_variant(base, owner)
+        existing = owner_dir and _existing_case_variant(owner_dir, name)
+        if existing:
+            return existing
     base = clones_base(repo_root)
     owner_dir = _existing_case_variant(base, owner) or base / owner
-    return _existing_case_variant(owner_dir, name) or owner_dir / name
+    return owner_dir / name
 
 
 # ---------------------------------------------------------------------------

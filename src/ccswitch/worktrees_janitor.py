@@ -53,7 +53,7 @@ from ccswitch.clone_doctor import (
     clone_is_repairable,
     read_gitdir_pointer,
 )
-from ccswitch.worktrees import remove_worktree, worktrees_base
+from ccswitch.worktrees import remove_worktree, worktrees_bases
 
 from . import brand
 
@@ -76,15 +76,15 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _candidate_worktree_dirs(repo_root: str) -> Iterator[Path]:
-    """Yield every ``<worktrees_base>/<repo>/<short-id>/`` dir."""
-    base = worktrees_base(repo_root)
-    if not base.is_dir():
-        return
-    for repo_dir in base.iterdir():
-        if repo_dir.is_dir():
-            for wt_dir in repo_dir.iterdir():
-                if wt_dir.is_dir():
-                    yield wt_dir
+    """Yield every ``<worktrees_base>/<repo>/<short-id>/`` dir, both namespace spellings."""
+    for base in worktrees_bases(repo_root):
+        if not base.is_dir():
+            continue
+        for repo_dir in base.iterdir():
+            if repo_dir.is_dir():
+                for wt_dir in repo_dir.iterdir():
+                    if wt_dir.is_dir():
+                        yield wt_dir
 
 
 def _orphaned_clone(wt: str) -> str | None:

@@ -830,7 +830,7 @@ class SessionOrchestrator:
         # the orchestrator anchored to the repo root), but is no longer stored
         # as an instance attribute since sessions now always resolve their own cwd.
         _ = work_dir
-        # Root under which per-session worktrees are created (<root>/.ccswitch/...).
+        # Root under which per-session worktrees are created (<root>/<namespace>/...).
         # Defaults to the configured repo_root so worktrees sit next to the repos.
         if repo_root is None:
             try:
@@ -3327,7 +3327,7 @@ class SessionOrchestrator:
                 # pass repo so their ownership reservation precedes this clone.
                 # The user's real ~/GitHub checkouts
                 # are never touched — all clone + worktree activity lives under
-                # <repo_root>/.ccswitch/.
+                # <repo_root>/<namespace>/ (paths.repo_namespace).
                 url = f"https://github.com/{repo}.git"
                 cwd = await asyncio.to_thread(
                     gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
@@ -5212,17 +5212,13 @@ class SessionOrchestrator:
                 log.exception("session.worktree_cleanup_failed id=%s path=%s",
                               session_id, wt_path)
 
-        if record and record.cwd:
-            scratch_base_resolved = worktrees.scratch_base(self._repo_root).resolve()
+        if record and record.cwd and worktrees.is_scratch_path(record.cwd, self._repo_root):
             try:
                 cwd_resolved = Path(record.cwd).resolve()
-                cwd_resolved.relative_to(scratch_base_resolved)
                 removed = await asyncio.to_thread(
                     worktrees.remove_scratch_dir, str(cwd_resolved))
                 if removed:
                     log.info("session.scratch_cleanup id=%s path=%s", session_id, cwd_resolved)
-            except ValueError:
-                pass
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
 
@@ -21160,7 +21156,8 @@ class SessionOrchestrator:
         (e.g. a stale sshfs handle that recovers on remount — #825).
 
         Containment guard: sessions only ever run in ViberPit-created worktrees or
-        scratch dirs (both under a ``.ccswitch`` segment — see the create-session
+        scratch dirs (both under a repo-namespace segment, either spelling —
+        ``brand.in_repo_namespace``; see the create-session
         isolation guarantee), so anything else is a misconfigured row and is left
         in place rather than risk deleting a user's real directory. Guarded by
         path segment, not the current worktrees base, so a repo_root move can't
@@ -21178,7 +21175,7 @@ class SessionOrchestrator:
         shared by every thread that identity ever opens, so it is deliberately left in
         place — logged at INFO, since a WARNING auto-files an issue per purge (#2029).
         """
-        if ".ccswitch" not in cwd_path.parts:
+        if not brand.in_repo_namespace(cwd_path.parts):
             if is_assistant_kind(kind):
                 log.info(
                     "session.permanent_delete id=%s cwd=%s is the shared assistant "

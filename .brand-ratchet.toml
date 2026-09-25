@@ -37,7 +37,8 @@ exclude = [
 id = "brand-module"
 paths = ["src/ccswitch/brand.py", "web/src/brand.ts"]
 permanent = "The LEGACY_* constants are the one place the old spelling may be defined (design §1)."
-ceiling = 4
+# 5th: web/src/brand.ts REPO_NAMESPACES, the web mirror of brand.REPO_NAMESPACES (#1373).
+ceiling = 5
 
 [[allow]]
 id = "wire-dual-accept"
@@ -122,13 +123,13 @@ id = "branch-prefix"
 # #1373 / #1592 / #1374; re-pointed at the epic, since #1369 is closed.
 pattern = '\bccswitch/'
 issue = 1365
-ceiling = 204
+ceiling = 190
 
 [[allow]]
 id = "repo-namespace"
 pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
 issue = 1373
-ceiling = 43
+ceiling = 36
 
 [[allow]]
 # #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b
@@ -180,7 +181,7 @@ issue = 1374
 # tests/test_cli.py::TestLintCommands test needs its own `from ccswitch import
 # cli` like every other test class in that file — the package name is not
 # renameable (this category's own reason for existing).
-ceiling = 1289
+ceiling = 1288
 
 [[allow]]
 id = "constitution"

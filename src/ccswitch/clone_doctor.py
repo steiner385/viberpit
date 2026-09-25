@@ -1,10 +1,10 @@
 """Shared-clone safety: a load-bearing clone must never be deleted, and a
 deleted one must be recoverable (issue #1003).
 
-Every session worktree under ``<repo_root>/.ccswitch/worktrees/<repo>/<id>``
+Every session worktree under ``<repo_root>/<namespace>/worktrees/<repo>/<id>``
 holds only a ``.git`` *pointer file*::
 
-    gitdir: <repo_root>/.ccswitch/clones/<owner>/<name>/.git/worktrees/<id>
+    gitdir: <repo_root>/<namespace>/clones/<owner>/<name>/.git/worktrees/<id>
 
 so the shared clone is load-bearing for every session on the host.  On
 2026-09-03 ``clones/cairnea/KinDash`` disappeared on two fleet hosts in the same
@@ -48,8 +48,8 @@ from pathlib import Path
 from typing import Callable
 
 from ccswitch import brand
-from ccswitch.gitrepos import clones_base
-from ccswitch.worktrees import lock_worktree, worktrees_base
+from ccswitch.gitrepos import clones_base, clones_bases
+from ccswitch.worktrees import lock_worktree, worktrees_bases
 
 log = logging.getLogger(__name__)
 
@@ -120,11 +120,11 @@ def scan_worktree_links(repo_root: str) -> list[WorktreeLink]:
     Dirs with no usable ``.git`` pointer are skipped — they are not linked
     worktrees, so there is nothing to diagnose or repair about them.
     """
-    base = worktrees_base(repo_root)
     links: list[WorktreeLink] = []
-    if not base.is_dir():
-        return links
-    for repo_dir in sorted(base.iterdir()):
+    repo_dirs = sorted(
+        repo_dir for base in worktrees_bases(repo_root) if base.is_dir()
+        for repo_dir in base.iterdir())
+    for repo_dir in repo_dirs:
         if not repo_dir.is_dir():
             continue
         for wt_dir in sorted(repo_dir.iterdir()):
@@ -199,14 +199,16 @@ class CloneReport:
 
 
 def name_with_owner_for(repo_root: str, clone_dir: str | os.PathLike[str]) -> str | None:
-    """``<owner>/<name>`` for a clone under the ccswitch clones base, else None."""
-    try:
-        rel = Path(clone_dir).relative_to(clones_base(repo_root))
-    except ValueError:
-        return None
-    if len(rel.parts) != 2:
-        return None
-    return f"{rel.parts[0]}/{rel.parts[1]}"
+    """``<owner>/<name>`` for a clone under either namespace's clones base, else None."""
+    for base in clones_bases(repo_root):
+        try:
+            rel = Path(clone_dir).relative_to(base)
+        except ValueError:
+            continue
+        if len(rel.parts) != 2:
+            return None
+        return f"{rel.parts[0]}/{rel.parts[1]}"
+    return None
 
 
 def clone_is_repairable(repo_root: str, clone_dir: str | os.PathLike[str]) -> bool:
@@ -479,7 +481,8 @@ def remove_clone(
     referencing-worktree count, so a deletion is never invisible again.
 
     Refuses outright — never forceable — for a path outside
-    ``<repo_root>/.ccswitch/clones``: ViberPit must never delete a user checkout.
+    ``<repo_root>/<namespace>/clones`` (either spelling): ViberPit must never
+    delete a user checkout.
     """
     path = Path(clone_dir).expanduser()
     resolved = str(path)

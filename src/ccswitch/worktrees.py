@@ -9,8 +9,9 @@ checked out to that branch, instead of mutating the user's real checkout with a
   * Two sessions on the same repo can be on different branches at once — each has
     a separate working tree, so there is no collision.
 
-Worktrees live under ``<repo_root>/.ccswitch/worktrees/<repo>/<short-session>``
-(a ViberPit-owned namespace next to the user's repos), and share the original
+Worktrees live under ``<repo_root>/<namespace>/worktrees/<repo>/<short-session>``
+(a ViberPit-owned namespace next to the user's repos — ``paths.repo_namespace``:
+the brand dot-dir, or the legacy one on a root that only has that), and share the original
 repo's object store (cheap — no full clone).
 
 If the selected branch is already checked out somewhere (commonly the user's real
@@ -263,8 +264,25 @@ def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
 
 
 def worktrees_base(repo_root: str) -> Path:
-    """ViberPit-owned root for all session worktrees, under the user's repo root."""
-    return Path(repo_root).expanduser() / ".ccswitch" / "worktrees"
+    """ViberPit-owned root NEW session worktrees are created under (see
+    ``paths.repo_namespace`` for which dot-dir that is)."""
+    return paths.repo_namespace_dir(repo_root) / "worktrees"
+
+
+def worktrees_bases(repo_root: str) -> tuple[Path, ...]:
+    """Every worktrees root a reader must scan — both namespace spellings (#1373)."""
+    return tuple(ns / "worktrees" for ns in paths.repo_namespace_dirs(repo_root))
+
+
+def _is_under_any(path: str, bases: tuple[Path, ...]) -> bool:
+    resolved = Path(path).resolve()
+    for base in bases:
+        try:
+            resolved.relative_to(base.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def is_managed_path(path: str, repo_root: str) -> bool:
@@ -273,11 +291,7 @@ def is_managed_path(path: str, repo_root: str) -> bool:
     Used at cleanup time to recognise ViberPit-created worktrees even across a
     server restart (no DB column needed — the location is the marker).
     """
-    try:
-        Path(path).resolve().relative_to(worktrees_base(repo_root).resolve())
-        return True
-    except ValueError:
-        return False
+    return _is_under_any(path, worktrees_bases(repo_root))
 
 
 def scratch_base(repo_root: str) -> Path:
@@ -288,6 +302,12 @@ def scratch_base(repo_root: str) -> Path:
     creation) and session teardown (scratch dir removal) must agree on.
     """
     return worktrees_base(repo_root).parent / "scratch"
+
+
+def is_scratch_path(path: str, repo_root: str) -> bool:
+    """True if `path` sits under a scratch base of either namespace spelling."""
+    return _is_under_any(
+        path, tuple(ns / "scratch" for ns in paths.repo_namespace_dirs(repo_root)))
 
 
 def remove_scratch_dir(scratch_path: str) -> bool:
@@ -515,9 +535,10 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     # worktrees predate the feature — remove it here too, BEFORE the dirty
     # check below, so a leftover staging dir never falsely marks an otherwise
     # untouched worktree dirty and blocks its own removal.
-    staging = os.path.join(wt, paths.codex_attachment_staging_dirname())
-    if os.path.isdir(staging):
-        shutil.rmtree(staging, ignore_errors=True)
+    for dirname in brand.CODEX_ATTACHMENTS_DIRNAMES:
+        staging = os.path.join(wt, dirname)
+        if os.path.isdir(staging):
+            shutil.rmtree(staging, ignore_errors=True)
 
     # Resolve the main repo this worktree belongs to (its common git dir is
     # <repo>/.git; the worktree's own .git is just a pointer file).

@@ -71,7 +71,7 @@ import re
 import time
 from pathlib import Path
 
-from ccswitch import paths as _paths
+from ccswitch import brand, paths as _paths
 from ccswitch.configdir import CLAUDE_JSON_NAME, CREDENTIALS_NAME, SHARE_ALLOWLIST
 
 log = logging.getLogger(__name__)
@@ -140,8 +140,8 @@ def _scratch_dir_for(src: Path, root: Path, *, suffix: str = "") -> Path:
     return root / f"{_SAFE_NAME_RE.sub('_', src.name) or 'account'}-{digest}{suffix}"
 
 
-def _stamp_path(dst: Path, name: str) -> Path:
-    return dst / f".ccswitch-src-{name}.stamp"
+def _stamp_path(dst: Path, name: str, slug: str = brand.SLUG) -> Path:
+    return dst / f".{slug}-src-{name}.stamp"
 
 
 def _sync_file(src_file: Path, dst: Path, name: str) -> bool:
@@ -179,6 +179,9 @@ def _sync_file(src_file: Path, dst: Path, name: str) -> bool:
     os.chmod(tmp, 0o600)
     os.replace(tmp, dst / name)
     stamp.write_text(fingerprint)
+    # A pre-rebrand stamp (#1373) is only ever a missed fast path — the first sync
+    # after the flip re-copies — so drop it rather than leave it beside the new one.
+    _stamp_path(dst, name, brand.LEGACY_SLUG).unlink(missing_ok=True)
     return False
 
 

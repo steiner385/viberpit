@@ -164,13 +164,17 @@ class WorktreeTests(unittest.TestCase):
         """#1291 — a Codex session may leave workspace-local staged attachment
         copies behind (server/codex/driver.py:_stage_in_workspace). Untracked,
         they must not read as "dirty" and block the worktree's own removal."""
-        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
-        from ccswitch import paths
-        staging = Path(info.path) / paths.codex_attachment_staging_dirname()
-        staging.mkdir()
-        (staging / "deadbeef.png").write_bytes(b"staged")
-        self.assertTrue(worktrees.remove_worktree(info.path))
-        self.assertFalse(os.path.isdir(info.path))
+        # Both spellings (#1373): a worktree created before the rebrand keeps
+        # staging under the legacy name for its whole life.
+        for i, dirname in enumerate(brand.CODEX_ATTACHMENTS_DIRNAMES):
+            with self.subTest(dirname=dirname):
+                info = worktrees.create_worktree(
+                    str(self.repo), "main", f"def6789{i}-1111", str(self.root))
+                staging = Path(info.path) / dirname
+                staging.mkdir()
+                (staging / "deadbeef.png").write_bytes(b"staged")
+                self.assertTrue(worktrees.remove_worktree(info.path))
+                self.assertFalse(os.path.isdir(info.path))
 
     def test_remove_keeps_dirty_worktree(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "feature", "abc12345-0000", str(self.root))

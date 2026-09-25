@@ -97,6 +97,34 @@ def is_session_branch(branch: str) -> bool:
     return branch.startswith(BRANCH_PREFIXES)
 
 
+#: Per-repo namespace dot-dir under a repo root (clones, worktrees, scratch). EMITTED
+#: form, for NEW repo roots only: ``paths.repo_namespace`` keeps a root that already
+#: has only the legacy dir on it forever, because a live worktree holds an absolute
+#: ``gitdir:`` pointer and a ``Session.cwd`` row into that tree — moving it strands
+#: the session. So both spellings are matched permanently, not Phase-7 scaffolding.
+REPO_NAMESPACE = f".{SLUG}"
+LEGACY_REPO_NAMESPACE = f".{LEGACY_SLUG}"
+#: Emitted spelling first, so a caller that wants "the" name reads ``[0]``.
+REPO_NAMESPACES = (REPO_NAMESPACE, LEGACY_REPO_NAMESPACE)
+#: Workspace-local Codex attachment staging dir — same new-dirs-only rule, resolved
+#: per workspace by ``paths.codex_attachment_staging_dirname``.
+CODEX_ATTACHMENTS_DIRNAME = f".{SLUG}-codex-attachments"
+LEGACY_CODEX_ATTACHMENTS_DIRNAME = f".{LEGACY_SLUG}-codex-attachments"
+CODEX_ATTACHMENTS_DIRNAMES = (CODEX_ATTACHMENTS_DIRNAME, LEGACY_CODEX_ATTACHMENTS_DIRNAME)
+
+
+def in_repo_namespace(parts: tuple[str, ...]) -> bool:
+    """Whether a ``Path.parts`` tuple has a repo-namespace segment, either spelling.
+
+    The one place the segment dual-accept is spelled. Every containment guard of
+    the shape "is this path under our dot-dir?" goes through here: the purge guard
+    that answers it deletes a directory on ``True`` and leaves it alone on
+    ``False``, so a copy that knew one spelling would silently stop cleaning (or
+    start refusing) every directory of the other.
+    """
+    return any(ns in parts for ns in REPO_NAMESPACES)
+
+
 #: Regex fragment matching either brand spelling. For compat PARSERS only —
 #: never for emission. Permanent, for the same reason as the legacy MCP prefix:
 #: markers and context headers live in stored transcripts that are re-parsed on

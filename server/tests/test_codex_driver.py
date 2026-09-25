@@ -1091,7 +1091,7 @@ async def test_staging_a_resent_image_reuses_the_same_file(
         if len(f["params"]["input"]) > 1
     }
     assert len(staged_paths) == 1
-    staging_dir = work / ccswitch_paths.codex_attachment_staging_dirname()
+    staging_dir = work / ccswitch_paths.codex_attachment_staging_dirname(work)
     assert len(list(staging_dir.iterdir())) == 1
 
 
@@ -1119,7 +1119,7 @@ async def test_staging_registers_a_git_exclude_entry(harness, tmp_path, monkeypa
     await harness.settle()
 
     exclude = (work / ".git" / "info" / "exclude").read_text()
-    assert f"/{ccswitch_paths.codex_attachment_staging_dirname()}/" in exclude.splitlines()
+    assert f"/{ccswitch_paths.codex_attachment_staging_dirname(work)}/" in exclude.splitlines()
     status = subprocess.run(
         ["git", "-C", str(work), "status", "--porcelain"],
         check=True, capture_output=True, text=True,
