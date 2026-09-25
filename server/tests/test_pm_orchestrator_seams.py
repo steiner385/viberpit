@@ -557,8 +557,9 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
 
     This is the wiring the dogfood found missing: classify sessions completed but
     ``_pm_classify_ingest`` had no caller, so proposals never landed (0 of 13)."""
+    await init_db(db_env)
     orch = _bare_orch()
-    orch._records = {}   # no record → _certify_harvested_complete no-ops; see its own tests
+    orch._records = {}   # no record → _certify_harvested_complete falls through to a DB read; see its own tests
     statuses = ["running", "running", "complete"]
     async def fake_settle_signal(sid):
         return _rec(statuses.pop(0) if statuses else "complete")
