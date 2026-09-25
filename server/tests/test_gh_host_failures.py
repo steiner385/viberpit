@@ -64,6 +64,11 @@ STDERR_UNREACHABLE = (
     "error connecting to api.github.com\n"
     "check your internet connection or https://githubstatus.com"
 )
+# Byte-for-byte from #1936: gh's Go transport error when the TCP connection
+# opened but the TLS handshake never completed — the request never reached GitHub.
+STDERR_TLS_HANDSHAKE_TIMEOUT = (
+    'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'
+)
 STDERR_RATE_LIMITED_IP = (
     "gh: API rate limit exceeded for 184.58.36.32. (But here's the good news: "
     "Authenticated requests get a higher rate limit. Check out the documentation "
@@ -205,6 +210,7 @@ def _loggers_exercised(caplog) -> set[str]:
 
 @pytest.mark.parametrize("stderr,expected_event", [
     (STDERR_UNREACHABLE, "github.host_gh_unreachable"),
+    (STDERR_TLS_HANDSHAKE_TIMEOUT, "github.host_gh_unreachable"),
     (STDERR_RATE_LIMITED_IP, "github.host_gh_unauthenticated"),
     (STDERR_RATE_LIMITED_USER, "github.host_gh_rate_limited"),
 ])
