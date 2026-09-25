@@ -367,6 +367,20 @@ def _reset_untrusted_identity_header_throttle():
     identity._UNTRUSTED_IDENTITY_HEADER_LOG.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_github_app_auth_singletons():
+    # Fifth instance of the same hazard: server.github.app_auth keeps a
+    # module-level signer/registry/token-source cache (#1023). A test that drives
+    # the facade with a stub REST seam (e.g. one raising GhAppError("boom")) would
+    # otherwise leave that registry behind, and a LATER test reaching
+    # installation_repos() through the registered git-provider seam reuses it
+    # instead of building a fresh one — failing only in full-suite ordering.
+    from server.github import app_auth
+    app_auth.reset()
+    yield
+    app_auth.reset()
+
+
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
