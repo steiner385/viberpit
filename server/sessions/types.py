@@ -125,6 +125,12 @@ class SessionRecord:
     # Session.hand_back_reason. Only meaningful alongside status == "handed_back":
     # _persist_status writes the pair together and clears this on any other status.
     hand_back_reason: str | None = None
+    # The suspected-complete overlay (DB Session.suspected_complete_reason): the
+    # completion bar's reason when a handed-back session's ask was a pure status
+    # report and a merged/armed PR says the objective is met. Same lifetime rule as
+    # hand_back_reason — only meaningful with status == "handed_back", cleared on any
+    # other status write and by the user's dismiss.
+    suspected_complete_reason: str | None = None
     # Fleet host that runs this session, mirroring DB Session.host (stamped at
     # creation by the dispatcher; None for pre-fleet rows and primary-local spawns).
     # Ownership input for host-partitioned recovery (#852): a daemon must not
@@ -235,6 +241,7 @@ class SessionRecord:
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
             "handBackReason": self.hand_back_reason,
+            "suspectedCompleteReason": self.suspected_complete_reason,
             "host": self.host,
             "displayMode": self.display_mode,
             "usageUnverified": self.usage_unverified,
@@ -301,6 +308,7 @@ class SessionRecord:
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
             hand_back_reason=d.get("handBackReason"),
+            suspected_complete_reason=d.get("suspectedCompleteReason"),
             host=d.get("host"),
             display_mode=d.get("displayMode"),
             usage_unverified=d.get("usageUnverified", False),

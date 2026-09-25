@@ -80,6 +80,9 @@ interface SessionCardProps {
   onToggleAutopilot?: (id: string, paused: boolean) => void
   /** Called when the user toggles this session's auto-archive opt-out — parent owns the mutation. */
   onToggleAutoArchive?: (id: string, optedOut: boolean) => void
+  /** Called when the user answers a "likely complete" hand-back: confirm archives the
+   *  session, reject clears the hint — parent owns the mutation. */
+  onResolveSuspectedComplete?: (id: string, decision: 'confirm' | 'reject') => void
   /** Sessions this one dispatched (child-session spec §4.6); derived by the list from the
    *  same sessions array, so the card never fetches. */
   childSessions?: Session[]
@@ -88,7 +91,7 @@ interface SessionCardProps {
   parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, childSessions = [], parentName = null }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, childSessions = [], parentName = null }: SessionCardProps) {
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
@@ -119,6 +122,10 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // column survives a resume, so the field alone would strand a stale ask on a
   // session that has since moved on.
   const handBackReason = session.status === 'handed_back' ? session.handBackReason : null
+  // The suspected-complete overlay: the server's own reading that this hand-back
+  // was a status report on a met objective. Same status gate as the reason — a
+  // resumed session keeps its old row value until the next status write clears it.
+  const suspectedComplete = session.status === 'handed_back' ? session.suspectedCompleteReason : null
 
   // "Guided by autopilot": the robot has acted on this session (assistedBy) AND it
   // isn't pinned to manual. The pause veto matters — a session can carry the
@@ -574,6 +581,46 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             so show that instead of making the user read the transcript for it. Gated
             on the live status, not the field: a resumed session keeps the old row
             value, and a stale ask beside "Working…" is a claim it is not making. */}
+        {/* "Likely complete": the server judged this hand-back a status report on a
+            met objective (merged/armed PR, reason that asks nothing). It is a hint
+            with two one-tap answers, never an automatic archive — the pill shows
+            the bar's reason on hover so the user can check the claim before
+            confirming. The buttons stop propagation: the card itself opens on click. */}
+        {suspectedComplete && (
+          <span
+            data-testid="card-suspected-complete"
+            className="flex-shrink-0 inline-flex items-center gap-1.5"
+          >
+            <span
+              className="rounded-full border border-success/50 bg-success/10 px-1.5 py-px text-xs font-medium text-success"
+              title={`Likely complete: ${suspectedComplete}`}
+            >
+              Likely complete
+            </span>
+            {onResolveSuspectedComplete && (
+              <>
+                <button
+                  type="button"
+                  data-testid="card-suspected-complete-confirm"
+                  onClick={(e) => { e.stopPropagation(); onResolveSuspectedComplete(session.id, 'confirm') }}
+                  className="rounded px-1.5 py-px text-xs font-medium text-success hover:bg-success/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  title={`Archive as complete — ${suspectedComplete}`}
+                >
+                  Mark complete
+                </button>
+                <button
+                  type="button"
+                  data-testid="card-suspected-complete-reject"
+                  onClick={(e) => { e.stopPropagation(); onResolveSuspectedComplete(session.id, 'reject') }}
+                  className="rounded px-1.5 py-px text-xs font-medium text-ink-muted hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  title="Keep it handed back; drop the hint"
+                >
+                  Not done
+                </button>
+              </>
+            )}
+          </span>
+        )}
         {handBackReason && (
           <span
             data-testid="card-hand-back-reason"

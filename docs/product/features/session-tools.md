@@ -223,6 +223,20 @@ error. `hand_back` has its own `handed_back` status since #2326: it used to borr
 `waiting_question`, which promised a card to tap that was never rendered. The two cardless
 prose paths (the parked-`done` overlay and the completion open-question hold) land there too.
 
+**The suspected-complete overlay.** When a turn ends in `hand_back`, the orchestrator judges
+the hand-back off the pump (`_judge_suspected_complete`): if the reason asks for nothing
+(`completion.hand_back_reason_asks` is the precision guard, `background_tasks.text_awaits_user`
+the recall floor, both consulted) AND a merged or armed PR meets the same `met_bar` the
+completion path runs, the bar's reason is written to `sessions.suspected_complete_reason`
+beside the hand-back reason, served as `suspectedCompleteReason`, and audited as
+`session.suspected_complete`. It has the hand-back's lifetime: every status write clears it.
+The card renders a "Likely complete" pill with the bar reason on hover and two one-tap
+answers — **Mark complete** archives through the ordinary archive path, **Not done** clears
+the hint (`POST /api/sessions/{id}/suspected-complete`, audited as
+`session.suspected_complete.resolve`). Autopilot names the verdict in its escalation and
+never archives on it; the confirm/reject ratio in the audit trail is the evidence any
+future auto-archive on suspicion would have to cite.
+
 **What "finished" means.** The completion bar (`completion_bar.met_bar`) reads a PR that is
 open, ready, auto-merge armed and without a failing required check as the goal met, so the
 `mark_complete` description and the completion marker instruction say so in the same words

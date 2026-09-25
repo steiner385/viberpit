@@ -120,6 +120,12 @@ class AutoArchiveOptOutRequest(BaseModel):
     optedOut: bool
 
 
+class SuspectedCompleteRequest(BaseModel):
+    """The user's answer to a "likely complete" hand-back: ``confirm`` archives the
+    session (the objective was met), ``reject`` clears the overlay (it was not)."""
+    decision: Literal["confirm", "reject"]
+
+
 class QueueMoveRequest(BaseModel):
     op: Literal["up", "down", "top", "position"]
     position: int | None = None
@@ -315,6 +321,13 @@ def _record_to_dict(
         # without them here the card shows a bare "Ended" over an empty transcript.
         "prResolution": getattr(record, "pr_resolution", None),
         "prResolutionSource": getattr(record, "pr_resolution_source", None),
+        # The hand-back ask (#2321) and the suspected-complete overlay on it (the
+        # completion bar's reason). Same two-serializer rule: SessionRecord.to_dict
+        # emits them daemon→edge, this emits them to the browser. #2326 added the
+        # first to the RPC copy only, so the card never showed the ask it was built
+        # to show (prod 2026-09-25: "Handed back" with nothing beside it).
+        "handBackReason": getattr(record, "hand_back_reason", None),
+        "suspectedCompleteReason": getattr(record, "suspected_complete_reason", None),
         "resumable": bool(getattr(record, "interrupted_by_restart", False)
                           and getattr(record, "interrupted_from_status", None)
                           in RESUME_ELIGIBLE_STATUSES),
@@ -1291,6 +1304,52 @@ async def set_auto_archive_opt_out(
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.post("/{session_id}/suspected-complete")
+async def resolve_suspected_complete(
+    session_id: str,
+    body: SuspectedCompleteRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Resolve the suspected-complete overlay on a handed-back session.
+
+    ``confirm`` archives it through the ordinary archive path with a distinct
+    provenance context, ``reject`` clears the overlay so the card reads as a plain
+    hand-back again. 404 if unknown, 409 if the session carries no such verdict —
+    the two buttons only render on one, so a 409 means the user is acting on a
+    stale card. Audited as ``session.suspected_complete.resolve`` so the
+    confirm/reject ratio can be read before anyone proposes acting on the verdict
+    automatically."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    verdict = getattr(record, "suspected_complete_reason", None)
+    if not verdict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "not_suspected",
+                    "message": f"Session {session_id!r} is not flagged as likely complete"},
+        )
+    if body.decision == "confirm":
+        await orch.archive_session(
+            session_id, archived_by="user",
+            context={"reason": "suspected complete — confirmed by user", "bar": verdict})
+    else:
+        await orch.dismiss_suspected_complete(session_id)
+    await record_audit(
+        db=db,
+        type="session.suspected_complete.resolve",
+        identity=identity,
+        detail={"session_id": session_id, "decision": body.decision, "reason": verdict},
+    )
+    return {"decision": body.decision, "sessionId": session_id}
 
 
 @router.post("/{session_id}/queue-move")

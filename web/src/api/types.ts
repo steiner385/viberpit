@@ -405,6 +405,12 @@ export interface Session {
    *  writes it with that status and clears it on any other, but a card must still gate
    *  on the status, exactly as prResolution does. Null/absent = handed back silently. */
   handBackReason?: string | null
+  /** The suspected-complete overlay on a handed-back session: the completion bar's
+   *  reason ("PR #N open with auto-merge armed") when the hand-back asked for nothing
+   *  and a merged/armed PR says the objective is met. Same gate as handBackReason —
+   *  only meaningful while `status === 'handed_back'`. The card offers "Mark complete"
+   *  / "Not done" on it; the server never acts on it by itself. */
+  suspectedCompleteReason?: string | null
   /** Why a needs_attention/limited session is parked (server pause reason token,
    *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
   pausedReason?: string | null
