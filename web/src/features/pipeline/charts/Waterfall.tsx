@@ -63,14 +63,26 @@ export function waterfallSegments(t: PrTimeline): WaterfallSegment[] {
 }
 
 // Geometry in viewBox units; the svg scales to the panel width (width:100%).
+// #2418: the three <text> elements below set a real CSS `font-size: var(--fs-base)`
+// (via `style`, not the `fontSize` JSX prop — that maps to the plain SVG attribute
+// and would bypass the kiosk --scale cascade) instead of a bare unitless number, so
+// kiosk's `--scale: 1.25` (AppShell.tsx, same mechanism plotroom.css uses for the
+// other three charts — #1407) enlarges this chart's own labels too. A CSS length
+// inside a viewBox-scaled <svg> renders through the SAME viewBox→rendered-width
+// transform as a unitless attribute value would, so FONT below is kept as the plain
+// number matching var(--fs-base) at --scale:1 (1rem = 16px, index.css) — every
+// geometry constant that depends on text metrics is re-derived off it (was tuned
+// around the old FONT=11 literal). PAD_L/PAD_R are widened to keep the longest
+// label ('green → enqueued') and duration text from clipping once kiosk's 1.25×
+// makes the effective rendered size exceed this base number.
 const VB_W = 1000;
-const PAD_L = 150;   // segment-label column
-const PAD_R = 70;    // duration-label column
-const ROW_H = 22;
-const BAR_H = 12;
-const PAD_T = 4;
-const AXIS_H = 18;
-const FONT = 11;
+const PAD_L = 200;   // segment-label column
+const PAD_R = 80;    // duration-label column
+const ROW_H = 32;
+const BAR_H = 16;
+const PAD_T = 6;
+const AXIS_H = 26;
+const FONT = 16;
 
 /** Local wall-clock for tooltips ('Jun 10, 09:30'). */
 function localTime(ms: number): string {
@@ -109,7 +121,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
           <g key={`tick${i}`}>
             <line x1={x(t0 + tk.off)} x2={x(t0 + tk.off)} y1={PAD_T} y2={axisY}
               stroke="var(--t-edge)" strokeDasharray="3 4" />
-            <text x={x(t0 + tk.off)} y={axisY + FONT + 2} fontSize={FONT} fill="var(--t-ink-muted)"
+            <text x={x(t0 + tk.off)} y={axisY + FONT + 2} style={{ fontSize: 'var(--fs-base)' }} fill="var(--t-ink-muted)"
               textAnchor={i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'}>
               {tk.text}
             </text>
@@ -123,7 +135,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
             <g key={s.id} data-testid={`waterfall-seg-${s.id}`}>
               <title>{`${s.label}: ${formatDur(durSecs)} (${localTime(s.startMs)} → ${localTime(s.endMs)}) — ${META.get(s.id)!.desc}`}</title>
               <text x={PAD_L - 8} y={y + ROW_H / 2 + FONT / 2 - 1} textAnchor="end"
-                fontSize={FONT} fill="var(--t-ink-muted)">{s.label}</text>
+                style={{ fontSize: 'var(--fs-base)' }} fill="var(--t-ink-muted)">{s.label}</text>
               <rect x={x(s.startMs)} y={y + (ROW_H - BAR_H) / 2} width={w} height={BAR_H}
                 rx={2} fill={s.color} />
               {SEG_PATTERN[s.id] && (
@@ -132,7 +144,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
               )}
               <text data-testid={`waterfall-dur-${s.id}`}
                 x={VB_W - 4} y={y + ROW_H / 2 + FONT / 2 - 1} textAnchor="end"
-                fontSize={FONT} fill="var(--t-ink)">{formatDur(durSecs)}</text>
+                style={{ fontSize: 'var(--fs-base)' }} fill="var(--t-ink)">{formatDur(durSecs)}</text>
             </g>
           );
         })}
