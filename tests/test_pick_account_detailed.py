@@ -261,6 +261,7 @@ def test_pick_account_detailed_fetches_usage_concurrently(monkeypatch):
     parallel — proven with a barrier that only releases once every account's
     fetch has started, so a serial implementation deadlocks (and times out)
     instead of silently passing."""
+    import contextlib
     import threading
     names = ["a", "b", "c"]
     monkeypatch.setattr(accounts, "_account_names", lambda: names)
@@ -271,12 +272,9 @@ def test_pick_account_detailed_fetches_usage_concurrently(monkeypatch):
         barrier.wait()  # only returns once every account's fetch has started
         return _healthy()
 
-    with patch.object(accounts, "usage_for", side_effect=slow_usage), \
-         patch("ccswitch.ledger.get_status", return_value="ok"), \
-         patch("ccswitch.ledger.is_account_enabled", return_value=True), \
-         patch("ccswitch.ledger.reservation_active", return_value=False), \
-         patch("ccswitch.ledger.reserve"), \
-         patch("ccswitch.ledger.weekly_reserves", return_value={}), \
-         patch("ccswitch.ledger.extra_usage_allowed", return_value=frozenset()):
+    with contextlib.ExitStack() as stack:
+        for p in _patched_ledger():
+            stack.enter_context(p)
+        stack.enter_context(patch.object(accounts, "usage_for", side_effect=slow_usage))
         picked = accounts.pick_account_detailed(Config())
     assert picked.name in names
