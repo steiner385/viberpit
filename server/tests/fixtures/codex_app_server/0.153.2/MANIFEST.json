@@ -1,6 +1,6 @@
 {
  "cliVersion": "codex-cli 0.153.2",
- "contractSha256": "c74a67306859f0cbdee29f7560754e004e9ba9800507197c7aa30b9ceffa1c0a",
+ "contractSha256": "a664cec849f949314d9252afb43361346233920b933a7dcf2a05a2844422d0bb",
  "documents": [
   "v1/InitializeParams.json",
   "v1/InitializeResponse.json",
@@ -58,7 +58,9 @@
   "DynamicToolCallParams.json",
   "DynamicToolCallResponse.json",
   "v2/ThreadBackgroundTerminalsListParams.json",
-  "v2/ThreadBackgroundTerminalsListResponse.json"
+  "v2/ThreadBackgroundTerminalsListResponse.json",
+  "v2/NullableRemoteControlDisableParams.json",
+  "v2/RemoteControlDisableResponse.json"
  ],
  "envelopes": {
   "ClientNotification.json": {
@@ -79,6 +81,6 @@
   }
  },
  "generator": "scripts/refresh_codex_contract_fixtures.py",
- "hashScope": "sha256 over the curated documents canonicalized as JSON with sorted keys and compact separators, plus the method-name inventory of every JSON-RPC envelope. The documents committed here are that same parsed content re-serialized for readability, not the generator's byte stream: the hash is invariant to upstream formatting but sensitive to every key, type, enum member, and required entry. Envelope bodies are recorded by digest only, so upstream churn in the 150+ methods ccswitch never calls does not break the pin.",
+ "hashScope": "sha256 over the curated documents canonicalized as JSON with sorted keys and compact separators, plus the method-name inventory of every JSON-RPC envelope. The documents committed here are that same parsed content re-serialized for readability, not the generator's byte stream: the hash is invariant to upstream formatting but sensitive to every key, type, enum member, and required entry. Envelope bodies are recorded by digest only, so upstream churn in the 150+ methods ViberPit never calls does not break the pin.",
  "methodIndex": "method_index.json"
 }

@@ -576,6 +576,20 @@ class CodexAppServerClient:
         assert isinstance(response, schema.GetAccountRateLimitsResponse)
         return response
 
+    async def disable_remote_control(self) -> schema.RemoteControlDisableResponse:
+        """Opt this connection out of ChatGPT-account remote-control arbitration.
+
+        `ephemeral=True` so the refusal lasts only as long as this connection —
+        it must never persist a preference against the account that would affect
+        the owner's own ChatGPT Desktop app or personal CLI use (#2150/#2313).
+        """
+        response = await self.call(
+            schema.METHOD_REMOTE_CONTROL_DISABLE,
+            schema.RemoteControlDisableParams(ephemeral=True).to_wire(),
+        )
+        assert isinstance(response, schema.RemoteControlDisableResponse)
+        return response
+
     async def list_models(
         self, params: schema.ModelListParams | None = None
     ) -> schema.ModelListResponse:
