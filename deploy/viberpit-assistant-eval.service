@@ -1,0 +1,23 @@
+[Unit]
+Description=ViberPit AI assistant nightly eval — run the case corpus, write a results file
+# Pairs with viberpit-assistant-eval.timer (plan Task 10.4). Manual, opt-in install: every
+# run spends real account quota (the full corpus on sonnet plus a haiku judge per case).
+# See deploy/README.md "Assistant nightly eval".
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/steiner385/viberpit
+
+[Service]
+Type=oneshot
+User=tony
+SyslogIdentifier=viberpit-assistant-eval
+# Same env as the daemon, so pick_helper_config_dir() sees this host's accounts.
+EnvironmentFile=-/etc/viberpit/viberpit.env
+# Rewrite both paths to this host's deploy checkout on install, like the daemon unit.
+WorkingDirectory=/home/tony/GitHub/viberpit-deploy
+# Results land OUTSIDE the deploy worktree (the script's default is docs/ inside the
+# checkout), so a nightly run never leaves the deploy tree dirty.
+ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/python scripts/eval_assistant.py --out /home/tony/.claude-accounts/evals/assistant
+Nice=10
+# A full run is ~126 sequential model turns; bound it so a hung turn cannot pin the unit.
+TimeoutStartSec=4h

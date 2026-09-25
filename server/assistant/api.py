@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func as sa_func
@@ -21,7 +21,9 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
-from server.db.models import AssistantToken, NotificationChannel, NotificationRule
+from server.db.clock import db_utc_now
+from server.db.models import (AssistantToken, AuditEvent, NotificationChannel,
+                               NotificationRule)
 from server.db.models import Session as DbSession
 from server.obs.metrics import assistant_feedback_total
 from server.sessions.model_policy import resolve_model_policy
@@ -328,6 +330,48 @@ async def feedback(body: FeedbackBody, request: Request,
     await db.commit()
     assistant_feedback_total.labels(body.vote).inc()
     return {"ok": True}
+
+
+# GET /gaps aggregates at most this many of the newest `assistant.gap` rows in the window.
+# `detail` is a JSON column, so grouping by `detail["capability"]` portably across SQLite
+# and Postgres means aggregating in Python; the cap bounds that work. It is far above any
+# realistic gap volume (one row per assistant turn that hit a missing capability) — if it
+# is ever reached, `total` undercounts rather than the request scanning the whole table.
+_GAPS_ROW_CAP = 10_000
+
+
+@router.get("/gaps")
+async def gaps(days: int = Query(30, ge=1, le=365),
+               _identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    """Capability-gap table (spec v2 §4.10, plan Task 10.4): the `assistant.gap` audit
+    rows written by the `report_gap` tool (server/assistant/tools.py), counted per
+    capability over the trailing *days*.
+
+    Aggregated across every identity, so the response carries only the capability
+    label, its count and when it was last seen — never the free-text `detail` (it can
+    quote another user's words) or who reported it. Absent from `ASSISTANT_ROUTE_ALLOW`
+    (server/assistant/policy.py), so the assistant's own bearer is 403'd before routing.
+    """
+    now = (await db.execute(select(db_utc_now()))).scalar_one()
+    rows = (await db.execute(
+        select(AuditEvent.detail, AuditEvent.at)
+        .where(AuditEvent.type == "assistant.gap",
+               AuditEvent.at >= now - timedelta(days=days))
+        .order_by(AuditEvent.at.desc())
+        .limit(_GAPS_ROW_CAP)
+    )).all()
+    counts: dict[str, int] = {}
+    last_seen: dict[str, datetime] = {}
+    for detail, at in rows:
+        cap = detail.get("capability") if isinstance(detail, dict) else None
+        cap = cap if isinstance(cap, str) and cap else "unknown"
+        counts[cap] = counts.get(cap, 0) + 1
+        if cap not in last_seen or at > last_seen[cap]:
+            last_seen[cap] = at
+    ordered = sorted(counts, key=lambda c: (-counts[c], c))
+    return {"days": days, "total": len(rows),
+            "gaps": [{"capability": c, "count": counts[c], "lastSeen": iso_utc(last_seen[c])}
+                     for c in ordered]}
 
 
 class WatchBody(BaseModel):

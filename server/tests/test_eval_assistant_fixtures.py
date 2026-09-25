@@ -165,7 +165,7 @@ def test_singular_mutations_share_batch_state_and_search_scope():
 
 def test_case_loader_rejects_unknown_setup_before_running(tmp_path):
     path = tmp_path / "cases.jsonl"
-    path.write_text(json.dumps({"id": "arbitrary", "prompt": "anything", "route": "/sessions",
+    path.write_text(json.dumps({"id": "arbitrary", "prompt": "anything", "route": "/sessions", "pack": "V1",
                                 "fixture_state": {"sessions": {"unknown": {"archived": True}}}}))
     with pytest.raises(ValueError, match="override"):
         ev.load_cases(path)

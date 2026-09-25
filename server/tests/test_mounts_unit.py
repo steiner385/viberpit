@@ -259,12 +259,30 @@ def test_live_mount_is_still_left_alone_unless_a_remount_is_forced(tmp_path):
     assert (tmp_path / "state" / "calls").exists(), "forced remount must re-run sshfs"
 
 
+# The units that existed under the legacy name before the rename — the only ones a host
+# can still have installed under that name, so the only ones that need the legacy alias.
+RENAMED_UNITS = frozenset({
+    "viberpit-cert-renew.service", "viberpit-cert-renew.timer",
+    "viberpit-codex-auth.service",
+    "viberpit-daemon-ensure.service", "viberpit-daemon-ensure.timer",
+    "viberpit-daemon-remote.service", "viberpit-daemon.service",
+    "viberpit-deploy-controller.service",
+    "viberpit-health.service", "viberpit-health.timer",
+    "viberpit-mounts.service", "viberpit.service",
+})
+
+
 def test_canonical_units_keep_legacy_aliases_without_duplicate_templates():
     units = list((ROOT / "deploy").glob("viberpit*.service"))
     units += list((ROOT / "deploy").glob("viberpit*.timer"))
-    assert len(units) == 12
+    assert RENAMED_UNITS <= {u.name for u in units}
     for canonical in units:
         legacy = canonical.with_name(canonical.name.replace(brand.SLUG, brand.LEGACY_SLUG, 1))
+        if canonical.name not in RENAMED_UNITS:
+            # A unit added after the rename was never installed under the legacy name;
+            # giving it an alias would only grow the brand ratchet.
+            assert not legacy.exists() and not legacy.is_symlink(), legacy
+            continue
         assert legacy.is_symlink(), legacy
         assert legacy.resolve() == canonical
         # Remote template is installed as viberpit-daemon.service on the runner.

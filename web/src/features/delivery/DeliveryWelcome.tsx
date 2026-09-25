@@ -9,6 +9,7 @@
  */
 import { DELIVERY } from '@/features/products/vocab'
 import { EmptyState } from '@/ui/EmptyState'
+import { AssistantGapsTable } from './ci/AssistantGapsTable'
 import type { DeliveryScope } from './deliveryNavState'
 
 export interface DeliveryWelcomeProps {
@@ -22,22 +23,25 @@ export interface DeliveryWelcomeProps {
 
 export function DeliveryWelcome({ scope, count, isError }: DeliveryWelcomeProps) {
   if (scope === 'ci') {
-    if (isError) {
-      return (
-        <EmptyState
-          title="No repositories to show"
-          description="It will fill in as soon as the list loads again."
-        />
-      )
-    }
-    if (count === 0) {
-      return <EmptyState title={DELIVERY.emptyRepos} />
-    }
+    // The assistant-gaps table (the old Insights page's other readout) does not
+    // depend on the repo list, so it shows under every sentence — even a failed one.
     return (
-      <EmptyState
-        title="Pick a repository"
-        description={`${count} with pipeline history — open one to see its slowest, flakiest and regressing checks.`}
-      />
+      <div className="space-y-4">
+        {isError ? (
+          <EmptyState
+            title="No repositories to show"
+            description="It will fill in as soon as the list loads again."
+          />
+        ) : count === 0 ? (
+          <EmptyState title={DELIVERY.emptyRepos} />
+        ) : (
+          <EmptyState
+            title="Pick a repository"
+            description={`${count} with pipeline history — open one to see its slowest, flakiest and regressing checks.`}
+          />
+        )}
+        <AssistantGapsTable />
+      </div>
     )
   }
   if (isError) {

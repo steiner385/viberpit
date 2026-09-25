@@ -20,6 +20,8 @@ Usage:
     python scripts/eval_assistant.py                  # full run, unique journal + summary
     python scripts/eval_assistant.py --limit 5         # smoke a handful of cases
     python scripts/eval_assistant.py --model haiku --threshold 0.8
+    python scripts/eval_assistant.py --pack N --pack G  # only the notification + GitHub packs
+    python scripts/eval_assistant.py --operator        # the operator-tier (pack O) cases
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Sequence
+from typing import Any, AsyncIterator, Callable, Collection, Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -51,6 +53,13 @@ DEFAULT_RESULTS_DIR = _REPO_ROOT / "docs/superpowers/evals/assistant"
 
 _EVAL_IDENTITY = "eval@ccswitch.local"
 
+# Capability packs a case can belong to (plan Task 10.4). The letters are the v2 packs of
+# spec §4.1–§4.10 (F foundations, P products/initiatives, A automations, S session ops,
+# C catalogs, G GitHub, N notifications/watches, O operator, X external, U UI); "V1" is
+# the v1 baseline tool surface, which the plan's letter set does not cover. Every case in
+# cases.jsonl declares exactly one; order here is the per-pack table order in results.
+PACKS: tuple[str, ...] = ("V1", "F", "P", "A", "S", "C", "G", "N", "O", "X", "U")
+
 # ---------------------------------------------------------------------------
 # Case loading + deterministic tool-sequence grading — network-free, unit tested
 # by server/tests/test_eval_assistant_grader.py.
@@ -62,6 +71,9 @@ class EvalCase:
     id: str
     prompt: str
     route: str
+    # One of PACKS; `load_cases` requires it on every case (the default only exists so
+    # the field can sit next to `route` ahead of the defaulted fields).
+    pack: str = ""
     expect_tools: tuple[str, ...] = ()
     forbid_tools: tuple[str, ...] = ()
     rubric: str = ""
@@ -77,7 +89,8 @@ class EvalCase:
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
     """Parse one ``EvalCase`` per non-blank line of *path*. Raises on a duplicate id —
-    a copy-pasted case silently shadowing another is worse than a loud failure here."""
+    a copy-pasted case silently shadowing another is worse than a loud failure here —
+    and on a missing/unknown ``pack`` or an operator case outside pack ``O``."""
     cases: list[EvalCase] = []
     seen: set[str] = set()
     for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
@@ -88,12 +101,20 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
         if doc["id"] in seen:
             raise ValueError(f"{path}:{lineno}: duplicate case id {doc['id']!r}")
         seen.add(doc["id"])
+        pack = doc.get("pack")
+        if pack not in PACKS:
+            raise ValueError(f"{path}:{lineno}: case {doc['id']!r} has pack {pack!r}; "
+                             f"every case needs a pack, one of {', '.join(PACKS)}")
+        operator = bool(doc.get("operator", False))
+        if operator and pack != "O":
+            raise ValueError(f"{path}:{lineno}: operator case {doc['id']!r} must be pack 'O', "
+                             f"not {pack!r}")
         cases.append(EvalCase(
-            id=doc["id"], prompt=doc["prompt"], route=doc["route"],
+            id=doc["id"], prompt=doc["prompt"], route=doc["route"], pack=pack,
             expect_tools=tuple(doc.get("expect_tools") or ()),
             forbid_tools=tuple(doc.get("forbid_tools") or ()),
             rubric=doc.get("rubric", ""),
-            operator=bool(doc.get("operator", False)),
+            operator=operator,
             fixture_state=doc.get("fixture_state"),
         ))
     for case in cases:
@@ -101,12 +122,18 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
     return cases
 
 
-def select_cases(cases: list[EvalCase], *, operator: bool) -> list[EvalCase]:
+def select_cases(cases: list[EvalCase], *, operator: bool,
+                 packs: Collection[str] | None = None) -> list[EvalCase]:
     """Cases for one run: a case's `operator` flag must match the run mode. An
     operator-tier case run without --operator would call a tool that is not registered;
     a non-operator case run WITH --operator would grade a prompt/tool surface the case
-    was not written against (e.g. the negative case for a now-available tool)."""
-    return [c for c in cases if c.operator == operator]
+    was not written against (e.g. the negative case for a now-available tool).
+
+    *packs* (``--pack``, repeatable) further keeps only cases in one of those packs;
+    ``None`` keeps every pack. The two filters compose, so ``--pack O`` without
+    ``--operator`` selects nothing."""
+    return [c for c in cases
+            if c.operator == operator and (packs is None or c.pack in packs)]
 
 
 @dataclass(frozen=True)
@@ -1596,7 +1623,13 @@ def write_results(results: list[CaseResult], out_dir: Path, *, model: str) -> Pa
     fd, filename = tempfile.mkstemp(prefix=f"results-{day}-", suffix=".md", dir=out_dir)
     lines = [f"# Assistant eval results — {day}", "",
              f"Model: {_public_text(model)} · Cases: {total} · Passed: {passed} · Pass rate: {rate:.0%}", "",
-             "| id | tools | rubric | notes |", "|---|---|---|---|"]
+             "| pack | cases | passed | pass rate |", "|---|---|---|---|"]
+    for pack in PACKS:
+        in_pack = [r for r in results if r.case.pack == pack]
+        if in_pack:
+            ok = sum(1 for r in in_pack if r.passed)
+            lines.append(f"| {pack} | {len(in_pack)} | {ok} | {ok / len(in_pack):.0%} |")
+    lines += ["", "| id | tools | rubric | notes |", "|---|---|---|---|"]
     for result in results:
         notes = []
         if result.tool_grade.missing:
@@ -1623,9 +1656,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Run the operator-tier cases (start_deploy, upgrade_host, "
                              "refresh_account, set_account_enabled, start_reauth) with "
                              "operator tools registered, instead of the default run.")
+    parser.add_argument("--pack", action="append", choices=PACKS, default=None,
+                        help="Only run cases in this capability pack (repeatable). "
+                             "Composes with --operator: pack O needs --operator.")
     args = parser.parse_args(argv)
 
-    cases = select_cases(load_cases(args.cases), operator=args.operator)
+    cases = select_cases(load_cases(args.cases), operator=args.operator, packs=args.pack)
     if args.limit:
         cases = cases[: args.limit]
 
