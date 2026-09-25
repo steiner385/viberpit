@@ -137,11 +137,10 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
 
 ## Working norms
 
-Concrete, operational discipline that backs constitution Principle VI (single source of truth / no
+Concrete, operational discipline backing constitution Principle VI (single source of truth / no
 dead code) and IV/V (security-first, quality gates). Several map to installed skills — invoke the
 skill, don't just recall the rule. `subagent-driven-development` ships with the `superpowers` plugin;
-the others are user-local skills under `~/.claude/skills/` (if one is missing, follow the rule as
-written here).
+others are user-local skills under `~/.claude/skills/` (if missing, follow the rule as written here).
 
 ### Execute implementation plans subagent-driven — always
 
@@ -223,10 +222,10 @@ does NOT close. Put `Fixes #N` in the PR body for a full fix, `Refs #N` for a pa
 
 ## Copilot account type
 
-GitHub Copilot Pro+ accounts run through the `whtsky/copilot2api` proxy binary, which translates
-Anthropic API calls into Copilot API calls. Gated on `VIBERPIT_ENABLE_COPILOT=true` plus an
-installed binary; experimental, with a ToS caveat — see
-`docs/product/features/copilot-account-support.md` for provisioning, the add flow, and the caveat.
+GitHub Copilot Pro+ accounts run through the `whtsky/copilot2api` proxy binary, translating
+Anthropic calls to Copilot's. Gated on `VIBERPIT_ENABLE_COPILOT=true` plus an installed binary;
+experimental, with a ToS caveat — see `docs/product/features/copilot-account-support.md` for
+provisioning, add flow, and caveat.
 
 **Copilot sessions behave differently from Anthropic sessions:**
 - Suggestions and auto-summaries are disabled (`_pre_record` skips `suggester`/`summarizer`).
@@ -241,7 +240,7 @@ installed binary; experimental, with a ToS caveat — see
 
 The mic button streams 16 kHz PCM to `/ws/stt` (`server/stt/`) where `faster-whisper`
 (`base.en`, int8, CPU) transcribes it with Silero VAD endpointing; Web Speech is the fallback
-when the edge does not advertise `sttEnabled` in `GET /api/config`.
+absent `sttEnabled` in `GET /api/config`.
 
 - Enable with `VIBERPIT_ENABLE_STT=true` on the **edge** (needs the `stt` extra: the deploy controller installs `.[server,stt]`; CI/runners
   stay on `[server]`). First start downloads `Systran/faster-whisper-base.en` into the HuggingFace cache; the lifespan warms the model in a
@@ -258,7 +257,8 @@ A right-side drawer backed by a real session of `kind == "assistant"`. Its only 
 in-process `viberpit` MCP server (`server/assistant/tools.py`) where each handler calls exactly
 **one ViberPit HTTP API endpoint over loopback** — never add business logic to a handler, add it to
 the endpoint. Its `ccas1:` bearer token (`server/assistant/token.py`) is identity-bound, never
-persisted, loopback-only. Kill switch `VIBERPIT_ASSISTANT_ENABLED`; evals under
+persisted, loopback-only. Opt-in operator tier and `ccas2:` tokens extend the surface; notices
+bypass the model. Kill switch `VIBERPIT_ASSISTANT_ENABLED`; evals under
 `docs/superpowers/evals/assistant/`. Details: `docs/product/features/ai-assistant.md`.
 
 ## Self-directed model switching

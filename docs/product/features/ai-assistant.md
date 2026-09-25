@@ -24,7 +24,7 @@ links:
     - web/src/features/assistant/StarterChips.tsx
     - web/src/features/assistant/starters.ts
     - web/src/api/assistant.ts
-  prs: [1044, 1087, 1091, 1099, 1104, 1110, 1118, 1119, 1123, 1126, 1128, 1158, 1160, 1162, 1165, 1169, 1175, 1185, 1186, 1192, 1329]
+  prs: [1044, 1087, 1091, 1099, 1104, 1110, 1118, 1119, 1123, 1126, 1128, 1158, 1160, 1162, 1165, 1169, 1175, 1185, 1186, 1192, 1329, 1345, 1350, 1391, 1631, 1901, 2205, 2252, 2297, 2340, 2409]
 ---
 
 # AI Assistant (drawer)
@@ -107,6 +107,15 @@ assistant mutation does not make subsequent harness cleanup safe.
   `POST /api/assistant/session` return 404 and the drawer show its disabled placeholder — it stops
   **new** threads; a thread already running keeps its driver until the idle reap
   (`VIBERPIT_ASSISTANT_IDLE_S`) ends it (spec §8).
+- **Operator tier (Pack O, opt-in)** — `VIBERPIT_ASSISTANT_OPERATOR_TOOLS` (default `false`) or
+  `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools, same
+  env-then-Settings precedence as the kill switch above) registers five deploy/host/account
+  administration tools (`start_deploy`, `upgrade_host`, `refresh_account`, `set_account_enabled`,
+  `start_reauth`) and appends `OPERATOR_TOOLS_ENABLED_LINE` to the system prompt instead of the
+  disabled variant (`server/assistant/prompt.py`, Task 9.3). Off deployments get neither the tools
+  nor the prompt text naming them, so a model on a non-operator deployment has no way to know the
+  tier exists. Takes effect on a thread's next spawn — an already-running assistant keeps the
+  surface it started with until the idle reap.
 - **Engine-neutral, with two different boundaries** — the drawer is not architecturally
   Claude-only. `VIBERPIT_ASSISTANT_ENGINE` (default `claude_code`) selects the overlay via
   `assistant_overlay_for` (`server/assistant/options.py`), and the two overlays are deliberately
@@ -128,8 +137,10 @@ assistant mutation does not make subsequent harness cleanup safe.
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
 - **Tool surface (v2)** — 92 tools are registered in `server/assistant/tools.py`; 87 are exposed by
-  default, Pack O's operator tools registering only once the operator tier is enabled. Pack X is
-  not yet built.
+  default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
+  U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
+  through a different transport (see "Use from other agents" below) and U instruments how the
+  existing tools are used — so neither gets its own pack row.
 
   | Pack | Tools | Surface |
   |---|---|---|
@@ -154,6 +165,16 @@ assistant mutation does not make subsequent harness cleanup safe.
   auto-allow in `PermissionRegistry.request`; they're gated by MCP `ToolAnnotations` per tool class
   (read / mutation / destructive), so mutations surface the same permission card a coding session
   would, and destructive tools can never be marked "always allow".
+- **Proactive notices (Pack N, spec §4.7) are never a model turn** — a fired watch or notification
+  rule with an `assistant` channel reaches the drawer through `SessionOrchestrator.post_notice`
+  (`server/sessions/orchestrator.py`), which appends a `kind="notice"` event straight to the live
+  stream (or queues it, flushed on the next WS attach by `pop_pending_notices`, if no driver is
+  attached) — it never asks Claude to generate the notice text, so a notice costs no tokens, cannot
+  be rate-limited by the per-identity prompt cap, and cannot be talked into saying something else
+  by injected content. The drawer renders it as a card (`NoticeCard.tsx`) with an "Ask about it"
+  action that starts a normal, tool-backed turn. `watch()` / `list_watches()` / `delete_watch()`
+  create, list and remove the underlying rule; `VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY` (default
+  20) caps live watches per identity so a runaway loop can't spam the notification table.
 - **`resolve_decision` (Pack P, spec 2026-09-18 §6)** — accepts or rejects ONE pending decision
   proposal from the Inbox on the person's behalf: `proposal_id`, `decision` (`accept` | `reject`),
   and for an accept a `chosen_key` among the proposal's own option keys. Like every tool here it is
@@ -164,6 +185,14 @@ assistant mutation does not make subsequent harness cleanup safe.
   actors are all 403, because the machine must not answer the question it raised. Reaching the
   routes still requires the route allowlist, which stays deny-by-default, and
   `server/tests/test_assistant_policy.py` carries a `False` row for every new mutating route.
+- **Exclusion table generates the prompt's redirects (spec §4.11)** — `server/assistant/prompt.py`
+  defines `EXCLUSIONS`, the single source for "what the assistant cannot do and where that lives
+  instead" (account/credential changes, Settings writes, Hooks, Library mutations, fleet host
+  add/remove, project/initiative authoring, PR actions beyond `ready_merge_pr`, and deploy/upgrade
+  when the operator tier is off). It renders at import time into the frozen `EXCLUSIONS_TEXT`
+  appended to `ASSISTANT_SYSTEM_PROMPT`, and `test_assistant_prompt.py::test_exclusions_match_spec_table`
+  parses this same table out of the spec's §4.11 markdown and asserts they're identical, so the
+  model's redirects cannot drift from the documented policy.
 - **Injection defence** — data returned by tools (session summaries, transcripts, PR titles) is
   untrusted and framed as such in the system prompt; the eval set includes ≥ 6 injection cases
   (`docs/superpowers/evals/assistant/cases.jsonl`) asserting the model refuses embedded instructions
