@@ -3,6 +3,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from ccswitch import ledger as _ledger
+from ccswitch.quota import anthropic_snapshot
 
 from server.sessions import helper_call
 from server.sessions.helper_call import run_helper_call
@@ -239,8 +241,6 @@ def test_a_denied_account_is_blocked_for_every_helper_subsystem():
 def test_a_blocked_account_is_not_helper_ready_so_the_pickers_fail_over(monkeypatch):
     import contextlib
 
-    from ccswitch import ledger as _ledger
-
     # A ledger that reports the account perfectly healthy — which is exactly what
     # the real one said throughout #1820. Readiness must turn on what the calls
     # learned, not on what the ledger believes.
@@ -267,8 +267,6 @@ def test_org_denied_ledger_status_alone_is_not_helper_ready(monkeypatch):
     session's ledger flip to 'org-denied' (#2244) persists — so readiness must
     also fail on that status directly, with no block in play."""
     import contextlib
-
-    from ccswitch import ledger as _ledger
 
     @contextlib.contextmanager
     def _org_denied_ledger():
@@ -315,8 +313,6 @@ def _rate_limited_stream(*, counter=None):
 def test_rate_limit_bars_the_whole_account_so_pickers_fail_over(monkeypatch):
     import contextlib
 
-    from ccswitch import ledger as _ledger
-
     @contextlib.contextmanager
     def _healthy_ledger():
         yield {}
@@ -353,9 +349,9 @@ def test_rate_limit_two_calls_61s_apart_fail_over_to_a_second_account():
 def test_rate_limit_block_falls_back_to_a_bounded_ttl_with_no_cached_reset():
     clock = Clock()
     _, sleep = _sleeps_recorded()
-    # No account named "acct1" is registered anywhere in this test, so
-    # _account_name_for_cfg_dir finds nothing and the block must fall back to
-    # _RATE_LIMIT_BLOCK_S rather than blocking forever or not at all.
+    # No usage is cached for "acct1" in the real ledger, so _reset_deadline_s
+    # finds nothing and the block must fall back to _RATE_LIMIT_BLOCK_S rather
+    # than blocking forever or not at all.
     asyncio.run(run_helper_call(_rate_limited_stream(), subsystem="test",
                                 account_key="/cfg/acct1", _now=clock, _sleep=sleep))
     clock.advance(helper_call._RATE_LIMIT_BLOCK_S - 1)
@@ -368,9 +364,6 @@ def test_rate_limit_block_uses_the_ledger_cached_reset_time(monkeypatch):
     import contextlib
     from datetime import datetime, timedelta, timezone
 
-    from ccswitch import ledger as _ledger
-    from ccswitch.quota import anthropic_snapshot
-
     # _reset_deadline_s measures against REAL wall-clock time (the deadline is a
     # UTC timestamp from the provider, not something the monotonic test clock
     # can stand in for), so resets_at must be anchored to actual now.
@@ -381,14 +374,13 @@ def test_rate_limit_block_uses_the_ledger_cached_reset_time(monkeypatch):
     @contextlib.contextmanager
     def _ledger_cm():
         yield {}
-    from ccswitch import accounts as _accts
-    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
-    monkeypatch.setattr(_accts, "all_accounts", lambda: [("acct1", "anthropic")])
     monkeypatch.setattr(_ledger, "locked_ledger", _ledger_cm)
     monkeypatch.setattr(_ledger, "stale_usage",
                         lambda led, name, now, max_age: (snapshot, now_utc))
 
-    deadline_s = helper_call._reset_deadline_s("acct1")
+    # "acct1" (the ledger name) comes straight off /cfg/acct1's last path
+    # component — no account registry involved.
+    deadline_s = helper_call._reset_deadline_s("/cfg/acct1")
     assert deadline_s is not None and abs(deadline_s - 3 * 3600) < 5
 
     clock = Clock()

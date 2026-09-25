@@ -59,6 +59,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
+from ccswitch import ledger as _ledger
+
 from . import failure
 
 log = logging.getLogger(__name__)
@@ -128,7 +130,6 @@ def is_account_helper_ready(name: str) -> bool:
     if cfg_dir is None or is_helper_account_blocked(cfg_dir):
         return False
     try:
-        from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as led:
             return (_ledger.is_account_enabled(led, name)
                     and _ledger.get_status(led, name) not in ("needs-reauth", "org-denied"))
@@ -256,42 +257,27 @@ def _note_auth_blocked(config_dir: str, detail: str | None, now: float) -> None:
                    "calls for %.0fs: %r", config_dir, _AUTH_BLOCK_S, detail or "")
 
 
-def _account_name_for_cfg_dir(config_dir: str) -> str | None:
-    """The account name whose config dir is *config_dir*, or None.
+def _reset_deadline_s(config_dir: str) -> float | None:
+    """Seconds until *config_dir*'s account's most-exhausted cached usage window
+    resets, or None when unknown (no cache, or the window carries no reset time).
 
-    The reverse of :func:`_account_cfg_dir`: ``run_helper_call`` only carries
-    the config dir (what it needs to bar the account), but a reset-aware
-    deadline needs the account NAME the ledger keys usage by. A linear scan
-    over ``all_accounts()`` — this only runs on a rate-limit failure, not on
-    the hot picker path.
-    """
-    try:
-        from ccswitch import accounts as _accts
-        for name, _provider in _accts.all_accounts():
-            if _account_cfg_dir(name) == config_dir:
-                return name
-    except Exception:
-        pass
-    return None
-
-
-def _reset_deadline_s(name: str) -> float | None:
-    """Seconds until *name*'s most-exhausted cached usage window resets, or
-    None when unknown (no cache, or the window carries no reset time).
-
-    Reuses the ledger's own cache (:func:`ccswitch.ledger.stale_usage`) rather
+    The account NAME the ledger keys usage by is *config_dir*'s own last path
+    component (:func:`_account_cfg_dir` composes it as ``cfg_root() / name`` —
+    the one relationship this module maps in either direction), so no reverse
+    lookup over the account list is needed. Reads the ledger's own cache rather
     than fetching — a helper call already failed with a rate limit, so a
     network round-trip here would just add load to the throttled account. The
-    BINDING window (``QuotaSnapshot.binding_window`` — the most-used one, the
-    codebase's single definition of "which allowance binds this account") is
-    the one that is actually exhausted, so its reset time is the deadline: a
-    session-only limit clears in hours, a weekly one in days, and this reads
-    whichever one applies without needing to parse which kind the CLI hit.
+    BINDING window (the most-used one, the codebase's single definition of
+    "which allowance binds this account") is the one that is actually
+    exhausted, so its reset time is the deadline: a session-only limit clears
+    in hours, a weekly one in days, and this reads whichever one applies
+    without needing to parse which kind the CLI hit.
     """
+    name = Path(config_dir).name
+    if not name:
+        return None
     try:
         from datetime import datetime, timezone
-
-        from ccswitch import ledger as _ledger
         now = datetime.now(timezone.utc)
         with _ledger.locked_ledger() as led:
             stale = _ledger.stale_usage(led, name, now, _RESET_LOOKUP_MAX_AGE_S)
@@ -310,8 +296,7 @@ def _reset_deadline_s(name: str) -> float | None:
 def _note_rate_limited(config_dir: str, detail: str | None, now: float) -> None:
     """Bar *config_dir*'s account from helper duty until its usage resets (or a
     bounded fallback), and say why, once per block."""
-    name = _account_name_for_cfg_dir(config_dir)
-    block_s = (name and _reset_deadline_s(name)) or _RATE_LIMIT_BLOCK_S
+    block_s = _reset_deadline_s(config_dir) or _RATE_LIMIT_BLOCK_S
     _block_account(config_dir, now, block_s,
                    "helper account %s is rate-limited — barred from helper calls "
                    "for %.0fs: %r", config_dir, block_s, detail or "")
