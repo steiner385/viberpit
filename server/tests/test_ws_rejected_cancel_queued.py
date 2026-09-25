@@ -10,6 +10,7 @@ gets an error frame naming the rejection.
 from __future__ import annotations
 
 import json
+import logging
 
 from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events, ws_env  # noqa: F401
 
@@ -35,3 +36,28 @@ def test_rejected_cancel_queued_surfaces_an_error_frame(ws_env):  # noqa: F811 �
         assert err.get("sessionId") == session_id
 
     client.portal.call(orch.close_session, session_id)
+
+
+def test_rejected_cancel_queued_logs_at_info(ws_env, caplog):  # noqa: F811 — pytest fixture
+    """A stale-index cancel is an ordinary click on a chip the queue already
+    moved past — INFO, so it does not auto-file an error report (#1944)."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(
+        lambda: orch.create_session("test-rejected-cancel-log", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            _drain_events(ws, until_type="replayComplete")
+            ws.send_text(json.dumps({
+                "type": "cancelQueued", "sessionId": session_id, "index": 5,
+            }))
+            _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=5.0)
+
+    client.portal.call(orch.close_session, session_id)
+
+    rejected = [r for r in caplog.records if "ws.cancel_queued rejected" in r.message]
+    assert rejected, "expected a ws.cancel_queued rejected log line"
+    assert all(r.levelno == logging.INFO for r in rejected)

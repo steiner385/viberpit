@@ -1934,9 +1934,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # permissionResponse (issue #917): a cancel the daemon
                         # can't honor (stale index — the queue already
                         # drained/shifted — or no live driver) must surface,
-                        # not 200-and-vanish while the chip stays put.
-                        log.warning("ws.cancel_queued rejected session=%s index=%s identity=%s",
-                                    session_id, index, identity)
+                        # not 200-and-vanish while the chip stays put. INFO, not
+                        # WARNING: both causes are an ordinary stale click (the
+                        # user was reacting to a chip the queue had already moved
+                        # past), the client is told via the frame below, and a
+                        # WARNING here auto-files an error report per click (#1944).
+                        log.info("ws.cancel_queued rejected session=%s index=%s identity=%s",
+                                 session_id, index, identity)
                         await _send({"type": "error", "code": "QUEUED_NOT_FOUND",
                                      "message": "That queued prompt is no longer in the queue "
                                                 "— it may have already run or been removed. "
