@@ -33,16 +33,34 @@ describe('SessionSocket close logging', () => {
     if (realWebSocket) globalThis.WebSocket = realWebSocket
   })
 
-  it('warns on unexpected close code (1006)', async () => {
+  it('logs an abnormal transport drop (1006) at info, not warn', async () => {
+    const warnSpy = vi.spyOn(clientLogger, 'warn')
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const { SessionSocket } = await import('@/ws/client')
+    const sock = new SessionSocket('ws://localhost/ws')
+    sock.connect()
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
+    ws.onclose?.({ code: 1006, reason: '' } as CloseEvent)
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('1006'),
+      expect.any(Object),
+    )
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('code='),
+      expect.any(Object),
+    )
+    sock.destroy()
+  })
+
+  it('warns on a server-signalled unexpected close code (1011)', async () => {
     const spy = vi.spyOn(clientLogger, 'warn')
     const { SessionSocket } = await import('@/ws/client')
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
-    // Directly invoke the installed onclose handler with an unexpected code
     const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
-    ws.onclose?.({ code: 1006, reason: '' } as CloseEvent)
+    ws.onclose?.({ code: 1011, reason: 'internal error' } as CloseEvent)
     expect(spy).toHaveBeenCalledWith(
-      expect.stringContaining('1006'),
+      expect.stringContaining('1011'),
       expect.any(Object),
     )
     sock.destroy()

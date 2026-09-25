@@ -219,9 +219,20 @@ export class SessionSocket {
     ws.onclose = (e: CloseEvent) => {
       this._clearStableTimer()
       if (this._destroyed) return
-      // 1000 = normal, 1001 = navigation; anything else is unexpected and worth logging.
+      // 1000 = normal, 1001 = navigation; neither is worth logging.
       const expected = e.code === 1000 || e.code === 1001
-      if (!expected) {
+      // 1006 = abnormal closure with no close frame — the browser's catch-all for a
+      // dropped TCP connection (wifi handoff, laptop sleep, a proxy/LB idle-timing out
+      // the socket, a deploy restart). It carries no server-side signal at all (unlike
+      // e.g. 1011 = server error), reconnect already handles it, and it fired ~250+
+      // times/day of pure noise with nothing actionable in it (#1489) — same shape as
+      // the onerror demotion in #1570. Anything else unexpected still warns.
+      if (!expected && e.code === 1006) {
+        clientLogger.info(`ws closed code=${e.code}`, {
+          sessionId: this._activeSessionId ?? undefined,
+          stack: e.reason || undefined,
+        })
+      } else if (!expected) {
         clientLogger.warn(`ws closed code=${e.code}`, {
           sessionId: this._activeSessionId ?? undefined,
           stack: e.reason || undefined,
