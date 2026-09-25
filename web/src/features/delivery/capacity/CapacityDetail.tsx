@@ -265,14 +265,6 @@ export function CapacityDetail() {
   // runner key. Runner/governor patches save first, then one sequential PATCH
   // per dirty pin row (stopping at the first failure); the existing `SaveBar`
   // does the dirty/saving/saved chrome for all of it.
-  //
-  // KNOWN GAP (#2380, deferred from #2032): `useSettingsForm`'s dirty check
-  // (`isDirty`) is whole-object, not per-field, so while ANY field here is
-  // dirty a readout refetch reflecting a DIFFERENT editor's concurrent pin
-  // change on an untouched row is dropped (`nextDraft` keeps the whole stale
-  // draft) — a later Save can re-send that row's stale value and clobber the
-  // other editor's change. Needs concurrent editors to manifest; the fix is
-  // per-field dirty tracking, tracked separately rather than in this pass.
   const draftInitial = useMemo(
     () => (readout ? seedCapacityDraft(readout, runner?.config ?? null, governor?.config ?? null) : undefined),
     [readout, runner, governor],

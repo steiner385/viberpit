@@ -26,9 +26,18 @@ export function isDirty<T extends object>(initial: T, draft: T): boolean {
   return (Object.keys(initial) as (keyof T)[]).some((k) => !Object.is(initial[k], draft[k]))
 }
 
-/** Pure: what the draft should be when `initial` changes. A dirty draft is never clobbered. */
+/**
+ * Pure: what the draft should be when `initial` changes. Merged per field — a
+ * field the user edited (differs from `prevInitial`) is never clobbered, but an
+ * untouched one always tracks the latest server value, so a refetch carrying
+ * another editor's change is not dropped just because a sibling field is dirty.
+ */
 export function nextDraft<T extends object>(prevInitial: T, draft: T, newInitial: T): T {
-  return isDirty(prevInitial, draft) ? draft : newInitial
+  const next = { ...newInitial }
+  for (const k of Object.keys(draft) as (keyof T)[]) {
+    if (!Object.is(prevInitial[k], draft[k])) next[k] = draft[k]
+  }
+  return next
 }
 
 /**

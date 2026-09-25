@@ -19,6 +19,7 @@ function Harness({ initial, save, beforeSave }: {
   return (
     <div>
       <input aria-label="Repo" value={form.draft.repoRoot} onChange={(e) => form.set('repoRoot', e.target.value)} />
+      <input aria-label="Max" type="number" value={form.draft.maxActive} onChange={(e) => form.set('maxActive', Number(e.target.value))} />
       {form.error && <p role="alert">{form.error}</p>}
       <SaveBar form={form} />
       <Link to="/elsewhere">leave</Link>
@@ -192,6 +193,15 @@ describe('useSettingsForm + SaveBar', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
   })
 
+  it('a refetch re-seeds an untouched field while a sibling field is dirty (#2380)', async () => {
+    mount(<Refetchable save={vi.fn()} start={{ repoRoot: '/a', maxActive: 3 }} />)
+    await userEvent.type(screen.getByLabelText('Repo'), 'b')
+    await userEvent.click(screen.getByRole('button', { name: 'refetch' }))
+    expect(screen.getByLabelText('Repo')).toHaveValue('/ab')
+    expect(screen.getByLabelText('Max')).toHaveValue(5)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
   it('guards a browser reload only while dirty', async () => {
     const add = vi.spyOn(window, 'addEventListener')
     const remove = vi.spyOn(window, 'removeEventListener')
@@ -210,6 +220,13 @@ describe('nextDraft', () => {
   it('keeps a dirty draft, replaces a clean one', () => {
     expect(nextDraft({ a: 1 }, { a: 1 }, { a: 2 })).toEqual({ a: 2 })      // clean → re-seed
     expect(nextDraft({ a: 1 }, { a: 9 }, { a: 2 })).toEqual({ a: 9 })      // dirty → keep
+  })
+
+  it('merges per field: a dirty field is kept, an untouched one tracks the server (#2380)', () => {
+    expect(nextDraft({ a: 1, b: 1 }, { a: 9, b: 1 }, { a: 2, b: 7 })).toEqual({ a: 9, b: 7 })
+    // A key the server dropped is dropped when clean, kept when the user edited it.
+    expect(nextDraft({ a: 1, b: 1 } as Record<string, number>, { a: 1, b: 5 }, { a: 1 })).toEqual({ a: 1, b: 5 })
+    expect(nextDraft({ a: 1, b: 1 } as Record<string, number>, { a: 1, b: 1 }, { a: 1 })).toEqual({ a: 1 })
   })
 })
 
