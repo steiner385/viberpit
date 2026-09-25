@@ -1,11 +1,15 @@
 """PmSyncLoop tests — backfill resumption, watermark rules, per-repo isolation."""
+import logging
 from datetime import datetime, timezone
 
 import pytest
 
 from server.automations.pm_sync import PmSyncLoop, RepoSyncView
+from server.github import host_failures
 from server.pm.feature_index import FeatureDocsRead
 from server.pm.map_changes import Pointer
+
+from .test_gh_host_failures import STDERR_RATE_LIMITED_IP, STDERR_UNREACHABLE
 
 
 class Ctx:
@@ -257,6 +261,73 @@ async def test_one_repo_failure_does_not_stall_others():
     loop._fetch = fetch
     await loop.tick()
     assert calls["n"] == 2  # good repo fully synced despite bad repo failing
+
+
+@pytest.fixture(autouse=True)
+def _fresh_host_throttle():
+    """The host-condition collapse window is module state on host_failures; each
+    test here starts at first sighting, same isolation as test_gh_host_failures.py."""
+    host_failures._HOST_THROTTLE.clear()
+    yield
+    host_failures._HOST_THROTTLE.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stderr", [STDERR_UNREACHABLE, STDERR_RATE_LIMITED_IP])
+async def test_repo_error_collapses_a_host_condition_instead_of_fanning_out(
+        stderr, caplog):
+    """A dead network or an unauthenticated-IP rate limit hits every repo's
+    fetch in the same tick — filing ``pm_sync.repo_error`` at WARNING per repo
+    re-mints the fan-out host_failures.py already fixed for ci_issues,
+    deployments and pr_poller on this exact incident (#1917-#1921, one outage
+    on 2026-09-17 filed as five per-repo issues). It must route through
+    log_gh_failure and collapse into the one host record instead."""
+    ctx = Ctx()
+    views = [_view(repo="o/bad"), _view(repo="o/good", project_id="p2")]
+    ok_pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def fetch(query):
+        if '"bad"' in query:
+            raise RuntimeError(f"gh graphql failed: {stderr}")
+        return ok_pages.pop(0)
+
+    loop, saved, upserted, applied = _loop(ctx, views, [])
+    loop._fetch = fetch
+    with caplog.at_level(logging.DEBUG):
+        await loop.tick()
+
+    repo_records = [r for r in caplog.records if r.name == "server.automations.pm_sync"]
+    warned = [r for r in repo_records if r.levelno >= logging.WARNING]
+    assert warned == [], f"a host condition must not warn per-repo: {[r.getMessage() for r in warned]}"
+    debugged = [r for r in repo_records if r.levelno == logging.DEBUG]
+    assert any("pm_sync.repo_error repo=o/bad" in r.getMessage() for r in debugged)
+
+    host_records = [r for r in caplog.records if r.name == "server.github.host"]
+    assert any(r.levelno == logging.WARNING for r in host_records)
+
+
+@pytest.mark.asyncio
+async def test_repo_error_still_warns_for_a_non_host_failure(caplog):
+    """The demotion is specific to a recognized host condition — any other
+    per-repo failure keeps reporting at WARNING with repo= exactly as before."""
+    ctx = Ctx()
+    views = [_view(repo="o/bad"), _view(repo="o/good", project_id="p2")]
+    ok_pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def fetch(query):
+        if '"bad"' in query:
+            raise RuntimeError("gh graphql failed: gh: not found (HTTP 404)")
+        return ok_pages.pop(0)
+
+    loop, saved, upserted, applied = _loop(ctx, views, [])
+    loop._fetch = fetch
+    with caplog.at_level(logging.DEBUG):
+        await loop.tick()
+
+    warned = [r for r in caplog.records
+              if r.name == "server.automations.pm_sync" and r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+    assert "pm_sync.repo_error repo=o/bad" in warned[0].getMessage()
 
 
 @pytest.mark.asyncio
