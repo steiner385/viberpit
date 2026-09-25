@@ -67,7 +67,7 @@ function eta(secs: number | null): string | null {
 }
 
 
-export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: controlledFilter, onFilter }: {
+export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: controlledFilter, onFilter, portrait }: {
   /** Non-null: the page renders its own loading skeleton before the first
    *  frame and only mounts the board once a frame exists. */
   state: DashboardState;
@@ -77,6 +77,13 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
    *  filter and internal state is bypassed. Omit for the standalone/uncontrolled use. */
   activeFilter?: Bucket | null;
   onFilter?: (bucket: Bucket | null) => void;
+  /** `useViewport().portrait` (#1407, FB-2), threaded by the host rather than
+   *  read here directly — `PipelineView` renders standalone in tests with no
+   *  `ViewportProvider` in the tree. Defaults to landscape composition, same
+   *  as before this prop existed. Drives `.pipeline-portrait` in plotroom.css,
+   *  which lets the queue train wrap instead of relying on pointer-only
+   *  horizontal scroll a kiosk viewer cannot use. */
+  portrait?: boolean;
 }) {
   const [ownFilter, setOwnFilter] = useState<Bucket | null>(null);
   const activeFilter = controlledFilter !== undefined ? controlledFilter : ownFilter;
@@ -106,7 +113,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   return (
     // The Workspace variant mounts this pane under a `scroll={false}`
     // PageContent, so the pane itself is what scrolls.
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 md:px-6">
+    <div className={`flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 md:px-6${portrait ? ' pipeline-portrait' : ''}`}>
       <h2 className="sr-only">Pipeline</h2>
       <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setFilter} />
       {repos.map((r) => {

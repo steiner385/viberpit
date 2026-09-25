@@ -41,6 +41,19 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(container.firstElementChild).toHaveClass('overflow-y-auto');
   });
 
+  // #1407 (G09, FB-2/AC-2.5): `portrait` is a prop, not a direct `useViewport()`
+  // read, precisely so this file's other renders (no ViewportProvider in the
+  // tree) keep working unchanged — this is the one test that exercises it.
+  it('defaults to landscape composition (no .pipeline-portrait) when portrait is omitted', () => {
+    const { container } = render(<PipelineView state={state()} focusedRepo={null} />);
+    expect(container.firstElementChild).not.toHaveClass('pipeline-portrait');
+  });
+
+  it('adds .pipeline-portrait when the host reports a portrait kiosk viewport', () => {
+    const { container } = render(<PipelineView state={state()} focusedRepo={null} portrait />);
+    expect(container.firstElementChild).toHaveClass('pipeline-portrait');
+  });
+
   it('has a section heading matching its rail label (#184)', () => {
     render(<PipelineView state={state()} focusedRepo={null} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Pipeline' })).toBeInTheDocument();

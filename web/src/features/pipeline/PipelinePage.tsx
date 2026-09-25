@@ -48,7 +48,7 @@ function Inner() {
   // Kiosk is read ONCE by the shell (`AppShell` → `ViewportProvider`); the page
   // must never re-parse the URL, or a mid-session `?kiosk=1` could flip the
   // interaction model under a user's hands.
-  const { mode, kiosk } = useViewport()
+  const { mode, kiosk, portrait } = useViewport()
   const isKiosk = mode === 'kiosk'
   const fixPr = useFixPr()
   // Depend on the stable `fixPr.mutate` (not the whole `fixPr` object, a fresh
@@ -151,6 +151,7 @@ function Inner() {
                 onFixPr={onFixPr}
                 activeFilter={filter}
                 onFilter={setFilter}
+                portrait={portrait}
               />
             </div>
           )}
