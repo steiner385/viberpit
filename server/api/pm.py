@@ -34,6 +34,7 @@ from server.db.models import (
     GhProject,
     GhProjectItem,
     Initiative,
+    InitiativeArtifact,
     InitiativeFeature,
     Project,
     ProjectEdge,
@@ -340,6 +341,26 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
                 ] if slug_by_id else []
     inits = (await db.execute(select(Initiative).where(Initiative.project_id == p.id))).scalars().all()
     ids = [i.id for i in inits]
+    slug_by_init_id = {i.id: i.slug or "" for i in inits}
+    artifacts: list[tuple[str, bool | None, str | None, tuple[str, ...]]] = []
+    epic_refs: set[str] = set()
+    if ids:
+        for art in (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.initiative_id.in_(ids),
+                InitiativeArtifact.repo_path.is_not(None),
+                InitiativeArtifact.commit_sha.is_not(None)))).scalars().all():
+            caps_ = tuple(art.frontmatter_capabilities or ())
+            artifacts.append((slug_by_init_id.get(art.initiative_id, ""),
+                              art.frontmatter_present, art.frontmatter_epic, caps_))
+            if art.frontmatter_epic:
+                epic_refs.add(art.frontmatter_epic)
+    epic_state: dict[str, str] = {}
+    if epic_refs:
+        for repo, number, state in (await db.execute(select(
+                WorkItem.repo, WorkItem.number, WorkItem.state).where(
+                tuple_(WorkItem.repo, WorkItem.number).in_(
+                    [(ref.rsplit("#", 1)[0], int(ref.rsplit("#", 1)[1])) for ref in epic_refs])))).all():
+            epic_state[f"{repo}#{number}"] = state or ""
     link_counts: dict[str, int] = {}
     parents_with_kids: set[str] = set()
     if ids:
@@ -365,7 +386,8 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
                                     i.stage == "done" or i.status == "done") for i in inits],
                        proposals=props, now=now, unindexed_docs=unindexed,
                        governance=p.constitution_status, evidence=evidence,
-                       doc_committed={f.slug: f.doc_committed_at for f in feats})
+                       doc_committed={f.slug: f.doc_committed_at for f in feats},
+                       artifacts=artifacts, epic_state=epic_state)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
@@ -376,6 +398,10 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             "untestedCapabilities": list(h.untested_capabilities),
             "codeWithoutSpecs": list(h.code_without_specs),
             "stateBehindSpec": list(h.state_behind_spec),
+            "artifactsEpicClosedNotDone": list(h.artifacts_epic_closed_not_done),
+            "artifactsUnknownCapability": [{"initiative": i, "capability": c}
+                                          for i, c in h.artifacts_unknown_capability],
+            "artifactsMissingFrontmatter": list(h.artifacts_missing_frontmatter),
             "generatedAt": now.isoformat()}
 
 

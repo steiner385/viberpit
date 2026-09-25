@@ -1507,6 +1507,20 @@ class InitiativeArtifact(Base):
     #: A refusal deliberately leaves it None so the next tick retries.
     auto_merge_armed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None)
+    # --- artifact frontmatter contract (issue #2161) ---
+    # Whether pm-sync's last successful read of `repo_path` found a `---`
+    # frontmatter fence at all. None = never checked (no committed doc read
+    # yet, or every read so far has failed); False is the only value
+    # `roadmap_health` treats as "flag it" — a genuine absence, not an
+    # unchecked row (server/pm/artifactdoc.py module docstring).
+    frontmatter_present: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # The frontmatter's `epic:` value verbatim ("owner/repo#N"), or None if
+    # unstated. Backs `roadmap_health`'s "epic closed but initiative not done"
+    # check; never written back to `epic_repo`/`epic_number` here — that
+    # happens on the owning Initiative (see apply_artifact_frontmatter).
+    frontmatter_epic: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The frontmatter's `capabilities:` list verbatim, or None if unstated.
+    frontmatter_capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
 

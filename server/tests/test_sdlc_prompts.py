@@ -58,6 +58,23 @@ def test_co_authored_by(prompt):
     assert "Co-Authored-By" in prompt
 
 
+@pytest.mark.parametrize("prompt", _all_prompts())
+def test_instructs_frontmatter_contract(prompt):
+    """Issue #2161: every stage session must be told to write the initiative↔
+    capability↔epic frontmatter fence, so the planning relationships are
+    version-controlled instead of DB-only."""
+    assert f"initiative: {SLUG}" in prompt
+    assert "capabilities:" in prompt
+    assert "epic:" in prompt
+    assert "OPTIONAL" in prompt
+
+
+def test_frontmatter_kind_matches_the_artifact_it_produces():
+    assert "kind: intent" in build_intent_prompt("t", slug=SLUG)
+    assert "kind: spec" in build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG)
+    assert "kind: plan" in build_plan_prompt(SPEC_MD, slug=SLUG)
+
+
 # --------------------------------------------------------------------------- #
 # intent                                                                       #
 # --------------------------------------------------------------------------- #

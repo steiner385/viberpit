@@ -22,6 +22,8 @@ from server.pm.feature_index import (
     FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.evidence import PathResolution
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
+from server.pm.artifactdoc import ArtifactDocError, parse_artifact_doc
+from server.pm.artifact_sync_seams import ArtifactFrontmatterResult
 from server.pm.gh_projects import (
     GhProjectItemView, GhProjectView, IssueRelView,
     build_issue_relations_query, build_owner_projects_query,
@@ -176,6 +178,17 @@ RenameRepo = Callable[[str, str], Awaitable[dict]]
 # stage=build (arg: project_id) -> the refs ("repo#number") adopted (#991).
 AdoptEpics = Callable[[str], Awaitable[list[str]]]
 
+# --- artifact frontmatter contract (issue #2161) -----------------------------
+# Every committed docs/sdlc/<slug>/<kind>.md for one project's initiatives in
+# one repo (args: project_id, repo).
+ListCommittedArtifacts = Callable[[str, str], Awaitable[list]]
+# Read one committed artifact's text off the primary repo's default branch
+# (repo, path) -> text, or None on a read failure (best-effort, same posture
+# as ReadConstitution — a transient git error must not poison the DB).
+ReadArtifactDoc = Callable[..., Awaitable[str | None]]
+# Persist a batch of ArtifactFrontmatterResult (project_id, results) -> None.
+ApplyArtifactFrontmatter = Callable[[str, list], Awaitable[None]]
+
 
 class PmSyncLoop:
     """One ``tick()`` syncs every due repo: backfill pages (resumable) or an
@@ -208,6 +221,9 @@ class PmSyncLoop:
         rename_repo: RenameRepo | None = None,
         adopt_epics: AdoptEpics | None = None,
         resolve_evidence_paths: ResolveEvidencePaths | None = None,
+        list_committed_artifacts: ListCommittedArtifacts | None = None,
+        read_artifact_doc: ReadArtifactDoc | None = None,
+        apply_artifact_frontmatter: ApplyArtifactFrontmatter | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -240,6 +256,12 @@ class PmSyncLoop:
         self._rename_repo = rename_repo
         # None ⇒ epic adoption is skipped (issue #991).
         self._adopt_epics = adopt_epics
+        # None (any of the three) ⇒ no artifact-frontmatter pass (issue #2161)
+        # — every pre-existing PmSyncLoop caller keeps today's behaviour.
+        self._list_committed_artifacts = list_committed_artifacts
+        self._read_artifact_doc = read_artifact_doc
+        self._apply_artifact_frontmatter = apply_artifact_frontmatter
+        self._bad_artifact_doc_log = LogThrottle()
         # Projects v2 pass gating (issue #973). In-memory on the long-lived loop:
         # ``_projects_next_run`` is the earliest UTC time the pass may run again;
         # ``_last_gh_projects`` keeps the status count steady across skipped ticks;
@@ -572,6 +594,7 @@ class PmSyncLoop:
                     last_synced_at=now, sync_requested_at=None)
                 await self._feature_index(view)
                 await self._governance_check(view)
+                await self._artifact_frontmatter_sync(view)
                 await self._ctx.emit("info", f"backfill complete for {view.repo}",
                                      kind="backfill_done", target=view.repo)
                 return True
@@ -619,6 +642,7 @@ class PmSyncLoop:
         await self._map_changes_lifecycle(view)
         await self._feature_index(view)
         await self._governance_check(view)
+        await self._artifact_frontmatter_sync(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
             sync_requested_at=None)
@@ -817,6 +841,50 @@ class PmSyncLoop:
                 log, str(exc), "pm_sync.constitution_read_failed repo=%s", view.repo, exc_info=True)
             return
         await self._save_constitution_status(view.project_id, classify_document(text))
+
+    async def _artifact_frontmatter_sync(self, view: RepoSyncView) -> None:
+        """Best-effort per-primary-repo pass (issue #2161): re-read every
+        committed ``docs/sdlc/<slug>/<kind>.md`` and back-fill the initiative↔
+        capability↔epic links the frontmatter states, so they are
+        version-controlled rather than DB-only. One artifact's read failure
+        or unparseable frontmatter is skipped, never poisoning the batch —
+        the same "one bad doc" posture as ``_feature_index``, but per-artifact
+        rather than atomic-or-raise, since each committed artifact is an
+        independent file with its own git history."""
+        if (not view.is_primary or self._list_committed_artifacts is None
+                or self._read_artifact_doc is None or self._apply_artifact_frontmatter is None):
+            return
+        try:
+            artifacts = await self._list_committed_artifacts(view.project_id, view.repo)
+        except Exception:
+            self._observation_degraded = True
+            log.warning("pm_sync.artifact_list_failed project=%s", view.project_id, exc_info=True)
+            return
+        results: list[ArtifactFrontmatterResult] = []
+        for art in artifacts:
+            try:
+                text = await self._read_artifact_doc(view.repo, art.repo_path)
+            except Exception:
+                self._observation_degraded = True
+                log.warning("pm_sync.artifact_read_failed repo=%s path=%s",
+                            view.repo, art.repo_path, exc_info=True)
+                continue
+            if text is None:
+                continue  # unreadable this pass — leave the last known answer in place
+            try:
+                doc = parse_artifact_doc(text, slug=art.initiative_slug, kind=art.kind)
+            except ArtifactDocError as e:
+                log_event_throttled(
+                    log, self._bad_artifact_doc_log, f"{view.repo}\0{art.repo_path}\0{e}",
+                    logging.WARNING, "pm_sync.bad_artifact_doc",
+                    repo=view.repo, path=art.repo_path)
+                continue
+            results.append(ArtifactFrontmatterResult(
+                artifact_id=art.artifact_id, initiative_id=art.initiative_id,
+                frontmatter_present=text.startswith("---"),
+                epic=doc.epic, capabilities=doc.capabilities))
+        if results:
+            await self._apply_artifact_frontmatter(view.project_id, results)
 
     def _stash(self, synced: int, backfilling: int, errors: int,
                gh_projects: int = 0) -> None:

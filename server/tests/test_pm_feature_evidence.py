@@ -307,6 +307,51 @@ def test_health_endpoint_reports_evidence_findings():
     assert h["stateBehindSpec"] == ["tasks"]
 
 
+def test_health_endpoint_reports_artifact_frontmatter_findings():
+    """Issue #2161: a committed initiative artifact's frontmatter — read by
+    pm-sync and stamped onto InitiativeArtifact — surfaces through the same
+    health endpoint as a closed-epic-not-done initiative, an unknown-capability
+    reference, and a missing-frontmatter flag."""
+    from server.db import db_session
+    from server.db.models import Feature, Initiative, InitiativeArtifact, Project, WorkItem
+
+    async def _seed():
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash", onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(Feature(project_id=p.id, slug="tasks", title="Tasks", state="live"))
+            ini_a = Initiative(project_id=p.id, repo="o/r", slug="init-closed-epic", status="active")
+            ini_b = Initiative(project_id=p.id, repo="o/r", slug="init-no-frontmatter", status="active")
+            db.add_all([ini_a, ini_b])
+            await db.flush()
+            db.add_all([
+                InitiativeArtifact(initiative_id=ini_a.id, kind="spec",
+                                   repo_path="docs/sdlc/init-closed-epic/spec.md", commit_sha="sha1",
+                                   frontmatter_present=True, frontmatter_epic="o/r#9",
+                                   frontmatter_capabilities=["ghost-capability"]),
+                InitiativeArtifact(initiative_id=ini_b.id, kind="intent",
+                                   repo_path="docs/sdlc/init-no-frontmatter/intent.md", commit_sha="sha2",
+                                   frontmatter_present=False),
+                WorkItem(repo="o/r", number=9, kind="issue", state="closed"),
+            ])
+
+    with _db():
+        asyncio.run(_seed())
+        from fastapi.testclient import TestClient
+
+        from server.app import create_app
+        from server.sessions.orchestrator import SessionOrchestrator
+        from server.tests.fakes.fake_factory import fake_sdk_factory
+        app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+        with TestClient(app, raise_server_exceptions=False) as c:
+            h = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+    assert h["artifactsEpicClosedNotDone"] == ["init-closed-epic"]
+    assert h["artifactsUnknownCapability"] == [
+        {"initiative": "init-closed-epic", "capability": "ghost-capability"}]
+    assert h["artifactsMissingFrontmatter"] == ["init-no-frontmatter"]
+
+
 # --- daemon resolver (real git) ---------------------------------------------
 
 def test_daemon_resolver_reads_the_tree_and_last_commit_times(tmp_path):

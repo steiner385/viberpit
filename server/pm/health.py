@@ -33,6 +33,17 @@ class RoadmapHealth:
     # capabilities whose doc (and so its `state`) last changed before their
     # newest linked spec did — the spec moved on, the state may not have.
     state_behind_spec: tuple[str, ...] = ()
+    # Artifact frontmatter contract (issue #2161). Initiative slugs whose
+    # committed artifact names an `epic:` that's closed while the initiative
+    # itself isn't `done` — the file and the board disagree about whether the
+    # work is finished.
+    artifacts_epic_closed_not_done: tuple[str, ...] = ()
+    # (initiative slug, capability slug) for every frontmatter `capabilities:`
+    # entry that names no indexed Feature in the project.
+    artifacts_unknown_capability: tuple[tuple[str, str], ...] = ()
+    # Initiative slugs with a committed artifact whose last frontmatter read
+    # found no `---` fence at all.
+    artifacts_missing_frontmatter: tuple[str, ...] = ()
 
 
 def _evidence_health(
@@ -63,6 +74,26 @@ def _evidence_health(
     return tuple(sorted(dangling)), untested, unspecced, behind
 
 
+def _artifact_health(
+    known_capabilities: set[str],
+    done_by_slug: Mapping[str, bool],
+    artifacts: Iterable[tuple[str, bool | None, str | None, tuple[str, ...]]],
+    epic_state: Mapping[str, str],
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[str, ...]]:
+    epic_closed: set[str] = set()
+    unknown_cap: set[tuple[str, str]] = set()
+    missing_fm: set[str] = set()
+    for slug, present, epic, caps in artifacts:
+        if present is False:
+            missing_fm.add(slug)
+        if epic and epic_state.get(epic) == "closed" and not done_by_slug.get(slug, False):
+            epic_closed.add(slug)
+        for cap in caps:
+            if cap not in known_capabilities:
+                unknown_cap.add((slug, cap))
+    return tuple(sorted(epic_closed)), tuple(sorted(unknown_cap)), tuple(sorted(missing_fm))
+
+
 def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, datetime | None]],
                    initiatives: Iterable[tuple[str, int, bool, bool]],
                    proposals: Iterable[datetime | None],
@@ -71,8 +102,11 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
                    governance: str | None = None,
                    evidence: Iterable[tuple[str, str, str, bool | None, datetime | None]] = (),
                    doc_committed: Mapping[str, datetime | None] | None = None,
+                   artifacts: Iterable[tuple[str, bool | None, str | None, tuple[str, ...]]] = (),
+                   epic_state: Mapping[str, str] | None = None,
                    ) -> RoadmapHealth:
     caps = list(capabilities)
+    inits = list(initiatives)
     has_child = {p for _, p, _, _ in caps if p}
     tree_in_use = any(p is None and s in has_child for s, p, _, _ in caps)
     unparented = tuple(sorted(s for s, p, _, _ in caps
@@ -80,7 +114,7 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
     # A program (`prog`) is judged by its phases, never itself — and a `done`
     # initiative (leaf or program) is finished, not drifting, so neither
     # belongs in the "needs a capability" readout.
-    unlinked = tuple(sorted(s for s, n, prog, done in initiatives if n == 0 and not prog and not done))
+    unlinked = tuple(sorted(s for s, n, prog, done in inits if n == 0 and not prog and not done))
     cutoff = now - timedelta(days=stale_days)
     stale = tuple(sorted(s for s, _, st, upd in caps
                          if st == "proposed" and upd is not None and _aware(upd) < cutoff))
@@ -88,8 +122,13 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
     stale_inbox = sum(1 for c in proposals if c is not None and _aware(c) < inbox_cutoff)
     unindexed = tuple(sorted(unindexed_docs))
     dangling, untested, unspecced, behind = _evidence_health(caps, evidence, doc_committed or {})
+    done_by_slug = {s: done for s, _, _, done in inits}
+    known_caps = {s for s, _, _, _ in caps}
+    epic_closed, unknown_cap, missing_fm = _artifact_health(
+        known_caps, done_by_slug, artifacts, epic_state or {})
     return RoadmapHealth(unparented, unlinked, stale, stale_inbox, unindexed, governance,
-                         dangling, untested, unspecced, behind)
+                         dangling, untested, unspecced, behind,
+                         epic_closed, unknown_cap, missing_fm)
 
 
 def _aware(dt: datetime) -> datetime:
