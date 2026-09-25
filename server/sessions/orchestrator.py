@@ -11299,6 +11299,12 @@ class SessionOrchestrator:
         if kind == "spec" and ini.get("origin") == "epic-adoption":
             epic_upstream = await self._sdlc_epic_upstream_text(
                 ini.get("epic_repo"), ini.get("epic_number"))
+        # Personas (#2447): resolved for every spec spawn, not only
+        # epic-adoption ones — unlike the epic-body substitute, this augments
+        # a normal intent.md read rather than replacing it.
+        persona_docs: list[tuple[str, str]] | None = None
+        if kind == "spec":
+            persona_docs = await self._sdlc_capability_personas(ini.get("id"))
 
         def build(cwd: str, default_branch: str) -> str:
             if epic_upstream is not None:
@@ -11312,10 +11318,16 @@ class SessionOrchestrator:
                     cwd, f"origin/{default_branch}", const_path)
                 const_text = (None if raw_const_text.startswith(_SDLC_UNREADABLE_PREFIX)
                              else raw_const_text)
+                persona_texts: list[tuple[str, str]] = []
+                for pslug, repo_path in (persona_docs or []):
+                    body = self._sdlc_show_committed_file(
+                        cwd, f"origin/{default_branch}", repo_path)
+                    if not body.startswith(_SDLC_UNREADABLE_PREFIX):
+                        persona_texts.append((pslug, body))
                 return build_spec_prompt(
                     content, [], slug=slug, repo=repo, default_branch=default_branch,
                     engine=engine, constitution=const_text, constitution_path=const_path,
-                    layout=layout)
+                    layout=layout, personas=persona_texts or None)
             return build_plan_prompt(
                 content, slug=slug, repo=repo, default_branch=default_branch,
                 engine=engine, layout=layout)
@@ -11380,6 +11392,34 @@ class SessionOrchestrator:
             parts += ["", f"## #{child.number} {child.title or ''}".rstrip(),
                      child.body or "_(no body)_"]
         return "\n".join(parts), ref
+
+    async def _sdlc_capability_personas(
+            self, initiative_id: str | None,
+    ) -> list[tuple[str, str]] | None:
+        """(slug, repo_path) for every LIVE persona `PersonaFeature` resolved
+        onto *initiative_id*'s PRIMARY capability (#2447) — or ``None`` when
+        the initiative has no primary capability (`InitiativeFeature.is_primary`,
+        `server/api/sdlc.py`'s existing link, not a new column), same
+        optional-pointer posture as `_sdlc_epic_upstream_text`'s epic pointer.
+        The caller reads each doc body off git; this only resolves WHICH docs."""
+        if not initiative_id:
+            return None
+        from sqlalchemy import select as sa_select
+        from server.db.models import InitiativeFeature, Persona, PersonaFeature
+        async with db_session() as db:
+            primary_id = (await db.execute(sa_select(InitiativeFeature.feature_id).where(
+                InitiativeFeature.initiative_id == initiative_id,
+                InitiativeFeature.is_primary.is_(True),
+            ))).scalar_one_or_none()
+            if primary_id is None:
+                return None
+            rows = (await db.execute(sa_select(Persona).join(
+                PersonaFeature, PersonaFeature.persona_id == Persona.id,
+            ).where(
+                PersonaFeature.feature_id == primary_id, Persona.orphaned.isnot(True),
+            ))).scalars().all()
+        docs = [(p.slug, p.repo_path) for p in rows if p.slug and p.repo_path]
+        return docs or None
 
     async def _sdlc_spawn_materialize(self, ini: dict):
         """Spawn a de-duped decompose session for a merged plan (spec 003 §7b).

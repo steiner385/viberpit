@@ -84,10 +84,10 @@ def test_issue_tier_honours_reason():
     assert issue_tier("open", "classified", False, None) == "idle"
 
 
-def _cap(slug, parent=None, state="live", issues=(), links=()):
+def _cap(slug, parent=None, state="live", issues=(), links=(), personas=()):
     return CapabilityIn(id=f"id-{slug}", slug=slug, title=slug.title(), state=state, summary="",
                         doc_path=f"d/{slug}.md", commit_sha=None, pr_number=None, parent_slug=parent,
-                        issue_tiers=tuple(issues), links=tuple(links))
+                        issue_tiers=tuple(issues), links=tuple(links), persona_slugs=tuple(personas))
 
 
 def test_build_product_tree_nests_and_rolls_up():
@@ -129,6 +129,24 @@ def test_build_product_tree_nests_and_rolls_up():
     assert tree["counts"]["needsYou"] == 1
     assert tree["counts"] == {"capabilities": 4, "inFlight": 0, "blocked": 1,
                               "needsYou": 1, "awaitingTriage": 0, "needsHome": 0}
+
+
+def test_capability_node_carries_persona_slugs():
+    product = ProductIn(
+        slug="example-product", name="Example",
+        capabilities=(_cap("sessions", personas=("parent", "teen")),),
+        initiatives=(), awaiting_triage=0, needs_home=0)
+    tree = build_product_tree(product)
+    assert tree["capabilities"][0]["personaSlugs"] == ["parent", "teen"]
+
+
+def test_capability_node_defaults_persona_slugs_to_empty_list():
+    product = ProductIn(
+        slug="example-product", name="Example",
+        capabilities=(_cap("sessions"),),
+        initiatives=(), awaiting_triage=0, needs_home=0)
+    tree = build_product_tree(product)
+    assert tree["capabilities"][0]["personaSlugs"] == []
 
 
 def test_pseudo_nodes_and_incidents_lift_the_product_tier():

@@ -210,6 +210,22 @@ describe('RoadmapListColumn', () => {
     expect(within(row).getByText('PR #12')).toBeInTheDocument()
     expect(within(row).getByText('proposed in pull request 12')).toBeInTheDocument()
   })
+
+  it('a persona filter narrows the tree to that persona\'s capabilities', () => {
+    mount()
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'billing')}`)).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Persona' }), { target: { value: 'teen' } })
+    expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'billing')}`)).toBeNull()
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeInTheDocument()
+  })
+
+  it('clearing the persona filter (back to "All personas") restores the full tree', () => {
+    mount()
+    const select = screen.getByRole('combobox', { name: 'Persona' })
+    fireEvent.change(select, { target: { value: 'teen' } })
+    fireEvent.change(select, { target: { value: '' } })
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'billing')}`)).toBeInTheDocument()
+  })
 })
 
 /**

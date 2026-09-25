@@ -23,12 +23,12 @@ const CAPS: CapabilityNode[] = [
   {
     id: 'f1', slug: 'sessions', title: 'Sessions', state: 'live', summary: null,
     docPath: null, commitSha: 'abc', prNumber: null, parentSlug: null, tier: 'live',
-    counts: { openIssues: 3, inFlight: 1, blocked: 0, needsYou: 0 }, links: [], initiatives: [],
+    counts: { openIssues: 3, inFlight: 1, blocked: 0, needsYou: 0 }, links: [], initiatives: [], personaSlugs: [],
     children: [
       {
         id: 'f2', slug: 'dictation', title: 'Dictation', state: 'delivering', summary: null,
         docPath: null, commitSha: 'def', prNumber: null, parentSlug: 'sessions', tier: 'in-flight',
-        counts: { openIssues: 5, inFlight: 2, blocked: 1, needsYou: 0 }, links: [], initiatives: [],
+        counts: { openIssues: 5, inFlight: 2, blocked: 1, needsYou: 0 }, links: [], initiatives: [], personaSlugs: [],
         children: [],
       },
     ],
@@ -40,7 +40,7 @@ const CAPS: CapabilityNode[] = [
 const SUNSET: CapabilityNode = {
   id: 'f3', slug: 'legacy', title: 'Legacy', state: 'sunset', summary: null,
   docPath: null, commitSha: 'ghi', prNumber: null, parentSlug: null, tier: 'live',
-  counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 }, links: [], initiatives: [],
+  counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 }, links: [], initiatives: [], personaSlugs: [],
   children: [],
 }
 const CAPS_WITH_SUNSET: CapabilityNode[] = [...CAPS, SUNSET]

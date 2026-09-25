@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { MAP } from './__fixtures__/map'
-import { flattenMap, toggleKey, capabilityKey, productKey, initiativeKey, setCollapsed } from './treeRows'
+import { flattenMap, toggleKey, capabilityKey, productKey, initiativeKey, setCollapsed, personaSlugsInMap } from './treeRows'
 
 const EXPANDED = { collapsed: new Set<string>() }
 const keys = (rows: ReturnType<typeof flattenMap>) => rows.map((r) => r.key)
@@ -103,5 +103,49 @@ describe('flattenMap — program nesting', () => {
   it('a search that hits a phase keeps its program row', () => {
     const k = keys(flattenMap(MAP, EXPANDED, 'restore'))
     expect(k).toEqual(expect.arrayContaining([initiativeKey('audit'), initiativeKey('audit-01')]))
+  })
+})
+
+describe('flattenMap persona filter', () => {
+  it('keeps only capabilities carrying the persona, plus ancestors on the path to a match', () => {
+    expect(keys(flattenMap(MAP, EXPANDED, '', 'teen'))).toEqual([
+      productKey('kindash'),
+      capabilityKey('kindash', 'tasks'),
+      capabilityKey('kindash', 'task-views'),
+      initiativeKey('views'),
+    ])
+  })
+
+  it('a persona with no match anywhere yields no rows', () => {
+    expect(keys(flattenMap(MAP, EXPANDED, '', 'nobody'))).toEqual([])
+  })
+
+  it('combines with a text query as an AND, not an OR', () => {
+    // 'billing' text-matches only the billing capability; 'teen' matches only
+    // task-views — no row satisfies both, so nothing survives.
+    expect(keys(flattenMap(MAP, EXPANDED, 'billing', 'teen'))).toEqual([])
+  })
+
+  it('null personaSlug behaves exactly like the 3-arg call (no filter)', () => {
+    expect(keys(flattenMap(MAP, EXPANDED, '', null))).toEqual(keys(flattenMap(MAP, EXPANDED, '')))
+  })
+
+  it('keeps a primary initiative that text-matches even though its capability title does not', () => {
+    // 'use-case' only matches the "views" initiative's own title ("Use-case-
+    // first task views"), not its capability's ("Task views") — the AND must
+    // apply to the branch as a whole (capability carries the persona,
+    // initiative carries the text match), not require both on the same row.
+    expect(keys(flattenMap(MAP, EXPANDED, 'use-case', 'teen'))).toEqual([
+      productKey('kindash'),
+      capabilityKey('kindash', 'tasks'),
+      capabilityKey('kindash', 'task-views'),
+      initiativeKey('views'),
+    ])
+  })
+})
+
+describe('personaSlugsInMap', () => {
+  it('collects every distinct persona slug declared anywhere in the map, sorted', () => {
+    expect(personaSlugsInMap(MAP)).toEqual(['parent', 'teen'])
   })
 })

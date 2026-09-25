@@ -412,6 +412,42 @@ def test_leaves_and_map_surface_needs_spec_bounces():
             assert dictation["counts"]["needsYou"] == 1
 
 
+def test_map_resolves_persona_slugs_onto_capability_nodes_live_only():
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Persona, PersonaFeature, Project
+
+    async def _seed(db_url: str) -> None:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            db.add(prod)
+            await db.flush()
+            sessions = Feature(project_id=prod.id, slug="sessions", title="Sessions", state="live")
+            db.add(sessions)
+            await db.flush()
+            parent = Persona(project_id=prod.id, slug="parent", title="Parent")
+            ghost = Persona(project_id=prod.id, slug="ghost", title="Ghost", orphaned=True)
+            db.add_all([parent, ghost])
+            await db.flush()
+            db.add(PersonaFeature(persona_id=parent.id, feature_id=sessions.id))
+            db.add(PersonaFeature(persona_id=ghost.id, feature_id=sessions.id))
+            await db.commit()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            products = {p["slug"]: p for p in body["products"]}
+            roots = {cap["slug"]: cap for cap in products["example-product"]["capabilities"]}
+            assert roots["sessions"]["personaSlugs"] == ["parent"]
+
+
 def test_threshold_fallback_is_the_schema_default_for_both_handlers():
     """Both handlers read the D8 threshold through ONE helper, so an item with no
     owning product falls back to the POLICY SCHEMA's default rather than to a

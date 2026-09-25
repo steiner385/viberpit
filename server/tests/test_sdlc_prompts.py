@@ -140,6 +140,38 @@ def test_spec_with_no_skills_is_still_valid():
 
 
 # --------------------------------------------------------------------------- #
+# spec — persona docs injected from the linked capability (issue #2447)        #
+# --------------------------------------------------------------------------- #
+
+PERSONAS = [("parent", "# Parent persona\n\nRole: primary caregiver.\n")]
+
+
+def test_spec_embeds_persona_docs():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG, personas=PERSONAS)
+    assert "PERSONA `parent`" in p
+    assert "# Parent persona" in p
+    assert "Role: primary caregiver." in p
+
+
+def test_spec_asks_stories_to_name_their_persona():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG, personas=PERSONAS).lower()
+    assert "must name which persona" in p
+
+
+def test_spec_with_no_personas_omits_the_persona_section():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG)
+    assert "PERSONA `" not in p
+    assert "must name which persona" not in p.lower()
+
+
+def test_spec_with_multiple_personas_embeds_each_one():
+    two = [("parent", "Parent doc body."), ("teen", "Teen doc body.")]
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG, personas=two)
+    assert "PERSONA `parent`" in p and "Parent doc body." in p
+    assert "PERSONA `teen`" in p and "Teen doc body." in p
+
+
+# --------------------------------------------------------------------------- #
 # spec — constitution-aware fallback (issue #2165, item 3)                     #
 # --------------------------------------------------------------------------- #
 
