@@ -44,8 +44,8 @@ from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
 from server.sessions.prompt_origin import strip_origin_header
-from server.sessions.completion import (has_completion_marker, parse_hand_back_marker,
-                                        resolution_from_text)
+from server.sessions.completion import (has_completion_marker, note_from_marker_text,
+                                        parse_hand_back_marker, resolution_from_text)
 from server.sessions.model_request import parse_model_request
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
@@ -362,6 +362,14 @@ class CodexEventTranslator:
         turn = params.turn
         text = self._state.turn_text
         pr_resolution = resolution_from_text(text)
+        # Codex has no `mark_no_pr` tool (module docstring), so the note can only
+        # ever arrive via the marker text — the last line the engine wrote before
+        # NO_PR_MARKER, per the prompt's own instruction (backlog_prompt's
+        # `_finish_not_needed` / `_finish_cancelled`). None when there is no
+        # resolution at all, so a dropped resolution (hand-back below) cannot
+        # leave an orphaned note latched on the driver.
+        pr_resolution_note = (note_from_marker_text(text)
+                              if pr_resolution is not None else None)
         hand_back = parse_hand_back_marker(text)
         outcome = _OUTCOME_BY_STATUS[turn.status]
         if outcome == "success":
@@ -375,6 +383,7 @@ class CodexEventTranslator:
                 # translator carries that log.
                 outcome = "hand_back"
                 pr_resolution = None
+                pr_resolution_note = None
             elif completed:
                 outcome = "complete"
         else:
@@ -396,6 +405,10 @@ class CodexEventTranslator:
                 usage=self._state.usage_by_turn.get(turn.id),
                 outcome=outcome,
                 pr_resolution=pr_resolution,
+                # Codex has exactly one channel for a resolution — the marker —
+                # so this is never ambiguous the way a tool-vs-marker choice is.
+                pr_resolution_source="marker" if pr_resolution is not None else None,
+                pr_resolution_note=pr_resolution_note,
                 model_request=parse_model_request(text),
                 hand_back_reason=hand_back.get("reason") if hand_back else None,
             )

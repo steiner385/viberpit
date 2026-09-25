@@ -156,22 +156,53 @@ describe('IssueDispositionDialog', () => {
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
   })
 
-  it('renders the machine consequence copy for an evidence hold through ConsequenceList, with no buttons', async () => {
-    const evidenceGuidance = { evidence: {
-      available: true, unavailableReason: null, immediate: [],
-      then: [{ text: 'The next run investigates this report instead of implementing it: it closes '
-        + 'noise, consolidates duplicates, converts it into a fix, or hands it to you with what is '
-        + 'needed. No pull request.', spawnsSession: false, writesGithub: false }],
-      when: 'next_tick', reversal: null, gate: null } }
+  const evidenceGuidance = { evidence: {
+    available: true, unavailableReason: null, immediate: [],
+    then: [{ text: 'The next run investigates this report instead of implementing it: it closes '
+      + 'noise, consolidates duplicates, converts it into a fix, or hands it to you with what is '
+      + 'needed. No pull request.', spawnsSession: false, writesGithub: false }],
+    when: 'next_tick', reversal: null, gate: null },
+    investigate: {
+      available: true, unavailableReason: null,
+      immediate: [{ text: 'Dispatches a coding session that investigates this report now. '
+        + 'No pull request.', spawnsSession: true, writesGithub: false }],
+      then: [], when: 'now', reversal: 'Archive the session; the item stays held pending investigation.',
+      gate: null } }
+
+  it('renders the machine consequence copy for an evidence hold through ConsequenceList, with no Retry or Implement now', async () => {
     fetchMock.mockResolvedValueOnce(reply({
       ...detail, holdKind: 'evidence', holdReason: 'auto-filed error report: investigate before implementing',
       holdBy: 'automation:error-triage', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: evidenceGuidance }))
     mount()
     expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for evidence')
     expect(screen.getByText(/investigates this report instead of implementing it/)).toBeInTheDocument()
-    expect(screen.getByText(/No pull request\./)).toBeInTheDocument()
+    expect(screen.getAllByText(/No pull request\./).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
+  it('#1963: dispatches a session on Investigate now for an evidence hold', async () => {
+    fetchMock.mockResolvedValueOnce(reply({
+      ...detail, holdKind: 'evidence', holdReason: 'auto-filed error report: investigate before implementing',
+      holdBy: 'automation:error-triage', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: evidenceGuidance }))
+      .mockResolvedValueOnce(reply({ status: 'spawned', session_id: 's9', session_name: 'sess-9' }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    click('Investigate now')
+    expect(await screen.findByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/sessions/s9')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ refs: ['o/r#1'] })
+  })
+
+  it('disables Investigate now when the guidance says it is unavailable', async () => {
+    fetchMock.mockResolvedValueOnce(reply({
+      ...detail, holdKind: 'evidence', holdReason: 'auto-filed error report: investigate before implementing',
+      holdBy: 'automation:error-triage', holdSetAt: '2026-09-18T00:00:00+00:00',
+      guidance: { ...evidenceGuidance, investigate: {
+        ...evidenceGuidance.investigate, available: false,
+        unavailableReason: "This product's dispatch is off; turn it on in the product's automation policy first." } } }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    expect(await screen.findByRole('button', { name: 'Investigate now' })).toBeDisabled()
   })
 
   // Spec 2026-09-18 §7: "Decision: links to the proposal card." The options,

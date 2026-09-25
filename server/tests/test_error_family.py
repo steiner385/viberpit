@@ -120,6 +120,45 @@ def test_families_follow_the_configured_triage_repo(tmp_path):
     asyncio.run(run())
 
 
+def test_a_repo_repoint_does_not_let_two_signatures_share_a_family(tmp_path):
+    """#1963: issue numbers are only unique within a repo. Before ``repo`` existed
+    on ``ErrorSignature``, a row filed against an OLD ``target_repo`` and a row
+    filed against a NEW one after a repoint could carry the same ``issue_number``
+    and be merged into one family purely by number — even though the ref-side
+    match already scoped the lookup to the (new) triage repo's refs."""
+    async def run():
+        await _seed(tmp_path, "repoint.db", [
+            {"issue_number": 101, "logger": "server.a", "event": "boom",
+             "repo": "old/repo"},
+            {"issue_number": 101, "logger": "server.b", "event": "crash",
+             "repo": TRIAGE_REPO},
+        ])
+
+        out = await _families([f"{TRIAGE_REPO}#101"])
+
+        # Only the row actually filed into TRIAGE_REPO answers — the old repo's
+        # same-numbered row must not donate its family.
+        assert out == {f"{TRIAGE_REPO}#101": "server.b:crash"}
+
+    asyncio.run(run())
+
+
+def test_a_legacy_signature_with_no_repo_still_matches_by_number(tmp_path):
+    """A row written before this column existed has no way to disagree with the
+    current target — it keeps the pre-existing number-only behaviour rather than
+    going permanently unfamiliable."""
+    async def run():
+        await _seed(tmp_path, "legacy.db", [
+            {"issue_number": 101, "logger": "server.a", "event": "boom"},
+        ])
+
+        out = await _families([f"{TRIAGE_REPO}#101"])
+
+        assert out == {f"{TRIAGE_REPO}#101": "server.a:boom"}
+
+    asyncio.run(run())
+
+
 def test_families_of_no_refs_reads_nothing(tmp_path):
     async def run():
         await _seed(tmp_path, "empty.db", [

@@ -59,11 +59,10 @@ def test_hold_guidance_only_for_owner_action_and_evidence():
     assert off["retry"]["when"] == "never"
 
 
-def test_hold_guidance_evidence_is_one_entry_with_no_buttons():
+def test_hold_guidance_evidence_is_button_less_and_policy_independent():
     from server.pm.explain import hold_guidance
     from server.automations.product_policy import effective_policy
     g = hold_guidance(hold_kind="evidence", policy=effective_policy(None))
-    assert set(g) == {"evidence"}
     e = g["evidence"]
     assert e["available"] is True
     assert e["immediate"] == []
@@ -74,7 +73,34 @@ def test_hold_guidance_evidence_is_one_entry_with_no_buttons():
     assert e["reversal"] is None and e["gate"] is None
     # Policy-independent: the copy does not vary with dispatch mode.
     g2 = hold_guidance(hold_kind="evidence", policy={**effective_policy(None), "dispatch": "auto"})
-    assert g2 == g
+    assert g2["evidence"] == e
+
+
+def test_hold_guidance_investigate_now_dispatches_immediately_under_auto():
+    """#1963: the Investigate-now tap's own consequence, gated on the owning
+    product's dispatch policy exactly like `implement` is for owner_action."""
+    from server.pm.explain import hold_guidance
+    from server.automations.product_policy import effective_policy
+    g = hold_guidance(hold_kind="evidence",
+                      policy={**effective_policy(None), "dispatch": "auto"})
+    assert set(g) == {"evidence", "investigate"}
+    i = g["investigate"]
+    assert i["available"] is True
+    assert i["when"] == "now"
+    assert i["immediate"][0]["spawnsSession"] is True
+    assert "investigates this report now" in i["immediate"][0]["text"]
+
+
+def test_hold_guidance_investigate_now_is_unavailable_under_dispatch_off():
+    from server.pm.explain import hold_guidance
+    from server.automations.product_policy import effective_policy
+    off = hold_guidance(hold_kind="evidence",
+                        policy={**effective_policy(None), "dispatch": "off"})
+    assert off["investigate"]["available"] is False
+    assert "dispatch is off" in off["investigate"]["unavailableReason"]
+    # The automatic column is unaffected — the Backlog Runner's own schedule
+    # does not depend on whether a PERSON is entitled to trigger it manually.
+    assert off["evidence"]["available"] is True
 
 
 # --------------------------------------------------------------------------- #

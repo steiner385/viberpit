@@ -94,10 +94,14 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
       // surfaced inline via release.error below
     }
   }
-  // Implement now: dispatches a coding session for the issue's own ref. A 200
-  // response can still carry a refusal (`no_account` / `refused`) rather than
-  // an HTTP error, so success/failure is read off `status`, not the promise.
-  const implementNow = async () => {
+  // Implement now / Investigate now (#1963): both dispatch a coding session for
+  // the issue's own ref through the SAME manual-dispatch endpoint — the dispatch
+  // KIND (implement vs investigate) is decided server-side from the issue's own
+  // hold at spawn time, never from a flag this dialog sends, so one handler
+  // covers both buttons. A 200 response can still carry a refusal (`no_account`
+  // / `refused`) rather than an HTTP error, so success/failure is read off
+  // `status`, not the promise.
+  const dispatchNow = async () => {
     if (!data) return
     setDispatchError(null)
     setSpawned(null)
@@ -150,7 +154,7 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
                 loading={dispatch.isPending}
                 disabled={pending || (data.guidance && 'implement' in data.guidance
                   ? !data.guidance.implement.available : false)}
-                onClick={() => void implementNow()}
+                onClick={() => void dispatchNow()}
               >
                 Implement now
               </Button>
@@ -164,11 +168,25 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
             </div>}
           </>}
           {/* Evidence: the Backlog Runner dispatches and settles this on its own
-              (spec 2026-09-18 §5) — a plain consequence line through the same
-              renderer as owner_action above, never a second one, and no buttons:
-              there is nothing here for a person to tap. */}
-          {data.holdKind === 'evidence' && data.guidance && 'evidence' in data.guidance &&
-            <ConsequenceList consequence={data.guidance.evidence} />}
+              (spec 2026-09-18 §5), or a person can tap Investigate now (#1963) to
+              trigger the SAME dispatch immediately — the two consequence columns
+              through the same renderer as owner_action above, never a third one. */}
+          {data.holdKind === 'evidence' && data.guidance && 'evidence' in data.guidance && <>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="lg"
+                loading={dispatch.isPending}
+                disabled={pending || !data.guidance.investigate.available}
+                onClick={() => void dispatchNow()}
+              >
+                Investigate now
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ConsequenceList heading="If nothing is tapped" consequence={data.guidance.evidence} />
+              <ConsequenceList heading="Investigate now" consequence={data.guidance.investigate} />
+            </div>
+          </>}
           {/* Decision: the options, the recommendation and the two consequence
               columns all live on the proposal card, so this panel LINKS there
               (spec 2026-09-18 §7) rather than growing a second copy of the

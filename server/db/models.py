@@ -1090,6 +1090,13 @@ class ErrorSignature(Base):
     # observed | filed | resolved | muted
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="observed", index=True)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # The repo ``issue_number`` was filed into (error-triage's ``target_repo`` at
+    # file time), NOT the fingerprint's origin. Issue numbers are only unique
+    # within a repo, so without this a `target_repo` repoint leaves an old row and
+    # a new one able to collide on the same number and be merged into one family
+    # (server/pm/error_family.py) — nullable so pre-existing rows read as before
+    # (#1963).
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     muted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     first_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

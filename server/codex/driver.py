@@ -423,6 +423,14 @@ class CodexAgentDriver:
         # Sticky (set-only), like ClaudeAgentDriver's: a turn carrying no request leaves
         # the previous one alone. The orchestrator consumes each exactly once by turn id.
         self._last_model_request: dict | None = None
+        # Sticky, exactly like ClaudeAgentDriver's: set-only, so a later turn with
+        # no resolution of its own cannot wipe an ended investigation's answer
+        # before the orchestrator persists it (#1963). All three latch together —
+        # the note explains THIS resolution and must never outlive it or precede
+        # it from a different turn.
+        self._last_pr_resolution: str | None = None
+        self._last_pr_resolution_source: str | None = None
+        self._last_pr_resolution_note: str | None = None
         self._condensing = False
         # (base, effective) pair from the last on_status overlay (or seed_status):
         # current_status() reports `effective` while the raw derivation still equals
@@ -529,6 +537,28 @@ class CodexAgentDriver:
         haiku/sonnet/opus/fable vocabulary, mapped onto the live Codex effort
         catalog by the orchestrator (#1273), never a Codex model id."""
         return self._last_model_request
+
+    @property
+    def last_pr_resolution(self) -> str | None:
+        """Resolution token from the most recent ``<!-- viberpit:no-pr -->`` marker,
+        or ``None`` if no completed turn has carried one yet. Codex has no
+        ``mark_no_pr`` tool, so this is always the marker path."""
+        return self._last_pr_resolution
+
+    @property
+    def last_pr_resolution_source(self) -> str | None:
+        """Always ``"marker"`` once a resolution has latched, or ``None`` before
+        that — Codex has exactly one channel for a resolution, so this is never
+        ambiguous the way ClaudeAgentDriver's tool-vs-marker choice is."""
+        return self._last_pr_resolution_source
+
+    @property
+    def last_pr_resolution_note(self) -> str | None:
+        """The last line the engine wrote before the marker (``note_from_marker_text``),
+        or ``None`` (no note, or no resolution has latched yet). Latched with the
+        resolution and therefore exactly as sticky — see ClaudeAgentDriver's
+        property of the same name for who reads this back and why."""
+        return self._last_pr_resolution_note
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1838,6 +1868,11 @@ class CodexAgentDriver:
             event.hand_back_reason if self._last_turn_outcome == "hand_back" else None)
         if event.model_request is not None:
             self._last_model_request = {"turn_id": event.turn_id, **event.model_request}
+        if event.pr_resolution is not None:
+            # Latched together, in this branch only — see the __init__ comment.
+            self._last_pr_resolution = event.pr_resolution
+            self._last_pr_resolution_source = event.pr_resolution_source
+            self._last_pr_resolution_note = event.pr_resolution_note
         self._turns_completed += 1
         self._turn_active = False
         self._turn_started_at = None

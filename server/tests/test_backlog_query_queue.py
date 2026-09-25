@@ -634,6 +634,61 @@ def test_refresh_groups_ranks_the_evidence_half_among_the_model_half(tmp_path,
     asyncio.run(run())
 
 
+def test_refresh_groups_still_refreshes_evidence_when_the_model_call_fails(tmp_path,
+                                                                           monkeypatch):
+    """#1963: a ``GroupingModelError`` must not also discard the deterministic
+    evidence half, which needs no model call and cannot itself have failed — a
+    family whose primary converted mid-plan would otherwise stay stale (dispatching
+    the wrong prompt, see ``test_backlog_grouping``) for a full grouping interval.
+    The previous plan's non-evidence groups are carried over verbatim, and the
+    caller still sees the raise so its existing backoff fires."""
+    async def run():
+        from server.automations.backlog_grouping import GroupingModelError
+        await _init(tmp_path, "evfail.db")
+        await _seed_product("viberpit", TRIAGE_REPO)
+        await _seed_item(TRIAGE_REPO, 101, score=9.0, hold_kind="evidence")
+        await _seed_item(TRIAGE_REPO, 103, score=7.0)
+        await _seed_signature(101, "server.a", "boom")
+        orch = _orch_with_ctx()
+
+        async def _healthy():
+            return None
+        orch._backlog_healthy_account = _healthy
+
+        async def _propose(cands, config, _config_dir=None):
+            raise GroupingModelError("SDK transport failed")
+
+        async def _load_plan():
+            return [{"id": 9, "refs": [f"{TRIAGE_REPO}#900"], "rationale": "stale"},
+                    {"id": 10, "refs": [f"{TRIAGE_REPO}#101"], "rationale": "old evidence"}]
+
+        seen: dict = {}
+
+        async def _store(groups, cands, *, degraded=False):
+            seen["stored"] = groups
+            seen["degraded"] = degraded
+            return len(groups)
+
+        monkeypatch.setattr("server.automations.backlog_grouping.propose_groups", _propose)
+        monkeypatch.setattr("server.automations.backlog_grouping.load_plan", _load_plan)
+        monkeypatch.setattr("server.automations.backlog_grouping.store_plan", _store)
+
+        raised = False
+        try:
+            await orch._backlog_refresh_groups(_config())
+        except GroupingModelError:
+            raised = True
+        assert raised, "the caller's backoff relies on seeing the failure"
+        # The fresh evidence group for #101 replaces the stale plan's stand-in for
+        # it; the unrelated #900 group (not a live candidate at all any more)
+        # carries over verbatim rather than being lost.
+        assert [g["refs"] for g in seen["stored"]] == [
+            [f"{TRIAGE_REPO}#101"], [f"{TRIAGE_REPO}#900"]]
+        assert seen["degraded"] is True
+
+    asyncio.run(run())
+
+
 def test_query_queue_survives_a_family_lookup_that_raises(tmp_path, monkeypatch):
     """Fail OPEN: the family read is an annotation, never the pool's life. A raising
     lookup leaves the evidence candidates familyless — which groups each alone, the

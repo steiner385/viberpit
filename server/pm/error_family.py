@@ -65,7 +65,7 @@ def families_for_refs(db: "Session", refs: Sequence[str], *,
 
     Sync — the orchestrator calls it under ``db.run_sync``.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
     from server.db.models import ErrorSignature
 
@@ -82,9 +82,15 @@ def families_for_refs(db: "Session", refs: Sequence[str], *,
     if not by_number:
         return {}
 
+    # A signature's OWN ``repo`` (the target it was filed into) must also agree —
+    # otherwise a ``target_repo`` repoint lets an old row and a new one collide on
+    # the same issue_number and merge into one family they do not share (#1963).
+    # ``repo IS NULL`` still matches: a row written before this column existed has
+    # no way to disagree, so it keeps the pre-existing number-only behaviour.
     rows: Any = db.execute(select(
         ErrorSignature.issue_number, ErrorSignature.logger, ErrorSignature.event,
-    ).where(ErrorSignature.issue_number.in_(sorted(by_number)))
+    ).where(ErrorSignature.issue_number.in_(sorted(by_number)),
+            or_(ErrorSignature.repo == repo, ErrorSignature.repo.is_(None)))
         .order_by(ErrorSignature.fingerprint)).all()
     out: dict[str, str] = {}
     for number, logger, event in rows:

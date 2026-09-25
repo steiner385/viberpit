@@ -221,6 +221,33 @@ def test_plan_to_batch_carries_the_primarys_hold_kind():
     assert unheld is not None and unheld.primary_hold_kind is None
 
 
+def test_plan_to_batch_drops_a_sibling_whose_evidence_hold_outlived_the_primarys():
+    """#1963: the group's refs are fixed at plan-build time, but hold_kind is read
+    fresh at pop time. If the primary converted (or was parked) between the two, a
+    still-``evidence``-held sibling must not ride into an implement dispatch —
+    family_groups' invariant is that one session is never given both prompts."""
+    cands = [
+        {"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "a", "hold_kind": None},
+        {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "b", "hold_kind": "evidence"},
+    ]
+    batch, _ = plan_to_batch([{"id": 1, "refs": ["o/r#9", "o/r#5"]}], cands)
+    assert batch is not None
+    assert batch.primary == "o/r#9"
+    assert batch.issues == ["o/r#9"]
+    assert batch.primary_hold_kind is None
+
+
+def test_plan_to_batch_keeps_siblings_still_agreeing_with_the_primarys_evidence_hold():
+    cands = [
+        {"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "a", "hold_kind": "evidence"},
+        {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "b", "hold_kind": "evidence"},
+    ]
+    batch, _ = plan_to_batch([{"id": 1, "refs": ["o/r#9", "o/r#5"]}], cands)
+    assert batch is not None
+    assert batch.issues == ["o/r#9", "o/r#5"]
+    assert batch.primary_hold_kind == "evidence"
+
+
 def test_plan_to_batch_empty_plan_waits():
     assert plan_to_batch([], C) == (None, None)
 
