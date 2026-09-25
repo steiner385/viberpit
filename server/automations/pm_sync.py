@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
+from server.github.host_failures import log_gh_failure
 from server.obs.context import log_event
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.pm.feature_index import (
@@ -298,13 +299,21 @@ class PmSyncLoop:
                         synced += 1
                     else:
                         backfilling += 1
-            except Exception:
+            except Exception as exc:
                 self._observation_degraded = True
                 errors += 1
                 await self._ctx.emit(
                     "warn", f"sync failed for {view.repo}",
                     kind="sync_error", target=view.repo)
-                log.warning("pm_sync.repo_error repo=%s", view.repo, exc_info=True)
+                # A host condition (offline, rate-limited, no credential) hits
+                # every repo's fetch in the same tick, so route it through
+                # log_gh_failure to collapse into the one host record instead
+                # of minting a per-repo auto-error issue — the same fan-out
+                # host_failures.py documents for ci_issues/deployments/pr_poller
+                # on this exact incident (#1917-#1921, 2026-09-17). Anything
+                # else keeps reporting at WARNING with repo= exactly as before.
+                log_gh_failure(log, str(exc), "pm_sync.repo_error repo=%s",
+                                view.repo, exc_info=True)
         if refreshed:
             self._repo_observation_degraded = self._observation_degraded
         else:
