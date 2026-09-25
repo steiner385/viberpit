@@ -40,6 +40,7 @@ from server.time_iso import iso_utc, parse_iso_utc
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS
 from server.sdlc.gates import RISK_TOLERANCES
+from server.sdlc.paths import ARTIFACT_LAYOUTS, DEFAULT_ARTIFACT_LAYOUT
 from server.sessions.model_catalog import TIER_ORDER
 from server.sessions.model_request import MODEL_TIERS
 
@@ -153,6 +154,14 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 default="none", choices=["none", *MODEL_TIERS],
                 help="Minimum model for a spec, plan or decompose session whose output will "
                      "be merged or accepted without a human read. Inert under cautious."),
+    # #2416: lets a product on spec-kit (or another convention) keep its specs
+    # where its own tooling already expects them, instead of every synthesizer
+    # spec/plan artifact being a manual `POST .../artifacts` adopt.
+    ConfigField(key="artifact_layout", label="Artifact layout", type="enum",
+                default=DEFAULT_ARTIFACT_LAYOUT, choices=list(ARTIFACT_LAYOUTS),
+                help="Where this product's SDLC stage artifacts are committed. docs_sdlc: "
+                     "docs/sdlc/<slug>/<kind>.md (default). speckit: specs/<slug>/<kind>.md, "
+                     "for a product already on spec-kit's own artifact layout."),
 ]
 
 # Keys this schema USED to have and deliberately dropped (spec 2026-09-18 §4, plan

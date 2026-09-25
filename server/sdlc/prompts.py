@@ -71,10 +71,11 @@ def _constitution_block(constitution: str | None, constitution_path: str) -> str
 
 
 def _common_instructions(slug: str, kind: str, repo: str, default_branch: str,
-                         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
+                         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                         layout: str | None = None) -> str:
     """The shared trailer every stage session must obey. Keeping it in one helper
     avoids N parallel copies drifting apart (constitution VI)."""
-    path = _artifact_path(slug, kind)
+    path = _artifact_path(slug, kind, layout)
     repo_clause = f" in repository `{repo}`" if repo else ""
     return (
         "Requirements — this is a propose-only SDLC stage, follow them exactly:\n"
@@ -144,6 +145,7 @@ def build_spec_prompt(
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
     constitution: str | None = None,
     constitution_path: str = ".specify/memory/constitution.md",
+    layout: str | None = None,
 ) -> str:
     """Seed prompt for the Synthesizer (Design): ``intent.md`` → ``spec.md``.
 
@@ -167,7 +169,7 @@ def build_spec_prompt(
         "-----8<----------------------8<-----\n\n"
         "ORG SKILLS — treat each as a binding constraint the spec must satisfy:\n"
         f"{skills_block}\n\n"
-        f"Produce `{_artifact_path(slug, 'spec')}` covering: functional behavior, "
+        f"Produce `{_artifact_path(slug, 'spec', layout)}` covering: functional behavior, "
         "acceptance criteria, data/API surface, and non-goals. Explicitly **flag "
         "any policy concerns** (security, governance, ToS, data handling) as called-"
         "out spec constraints so a human can resolve them at the gate.\n\n"
@@ -183,7 +185,7 @@ def build_spec_prompt(
         "(`FR-NNN` for a functional requirement, `AC-NNN` for an acceptance "
         "criterion, `US-N` for a user story — zero-padded, sequential within "
         "this spec.)\n\n"
-        + _common_instructions(slug, "spec", repo, default_branch, engine)
+        + _common_instructions(slug, "spec", repo, default_branch, engine, layout)
     )
 
 
@@ -194,6 +196,7 @@ def build_plan_prompt(
     repo: str = "",
     default_branch: str = "master",
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+    layout: str | None = None,
 ) -> str:
     """Seed prompt for the Synthesizer (Plan, plan mode): ``spec.md`` → ``plan.md``.
 
@@ -207,7 +210,7 @@ def build_plan_prompt(
         "-----8<----- spec.md -----8<-----\n"
         f"{spec_md}\n"
         "-----8<--------------------8<-----\n\n"
-        f"Produce `{_artifact_path(slug, 'plan')}` with:\n"
+        f"Produce `{_artifact_path(slug, 'plan', layout)}` with:\n"
         "- **Files** — every file to add/change, with a one-line purpose each.\n"
         "- **Order** — the sequence of steps (what must land before what).\n"
         "- **Tests** — the tests that prove each step, TDD-first where possible. "
@@ -215,7 +218,7 @@ def build_plan_prompt(
         "e.g. `test_theme_persists_per_user — proves AC-001`. If the spec above "
         "carries no `FR-`/`AC-`/`US-` IDs, skip the mapping.\n"
         "- **Risks** — what could go wrong and the mitigation for each.\n\n"
-        + _common_instructions(slug, "plan", repo, default_branch, engine)
+        + _common_instructions(slug, "plan", repo, default_branch, engine, layout)
     )
 
 

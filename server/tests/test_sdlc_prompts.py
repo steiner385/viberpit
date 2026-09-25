@@ -222,3 +222,24 @@ def test_default_branch_can_be_main():
     p = build_plan_prompt(SPEC_MD, slug=SLUG, default_branch="main")
     assert "origin/main" in p
     assert "origin/master" not in p
+
+
+# --------------------------------------------------------------------------- #
+# artifact layout (#2416)                                                      #
+# --------------------------------------------------------------------------- #
+
+def test_spec_prompt_targets_the_resolved_layout():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG, layout="speckit")
+    assert f"specs/{SLUG}/spec.md" in p
+    assert "docs/sdlc" not in p
+
+
+def test_plan_prompt_targets_the_resolved_layout():
+    p = build_plan_prompt(SPEC_MD, slug=SLUG, layout="speckit")
+    assert f"specs/{SLUG}/plan.md" in p
+    assert "docs/sdlc" not in p
+
+
+def test_unset_layout_still_defaults_to_docs_sdlc():
+    p = build_plan_prompt(SPEC_MD, slug=SLUG)
+    assert f"docs/sdlc/{SLUG}/plan.md" in p

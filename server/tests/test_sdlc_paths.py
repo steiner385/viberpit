@@ -26,6 +26,23 @@ def test_artifact_path_layout():
     assert artifact_path("dark-mode", "spec") == "docs/sdlc/dark-mode/spec.md"
 
 
+def test_artifact_path_default_layout_is_explicit():
+    from server.sdlc.paths import DEFAULT_ARTIFACT_LAYOUT, artifact_path
+    assert DEFAULT_ARTIFACT_LAYOUT == "docs_sdlc"
+    assert (artifact_path("dark-mode", "plan", "docs_sdlc")
+            == artifact_path("dark-mode", "plan"))
+
+
+def test_artifact_path_speckit_layout():
+    from server.sdlc.paths import artifact_path
+    assert artifact_path("007-dark-mode", "plan", "speckit") == "specs/007-dark-mode/plan.md"
+
+
+def test_artifact_path_unknown_layout_falls_back_to_the_default():
+    from server.sdlc.paths import artifact_path
+    assert artifact_path("dark-mode", "spec", "no-such-layout") == "docs/sdlc/dark-mode/spec.md"
+
+
 def test_paths_module_is_pure():
     """Importing it must not drag in the DB, automations or session packages."""
     assert_pure("server.sdlc.paths")
