@@ -445,3 +445,74 @@ def test_completion_nudge_is_delivered_after_the_driver_was_released(tmp_path):
     assert orch._last_prompt.get("s1") == verdict.remedy
     assert "s1" in orch._drivers, "the nudge must run on a live driver"
     assert orch.record("s1").status != "complete", "a nudged session is no longer complete"
+
+
+def _unmet_verdict():
+    from types import SimpleNamespace
+    return SimpleNamespace(met=False, confidence="high", reason="no PR opened",
+                           remedy="Open the PR before signalling completion.")
+
+
+async def _nudge_during_drain(tmp_path, orch, verdict):
+    with patch("server.automations.completion_bar.met_bar", return_value=verdict), \
+         patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+         patch("server.sessions.orchestrator.configdir.trust_project"):
+        await orch.begin_drain(selfclear_sec=60)
+        await orch._auto_archive_completed("s1")
+
+
+def test_completion_nudge_refused_by_a_drain_is_not_a_warning(tmp_path, caplog):
+    """#2271: a drain refusing the nudge is expected (send_prompt already logs it at
+    info) — the nudge call site must not escalate it to a WARNING, which auto-files."""
+    import logging
+    verdict = _unmet_verdict()
+
+    async def run():
+        orch = await _build_orch(tmp_path, status="complete", cwd=str(tmp_path / "repo"))
+        with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+            await _nudge_during_drain(tmp_path, orch, verdict)
+        orch.cancel_drain()
+        await _drain(orch)
+    asyncio.run(run())
+    warnings = [r for r in caplog.records
+                if r.levelno >= logging.WARNING and "nudge_failed" in r.getMessage()]
+    assert warnings == []
+    assert any("completion.nudge_deferred" in r.getMessage() for r in caplog.records)
+
+
+def test_completion_nudge_refused_by_a_drain_is_delivered_when_the_drain_cancels(tmp_path):
+    """#2271: the nudge is not silently lost — an aborted drain delivers it."""
+    verdict = _unmet_verdict()
+
+    async def run():
+        orch = await _build_orch(tmp_path, status="complete", cwd=str(tmp_path / "repo"))
+        await _nudge_during_drain(tmp_path, orch, verdict)
+        assert orch._last_prompt.get("s1") is None   # refused while draining
+        orch.cancel_drain()
+        await _drain(orch)
+        return orch
+    orch = asyncio.run(run())
+    assert orch._last_prompt.get("s1") == verdict.remedy
+    assert orch._drain_deferred_nudges == {}
+
+
+def test_completion_nudge_refused_by_a_drain_survives_the_restart(tmp_path):
+    """#2271: a drain that ends in a restart replays the nudge from ``pending_prompt``
+    at boot — and the drain snapshot pass must not clobber it back to None."""
+    from sqlalchemy import select as sa_select
+    verdict = _unmet_verdict()
+
+    async def run():
+        orch = await _build_orch(tmp_path, status="complete", cwd=str(tmp_path / "repo"))
+        await _nudge_during_drain(tmp_path, orch, verdict)
+        await orch._snapshot_open_tasks()     # a late snapshot pass after the refusal
+        async with db_session() as db:
+            row = (await db.execute(sa_select(DbSession).where(
+                DbSession.id == "s1"))).scalar_one()
+        # Leave the drain without cancel_drain's snapshot wipe, as a restart would.
+        orch._draining = False
+        if orch._drain_timer is not None:
+            orch._drain_timer.cancel()
+        await _drain(orch)
+        return row.pending_prompt
+    assert asyncio.run(run()) == verdict.remedy

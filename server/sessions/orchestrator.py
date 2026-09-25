@@ -1590,6 +1590,9 @@ class SessionOrchestrator:
         self._draining: bool = False
         self._drain_started_at: float = 0.0
         self._drain_timer: asyncio.Task | None = None
+        # Completion nudges a drain refused (#2271): re-sent by cancel_drain, and kept
+        # in `pending_prompt` by the drain snapshot so a restart's re-arm replays them.
+        self._drain_deferred_nudges: dict[str, str] = {}
         # Set at stop(): the daemon is tearing down (deploy or watchdog restart). While
         # true, a turn dropped by our own driver teardown must NOT run failure recovery
         # or escalate to needs_attention — rehydrate() on the next boot normalizes the
@@ -5933,7 +5936,10 @@ class SessionOrchestrator:
                         return
                     result = await self.send_prompt(session_id, nudge,
                                                     origin={"kind": "completion"})
-                    if result != "sent":
+                    if result == "draining":
+                        # Expected during every deploy (#2271): park it for after the drain.
+                        await self._defer_nudge_past_drain(session_id, nudge)
+                    elif result != "sent":
                         log.warning("completion.nudge_failed sid=%s reason=%s",
                                     session_id, result)
                 except Exception:
@@ -15922,6 +15928,7 @@ class SessionOrchestrator:
                 drv = self._drivers.get(sid)
                 getter = getattr(drv, "pending_foreground_prompt", None)
                 prompt = getter() if callable(getter) else None
+                prompt = prompt or getattr(self, "_drain_deferred_nudges", {}).get(sid)
                 await db.execute(sa_update(DbSession).where(DbSession.id == sid)
                                  .values(pending_prompt=prompt))
         if n:
@@ -15932,6 +15939,43 @@ class SessionOrchestrator:
         from sqlalchemy import update as sa_update
         async with db_session() as db:
             await db.execute(sa_update(DbSession).values(pending_rearm=None, pending_prompt=None))
+
+    async def _defer_nudge_past_drain(self, session_id: str, nudge: str) -> None:
+        """Hold a completion nudge a deploy drain refused (#2271) instead of dropping
+        it: the session was already resumed out of ``complete``, so nothing would ever
+        re-judge it. ``cancel_drain`` re-sends it; a drain that ends in a restart
+        replays it from ``pending_prompt`` via ``rearm_background_tasks``."""
+        from sqlalchemy import update as sa_update
+        # getattr: bare `__new__` test orchs skip __init__ (cf. _complete_nudge_counts).
+        deferred = getattr(self, "_drain_deferred_nudges", None)
+        if deferred is None:
+            deferred = self._drain_deferred_nudges = {}
+        deferred[session_id] = nudge
+        log.info("completion.nudge_deferred sid=%s reason=draining", session_id)
+        try:
+            async with db_session() as db:
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(pending_prompt=nudge))
+        except Exception:
+            log.warning("completion.nudge_defer_persist_failed sid=%s", session_id,
+                        exc_info=True)
+
+    async def _flush_drain_deferred_nudges(self) -> None:
+        """Deliver the nudges a now-cancelled drain refused (see
+        ``_defer_nudge_past_drain``). A nudge a new drain refuses again is re-deferred."""
+        pending = getattr(self, "_drain_deferred_nudges", {})
+        self._drain_deferred_nudges = {}
+        for session_id, nudge in pending.items():
+            try:
+                result = await self.send_prompt(session_id, nudge,
+                                                origin={"kind": "completion"})
+                if result == "draining":
+                    await self._defer_nudge_past_drain(session_id, nudge)
+                elif result != "sent":
+                    log.warning("completion.nudge_failed sid=%s reason=%s",
+                                session_id, result)
+            except Exception:
+                log.warning("completion.nudge_failed sid=%s", session_id, exc_info=True)
 
     def drain_status(self) -> dict:
         """Report drain state: 'idle' (not draining), 'draining' (turns still running),
@@ -15974,6 +16018,9 @@ class SessionOrchestrator:
             self._draining = False
             self._publish_event({"type": "updateCancelled"})
             self._spawn(self._clear_rearm_snapshots(), name="clear-rearm-snapshots")
+            if getattr(self, "_drain_deferred_nudges", None):
+                self._spawn(self._flush_drain_deferred_nudges(),
+                            name="flush-drain-deferred-nudges")
             if self._drain_timer is not None and not self._drain_timer.done():
                 self._drain_timer.cancel()
             self._drain_timer = None
