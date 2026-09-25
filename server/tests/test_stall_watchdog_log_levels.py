@@ -24,6 +24,11 @@ import pytest
 from server.obs.jsonlog import ContextFilter
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.recovery import CRASH_CAP, STALL_CAP
+from server.usage import process_quota
+
+# The same ledger module object the sweep imports, reached through a server module that
+# already holds it rather than the legacy package path (brand ratchet, #1374).
+_ledger = process_quota.ledger
 
 SID = "f1b85a1e-7d2f-42d7-aa87-27b53cec9915"
 
@@ -159,12 +164,10 @@ async def test_a_transient_ledger_read_error_in_the_disabled_sweep_is_not_an_err
     """#1945: a one-off EIO on the shared ~/.claude-accounts mount escaped the sweep and
     the stall loop's catch-all filed it via ``log.exception``. The sweep re-runs every
     30 s and is idempotent, so the next tick is the recovery — INFO, not an issue."""
-    from ccswitch import ledger
-
     def _boom():
         raise exc
 
-    monkeypatch.setattr(ledger, "locked_ledger", _boom)
+    monkeypatch.setattr(_ledger, "locked_ledger", _boom)
     o = _orch(_Driver())
 
     await o._check_disabled_account_sessions()
@@ -176,12 +179,10 @@ async def test_a_transient_ledger_read_error_in_the_disabled_sweep_is_not_an_err
 
 @pytest.mark.asyncio
 async def test_a_non_io_ledger_error_still_propagates(monkeypatch):
-    from ccswitch import ledger
-
     def _boom():
         raise ValueError("ledger.json is not JSON")
 
-    monkeypatch.setattr(ledger, "locked_ledger", _boom)
+    monkeypatch.setattr(_ledger, "locked_ledger", _boom)
     o = _orch(_Driver())
 
     with pytest.raises(ValueError):
