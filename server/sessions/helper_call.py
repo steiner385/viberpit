@@ -30,6 +30,17 @@ trips only its own lane while healthy accounts keep flowing:
    (#1820: the first-listed account was org-denied, so every helper in the
    daemon failed on it for a week).
 
+4. **Rate-limit block** — a 429 is account-wide the same way a 403 is: every
+   subsystem calling that account will fail the same way, and the per-lane
+   breaker's 60s cooldown is far shorter than a real rate limit (a 5-hour
+   session window, or a 7-day weekly one). So a rate limit ALSO bars the
+   account from every helper subsystem, for as long as the ledger's cached
+   usage says the account's most-exhausted window needs to reset — falling
+   back to the same 30-minute bound as an authorization block when no cached
+   reset time is available (#2410: one weekly-exhausted account kept getting
+   re-picked and re-failing every 60s until the weekly reset, three days
+   away).
+
 Failure classification is delegated to :func:`server.sessions.failure.classify`
 (the single source of truth for the ``api_429`` / ``api_401`` / ``overloaded`` /
 ``process_crash`` taxonomy) — this module adds no parallel regex.
@@ -47,6 +58,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
+
+from ccswitch import ledger as _ledger
 
 from . import failure
 
@@ -117,7 +130,6 @@ def is_account_helper_ready(name: str) -> bool:
     if cfg_dir is None or is_helper_account_blocked(cfg_dir):
         return False
     try:
-        from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as led:
             return (_ledger.is_account_enabled(led, name)
                     and _ledger.get_status(led, name) not in ("needs-reauth", "org-denied"))
@@ -196,35 +208,98 @@ _OPEN_IMMEDIATELY_KINDS = frozenset({"rate_limit", "auth_401", "auth_forbidden"}
 # TTL'd rather than written to the ledger: a 403 we misread must expire on its
 # own, and a real one re-arms on the next call.
 _AUTH_BLOCK_S = 1800.0
-_auth_blocked: dict[str, float] = {}   # account config dir -> deadline (monotonic)
+# Fallback for a rate-limit block when no cached reset time can be resolved
+# (see _reset_deadline_s) — same bound as an authorization block.
+_RATE_LIMIT_BLOCK_S = 1800.0
+# How stale a cached usage reading may be and still answer "when does this
+# account's rate limit clear" — generous on purpose: resets_at is a timestamp,
+# not a measurement that goes bad with age, and the weekly window is 7 days
+# wide, so a week-old cache entry is still the best information available.
+_RESET_LOOKUP_MAX_AGE_S = 8 * 24 * 3600.0
+
+_blocked_until: dict[str, float] = {}   # account config dir -> deadline (monotonic)
 
 
 def is_helper_account_blocked(config_dir: str,
                               *, _now: Callable[[], float] = time.monotonic) -> bool:
-    """True while *config_dir*'s account is barred from helper duty (403 org denial)."""
+    """True while *config_dir*'s account is barred from helper duty (403 org
+    denial, or a rate limit the account has not yet recovered from)."""
     key = config_dir or ""
-    until = _auth_blocked.get(key)
+    until = _blocked_until.get(key)
     if until is None:
         return False
     if _now() >= until:
-        _auth_blocked.pop(key, None)
+        _blocked_until.pop(key, None)
         return False
     return True
 
 
-def _note_auth_blocked(config_dir: str, detail: str | None, now: float) -> None:
-    """Bar *config_dir*'s account from helper duty and say why, once per block."""
+def _block_account(config_dir: str, now: float, block_s: float,
+                   log_fmt: str, *log_args: object) -> None:
+    """Bar *config_dir*'s account from helper duty for *block_s* seconds, logging
+    *log_fmt* % *log_args* once per block rather than once per failed call."""
     key = config_dir or ""
     if not key:
         return  # no account to bar (a caller with no config dir picks nothing)
-    first = _auth_blocked.get(key, 0.0) <= now
-    _auth_blocked[key] = now + _AUTH_BLOCK_S
+    first = _blocked_until.get(key, 0.0) <= now
+    _blocked_until[key] = now + block_s
     if first:
         # %r so the volatile text lands inside quotes: the error-sink fingerprint
         # normalizes a quoted run to <str>, which keeps one condition to one
         # auto-error issue instead of one per distinct CLI sentence.
-        log.warning("helper account %s refused authorization — barred from helper "
-                    "calls for %.0fs: %r", key, _AUTH_BLOCK_S, detail or "")
+        log.warning(log_fmt, *log_args)
+
+
+def _note_auth_blocked(config_dir: str, detail: str | None, now: float) -> None:
+    """Bar *config_dir*'s account from helper duty and say why, once per block."""
+    _block_account(config_dir, now, _AUTH_BLOCK_S,
+                   "helper account %s refused authorization — barred from helper "
+                   "calls for %.0fs: %r", config_dir, _AUTH_BLOCK_S, detail or "")
+
+
+def _reset_deadline_s(config_dir: str) -> float | None:
+    """Seconds until *config_dir*'s account's most-exhausted cached usage window
+    resets, or None when unknown (no cache, or the window carries no reset time).
+
+    The account NAME the ledger keys usage by is *config_dir*'s own last path
+    component (:func:`_account_cfg_dir` composes it as ``cfg_root() / name`` —
+    the one relationship this module maps in either direction), so no reverse
+    lookup over the account list is needed. Reads the ledger's own cache rather
+    than fetching — a helper call already failed with a rate limit, so a
+    network round-trip here would just add load to the throttled account. The
+    BINDING window (the most-used one, the codebase's single definition of
+    "which allowance binds this account") is the one that is actually
+    exhausted, so its reset time is the deadline: a session-only limit clears
+    in hours, a weekly one in days, and this reads whichever one applies
+    without needing to parse which kind the CLI hit.
+    """
+    name = Path(config_dir).name
+    if not name:
+        return None
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        with _ledger.locked_ledger() as led:
+            stale = _ledger.stale_usage(led, name, now, _RESET_LOOKUP_MAX_AGE_S)
+        if stale is None:
+            return None
+        snapshot, _fetched = stale
+        window = snapshot.binding_window()
+        if window is None or window.resets_at is None:
+            return None
+        delta = (window.resets_at - now).total_seconds()
+        return delta if delta > 0 else None
+    except Exception:
+        return None
+
+
+def _note_rate_limited(config_dir: str, detail: str | None, now: float) -> None:
+    """Bar *config_dir*'s account from helper duty until its usage resets (or a
+    bounded fallback), and say why, once per block."""
+    block_s = _reset_deadline_s(config_dir) or _RATE_LIMIT_BLOCK_S
+    _block_account(config_dir, now, block_s,
+                   "helper account %s is rate-limited — barred from helper calls "
+                   "for %.0fs: %r", config_dir, block_s, detail or "")
 
 
 @dataclass
@@ -241,8 +316,8 @@ class HelperOutcome:
     - skipped: ``skipped is True`` — no call was made; ``skip_reason`` says
       whether the lane's breaker was open (``circuit-open``, a cooling-off after
       failures) or the account itself is barred (``account-blocked``, a 403 org
-      denial). A caller that reports the skip to a human should not call the
-      second one transient.
+      denial or a rate limit not yet reset). A caller that reports the skip to a
+      human should not call the second one transient.
 
     ``error_text`` is the CLI's own description of a failure when it gave one
     (see :func:`_error_detail`) — the exception alone is often opaque.
@@ -293,9 +368,9 @@ _breakers: dict[tuple[str, str], _BreakerState] = {}
 
 
 def reset_breakers() -> None:
-    """Clear all breaker and authorization-block state (tests only)."""
+    """Clear all breaker and account-block state (tests only)."""
     _breakers.clear()
-    _auth_blocked.clear()
+    _blocked_until.clear()
 
 
 def _api_error_status(messages: list) -> int | None:
@@ -424,6 +499,8 @@ async def run_helper_call(
             st.record_failure(kind, now)
             if kind == "auth_forbidden":
                 _note_auth_blocked(account_key, detail, now)
+            elif kind == "rate_limit":
+                _note_rate_limited(account_key, detail, now)
             return HelperOutcome(messages=messages, error=exc, failure_kind=kind,
                                  api_error_status=status, error_text=detail)
         else:
