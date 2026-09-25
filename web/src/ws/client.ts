@@ -207,7 +207,12 @@ export class SessionSocket {
     ws.onmessage = (event) => this._onRawMessage(event.data as string)
 
     ws.onerror = () => {
-      clientLogger.warn('ws error', { sessionId: this._activeSessionId ?? undefined })
+      // The browser 'error' event carries no diagnostic detail (no code, no reason) and
+      // always fires immediately before onclose, which already does the real
+      // classification (expected vs unexpected close code) and warns with the code/reason
+      // when it matters. Warning here too duplicates that — one WARNING per reconnect
+      // blip with nothing useful in it, including expected ones — so this stays INFO.
+      clientLogger.info('ws error', { sessionId: this._activeSessionId ?? undefined })
       // onclose will fire right after; let it drive reconnect
     }
 
