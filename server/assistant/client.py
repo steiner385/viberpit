@@ -9,7 +9,16 @@ import httpx
 from ccswitch import brand
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.auth.middleware import ASSISTANT_SESSION_HEADER, VIA_HEADER
+from server.http_keepalive import CLIENT_KEEPALIVE_EXPIRY_S
 from server.sessions.types import SYSTEM_IDENTITY
+
+# This hop is loopback client -> the edge's own uvicorn (deploy/viberpit.service),
+# the "remaining instance" tie in the #1614/#1632 keepalive audit: a bare
+# httpx.AsyncClient defaults to the same 5s expiry uvicorn defaults to. Shared
+# with every other in-fleet hop via server/http_keepalive.py so this pool can't
+# drift back into a tie with the edge's --timeout-keep-alive.
+_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10,
+                        keepalive_expiry=CLIENT_KEEPALIVE_EXPIRY_S)
 
 # Tool-call ceiling for ONE assistant session (spec §4.10): a burst of 30 calls,
 # refilling at 1/s — so a runaway loop settles at ~60 calls/min and a 31st call in
@@ -32,7 +41,7 @@ class AssistantApi:
                  transport: httpx.AsyncBaseTransport | None = None,
                  timeout_s: float = 20.0) -> None:
         self._client = httpx.AsyncClient(
-            base_url=base_url, transport=transport, timeout=timeout_s,
+            base_url=base_url, transport=transport, timeout=timeout_s, limits=_LIMITS,
             # Header NAMES come from `auth.middleware`, which is also the accept side
             # (`request_attribution`): emitter and acceptor share one spelling so the
             # rebrand cannot leave them pointing at different headers (#1368).

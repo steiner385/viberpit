@@ -24,7 +24,13 @@ EnvironmentFile=/etc/viberpit/viberpit.env
 # server/app.py (session close, X11 sweep, DB dispose — see app.py's shutdown
 # comment block) NEVER runs, and systemd SIGKILLs at TimeoutStopSec on every deploy
 # (transcript audit V4).
-ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10
+# --timeout-keep-alive: without it uvicorn defaults to 5s, tied with the assistant
+# loopback client's httpx pool (server/assistant/client.py), which also defaults to
+# 5s. Equal timers race at the boundary and the client can hit "Server disconnected
+# without sending a response" from this healthy process (#1614/#1632 keepalive
+# audit). Set to server/http_keepalive.py's SERVER_KEEPALIVE_TIMEOUT_S so it stays
+# well above every client pool's CLIENT_KEEPALIVE_EXPIRY_S.
+ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10 --timeout-keep-alive 30
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box
