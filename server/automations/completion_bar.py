@@ -31,6 +31,27 @@ def _has_explicit_arm_step(text: str) -> bool:
     return bool(_SQUASH_AUTO_RE.search(text or ""))
 
 
+# Detects an explicit no-PR / investigate-only dispatch in task instructions (#2474):
+# three sessions since 2026-09-24 (5a756926, ae34025a, 366e8a65) were dispatched with
+# instructions forbidding implementation, yet a code-flavored goal title (e.g. "fix the
+# resource leak") made `_is_code_goal` demand a PR anyway. The session cannot satisfy
+# both its dispatch and the bar, and ends in a `hand_back` reporting the contradiction.
+_NO_PR_DISPATCH_RE = re.compile(
+    r"\bdo\s+not\s+implement\b"
+    r"|\bopen\s+no\s+pr\b"
+    r"|\bread[\s-]?only\b"
+    r"|\binvestigate[\s-]?only\b",
+    re.IGNORECASE,
+)
+
+
+def _has_no_pr_dispatch(text: str) -> bool:
+    """True when *text* (the session's initial dispatch prompt) explicitly forbids
+    opening a PR — "do not implement", "open no PR", "read-only", "investigate only" —
+    the phrasing observed in the #2474 hand-back trail."""
+    return bool(_NO_PR_DISPATCH_RE.search(text or ""))
+
+
 @dataclass(frozen=True)
 class PrFact:
     number: int
@@ -160,10 +181,10 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             pr_resolution_source: str | None = None,
             instructions: str | None = None) -> BarVerdict:
     """Is the session's goal genuinely met? Precedence: merged > armed >
-    open-unarmed > pr_resolution(no-PR, verified) > instructions-arm-required >
-    no-PR-nudge. Only high-confidence verdicts are safe to auto-act on. A real PR
-    fact always overrides a pr_resolution (a stale 'no PR' claim never masks an
-    actual PR).
+    open-unarmed > no-PR-dispatch(instructions) > pr_resolution(no-PR, verified) >
+    instructions-arm-required > no-PR-nudge. Only high-confidence verdicts are safe
+    to auto-act on. A real PR fact always overrides a pr_resolution (a stale 'no PR'
+    claim never masks an actual PR).
 
     ``pr_resolution_source`` decides whether a resolution is a verdict or a claim:
     a self-certified ``not-needed`` (``marker`` or ``tool``) on a repo-attached code goal
@@ -176,7 +197,13 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     When it contains an explicit ``--squash --auto`` arming step, the bar
     requires an armed or merged PR regardless of how the goal text is worded —
     overriding the non-code/research escape hatch that would otherwise return
-    ``met=True`` with no PR in the cache."""
+    ``met=True`` with no PR in the cache.
+
+    When ``instructions`` instead explicitly forbids opening a PR (#2474: "do not
+    implement", "open no PR", "read-only", "investigate only"), the bar treats that
+    as the resolution — ahead of ``pr_resolution`` and the arm-step check — so a
+    code-flavored goal title cannot out-vote the session's own dispatch and push it
+    into a self-contradictory nudge."""
     merged = facts.merged_pr
     if merged is not None and not (merged.is_docs_only and _is_code_goal(goal)):
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
@@ -198,6 +225,10 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             False, f"PR #{unarmed.number} is open but not armed",
             f"ready the PR and arm auto-merge: `gh pr ready {unarmed.number}` then "
             f"`gh pr merge {unarmed.number} --squash --auto`", "high")
+    if instructions and _has_no_pr_dispatch(instructions):
+        return BarVerdict(
+            True, "dispatch instructions explicitly forbid opening a PR "
+            "(investigate-only/read-only)", None, "high")
     self_claim = is_unverified_self_resolution(goal, facts, pr_resolution,
                                                pr_resolution_source)
     if pr_resolution and not self_claim:
