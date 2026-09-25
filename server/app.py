@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -20,6 +21,7 @@ from server.stt.engine import WhisperEngine, is_available as stt_available
 from server.stt.ws import build_stt_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
+from server.sessions.failure import classify as classify_turn_failure
 from ccswitch import brand
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
@@ -818,6 +820,56 @@ def create_app(
 
     @app.exception_handler(DaemonError)
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
+        # Most DaemonErrors are the daemon reporting a genuine local conflict (bad
+        # session id, malformed request) — `.message` IS the right client-facing
+        # detail, and 409 is the right status. But a handful of RPC paths (notably
+        # `ensure_driver`'s detached-resume rebuild in orchestrator.py) re-raise a
+        # raw upstream SDK/CLI failure completely unclassified, so the account's own
+        # rate-limit/auth error — verbatim Anthropic JSON body and all — leaked to
+        # the client as `detail` on a fixed, misleading 409 (#1872). Route the
+        # message through the same classifier a live turn's failure already uses so
+        # a rate-limit/auth/overload condition gets its real status and a clean
+        # message instead of leaking internals; anything else keeps today's 409.
+        turn_failure = classify_turn_failure(None, _exc.message)
+        if turn_failure.kind == "rate_limit":
+            headers = (
+                {"Retry-After": str(math.ceil(turn_failure.retry_after))}
+                if turn_failure.retry_after
+                else None
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "The AI provider is rate-limiting this account. Try again in a moment.",
+                    "code": "daemon_upstream_rate_limited",
+                },
+                headers=headers,
+            )
+        if turn_failure.kind == "auth_401":
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": ("Authentication with the AI provider failed — the "
+                               "account's credentials may need to be re-linked."),
+                    "code": "daemon_upstream_auth_failed",
+                },
+            )
+        if turn_failure.kind == "auth_forbidden":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "The account's organization has disabled access — re-linking won't help.",
+                    "code": "daemon_upstream_forbidden",
+                },
+            )
+        if turn_failure.kind == "overloaded":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "The AI provider is temporarily overloaded. Try again shortly.",
+                    "code": "daemon_upstream_overloaded",
+                },
+            )
         return JSONResponse(status_code=409, content={"detail": _exc.message})
 
     @app.exception_handler(Exception)
