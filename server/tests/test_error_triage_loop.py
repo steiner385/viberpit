@@ -100,6 +100,10 @@ def test_error_files_on_first_occurrence_two_phase(tmp_path):
         row = await _row("fp1")
         assert row.status == "filed" and row.issue_number == 42
         assert row.filed_at == NOW and row.count_since_filed == 0
+        # The repo the issue actually landed in, so a later target_repo repoint
+        # cannot collide this row's number with a same-numbered one filed under
+        # the new target (#1963).
+        assert row.repo == "o/r"
         create = gh.creates[0]
         assert "labels[]=auto-error" in create and "labels[]=source:server" in create
         assert any("title=[auto-error] ERROR server.x: boom" == c for c in create)

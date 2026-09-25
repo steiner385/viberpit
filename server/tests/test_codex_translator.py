@@ -779,6 +779,32 @@ def test_no_pr_marker_sets_the_pr_resolution() -> None:
     out = _turn_completed(translator)
     assert out[0].outcome == "complete"  # type: ignore[attr-defined]
     assert out[0].pr_resolution == "not-needed"  # type: ignore[attr-defined]
+    assert out[0].pr_resolution_source == "marker"  # type: ignore[attr-defined]
+    assert out[0].pr_resolution_note == "nothing to change"  # type: ignore[attr-defined]
+
+
+def test_no_pr_marker_note_is_the_last_line_not_the_whole_message() -> None:
+    """#1963: the runner's converted exit matches on the note's PREFIX, so the
+    note has to be the one line the prompt actually asked for — not the
+    investigation write-up that comes before it."""
+    translator, _ = _fresh()
+    _item_completed(
+        translator, {
+            "type": "agentMessage", "id": "it_a",
+            "text": ("I dug into the stack trace and found the retry loop never "
+                     f"resets its counter.\nconverted to a fix: retry loop fix\n{NO_PR_MARKER}"),
+        })
+    out = _turn_completed(translator)
+    assert out[0].pr_resolution_note == "converted to a fix: retry loop fix"  # type: ignore[attr-defined]
+
+
+def test_a_turn_with_no_resolution_carries_no_note() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a", "still working")
+    out = _turn_completed(translator)
+    assert out[0].pr_resolution is None  # type: ignore[attr-defined]
+    assert out[0].pr_resolution_source is None  # type: ignore[attr-defined]
+    assert out[0].pr_resolution_note is None  # type: ignore[attr-defined]
 
 
 def test_a_marker_never_upgrades_a_failed_turn() -> None:
@@ -835,6 +861,9 @@ def test_hand_back_marker_beats_the_no_pr_marker_and_drops_the_resolution() -> N
     out = _turn_completed(translator)
     assert out[0].outcome == "hand_back"  # type: ignore[attr-defined]
     assert out[0].pr_resolution is None  # type: ignore[attr-defined]
+    # The note must not survive either — it would otherwise describe a
+    # resolution this turn no longer carries.
+    assert out[0].pr_resolution_note is None  # type: ignore[attr-defined]
 
 
 def test_hand_back_marker_never_upgrades_a_failed_turn() -> None:

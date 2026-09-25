@@ -2534,6 +2534,22 @@ class BacklogRunnerLoop:
                 return  # release lost the fence — leave it for the next sweep
             await self._investigated(target, "closed", safe)
             return
+        if converted:
+            # The session's own note is checked BEFORE the mirror state: it comes
+            # from the session row, not the WorkItem mirror, so it is legible even
+            # for an issue that has since left the mirror — reading the mirror
+            # first would report that case as ``unmirrored`` and hide a real
+            # conversion (#1963). Clear the hold BEFORE releasing the row (the
+            # escalate-then-release ordering the ladder uses, review R1 I2 item 2):
+            # a raise leaves the claim intact and the next sweep retries the whole
+            # branch. A hold the session or a person already cleared, or a WorkItem
+            # that no longer exists, makes the write seam answer False, which is
+            # simply the observation that the conversion happened.
+            await self._release_investigation_hold(target)
+            if not await finalise("investigation: converted to a fix"):
+                return
+            await self._investigated(target, "converted", safe)
+            return
         hold_kind = info.get("hold_kind")
         if not info.get("mirrored"):
             # The issue left the mirror (or never entered it) while the
@@ -2546,17 +2562,6 @@ class BacklogRunnerLoop:
             if not await finalise("investigation: issue unmirrored"):
                 return
             await self._investigated(target, "unmirrored", safe)
-            return
-        if converted:
-            # Clear the hold BEFORE releasing the row (the escalate-then-release
-            # ordering the ladder uses, review R1 I2 item 2): a raise leaves the
-            # claim intact and the next sweep retries the whole branch. A hold the
-            # session or a person already cleared makes the write seam answer False,
-            # which is simply the observation that the conversion happened.
-            await self._release_investigation_hold(target)
-            if not await finalise("investigation: converted to a fix"):
-                return
-            await self._investigated(target, "converted", safe)
             return
         if hold_kind is None:
             # No note, but the hold is gone: a Claude session cleared its own

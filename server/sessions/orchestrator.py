@@ -5451,12 +5451,12 @@ class SessionOrchestrator:
         # getattr (not attribute access): a driver may be absent, or a test/partial
         # driver stub without last_pr_resolution — neither should break status persist.
         resolution = getattr(driver, "last_pr_resolution", None)
-        # Provenance of that token. Only ClaudeAgentDriver latches it (the Codex
-        # driver keeps the marker contract by design and leaves
-        # TurnEnd.pr_resolution_source None), so the `or "marker"` default is
-        # load-bearing: any driver — or partial test stub — that reports a resolution
-        # without a source keeps the pre-provenance behaviour and persists "marker",
-        # never None.
+        # Provenance of that token: "tool" (ClaudeAgentDriver, a real mark_no_pr
+        # call) or "marker" (either driver's marker path — Codex has no tool at
+        # all, spec 2026-09-18 §5's Codex convert-to-fix follow-up, #1963). The
+        # `or "marker"` default is still load-bearing for a partial test stub that
+        # reports a resolution without a source: it keeps the pre-provenance
+        # behaviour and persists "marker", never None.
         resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
         # The session's own one-line reason for finishing without a PR. No default:
         # unlike the source, "no note" is a real answer (the marker path has no
@@ -6965,8 +6965,8 @@ class SessionOrchestrator:
         every auto-filed error report ahead of every implement issue. Urgent work
         still leads, floated over the whole plan last."""
         from server.automations.backlog_grouping import (
-            RefreshSummary, family_groups, float_urgent_first, order_by_pool_rank,
-            propose_groups, store_plan)
+            GroupingModelError, RefreshSummary, family_groups, float_urgent_first,
+            load_plan, order_by_pool_rank, propose_groups, store_plan)
         candidates = await self._backlog_query_queue(config)
         if not candidates:
             return RefreshSummary(groups=await store_plan([], []))
@@ -6984,7 +6984,25 @@ class SessionOrchestrator:
             acct = await self._backlog_healthy_account()
             config_dir = (self._autopilot_helper_config_dir(acct) if acct is not None
                           else pick_helper_config_dir())
-            proposed = await propose_groups(rest, config, _config_dir=config_dir)
+            try:
+                proposed = await propose_groups(rest, config, _config_dir=config_dir)
+            except GroupingModelError:
+                # The evidence half above needs no model call and is never itself
+                # the failure — discarding it along with the model's half leaves a
+                # STALE evidence group live (e.g. one whose primary already
+                # converted, #1963) for a full grouping interval, when refreshing
+                # it here costs nothing. Store evidence fresh, carry the previous
+                # plan's non-evidence groups over verbatim, and still raise so the
+                # caller's existing backoff (``groups_refresh_failed`` + retry-at)
+                # fires exactly as before (#1963).
+                previous = await load_plan()
+                evidence_refs = {r for g in evidence for r in g["refs"]}
+                stale = [g for g in previous
+                         if not (set(g["refs"]) & evidence_refs)]
+                plan = float_urgent_first(
+                    order_by_pool_rank(evidence + stale, candidates), candidates)
+                await store_plan(plan, candidates, degraded=True)
+                raise
             groups, degraded = proposed.groups, proposed.degraded
         # Two orderings, applied in this order and nowhere else. First rank: the
         # concatenation itself must not decide priority (spec §5 dispatches an

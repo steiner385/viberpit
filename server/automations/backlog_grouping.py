@@ -536,6 +536,18 @@ def plan_to_batch(
         return None, None
     group, refs = live[0]
     primary = refs[0]
+    primary_hold_kind = by_ref[primary].get("hold_kind")
+    # An evidence-held item dispatches as an investigation and can never ride a
+    # batch with implement work (family_groups' invariant) — but the group's refs
+    # were fixed when the PLAN was built while this hold_kind is read fresh at POP
+    # time, so a primary that converted (or was parked) mid-plan must not carry
+    # still-evidence-held siblings into an implement dispatch (#1963). Any ref
+    # whose current evidence-classification disagrees with the primary's is
+    # dropped from this batch; it stays in the live pool for the next refresh to
+    # regroup correctly.
+    primary_is_evidence = primary_hold_kind == "evidence"
+    refs = [r for r in refs if r == primary
+            or (by_ref[r].get("hold_kind") == "evidence") == primary_is_evidence]
     return Batch(
         primary=primary,
         issues=refs,
@@ -550,7 +562,7 @@ def plan_to_batch(
         # question (spec 2026-09-18 §5), and the candidate dict is all the loop
         # receives across this hand-off. A secondary's hold does not travel — the
         # session is for the primary, and it is the primary's prompt that is seeded.
-        primary_hold_kind=by_ref[primary].get("hold_kind"),
+        primary_hold_kind=primary_hold_kind,
     ), group.get("id")
 
 

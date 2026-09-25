@@ -3054,34 +3054,42 @@ def test_issue_detail_carries_hold_fields_and_guidance():
         assert body["version"] == c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()["version"]
 
 
-def test_issue_detail_reads_the_policy_only_for_an_owner_action_hold():
+def test_issue_detail_skips_the_policy_load_only_when_unheld():
     """`hold_guidance` decides which kinds carry copy; the endpoint just supplies a
-    policy for whichever kind is on the row. Its evidence copy is policy-independent
-    (spec 2026-09-18 §5), so an evidence hold must not pay for the owning-product
-    lookup / policy load an owner_action hold needs — the common unheld-issue case
-    pays for neither."""
+    policy for whichever kind is on the row. owner_action's `implement` AND
+    evidence's `investigate` (#1963's Investigate-now tap) both vary with the
+    owning product's dispatch policy, so both now pay for the owning-product
+    lookup / policy load — only the common unheld-issue case (no guidance is
+    computed at all) pays for neither."""
     from unittest.mock import AsyncMock
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
-        c.patch(f"/api/pm/work-items/{wid}/overlay",
-                json={"holdKind": "evidence", "holdReason": "needs a repro"},
-                headers=IDENTITY_HEADERS)
-        loader = AsyncMock(name="load_policies")
+        loader = AsyncMock(name="load_policies", return_value={})
         with patch("server.api.pm.load_policies", loader):
             r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
-        assert r.json()["holdKind"] == "evidence"
-        assert set(r.json()["guidance"]) == {"evidence"}
+        assert r.json()["guidance"] is None
         loader.assert_not_awaited()
+
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "evidence", "holdReason": "needs a repro"},
+                headers=IDENTITY_HEADERS)
+        loader2 = AsyncMock(name="load_policies", return_value={})
+        with patch("server.api.pm.load_policies", loader2):
+            r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["holdKind"] == "evidence"
+        assert set(r.json()["guidance"]) == {"evidence", "investigate"}
+        loader2.assert_awaited()
 
 
 def test_issue_detail_guidance_for_evidence_and_none_for_stronger_model():
-    """spec 2026-09-18 §5: an evidence hold's live detail response carries the
-    single button-less consequence `hold_guidance` computes for it (the API gap
-    task 6's own review caught — `guidance` must not stay null in production for
-    this kind); `stronger_model`, which `hold_guidance` does not know, still reads
-    as no guidance at all."""
+    """spec 2026-09-18 §5 + #1963: an evidence hold's live detail response carries
+    the button-less `evidence` consequence AND the Investigate-now tap's own
+    `investigate` consequence (the API gap task 6's own review caught —
+    `guidance` must not stay null in production for this kind); `stronger_model`,
+    which `hold_guidance` does not know, still reads as no guidance at all."""
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
@@ -3092,11 +3100,13 @@ def test_issue_detail_guidance_for_evidence_and_none_for_stronger_model():
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["holdKind"] == "evidence"
-        assert set(body["guidance"]) == {"evidence"}
+        assert set(body["guidance"]) == {"evidence", "investigate"}
         e = body["guidance"]["evidence"]
         assert e["available"] is True
         assert "investigates this report instead of implementing it" in e["then"][0]["text"]
         assert e["immediate"] == []
+        i = body["guidance"]["investigate"]
+        assert i["when"] == "now"
 
         c.patch(f"/api/pm/work-items/{wid}/overlay",
                 json={"holdKind": "stronger_model", "holdReason": "bounced at sonnet"},

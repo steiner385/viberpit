@@ -3377,6 +3377,28 @@ def test_an_unmirrored_issue_releases_the_claim_and_says_so(tmp_path):
     asyncio.run(run())
 
 
+def test_a_converted_note_wins_over_an_unmirrored_issue(tmp_path):
+    """The note comes from the session row, not the WorkItem mirror, so it is
+    legible even once the issue has left the mirror. Checking ``mirrored`` first
+    would report this as ``unmirrored`` and hide a real conversion (#1963)."""
+    async def run():
+        from server.automations.backlog_prompt import CONVERTED_NOTE_PREFIX
+        note = f"{CONVERTED_NOTE_PREFIX}: root-caused before the mirror sync dropped it"
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_converted_unmirrored.db",
+            {"issue_state": "open", "mirrored": False, "hold_kind": None,
+             "no_pr_note": note})
+
+        assert not await ctx.get_target_state("o/r#1")
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: converted to a fix")]
+        assert rec.needs_humans == []
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "converted"]
+
+    asyncio.run(run())
+
+
 def test_an_open_evidence_report_hands_off_with_the_sessions_own_note(tmp_path):
     """Exit 4: only the owner can supply what is needed. The issue is still open and
     still holds ``evidence``, so nothing was resolved — hand it over through the

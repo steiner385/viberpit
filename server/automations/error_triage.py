@@ -394,7 +394,7 @@ class ErrorTriageLoop:
             return None
         async with db_session() as db:
             await db.execute(update(ES).where(ES.fingerprint == fp)
-                             .values(issue_number=applied.issue_number))
+                             .values(issue_number=applied.issue_number, repo=repo))
         return applied.issue_number
 
     # -- card actions ---------------------------------------------------------

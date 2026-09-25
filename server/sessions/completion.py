@@ -255,6 +255,33 @@ def resolution_from_text(text: str) -> str | None:
     return "cancelled" if _CANCEL_RE.search(text) else "not-needed"
 
 
+def note_from_marker_text(text: str) -> str | None:
+    """The free-text note a marker-only engine (Codex — no ``mark_no_pr`` tool)
+    wrote immediately before ``NO_PR_MARKER``, or ``None`` when there is none.
+
+    The marker itself carries no attribute for it (unlike ``HAND_BACK_MARKER``'s
+    ``reason="…"``) — ``NO_PR_INSTRUCTION`` and the backlog investigate prompt
+    (``backlog_prompt._finish_not_needed``) both ask the engine to write the note
+    as the LAST LINE of its final message, then end that message with the marker
+    on its own line. Reading that last line back is the mirror of writing it: the
+    one exit that keys off note CONTENT (``converted to a fix``, spec
+    2026-09-18 §5) needs the note to START with that phrase, so grabbing the
+    WHOLE preceding message — which usually leads with the investigation's own
+    narrative — would break that match; the last line is what the prompt
+    actually asked the engine to write."""
+    if not text:
+        return None
+    match = NO_PR_MARKER_RE.search(text)
+    if match is None:
+        return None
+    before = text[:match.start()]
+    for line in reversed(before.splitlines()):
+        line = line.strip()
+        if line:
+            return line
+    return None
+
+
 #: The resolution tokens a no-PR completion can carry. Identical to what
 #: ``resolution_from_text`` answers, so the tool path and the marker fallback
 #: produce values that are comparable rather than merely similar.

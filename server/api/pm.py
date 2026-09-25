@@ -2435,14 +2435,15 @@ async def get_work_item_issue(item_id: str, _identity: str = Depends(current_ide
     # evidence today) — this endpoint never spells that list, it just supplies a
     # policy and lets the function answer None for anything it doesn't know. The
     # owning-product lookup and the policy load are the expensive half of that, so
-    # they run only for owner_action, whose copy actually varies with the product's
-    # dispatch policy; evidence's copy is policy-independent (see hold_guidance's
-    # docstring), so it gets the cheap `effective_policy(None)` default rather than
-    # paying for a lookup its answer can never use.
+    # they run only for the two kinds whose copy actually varies with the
+    # product's dispatch policy: owner_action's `implement`, and evidence's
+    # `investigate` (#1963) — its `evidence` entry alone would still be
+    # policy-independent (see hold_guidance's docstring), but the Investigate-now
+    # tap needs the real policy to know whether it can dispatch at all.
     guidance = None
     if wi.hold_kind is not None:
         policy = effective_policy(None)
-        if wi.hold_kind == "owner_action" and wi.repo:
+        if wi.hold_kind in ("owner_action", "evidence") and wi.repo:
             slug_by_repo = {repo: owner.slug for repo, owner
                             in (await owning_projects_by_repo(db, {wi.repo})).items()}
             slug = slug_by_repo.get(wi.repo)

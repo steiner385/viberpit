@@ -517,13 +517,14 @@ export interface WorkItemIssue {
   /** What Retry and Implement now each do from here: one `Consequence` per
    *  control, computed server-side by `server/pm/explain.py:hold_guidance`
    *  under the owning product's dispatch policy. For an `evidence` hold this is
-   *  instead a single, button-less `Consequence` describing what the next
-   *  Backlog Runner run does on its own (spec 2026-09-18 §5) — rendered through
-   *  the same `ConsequenceList`, never a second renderer. Null for every other
-   *  `holdKind` (`stronger_model`, `decision`) and for an unheld issue — the
-   *  ladder climb and the decision inbox, other items in the series, have no
-   *  copy here yet. */
-  guidance?: { retry: Consequence; implement: Consequence } | { evidence: Consequence } | null
+   *  instead `evidence` (what the next Backlog Runner run does on its own,
+   *  spec 2026-09-18 §5) paired with `investigate` (the Investigate-now tap's
+   *  own consequence, #1963) — both rendered through the same `ConsequenceList`,
+   *  never a second renderer. Null for every other `holdKind` (`stronger_model`,
+   *  `decision`) and for an unheld issue — the ladder climb and the decision
+   *  inbox, other items in the series, have no copy here yet. */
+  guidance?: { retry: Consequence; implement: Consequence }
+    | { evidence: Consequence; investigate: Consequence } | null
 }
 export type IssueDispositionInput = { version: string } & (
   | { action: 'edit'; title: string; body: string }

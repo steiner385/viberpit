@@ -37,7 +37,7 @@ from server.codex.manager import (
 )
 from server.codex.redaction import Redacted
 from server.sessions import events as ev
-from server.sessions.completion import COMPLETION_MARKER
+from server.sessions.completion import COMPLETION_MARKER, NO_PR_MARKER
 from server.sessions.engine import AgentDriver, AgentDriverConfig, AgentEngine
 from server.sessions.model_request import MODEL_REQUEST_INSTRUCTION
 from server.sessions.permissions import PermissionRegistry
@@ -395,6 +395,56 @@ async def test_a_prompt_starts_a_turn_and_streams_its_answer(harness):
     assert [e.outcome for e in ends] == ["success"]
     assert driver.turn_active is False
     assert driver.current_status() == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_no_pr_marker_turn_latches_the_resolution_and_its_note(harness):
+    """#1963: Codex has no `mark_no_pr` tool, so the driver must latch the
+    resolution AND the note off the marker text alone — the same pair
+    ClaudeAgentDriver latches off a real tool call, and what the Backlog Runner's
+    converted-to-a-fix exit reads back by session id (spec 2026-09-18 §5)."""
+    driver = await harness.boot()
+    await harness.run_turn("investigate")
+    harness.notify_text(f"converted to a fix: retry loop never resets\n{NO_PR_MARKER}")
+    harness.notify_turn_completed()
+    await harness.settle()
+
+    assert driver.last_pr_resolution == "not-needed"
+    assert driver.last_pr_resolution_source == "marker"
+    assert driver.last_pr_resolution_note == "converted to a fix: retry loop never resets"
+
+
+@pytest.mark.asyncio
+async def test_a_later_resolution_free_turn_does_not_wipe_the_codex_latch(harness):
+    """Sticky, exactly like ClaudeAgentDriver's: a turn that decides nothing must
+    not blank the answer an ended investigation is settled from."""
+    driver = await harness.boot()
+    await harness.run_turn("investigate")
+    harness.notify_text(f"converted to a fix: x\n{NO_PR_MARKER}")
+    harness.notify_turn_completed()
+    await harness.settle()
+
+    await driver.send_prompt("one more thing")
+    harness.notify_turn_started("turn-2")
+    harness.notify_text("just a follow-up", turn_id="turn-2")
+    harness.notify_turn_completed("turn-2")
+    await harness.settle()
+
+    assert driver.last_pr_resolution == "not-needed"
+    assert driver.last_pr_resolution_note == "converted to a fix: x"
+
+
+@pytest.mark.asyncio
+async def test_a_plain_codex_turn_carries_no_resolution_or_note(harness):
+    driver = await harness.boot()
+    await harness.run_turn("write a haiku")
+    harness.notify_text("cherry blossoms fall")
+    harness.notify_turn_completed()
+    await harness.settle()
+
+    assert driver.last_pr_resolution is None
+    assert driver.last_pr_resolution_source is None
+    assert driver.last_pr_resolution_note is None
 
 
 @pytest.mark.asyncio
