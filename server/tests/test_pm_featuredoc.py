@@ -6,6 +6,7 @@ from server.pm.featuredoc import (
     FEATURE_STATE_ALIASES,
     FeatureDocError,
     FeatureLinkRef,
+    NotAFeatureDoc,
     parse_feature_doc,
     serialize_feature_doc,
 )
@@ -328,6 +329,19 @@ def test_fenceless_doc_takes_its_slug_from_the_path():
 def test_fenceless_doc_without_a_path_still_raises():
     with pytest.raises(FeatureDocError, match="frontmatter"):
         parse_feature_doc(NO_FENCE)
+
+
+def test_readme_shaped_file_raises_not_a_feature_doc():
+    """A directory index like docs/product/features/README.md is never meant
+    to be a feature doc — no fence and "README" isn't a valid slug. Callers
+    must be able to tell this apart from a genuinely malformed doc (#2478)."""
+    with pytest.raises(NotAFeatureDoc):
+        parse_feature_doc("# Feature registry\n\nSee below.\n",
+                          path="docs/product/features/README.md")
+
+
+def test_not_a_feature_doc_is_a_feature_doc_error():
+    assert issubclass(NotAFeatureDoc, FeatureDocError)
 
 
 def test_fenceless_doc_without_an_h1_still_raises():

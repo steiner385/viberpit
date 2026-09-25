@@ -1,6 +1,6 @@
 import pytest
 
-from server.pm.personadoc import PersonaDoc, PersonaDocError, parse_persona_doc
+from server.pm.personadoc import NotAPersonaDoc, PersonaDoc, PersonaDocError, parse_persona_doc
 
 
 def test_parses_full_frontmatter():
@@ -42,6 +42,19 @@ def test_no_fence_falls_back_to_path_slug():
 def test_no_fence_and_no_resolvable_path_raises():
     with pytest.raises(PersonaDocError):
         parse_persona_doc("Just a body, no fence.\n")
+
+
+def test_readme_shaped_file_raises_not_a_persona_doc():
+    """A directory index like docs/product/personas/README.md is never meant
+    to be a persona doc — no fence and "README" isn't a valid slug. Callers
+    must be able to tell this apart from a genuinely malformed doc (#2478)."""
+    with pytest.raises(NotAPersonaDoc):
+        parse_persona_doc("# Persona registry\n\nSee below.\n",
+                          path="docs/product/personas/README.md")
+
+
+def test_not_a_persona_doc_is_a_persona_doc_error():
+    assert issubclass(NotAPersonaDoc, PersonaDocError)
 
 
 def test_missing_slug_and_title_raises():

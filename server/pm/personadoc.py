@@ -18,6 +18,13 @@ class PersonaDocError(ValueError):
     must never poison the whole index (mirrors FeatureDocError)."""
 
 
+class NotAPersonaDoc(PersonaDocError):
+    """Raised when *text* isn't shaped like a persona doc at all: no
+    frontmatter fence, and the path's stem isn't a valid slug either (e.g. a
+    directory ``README.md``). This is expected, deliberate filtering, not a
+    malformed doc — callers should skip it quietly rather than warn (#2478)."""
+
+
 @dataclass(frozen=True)
 class PersonaDoc:
     slug: str
@@ -64,7 +71,7 @@ def parse_persona_doc(text: str, *, path: str | None = None) -> PersonaDoc:
     elif _slug_from_path(path):
         body = text.lstrip("\n")
     else:
-        raise PersonaDocError("missing frontmatter fence")
+        raise NotAPersonaDoc("missing frontmatter fence")
 
     slug = str(meta.get("slug") or "").strip() or _slug_from_path(path)
     title = str(meta.get("title") or "").strip() or _title_from_body(body)
