@@ -381,7 +381,7 @@ class PmSyncLoop:
                         break
                 self._owner_next_retry.pop(owner, None)  # recovered
                 self._owner_failing.discard(owner)
-            except Exception:
+            except Exception as exc:
                 projects_degraded = True
                 self._owner_next_retry[owner] = now + _OWNER_ERROR_BACKOFF
                 if owner not in self._owner_failing:  # warn on onset only (dedup)
@@ -389,21 +389,21 @@ class PmSyncLoop:
                     await self._ctx.emit(
                         "warn", f"project discovery failed for {owner}",
                         kind="gh_projects_error", target=owner)
-                log.warning("pm_sync.project_discovery_error owner=%s",
-                            owner, exc_info=True)
+                log_gh_failure(
+                    log, str(exc), "pm_sync.project_discovery_error owner=%s", owner, exc_info=True)
         by_title: dict[str, GhProjectView] = {
             v.title.lower(): v for v in discovered.values()}
         linked = 0
         for product in products:
             try:
                 linked += await self._sync_one_product(product, by_title)
-            except Exception:
+            except Exception as exc:
                 projects_degraded = True
                 await self._ctx.emit(
                     "warn", f"project sync failed for {product.project_id}",
                     kind="gh_projects_error", target=product.project_id)
-                log.warning("pm_sync.project_error project=%s",
-                            product.project_id, exc_info=True)
+                log_gh_failure(
+                    log, str(exc), "pm_sync.project_error project=%s", product.project_id, exc_info=True)
         self._projects_observation_degraded = projects_degraded
         self._last_gh_projects = linked
         return linked
@@ -634,10 +634,10 @@ class PmSyncLoop:
             return
         try:
             await self._refresh_map_changes(view.project_id)
-        except Exception:
+        except Exception as exc:
             self._observation_degraded = True
-            log.warning("pm_sync.map_changes_refresh_failed repo=%s",
-                        view.repo, exc_info=True)
+            log_gh_failure(
+                log, str(exc), "pm_sync.map_changes_refresh_failed repo=%s", view.repo, exc_info=True)
             await self._ctx.emit(
                 "warn", f"map-changes PR refresh failed for {view.repo}",
                 kind="map_changes_refresh_error", target=view.repo)
@@ -652,10 +652,10 @@ class PmSyncLoop:
         # read never propagates out to abort the surrounding incremental pass.
         try:
             main = await self._read_feature_docs(view.repo)
-        except Exception:
+        except Exception as exc:
             self._observation_degraded = True
-            log.warning("pm_sync.feature_read_failed repo=%s — skipping reindex",
-                        view.repo, exc_info=True)
+            log_gh_failure(
+                log, str(exc), "pm_sync.feature_read_failed repo=%s — skipping reindex", view.repo, exc_info=True)
             await self._ctx.emit(
                 "warn", f"feature-doc read failed for {view.repo}; reindex skipped",
                 kind="feature_read_error", target=view.repo)
@@ -720,10 +720,10 @@ class PmSyncLoop:
                             continue  # inherited unchanged — not this PR's doing
                         docs_by_slug[doc.slug] = (path, doc)
                         proposed[doc.slug] = (pointer.pr_number, pointer.pr_url)
-            except Exception:
+            except Exception as exc:
                 self._observation_degraded = True
-                log.warning("pm_sync.map_changes_read_failed repo=%s",
-                            view.repo, exc_info=True)
+                log_gh_failure(
+                    log, str(exc), "pm_sync.map_changes_read_failed repo=%s", view.repo, exc_info=True)
                 await self._ctx.emit(
                     "warn", f"map-changes branch read failed for {view.repo}",
                     kind="map_changes_read_error", target=view.repo)
@@ -793,9 +793,10 @@ class PmSyncLoop:
                     timed.add(ev.path)
         try:
             return await self._resolve_evidence_paths(repo, sha, list(paths), timed)
-        except Exception:
+        except Exception as exc:
             self._observation_degraded = True
-            log.warning("pm_sync.evidence_resolve_failed repo=%s", repo, exc_info=True)
+            log_gh_failure(
+                log, str(exc), "pm_sync.evidence_resolve_failed repo=%s", repo, exc_info=True)
             return {}
 
     async def _governance_check(self, view: RepoSyncView) -> None:
@@ -810,10 +811,10 @@ class PmSyncLoop:
             return
         try:
             text = await self._read_constitution(view.repo)
-        except Exception:
+        except Exception as exc:
             self._observation_degraded = True
-            log.warning("pm_sync.constitution_read_failed repo=%s",
-                        view.repo, exc_info=True)
+            log_gh_failure(
+                log, str(exc), "pm_sync.constitution_read_failed repo=%s", view.repo, exc_info=True)
             return
         await self._save_constitution_status(view.project_id, classify_document(text))
 
