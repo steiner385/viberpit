@@ -66,7 +66,7 @@ from server.codex.capabilities import (
     CodexUnavailableReason,
 )
 from server.codex.external_auth import (
-    ExternalAuthUnavailable,
+    RunnerHoldsCredential,
     assert_no_runner_credentials,
 )
 from server.codex.process import CodexProcess, CodexProcessHandle
@@ -525,12 +525,15 @@ class CodexRunnerManager:
             # process.start/client.start may already have allocated OS resources.
             await self._discard_startup(account, process, client)
             raise
-        except ExternalAuthUnavailable:
+        except RunnerHoldsCredential:
             # Named separately from the generic failure below because the generic
-            # path reduces its cause to a fixed category ("runtime_error"), and
-            # "this runner is holding a ChatGPT credential" is the one startup
-            # failure whose REASON an operator must be told verbatim — the message
-            # is authored here, contains no native text, and names the remedy.
+            # path reduces its cause to a fixed category, and "this runner is
+            # holding a ChatGPT credential" is the one startup failure whose REASON
+            # an operator must be told verbatim — the message is authored here,
+            # contains no native text, and names the remedy. Only the post-login
+            # cache check raises this type: a login the authority refused is an
+            # ordinary ExternalAuthUnavailable and takes the generic path, or it
+            # would be reported as a credential leak it is not (#1942).
             await self._discard_startup(account, process, client)
             log_event(
                 logger,

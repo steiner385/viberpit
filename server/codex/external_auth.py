@@ -68,6 +68,16 @@ class ExternalAuthUnavailable(RuntimeError):
     """External-token auth cannot be used on this runner. Always fatal for Codex."""
 
 
+class RunnerHoldsCredential(ExternalAuthUnavailable):
+    """A runner's ``CODEX_HOME`` has acquired a credential cache it must not have.
+
+    Its own type, because the manager reports it verbatim as the one startup
+    failure whose reason an operator must be told. Every *other*
+    :class:`ExternalAuthUnavailable` (authority refused, unreachable, degraded) is
+    a login failure and must not borrow this name (#1942).
+    """
+
+
 class ExternalAuthProvider:
     """Supplies login params and refresh answers from the credential authority."""
 
@@ -386,7 +396,7 @@ def assert_no_runner_credentials(home: str | Path) -> None:
     """
     path = Path(home) / AUTH_FILENAME
     if path.exists():
-        raise ExternalAuthUnavailable(
+        raise RunnerHoldsCredential(
             f"{path} exists: a runner using external-token auth must never hold a "
             f"credential cache. Refusing to continue rather than leaving a "
             f"refresh token on a session host."
