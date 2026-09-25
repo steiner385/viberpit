@@ -156,6 +156,18 @@ def build_spec_prompt(
         "acceptance criteria, data/API surface, and non-goals. Explicitly **flag "
         "any policy concerns** (security, governance, ToS, data handling) as called-"
         "out spec constraints so a human can resolve them at the gate.\n\n"
+        "Give every functional requirement and acceptance criterion a stable ID — "
+        "it is the identity that must survive from this spec through the plan, the "
+        "materialized issues, and the PRs that close them, so never renumber or "
+        "reuse one once written. Use a `## Requirements` section shaped like:\n"
+        "```\n"
+        "- FR-001: <functional requirement, in one sentence>\n"
+        "- AC-001: <acceptance criterion, covers FR-001>\n"
+        "- US-1: <user story this requirement serves>\n"
+        "```\n"
+        "(`FR-NNN` for a functional requirement, `AC-NNN` for an acceptance "
+        "criterion, `US-N` for a user story — zero-padded, sequential within "
+        "this spec.)\n\n"
         + _common_instructions(slug, "spec", repo, default_branch, engine)
     )
 
@@ -183,7 +195,10 @@ def build_plan_prompt(
         f"Produce `{_artifact_path(slug, 'plan')}` with:\n"
         "- **Files** — every file to add/change, with a one-line purpose each.\n"
         "- **Order** — the sequence of steps (what must land before what).\n"
-        "- **Tests** — the tests that prove each step, TDD-first where possible.\n"
+        "- **Tests** — the tests that prove each step, TDD-first where possible. "
+        "Map each test to the requirement/acceptance-criteria ID(s) it proves, "
+        "e.g. `test_theme_persists_per_user — proves AC-001`. If the spec above "
+        "carries no `FR-`/`AC-`/`US-` IDs, skip the mapping.\n"
         "- **Risks** — what could go wrong and the mitigation for each.\n\n"
         + _common_instructions(slug, "plan", repo, default_branch, engine)
     )

@@ -28,6 +28,8 @@ from server.db.models import (
 )
 from server.pm.desired_state import STATUS_BLOCKED, is_held_status
 from server.pm.priority import initiative_priority
+from server.pm.requirement_ids import parse_covers
+from server.pm.requirement_ids import sort_key as _requirement_sort_key
 from server.pm.score import rice_score
 from server.pm.tree import derived_stage, rollup_epic_progress
 from server.sdlc import triage_store
@@ -605,6 +607,83 @@ async def get_initiative(
         tick_seconds=int(TICK_INTERVAL_S),
         materialize_exhausted=materialize_exhausted)))
     return result
+
+
+def _work_item_ref(w: WorkItem) -> dict:
+    return {"ref": f"{w.repo}#{w.number}", "number": w.number, "title": w.title,
+            "state": w.state, "url": w.url}
+
+
+@router.get("/initiatives/{slug}/requirements")
+async def get_initiative_requirements(
+    slug: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The requirement-ID coverage map for *slug* (issue #2163): every stable
+    ID (`FR-NNN`/`AC-NNN`/`US-N`) a materialized task issue declared on a
+    `Covers:` line, resolved to the issues and PRs that carry it.
+
+    Parsed straight off the GitHub mirror (`WorkItem.body`/
+    `linked_issue_numbers`) — no plan.md fetch, no new storage: the same
+    `Covers:` convention `build_materialize_prompt` asks a decompose session to
+    write is the only source of truth (constitution VI). An initiative with no
+    epic yet, or an epic whose tasks carry no `Covers:` line (materialized
+    before #2163, or a plan with no requirement IDs), answers an empty list —
+    not an error.
+    """
+    ini = (
+        await db.execute(select(Initiative).where(Initiative.slug == slug))
+    ).scalar_one_or_none()
+    if ini is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+
+    if not ini.epic_repo or not ini.epic_number:
+        return {"slug": slug, "epic": None, "requirements": []}
+
+    epic = (
+        await db.execute(
+            select(WorkItem).where(
+                WorkItem.repo == ini.epic_repo,
+                WorkItem.number == ini.epic_number,
+                WorkItem.kind == "issue",
+            )
+        )
+    ).scalar_one_or_none()
+    if epic is None:
+        return {"slug": slug, "epic": None, "requirements": []}
+
+    children = (
+        await db.execute(select(WorkItem).where(WorkItem.parent_work_item_id == epic.id))
+    ).scalars().all()
+    prs = (
+        await db.execute(
+            select(WorkItem).where(WorkItem.repo == ini.epic_repo, WorkItem.kind == "pr")
+        )
+    ).scalars().all()
+
+    by_id: dict[str, dict] = {}
+    for child in children:
+        ids = parse_covers(child.body)
+        if not ids:
+            continue
+        issue_entry = _work_item_ref(child)
+        pr_entries = [
+            _work_item_ref(pr) for pr in prs
+            if pr.linked_issue_numbers and child.number in pr.linked_issue_numbers
+        ]
+        for rid in ids:
+            entry = by_id.setdefault(rid, {"id": rid, "issues": [], "prs": []})
+            entry["issues"].append(issue_entry)
+            known_prs = {p["ref"] for p in entry["prs"]}
+            entry["prs"].extend(p for p in pr_entries if p["ref"] not in known_prs)
+
+    requirements = [by_id[rid] for rid in sorted(by_id, key=_requirement_sort_key)]
+    return {
+        "slug": slug,
+        "epic": {"ref": f"{epic.repo}#{epic.number}", "url": epic.url},
+        "requirements": requirements,
+    }
 
 
 @router.get("/gates")

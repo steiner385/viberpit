@@ -48,6 +48,14 @@ def test_single_issue_contains_fixes_keyword():
     assert "Fixes #42" in result
 
 
+def test_instructs_citing_covers_ids_in_pr_body():
+    """Issue #2163: the implement prompt tells the session to cite an issue's
+    Covers: requirement IDs in the PR body."""
+    result = build_implement_prompt(SINGLE_BATCH)
+    assert "Covers:" in result
+    assert "PR body" in result
+
+
 def test_multi_issue_contains_fixes_for_each():
     result = build_implement_prompt(MULTI_BATCH)
     assert "Fixes #10" in result
@@ -141,12 +149,16 @@ UNDECIDED_PROMPT = (
     "2. Open ONE pull request that covers all of them (never a draft).\n"
     "3. In the PR body include a closing keyword for EVERY issue:\n"
     "   `Fixes #<n>` (one per issue) so GitHub auto-closes them on merge.\n"
-    "4. Mark the PR ready for review immediately after opening.\n"
-    "5. Arm auto-merge: `gh pr merge <#> --squash --auto`.\n"
-    "   Both steps 4 and 5 are required — a ready PR with auto-merge armed\n"
+    "4. If an issue's body has a `Covers: FR-…, AC-…` line naming stable\n"
+    "   requirement/acceptance-criteria IDs, cite those same IDs in the PR\n"
+    "   body (e.g. `Covers: FR-003, AC-012`) so requirement coverage traces\n"
+    "   from the PR back to the spec.\n"
+    "5. Mark the PR ready for review immediately after opening.\n"
+    "6. Arm auto-merge: `gh pr merge <#> --squash --auto`.\n"
+    "   Both steps 5 and 6 are required — a ready PR with auto-merge armed\n"
     "   is the finished state.\n"
-    "6. Branch off `origin/master` (never local `master`).\n"
-    "7. End every commit message with:\n"
+    "7. Branch off `origin/master` (never local `master`).\n"
+    "8. End every commit message with:\n"
     f"   `{commit_trailer(AgentEngine.CLAUDE_CODE)}`\n"
 )
 

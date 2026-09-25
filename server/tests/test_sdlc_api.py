@@ -1826,3 +1826,89 @@ def test_detail_guidance_with_a_pending_materialization():
             assert "2 sub-issues" in acc["immediate"][0]["text"]
             assert acc["immediate"][0]["writesGithub"] is True
             assert body["guidance"]["machine"]["summary"] == "A decomposition is waiting for your Accept or Reject."
+
+
+# --------------------------------------------------------------------------- #
+# GET /initiatives/{slug}/requirements (issue #2163)                          #
+# --------------------------------------------------------------------------- #
+
+def test_requirements_404_for_unknown_slug():
+    with _client() as c:
+        r = c.get("/api/sdlc/initiatives/nope/requirements", headers=IDENTITY_HEADERS)
+        assert r.status_code == 404
+
+
+def test_requirements_empty_for_initiative_with_no_epic():
+    from server.db import db_session
+    from server.db.models import Initiative
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            db.add(Initiative(slug="no-epic", repo="o/r", title="No epic",
+                              stage="plan", status="active"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with _client(db_url) as c:
+            r = c.get("/api/sdlc/initiatives/no-epic/requirements", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["epic"] is None
+            assert body["requirements"] == []
+
+
+def test_requirements_maps_covers_lines_to_issues_and_prs():
+    """Two task issues cover FR-001 (one also covers AC-002); a third task has no
+    Covers: line and must not appear. One PR closes task #1 (linked_issue_numbers)
+    and must show up under FR-001 but not under AC-002."""
+    from server.db import db_session
+    from server.db.models import Initiative, WorkItem
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            db.add(Initiative(slug="reqs", repo="o/r", title="Reqs", stage="build",
+                              status="active", epic_repo="o/r", epic_number=500))
+            epic_wi = WorkItem(repo="o/r", number=500, kind="issue", state="open", is_epic=True)
+            db.add(epic_wi)
+            await db.flush()
+            db.add_all([
+                WorkItem(repo="o/r", number=1, kind="issue", title="Task one",
+                        state="open", parent_work_item_id=epic_wi.id,
+                        body="Do the thing.\n\nCovers: FR-001"),
+                WorkItem(repo="o/r", number=2, kind="issue", title="Task two",
+                        state="open", parent_work_item_id=epic_wi.id,
+                        body="Do another thing.\n\nCovers: FR-001, AC-002"),
+                WorkItem(repo="o/r", number=3, kind="issue", title="Task three",
+                        state="open", parent_work_item_id=epic_wi.id,
+                        body="No IDs here."),
+                WorkItem(repo="o/r", number=44, kind="pr", title="Fix task one",
+                        state="open", url="https://github.com/o/r/pull/44",
+                        linked_issue_numbers=[1]),
+            ])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with _client(db_url) as c:
+            r = c.get("/api/sdlc/initiatives/reqs/requirements", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["epic"]["ref"] == "o/r#500"
+            by_id = {req["id"]: req for req in body["requirements"]}
+            assert set(by_id) == {"FR-001", "AC-002"}
+
+            fr001 = by_id["FR-001"]
+            assert {i["ref"] for i in fr001["issues"]} == {"o/r#1", "o/r#2"}
+            assert {p["ref"] for p in fr001["prs"]} == {"o/r#44"}
+
+            ac002 = by_id["AC-002"]
+            assert {i["ref"] for i in ac002["issues"]} == {"o/r#2"}
+            assert ac002["prs"] == []
+
+            # Sorted by prefix then numerically (AC < FR < US alphabetically).
+            assert [r["id"] for r in body["requirements"]] == ["AC-002", "FR-001"]

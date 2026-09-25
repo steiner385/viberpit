@@ -37,6 +37,16 @@ def test_prompt_carries_the_plan_and_the_json_contract():
     assert "phase" in p.lower()
 
 
+def test_prompt_asks_for_covers_line_and_epic_requirement_index():
+    """Issue #2163: each task body gets a Covers: line copied from the plan's
+    requirement IDs; the epic body gets a matching index."""
+    p = build_materialize_prompt("acme", "o/acme", PLAN)
+    assert "Covers:" in p
+    assert "FR-" in p and "AC-" in p and "US-" in p
+    assert "## Requirements covered" in p
+    assert "verbatim" in p.lower()
+
+
 # --------------------------------------------------------------------------- #
 # Parser                                                                       #
 # --------------------------------------------------------------------------- #
