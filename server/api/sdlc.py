@@ -26,7 +26,7 @@ from server.db.models import (
     TriageItem,
     WorkItem,
 )
-from server.pm.desired_state import STATUS_BLOCKED, is_held_status
+from server.pm.desired_state import STATUS_BLOCKED, STATUS_HELD
 from server.pm.priority import initiative_priority
 from server.pm.requirement_ids import parse_covers
 from server.pm.requirement_ids import sort_key as _requirement_sort_key
@@ -253,7 +253,7 @@ async def _epic_progress_batch(
             "done": sum(1 for c in children if c.state == "closed"),
             "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
             # Both board spellings count while the fleet finishes renaming (spec §9).
-            "held": sum(1 for c in children if is_held_status(status_by_child.get(c.id))),
+            "held": sum(1 for c in children if status_by_child.get(c.id) == STATUS_HELD),
             # Spec 2026-09-14 D6: computed here, once, for every reader.
             "priority": initiative_priority(
                 rice_score(epic_wi.reach, epic_wi.impact, epic_wi.effort, epic_wi.confidence)

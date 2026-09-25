@@ -21,12 +21,10 @@ from typing import Any
 
 from server.db.models import INITIATIVE_STAGES
 from server.pm.desired_state import (
-    HELD_STATUS_SPELLINGS,
-    STATUS_HELD,
     STATUS_OPTIONS,
     derive,
 )
-from server.pm.gh_mutations import (UnknownOption, as_written, build_batch, build_create_field,
+from server.pm.gh_mutations import (UnknownOption, build_batch, build_create_field,
                                     build_rate_limit_query, build_update_field_options, chunk,
                                     parse_batch, parse_rate_limit)
 from server.pm.gh_projects import build_project_fields_query, parse_created_field, parse_project_fields
@@ -81,16 +79,9 @@ def _owner_of(product: ProductSyncView) -> str:
 def _missing_status_options(have: Iterable[str]) -> list[str]:
     """The spec Status options this board's field does NOT have, in spec order.
 
-    ``STATUS_HELD`` counts as present when the board still spells that column the
-    legacy way (spec 2026-09-18 §9): the two are ONE column, and appending "Held"
-    beside "Needs human" would split every parked card across two options and leave
-    a rename no script can do safely afterwards. The board's own rename is the only
-    thing that changes the spelling; until then `gh_mutations._render` writes the
-    cached one. Used by BOTH the bootstrap and ``_field_gap`` so the repair and the
-    gate that demands it cannot disagree."""
+    Used by BOTH the bootstrap and ``_field_gap`` so the repair and the gate that
+    demands it cannot disagree."""
     present = set(have)
-    if present & HELD_STATUS_SPELLINGS:
-        present.add(STATUS_HELD)
     return [o for o in STATUS_OPTIONS if o not in present]
 
 
@@ -362,7 +353,10 @@ class GhReconcileLoop:
         those columns. Each preserved option therefore carries its existing id straight out of
         ``field_cache`` (``option_ids`` on ``build_update_field_options``); the probe confirmed
         ids and item assignments survive that way. The runbook keeps the caveat for anyone
-        hand-rolling a repair without the ids.
+        hand-rolling a repair without the ids. ``color``/``description`` are likewise required
+        input members (``option_attrs``, #2015): omitting them repaints every preserved column
+        gray with its description erased, which the field cache now carries alongside the ids
+        (``parse_project_fields``' ``attrs``) precisely so this call can resend them.
 
         A bootstrap mutation that fails twice PARKS exactly like an item mutation: a board whose
         field creation is broken must not be retried at every tick forever. The caller re-runs
@@ -396,7 +390,8 @@ class GhReconcileLoop:
             wanted.append((Mutation("set_field_options", status["field_id"], "Status",
                                     have, union, f"fields:{facts.slug}"),
                            build_update_field_options(status["field_id"], union,
-                                                      option_ids=status.get("options"))))
+                                                      option_ids=status.get("options"),
+                                                      option_attrs=status.get("attrs"))))
         if not wanted:
             return cache
         batch_id = f"fields-{now.strftime('%Y%m%dT%H%M%S')}"
@@ -435,7 +430,16 @@ class GhReconcileLoop:
                                          kind="gh_reconcile_error", target=facts.project_id)
                 continue
             field_id, name, options = parsed
-            cache[name or (m.field or "")] = {"field_id": field_id, "options": options}
+            key = name or (m.field or "")
+            entry = {"field_id": field_id, "options": options}
+            # The mutation's own response omits color/description (``parse_created_field``
+            # selects ``id name`` only), but a preserved option's attrs did not change —
+            # carry the pre-mutation ones forward rather than dropping them for one tick.
+            # A brand-new option has none yet; the next full field read fills it in.
+            prior_attrs = (cache.get(key) or {}).get("attrs") or {}
+            if prior_attrs:
+                entry["attrs"] = prior_attrs
+            cache[key] = entry
             await self._j_applied([rid], now)
             counts["applied"] += 1
         if not dry_run and facts.gh_project_db_id:
@@ -542,10 +546,6 @@ class GhReconcileLoop:
                 planned.extend(diff_fields(derive(item), mirror, own_values or {}))
         planned.extend(membership(facts.open_issue_nodes, set(facts.mirror), facts.project_node_id))
         planned.extend(compile_edges(facts.deps, facts.node_ids, applied_keys))
-        # Restate every plan in the board's own vocabulary BEFORE it is journaled, so the
-        # write-ahead row (and therefore the echo-suppression key the next sync reads back)
-        # carries the spelling we actually send — see ``gh_mutations.as_written``.
-        planned = [as_written(m, cache) for m in planned]
         keep: list[Mutation] = []
         for m in planned:
             if await self._j_parked(m.key()):

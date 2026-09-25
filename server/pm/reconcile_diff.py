@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping, Set
 from dataclasses import dataclass
 from datetime import datetime
 
-from .desired_state import DesiredItem, is_held_status
+from .desired_state import DesiredItem
 
 
 @dataclass(frozen=True)
@@ -58,14 +58,6 @@ def _same(a: object, b: object, *, field: str | None) -> bool:
             return abs(float(a) - float(b)) < 1e-6  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
-    # Rollout tolerance (spec 2026-09-18 §9): a board whose Status option is still
-    # spelled "Needs human" already holds the card our decision calls "Held" — the
-    # two are ONE column. Without this the diff would re-plan the same mutation on
-    # every tick, and `_render` would keep resolving it to that same option id.
-    # Status-scoped on purpose: no other field carries the alias.
-    if (field == "Status" and isinstance(a, str) and isinstance(b, str)
-            and is_held_status(a) and is_held_status(b)):
-        return True
     return a == b
 
 

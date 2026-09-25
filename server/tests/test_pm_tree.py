@@ -41,9 +41,7 @@ def test_issue_and_capability_and_incident_tiers():
     assert issue_tier("open", "classified", False, "in_progress") == "in-flight"
     assert issue_tier("open", "classified", False, None) == "idle"
     # Board Status tier rows (spec §11): GhProjectItem.status mirrors the board.
-    # Both spellings: a board mid-rollout still reports the legacy option (spec §9).
     assert issue_tier("open", "classified", False, None, board_status="Held") == "needs-you"
-    assert issue_tier("open", "classified", False, None, board_status="Needs human") == "needs-you"
     assert issue_tier("open", "classified", False, None, board_status="Blocked") == "blocked"
     assert issue_tier("open", "classified", False, None, board_status="In progress") == "in-flight"
     assert issue_tier("open", "classified", False, None, board_status="Backlog") == "idle"

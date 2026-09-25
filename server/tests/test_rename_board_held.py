@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from server.pm.desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
+from server.pm.desired_state import STATUS_HELD
 
 #: Absolute, so collection does not depend on pytest's cwd (this module imports the
 #: script at import time, so a relative path errors the whole file, not one test).
@@ -27,6 +27,8 @@ def _module():
 
 
 mod = _module()
+# The script's own literal (desired_state dropped the read alias; see the script).
+LEGACY_STATUS_NEEDS_HUMAN = mod.LEGACY_STATUS_NEEDS_HUMAN
 
 
 def _fields_payload(*options: tuple[str, str], field_id: str | None = "F-status",

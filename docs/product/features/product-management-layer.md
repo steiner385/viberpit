@@ -168,8 +168,9 @@ per invocation). The apply path has not yet run against real GitHub, so apply on
 Expect exactly one `gh_human_edit` observation per already-held card right after its board's rename:
 the mirror's last-synced value for that card is still the old spelling, the read-back after the
 rename reports the new one for the SAME option id, and `upsert_project_items` compares those two
-strings literally — a real, one-time, harmless echo, not a person touching the card. The read alias
-(`LEGACY_STATUS_NEEDS_HUMAN`) is dropped in a follow-up PR once every board reports `done`.
+strings literally — a real, one-time, harmless echo, not a person touching the card. The fleet
+rename landed and every board reported `done`, so the read alias (`LEGACY_STATUS_NEEDS_HUMAN`) has
+since been dropped — `Held` is the sole spelling everywhere (#2015).
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +

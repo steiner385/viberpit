@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """ONE-SHOT: rename each board's Status option "Needs human" to "Held" IN PLACE.
 
-Spec: docs/superpowers/specs/2026-09-18-hold-ladder-design.md §9. The code now
-produces ``Held`` (``server/pm/desired_state.STATUS_HELD``) and READS both
-spellings through ``is_held_status`` so a board that has not been renamed yet
-keeps working. This script closes that window, once per fleet:
+Spec: docs/superpowers/specs/2026-09-18-hold-ladder-design.md §9. The code produces
+``Held`` (``server/pm/desired_state.STATUS_HELD``); before the fleet rename, it also
+READ both spellings so a board that had not been renamed yet kept working. This
+script closed that window, once per fleet — the read-alias support has since been
+dropped from ``desired_state`` (#2015), so a board this script has not yet reached
+is now a genuine vocabulary mismatch, not a tolerated rollout state:
 
     python scripts/rename_board_held.py                    # dry run: print the plan
     python scripts/rename_board_held.py --project viberpit # one board
@@ -29,6 +31,14 @@ exactly one name changes. The mutation is built by the reconciler's own
 query/parse helpers, and the refreshed cache is saved through
 ``mirror_store.save_field_cache`` — this one-shot cannot drift from the shapes the
 reconciler writes every tick (constitution VI).
+
+There is a seconds-wide window between the live plan-building read and the mutation
+that resends it: a Status column added on GitHub inside that window is not in the
+resent set and is deleted along with its cards, same as the "option not in the
+input" case above — there is no compare-and-swap against the field's state. Fine
+for a one-shot run when nobody is editing columns (the operator is told to run it
+that way); if this script is ever reached for outside a one-time fleet migration,
+that assumption needs re-checking first.
 
 Then it CHECKS: after the rename the board is re-read and every option id must be
 the one that went in, with "Held" carrying the legacy option's id. A rename that
@@ -74,12 +84,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from server.pm.desired_state import (  # noqa: E402 -- repo root added above
-    LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD)
+from server.pm.desired_state import STATUS_HELD  # noqa: E402 -- repo root added above
 from server.pm.gh_mutations import (  # noqa: E402
     build_update_field_options, payload_from_gh)
 from server.pm.gh_projects import (  # noqa: E402
     build_project_fields_query, parse_field_options, parse_project_fields)
+
+#: The pre-rename spelling this one-shot looks for. Read-alias support for it was
+#: dropped from ``desired_state`` (spec 2026-09-18 §9) once the fleet rename landed,
+#: so this script — whose whole job is finding boards that still carry it — keeps
+#: its own literal rather than a production import that no longer exists.
+LEGACY_STATUS_NEEDS_HUMAN = "Needs human"
 
 #: Canonical spelling of the board-token env name. The legacy-prefixed name an
 #: operator's env file actually carries is mirrored onto this one at import.
@@ -352,7 +367,13 @@ def gh_runner(token: str | None) -> GhRunner:
 
 async def load_boards(slug: str | None = None) -> list[Board]:
     """Every mirrored board (optionally one). Identity only — the option set is
-    read live from GitHub, never from the cached mirror."""
+    read live from GitHub, never from the cached mirror.
+
+    A row with no ``gh_node_id`` (a ``Project`` never linked to a live board) is
+    skipped rather than silently dropped: with ``--project`` this is the only
+    thing standing between a real "board not found" and the misleading "no
+    mirrored boards found" the caller prints when the filtered list comes back
+    empty."""
     from sqlalchemy import select
 
     from server.db import db_session
@@ -364,7 +385,12 @@ async def load_boards(slug: str | None = None) -> list[Board]:
             .select_from(GhProject)
             .join(Project, Project.id == GhProject.project_id)
         )).all()
-    boards = [Board(str(r[0]), str(r[1] or ""), str(r[2])) for r in rows if r[0] and r[1]]
+    boards = []
+    for slug_, node_id, db_id in rows:
+        if not slug_ or not node_id:
+            print(f"skip: {slug_ or db_id} has no gh_node_id, not a live board", file=sys.stderr)
+            continue
+        boards.append(Board(str(slug_), str(node_id), str(db_id)))
     if slug:
         boards = [b for b in boards if b.slug == slug]
     return sorted(boards, key=lambda b: b.slug)

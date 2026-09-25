@@ -115,9 +115,10 @@ export const reasonLabel = (reason: string | null | undefined): string =>
 
 /** Why an issue is held (server `holdKind`, spec 2026-09-18 §3). Evidence
  *  dispatch (item 4b) and the decision inbox (item 5) have landed, so those two
- *  labels name a surface a tap actually reaches; the stronger-model exit is
- *  still a later series item and its label stays neutral about what happens
- *  next, because a label must never promise a surface before it exists. */
+ *  labels name a surface a tap actually reaches. The model ladder (item 4a,
+ *  #1961) has landed too, but `stronger_model` still has no tap target: it
+ *  clears itself automatically on the next ladder dispatch, so its label stays
+ *  neutral rather than naming a surface that doesn't exist for a human to press. */
 export const HOLD_LABEL: Record<string, string> = {
   owner_action: 'Held for the owner',
   decision: 'Awaiting your decision',
