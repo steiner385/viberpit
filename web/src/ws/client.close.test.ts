@@ -76,14 +76,16 @@ describe('SessionSocket close logging', () => {
     sock.destroy()
   })
 
-  it('warns on ws error', async () => {
-    const spy = vi.spyOn(clientLogger, 'warn')
+  it('logs ws error at info, not warn (onclose owns the classified warning)', async () => {
+    const warnSpy = vi.spyOn(clientLogger, 'warn')
+    const infoSpy = vi.spyOn(clientLogger, 'info')
     const { SessionSocket } = await import('@/ws/client')
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
     const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
     ws.onerror?.({} as Event)
-    expect(spy).toHaveBeenCalledWith('ws error', expect.any(Object))
+    expect(infoSpy).toHaveBeenCalledWith('ws error', expect.any(Object))
+    expect(warnSpy).not.toHaveBeenCalledWith('ws error', expect.any(Object))
     sock.destroy()
   })
 
