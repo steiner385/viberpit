@@ -8,6 +8,7 @@ import subprocess
 
 from sqlalchemy import select
 
+from server.automations import cicd_doctor
 from server.automations.cicd_doctor import CicdDoctorLoop
 from server.automations.context import AutomationContext
 from server.db import db_session, init_db
@@ -72,7 +73,7 @@ class FakeGh:
 
 
 def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, gh=None,
-          repos=("o/r",)):
+          repos=("o/r",), fetch_jobs=None):
     gh = gh if gh is not None else FakeGh()
     repos = list(repos)
     async def read_config():
@@ -88,8 +89,9 @@ def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, gh=None,
         list_repos=lambda config: _async(repos),
         fetch_runs=lambda repo, since: _async([r for r in runs
                                                if not since or r["created_ts"] > since]),
-        fetch_jobs=lambda repo, rid: _async([{"id": rid * 10, "name": "e2e",
-                                              "conclusion": "success", "duration_s": 60.0}]),
+        fetch_jobs=fetch_jobs or (lambda repo, rid: _async([{
+            "id": rid * 10, "name": "e2e", "conclusion": "success",
+            "duration_s": 60.0}])),
         fetch_junit=fetch_junit,
         fetch_repo_meta=lambda repo: _async(("master", {"lint-and-test"})),
         fetch_workflows=lambda repo, br: _async({}),
@@ -152,6 +154,44 @@ def test_run_already_stored_under_a_repo_alias_is_not_reinserted(tmp_path, caplo
         for repo in ("o/old-name", "o/new-name"):
             assert (await ctx.get_target_state(f"cursor:{repo}"))["last_created_ts"] == 1002.0
     asyncio.run(run())
+
+
+def _failing_jobs(message):
+    async def fetch_jobs(repo, rid):
+        # the doctor's own gitrepos binding, so the test needs no import of its own
+        raise cicd_doctor.gitrepos.GhError(message)
+    return fetch_jobs
+
+
+def test_github_5xx_on_a_repo_is_not_a_warning(tmp_path, caplog):
+    """#2051: a GitHub-side 5xx from list_jobs failed the repo at WARNING, so the
+    error sink re-filed the same auto-error on every tick of the outage. It is
+    GitHub's outage, retried next tick — INFO, still counted as a tick error."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(1), junit_by_run={},
+                     fetch_jobs=_failing_jobs("gh: Server Error (HTTP 502)"))
+        with caplog.at_level(logging.INFO, logger="server.automations.cicd_doctor"):
+            await loop.tick()
+    asyncio.run(run())
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "cicd_doctor.repo_unavailable repo=o/r" in caplog.text
+
+
+def test_non_transient_gh_failure_on_a_repo_still_warns(tmp_path, caplog):
+    """The 5xx demotion must not swallow a real repo failure (auth, 404, ...)."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(1), junit_by_run={},
+                     fetch_jobs=_failing_jobs("gh: Not Found (HTTP 404)"))
+        with caplog.at_level(logging.INFO, logger="server.automations.cicd_doctor"):
+            await loop.tick()
+    asyncio.run(run())
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "cicd_doctor.repo_failed repo=o/r" in warnings[0].getMessage()
 
 
 def test_malformed_junit_warnings_are_throttled_per_repo(tmp_path, caplog):

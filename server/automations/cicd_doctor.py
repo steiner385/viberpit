@@ -18,6 +18,7 @@ from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
 from .issue_filing import Decision, Linked, apply, decide
+from server.github.host_failures import is_transient_5xx
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
@@ -484,9 +485,15 @@ class CicdDoctorLoop:
                 o, c = await self._reconcile(repo, fresh, config)
                 open_total += o
                 candidates += c
-            except Exception:  # one repo must never stall the tick
+            except Exception as exc:  # one repo must never stall the tick
                 errors += 1
-                log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
+                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                    # GitHub's own outage, not ours — every tick re-ingests each
+                    # repo, so filing it at WARNING re-mints the same
+                    # non-actionable auto-error until GitHub recovers (#2051).
+                    log.info("cicd_doctor.repo_unavailable repo=%s: %s", repo, exc)
+                else:
+                    log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
         if repos:  # an empty list is a transient failure, not "every repo is gone"
             await self._resolve_orphans(repos)
         await self._prune(config)
