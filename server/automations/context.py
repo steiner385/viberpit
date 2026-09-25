@@ -24,6 +24,7 @@ from server.db.models import (
 from server.pm.outcomes import (
     body_fingerprint,
     bounces_stmt,
+    never_ran_stmt,
     prior_attempts as _prior_attempts,
     project_id_for_slug,
     rows_to_bounces,
@@ -507,6 +508,33 @@ class AutomationContext:
                         exc_info=True)
             return 0
 
+    async def never_ran_count_for(self, target_ref: str) -> int:
+        """How many times *target_ref*'s current body has already taken the
+        no-penalty release because its session never started turn one (#1960
+        ladder default change): the never-ran path consults no dial today, so
+        without this a target that spawns and never runs is re-dispatched,
+        no-penalty, until ``max_spawns_per_day`` bounds it instead.
+
+        Same ``never_ran_stmt`` + ``rows_to_bounces`` composition ``bounces_for``
+        runs, over the never-ran cause instead of an ordinary bounce, and the
+        same fingerprint scoping — a body edit re-arms this exactly as it re-arms
+        D8's dial. Best-effort by §13: a failed read answers 0, which keeps the
+        target on the no-penalty path rather than handing it to a human on a DB
+        blip."""
+        try:
+            async with db_session() as db:
+                fingerprint = await _fingerprint_for(db, target_ref)
+                if fingerprint is None:
+                    return 0
+                pairs = [(target_ref, fingerprint)]
+                rows = [(ref, fp, n)
+                        for ref, fp, n in (await db.execute(never_ran_stmt(pairs))).all()]
+            return rows_to_bounces(rows, pairs)[target_ref]
+        except Exception:
+            log.warning("automation_context.never_ran_count_failed target=%s", target_ref,
+                        exc_info=True)
+            return 0
+
     async def record_outcome(self, target: str, *, product_slug: str | None,
                              session_id: str | None, model: str | None,
                              attempt_no: int, dispatch_kind: str = "implement",
@@ -560,23 +588,10 @@ class AutomationContext:
     async def finalize_outcome(self, target: str, *, outcome: str, cause: str | None = None,
                                pr_number: int | None = None, pr_url: str | None = None,
                                first_pass_merge: bool | None = None,
-                               upgrade_from: tuple[str, ...] = (),
                                fallback: dict | None = None, _db=None) -> None:
         """Finalise the newest ``running`` row for *target* (spec §6). An unknown
         outcome is a programming error and raises; a DB failure is logged and
         swallowed (§13).
-
-        *upgrade_from* is the fallback for a verdict that arrives a SWEEP LATE.
-        The runner's give-up branches fire on the tick that charges the last
-        attempt, and the tick that charged the previous one already closed that
-        same dispatch as ``no_pr`` — nothing re-dispatches in between. With no
-        running row to claim, the newest row whose outcome is listed here is
-        RE-finalised in place: one row per dispatch, ending at its real verdict,
-        never a second bounce for one session (R3-7). ``ended_at``/``duration_s``
-        are kept — the dispatch ended when its session did, not when the loop
-        noticed — and the PR fields are overwritten only when given, so an upgrade
-        that knows nothing new about the PR does not erase what the bounce
-        recorded.
 
         *fallback* is spec §13's recovery for the OTHER way a row can be missing:
         the spawn-time write failed (history is best-effort, dispatch is not), so
@@ -589,9 +604,18 @@ class AutomationContext:
         bounce could never be counted against the body it bounced on),
         ``started_at`` left None because nobody knows when it began (and so
         ``duration_s`` with it), ``ended_at`` now. It is strictly a LAST resort —
-        a running row, then an upgradable one, then this — so it can never add a
-        second row for one dispatch. Neither a row nor a fallback → still a
-        no-op."""
+        a running row, then this — so it can never add a second row for one
+        dispatch. Neither a row nor a fallback → still a no-op.
+
+        No ``upgrade_from`` (#1960 runner edges 3, retired): it re-finalised the
+        newest row of a listed outcome when no running row existed, for a verdict
+        that arrived a sweep late — but ``backlog_runner.py``'s only candidate
+        caller (the never-ran release) deliberately never passed it (final review
+        M3, ``_release_never_ran``'s own docstring), and no other caller ever
+        did. A parameter with zero production callers is worse than dead code:
+        the next give-up branch reads its docstring, assumes it is load-bearing,
+        and inherits the bug M3 removed it to avoid — rewriting a PREVIOUS
+        claim's real bounce as this dispatch's verdict."""
         if outcome not in DISPATCH_OUTCOMES:
             raise ValueError(f"unknown dispatch outcome {outcome!r}")
         # Checked HERE, beside the outcome check and outside the best-effort
@@ -616,10 +640,6 @@ class AutomationContext:
                                   DispatchOutcome.id.desc()).limit(1))
 
                 row = (await db.execute(_newest("running"))).scalars().first()
-                upgrade = row is None
-                if upgrade and upgrade_from:
-                    row = (await db.execute(
-                        _newest(*upgrade_from))).scalars().first()
                 now = datetime.now(timezone.utc)
                 if row is None and fallback is not None:
                     # §13: the spawn-time write was lost — insert the dispatch's
@@ -673,10 +693,10 @@ class AutomationContext:
                 if first_pass_merge is not None:
                     row.first_pass_merge = first_pass_merge
                 row.updated_at = now
-                if not upgrade:
-                    # A live dispatch ends NOW; an upgrade keeps the end it had.
-                    row.ended_at = now
-                    row.duration_s = _elapsed_s(row.started_at, now)
+                # A live dispatch ends NOW — the only row this can be, with no
+                # ``upgrade_from`` to have re-opened an already-closed one.
+                row.ended_at = now
+                row.duration_s = _elapsed_s(row.started_at, now)
         except Exception:
             if _db is not None:
                 raise

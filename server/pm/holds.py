@@ -19,8 +19,14 @@ if TYPE_CHECKING:
 
     from server.pm.mirror_store import HumanEdit
 
+#: The ladder's own hold kind (spec 2026-09-18 §4), spelled once (#1960 runner
+#: edges tidy) for the three literal readers below that would otherwise drift:
+#: ``AGENT_SETTABLE``, ``set_runner_stronger_hold``'s writer and
+#: ``release_on_dispatch``'s reader/audit pair.
+STRONGER_MODEL = "stronger_model"
+
 #: Kinds a non-person (session, assistant, loopback caller) may set or clear.
-AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", "stronger_model"})
+AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", STRONGER_MODEL})
 
 #: System actors: the runner and the automations. They ARE the ladder and the
 #: reject flows, so they may write any kind — but they are never "human".
@@ -252,7 +258,7 @@ def set_runner_stronger_hold(wi: WorkItem, *, reason: str, now: datetime) -> Non
     """The Backlog Runner's ladder climb (spec 2026-09-18 §4): a bounce below the
     top tier parks the item as ``stronger_model`` — agent-settable, queue-eligible —
     so the next refill re-claims it and the spawn pins the next rung."""
-    set_hold(wi, kind="stronger_model", reason=reason, actor=RUNNER_ACTOR, now=now)
+    set_hold(wi, kind=STRONGER_MODEL, reason=reason, actor=RUNNER_ACTOR, now=now)
 
 
 #: The error-triage automation's actor. System class via ``SYSTEM_PREFIXES``, so the
@@ -365,10 +371,10 @@ def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) 
         return []
     released: list[str] = []
     for wi in db.scalars(select(WorkItem).where(
-            WorkItem.kind == "issue", WorkItem.hold_kind == "stronger_model",
+            WorkItem.kind == "issue", WorkItem.hold_kind == STRONGER_MODEL,
             tuple_(WorkItem.repo, WorkItem.number).in_(parts))).all():
         clear_hold(wi, actor=RUNNER_ACTOR)
-        _audit_release(db, wi, kind="stronger_model", signal="dispatch",
+        _audit_release(db, wi, kind=STRONGER_MODEL, signal="dispatch",
                        actor=RUNNER_ACTOR, via="runner")
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()

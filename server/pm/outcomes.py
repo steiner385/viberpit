@@ -115,13 +115,38 @@ def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
 def rows_to_bounces(rows: Iterable[tuple[str, str, int]],
                     pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
     """``{target_ref: bounces}`` for every pair, 0 when no row matched the
-    CURRENT fingerprint (a row for an older body never counts)."""
+    CURRENT fingerprint (a row for an older body never counts). Named for
+    ``bounces_stmt``, its usual caller, but the shape is generic — the never-ran
+    cap's own count (:func:`never_ran_stmt`) reduces through it too."""
     want = dict(pairs)
     out = {ref: 0 for ref in want}
     for ref, fp, n in rows:
         if want.get(ref) == fp:
             out[ref] = int(n)
     return out
+
+
+#: THE cause ``_release_never_ran`` (``backlog_runner.py``) writes for a dispatch
+#: whose session never started turn one — spelled once here so the never-ran
+#: cap's own count (:func:`never_ran_stmt`) and the writer can never drift apart.
+NEVER_RAN_CAUSE = "session never ran a turn"
+
+
+def never_ran_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
+    """Grouped counts of finalised ``abandoned``/:data:`NEVER_RAN_CAUSE` outcomes
+    for the given ``(target_ref, fingerprint)`` pairs — the never-ran cap's own
+    count (#1960 ladder default change), parallel to :func:`bounces_stmt` but for
+    the no-penalty release the ordinary bounce dial never sees. Callers execute it
+    in their own session and hand the rows to :func:`rows_to_bounces`, fingerprint
+    scoping matching every other D8 count: an edited body re-arms it."""
+    wanted = list(pairs)
+    return (select(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint,
+                   func.count(DispatchOutcome.id))
+            .where(DispatchOutcome.outcome == "abandoned",
+                   DispatchOutcome.cause == NEVER_RAN_CAUSE,
+                   tuple_(DispatchOutcome.target_ref,
+                          DispatchOutcome.body_fingerprint).in_(wanted))
+            .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))
 
 
 def list_outcomes_stmt(target_ref: str) -> Select:

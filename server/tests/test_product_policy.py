@@ -53,6 +53,24 @@ def test_weight_is_retired():
     assert "weight" not in effective_policy({"dispatch": "auto", "weight": 3})
 
 
+def test_merge_policy_patch_drops_a_retired_key_a_stale_client_still_sends():
+    """#1960 runner edges tidy: ``merge_policy_patch``'s retired-key path (a stale
+    client PATCH still carrying ``max_attempts`` from before its removal) was
+    exercised only transitively, through ``effective_policy``'s own coverage —
+    this exercises the merge itself. Neither the stored row nor the stale patch
+    should ever resurrect the key into what gets persisted."""
+    from server.automations.product_policy import merge_policy_patch
+    merged = merge_policy_patch({"dispatch": "auto"}, {"max_attempts": 5, "ladder_top": "opus"})
+    assert merged is not None
+    assert "max_attempts" not in merged
+    assert merged["ladder_top"] == "opus"
+    # A retired key already sitting in the STORED policy (a pre-retirement row)
+    # is dropped the same way, even when the patch itself never mentions it.
+    merged = merge_policy_patch({"dispatch": "auto", "max_attempts": 2}, {"ladder_top": "haiku"})
+    assert "max_attempts" not in merged
+    assert merged == {"dispatch": "auto", "ladder_top": "haiku"}
+
+
 def test_an_in_memory_annotation_survives_a_re_read_as_a_dropped_key():
     """The Backlog Runner hangs ``ladder_top_configured`` on its snapshot (the
     ``ladder_top`` the approval gate clamped away). Re-reading such a policy must be

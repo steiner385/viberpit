@@ -512,8 +512,10 @@ async def test_backlog_spawn_survives_a_failing_rung_lookup(tmp_path, monkeypatc
 async def test_backlog_spawn_consumes_the_stronger_model_hold(isolated_db, tmp_path,
                                                               monkeypatch):
     """The dispatch the hold was asking for has happened, so the hold is spent
-    (spec §4) — on every issue of the batch, not just the primary. Left in place
-    it would re-park the item the moment the session ended."""
+    (spec §4) — for the PRIMARY only (#1960 series-level gap 2). ``rung`` is read
+    off the primary's own hold and history alone, so a secondary that happens to
+    carry its own ``stronger_model`` hold (its own bounce, its own climb owed) is
+    left alone: a dispatch that never climbed for it must not spend it."""
     from datetime import datetime, timezone
 
     from sqlalchemy import select
@@ -540,12 +542,15 @@ async def test_backlog_spawn_consumes_the_stronger_model_hold(isolated_db, tmp_p
 
     assert captured["model"] == "opus"
     async with db_session() as db:
-        held = (await db.execute(select(WorkItem.hold_kind))).scalars().all()
-        assert held == [None, None]
+        held = (await db.execute(select(WorkItem.number, WorkItem.hold_kind)
+                                 .order_by(WorkItem.number))).all()
+        # #7 (the primary, whose rung this dispatch pinned) is spent; #8 (the
+        # secondary) keeps its own hold — this dispatch never climbed for it.
+        assert held == [(7, None), (8, "stronger_model")]
         rows = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "pm.hold.release"))).scalars().all()
-        assert [r.detail["signal"] for r in rows] == ["dispatch", "dispatch"]
-        assert all(r.identity == "runner" and r.via == "runner" for r in rows)
+        assert [r.detail["signal"] for r in rows] == ["dispatch"]
+        assert rows[0].identity == "runner" and rows[0].via == "runner"
 
 
 @pytest.mark.asyncio
