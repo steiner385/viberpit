@@ -497,6 +497,52 @@ def test_approve_launch_spawn_failure_keeps_session_recoverable(tmp_path):
     assert row.model is None
 
 
+def test_approve_launch_spawn_failure_logs_rate_limit_at_info(tmp_path, caplog):
+    """A 429/rate-limit failure during approve+launch is an ordinary external
+    condition the restore-and-retry path above already handles — the approver
+    just tries again. WARNING made every one of these auto-file an error report
+    (9 occurrences in 3 days, #1688); anything else (a bad worktree branch, a
+    dead credential) is a real defect and must keep WARNING."""
+    import logging
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run(exc: Exception):
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="fable")
+
+                async def _boom(*a, **k):
+                    raise exc
+                orch._spawn_session = _boom  # type: ignore[method-assign]
+
+                with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                    try:
+                        await orch.resolve_model_approval(
+                            rec.id, "approve", identity="user@x")
+                    except type(exc):
+                        pass
+            finally:
+                await orch.stop()
+
+        caplog.clear()
+        asyncio.run(_run(Exception(
+            'API error: 429 {"type":"error","error":{"type":"rate_limit_error",'
+            '"message":"This request would exceed your account\'s rate limit."}}')))
+        rate_limit_records = [r for r in caplog.records
+                              if "session.model_approval_spawn_failed" in r.message]
+        assert rate_limit_records, "expected a model_approval_spawn_failed log line"
+        assert all(r.levelno == logging.INFO for r in rate_limit_records)
+
+        caplog.clear()
+        asyncio.run(_run(RuntimeError("spawn exploded")))
+        other_records = [r for r in caplog.records
+                         if "session.model_approval_spawn_failed" in r.message]
+        assert other_records, "expected a model_approval_spawn_failed log line"
+        assert all(r.levelno == logging.WARNING for r in other_records)
+
+
 def test_approve_midsession_applies(tmp_path):
     env, comp, trust, sel, h = _harness(tmp_path)
     with env, comp, trust, sel:
