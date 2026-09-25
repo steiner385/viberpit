@@ -777,8 +777,13 @@ class DispatchOutcome(Base):
         String, ForeignKey("projects.id"), nullable=True, index=True)
     target_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     body_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    # SET NULL, not a bare FK: the row is written at dispatch time, before a
+    # model-approval hold resolves, and approving that hold DELETEs the placeholder
+    # sessions row to re-INSERT it under the same id. A bare FK made Postgres refuse
+    # that delete (and the archive purge's, #2074). History outlives its session;
+    # init_db's _reconcile_fk_on_delete rewrites the live constraint to match.
     session_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("sessions.id"), nullable=True)
+        String, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True)
     model: Mapped[str | None] = mapped_column(String, nullable=True)
     attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

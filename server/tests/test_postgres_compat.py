@@ -891,3 +891,82 @@ async def test_autopilot_reversal_hint_lookback_is_not_shifted_by_local_offset_o
         async with Session() as s:
             await s.execute(delete(AutomationEvent).where(AutomationEvent.id == event_id))
             await s.commit()
+
+
+def _session_fk_ondelete(sync_conn, table: str) -> str | None:
+    from sqlalchemy import inspect as sa_inspect
+    for fk in sa_inspect(sync_conn).get_foreign_keys(table):
+        if fk["constrained_columns"] == ["session_id"] and fk["referred_table"] == "sessions":
+            return (fk.get("options") or {}).get("ondelete")
+    raise AssertionError(f"{table}.session_id has no FK to sessions")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dispatch_outcomes_session_fk_is_set_null_on_postgres(pg_engine):
+    """Deleting a session must detach, not be refused by, its dispatch history.
+
+    ``dispatch_outcomes.session_id`` is written at dispatch time, before a
+    model-approval hold resolves; approving the hold deletes the placeholder
+    ``sessions`` row to re-INSERT it, and with a bare FK Postgres raised
+    ForeignKeyViolationError on that DELETE (the archive purge hit the same wall
+    in #2074). The constraint is ON DELETE SET NULL, and it actually fires."""
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import DispatchOutcome, Session as DbSession
+
+    async with pg_engine.connect() as conn:
+        assert (await conn.run_sync(_session_fk_ondelete, "dispatch_outcomes")) == "SET NULL"
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    sid, oid = "fk-setnull-session", "fk-setnull-outcome"
+    async with Session() as s:
+        s.add(DbSession(id=sid, name="n", account_name="a", cwd="/tmp",
+                        status="pending_approval"))
+        await s.flush()
+        s.add(DispatchOutcome(id=oid, automation_id="backlog-runner", target_ref="o/r#1",
+                              session_id=sid, outcome="running"))
+        await s.commit()
+    try:
+        async with Session() as s:
+            await s.execute(delete(DbSession).where(DbSession.id == sid))
+            await s.commit()
+        async with Session() as s:
+            left = (await s.execute(
+                select(DispatchOutcome.session_id).where(DispatchOutcome.id == oid))).one()
+        assert left == (None,), "outcome row must survive the session delete, detached"
+    finally:
+        async with Session() as s:
+            await s.execute(delete(DispatchOutcome).where(DispatchOutcome.id == oid))
+            await s.execute(delete(DbSession).where(DbSession.id == sid))
+            await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconcile_upgrades_fk_on_delete_on_postgres(pg_engine, pg_url):
+    """The live DB was built by create_all before the FK gained ON DELETE SET
+    NULL, and nothing runs alembic on rollout — so startup must rewrite a
+    constraint whose ON DELETE rule differs from the model's, the same way it
+    ALTER-ADDs a missing column. Self-restoring: downgrades the constraint to the
+    bare shape the live DB has, then drives the REAL init_db path to put it back."""
+    from sqlalchemy import text as sa_text
+
+    from server.db import dispose_db, init_db
+
+    async with pg_engine.begin() as conn:
+        await conn.execute(sa_text(
+            "ALTER TABLE dispatch_outcomes DROP CONSTRAINT dispatch_outcomes_session_id_fkey"))
+        await conn.execute(sa_text(
+            "ALTER TABLE dispatch_outcomes ADD CONSTRAINT dispatch_outcomes_session_id_fkey "
+            "FOREIGN KEY (session_id) REFERENCES sessions (id)"))
+    async with pg_engine.connect() as conn:
+        assert (await conn.run_sync(_session_fk_ondelete, "dispatch_outcomes")) is None, (
+            "precondition: constraint should be the bare live-DB shape")
+
+    try:
+        await init_db(db_url=pg_url)
+    finally:
+        await dispose_db()
+
+    async with pg_engine.connect() as conn:
+        assert (await conn.run_sync(_session_fk_ondelete, "dispatch_outcomes")) == "SET NULL", (
+            "init_db must rewrite an FK whose ON DELETE rule drifted from the model")

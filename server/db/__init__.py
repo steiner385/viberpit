@@ -168,6 +168,51 @@ def _reconcile_columns(sync_conn) -> None:
             ))
 
 
+def _reconcile_fk_on_delete(sync_conn) -> None:
+    """Rewrite any live foreign key whose ON DELETE rule differs from the model's.
+
+    Postgres only: SQLite cannot ALTER a constraint (and does not enforce FKs by
+    default, so a stale rule there is inert). The live database was built by
+    ``create_all`` and nothing runs Alembic on rollout, so a model that gains
+    ``ondelete=`` on an existing FK (``dispatch_outcomes.session_id`` → SET NULL,
+    #2074's sibling on the approval path) would otherwise keep the bare
+    constraint forever and every session delete would keep raising
+    ForeignKeyViolationError. Same single-source-of-truth shape as
+    ``_reconcile_columns``: the models say what the constraint should be,
+    matched by constrained columns, and a mismatch is DROPped and re-ADDed under
+    its existing name. Idempotent — matches nothing once the rules agree.
+    """
+    if sync_conn.dialect.name != "postgresql":
+        return
+    inspector = sa_inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all just made it with the model's rule
+        wanted = {tuple(c.name for c in fk.columns): fk
+                  for fk in table.foreign_key_constraints}
+        for live in inspector.get_foreign_keys(table.name):
+            fk = wanted.get(tuple(live["constrained_columns"]))
+            if fk is None or not live.get("name"):
+                continue
+            desired = (fk.ondelete or "NO ACTION").upper()
+            actual = ((live.get("options") or {}).get("ondelete") or "NO ACTION").upper()
+            if desired == actual:
+                continue
+            name = live["name"]
+            cols = ", ".join(f'"{c.name}"' for c in fk.columns)
+            ref_cols = ", ".join(f'"{e.column.name}"' for e in fk.elements)
+            rule = "" if desired == "NO ACTION" else f" ON DELETE {desired}"
+            log.info("reconcile: rewriting %s.%s ON DELETE %s -> %s",
+                     table.name, name, actual, desired)
+            sync_conn.execute(sa_text(
+                f'ALTER TABLE "{table.name}" DROP CONSTRAINT "{name}"'))
+            sync_conn.execute(sa_text(
+                f'ALTER TABLE "{table.name}" ADD CONSTRAINT "{name}" '
+                f'FOREIGN KEY ({cols}) REFERENCES "{fk.referred_table.name}" ({ref_cols})'
+                f'{rule}'))
+
+
 def _normalize_pending_rearm_null(sync_conn) -> None:
     """Rewrite the JSON-`null` sentinel in ``sessions.pending_rearm`` to SQL NULL.
 
@@ -274,6 +319,7 @@ async def init_db(db_url: str | None = None) -> None:
         # dialect-generic: reconcile compiles column types against the live dialect and
         # only ever ADDs a missing column, and the drift assert compares names only.
         await conn.run_sync(_reconcile_columns)
+        await conn.run_sync(_reconcile_fk_on_delete)
         # Reconciliation only adds columns; copy legacy identity before the ORM can
         # observe the rows. This is deliberately dialect-generic because the live
         # Postgres deployment does not run Alembic revisions.
