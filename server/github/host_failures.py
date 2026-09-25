@@ -54,6 +54,7 @@ should surface — not from a KeyError raised inside an error path.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ccswitch import gh_credential
@@ -95,6 +96,33 @@ _EVENTS: dict[str, tuple[str, dict[str, Any]]] = {
 #: cannot happen. Every key reports at WARNING, so the "never share a key across
 #: two levels" trap does not apply.
 _HOST_THROTTLE = LogThrottle()
+
+#: gh's wording when GitHub itself failed a request that DID reach it — a
+#: 502/503/504. Deliberately NOT one of the conditions above: those three are
+#: correlated across every repo a host touches (one keyring, one route, one
+#: budget), so collapsing them into a single issue is the fix. A 5xx from
+#: GitHub's own edge is neither the host's fault nor reliably correlated with
+#: any other repo's call in the same tick — ``test_a_failure_about_the_target_
+#: still_names_the_target`` pins that a bare 502 must keep naming its target,
+#: not fold into a host record.
+#:
+#: What it still needs is the read #1839 gave the CI/CD Doctor's artifact-zip
+#: fetch: this is GitHub's outage, not ours, so it does not belong in the error
+#: sink at all. ``pr_population``'s refresh loop hit the WARNING-per-tick
+#: version of the same bug (#1681) — a poller that reaches GitHub every few
+#: seconds turned one flaky upstream request into 600+ occurrences in a day.
+#: Callers on a tight poll should check this and log at INFO instead of calling
+#: :func:`log_gh_failure`, which is right for a failure that will not resolve
+#: itself by simply trying again next tick.
+_RE_TRANSIENT_5XX = re.compile(r"\bHTTP 5\d\d\b")
+
+
+def is_transient_5xx(stderr: str) -> bool:
+    """Whether *stderr* is gh reporting a GitHub-side 5xx: the request reached
+    GitHub and GitHub's own edge failed it. Not a host condition (see
+    :data:`_RE_TRANSIENT_5XX`) — just a shared read of when a per-target
+    failure is GitHub's outage rather than a defect to chase."""
+    return bool(_RE_TRANSIENT_5XX.search(stderr))
 
 
 def log_gh_failure(

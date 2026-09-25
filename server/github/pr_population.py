@@ -22,7 +22,7 @@ from ccswitch import gitrepos
 from server.aio import cancel_and_reap
 from server.github import app_auth
 from .api_budget import PriorityGate
-from .host_failures import log_gh_failure
+from .host_failures import is_transient_5xx, log_gh_failure
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
@@ -533,8 +533,13 @@ class PrPopulationPoller:
             # Fresh fetch failed even after a jittered retry. Rather than blank
             # the board, re-serve each open PR's last-good ETA marked stale
             # (issue #671 — stale-while-revalidate).
-            log_gh_failure(log, str(exc), "pr_population.eta_fetch_failed",
-                           exc_info=True)
+            if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                # GitHub's own outage, not ours (#1839's read) — this loop
+                # retries every tick, so don't also file an auto-error (#1681).
+                log.info("pr_population.eta_fetch_unavailable: %s", exc)
+            else:
+                log_gh_failure(log, str(exc), "pr_population.eta_fetch_failed",
+                               exc_info=True)
             return self._apply_stale_eta(prs_by_repo)
 
         now = self._now_fn()
@@ -709,10 +714,17 @@ class PrPopulationPoller:
                 # ``_default_query`` raises ``GhError`` carrying gh's stderr, so
                 # a host condition (offline, rate-limited, no credential) is
                 # readable here and collapses into the one host record instead
-                # of minting a per-repo auto-error issue. Anything else keeps
-                # reporting at WARNING with repo= exactly as before.
-                log_gh_failure(log, str(exc), "pr_population.refresh_failed repo=%s",
-                               repo, exc_info=True)
+                # of minting a per-repo auto-error issue. A GitHub-side 5xx is
+                # neither a host condition nor ours to fix — this loop retries
+                # every tick, so filing it at WARNING just re-mints the same
+                # non-actionable issue on a schedule (#1681). Anything else
+                # keeps reporting at WARNING with repo= exactly as before.
+                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                    log.info("pr_population.refresh_unavailable repo=%s: %s",
+                             repo, exc)
+                else:
+                    log_gh_failure(log, str(exc), "pr_population.refresh_failed repo=%s",
+                                   repo, exc_info=True)
                 any_fail = True
                 # Recorded even though the repo keeps its stale cache entry (if
                 # any) below — a repo that has NEVER once succeeded has no
@@ -736,8 +748,11 @@ class PrPopulationPoller:
                 captured_at = int(self._now_fn().timestamp())
                 await self._merge_queue_sink(by_repo, captured_at)
             except Exception as exc:
-                log_gh_failure(log, str(exc), "pr_population.merge_queue_failed",
-                               exc_info=True)
+                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                    log.info("pr_population.merge_queue_unavailable: %s", exc)
+                else:
+                    log_gh_failure(log, str(exc), "pr_population.merge_queue_failed",
+                                   exc_info=True)
         # Capture PrTimeline waypoints from this cycle's population + queue
         # observations (SPEC §2). Best-effort — NEVER break the poll.
         try:

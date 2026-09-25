@@ -1,5 +1,7 @@
 import asyncio
+import logging
 
+import server.github.pr_population as pop
 from server.github.pr_population import PrPopulationPoller
 
 
@@ -92,3 +94,38 @@ def test_last_error_unknown_or_empty_repo_is_none():
     p = PrPopulationPoller(query_fn=lambda r: _resp(1))
     assert p.last_error("never/seen") is None
     assert p.last_error(None) is None
+
+
+def test_github_5xx_logs_info_not_a_warning(caplog):
+    """A GitHub-side 5xx is the poller's own outage to wait out, not a defect to
+    chase (#1839's read). This loop retries every tick, so filing it at WARNING
+    the old way re-mints the same non-actionable auto-error issue on a schedule
+    — #1681 was 600+ occurrences of exactly that in a day."""
+    def qfn(repo: str) -> dict:
+        raise pop.gitrepos.GhError("gh: HTTP 502")
+
+    p = PrPopulationPoller(query_fn=qfn)
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once(["o/bad"]))
+
+    assert p.cached("o/bad") == ()
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], f"a 5xx must not warn: {[r.getMessage() for r in warned]}"
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("pr_population.refresh_unavailable" in r.getMessage() for r in info)
+
+
+def test_non_5xx_failure_still_warns(caplog):
+    """The demotion is specific to a GitHub 5xx — any other target-specific
+    failure keeps reporting at WARNING with repo= exactly as before."""
+    def qfn(repo: str) -> dict:
+        raise pop.gitrepos.GhError("gh: not found (HTTP 404)")
+
+    p = PrPopulationPoller(query_fn=qfn)
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once(["o/bad"]))
+
+    assert p.cached("o/bad") == ()
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+    assert "pr_population.refresh_failed repo=o/bad" in warned[0].getMessage()

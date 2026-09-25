@@ -1,5 +1,6 @@
 # server/tests/test_pr_population_merge_queue.py
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -80,3 +81,28 @@ async def test_refresh_ok_when_merge_queue_fns_absent():
         return {"data": {"repo": {"pullRequests": {"nodes": []}, "deployments": {"nodes": []}}}}
     p = PrPopulationPoller(query_fn=qfn)         # no merge-queue wiring
     assert await p.refresh_once(["acme/web"]) is True
+
+
+@pytest.mark.asyncio
+async def test_merge_queue_5xx_logs_info_not_a_warning(caplog):
+    """Same read as the population-query boundary (#1681): a GitHub 5xx on the
+    merge-queue query is GitHub's outage, not ours, and this loop retries every
+    tick — so it must not file an auto-error WARNING."""
+    def qfn(repo):
+        return {"data": {"repo": {"pullRequests": {"nodes": []}, "deployments": {"nodes": []}}}}
+
+    def mqfn(repos):
+        raise pop.gitrepos.GhError("gh: HTTP 503")
+
+    async def sink(by_repo, captured_at):
+        return None
+
+    p = PrPopulationPoller(query_fn=qfn, merge_queue_query_fn=mqfn,
+                           merge_queue_sink=sink)
+    with caplog.at_level(logging.DEBUG):
+        await p.refresh_once(["acme/web"])
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], f"a 5xx must not warn: {[r.getMessage() for r in warned]}"
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("pr_population.merge_queue_unavailable" in r.getMessage() for r in info)

@@ -361,6 +361,16 @@ def test_the_traceback_never_rides_the_collapsed_event(caplog):
     assert collapsed and all(r.exc_info is None for r in collapsed)
 
 
+def test_is_transient_5xx_matches_gh_server_errors():
+    assert host_failures.is_transient_5xx("gh: HTTP 502") is True
+    assert host_failures.is_transient_5xx("gh: Bad Gateway (HTTP 502)") is True
+    assert host_failures.is_transient_5xx("gh: HTTP 503") is True
+    assert host_failures.is_transient_5xx("gh: HTTP 504") is True
+    assert host_failures.is_transient_5xx(STDERR_UNREACHABLE) is False
+    assert host_failures.is_transient_5xx("gh: not found (HTTP 404)") is False
+    assert host_failures.is_transient_5xx("") is False
+
+
 def test_success_is_untouched():
     url = ci_issues.comment_on_issue(
         "o/r", 7, "hi",
