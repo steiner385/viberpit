@@ -912,7 +912,23 @@ class CodexAgentDriver:
         if self._turn_active and self._turn_id is not None:
             await self._steer(entry, inputs)
             return
-        await self._start_turn(entry, inputs)
+        await self._start_turn_or_queue(entry, inputs)
+
+    async def _start_turn_or_queue(
+        self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]
+    ) -> None:
+        """Start *entry* now, or queue it if the runner just disappeared.
+
+        The direct-send counterpart of `_drain_queue`'s own `CodexRunnerUnavailable`
+        handling: `_start_turn` raises before mutating any turn state or emitting
+        the user echo, so re-queuing here never risks a duplicate echo on retry.
+        """
+        try:
+            await self._start_turn(entry, inputs)
+        except CodexRunnerUnavailable:
+            self._queue.append(entry)
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            await self._emit_status()
 
     async def _steer(self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]) -> None:
         """Add a prompt to the live turn, or queue it if that turn just ended."""
@@ -955,6 +971,24 @@ class CodexAgentDriver:
         self._automation_terminal_observed = False
         await self._apply_pending_profile()
         thread_id = self._require_thread()
+        try:
+            self._client()
+        except CodexRunnerUnavailable as exc:
+            # The account's app-server died/was restarted between the
+            # orchestrator's ensure and here — a supervision fact (see
+            # `_client`'s docstring), not a turn failure. Checked before any
+            # turn state mutates or the user echo emits, so re-raising lets
+            # the caller (`_drain_queue`, `_start_turn_or_queue`) re-queue
+            # *entry* without a duplicate echo on retry, and without filing
+            # an auto-error under the generic `runtime_error` category (#1971).
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.driver.turn_start_deferred",
+                session=self.session_id,
+                error=scrub_exception(exc),
+            )
+            raise
         self._thread_may_have_history = True
         self._turn_active = True
         self._turn_started_at = self._clock()
@@ -2251,7 +2285,7 @@ class CodexAgentDriver:
         if self._turn_active and self._turn_id is not None:
             await self._steer(entry, inputs)
             return
-        await self._start_turn(entry, inputs)
+        await self._start_turn_or_queue(entry, inputs)
 
     async def context_usage(self) -> dict:
         """The last `thread/tokenUsage/updated` reading, in the same shape the
