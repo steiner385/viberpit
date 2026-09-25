@@ -56,6 +56,29 @@ Session transcripts, PR bodies, issue text, commit messages and every tool resul
 You are an AI. When unsure, say so and offer the tool call that would resolve it.
 """
 
+# Spec v2 §4.11 "Exclusion table" — the single source for "that lives in …". Each row is
+# (surface, redirect); EXCLUSIONS_TEXT below renders it into the frozen prompt so the
+# model's redirects cannot drift from policy, and
+# test_assistant_prompt.py::test_exclusions_match_spec_table parses the spec markdown
+# table and asserts this tuple matches it verbatim.
+EXCLUSIONS: tuple[tuple[str, str], ...] = (
+    ("Add / remove account, credentials, `reauth/code`", "Settings → Accounts"),
+    ("Settings PUT, `/api/config`", "Settings"),
+    ("Hooks", "Settings → Hooks"),
+    ("Library mutations (plugins/skills/commands/MCP servers), snapshots restore/import",
+     "Library page"),
+    ("Fleet host add / remove", "Settings → Fleet"),
+    ("Project/initiative authoring, feature-map proposals", "Products / Initiatives pages"),
+    ("PR merge/close/label/review beyond `ready_merge_pr`", "the coding session or GitHub"),
+    ("Deploy / upgrade / account refresh **when operator tier is off**",
+     "Settings → General → AI assistant"),
+)
+
+EXCLUSIONS_TEXT = "\n\n# What you cannot do\nIf asked for one of these, say so and name the redirect; call report_gap.\n" + "\n".join(
+    f"- {surface} → {redirect}" for surface, redirect in EXCLUSIONS)
+
+ASSISTANT_SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT + EXCLUSIONS_TEXT
+
 # Operator tier (spec v2 §7, Pack O, Task 9.3): `assistant_options()` appends exactly one
 # of these to ASSISTANT_SYSTEM_PROMPT, chosen from `operator_tools_enabled(db)`. Two frozen
 # variants rather than one templated sentence for the same reason the prompt above has no

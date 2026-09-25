@@ -128,6 +128,9 @@ it reuses the normal session stack, so there is no extra venv extra and no model
 | `VIBERPIT_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
 | `VIBERPIT_ASSISTANT_ENGINE` | `claude_code` | Which agent engine the drawer runs on. `codex` mounts the Codex overlay (`server/assistant/options_codex.py`): the ViberPit tools become client-declared `dynamicTools` that the edge itself executes, the thread runs `read-only` + `untrusted` in a repo-free `cwd`, and every built-in approval is declined. Default Claude because the boundary is unit-tested but has no end-to-end acceptance run yet (#1321/#1290). Needs `VIBERPIT_CODEX_ENABLED=true` and an OpenAI account on the host, or `POST /api/assistant/session` answers 409 `ASSISTANT_ENGINE_UNAVAILABLE` rather than falling back to Claude. Env only — deliberately not a Settings toggle, because the engine picks the security overlay. **A Codex drawer does not resume**: `thread/resume` cannot re-declare the tool surface, so each reopen after the idle reap starts a fresh thread and the model loses prior context (the ViberPit transcript is unaffected). |
 | `VIBERPIT_ASSISTANT_OPERATOR_TOOLS` | `false` | Opt-in operator tier: deploy start, host upgrade, account refresh/enable and re-auth kick-off. Off by default because of the blast radius. `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools) overrides it with the same precedence as the kill switch below. Takes effect for a thread on its **next** spawn — the tools are registered at session start, so an assistant already running keeps the surface it started with until the idle reap. |
+| `VIBERPIT_ASSISTANT_EXTERNAL_TOKENS` | `false` | Opt-in `ccas2:` external tokens for the CLI/MCP bridges (Pack X, "Use from other agents" in the feature doc). Off by default: `false` means `POST /api/assistant/tokens` (mint), `GET`/`DELETE /api/assistant/tokens[/{id}]` (list/revoke) all 404, so no external client can reach the edge over the tailnet without a browser session. |
+| `VIBERPIT_ASSISTANT_TOKEN_MAX_DAYS` | `90` | Hard cap on a minted `ccas2:` token's lifetime regardless of the `ttlDays` the caller requests. |
+| `VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY` | `20` | Per-identity cap on live proactive-notice watches (`watch()`, Pack N) so a runaway loop can't spam the notification table. |
 
 **The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
 `server/assistant/policy.py` reads `app_settings.assistant_enabled` first and only falls back to
@@ -155,6 +158,12 @@ the bearer token is loopback-only and never persisted. Metrics to scrape:
 
 See also the `ix_sessions_kind_owner` index note under "Notes" below — the assistant works
 without it, but wants it once session volume grows.
+
+**`assistant_tokens` table** (external `ccas2:` tokens, migration `0028_assistant_tokens`) stores
+only a `token_hash`, never the raw token — a database dump or backup cannot be used to mint a
+working credential. `expires_at` and `revoked_at` are both checked on every request in addition to
+`VIBERPIT_ASSISTANT_EXTERNAL_TOKENS`, so flipping that var off leaves already-issued rows inert
+rather than needing a bulk revoke.
 
 ## Operate
 

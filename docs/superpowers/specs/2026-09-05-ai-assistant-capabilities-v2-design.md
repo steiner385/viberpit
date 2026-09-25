@@ -1,8 +1,7 @@
 # ccswitch AI Assistant — Capability Audit and v2 Design
 
 **Date:** 2026-09-05
-**Status:** Proposed — awaiting review (produced in an autonomous session; every decision taken
-without a human is listed in §0.3 so it can be overridden in review)
+**Status:** Delivered — Phases 5–10, epic #1210
 **Extends:** `2026-09-04-ai-assistant-design.md` (v1, delivered — Phases 0–4, epic #1052). Decisions
 A1–A8 of v1 stand unchanged. This spec **amends A9** (§4.8) and **supersedes v1 §2 "Capabilities,
 v1"** as the tool-surface roadmap. Everything else in v1 (runtime, token, permission posture,
