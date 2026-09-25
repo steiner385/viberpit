@@ -9,6 +9,7 @@ integration test each against their real manager surface.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,7 @@ from ccswitch.quota import (
     copilot_snapshot,
     unknown_snapshot,
 )
+from server.codex.manager import CodexStartError
 from server.usage.process_quota import (
     CodexQuotaSource,
     CopilotQuotaSource,
@@ -200,6 +202,44 @@ def test_start_failure_arms_the_shared_cooldown_and_is_not_retried_until_it_laps
         # The manual refresh button bypasses the cooldown.
         assert asyncio.run(r.refresh("cp", force=True)) is None
         assert src.starts == ["cp", "cp"]
+
+
+def _start_failure_records(caplog):
+    return [r for r in caplog.records
+            if r.name == "server.usage.process_quota" and "could not start" in r.getMessage()]
+
+
+def test_a_reported_codex_start_failure_is_not_filed_again_at_warning(caplog):
+    """#2054: the manager already filed `codex.manager.start_failed` at ERROR with
+    the real cause. The refresher's own WARNING+traceback was a second issue for
+    the same incident; the cooldown is what tells the operator it is backing off."""
+    with temp_env():
+        account_registry.register_account("chatgpt", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        src = FakeSource(
+            "openai",
+            start_error=CodexStartError("codex app-server for chatgpt failed to start: "
+                                        "external_auth_unavailable"),
+        )
+        with caplog.at_level(logging.DEBUG, logger="server.usage.process_quota"):
+            assert asyncio.run(_refresher(src).refresh("chatgpt")) is None
+        (record,) = _start_failure_records(caplog)
+        assert record.levelno < logging.WARNING
+        assert record.exc_info is None
+        assert _cooldown("chatgpt")[0] == 1
+
+
+def test_an_unexpected_start_failure_still_warns_with_its_traceback(caplog):
+    with temp_env():
+        account_registry.register_account("chatgpt", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        src = FakeSource("openai", start_error=RuntimeError("boom"))
+        with caplog.at_level(logging.DEBUG, logger="server.usage.process_quota"):
+            assert asyncio.run(_refresher(src).refresh("chatgpt")) is None
+        (record,) = _start_failure_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is not None
+        assert _cooldown("chatgpt")[0] == 1
 
 
 def test_unreadable_process_is_still_released_and_nothing_is_persisted():
