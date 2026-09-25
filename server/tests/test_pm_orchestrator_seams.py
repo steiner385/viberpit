@@ -1011,6 +1011,73 @@ async def test_read_feature_docs_returns_all_docs_from_pinned_snapshot(db_env):
     assert read.sha  # the pinned snapshot the docs were read at (R8b-4)
 
 
+def _make_persona_repo(root: str, slugs) -> str:
+    """A real git repo with docs/product/personas/<slug>.md committed, plus a
+    ``refs/remotes/origin/master`` ref — the persona twin of _make_feature_repo."""
+    import os
+    import subprocess
+    clone = os.path.join(root, "clone")
+    os.makedirs(os.path.join(clone, "docs", "product", "personas"))
+    subprocess.run(["git", "init", "-q", clone], check=True,
+                   capture_output=True, text=True)
+    _git("config", "user.email", "t@t", cwd=clone)
+    _git("config", "user.name", "t", cwd=clone)
+    for slug in slugs:
+        p = os.path.join(clone, "docs", "product", "personas", f"{slug}.md")
+        with open(p, "w") as fh:
+            fh.write(f"---\nslug: {slug}\ntitle: T{slug}\n---\n\nbody {slug}\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "-m", "docs", cwd=clone)
+    head = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    _git("update-ref", "refs/remotes/origin/master", head, cwd=clone)
+    return clone
+
+
+@pytest.mark.asyncio
+async def test_read_persona_docs_returns_all_docs_from_pinned_snapshot(db_env):
+    """Persona twin of test_read_feature_docs_returns_all_docs_from_pinned_snapshot
+    — same ATOMIC-OR-RAISE contract, different subdir, via the shared reader."""
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_persona_repo(root, ["teen", "parent-admin"])
+        with patch(_ENSURE_CLONE, return_value=clone):
+            read = await orch._pm_sync_read_persona_docs("o/r")
+    paths = sorted(p for p, _ in read.docs)
+    assert paths == [
+        "docs/product/personas/parent-admin.md",
+        "docs/product/personas/teen.md",
+    ]
+    assert all("body" in text for _, text in read.docs)
+    assert read.sha
+
+
+@pytest.mark.asyncio
+async def test_read_feature_docs_still_reads_only_the_features_subdir_after_extraction(db_env):
+    """Regression guard for the _pm_sync_read_docs_at_ref extraction: a repo
+    with BOTH features/ and personas/ docs must have _pm_sync_read_feature_docs
+    return only the features/ ones."""
+    import os
+    import subprocess
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_feature_repo(root, ["alpha"])
+        os.makedirs(os.path.join(clone, "docs", "product", "personas"))
+        with open(os.path.join(clone, "docs", "product", "personas", "teen.md"), "w") as fh:
+            fh.write("---\nslug: teen\ntitle: Teen\n---\nbody\n")
+        _git("add", "-A", cwd=clone)
+        _git("commit", "-q", "-m", "persona too", cwd=clone)
+        head = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+        _git("update-ref", "refs/remotes/origin/master", head, cwd=clone)
+        with patch(_ENSURE_CLONE, return_value=clone):
+            read = await orch._pm_sync_read_feature_docs("o/r")
+    paths = [p for p, _ in read.docs]
+    assert paths == ["docs/product/features/alpha.md"]
+
+
 @pytest.mark.asyncio
 async def test_read_feature_docs_raises_on_partial_read(db_env, monkeypatch):
     """A single unreadable blob makes the whole read raise — never a silent
