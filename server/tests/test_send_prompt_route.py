@@ -59,12 +59,12 @@ class _FakeSessions:
         return []
 
 
-def _rec(detached=False):
+def _rec(detached=False, status="idle"):
     from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     return SessionRecord(
         id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
-        cols=80, rows=24, cwd="/x", detached=detached,
+        cols=80, rows=24, cwd="/x", detached=detached, status=status,
     )
 
 
@@ -106,6 +106,19 @@ def test_send_prompt_409_resume_failed():
     with patch.dict(os.environ, _ENV), client:
         r = client.post("/api/sessions/s1/prompt", json={"text": "continue"}, headers=_H)
     assert r.status_code == 409
+    assert fake.sent == []
+
+
+def test_send_prompt_409_queued_gets_specific_message():
+    # #1777: a queued session's 409 should say WHY (still queued) instead of the
+    # generic "could not be resumed" — the only ensure_driver-None cause visible
+    # to the API layer via the record it already fetched.
+    client, fake = _make_client(_rec(detached=True, status="queued"), resumable=False)
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/sessions/s1/prompt", json={"text": "continue"}, headers=_H)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "resume_failed_queued"
+    assert "queued" in r.json()["detail"]["message"]
     assert fake.sent == []
 
 

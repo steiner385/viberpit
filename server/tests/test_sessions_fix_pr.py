@@ -60,12 +60,12 @@ class _FakeSessions:
         return []
 
 
-def _rec():
+def _rec(status="idle"):
     from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     return SessionRecord(
         id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
-        cols=80, rows=24, cwd="/x", detached=False,
+        cols=80, rows=24, cwd="/x", detached=False, status=status,
     )
 
 
@@ -96,6 +96,18 @@ def test_fix_pr_404_unknown_session():
         r = client.post("/api/sessions/nope/fix-pr", json={"number": 7}, headers=_H)
     assert r.status_code == 404
     assert fake.ensured == []
+    assert fake.fixed == []
+
+
+def test_fix_pr_409_queued_gets_specific_message():
+    # #1777: same queued-aware 409 message as the prompt route.
+    client, fake = _make_client(_rec(status="queued"), resumable=False)
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/sessions/s1/fix-pr", json={"number": 7}, headers=_H)
+    assert r.status_code == 409
+    body = r.json()
+    assert body["detail"]["code"] == "resume_failed_queued"
+    assert "queued" in body["detail"]["message"]
     assert fake.fixed == []
 
 

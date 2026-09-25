@@ -1446,6 +1446,20 @@ async def unarchive_session(
     return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
+def _resume_failed_detail(record: object) -> dict:
+    """409 detail for an ensure_driver(...) None, tailored to the one reason
+    ensure_driver's caller can already see on `record`: a queued session (#1777).
+    Every other None cause (lease held by another host, a mid-flight spawn
+    failure) is invisible to the API layer, so it keeps the generic message."""
+    if getattr(record, "status", None) == "queued":
+        return {
+            "code": "resume_failed_queued",
+            "message": "Session is still queued and hasn't started yet — it will "
+            "resume automatically once capacity frees up.",
+        }
+    return {"code": "resume_failed", "message": "Session could not be resumed."}
+
+
 @router.post("/{session_id}/prompt")
 async def send_session_prompt(
     session_id: str,
@@ -1473,7 +1487,7 @@ async def send_session_prompt(
     if driver is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "resume_failed", "message": "Session could not be resumed."},
+            detail=_resume_failed_detail(record),
         )
     await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
@@ -1666,7 +1680,7 @@ async def fix_session_pr(
     if driver is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "resume_failed", "message": "Session could not be resumed."},
+            detail=_resume_failed_detail(record),
         )
     result = await orch.request_pr_fix(session_id, body.number)
     if result != "sent":
