@@ -201,6 +201,47 @@ def test_purge_absent_archive_dir_with_recorded_root_still_warns(tmp_path, caplo
     assert [r.levelno for r in records] == [logging.WARNING]
 
 
+def _unmanaged_cwd_purge_records(tmp_path, caplog, *, kind: str | None) -> tuple[list, bool]:
+    """Purge one archived row whose cwd exists outside the managed worktree tree; return
+    the containment-guard log records and whether the directory survived."""
+    import logging
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+    scratch = tmp_path / "cfg" / "assistant" / "47ecfd467398f8b1"
+    scratch.mkdir(parents=True)
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([{**_archived(0, archived_at=_BASE), "cwd": str(scratch),
+                          "kind": kind}])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                return await orch.purge_oldest_archived(1)
+
+    assert asyncio.run(run()) == ["arch0"]  # row dropped either way
+    records = [r for r in caplog.records if "leaving it in place" in r.getMessage()]
+    return records, scratch.exists()
+
+
+def test_purge_assistant_scratch_dir_is_not_a_warning(tmp_path, caplog):
+    """The assistant's per-identity scratch dir never sits in a managed worktree; leaving it
+    in place is the expected behavior, so it must not log at WARNING (which auto-files an
+    issue per purge, #2029)."""
+    import logging
+    records, survived = _unmanaged_cwd_purge_records(tmp_path, caplog, kind="assistant")
+    assert survived
+    assert [r.levelno for r in records] == [logging.INFO]
+
+
+def test_purge_unmanaged_non_assistant_cwd_still_warns(tmp_path, caplog):
+    """A non-assistant row pointing outside the managed worktree tree is a genuinely misconfigured
+    row and stays a WARNING."""
+    import logging
+    records, survived = _unmanaged_cwd_purge_records(tmp_path, caplog, kind=None)
+    assert survived
+    assert [r.levelno for r in records] == [logging.WARNING]
+
+
 def test_purge_prioritizes_automation_over_human(tmp_path):
     """Automation-origin sessions are purged first; human sessions survive as long as
     there are automation archives to consume (#921)."""
