@@ -206,6 +206,25 @@ async def test_terminal_close_persists_proof_before_driver_disappears(ownership_
 
 
 @pytest.mark.asyncio
+async def test_nonterminal_close_swallows_stale_ownership_without_warning(monkeypatch, caplog):
+    """#2246: targets reassigned between snapshot and CAS is benign; the fence must not warn."""
+    import logging
+    import server.automations.ownership as ownership
+    snapshot = SimpleNamespace(token=object(), generation=1)
+    monkeypatch.setattr(ownership, "execution_snapshot", AsyncMock(return_value=snapshot))
+    monkeypatch.setattr(ownership, "attest_session_stopped",
+                        AsyncMock(side_effect=StaleOwnership("operation no longer owns its targets")))
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    stopped = SimpleNamespace(automation_work_stopped=AsyncMock(return_value=True))
+    fence = AutomationExecutionFence(
+        after_close=lambda d: orch._automation_driver_closed(d, session_id="s", execution_id="e"))
+    with caplog.at_level(logging.WARNING):
+        await fence.closed(stopped)
+    ownership.attest_session_stopped.assert_awaited_once()
+    assert not [r for r in caplog.records if "close proof unknown" in r.getMessage()]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_timeout_cannot_become_stopped_proof(monkeypatch):
     import server.sessions.claude_driver as module
     monkeypatch.setattr(module, "_CLOSE_AEXIT_TIMEOUT_S", 0.01)

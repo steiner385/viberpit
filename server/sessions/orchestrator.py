@@ -2052,13 +2052,22 @@ class SessionOrchestrator:
     async def _automation_driver_closed(self, driver: AgentDriver, *, session_id: str,
                                          execution_id: str) -> None:
         """Retain a driver's own stopped evidence even during a nonterminal rebuild."""
-        from server.automations.ownership import attest_session_stopped, execution_snapshot
+        from server.automations.ownership import (
+            StaleOwnership, attest_session_stopped, execution_snapshot,
+        )
         snapshot = await execution_snapshot(session_id, execution_id=execution_id)
         if snapshot is None or snapshot.generation is None:
             return
         if await driver.automation_work_stopped():
-            await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
-                                         execution_id=execution_id, allow_tree_stop=False)
+            try:
+                await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                             execution_id=execution_id, allow_tree_stop=False)
+            except StaleOwnership:
+                # Targets were reassigned to a successor operation between the
+                # snapshot read and this CAS write — the state already moved
+                # on, so there is nothing to attest. Benign, matches the
+                # terminal-close sibling _close_automation_driver below.
+                pass
 
     async def _close_automation_driver(self, driver: AgentDriver, session_id: str) -> None:
         """Terminal close retains each child proof until the whole managed tree stops."""
