@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -682,7 +683,16 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     # in any fallback tier) and, being paused, must not be polled for usage either.
     with ledger.locked_ledger() as led:
         names = [n for n in names if ledger.is_account_enabled(led, n)]
-    usages = {n: usage_for(n) for n in names}
+    # Fan the per-account usage fetch out concurrently rather than serially: each
+    # is independent network I/O (oauth.fetch_usage, up to a 15s retry budget on
+    # a 429), so a fleet with several accounts otherwise compounds multiple ~15s
+    # blocks into a single pick — the backlog runner's tick observed this stalling
+    # its daemon's event loop for 12-38s at a time (#2223).
+    if names:
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            usages = dict(zip(names, pool.map(usage_for, names)))
+    else:
+        usages = {}
     now = datetime.now(timezone.utc)
     now_ts = time.time()
     with ledger.locked_ledger() as led:

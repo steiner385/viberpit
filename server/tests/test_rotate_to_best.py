@@ -77,6 +77,27 @@ def test_replay_statuses_add_the_two_parked_shapes():
 
 
 @pytest.mark.asyncio
+async def test_rotate_to_best_selects_off_event_loop(monkeypatch):
+    """select_account does blocking oauth usage I/O (#2223) — rotate_to_best must
+    run it off the daemon's event loop thread, like every other selection call
+    in this class."""
+    import threading
+    rec = _rec(status="needs_attention", paused_reason="all_accounts_busy")
+    o = _orch(monkeypatch, rec)
+    loop_thread = threading.get_ident()
+    seen_threads = []
+    stub = orch_mod.select_account
+
+    def wrapped(*a, **k):
+        seen_threads.append(threading.get_ident())
+        return stub(*a, **k)
+
+    monkeypatch.setattr(orch_mod, "select_account", wrapped)
+    assert await o.rotate_to_best("s1") == "rotated"
+    assert seen_threads and seen_threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
 async def test_rotates_stalled_session_replays_and_unpins(monkeypatch):
     # An explicitly tiered model so the expected quota key is deterministic
     # ("sonnet") rather than whatever a host's settings.json resolves "default" to.

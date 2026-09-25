@@ -4529,7 +4529,11 @@ class SessionOrchestrator:
             if account is None:
                 # Skip accounts currently quarantined for a 429/401 so a fresh session
                 # doesn't land on an account we already know is struggling.
-                picked = select_account(
+                # select_account does synchronous, potentially-blocking oauth usage
+                # I/O (#2223) — off the loop via to_thread, like every other
+                # ledger-contending call in this class.
+                picked = await asyncio.to_thread(
+                    select_account,
                     exclude=self._recovery.quarantined(now=self._clock()),
                     load=self.live_session_load(), engine=selected_engine,
                     model=quota_model(model, engine=selected_engine))
@@ -6311,7 +6315,12 @@ class SessionOrchestrator:
             # would consume the picked account's reservation window without starting
             # a session, starving the real spawn (and interactive creates) when only
             # one account has headroom.
-            picked = select_account(
+            # select_account's usage_for fallback is synchronous urllib I/O; run it
+            # off the loop so a throttled/slow usage endpoint can't stall every
+            # other in-flight turn's event loop (#2223 — this is the confirmed
+            # backlog-tick call chain that starved /info for 12-38s at a time).
+            picked = await asyncio.to_thread(
+                select_account,
                 exclude=self._recovery.quarantined(now=self._clock()),
                 load=self.live_session_load(), reserve=False, engine=engine,
                 model=probe_model)
@@ -16470,12 +16479,15 @@ class SessionOrchestrator:
         # The current account is a HARD exclusion, quarantine a relaxable one: a
         # "move me off this account" that returns the same account is not a move.
         try:
-            new_account = select_account(
+            # Off the loop (#2223): select_account's usage fallback is blocking I/O.
+            picked = await asyncio.to_thread(
+                select_account,
                 exclude=frozenset({record.account}),
                 soft_exclude=self._recovery.quarantined(now=now),
                 load=self.live_session_load(), engine=record.engine,
                 model=quota_model(record.model, engine=record.engine),
-            ).name
+            )
+            new_account = picked.name
         except AllAccountsBusy as e:
             if is_usage_stalled(record.status, record.paused_reason):
                 # Already parked: honour the move request (drop the pin) and refresh
@@ -19108,12 +19120,15 @@ class SessionOrchestrator:
         now = self._clock()
         old = record.account
         try:
-            new_account = select_account(
+            # Off the loop (#2223): select_account's usage fallback is blocking I/O.
+            picked = await asyncio.to_thread(
+                select_account,
                 exclude=frozenset({old}),
                 soft_exclude=self._recovery.quarantined(now=now),
                 load=self.live_session_load(), engine=record.engine,
                 model=quota_model(record.model, engine=record.engine),
-            ).name
+            )
+            new_account = picked.name
         except AllAccountsBusy as e:
             model = quota_model(record.model, engine=record.engine)
             if (e.kind == "no_usable_accounts"

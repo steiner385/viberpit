@@ -251,3 +251,30 @@ def test_a_growing_exclude_set_is_honoured_in_full(monkeypatch):
     assert _pick(monkeypatch, usages, exclude={"a"}).name == "b"
     with pytest.raises(AllAccountsBusy):
         _pick(monkeypatch, usages, exclude={"a", "b"})
+
+
+def test_pick_account_detailed_fetches_usage_concurrently(monkeypatch):
+    """The backlog runner's per-tick pick fetches every configured account's
+    usage; done serially, a throttled/slow oauth usage endpoint compounds
+    multiple ~15s retry budgets into one pick and stalls the daemon's event loop
+    (#2223). Each account's ``usage_for`` must run on its own thread in
+    parallel — proven with a barrier that only releases once every account's
+    fetch has started, so a serial implementation deadlocks (and times out)
+    instead of silently passing."""
+    import contextlib
+    import threading
+    names = ["a", "b", "c"]
+    monkeypatch.setattr(accounts, "_account_names", lambda: names)
+    _patch_legacy_entries(monkeypatch)
+    barrier = threading.Barrier(len(names), timeout=2.0)
+
+    def slow_usage(n):
+        barrier.wait()  # only returns once every account's fetch has started
+        return _healthy()
+
+    with contextlib.ExitStack() as stack:
+        for p in _patched_ledger():
+            stack.enter_context(p)
+        stack.enter_context(patch.object(accounts, "usage_for", side_effect=slow_usage))
+        picked = accounts.pick_account_detailed(Config())
+    assert picked.name in names
