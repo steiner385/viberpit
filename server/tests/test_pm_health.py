@@ -130,3 +130,22 @@ def test_health_accepts_naive_utc_timestamps():
     assert h.stale_proposed == ("old",)
     assert h.stale_inbox == 1
     assert h.unparented_capabilities == ("old",)
+
+
+def test_health_flags_unlinked_persona_slug():
+    h = roadmap_health(
+        capabilities=[("chores", None, "live", NEW)], initiatives=[], proposals=[], now=NOW,
+        capability_personas=[("chores", ("teen", "ghost"))], known_personas=["teen"])
+    assert h.unlinked_personas == (("chores", "ghost"),)
+
+
+def test_health_unlinked_personas_defaults_to_empty():
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW)
+    assert h.unlinked_personas == ()
+
+
+def test_health_no_false_positive_when_all_personas_resolve():
+    h = roadmap_health(
+        capabilities=[("chores", None, "live", NEW)], initiatives=[], proposals=[], now=NOW,
+        capability_personas=[("chores", ("teen",))], known_personas=["teen"])
+    assert h.unlinked_personas == ()
