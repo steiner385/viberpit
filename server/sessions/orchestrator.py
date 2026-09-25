@@ -204,6 +204,14 @@ _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", 
 # next turn-end re-asks.
 _BG_WORK_READ_TIMEOUT_S = 15.0
 
+# Budget for the parked-completion open-question judge (#2396), which runs on the
+# driver pump because its verdict picks the status written. The judge runs as a
+# detached task, so a cancelled pump unwinds at once whatever this is set to. The
+# budget only limits how long a slow Haiku lane can hold the turn-end status write.
+# When it runs out, the floor's verdict (True) is used, the same as the helper-down
+# degrade path.
+_PARKED_JUDGE_TIMEOUT_S = 10.0
+
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
@@ -5338,7 +5346,6 @@ class SessionOrchestrator:
         completed_turn = status == "done"
         if completed_turn:
             from .completion import strip_markers
-            from .open_question import completion_awaits_user
             if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
@@ -5364,8 +5371,8 @@ class SessionOrchestrator:
                 # degrading to the floor's own True whenever the helper lane is down — so
                 # this is strictly the completion gate's judgement, which this path was
                 # missing while _completion_open_question had it all along.
-                prose = strip_markers(self._last_assistant_prose(session_id))
-                awaits = await completion_awaits_user(prose)
+                prose = strip_markers(await self._last_assistant_prose(session_id))
+                awaits = await self._parked_prose_awaits_user(session_id, prose)
                 # handed_back, not waiting_question (#2321): this ask lives in the
                 # closing prose and has no card to tap, which is the whole distinction
                 # the two statuses now draw.
@@ -5939,7 +5946,7 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         from .completion import strip_markers
         from .open_question import completion_awaits_user
-        text = strip_markers(self._last_assistant_prose(session_id))
+        text = strip_markers(await self._last_assistant_prose(session_id))
         if not text:
             return None
         if await completion_awaits_user(text):
@@ -5948,7 +5955,39 @@ class SessionOrchestrator:
             return "handed_back"
         return None
 
-    def _last_assistant_prose(self, session_id: str) -> str:
+    async def _parked_prose_awaits_user(self, session_id: str, prose: str) -> bool:
+        """``completion_awaits_user`` for the parked overlay, safe to await on the pump.
+
+        The judge's verdict picks the status, so it cannot be fire-and-forget like the
+        auto-title (#2180). Awaited inline, a ``driver.close()`` at that turn boundary
+        cancelled the pump while it was inside the Haiku query. The SDK's
+        ``transport.close()`` teardown can then take ~10 s, longer than the 5 s cancel
+        grace, so the pump was abandoned with a CRITICAL (#2396). Here the judge is a
+        tracked task that the pump only *waits on*: a cancelled pump unwinds at once,
+        and the ``finally`` cancels the judge without awaiting it (``stop()`` reaps it
+        via ``_bg_tasks``). If the budget runs out, the floor's own True stands,
+        which is what the judge returns when the helper lane is down.
+        """
+        from .background_tasks import text_awaits_user
+        from .open_question import completion_awaits_user
+        # The floor runs here too, so the timeout fallback is the floor's verdict and
+        # a clean completion never spawns a task at all. The judge re-runs it (cheap).
+        if not (prose or "").strip() or not text_awaits_user(prose):
+            return False
+        judge = self._spawn(completion_awaits_user(prose),
+                            name=f"parked_open_question:{session_id}")
+        try:
+            done, _ = await asyncio.wait({judge}, timeout=_PARKED_JUDGE_TIMEOUT_S)
+        finally:
+            if not judge.done():
+                judge.cancel()
+        if not done:
+            log.info("parked_open_question.timeout sid=%s budget=%.1fs — using the floor",
+                     session_id, _PARKED_JUDGE_TIMEOUT_S)
+            return True
+        return bool(judge.result())   # completion_awaits_user never raises
+
+    async def _last_assistant_prose(self, session_id: str) -> str:
         """The last assistant message's prose, whichever engine produced it.
 
         THE per-engine reader — both the completion classifier above and the parked
@@ -5961,11 +6000,15 @@ class SessionOrchestrator:
         idle-suggestion seeding. Empty when neither source is available — a detached
         Codex session has no buffer to read, and inventing prose for it would be worse
         than admitting we cannot see the message.
+
+        Async, and the transcript half runs off the loop (#2356): ``transcript_path``
+        stats the account store and ``last_assistant_text`` reads the whole JSONL.
+        On a slow mount either one stalled the event loop for every session (#1913).
         """
-        tpath = self.transcript_path(session_id)
+        tpath = await asyncio.to_thread(self.transcript_path, session_id)
         if tpath:
             from .background_tasks import last_assistant_text
-            return last_assistant_text(tpath)
+            return await asyncio.to_thread(last_assistant_text, tpath)
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is None:
             return ""
@@ -17331,7 +17374,7 @@ class SessionOrchestrator:
             return
         text = _cs.build_child_notice(
             session_id=rec.id, name=getattr(rec, "name", None) or rec.id, status=status,
-            last_message=self._last_assistant_prose(rec.id),
+            last_message=await self._last_assistant_prose(rec.id),
             hand_back_reason=hand_back_reason,
             pr_resolution=getattr(rec, "pr_resolution", None))
         self._spawn(self._notify_parent(parent_id, rec.id, status, text), name="child-notify")
