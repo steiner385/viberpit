@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { ViewportProvider, type ViewportKiosk } from '@/shell/useViewport'
 import { InteractionProvider } from '@/shell/InteractionContext'
-import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
+import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import type { DashboardState } from '@/pipeline/types'
 import { PipelinePage } from './PipelinePage'
 
@@ -47,8 +47,9 @@ function LocationSearchProbe() {
   return <span data-testid="loc-search">{search}</span>
 }
 
-function mount({ kiosk = null, entry = '/pipeline' }: { kiosk?: ViewportKiosk | null; entry?: string } = {}) {
-  stubMatchMedia(LAYOUT_MODE_QUERIES[kiosk ? 'kiosk' : 'desktop'])
+function mount({ kiosk = null, entry = '/pipeline', portrait = false }: { kiosk?: ViewportKiosk | null; entry?: string; portrait?: boolean } = {}) {
+  const queries = LAYOUT_MODE_QUERIES[kiosk ? 'kiosk' : 'desktop']
+  stubMatchMedia(portrait ? [...queries, MEDIA.portrait] : queries)
   const Wrap = ({ children }: { children: ReactNode }) => (
     <ViewportProvider kiosk={kiosk}>
       <InteractionProvider interactive={!kiosk}>
@@ -149,6 +150,22 @@ describe('PipelinePage (Workspace variant)', () => {
     mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] }, entry: '/pipeline?pipeline=o%2Fb' })
     deliver()
     expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
+  })
+
+  // #1407 (G09, FB-2): PipelinePage threads useViewport().portrait — the one
+  // orientation signal — into the board so a portrait kiosk wall display
+  // doesn't depend on pointer-only horizontal scroll (queue-train wraps under
+  // .pipeline-portrait; see plotroom.test.ts for the CSS side).
+  it('a portrait kiosk viewport marks the board .pipeline-portrait; landscape does not', () => {
+    mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] }, portrait: true })
+    deliver()
+    expect(document.querySelector('.pipeline-portrait')).toBeInTheDocument()
+  })
+
+  it('landscape kiosk leaves the board in its default (no .pipeline-portrait) composition', () => {
+    mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] } })
+    deliver()
+    expect(document.querySelector('.pipeline-portrait')).not.toBeInTheDocument()
   })
 
   it('a stalled feed shows a warning banner as the first thing in the content region', () => {

@@ -10,7 +10,25 @@
    `queue-section`),
    which the `&.` rules below select; everything else is a descendant, exactly
    as it was. LegendPanel's static swatches render the same class names inside a
-   bare `.pipeline-chart` wrapper, so they inherit the live look for free. */
+   bare `.pipeline-chart` wrapper, so they inherit the live look for free.
+
+   Type scale (issue 1407, G09): every `font-size` here now resolves through the
+   SAME `--fs-*`/`--scale` mechanism the rest of the app already uses (index.css)
+   instead of a literal px — kiosk mode's `--scale: 1.25` (AppShell.tsx) enlarges
+   this text exactly like every other chrome element, with no second scale rule
+   (the thing AppShell's own comment warns against). Two tiers, chosen so the
+   result clears the audit's proposed distance floor once kiosk scaling is
+   applied (`--fs-base` → 20px, `--fs-xl` → 25px at `--scale: 1.25`, both above
+   the 18px/24px starting points — `--fs-sm`/`--fs-lg` land just under and were
+   rejected for that reason):
+     - `var(--fs-base)` — every label, timestamp, row, and legend line. This is
+       the floor; nothing in this file reads a step below it.
+     - `var(--fs-xl)` — the two single-glance status glyphs a viewer reads from
+       across the room: the metro-track node glyph (`.node .c`) and the queue
+       health word (`.ops-health`). Everything else is secondary detail.
+   OQ-2 (the epic spec) leaves the exact floor for physical confirmation at the
+   four kiosk viewports — this is the computed starting point, not a final,
+   physically-validated number. */
 
 @keyframes prdash-pulse {
   0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
@@ -21,10 +39,12 @@
 
 /* --- Metro-map track (V3) --- */
 &.track { display: flex; align-items: flex-start; }
-.node { display: flex; flex-direction: column; align-items: center; width: 70px;
+.node { display: flex; flex-direction: column; align-items: center; width: 84px;
   flex-shrink: 0; }
-.node .c { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
-  justify-content: center; font-size: 11px; background: var(--t-edge); color: var(--t-ink-muted); }
+/* Circle grew from 22px to fit the `--fs-xl` glyph (was sized for the old
+   11px literal); `.seg`'s `margin-top` below is re-centered on the new radius. */
+.node .c { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: var(--fs-xl); background: var(--t-edge); color: var(--t-ink-muted); }
 /* Filled-node glyph ink, no literal white — and the token depends on whether the
    fill flips with the theme. The `-strong` fills do NOT (index.css holds them
    theme-invariant precisely so their white ink stays AA), so `--t-on-strong`
@@ -37,13 +57,13 @@
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
 .node.fail .c { background: var(--t-danger); color: var(--t-canvas); }
 .node.parked .c { background: var(--t-warning-strong); color: var(--t-on-strong); font-weight: 700; }
-.node-label { font-size: 9px; color: var(--t-ink-muted); margin-top: 3px; }
+.node-label { font-size: var(--fs-base); color: var(--t-ink-muted); margin-top: 3px; }
 .node.active .node-label { color: var(--t-accent); font-weight: 700; }
 .node.fail .node-label { color: var(--t-danger); font-weight: 700; }
 .node.parked .node-label { color: var(--t-warning); font-weight: 700; }
-.node-eta { font-size: 9px; color: var(--t-accent); font-variant-numeric: tabular-nums; }
+.node-eta { font-size: var(--fs-base); color: var(--t-accent); font-variant-numeric: tabular-nums; }
 .seg { flex: 1; height: 4px; background: var(--t-edge); border-radius: 2px;
-  margin-top: 9px; min-width: 24px; }
+  margin-top: 14px; min-width: 24px; }
 .seg.done { background: var(--t-success); }
 @media (prefers-reduced-motion: no-preference) {
   /* Only a LIVE track pulses. The legend's "active" node is a static swatch
@@ -55,11 +75,14 @@
 
 /* --- Check Gantt (expanded panel, V4) --- */
 &.checks { list-style: none; margin: 0; padding: 6px 14px 10px; border-top: 1px solid var(--t-edge);
-  font-size: 12px; }
+  font-size: var(--fs-base); }
 /* Inside a PR row's expanded panel the section already draws the divider. */
 .check-sections &.checks { border-top: none; }
-.g-row { display: grid; grid-template-columns: 170px 1fr 80px; gap: 8px; align-items: center;
-  padding: 3px 0; font-size: 11px; }
+/* Columns widened alongside the font bump so the name and duration text (both
+   already `.g-name`/`.g-t` ellipsis/nowrap, so this is headroom, not a hard
+   requirement) don't truncate more aggressively than the 11px original did. */
+.g-row { display: grid; grid-template-columns: 200px 1fr 100px; gap: 8px; align-items: center;
+  padding: 3px 0; font-size: var(--fs-base); }
 .g-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g-name a { color: var(--t-ink); }
 .g-bar { height: 12px; background: var(--t-edge); border-radius: 3px; position: relative;
@@ -117,7 +140,7 @@
    list (CheckGantt returns a fragment), so it carries the root class itself.
    Each swatch is a mini .g-bar, reusing the exact fills/textures above. */
 &.gantt-inline-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
-  margin: 4px 14px 8px; font-size: 10px; color: var(--t-ink-muted); }
+  margin: 4px 14px 8px; font-size: var(--fs-base); color: var(--t-ink-muted); }
 &.gantt-inline-legend span { display: inline-flex; align-items: center; gap: 4px; }
 &.gantt-inline-legend .gil-bar { width: 18px; height: 9px; display: inline-block; flex: none; }
 .g-bar .exp { position: absolute; top: 0; bottom: 0; width: 2px;
@@ -131,7 +154,7 @@
 /* advisory job rows: name recedes so required rows stay visually dominant */
 .g-advisory .g-name { font-style: italic; color: var(--t-ink-muted); }
 .g-advisory .g-name a { color: var(--t-ink-muted); }
-.divider { color: var(--t-ink-muted); text-transform: uppercase; font-size: 10px;
+.divider { color: var(--t-ink-muted); text-transform: uppercase; font-size: var(--fs-base);
   letter-spacing: 0.05em; padding: 6px 0 2px; }
 /* workflow header rows in a grouped panel (e.g. CI / Auto-merge PRs / other checks) */
 .g-workflow { font-weight: 600; padding-top: 8px; opacity: 0.85; }
@@ -145,10 +168,12 @@
 /* --- Queue ops strip (issue #39) --- */
 .queue-ops {
   display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
-  font-size: 11px; color: var(--t-ink-muted); margin-bottom: 6px;
+  font-size: var(--fs-base); color: var(--t-ink-muted); margin-bottom: 6px;
   font-variant-numeric: tabular-nums;
 }
-.ops-health { font-weight: 700; }
+/* The one queue-level glance status (healthy / cap-backlog / DISPATCH STALL) —
+   the other primary-tier glyph alongside `.node .c` (see the file header). */
+.ops-health { font-weight: 700; font-size: var(--fs-xl); }
 .ops-health.healthy { color: var(--t-success); }
 .ops-health.cap-backlog { color: var(--t-warning); }
 .ops-health.dispatch-stall { color: var(--t-danger); }
@@ -162,8 +187,8 @@
   overflow-x: auto; padding-bottom: 6px; margin-bottom: 10px;
 }
 .car {
-  border-radius: 8px; padding: 6px 8px; font-size: 11px;
-  min-width: 105px; flex-shrink: 0;
+  border-radius: 8px; padding: 6px 8px; font-size: var(--fs-base);
+  min-width: 130px; flex-shrink: 0;
 }
 .car.building {
   background: color-mix(in srgb, var(--t-accent) 12%, var(--t-surface));
@@ -185,13 +210,13 @@
   background: color-mix(in srgb, var(--t-warning) 8%, var(--t-canvas));
   border: 2px dashed var(--t-warning); color: var(--t-ink-muted);
 }
-.car-header { font-weight: 700; font-size: 10px; margin-bottom: 4px; }
+.car-header { font-weight: 700; font-size: var(--fs-base); margin-bottom: 4px; }
 .car.building .car-header { color: var(--t-accent); }
 .car.building.failed .car-header { color: var(--t-danger); }
 .car.queued .car-header { color: var(--t-ink-muted); }
 .car.unmergeable .car-header { color: var(--t-danger); }
 .car.queue-blocked .car-header { color: var(--t-warning); }
-.car-numbers { font-size: 11px; line-height: 1.6; }
+.car-numbers { font-size: var(--fs-base); line-height: 1.6; }
 .car-numbers a { color: var(--t-ink); text-decoration: none; font-weight: 600; }
 .car-numbers a:hover { text-decoration: underline; }
 .car-count { font-style: italic; }
@@ -201,7 +226,7 @@
 }
 .car-pct i { display: block; height: 100%; background: var(--t-accent); border-radius: 3px; }
 .car.building.failed .car-pct i { background: var(--t-danger); }
-.car-progress { font-size: 10px; color: var(--t-ink-muted); margin-top: 3px;
+.car-progress { font-size: var(--fs-base); color: var(--t-ink-muted); margin-top: 3px;
   font-variant-numeric: tabular-nums; }
 
 /* --- Legend swatches: the live chart classes at swatch size --------------
@@ -216,11 +241,30 @@
 .queue-train.legend-train { margin-bottom: 4px; flex-wrap: wrap; overflow-x: visible; }
 .legend-train .car { min-width: 88px; }
 
-/* Phones (≤560px): nodes are flex-shrink:0 × 70px, so a long pipeline overflows.
-   Narrow them and let the track scroll as a backstop. */
+/* Phones (≤560px): nodes are flex-shrink:0 × 84px, so a long pipeline overflows.
+   Narrow them and let the track scroll as a backstop. (Was 52px for the old
+   70px/11px-glyph node; widened alongside the issue 1407 bump so the larger label
+   text still fits.) */
 @media (max-width: 560px) {
   &.track { overflow-x: auto; padding-bottom: 2px; }
-  .node { width: 52px; }
+  .node { width: 64px; }
   .seg { min-width: 10px; }
 }
+}
+
+/* Portrait kiosk (issue 1407, FB-2): a kiosk has no pointer, so `.queue-train`'s
+   horizontal scroll (above) is unreachable content in a portrait wall display.
+   `PipelinePage` reads the ONE orientation signal, `useViewport().portrait`
+   (shell/useViewport.tsx -- no second matchMedia added here), and threads it
+   into `PipelineView` as a prop; when set, `PipelineView` adds this class to
+   its root and the train wraps into stacked rows instead of scrolling.
+   `.pipeline-portrait` lives outside `.pipeline-chart` -- it is applied to
+   PipelineView's own root, an ancestor of the `.pipeline-chart.queue-section`
+   div, not a modifier on it. */
+.pipeline-portrait .queue-train {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+.pipeline-portrait .car {
+  flex: 1 1 160px;
 }
