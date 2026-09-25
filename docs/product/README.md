@@ -45,6 +45,24 @@ under Operator experience. Its [migration guide](guides/viberpit-rebrand.md) pre
 design and delivery evidence outside the indexed capability directory. Remaining
 engineering issues stay with the initiative and their durable capability homes.
 
+## Personas
+
+A capability's `## Target users` prose may also name persona slugs in its
+`personas:` frontmatter list. Each slug indexes to a
+`docs/product/personas/<slug>.md` document (issue #2164), parsed the same way
+capability docs are: YAML frontmatter (`slug`, `title`, `role`, `age_band`,
+`tier` — all but `slug`/`title` optional) plus a free-form body (goals,
+constraints, protections). pm-sync indexes personas into a `Persona` table per
+product, default-branch-only — there is no map-changes-branch proposal flow
+for personas, unlike capabilities. A capability's declared `personas:` slug
+that doesn't resolve to a live Persona row surfaces on `GET
+/pm/projects/{slug}/health` as `unlinkedPersonas`, rendered on the roadmap
+hygiene banner.
+
+ViberPit does not run persona reviews itself — this just gives the persona an
+indexed identity a capability doc, a spec's acceptance criteria, or a test can
+cite.
+
 ## Maintaining the hierarchy
 
 - Search the existing map before adding a capability. Use noun-phrase titles for
