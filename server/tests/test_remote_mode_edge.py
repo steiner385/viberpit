@@ -279,6 +279,58 @@ def test_rest_daemonerror_maps_to_409(remote_edge):
     assert resp.json()["detail"] == "account"
 
 
+def test_rest_daemonerror_upstream_rate_limit_maps_to_429_not_409(remote_edge):
+    """#1872: `ensure_driver`'s detached-resume rebuild can re-raise a raw upstream
+    SDK/CLI 429 unclassified; the daemon wraps whatever str(exc) that is into a
+    DaemonError, which used to always surface as a fixed 409 with the raw Anthropic
+    error body as `detail` — misleading status, and a client `error`-level log
+    (auto-filed) for a routine, recoverable rate limit."""
+    orch, client = remote_edge
+    from server.ipc.client import DaemonError
+
+    raw = ('API error: 429 {"type":"error","error":{"type":"rate_limit_error",'
+           '"message":"This request would exceed your account\'s rate limit. '
+           'Please try again later."},"request_id":"req_011Cf3AM4hyq83KJBtz4f8Xa"}')
+
+    async def boom(*a, **k):
+        raise DaemonError("ProcessError", raw)
+
+    client.app.state.sessions.list_sessions = boom
+    resp = client.get("/api/sessions", headers=_IDENT)
+    assert resp.status_code == 429, resp.text
+    body = resp.json()
+    assert body["code"] == "daemon_upstream_rate_limited"
+    # The raw upstream JSON never reaches the client as `detail`.
+    assert "rate_limit_error" not in body["detail"]
+    assert "request_id" not in body["detail"]
+
+
+def test_rest_daemonerror_upstream_auth_401_maps_to_401(remote_edge):
+    orch, client = remote_edge
+    from server.ipc.client import DaemonError
+
+    async def boom(*a, **k):
+        raise DaemonError("RuntimeError", "invalid authentication credentials")
+
+    client.app.state.sessions.list_sessions = boom
+    resp = client.get("/api/sessions", headers=_IDENT)
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["code"] == "daemon_upstream_auth_failed"
+
+
+def test_rest_daemonerror_upstream_overloaded_maps_to_503(remote_edge):
+    orch, client = remote_edge
+    from server.ipc.client import DaemonError
+
+    async def boom(*a, **k):
+        raise DaemonError("ProcessError", "the server is overloaded, please retry")
+
+    client.app.state.sessions.list_sessions = boom
+    resp = client.get("/api/sessions", headers=_IDENT)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["code"] == "daemon_upstream_overloaded"
+
+
 def test_vnc_end_to_end_remote(tmp_path):
     """browser → edge /ws/vnc → daemon /vnc → local RFB echo → browser, in real remote mode."""
     import socket
