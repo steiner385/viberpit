@@ -17,15 +17,6 @@ STATUS_IN_PROGRESS = "In progress"
 STATUS_BLOCKED = "Blocked"
 STATUS_HELD = "Held"
 STATUS_DONE = "Done"
-#: The pre-rename spelling of :data:`STATUS_HELD` (spec 2026-09-18 §9). READ-ONLY
-#: alias: nothing derives it any more, but a board whose Status option has not been
-#: renamed yet still reports it, so every read normalises through
-#: :func:`is_held_status` and the single write path (``gh_mutations._render``)
-#: resolves whichever spelling that board's field cache carries. Dropped in the
-#: follow-up PR once every board reports "Held".
-LEGACY_STATUS_NEEDS_HUMAN = "Needs human"
-#: THE definition of the two spellings. One set, so no module re-spells the legacy name.
-HELD_STATUS_SPELLINGS: frozenset[str] = frozenset({STATUS_HELD, LEGACY_STATUS_NEEDS_HUMAN})
 STATUS_OPTIONS: tuple[str, ...] = (
     STATUS_BACKLOG, STATUS_READY, STATUS_IN_PROGRESS, STATUS_BLOCKED, STATUS_HELD, STATUS_DONE)
 
@@ -44,14 +35,6 @@ LIVE_SESSION_STATUSES = (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 #: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
 #: on their own and never reach the board.
 HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision"})
-
-
-def is_held_status(value: str | None) -> bool:
-    """True when a board Status value is the held column, under either spelling.
-
-    THE normaliser every read path uses (diff comparison, tier derivation, the SDLC
-    count) so a mixed fleet mid-rename cannot disagree about which cards are held."""
-    return value in HELD_STATUS_SPELLINGS
 
 
 @dataclass(frozen=True)

@@ -94,15 +94,10 @@ def test_held_outranks_the_board_status_it_causes():
     assert skip_reason(_row(status="Held", hold_kind="owner_action"), **kw) == "held"
 
 
-@pytest.mark.parametrize("status", ["Held", "Needs human"])
-def test_the_held_column_is_a_status_skip_under_either_spelling(status):
-    """Rollout tolerance (spec 2026-09-18 §9): a card sitting in the held column of a
-    board the rename has not reached must not be dispatched. Without normalising, the
-    legacy spelling is outside STATUS_OPTIONS and C-2 would treat it as Backlog-
-    equivalent — so a card whose hold is already cleared and whose session is gone
-    (nothing else gates it) would be admitted in Backlog mode."""
+def test_the_held_column_is_a_status_skip():
+    """A card sitting in the Held column must not be dispatched."""
     kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
-    assert skip_reason(_row(status=status), **kw) == "status"
+    assert skip_reason(_row(status="Held"), **kw) == "status"
 
 
 def test_needs_spec_skips_a_bounced_row_before_the_status_gate():

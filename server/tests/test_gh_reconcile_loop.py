@@ -347,22 +347,31 @@ def test_ensure_fields_creates_missing_and_extends_status_options():
     assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc"
 
 
-def test_ensure_fields_never_adds_held_beside_the_legacy_spelling():
-    """Rollout tolerance (spec 2026-09-18 §9): ``Held`` and ``Needs human`` are ONE
-    column. A board still on the old spelling is complete — adding a second option
-    would split every parked card across two columns and needs a human's rename."""
-    from server.pm.desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
-    legacy_options = {(LEGACY_STATUS_NEEDS_HUMAN if n == STATUS_HELD else n): f"O_{n}"
-                      for n in STATUS_OPTIONS}
-    legacy = _facts(field_cache={**CACHE, "Status": {"field_id": "F_s",
-                                                     "options": legacy_options}},
-                    items=[], mirror={}, open_issue_nodes={})
-    ctx = Ctx(); loop, calls = _loop(ctx, facts=legacy, config={"migrate": True})
+def test_status_option_repair_preserves_cached_attrs_the_mutation_echo_omits():
+    """``updateProjectV2Field``'s own response selects ``id name`` only (no colour or
+    description), so the post-mutation cache write must not drop the ``attrs`` the
+    pre-mutation cache carried for the preserved options (#2015) — it is what the
+    NEXT tick's repair (if any) would resend."""
+    human = _facts(field_cache={"Score": {"field_id": "F_sc", "options": {}},
+                                "Stage": {"field_id": "F_st", "options": {}},
+                                "Status": {"field_id": "F_s",
+                                           "options": {"Icebox": "O_i", "Backlog": "O_b"},
+                                           "attrs": {"Icebox": {"color": "PURPLE",
+                                                                "description": "frozen"}}}},
+                   items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"data": {"updateProjectV2Field": {"projectV2Field": {"id": "F_s", "name": "Status",
+                "options": [{"id": o, "name": n} for n, o in
+                           {"Icebox": "O_i", "Backlog": "O_b",
+                            **{n: f"O_{n}" for n in STATUS_OPTIONS if n != "Backlog"}}.items()]}}}}
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=human, mutate=mutate, config={"migrate": True})
     asyncio.run(loop.tick())
-    assert calls["record"] == [] and calls["cache"] == []
-    # …and the product is not parked as "incomplete" either: the gap check reads the
-    # same pair, so item writes proceed against the legacy option id.
-    assert GhReconcileLoop._field_gap(legacy.field_cache) == []
+    assert calls["cache"][-1][1]["Status"]["attrs"] == {
+        "Icebox": {"color": "PURPLE", "description": "frozen"}}
 
 
 def test_status_option_repair_is_a_union_and_never_drops_a_human_column():
@@ -374,13 +383,18 @@ def test_status_option_repair_is_a_union_and_never_drops_a_human_column():
     human = _facts(field_cache={"Score": {"field_id": "F_sc", "options": {}},
                                 "Stage": {"field_id": "F_st", "options": {}},
                                 "Status": {"field_id": "F_s",
-                                           "options": {"Icebox": "O_i", "Backlog": "O_b"}}},
+                                           "options": {"Icebox": "O_i", "Backlog": "O_b"},
+                                           "attrs": {"Icebox": {"color": "PURPLE",
+                                                                "description": "frozen"}}}},
                    items=[], mirror={}, open_issue_nodes={})
     ctx = Ctx(); loop, calls = _loop(ctx, facts=human, config={"migrate": True})
     asyncio.run(loop.tick())
     doc = [d for d in _docs(calls) if "updateProjectV2Field" in d][0]
     assert '{id: "O_i", name: "Icebox"' in doc               # id echoed -> id preserved
     assert '{id: "O_b", name: "Backlog"' in doc
+    # a human-set colour/description survives the replace instead of coming back
+    # gray with no description (#2015)
+    assert '{id: "O_i", name: "Icebox", color: PURPLE, description: "frozen"}' in doc
     # spec names the board doesn't have yet carry no id: they are genuinely new options
     assert all(f'{{name: "{n}"' in doc for n in STATUS_OPTIONS if n != "Backlog")
     assert doc.index('"Icebox"') < doc.index('"Ready"')      # existing options keep their order

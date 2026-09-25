@@ -112,6 +112,29 @@ def test_parse_project_fields_caches_ids_and_options():
     assert cache["Score"] == {"field_id": "F_score", "options": {}}
 
 
+def test_parse_project_fields_carries_option_colour_and_description():
+    """A writer REPLACING a single-select's option set (``_ensure_fields``) has to
+    resend colour/description or GitHub repaints the preserved options gray and
+    erases their descriptions (#2015) — so the cache carries what the query
+    already selects, not just the id."""
+    payload = {"data": {"node": {"fields": {"nodes": [
+        {"id": "F_status", "name": "Status", "options": [
+            {"id": "O_ready", "name": "Ready", "color": "GREEN", "description": "picked"},
+            {"id": "O_done", "name": "Done", "color": "", "description": ""}]}]}}}}
+    cache = parse_project_fields(payload)
+    assert cache["Status"]["attrs"] == {
+        "Ready": {"color": "GREEN", "description": "picked"},
+        "Done": {"color": "", "description": ""}}
+
+
+def test_parse_project_fields_omits_attrs_when_the_query_carried_none():
+    """A payload without ``color``/``description`` keys (an older snapshot, or a
+    NUMBER field with no options at all) gets no ``attrs`` key — callers that
+    only ever read ``options`` see no shape change."""
+    cache = parse_project_fields(_fields_payload())
+    assert "attrs" not in cache["Status"] and "attrs" not in cache["Score"]
+
+
 def test_fields_query_selects_the_option_attributes_a_writer_must_send_back():
     """Anything that REPLACES a single-select's option set has to resend each option's
     colour and description, so the one fields query reads them."""

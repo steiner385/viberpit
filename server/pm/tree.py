@@ -17,8 +17,8 @@ from server.pm.desired_state import (
     HELD_KINDS,
     HUMAN_WAIT_SESSION_STATUSES,
     STATUS_BLOCKED,
+    STATUS_HELD,
     STATUS_IN_PROGRESS,
-    is_held_status,
 )
 from server.pm.outcomes import bounced_out
 from server.sdlc.gates import auto_resolved_view
@@ -125,7 +125,7 @@ def issue_tier(state: str | None, triage_state: str | None,
     if reason is not None:
         return "needs-you"
     if (hold_kind in HELD_KINDS or session_status in HUMAN_WAIT_SESSION_STATUSES
-            or is_held_status(board_status)):
+            or board_status == STATUS_HELD):
         return "needs-you"
     if has_open_blocker or board_status == STATUS_BLOCKED:
         return "blocked"

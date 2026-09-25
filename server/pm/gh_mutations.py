@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-from .desired_state import LEGACY_STATUS_NEEDS_HUMAN, STATUS_HELD
 from .reconcile_diff import Mutation
 
 MAX_ALIASES = 20
@@ -36,56 +35,6 @@ def _q(value: object) -> str:
     return json.dumps(value)  # quotes + escapes strings; numbers verbatim
 
 
-def written_option_name(field: str | None, value: object,
-                        field_cache: Mapping[str, dict]) -> str | None:
-    """The single-select option name this write will actually land on, or None.
-
-    THE write-side spelling resolver for the rename (spec 2026-09-18 §9): the engine
-    only ever decides ``Held``, but a board the one-time rename has not reached still
-    spells that column ``Needs human``. Same column — so the write uses whichever
-    spelling the board's field cache carries, preferring the new one when it has both,
-    and never creates a second option (``gh_reconcile._missing_status_options``).
-
-    ``_render`` looks up the option id under this name, and ``as_written`` stamps the
-    journaled mutation with it, so what we recorded is what we sent — see ``as_written``
-    for why that matters.
-
-    Status-scoped on purpose: every other single-select (``Stage``) matches by name only.
-    """
-    options = (field_cache.get(field or "") or {}).get("options") or {}
-    name = str(value)
-    if name in options:
-        return name
-    if field == "Status" and value == STATUS_HELD and LEGACY_STATUS_NEEDS_HUMAN in options:
-        return LEGACY_STATUS_NEEDS_HUMAN
-    return None
-
-
-def as_written(m: Mutation, field_cache: Mapping[str, dict]) -> Mutation:
-    """*m* restated in the vocabulary of the board it is about to be sent to.
-
-    The reconciler journals a mutation BEFORE sending it, and that journal row is
-    what the echo-suppression key is built from (``journal.recent_own_writes`` →
-    ``mirror_store.upsert_project_items``). On a board still spelled the legacy way a
-    decision of ``Held`` lands on the ``Needs human`` option, so a row recorded as
-    ``Held`` would never match the readback: our own write would be reported as a
-    ``HumanEdit`` and every parked card would emit a phantom ``gh_human_edit``
-    observation. Stamping the mutation with the resolved name keeps the journal, the
-    ownership replay (``own_applied_values``) and the echo key all saying what we
-    actually wrote.
-
-    A value with no option at all is returned unchanged, so ``_render`` still raises
-    ``UnknownOption`` and the batch parks on vocabulary drift exactly as before.
-
-    ``key()`` moves with the value, which is what the parked/dry-run dedupe sets want:
-    both are keyed on ``target_node_id`` too, so they are per board already, and a board
-    resolves the same spelling on every tick."""
-    if m.kind != "set_field" or m.field == "Score":
-        return m
-    name = written_option_name(m.field, m.new_value, field_cache)
-    return m if name is None or name == m.new_value else replace(m, new_value=name)
-
-
 def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) -> str:
     if m.kind == "set_field":
         spec = field_cache.get(m.field or "") or {}
@@ -95,8 +44,7 @@ def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) 
         if m.field == "Score":
             value = "{number: %s}" % float(m.new_value)  # type: ignore[arg-type]
         else:
-            name = written_option_name(m.field, m.new_value, field_cache)
-            option = (spec.get("options") or {}).get(name) if name is not None else None
+            option = (spec.get("options") or {}).get(str(m.new_value))
             if not option:
                 raise UnknownOption(f"{m.field}={m.new_value!r} has no option id")
             value = "{singleSelectOptionId: %s}" % _q(option)

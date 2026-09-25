@@ -11,8 +11,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from .desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED, STATUS_HELD,
-                            STATUS_OPTIONS, STATUS_READY, is_held_status)
+from .desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
+                            STATUS_OPTIONS, STATUS_READY)
 from .outcomes import bounced_out
 
 # Issues the runner must never treat as implementable work (#637). A backlog
@@ -171,13 +171,7 @@ def skip_reason(
     # fingerprint the count is keyed on) is what re-arms it, not time.
     if bounced_out(row.bounces, give_up_after_bounces):
         return "needs_spec"
-    # Normalised through THE one reader (spec 2026-09-18 §9) before the vocabulary
-    # check: a board the rename has not reached still mirrors LEGACY_STATUS_NEEDS_HUMAN,
-    # which is not in STATUS_OPTIONS, and would otherwise fall into the C-2
-    # "foreign column" branch above and be dispatched as Backlog-equivalent — the
-    # queue admitting a card that is sitting in the held column.
-    status = (STATUS_HELD if is_held_status(row.status)
-              else (row.status if row.status in STATUS_OPTIONS else STATUS_BACKLOG))
+    status = row.status if row.status in STATUS_OPTIONS else STATUS_BACKLOG
     if status not in (STATUS_BACKLOG, STATUS_READY, STATUS_BLOCKED):
         return "status"  # Done / In progress / Held
     if status == STATUS_BLOCKED or (respect_dependencies and row.open_blockers):

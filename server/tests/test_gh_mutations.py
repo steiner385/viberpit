@@ -47,53 +47,20 @@ def test_build_batch_rejects_unknown_option_and_oversize():
     assert [len(c) for c in chunk(too_many)] == [MAX_ALIASES, 1]
 
 
-@pytest.mark.parametrize("options,expect", [
-    ({"Held": "O_held"}, "O_held"),
-    ({"Needs human": "O_legacy"}, "O_legacy"),
-    ({"Needs human": "O_legacy", "Held": "O_held"}, "O_held"),
-])
-def test_held_resolves_to_whichever_spelling_the_board_has(options, expect):
-    """Rollout tolerance (spec 2026-09-18 §9): the engine only ever decides ``Held``,
-    but the board's own Status option may still be spelled ``Needs human``. The write
-    path resolves against the cached spelling — preferring ``Held`` when both exist —
-    so a mixed fleet keeps writing instead of parking on ``UnknownOption``."""
+def test_held_resolves_by_name_like_any_other_status():
     from server.pm.desired_state import STATUS_HELD
-    cache = {"Status": {"field_id": "F_s", "options": options}}
+    cache = {"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}}
     m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
     doc, _ = build_batch([m], project_node_id="PVT_1", field_cache=cache)
-    assert f'value: {{singleSelectOptionId: "{expect}"}}' in doc
+    assert 'value: {singleSelectOptionId: "O_held"}' in doc
 
 
-def test_held_with_neither_spelling_cached_is_an_unknown_option():
+def test_held_with_no_option_cached_is_an_unknown_option():
     from server.pm.desired_state import STATUS_HELD
     cache = {"Status": {"field_id": "F_s", "options": {"Ready": "O_ready"}}}
     m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
     with pytest.raises(UnknownOption):
         build_batch([m], project_node_id="PVT_1", field_cache=cache)
-    # The alias is one-way: a board that somehow still DECIDES the legacy spelling
-    # gets no help from a "Held" option — nothing produces that value any more.
-    legacy = Mutation("set_field", "PVTI_1", "Status", None, "Needs human", "status:o/r#1")
-    with pytest.raises(UnknownOption):
-        build_batch([legacy], project_node_id="PVT_1",
-                    field_cache={"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}})
-
-
-def test_as_written_stamps_the_mutation_with_the_spelling_the_board_carries():
-    """What we journal must be what we send (spec 2026-09-18 §9): the echo-suppression
-    key is built from the journal row, so a row saying "Held" against a board that
-    stores "Needs human" would read our own write back as a human edit."""
-    from server.pm.desired_state import STATUS_HELD
-    from server.pm.gh_mutations import as_written
-    legacy = {"Status": {"field_id": "F_s", "options": {"Needs human": "O_legacy"}}}
-    renamed = {"Status": {"field_id": "F_s", "options": {"Held": "O_held"}}}
-    m = Mutation("set_field", "PVTI_1", "Status", None, STATUS_HELD, "status:o/r#1")
-    assert as_written(m, legacy).new_value == "Needs human"
-    assert as_written(m, renamed) is m          # already the board's spelling
-    assert as_written(m, {}) is m               # no option at all -> _render still raises
-    # Score and non-field mutations are never restated.
-    score = Mutation("set_field", "PVTI_1", "Score", None, 480.0, "score:o/r#1")
-    add = Mutation("add_item", "PVT_1", None, None, "I_9", "membership:o/r#9")
-    assert as_written(score, legacy) is score and as_written(add, legacy) is add
 
 
 def test_parse_batch_maps_errors_per_alias():

@@ -104,15 +104,31 @@ def project_node_missing(payload: dict) -> bool:
 
 
 def parse_project_fields(payload: dict) -> dict:
+    """The board's field cache: ``{field_name: {field_id, options, attrs?}}``.
+
+    ``attrs`` (``{option_name: {color, description}}``) rides alongside ``options``
+    for a single-select whose options carry them (the query already selects
+    ``color``/``description`` for exactly this reason — see
+    ``build_project_fields_query``). It is what a caller REPLACING that option set
+    (``_ensure_fields``) must resend so a preserved option doesn't come back
+    repainted gray with its description erased; omitted when there is nothing to
+    carry, so an existing cache without it (a NUMBER field, or an old snapshot)
+    behaves exactly as it always has."""
     nodes = (((payload.get("data") or {}).get("node") or {}).get("fields") or {}).get("nodes") or []
     cache: dict = {}
     for node in nodes:
         if not node or "name" not in node:
             continue
-        cache[node["name"]] = {
+        options = node.get("options") or []
+        entry = {
             "field_id": node.get("id"),
-            "options": {o["name"]: o["id"] for o in node.get("options") or []},
+            "options": {o["name"]: o["id"] for o in options},
         }
+        if any(("color" in o or "description" in o) for o in options):
+            entry["attrs"] = {o["name"]: {"color": o.get("color") or "",
+                                          "description": o.get("description") or ""}
+                              for o in options}
+        cache[node["name"]] = entry
     return cache
 
 

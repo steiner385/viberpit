@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from server.pm.desired_state import (
-    HELD_STATUS_SPELLINGS, ItemFacts, Decision, LEGACY_STATUS_NEEDS_HUMAN, derive, derive_status,
-    is_held_status, STATUS_BACKLOG, STATUS_BLOCKED, STATUS_DONE, STATUS_HELD, STATUS_IN_PROGRESS,
+    ItemFacts, Decision, derive, derive_status,
+    STATUS_BACKLOG, STATUS_BLOCKED, STATUS_DONE, STATUS_HELD, STATUS_IN_PROGRESS,
     STATUS_OPTIONS, STATUS_READY)
 from server.pm.score import rice_score
 
@@ -77,20 +77,12 @@ def test_failed_turn_is_not_a_human_wait():
 
 
 def test_held_is_the_only_spelling_the_engine_produces():
-    """Spec 2026-09-18 §9: the board value is ``Held``. ``Needs human`` survives
-    ONLY as a read alias for a board that has not been renamed yet — the engine
-    never derives it and the bootstrap never offers it as a column."""
-    assert STATUS_HELD == "Held" and LEGACY_STATUS_NEEDS_HUMAN == "Needs human"
-    assert STATUS_HELD in STATUS_OPTIONS and LEGACY_STATUS_NEEDS_HUMAN not in STATUS_OPTIONS
+    """Spec 2026-09-18 §9: the board value is ``Held``. The fleet rename landed and
+    the read alias was dropped, so ``Held`` is the sole spelling everywhere."""
+    assert STATUS_HELD == "Held"
+    assert STATUS_HELD in STATUS_OPTIONS
     # the old slot: between Blocked and Done, so the board's column order is unchanged
     assert STATUS_OPTIONS.index(STATUS_HELD) == STATUS_OPTIONS.index(STATUS_BLOCKED) + 1
-    assert HELD_STATUS_SPELLINGS == frozenset({STATUS_HELD, LEGACY_STATUS_NEEDS_HUMAN})
-
-
-def test_is_held_status_reads_both_spellings():
-    assert is_held_status(STATUS_HELD) and is_held_status(LEGACY_STATUS_NEEDS_HUMAN)
-    assert not is_held_status(STATUS_READY)
-    assert not is_held_status(None)
 
 
 def test_derive_bundles_score_and_stage():

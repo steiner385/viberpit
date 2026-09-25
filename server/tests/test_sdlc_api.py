@@ -380,11 +380,9 @@ def test_build_stage_surfaces_backlog_sessions():
 
 
 def test_get_detail_includes_epic_progress():
-    """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 5 children
-    (1 closed, 1 'Blocked', 1 'Ready', and one in the held column under EACH spelling
-    via GhProjectItem.status); GET detail → epic.total==5, epic.done==1,
-    epic.blocked==1, epic.held==2 (#991; both spellings per spec 2026-09-18 §9 — a
-    board the rename has not reached still counts toward `held`)."""
+    """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 4 children
+    (1 closed, 1 'Blocked', 1 'Ready', 1 'Held' via GhProjectItem.status); GET
+    detail → epic.total==4, epic.done==1, epic.blocked==1, epic.held==1 (#991)."""
     from server.db import db_session
     from server.db.models import GhProjectItem, Initiative, WorkItem
 
@@ -421,18 +419,12 @@ def test_get_detail_includes_epic_progress():
             held_child = WorkItem(
                 repo="o/r", number=4, kind="issue", title="Held child",
                 state="open", parent_work_item_id=epic_wi.id)
-            legacy_held_child = WorkItem(
-                repo="o/r", number=5, kind="issue", title="Legacy held child",
-                state="open", parent_work_item_id=epic_wi.id)
-            db.add_all([done_child, blocked_child, ready_child, held_child,
-                        legacy_held_child])
+            db.add_all([done_child, blocked_child, ready_child, held_child])
             await db.flush()
 
             db.add(GhProjectItem(work_item_id=blocked_child.id, status="Blocked"))
             db.add(GhProjectItem(work_item_id=ready_child.id, status="Ready"))
             db.add(GhProjectItem(work_item_id=held_child.id, status="Held"))
-            # A board the one-time rename has not reached yet (spec 2026-09-18 §9).
-            db.add(GhProjectItem(work_item_id=legacy_held_child.id, status="Needs human"))
 
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
@@ -456,18 +448,15 @@ def test_get_detail_includes_epic_progress():
                 epic = body["epic"]
                 assert epic["ref"] == "o/r#997"
                 assert epic["url"] == "https://github.com/o/r/issues/997"
-                assert epic["total"] == 5
+                assert epic["total"] == 4
                 assert epic["done"] == 1
                 assert epic["blocked"] == 1
-                # Both spellings of the held column count as one (spec §9).
-                assert epic["held"] == 2
+                assert epic["held"] == 1
                 child_refs = {c["ref"]: c for c in epic["children"]}
                 assert child_refs["o/r#1"]["state"] == "closed"
                 assert child_refs["o/r#2"]["status"] == "Blocked"
                 assert child_refs["o/r#3"]["status"] == "Ready"
-                # the per-child array is verbatim: it reports what the board says
                 assert child_refs["o/r#4"]["status"] == "Held"
-                assert child_refs["o/r#5"]["status"] == "Needs human"
 
                 # The list endpoint serves the API's non-web readers (the AI
                 # assistant's `server/assistant/tools.py`, and anything scripting
