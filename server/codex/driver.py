@@ -92,9 +92,11 @@ from server.sessions.background_tasks import OpenBgTask
 from server.sessions.automation_execution import AutomationExecutionFence
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
 from server.sessions.engine import (
+    EFFORT_UNCHANGED,
     AgentDriverConfig,
     AgentDriverFactory,
     AgentEngine,
+    _EffortUnchanged,
 )
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.questions import QuestionRegistry
@@ -418,6 +420,9 @@ class CodexAgentDriver:
         # that handed back, and the next turn clears it so the orchestrator can never
         # audit a stale reason against a later waiting_question.
         self._last_hand_back_reason: str | None = None
+        # Sticky (set-only), like ClaudeAgentDriver's: a turn carrying no request leaves
+        # the previous one alone. The orchestrator consumes each exactly once by turn id.
+        self._last_model_request: dict | None = None
         self._condensing = False
         # (base, effective) pair from the last on_status overlay (or seed_status):
         # current_status() reports `effective` while the raw derivation still equals
@@ -517,6 +522,14 @@ class CodexAgentDriver:
         writes ``waiting_question``."""
         return self._last_hand_back_reason
 
+    @property
+    def last_model_request(self) -> dict | None:
+        """The most recent ``<!-- viberpit:model=<tier> -->`` request, or ``None``.
+        ``{"turn_id", "model", "reason"}`` — ``model`` is a tier in the shared
+        haiku/sonnet/opus/fable vocabulary, mapped onto the live Codex effort
+        catalog by the orchestrator (#1273), never a Codex model id."""
+        return self._last_model_request
+
     # -- lifecycle ---------------------------------------------------------
 
     def _client(self) -> CodexAppServerClient:
@@ -540,10 +553,12 @@ class CodexAgentDriver:
             model=self._model,
             sandbox=profile.sandbox_mode.value,
             approval_policy=profile.approval_policy.value,
-            # Codex cannot act on a model request
-            # (`AgentCapabilities.self_model_switch=False`), so it is
-            # never told about the marker — asking for a signal nothing
-            # honours burns turns on a request that is silently dropped.
+            # Codex is told about the model-request marker whenever
+            # `AgentCapabilities.self_model_switch` says it can act on one
+            # (#1273) — this call reads the SAME capability `codex/translator.py`
+            # cites for why it always scans for the marker, so the instruction
+            # and the parsing can never disagree about whether a session should
+            # see it.
             #
             # The session-tools paragraph rides the SAME string, through the
             # same helper the Claude factory's system-prompt append uses, and
@@ -1124,11 +1139,21 @@ class CodexAgentDriver:
 
     # -- model / effort / permission mode ----------------------------------
 
-    async def set_model(self, model: str | None) -> None:
-        """Switch models. Mid-turn this retargets the live turn; otherwise it is
-        stored for the next one. ``None``/``"default"`` means "account default"
-        and is stored as ``None`` so the app-server picks."""
+    async def set_model(
+        self, model: str | None, *, effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
+    ) -> None:
+        """Switch models and/or reasoning effort. Mid-turn this retargets the live
+        turn; otherwise it is stored for the next one. ``None``/``"default"`` means
+        "account default" and is stored as ``None`` so the app-server picks.
+
+        ``effort`` is left exactly as it was unless given: an ordinary model switch
+        passes none, while a self-directed request (#1273) re-passes the CURRENT
+        model with only the effort changed. ``model`` and ``effort`` ride one
+        `turn/settings/update`, so the app-server never sees the pair half-applied.
+        """
         self._model = _normalize_model(model)
+        if not isinstance(effort, _EffortUnchanged):
+            self._effort = effort
         if not self._turn_active or self._turn_id is None or self._model is None:
             return
         with contextlib.suppress(Exception):
@@ -1811,6 +1836,8 @@ class CodexAgentDriver:
             self._last_turn_outcome = "failed" if outcome == "error" else outcome
         self._last_hand_back_reason = (
             event.hand_back_reason if self._last_turn_outcome == "hand_back" else None)
+        if event.model_request is not None:
+            self._last_model_request = {"turn_id": event.turn_id, **event.model_request}
         self._turns_completed += 1
         self._turn_active = False
         self._turn_started_at = None

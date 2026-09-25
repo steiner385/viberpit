@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from ccswitch.engines import (
     AgentEngine,
@@ -12,6 +12,24 @@ from ccswitch.engines import (
 )
 from server.assistant.context import PromptContext
 from server.sessions.prompt_origin import PromptOrigin
+
+class _EffortUnchanged:
+    """Type of :data:`EFFORT_UNCHANGED`. A class (not a bare ``object()``) so it can
+    sit in an ``effort`` union that mypy can still narrow."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "EFFORT_UNCHANGED"
+
+
+#: "No effort argument was given" for ``AgentDriver.set_model`` — distinct from an
+#: explicit ``None``, which means "clear back to the engine default". Every ordinary
+#: model switch passes neither, and must leave a Codex session's reasoning effort
+#: exactly where it was; a self-directed request (#1273) is the one caller that
+#: changes effort alone.
+EFFORT_UNCHANGED: Final = _EffortUnchanged()
+
 
 class AgentEngineUnavailable(RuntimeError):
     """Raised when an engine is recognized but has no installed driver factory."""
@@ -164,7 +182,9 @@ class AgentDriver(Protocol):
         origin: PromptOrigin | None = None,
     ) -> None: ...
     async def interrupt(self, *, keep_queue: bool = False) -> None: ...
-    async def set_model(self, model: str | None) -> None: ...
+    async def set_model(
+        self, model: str | None, *, effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
+    ) -> None: ...
     async def set_permission_mode(self, mode: str) -> None: ...
     def resolve_permission(self, perm_id: str, decision: str, identity: str) -> bool: ...
     def answer_question(

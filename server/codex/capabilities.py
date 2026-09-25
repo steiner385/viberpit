@@ -106,9 +106,22 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: a gap to close later, same as ``account_rotation`` below — verified against the
 #: pinned protocol fixture, not assumed.
 #:
-#: The remaining ``False`` entries (ViberPit's fork and self-directed model switching
-#: surfaces) are equally deliberate: they are implemented against the Claude CLI's
-#: private state and have no app-server equivalent in v1.
+#: ``fork`` stays False, equally deliberately: it is implemented against the Claude
+#: CLI's private state and has no app-server equivalent in v1.
+#:
+#: ``self_model_switch`` is True (#1273). What made it False was never the vendor
+#: boundary — `turn/start` and `turn/settings/update` already carry `model` and
+#: `effort`, and a manual switch has always ridden them — it was that a request
+#: had no Codex-shaped meaning: a Claude tier alias is not a Codex model id. It
+#: has one now. The session self-assesses in the SHARED haiku/sonnet/opus/fable
+#: rubric (the instruction and marker are engine-neutral) and the orchestrator
+#: maps the requested tier onto the CURRENT model's live `model/list` reasoning
+#: efforts (`model_pick.tier_to_effort`), so what is dispatched is always a value
+#: the catalog offers and never a Claude alias. The model id itself is never
+#: switched by a session: no verified cost ordering exists across Codex models,
+#: while a model's own effort list is ordered by the app-server. Downgrade
+#: auto-apply, upgrade parking, the tier denylist, the loop guards and the audit
+#: trail are the SAME code Claude runs (`_apply_model_request`), not a copy.
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
 #: by that path rather than rebuilt as some other engine's driver. That refusal is
@@ -131,7 +144,7 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     questions=True,
     fork=False,
     adopt=False,
-    self_model_switch=False,
+    self_model_switch=True,
     subagents=False,
     attachments=True,
     account_rotation=False,

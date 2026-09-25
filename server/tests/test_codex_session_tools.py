@@ -153,8 +153,9 @@ async def test_a_fresh_thread_is_TOLD_about_the_tools_it_declared(harness, sessi
     instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
     assert "session_context" in instructions and "report_feedback" in instructions
     assert "mark_complete" not in instructions and "request_model" not in instructions
-    # And it is an APPEND, not a replacement: the marker contracts must survive.
-    assert marker_instructions(self_model_switch=False) in instructions
+    # And it is an APPEND, not a replacement: the marker contracts must survive —
+    # including the model-request one: Codex can act on it (#1273).
+    assert marker_instructions(self_model_switch=True) in instructions
 
 
 @pytest.mark.asyncio
@@ -162,7 +163,7 @@ async def test_a_fresh_thread_without_tools_is_not_told_about_them(harness):
     await harness.boot()
     instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
     assert "session_context" not in instructions
-    assert instructions == marker_instructions(self_model_switch=False)
+    assert instructions == marker_instructions(self_model_switch=True)
 
 
 @pytest.mark.asyncio
@@ -218,7 +219,7 @@ async def test_a_coding_thread_with_tools_keeps_its_own_profile(harness, session
     params = dict(harness.params(schema.METHOD_THREAD_START))
     assert params.pop("dynamicTools")
     assert params.pop("developerInstructions") == session_instructions(
-        session_tools=True, signalling_tools=False, self_model_switch=False)
+        session_tools=True, signalling_tools=False, self_model_switch=True)
     assert {k: v for k, v in params.items() if k != "cwd"} == {
         k: v for k, v in reference.items() if k not in {"cwd", "developerInstructions"}}
 

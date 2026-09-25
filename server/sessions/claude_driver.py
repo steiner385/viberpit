@@ -28,7 +28,8 @@ from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
 from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
-from .engine import AgentCapabilities, AgentDriverConfig, AgentDriverFactory, AgentEngine
+from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
+                     AgentDriverFactory, AgentEngine, _EffortUnchanged)
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
@@ -1943,7 +1944,12 @@ class ClaudeAgentDriver:
         if self._client:
             await self._client.set_permission_mode(to_sdk_permission_mode(mode))
 
-    async def set_model(self, model: str | None) -> None:
+    async def set_model(
+        self, model: str | None, *, effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
+    ) -> None:
+        # ``effort`` is part of the engine-neutral contract (`AgentDriver.set_model`),
+        # but Claude has no reasoning-effort dial (`AgentCapabilities.reasoning_effort`
+        # is False), so there is nothing to apply it to.
         if self._client:
             await self._client.set_model(model)
 

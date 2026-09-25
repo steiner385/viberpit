@@ -788,6 +788,27 @@ def test_a_marker_never_upgrades_a_failed_turn() -> None:
     assert out[-1].outcome == "error"  # type: ignore[attr-defined]
 
 
+def test_model_request_marker_is_parsed_onto_turn_end() -> None:
+    """#1273: Codex now scans for the marker exactly as the Claude translator
+    does — the tier travels raw (a haiku/sonnet/opus/fable word), never a Codex
+    model id; mapping it onto the live effort catalog is the orchestrator's
+    job, not this pure module's (see the module docstring)."""
+    translator, _ = _fresh()
+    _agent_delta(
+        translator, "it_a",
+        'this needs more care\n<!-- viberpit:model=opus reason="tricky merge" -->')
+    out = _turn_completed(translator)
+    end = out[0]
+    assert isinstance(end, ev.TurnEnd)
+    assert end.model_request == {"model": "opus", "reason": "tricky merge"}
+
+
+def test_no_marker_leaves_model_request_none() -> None:
+    translator, _ = _fresh()
+    out = _turn_completed(translator)
+    assert out[0].model_request is None  # type: ignore[attr-defined]
+
+
 HAND_BACK_MARKER_WITH_REASON = '<!-- viberpit:hand-back reason="wire vs remove" -->'
 
 
