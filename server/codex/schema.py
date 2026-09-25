@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "c74a67306859f0cbdee29f7560754e004e9ba9800507197c7aa30b9ceffa1c0a"
+    "a664cec849f949314d9252afb43361346233920b933a7dcf2a05a2844422d0bb"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -131,6 +131,12 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     # a method with no caller would be exactly the dead surface Principle VI bans.
     "v2/ThreadBackgroundTerminalsListParams.json",
     "v2/ThreadBackgroundTerminalsListResponse.json",
+    # #2150/#2313 — a headless runner disables remote-control arbitration on its
+    # own connection right after login, so another client signed into the same
+    # ChatGPT account (the desktop app, a personal CLI) cannot make the backend
+    # tell a daemon-managed app-server to yield.
+    "v2/NullableRemoteControlDisableParams.json",
+    "v2/RemoteControlDisableResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -210,6 +216,16 @@ METHOD_TURN_SETTINGS_UPDATE: Final = "turn/settings/update"
 # `server/codex/background.py`).
 METHOD_THREAD_BACKGROUND_TERMINALS_LIST: Final = "thread/backgroundTerminals/list"
 
+# Remote control (#2150/#2313's shared root cause) — the mechanism a ChatGPT
+# account uses to arbitrate which of several connected app-server instances is
+# "active" (e.g. handing control between the ChatGPT Desktop app and a CLI
+# signed into the same account). A ViberPit-managed runner is headless and
+# daemon-supervised: it must never be preempted by another client's foreground
+# session, so every runner disables it for its own connection right after
+# login. `ephemeral: true` scopes the disablement to this connection rather
+# than persisting a preference against the account.
+METHOD_REMOTE_CONTROL_DISABLE: Final = "remoteControl/disable"
+
 # Approvals (server -> client requests). `item/permissions/requestApproval` is
 # deliberately absent: its response hands the server a permissions *grant*, and
 # ViberPit has no vocabulary to describe one, so answering it at all would mean
@@ -277,6 +293,7 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_TURN_INTERRUPT,
         METHOD_TURN_SETTINGS_UPDATE,
         METHOD_THREAD_BACKGROUND_TERMINALS_LIST,
+        METHOD_REMOTE_CONTROL_DISABLE,
     }
 )
 #: Methods that only exist on the experimental surface and carry host-supplied
@@ -2438,6 +2455,45 @@ class ThreadBackgroundTerminalsListResponse:
     next_cursor: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# remoteControl/disable (#2150/#2313)
+# ---------------------------------------------------------------------------
+
+REMOTE_CONTROL_CONNECTION_STATUSES: Final[frozenset[str]] = frozenset(
+    {"disabled", "connecting", "connected", "errored"}
+)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RemoteControlDisableParams:
+    ephemeral: bool | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {}
+        if self.ephemeral is not None:
+            wire["ephemeral"] = self.ephemeral
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RemoteControlDisableResponse:
+    status: str
+    server_name: str
+    installation_id: str
+    environment_id: str | None = None
+
+
+def parse_remote_control_disable_response(payload: Any) -> RemoteControlDisableResponse:
+    what = "remoteControl/disable response"
+    body = _as_mapping(payload, what)
+    return RemoteControlDisableResponse(
+        status=_require_enum(body, "status", what, REMOTE_CONTROL_CONNECTION_STATUSES),
+        server_name=_require_str(body, "serverName", what),
+        installation_id=_require_str(body, "installationId", what),
+        environment_id=_optional_str(body, "environmentId", what),
+    )
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class TurnStartResponse:
     turn: Turn
@@ -2756,6 +2812,11 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             thread_id=_require_str(body, "threadId", what),
             cursor=_optional_str(body, "cursor", what),
             limit=limit,
+        ).to_wire()
+    if method == METHOD_REMOTE_CONTROL_DISABLE:
+        _reject_unknown_fields(body, frozenset({"ephemeral"}), what)
+        return RemoteControlDisableParams(
+            ephemeral=_optional_bool(body, "ephemeral", what)
         ).to_wire()
     if method == METHOD_TURN_START:
         _reject_unknown_fields(
@@ -3491,6 +3552,7 @@ ClientResponse = (
     | TurnSteerResponse
     | TurnInterruptResponse
     | TurnSettingsUpdateResponse
+    | RemoteControlDisableResponse
 )
 
 
@@ -3533,6 +3595,8 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
         return parse_turn_interrupt_response(payload)
     if method == METHOD_TURN_SETTINGS_UPDATE:
         return parse_turn_settings_update_response(payload)
+    if method == METHOD_REMOTE_CONTROL_DISABLE:
+        return parse_remote_control_disable_response(payload)
     raise CodexSchemaError("unsupported client response method")
 
 

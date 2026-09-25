@@ -96,6 +96,10 @@ class FakeCodexProcess:
             "initialize", result=FakeCodexAppServer.default_initialize_response()
         )
         self.server.rule("account/login/start", result={"type": "chatgptAuthTokens"})
+        self.server.rule(
+            "remoteControl/disable",
+            result={"status": "disabled", "serverName": "fake", "installationId": "fake-install"},
+        )
         self._exited = asyncio.Event()
         self._rc = 0
 

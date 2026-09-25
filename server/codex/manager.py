@@ -528,6 +528,7 @@ class CodexRunnerManager:
             # given a token and has had a chance to persist one. If it did, this
             # runner is now holding a credential and must not continue.
             assert_no_runner_credentials(home)
+            await self._disable_remote_control(account, client)
         except asyncio.CancelledError:
             # Cancellation is an outcome, not an exemption from ownership cleanup:
             # process.start/client.start may already have allocated OS resources.
@@ -588,6 +589,28 @@ class CodexRunnerManager:
             generation=self._next_generation(account),
             started_at=self._clock(),
         )
+
+    async def _disable_remote_control(
+        self, account: str, client: CodexAppServerClient
+    ) -> None:
+        """Best-effort hardening: never let this hold up or fail a runner's start.
+
+        Confirmed root cause of #2150/#2313's clean-exit bursts: an account also
+        signed into the ChatGPT Desktop app or a personal `codex` CLI lets the
+        backend's remote-control arbitration tell ViberPit's managed app-server to
+        yield. A CLI that predates this request, or a backend that refuses it for
+        some other reason, must still produce a perfectly usable runner.
+        """
+        try:
+            await client.disable_remote_control()
+        except Exception as exc:  # noqa: BLE001 -- hardening must never block startup
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.manager.remote_control_disable_failed",
+                account=account,
+                error=redaction.scrub_exception(exc),
+            )
 
     def _resolve_home(self, account: str) -> Path:
         if self._home_factory is not None:

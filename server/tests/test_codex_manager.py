@@ -48,6 +48,10 @@ class FakeCodexProcess:
         self.server = FakeCodexAppServer()
         self.server.rule("initialize", result=FakeCodexAppServer.default_initialize_response())
         self.server.rule("account/login/start", result={"type": "chatgptAuthTokens"})
+        self.server.rule(
+            "remoteControl/disable",
+            result={"status": "disabled", "serverName": "fake", "installationId": "fake-install"},
+        )
         self.started = False
         self.stopped = False
         self._start_error = start_error
@@ -87,9 +91,12 @@ class FakeCodexProcess:
 def _manager(**kw):
     spawned: list[FakeCodexProcess] = []
     start_errors = kw.pop("start_errors", 0)
+    on_child = kw.pop("on_child", None)
 
     def factory(*, account: str, binary: str, home: Path):
         child = FakeCodexProcess(account, home, start_error=len(spawned) < start_errors)
+        if on_child is not None:
+            on_child(child)
         spawned.append(child)
         return child
 
@@ -165,6 +172,51 @@ def test_ensure_initializes_and_logs_in_with_the_supplied_credential():
         assert login["params"]["type"] == "chatgptAuthTokens"
         assert login["params"]["accessToken"] == TOKEN
         assert manager.client_for("openai-main").initialized
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_ensure_disables_remote_control_after_login():
+    """#2150/#2313: a headless runner must opt out of ChatGPT-account
+    remote-control arbitration, or another client signed into the same account
+    (the desktop app, a personal CLI) can make the backend tell this app-server
+    to yield — the confirmed cause of the account's `runner_exited` bursts."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("openai-main")
+        child = spawned[0]
+        login_index = child.server.client_frames.index(
+            child.server.frames_for("account/login/start")[0]
+        )
+        disable_frame = child.server.frames_for("remoteControl/disable")[0]
+        disable_index = child.server.client_frames.index(disable_frame)
+        assert disable_index > login_index
+        assert disable_frame["params"] == {"ephemeral": True}
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_a_refused_remote_control_disable_does_not_block_startup(caplog):
+    def refuse_remote_control(child: FakeCodexProcess) -> None:
+        child.server.rule(
+            "remoteControl/disable", error={"code": -32601, "message": "unknown method"}
+        )
+
+    async def go():
+        manager, _ = _manager(on_child=refuse_remote_control)
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            await manager.ensure("openai-main")
+        client = manager.client_for("openai-main")
+        assert client is not None and client.initialized
+        warnings = [
+            r for r in caplog.records
+            if r.name == "server.codex.manager"
+            and getattr(r, "event", None) == "codex.manager.remote_control_disable_failed"
+        ]
+        assert len(warnings) == 1
         await manager.stop_all()
 
     asyncio.run(go())
