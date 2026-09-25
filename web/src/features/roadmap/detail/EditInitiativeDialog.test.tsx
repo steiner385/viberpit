@@ -15,7 +15,7 @@ vi.mock('@/api/hooks', () => ({
 const cap = (id: string, slug: string, title: string, children: ProductNode['capabilities'] = []) => ({
   id, slug, title, state: 'live', summary: null, docPath: null, commitSha: null, prNumber: null,
   parentSlug: null, tier: 'idle' as const, counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
-  links: [], initiatives: [], children,
+  links: [], initiatives: [], personaSlugs: [], children,
 })
 const product = (slug: string, name: string, capabilities: ProductNode['capabilities']): ProductNode => ({
   slug, name, tier: 'idle', counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: capabilities.length, awaitingTriage: 0, needsHome: 0 },

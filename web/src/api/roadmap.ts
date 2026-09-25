@@ -40,6 +40,8 @@ export interface CapabilityNode {
   links: CapabilityLink[]
   /** Slugs of initiatives that TOUCH this capability (not primary). */
   initiatives: string[]
+  /** Resolved PersonaFeature edges, live personas only (steiner385/viberpit#2446). */
+  personaSlugs: string[]
   children: CapabilityNode[]
 }
 

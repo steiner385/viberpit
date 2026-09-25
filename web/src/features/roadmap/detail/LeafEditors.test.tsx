@@ -19,7 +19,7 @@ const leaf: Leaf = {
 const node = (id: string, slug: string, title: string) => ({
   id, slug, title, state: 'live', summary: null, docPath: null, commitSha: null, prNumber: null,
   parentSlug: null, tier: 'idle' as const, counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
-  links: [], initiatives: [], children: [],
+  links: [], initiatives: [], personaSlugs: [], children: [],
 })
 const capabilities = [{ node: node('f1', 'task-views', 'Task views'), depth: 0 }, { node: node('f2', 'filters', 'Filters'), depth: 1 }]
 

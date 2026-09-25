@@ -5,7 +5,7 @@ export function cap(over: Partial<CapabilityNode> & { slug: string }): Capabilit
     id: `f-${over.slug}`, title: over.slug, state: 'live', summary: null, docPath: null,
     commitSha: null, prNumber: null, parentSlug: null, tier: 'idle',
     counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
-    links: [], initiatives: [], children: [], ...over,
+    links: [], initiatives: [], personaSlugs: [], children: [], ...over,
   }
 }
 
@@ -33,7 +33,7 @@ export const MAP: RoadmapMap = {
       slug: 'kindash', name: 'KinDash', tier: 'needs-you',
       counts: { inFlight: 1, blocked: 0, needsYou: 1, capabilities: 3, awaitingTriage: 2, needsHome: 0 },
       capabilities: [
-        cap({ slug: 'billing', title: 'Billing' }),
+        cap({ slug: 'billing', title: 'Billing', personaSlugs: ['parent'] }),
         // `tasks` counts 5 open issues, 3 of which are its child's: capability
         // counts are ROLLED UP by the server, so a parent's direct issues are
         // the difference. Kept different on purpose so the subtraction shows.
@@ -42,7 +42,7 @@ export const MAP: RoadmapMap = {
           children: [
             cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks', tier: 'in-flight',
               counts: { openIssues: 3, inFlight: 0, blocked: 0, needsYou: 0 },
-              initiatives: ['views'] }),
+              personaSlugs: ['teen'], initiatives: ['views'] }),
           ] }),
       ],
       initiatives: [

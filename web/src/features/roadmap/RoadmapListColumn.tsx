@@ -12,6 +12,7 @@ import type { InitiativeNode, ProductNode, RoadmapMap } from '@/api/roadmap'
 import { INITIATIVE_STAGES } from '@/api/sdlc'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { ListSearchInput } from '@/ui/list/ListSearchInput'
+import { listControlClass } from '@/ui/list/listControlStyles'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
@@ -28,7 +29,7 @@ import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
 import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
-import { flattenMap, initiativeKey, setCollapsed, toggleKey, type TreeRow, type TreeState } from './treeRows'
+import { flattenMap, initiativeKey, personaSlugsInMap, setCollapsed, toggleKey, type TreeRow, type TreeState } from './treeRows'
 import { TREE_ID_SCOPE, useTreeKeys } from './useTreeKeys'
 
 /**
@@ -134,32 +135,58 @@ type MapScopeBodyProps = Omit<RoadmapListColumnProps, 'scope' | 'isError' | 'inb
 function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapScopeBodyProps) {
   const [tree, setTree] = useState<TreeState>(() => ({ collapsed: loadGroupCollapseNs(COLLAPSE_NS) }))
   const [query, setQuery] = useState('')
+  const [personaSlug, setPersonaSlug] = useState<string | null>(null)
   useEffect(() => {
     saveGroupCollapseNs(COLLAPSE_NS, new Set(tree.collapsed))
   }, [tree])
-  const rows = useMemo(() => (map ? flattenMap(map, tree, query) : []), [map, tree, query])
+  const personaOptions = useMemo(() => (map ? personaSlugsInMap(map) : []), [map])
+  const rows = useMemo(
+    () => (map ? flattenMap(map, tree, query, personaSlug) : []),
+    [map, tree, query, personaSlug],
+  )
   const collapse = useCallback(
     (key: string, collapsed: boolean) => setTree((t) => setCollapsed(t, key, collapsed)),
     [],
   )
   const { containerRef, rovingKey, onKeyDown } = useTreeKeys(rows, selectedKey, collapse)
+  const filtering = query.trim() !== '' || personaSlug !== null
 
   return (
     <ScopeBody
       controls={
-        <ListSearchInput
-          value={query}
-          onChange={setQuery}
-          placeholder={`Search ${ROADMAP.label.toLowerCase()}…`}
-          ariaLabel={`Search ${ROADMAP.label.toLowerCase()}`}
-        />
+        <div className="flex items-center gap-3 flex-wrap">
+          <ListSearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder={`Search ${ROADMAP.label.toLowerCase()}…`}
+            ariaLabel={`Search ${ROADMAP.label.toLowerCase()}`}
+          />
+          {/* Only rendered once at least one capability declares a persona —
+              an empty select would offer nothing but "All personas" forever. */}
+          {personaOptions.length > 0 && (
+            <label className="flex items-center gap-1 text-xs text-ink-muted">
+              <span>Persona</span>
+              <select
+                aria-label="Persona"
+                className={listControlClass}
+                value={personaSlug ?? ''}
+                onChange={(e) => setPersonaSlug(e.target.value === '' ? null : e.target.value)}
+              >
+                <option value="">All personas</option>
+                {personaOptions.map((slug) => (
+                  <option key={slug} value={slug}>{slug}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       }
     >
       {isLoading && !map && (
         <div role="status" aria-label="Loading roadmap"><Skeleton lines={6} /></div>
       )}
       {map && rows.length === 0 && (
-        <EmptyState title={query.trim() ? 'No matches' : PRODUCT.empty} />
+        <EmptyState title={filtering ? 'No matches' : PRODUCT.empty} />
       )}
       {/* A real tree: one tab stop, arrows to walk and fold it (`useTreeKeys`).
           The handler hangs off the container, so every row's keys are handled in

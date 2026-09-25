@@ -53,13 +53,23 @@ export function rowMatches(row: TreeRow, query: string): boolean {
   return terms.every((t) => hay.includes(t))
 }
 
+/** True when no persona filter is active, or `row` is a capability row that
+ *  declares `personaSlug` — false for every other row kind while a filter IS
+ *  active, so a product/initiative/pseudo row never "vacuously" survives a
+ *  persona filter the way `rowMatches('')` would with an empty query; it only
+ *  shows via the existing "kept when a descendant matches" recursion below. */
+function personaMatches(row: TreeRow, personaSlug: string | null): boolean {
+  if (personaSlug === null) return true
+  return row.kind === 'capability' && row.capability.personaSlugs.includes(personaSlug)
+}
+
 /**
  * Flatten one product. Returns rows in display order. With a query, a row is
  * kept when it or any descendant matches; collapse is ignored so a search can
  * never be hidden by an earlier fold.
  */
-function flattenProduct(product: ProductNode, state: TreeState, query: string): TreeRow[] {
-  const searching = query.trim() !== ''
+function flattenProduct(product: ProductNode, state: TreeState, query: string, personaSlug: string | null): TreeRow[] {
+  const searching = query.trim() !== '' || personaSlug !== null
   const known = new Set<string>()
   const collect = (c: CapabilityNode) => { known.add(c.slug); c.children.forEach(collect) }
   product.capabilities.forEach(collect)
@@ -112,50 +122,74 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
         expanded: searching ? shown.length > 0 : !state.collapsed.has(key),
         hasChildren: searching ? shown.length > 0 : phases.length > 0,
       }
-      if (searching) return rowMatches(self, query) || shown.length > 0 ? [self, ...shown] : []
+      // Persona filtering never touches this function directly — an
+      // initiative carries no persona of its own. Whether it even gets
+      // CALLED for a given branch is decided by the caller (`orphanRows`
+      // below, and `capPersonaOk` in `capRows`), so once we're here this is a
+      // plain text match, same as before the persona filter existed.
+      if (searching) {
+        return rowMatches(self, query) || shown.length > 0 ? [self, ...shown] : []
+      }
       return self.expanded ? [self, ...kids] : [self]
     })
 
   const capRows = (c: CapabilityNode, depth: number): TreeRow[] => {
     const key = capabilityKey(product.slug, c.slug)
+    const self: TreeRow = {
+      kind: 'capability', key, depth, product, capability: c,
+      expanded: false, hasChildren: false,
+    }
+    const textMatch = rowMatches(self, query)
+    // A capability's OWN persona match — ANDed with `textMatch` for the
+    // capability's own self-match below, and also used to gate whether its
+    // primary initiatives are even eligible: an initiative carries no persona
+    // of its own, so under an active filter it can only survive under a
+    // capability that does (steiner385/viberpit#2446). Without this gate, an
+    // initiative with an empty/non-matching text query would trivially
+    // "self-match" (see `rowMatches`'s empty-query short-circuit) and drag in
+    // every capability that merely has primary initiatives, regardless of
+    // persona — see the "no match anywhere" test in treeRows.test.ts.
+    const capPersonaOk = personaMatches(self, personaSlug)
     // `initiativeRows` already self-filters while searching (a program row is
     // kept for a matching phase even when its own title does not match), so —
     // same as the nested-capability branch just above it — nothing here
     // filters the result a second time.
     const kids: TreeRow[] = [
       ...c.children.flatMap((k) => capRows(k, depth + 1)),
-      ...initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1),
+      ...(capPersonaOk ? initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1) : []),
     ]
     // While searching the fold is ignored — `kids` are emitted whatever the
     // collapse state — so the row reports what it ACTUALLY renders. Reporting
     // the stored fold instead would give a visibly expanded row an
     // `aria-expanded="false"` and an "Expand" chevron that does nothing.
-    const self: TreeRow = {
-      kind: 'capability',
-      key,
-      depth,
-      product,
-      capability: c,
-      expanded: searching ? kids.length > 0 : !state.collapsed.has(key),
-      hasChildren: searching
-        ? kids.length > 0
-        : c.children.length > 0 || (byPrimary.get(c.slug)?.length ?? 0) > 0,
-    }
+    self.expanded = searching ? kids.length > 0 : !state.collapsed.has(key)
+    self.hasChildren = searching
+      ? kids.length > 0
+      : c.children.length > 0 || (byPrimary.get(c.slug)?.length ?? 0) > 0
     if (searching) {
-      return rowMatches(self, query) || kids.length > 0 ? [self, ...kids] : []
+      return (textMatch && capPersonaOk) || kids.length > 0 ? [self, ...kids] : []
     }
     return self.expanded ? [self, ...kids] : [self]
   }
 
-  const children: TreeRow[] = [
-    ...product.capabilities.flatMap((c) => capRows(c, 1)),
-    ...initiativeRows(orphans, 1),
+  // When a persona filter is active, don't include orphan initiatives or pseudo
+  // rows, since they have no persona of their own and are gated only indirectly
+  // through matching capabilities. Primary initiatives of matching capabilities
+  // are already included via capRows.
+  const orphanRows = personaSlug !== null ? [] : initiativeRows(orphans, 1)
+  const pseudoRows = personaSlug !== null ? [] : [
     ...(product.counts.awaitingTriage > 0
       ? [{ kind: 'pseudo', key: pseudoKey(product.slug, 'awaiting-triage'), depth: 1, product, pseudo: 'awaiting-triage', count: product.counts.awaitingTriage } as TreeRow]
       : []),
     ...(product.counts.needsHome > 0
       ? [{ kind: 'pseudo', key: pseudoKey(product.slug, 'needs-home'), depth: 1, product, pseudo: 'needs-home', count: product.counts.needsHome } as TreeRow]
       : []),
+  ]
+
+  const children: TreeRow[] = [
+    ...product.capabilities.flatMap((c) => capRows(c, 1)),
+    ...orphanRows,
+    ...pseudoRows,
   ]
   const key = productKey(product.slug)
   // Pseudo rows were not filtered above; filter here. Capability AND initiative
@@ -177,11 +211,22 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
     hasChildren: searching ? kept.length > 0 : children.length > 0,
   }
   if (searching) {
-    return rowMatches(self, query) || kept.length > 0 ? [self, ...kept] : []
+    return (rowMatches(self, query) && personaMatches(self, personaSlug)) || kept.length > 0 ? [self, ...kept] : []
   }
   return self.expanded ? [self, ...children] : [self]
 }
 
-export function flattenMap(map: RoadmapMap, state: TreeState, query: string): TreeRow[] {
-  return map.products.flatMap((p) => flattenProduct(p, state, query))
+export function flattenMap(map: RoadmapMap, state: TreeState, query: string, personaSlug: string | null = null): TreeRow[] {
+  return map.products.flatMap((p) => flattenProduct(p, state, query, personaSlug))
+}
+
+/** Every distinct persona slug declared anywhere in the map, sorted — the
+ *  filter dropdown's option list (steiner385/viberpit#2446). Derived from the
+ *  map already on hand rather than a second per-product fetch: a capability's
+ *  resolved personaSlugs are already threaded onto every node (Task 1). */
+export function personaSlugsInMap(map: RoadmapMap): string[] {
+  const seen = new Set<string>()
+  const walk = (c: CapabilityNode) => { c.personaSlugs.forEach((s) => seen.add(s)); c.children.forEach(walk) }
+  map.products.forEach((p) => p.capabilities.forEach(walk))
+  return [...seen].sort()
 }
