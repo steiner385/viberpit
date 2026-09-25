@@ -37,7 +37,7 @@ import { Switch } from '@/ui/Switch'
 import { accountRowLine, buildCapacityStack } from './capacityStack'
 import { CapacityRowLabel } from './CapacityRowLabel'
 import { governorNotice } from './governorNotice'
-import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, parsePipelineCap, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
+import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, capDraft, parsePipelineCap, parseRunnerDraft, parseWhole, seedCapacityDraft } from './runnerForm'
 import { RowStatus, type MutationLike, type RowStatusProps } from './RowStatus'
 import { swapRanks } from './swapRanks'
 
@@ -316,16 +316,9 @@ export function CapacityDetail() {
           // Fix round 2 / item 2: a cleared field is not "0" — `Number('')`
           // is 0, and silently saving that PAUSES the product
           // (`max_in_flight: 0` is a real, load-bearing value, not "no input
-          // yet"). Checked before the unchanged-value skip below so a pin
-          // that happens to already be 0 still can't be "saved" by clearing
-          // and re-submitting.
-          if (rawPin.trim() === '') {
-            throw new Error(`${name}: pin must be a whole number ≥ 0`)
-          }
-          const next = Number(rawPin)
-          if (!Number.isInteger(next) || next < 0) {
-            throw new Error(`${name}: pin must be a whole number ≥ 0`)
-          }
+          // yet"). `blank: 'throw'` enforces that a pin that happens to
+          // already be 0 still can't be "saved" by clearing and re-submitting.
+          const next = parseWhole(rawPin, { label: `${name}: pin`, min: 0, blank: 'throw' })
           if (next !== product.pin) policy.max_in_flight = next
         }
         // Unlike the pin, a blank pipeline cap is a legitimate value (null =
@@ -514,7 +507,7 @@ export function CapacityDetail() {
                 onMove={handleMove}
                 pinValue={pinForm.draft?.[PIN_KEY(product.slug)] ?? String(product.pin)}
                 onPinChange={(value) => pinForm.set(PIN_KEY(product.slug), value)}
-                pipelineValue={pinForm.draft?.[PIPELINE_KEY(product.slug)] ?? (product.pipelineCap == null ? '' : String(product.pipelineCap))}
+                pipelineValue={pinForm.draft?.[PIPELINE_KEY(product.slug)] ?? capDraft(product.pipelineCap)}
                 onPipelineChange={(value) => pinForm.set(PIPELINE_KEY(product.slug), value)}
               />
             ))}
