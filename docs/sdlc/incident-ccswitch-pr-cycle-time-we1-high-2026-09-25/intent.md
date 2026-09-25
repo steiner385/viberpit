@@ -91,6 +91,12 @@ false positive cannot recur, then close the incident.
    until the fix PR merges. Land the fix promptly, or ask whether to add the case in
    the fix PR instead. The `-k partial_day` naming convention is the coupling to
    settle in the spec.
+   **Resolved (2026-09-24): the case lands with the fix PR.** The static gate is also
+   enforced by the required `server/tests/test_sdlc_evals_runner.py`, so shipping the
+   case ahead of the guard turned master red; it was removed and must be re-added,
+   `check: python -m pytest -q server/tests/test_sdlc_control_bands.py -k partial_day`,
+   in the same PR as the guard. Its description must not spell the band id (the brand
+   ratchet's `persisted-keys` entry sits at its ceiling).
 3. Is the ~3h wait of a red-CI PR with no re-push (#2397) worth its own signal? Not
    part of this incident, but PR Doctor / CI-repair dispatch might warrant a look if
    it recurs.
