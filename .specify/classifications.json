@@ -34,5 +34,17 @@
     "confidence": 2,
     "rationale": "Backlog runner sweep fails on a specific ghostdriver-mcp target (#199). Prevents that work item from being assigned to an agent. Pattern mirrors #2232; likely the same or related sweep-stage failure affecting multiple repos.",
     "confidence_level": "low"
+  },
+  {
+    "number": 2484,
+    "kind": "auto-error",
+    "feature_slug": "openai-codex-integration",
+    "no_fit_suggestion": null,
+    "reach": 3,
+    "impact": 3,
+    "effort": 4,
+    "confidence": 3,
+    "rationale": "Codex-specific runner exit issue (event: codex.manager.runner_exited) affecting Codex accounts. The regression tag and reference to #2150 indicate a known Codex problem has resurged. Belongs in Codex integration where runner lifecycle and account-specific behavior is owned. WARNING level suggests observable but non-blocking; 41 occurrences in 5 days shows steady recurrence requiring investigation and a fix to prevent runner churn.",
+    "confidence_level": "medium"
   }
 ]
