@@ -71,7 +71,8 @@ A missing credential is not the only gh failure that belongs to the *host* rathe
 than to whatever repo happened to notice it. Two others produced the same fan-out
 of auto-error issues, so :func:`classify_gh_failure` names them too:
 
-* :data:`UNREACHABLE` — ``error connecting to api.github.com``. One network
+* :data:`UNREACHABLE` — ``error connecting to api.github.com`` (or Go's
+  ``net/http: TLS handshake timeout``, #1936). One network
   outage on 2026-09-17 was filed as five issues (#1922, #1923, #1924, #1926,
   #1927) because three loops each reported the target they failed to reach.
 * :data:`RATE_LIMITED` — an *authenticated* token over its budget
@@ -199,8 +200,19 @@ _PATTERNS = (_RE_401, _RE_UNAUTH_RATE_LIMIT, _RE_NOT_LOGGED_IN)
 #: first line (a different host, a wrapped dial error) still classifies. Anchored
 #: on observed output rather than on guessed Go/net phrasings, per constitution
 #: Principle III.
+#:
+#: The one other transport failure observed so far (#1936) is gh passing Go's
+#: ``net/http`` error straight through when the connection opened but the TLS
+#: handshake never completed::
+#:
+#:     Post "https://api.github.com/graphql": net/http: TLS handshake timeout
+#:
+#: Same condition — the request never reached GitHub — so it collapses into the
+#: same host record instead of minting one auto-error issue per repo.
 _RE_UNREACHABLE = re.compile(
-    r"error connecting to |check your internet connection", re.IGNORECASE
+    r"error connecting to |check your internet connection"
+    r"|net/http: TLS handshake timeout",
+    re.IGNORECASE,
 )
 
 #: ``API rate limit exceeded for user ID 1234567`` — the mirror of
