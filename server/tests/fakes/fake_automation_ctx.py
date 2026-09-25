@@ -16,7 +16,9 @@ The contract it models, in call order:
 2. ``launch_plan_or_refuse(origin_ref)`` → ``(engine, config)``, or ``None`` when
    the origin's audited ceiling refuses the launch. A caller must treat ``None``
    as "no session exists" and spend nothing further.
-3. ``spawn_session(**kwargs)`` → the session record, or ``None``.
+3. ``spawn_or_join_session(**kwargs)`` → ``(session record or None, created)``.
+   ``spawn_session(**kwargs)`` is a thin wrapper that discards ``created``, for a
+   caller that only wants the session and never chains a follow-up onto it.
 4. ``emit(level, summary, **kw)`` → one activity event (best-effort in the real
    context, recorded here so a test can assert what the feed was told).
 """
@@ -63,20 +65,27 @@ class FakeAutomationContext:
             return None
         return self._engine, self._config
 
-    async def spawn_session(self, **kw: Any) -> Any:
+    async def spawn_or_join_session(self, **kw: Any) -> tuple[Any, bool]:
         """Find-or-create, modelled: an *existing* record whose ``origin_ref``
-        matches this call's dedupe key is handed BACK instead of spawning.
+        matches this call's dedupe key is handed BACK instead of spawning, with
+        ``created=False``.
 
         That is what the real context does, and a fake that skipped it hid the
         C4-R15 resurrection bug — a finished session returned by the dedupe, then
-        re-ingested into a byte-identical proposal."""
+        re-ingested into a byte-identical proposal — and, since #2235, would also
+        hide a caller re-chaining a follow-up ingest onto a session it didn't
+        actually spawn."""
         self.calls.append(kw)
         key = kw.get("dedupe_key") or kw.get("origin_ref")
         if (self._existing is not None
                 and getattr(self._existing, "origin_ref", key) == key):
-            return self._existing
+            return self._existing, False
         return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None,
-                               origin_ref=kw.get("origin_ref"), status="idle")
+                               origin_ref=kw.get("origin_ref"), status="idle"), True
+
+    async def spawn_session(self, **kw: Any) -> Any:
+        rec, _created = await self.spawn_or_join_session(**kw)
+        return rec
 
     async def emit(self, level: str, summary: str, **kw: Any) -> None:
         self.events.append((level, summary, kw))
