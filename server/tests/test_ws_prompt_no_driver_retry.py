@@ -162,3 +162,39 @@ def test_prompt_is_handed_back_while_the_driver_recomposes(ws_env):
             f"expected a promptRejected hand-back, got {terminal!r}")
         assert terminal[0]["text"] == "continue"
         assert terminal[0]["reason"] == "recovering"
+
+
+def test_prompt_is_handed_back_when_the_daemon_is_unreachable(ws_env, caplog):
+    """#1884: a connect timeout on the send_prompt RPC surfaces as DaemonTimeout (a
+    DaemonUnavailable). It used to escape _handle_prompt entirely and land in the work
+    chain's catch-all `log.exception`, auto-filing an ERROR for one self-healing blip.
+    The bridge must instead hand the prompt back (promptRejected, reason "unavailable")
+    and log no ERROR."""
+    import logging
+
+    from server.ipc.client import DaemonTimeout
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "unreachable")
+    sid = session.id
+
+    async def timing_out_send(session_id, text, attachment_ids=None, **kw):
+        raise DaemonTimeout("send_prompt timed out: ConnectTimeout")
+
+    orch.send_prompt = timing_out_send  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            _attach(ws, sid)
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                     "text": "still here?"}))
+            events = _drain_events(
+                ws, until=lambda e: e.get("type") == "promptRejected", timeout=8.0)
+
+    rejected = [e for e in events if e.get("type") == "promptRejected"]
+    assert rejected, f"no promptRejected surfaced: {[e.get('type') for e in events]}"
+    assert rejected[0]["reason"] == "unavailable"
+    assert rejected[0]["text"] == "still here?"
+    errors = [r for r in caplog.records
+              if r.name == "server.bridge.ws" and r.levelno >= logging.ERROR]
+    assert not errors, f"a transient daemon timeout must not log ERROR: {errors!r}"

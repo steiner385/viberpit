@@ -1776,8 +1776,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # need to parse out the id.
                 if "](/sessions/" in text:
                     assistant_mentions_total.inc()
-            status = await orchestrator.send_prompt(
-                session_id, text, attachment_ids, **extra)
+            try:
+                status = await orchestrator.send_prompt(
+                    session_id, text, attachment_ids, **extra)
+            except DaemonUnavailable:
+                # A connect timeout / refused / wedged-daemon RPC failure lands
+                # here exactly like the SDK-stream-death race #1997 fixed for
+                # `query` — except this one had NO guard at all, so the raw
+                # exception fell through to `_work_chain`'s catch-all `log.exception`
+                # and auto-filed a brand-new issue for a single self-healing
+                # blip (#1884: one `httpcore.ConnectTimeout`, never repeated).
+                # Treat it exactly like every other undelivered-prompt outcome
+                # below — one WARNING, a `promptRejected` frame, no stack trace.
+                status = "unavailable"
             if status == "no_driver":
                 # The 2026-08-30 unresponsive-session incident: the daemon
                 # dropped the driver AFTER this socket attached, so
@@ -1803,9 +1814,25 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     await _teardown_live_task(session_id)
                     rebuilt = await _ensure_live(session_id)
                 if rebuilt:
-                    status = await orchestrator.send_prompt(
-                        session_id, text, attachment_ids, **extra)
-            await orchestrator.note_user_interaction(session_id)
+                    try:
+                        status = await orchestrator.send_prompt(
+                            session_id, text, attachment_ids, **extra)
+                    except DaemonUnavailable:
+                        status = "unavailable"
+            try:
+                await orchestrator.note_user_interaction(session_id)
+            except DaemonUnavailable:
+                # Best-effort telemetry (last-interaction timestamp), not part
+                # of the delivery contract above — a daemon hiccup here must
+                # not turn an otherwise-successful send into an uncaught
+                # exception either (same #1884 shape). INFO, not WARNING: when
+                # send_prompt itself also failed, "ws.prompt rejected" below
+                # already files the ONE warning for this incident — a second
+                # WARNING here would double-file the same daemon hiccup
+                # (#1783/#1784's fanout). When send_prompt succeeded, a stale
+                # last-interaction timestamp is not worth paging on.
+                log.info("ws.prompt note_user_interaction failed session=%s",
+                         session_id)
             # The split #1180 asked for, isolated: `ensure_ms` is the wake
             # (ws.session.resume breaks it down further), `send_ms` is everything
             # after the driver exists. Together they answer "does the resume really
@@ -1834,16 +1861,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 except Exception:
                     log.warning("ws.audit_failed event=%s session=%s",
                                 "session.interrupt", session_id, exc_info=True)
-            if status in ("draining", "no_driver", "recovering"):
+            if status in ("draining", "no_driver", "recovering", "unavailable"):
                 # The turn was refused — ack it so the browser re-queues
                 # instead of losing the prompt. "draining": a deploy drain.
                 # "no_driver": the session's driver was released between
                 # _ensure_live and the send (or _ensure_live believed it was
                 # already live). "recovering": the driver is there but its
                 # SDK stream is dead and the daemon is recomposing it — a
-                # prompt written now would reach a CLI nobody can hear. Either
-                # way the prompt was NOT delivered, and a dropped user message
-                # must never be silent.
+                # prompt written now would reach a CLI nobody can hear.
+                # "unavailable": the send_prompt RPC itself couldn't reach the
+                # daemon (connect timeout, refused, wedged — see the
+                # DaemonUnavailable catch above, #1884). Every case here the
+                # prompt was NOT delivered, and a dropped user message must
+                # never be silent.
                 log.warning("ws.prompt rejected session=%s reason=%s",
                             session_id, status)
                 await _send({"type": "promptRejected", "sessionId": session_id,
