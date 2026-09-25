@@ -130,4 +130,35 @@ describe('handleMutationError forwarding', () => {
     handleMutationError(new ApiRequestError(409, { detail: { message: 'all accounts at/above usage ceiling' } }), fakeMutation())
     expect(toast.error).toHaveBeenCalledWith('all accounts at/above usage ceiling')
   })
+
+  // A 503 with app.py's daemon_unavailable/daemon_outcome_unknown code is the deploy
+  // restart window announcing itself on purpose, not a client defect. See #1949.
+  it.each(['daemon_unavailable', 'daemon_outcome_unknown'])(
+    'logs a 503 with code %s at info, not error',
+    (code) => {
+      const infoSpy = vi.spyOn(clientLogger, 'info')
+      const errorSpy = vi.spyOn(clientLogger, 'error')
+      const err = new ApiRequestError(503, { detail: 'System is restarting — session creation will be available shortly', code })
+      handleMutationError(err, fakeMutation())
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining('System is restarting'),
+        expect.objectContaining({ stack: expect.any(String) }),
+      )
+      expect(errorSpy).not.toHaveBeenCalled()
+    },
+  )
+
+  it('still logs a plain 503 with no recognized code at error', () => {
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const errorSpy = vi.spyOn(clientLogger, 'error')
+    handleMutationError(new ApiRequestError(503, { detail: { message: 'server fail' } }), fakeMutation())
+    expect(errorSpy).toHaveBeenCalled()
+    expect(infoSpy).not.toHaveBeenCalled()
+  })
+
+  it('still toasts a transient 503 outage — only the log level changes', () => {
+    const err = new ApiRequestError(503, { detail: 'System is restarting — session creation will be available shortly', code: 'daemon_unavailable' })
+    handleMutationError(err, fakeMutation())
+    expect(toast.error).toHaveBeenCalledWith('System is restarting — session creation will be available shortly')
+  })
 })

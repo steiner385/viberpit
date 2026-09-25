@@ -9,7 +9,7 @@
  */
 import { QueryClient, MutationCache, type Mutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ApiRequestError } from '@/api/client'
+import { ApiRequestError, apiErrorCode } from '@/api/client'
 import { clientLogger } from '@/obs/logger'
 
 export const MUTATION_ERROR_FALLBACK = 'Something went wrong. Please try again.'
@@ -48,6 +48,21 @@ function isDeliberateRefusal(error: unknown): boolean {
   return error instanceof ApiRequestError && error.status >= 400 && error.status < 500
 }
 
+/** Server codes on a 503 that mean "the session runner is restarting / not answering — retry",
+ *  the deploy-window condition app.py's DaemonUnavailable handler reports on purpose. It is an
+ *  expected transient the user already sees as a toast, not a client defect, so it logs at `info`
+ *  (#1949). A 503 without one of these codes (a proxy, an unrelated fault) stays at `error`. */
+const TRANSIENT_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  'daemon_unavailable',
+  'daemon_outcome_unknown',
+])
+
+function isExpectedTransientOutage(error: unknown): boolean {
+  if (!(error instanceof ApiRequestError) || error.status !== 503) return false
+  const code = apiErrorCode(error)
+  return code !== null && TRANSIENT_UNAVAILABLE_CODES.has(code)
+}
+
 /** Global MutationCache.onError handler: log to clientLogger, then toast unless the mutation opts out. */
 export function handleMutationError(
   error: unknown,
@@ -55,7 +70,7 @@ export function handleMutationError(
 ): void {
   const message = extractMutationErrorMessage(error)
   const extra = { stack: error instanceof Error ? (error.stack ?? String(error)) : String(error) }
-  if (isDeliberateRefusal(error)) clientLogger.info(`mutation: ${message}`, extra)
+  if (isDeliberateRefusal(error) || isExpectedTransientOutage(error)) clientLogger.info(`mutation: ${message}`, extra)
   else clientLogger.error(`mutation: ${message}`, extra)
   if (mutation.options.meta?.suppressErrorToast) return
   toast.error(message)

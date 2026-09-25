@@ -14,9 +14,10 @@ export class ApiRequestError extends Error {
  * The machine-readable `code` an API error carries, or null.
  *
  * THE one decoder for this question — `ApiRequestError` is defined here, so the
- * shape of its body is this module's to know. The server spells the code two ways
- * (`error.code` on domain errors, `detail.code` on FastAPI's) and the create-session
- * endpoint uses the key `error` where others use `code`, so all four are tried.
+ * shape of its body is this module's to know. The server spells the code three ways
+ * (`error.code` on domain errors, `detail.code` on FastAPI's, and a top-level `code`
+ * beside a string `detail` on the app-level exception handlers) and the create-session
+ * endpoint uses the key `error` where others use `code`, so all are tried.
  *
  * Accepts either the thrown `ApiRequestError` or a raw body, because
  * `createSessionFailure.ts` decodes a body it already destructured.
@@ -33,7 +34,7 @@ export function apiErrorCode(err: unknown): string | null {
       if (typeof value === 'string') return value
     }
   }
-  return null
+  return typeof record.code === 'string' ? record.code : null
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
