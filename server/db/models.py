@@ -1011,6 +1011,11 @@ class ArchiveReviewFinding(Base):
     # decision; resolved means the underlying premature condition cleared on its own.
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="open")
     decided_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Set when an auto_reopen attempt actually failed (e.g. ArchiveMissingError on a
+    # legacy row whose archive directory is gone). Gates persist_findings from
+    # re-attempting the SAME session automatically every tick (issue #1906) while the
+    # finding stays "open" for a human to retain/reopen manually via the action provider.
+    auto_reopen_failed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     first_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     last_seen_at: Mapped[datetime | None] = mapped_column(

@@ -297,6 +297,62 @@ def test_tick_propose_files_a_finding_and_never_unarchives():
     asyncio.run(run())
 
 
+def test_failed_unarchive_invokes_mark_auto_reopen_failed():
+    """#1906: when the injected unarchive_fn raises (e.g. ArchiveMissingError on a
+    legacy row whose archive directory is gone), the loop must call
+    mark_auto_reopen_failed_fn with that session id so persist_findings' optimistic
+    "reopened" mark gets reverted — instead of silently claiming success forever."""
+    async def run():
+        from server.automations.archive_audit import ArchiveAuditLoop
+        ctx = _FakeCtx()
+        rows = [_row("sess-broken", "fix ci")]
+        list_rows = AsyncMock(return_value=rows)
+        unarchive_fn = AsyncMock(side_effect=RuntimeError("archive missing"))
+        mark_failed_fn = AsyncMock()
+
+        async def read_config():
+            return ("auto_reopen", {"window_days": 7})
+
+        loop = ArchiveAuditLoop(
+            ctx, read_config=read_config, list_rows=list_rows,
+            gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record, mark_auto_reopen_failed_fn=mark_failed_fn)
+        await loop.tick()
+
+        unarchive_fn.assert_awaited_once_with("sess-broken")
+        mark_failed_fn.assert_awaited_once_with("sess-broken")
+        detail = ctx.emit.call_args.kwargs["detail"]
+        assert detail["unarchived"] == []  # the failed attempt is not reported as success
+
+    asyncio.run(run())
+
+
+def test_failed_unarchive_without_mark_fn_still_never_crashes():
+    """mark_auto_reopen_failed_fn is optional (defaults to None) — a caller that hasn't
+    wired it must not crash the tick."""
+    async def run():
+        from server.automations.archive_audit import ArchiveAuditLoop
+        ctx = _FakeCtx()
+        list_rows = AsyncMock(return_value=[_row("sess-broken", "fix ci")])
+        unarchive_fn = AsyncMock(side_effect=RuntimeError("archive missing"))
+
+        async def read_config():
+            return ("auto_reopen", {"window_days": 7})
+
+        loop = ArchiveAuditLoop(
+            ctx, read_config=read_config, list_rows=list_rows,
+            gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record)
+        await loop.tick()  # must not raise
+
+        detail = ctx.emit.call_args.kwargs["detail"]
+        assert detail["unarchived"] == []
+
+    asyncio.run(run())
+
+
 def test_default_mode_is_propose_and_legacy_act_is_not_consent_to_auto_reopen():
     """An enabled row with no mode, or one still carrying the retired pre-#1611 "act"
     (auto-unarchive), resolves to propose — never to auto_reopen."""

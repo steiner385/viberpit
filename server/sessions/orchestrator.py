@@ -1511,7 +1511,8 @@ class SessionOrchestrator:
         self._deploy_monitor_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
-        from server.automations.archive_audit import list_recent_archived_rows, persist_findings
+        from server.automations.archive_audit import (
+            list_recent_archived_rows, mark_auto_reopen_failed, persist_findings)
         self._archaudit_ctx = AutomationContext("archive-audit")
         self._archaudit_loop = ArchiveAuditLoop(
             self._archaudit_ctx,
@@ -1522,6 +1523,7 @@ class SessionOrchestrator:
             unarchive_fn=lambda sid: self.unarchive(sid),  # type: ignore[arg-type,return-value]
             clock=time.time,
             record_findings_fn=lambda results, mode: persist_findings(db_session, results, mode),
+            mark_auto_reopen_failed_fn=lambda sid: mark_auto_reopen_failed(db_session, sid),
         )
         self._archaudit_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``

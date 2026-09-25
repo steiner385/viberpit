@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from server.automations.action_providers import ArchiveAuditActionProvider
-from server.automations.archive_audit import persist_findings
+from server.automations.archive_audit import mark_auto_reopen_failed, persist_findings
 from server.db import db_session
 from server.db.models import ArchiveReviewFinding
 
@@ -62,6 +62,47 @@ def test_auto_reopen_records_the_decision_and_returns_the_session(isolated_db):
         assert "auto_reopen" in row.decided_by
         # Idempotent: a session already reopened is not returned for another unarchive.
         assert (await persist_findings(db_session, [_r("s1")], "auto_reopen"))["to_unarchive"] == []
+    asyncio.run(run())
+
+
+def test_a_failed_auto_reopen_reverts_to_open_and_is_not_retried(isolated_db):
+    """#1906: a session whose archive directory is gone raises on unarchive_fn every
+    tick pre-fix. mark_auto_reopen_failed must revert the optimistic "reopened" mark
+    back to "open" (visible to a human) and persist_findings must never again offer it
+    for automatic reopening."""
+    async def run():
+        out = await persist_findings(db_session, [_r("s1")], "auto_reopen")
+        assert out["to_unarchive"] == ["s1"]
+        assert (await _rows())["s1"].status == "reopened"
+
+        # The caller's unarchive_fn actually failed -> revert.
+        await mark_auto_reopen_failed(db_session, "s1")
+        row = (await _rows())["s1"]
+        assert row.status == "open" and row.auto_reopen_failed is True
+        assert row.decided_at is None and row.decided_by is None
+
+        # Still premature next tick: NOT re-marked reopened, NOT retried.
+        out2 = await persist_findings(db_session, [_r("s1")], "auto_reopen")
+        assert out2["to_unarchive"] == [] and out2["reopened"] == 0
+        assert out2["open_total"] == 1
+        assert (await _rows())["s1"].status == "open"
+    asyncio.run(run())
+
+
+def test_mark_auto_reopen_failed_is_a_noop_for_a_decided_or_missing_finding(isolated_db):
+    async def run():
+        # No finding at all yet.
+        await mark_auto_reopen_failed(db_session, "missing")
+        assert await _rows() == {}
+
+        # A human already retained it — must not be disturbed.
+        await persist_findings(db_session, [_r("s1")], "propose")
+        async with db_session() as db:
+            row = (await db.execute(select(ArchiveReviewFinding))).scalar_one()
+            row.status = "retained"
+            await db.commit()
+        await mark_auto_reopen_failed(db_session, "s1")
+        assert (await _rows())["s1"].status == "retained"
     asyncio.run(run())
 
 

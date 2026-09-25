@@ -87,7 +87,9 @@ class ArchiveAuditLoop:
                  gh_num_fn: "Callable[[str, int], dict | None] | None",
                  unarchive_fn: Callable[[str], Awaitable[None]],
                  clock: Callable[[], float],
-                 record_findings_fn: "Callable[[list[dict], str], Awaitable[dict]]") -> None:
+                 record_findings_fn: "Callable[[list[dict], str], Awaitable[dict]]",
+                 mark_auto_reopen_failed_fn: "Callable[[str], Awaitable[None]] | None" = None
+                 ) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_rows = list_rows
@@ -96,6 +98,7 @@ class ArchiveAuditLoop:
         self._unarchive_fn = unarchive_fn
         self._clock = clock
         self._record_findings_fn = record_findings_fn
+        self._mark_auto_reopen_failed_fn = mark_auto_reopen_failed_fn
         self._lock = asyncio.Lock()
 
     async def tick(self) -> None:
@@ -141,6 +144,17 @@ class ArchiveAuditLoop:
                 unarchived.append(sid)
             except Exception:
                 log.warning("archive_audit loop unarchive failed sid=%s", sid, exc_info=True)
+                # persist_findings already committed this finding as "reopened" —
+                # a durable, never-resurrected decision — before we knew the actual
+                # unarchive would fail. Revert it to "open" (auto_reopen_failed=True)
+                # so a human sees it via the action provider instead of the session
+                # staying silently "resolved" while archived and broken forever (#1906).
+                if self._mark_auto_reopen_failed_fn is not None:
+                    try:
+                        await self._mark_auto_reopen_failed_fn(sid)
+                    except Exception:
+                        log.warning("archive_audit mark_auto_reopen_failed failed sid=%s",
+                                   sid, exc_info=True)
         from collections import Counter
         counts = Counter(r["bucket"] for r in results)
         open_findings = outcome.get("open_total", 0)
@@ -348,7 +362,10 @@ async def persist_findings(session_factory, results: list[dict], mode: str) -> d
 
     ``auto_reopen`` mode: a fresh or still-``open`` finding is immediately marked
     ``reopened`` and its session id comes back in ``to_unarchive`` — reopening is still
-    ONE recorded decision, just made by the automation instead of a human.
+    ONE recorded decision, just made by the automation instead of a human. A finding
+    the caller previously reverted via ``mark_auto_reopen_failed`` (``auto_reopen_failed``
+    is set) is NOT retried automatically — the earlier attempt already proved the
+    session can't be restored on its own, so it stays ``open`` for a human.
 
     Either mode: a finding already ``retained``/``reopened`` is a durable human (or prior
     automatic) decision and is NEVER resurrected, even if the session is (still, again)
@@ -375,14 +392,15 @@ async def persist_findings(session_factory, results: list[dict], mode: str) -> d
             row.repo, row.goal = r.get("repo"), r.get("goal", "")
             row.bucket, row.reason = r["bucket"], r.get("reason")
             row.last_seen_at = now
-            if row.status in (None, "open"):
+            if row.status in (None, "open") and not row.auto_reopen_failed:
                 if mode == "auto_reopen":
                     row.status, row.decided_at, row.decided_by = (
                         "reopened", now, "archive-audit (auto_reopen mode)")
                     to_unarchive.append(sid)
                     reopened += 1
                 # 'propose': stays open — a human decides.
-            # else: 'retained'/'reopened' already decided — leave it alone.
+            # else: 'retained'/'reopened' already decided, or a prior auto_reopen
+            # attempt already failed — leave it alone.
         for row in rows:
             if row.status == "open" and row.session_id not in premature:
                 row.status, row.decided_at, row.decided_by = (
@@ -395,6 +413,28 @@ async def persist_findings(session_factory, results: list[dict], mode: str) -> d
         await db.commit()
     return {"to_unarchive": to_unarchive, "opened": opened, "resolved": resolved,
             "reopened": reopened, "open_total": open_total}
+
+
+async def mark_auto_reopen_failed(session_factory, session_id: str) -> None:
+    """Revert a finding ``persist_findings`` just optimistically marked ``reopened``
+    back to ``open`` after the actual unarchive attempt failed (#1906). Sets
+    ``auto_reopen_failed`` so the next tick's ``persist_findings`` does not immediately
+    re-mark it ``reopened`` and retry forever — the session now waits for a human via
+    the action provider, same as ``propose`` mode. No-op if the row is missing or was
+    not in the ``reopened`` state (e.g. a human already acted on it)."""
+    from sqlalchemy import select as sa_select
+
+    from server.db.models import ArchiveReviewFinding
+
+    async with session_factory() as db:
+        row = (await db.execute(
+            sa_select(ArchiveReviewFinding).where(
+                ArchiveReviewFinding.session_id == session_id))).scalars().first()
+        if row is None or row.status != "reopened":
+            return
+        row.status, row.decided_at, row.decided_by = "open", None, None
+        row.auto_reopen_failed = True
+        await db.commit()
 
 
 def format_report(results: list[dict]) -> str:
