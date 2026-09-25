@@ -1,8 +1,39 @@
 import { describe, it, expect } from 'vitest'
 import { CAPACITY } from './__fixtures__/capacity'
-import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, parsePipelineCap, parseRunnerDraft, seedCapacityDraft } from './runnerForm'
+import { PIN_KEY, PIPELINE_KEY, RUNNER_KEYS, capDraft, parsePipelineCap, parseRunnerDraft, parseWhole, seedCapacityDraft } from './runnerForm'
 
 const CURRENT = { ceiling: 5, budget: 10, perAccount: 2, globalCap: 20 }
+
+describe('parseWhole', () => {
+  it.each([
+    ['0', 0],
+    ['6', 6],
+    ['  6  ', 6],
+  ] as const)('%s -> %s with blank: throw', (raw, expected) => {
+    expect(parseWhole(raw, { label: 'Field', min: 0, blank: 'throw' })).toBe(expected)
+  })
+  it.each(['', '1.5', '-1', 'abc'])('%s throws the labeled message with blank: throw', (raw) => {
+    expect(() => parseWhole(raw, { label: 'Field', min: 0, blank: 'throw' })).toThrow('Field must be a whole number ≥ 0')
+  })
+  it.each([
+    ['', null],
+    ['0', 0],
+    ['6', 6],
+  ] as const)('%s -> %s with blank: null', (raw, expected) => {
+    expect(parseWhole(raw, { label: 'Field', min: 0, blank: 'null' })).toBe(expected)
+  })
+  it.each(['1.5', '-1', 'abc'])('%s still throws with blank: null', (raw) => {
+    expect(() => parseWhole(raw, { label: 'Field', min: 0, blank: 'null' })).toThrow('Field must be a whole number ≥ 0')
+  })
+})
+
+describe('capDraft', () => {
+  it('renders null as blank and a number as its string', () => {
+    expect(capDraft(null)).toBe('')
+    expect(capDraft(0)).toBe('0')
+    expect(capDraft(6)).toBe('6')
+  })
+})
 
 describe('seedCapacityDraft (spec 2026-09-20 §5.2 item 3)', () => {
   it('namespaces pins and seeds the runner and governor fields from their configs', () => {

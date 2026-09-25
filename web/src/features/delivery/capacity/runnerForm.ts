@@ -18,6 +18,13 @@ function str(v: unknown): string {
   return typeof v === 'number' ? String(v) : ''
 }
 
+/** Blank = unlimited (null); otherwise a whole number ≥ 0. The inverse of
+ *  `parseWhole`'s `blank: 'null'` mode, used wherever a cap is rendered back
+ *  into a draft string (the seed and each row). */
+export function capDraft(cap: number | null): string {
+  return cap == null ? '' : String(cap)
+}
+
 export function seedCapacityDraft(
   readout: CapacityReadout,
   runnerConfig: Record<string, unknown> | null,
@@ -26,7 +33,7 @@ export function seedCapacityDraft(
   const draft: CapacityDraft = {}
   for (const p of readout.products) {
     draft[PIN_KEY(p.slug)] = String(p.pin)
-    draft[PIPELINE_KEY(p.slug)] = p.pipelineCap == null ? '' : String(p.pipelineCap)
+    draft[PIPELINE_KEY(p.slug)] = capDraft(p.pipelineCap)
   }
   // The readout's `ceiling` IS the stored max_concurrent, so it is the fallback
   // when the automations list has not loaded; budget and per-account have no
@@ -44,21 +51,30 @@ export interface RunnerPatches {
   ceilingRaised: boolean
 }
 
-function whole(raw: string, label: string, min: number): number {
-  const n = Number(raw.trim())
-  if (raw.trim() === '' || !Number.isInteger(n) || n < min) {
-    throw new Error(`${label} must be a whole number ≥ ${min}`)
+/** The Capacity page's one "whole number ≥ min" rule (runner ceiling, daily
+ *  budget, sessions per account, product pin, pipeline cap). `blank` picks
+ *  what an empty field means: `'throw'` for fields with no "unset" value,
+ *  `'null'` where blank is itself a legitimate value (unlimited). */
+export function parseWhole(raw: string, opts: { label: string; min: number; blank: 'throw' }): number
+export function parseWhole(raw: string, opts: { label: string; min: number; blank: 'null' }): number | null
+export function parseWhole(raw: string, opts: { label: string; min: number; blank: 'throw' | 'null' }): number | null {
+  const trimmed = raw.trim()
+  if (trimmed === '' && opts.blank === 'null') return null
+  const n = Number(trimmed)
+  if (trimmed === '' || !Number.isInteger(n) || n < opts.min) {
+    throw new Error(`${opts.label} must be a whole number ≥ ${opts.min}`)
   }
   return n
+}
+
+function whole(raw: string, label: string, min: number): number {
+  return parseWhole(raw, { label, min, blank: 'throw' })
 }
 
 /** Blank = unlimited (null); otherwise a whole number ≥ 0. Throws the row-named
  *  message the form's banner shows. */
 export function parsePipelineCap(raw: string, name: string): number | null {
-  if (raw.trim() === '') return null
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n < 0) throw new Error(`${name}: pipeline cap must be a whole number ≥ 0`)
-  return n
+  return parseWhole(raw, { label: `${name}: pipeline cap`, min: 0, blank: 'null' })
 }
 
 /** Validates and diffs the runner/governor part of the draft. Throws with the
