@@ -100,6 +100,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     parse_agent_engine,
 )
+from server.sessions.failure import classify as classify_failure
 from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
@@ -3760,12 +3761,24 @@ class SessionOrchestrator:
                         session_id, model=approved_model, **spawn_kwargs)
                 return await self._spawn_session(
                     session_id, model=approved_model, **spawn_kwargs)
-            except Exception:
+            except Exception as exc:
                 # Spawn/enqueue failed after the placeholder was already deleted.
                 # Restore the pending_approval hold (row + in-memory record + the
                 # in-memory spawn kwargs) so the approval can be retried instead of
                 # the session being silently lost, then re-raise.
-                log.warning(
+                #
+                # A rate-limit/overload failure here is an ordinary external condition
+                # that this restore-and-retry path already handles by design — the
+                # approver just tries again once the account cools down. WARNING made
+                # every 429 auto-file an error report (9 in 3 days, #1688); anything
+                # else (a bad worktree branch, a dead credential) is a real defect and
+                # keeps WARNING so it still surfaces.
+                level = (logging.INFO
+                         if classify_failure(None, str(exc)).kind in
+                            ("rate_limit", "overloaded")
+                         else logging.WARNING)
+                log.log(
+                    level,
                     "session.model_approval_spawn_failed id=%s model=%s — restoring "
                     "pending_approval hold for retry", session_id, approved_model,
                     exc_info=True)
