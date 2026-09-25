@@ -118,7 +118,7 @@ class Recorder:
         return self.mode, {}
 
 
-def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True):
+def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True, clock=None):
     # `rec` doubles as the default fake ctx (it has `emit`): a test that omits
     # `ctx` can still inspect `rec.events`, matching every other Recorder seam.
     return SdlcSynthesizerLoop(
@@ -130,7 +130,8 @@ def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True):
         has_pending_materialization=rec.has_pending_materialization,
         materialization_attempts=rec.materialization_attempts,
         pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
-        read_config=rec.read_config, clock=lambda: 0.0, read_policies=rec.read_policies,
+        read_config=rec.read_config, clock=clock or (lambda: 0.0),
+        read_policies=rec.read_policies,
         live_sessions=rec.live_sessions,
         advance_stage=rec.advance_stage if advance else None,
         autoresolve_enabled=rec.autoresolve_enabled,
@@ -907,3 +908,33 @@ async def test_a_refused_arm_is_not_retried_or_re_reported():
     assert rec.armed == [("a-1", "o/r", 42)]           # gh spent exactly once
     kinds = [e.get("kind") for e in rec.events]
     assert kinds.count("gate_refused") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_arm_retries_after_the_ttl():
+    """#2037: unlike `_arm_unwired`, `_arm_refused` latches a GitHub-side fact
+    (the repo's auto-merge setting) an owner can flip at any moment with
+    nothing in this process observing it. A tick within `ARM_REFUSED_RETRY_S`
+    still suppresses the retry, but one past it spends a fresh `gh` call —
+    letting a settings fix take effect without a daemon restart."""
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.arm_result = {"armed": False, "error": "Auto-merge is not allowed"}
+    now = [0.0]
+    loop = _loop(rec, clock=lambda: now[0])
+    await loop.tick()
+
+    now[0] += 3600.0 - 1.0        # still within the TTL
+    await loop.tick()
+    assert rec.armed == [("a-1", "o/r", 42)]            # second tick suppressed
+
+    now[0] += 1.0                 # TTL has now elapsed
+    rec.arm_result = {"armed": True, "error": ""}
+    await loop.tick()
+
+    assert rec.armed == [("a-1", "o/r", 42), ("a-1", "o/r", 42)]
+    kinds = [e.get("kind") for e in rec.events]
+    assert kinds.count("gate_refused") == 1
+    assert kinds.count("auto_resolved") == 1

@@ -41,6 +41,16 @@ log = logging.getLogger(__name__)
 #: three sessions, not a session every tick forever.
 MATERIALIZE_MAX_ATTEMPTS = 3
 
+#: How long `_arm_refused` (#2037) suppresses a retry after GitHub declines to
+#: auto-merge. The refusal is keyed on an EXTERNAL fact — the repo's auto-merge
+#: setting — that an owner can flip at any moment with nothing in this process
+#: observing it, unlike `_arm_unwired`/`_advance_unwired`, which latch on
+#: whether the deployment wired a seam at all and genuinely cannot change
+#: without a restart. An hour bounds the cost (one `gh` call + one
+#: `gate_refused` event per slug per hour, not per 60s tick) while keeping a
+#: settings fix effective without anyone having to restart the daemon.
+ARM_REFUSED_RETRY_S = 3600.0
+
 
 @dataclass(frozen=True)
 class MaterializeAttempts:
@@ -295,12 +305,13 @@ class SdlcSynthesizerLoop:
         #: slugs already warned that the engine wanted auto-merge this
         #: deployment cannot arm — once, like the advance seam.
         self._arm_unwired: set[str] = set()
-        #: slugs GitHub has already refused to auto-merge this deployment — once
-        #: set, the loop stops spending a `gh` call and a `gate_refused` event on
-        #: this slug every tick forever (a repo with auto-merge disabled would
-        #: otherwise cost both, indefinitely, at the 60s tick interval). Cleared
-        #: only by a restart, same as `_arm_unwired` / `_advance_unwired`.
-        self._arm_refused: set[str] = set()
+        #: slug -> `clock()` at the last refusal. The loop stops spending a `gh`
+        #: call and a `gate_refused` event on a slug that just refused, but only
+        #: for `ARM_REFUSED_RETRY_S`: unlike `_arm_unwired` / `_advance_unwired`,
+        #: which latch on a seam this deployment either has or does not, a
+        #: refusal is a GitHub-side fact (auto-merge disabled on the repo) an
+        #: owner can flip without this process ever finding out.
+        self._arm_refused: dict[str, float] = {}
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -433,10 +444,13 @@ class SdlcSynthesizerLoop:
         degrade to "a human merges it", never to a lost initiative.
 
         A refusal (GitHub declines to arm — e.g. auto-merge disabled on the
-        repo) is remembered in ``_arm_refused`` for the rest of this process,
-        same idiom as ``_arm_unwired``: without it, every tick (60s) would
-        spend a fresh ``gh`` call and re-emit ``gate_refused`` on a slug that
-        has already told us it will never arm.
+        repo) is remembered in ``_arm_refused`` for ``ARM_REFUSED_RETRY_S``
+        (#2037): without it, every tick (60s) would spend a fresh ``gh`` call
+        and re-emit ``gate_refused`` on a slug that has already told us it
+        will never arm. Unlike ``_arm_unwired``, the refusal is a GitHub-side
+        fact an owner can change (flip auto-merge back on) without this
+        process observing it, so the memory expires instead of latching for
+        the life of the process.
         """
         slug = str(ini.get("slug") or "")
         if self._arm_auto_merge is None:
@@ -446,7 +460,8 @@ class SdlcSynthesizerLoop:
                                  f"{tolerance} but arming is not wired — merge it by hand",
                                  kind="arm_unwired", target=slug)
             return False
-        if slug in self._arm_refused:
+        refused_at = self._arm_refused.get(slug)
+        if refused_at is not None and self._clock() - refused_at < ARM_REFUSED_RETRY_S:
             return False
         art = next((a for a in artifacts if a.get("kind") == action.kind), None)
         if art is None or not art.get("pr_number"):
@@ -466,7 +481,7 @@ class SdlcSynthesizerLoop:
         out = await self._arm_auto_merge(str(art["id"]), repo, int(art["pr_number"]),
                                          str(ini["id"]), record)
         if not out.get("armed"):
-            self._arm_refused.add(slug)
+            self._arm_refused[slug] = self._clock()
             await self._emit("warn", f"{slug}: auto-merge unavailable on {repo} — "
                              f"merge {action.kind} PR #{art['pr_number']} by hand",
                              kind="gate_refused", target=slug,
