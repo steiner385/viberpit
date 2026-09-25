@@ -135,6 +135,35 @@ def test_parse_flags_garbage_as_degraded():
     assert parse_group_plan("not json", C, 3).degraded is True
 
 
+def test_parse_takes_the_last_plan_when_the_model_revises_itself():
+    """#2228: draft, "Wait, let me reconsider", corrected draft. ``json.loads``
+    stops at "Extra data" and the whole reply was thrown away, degrading every
+    candidate to a singleton even though the model's final answer was valid."""
+    raw = (
+        _plan_json([{"refs": ["o/r#5", "o/r#9"], "rationale": "x"}])
+        + "\n\nWait, let me reconsider.\n\n"
+        + _plan_json([{"refs": ["o/r#5", "o/r#2"], "rationale": "y"}])
+    )
+    plan = parse_group_plan(raw, C, 3)
+    assert plan.degraded is False
+    assert plan.groups[0] == {"refs": ["o/r#5", "o/r#2"], "rationale": "y"}
+
+
+def test_parse_finds_a_plan_wrapped_in_prose():
+    raw = "Here is the plan [see notes]:\n" + _plan_json(
+        [{"refs": ["o/r#2", "o/r#9"], "rationale": "r"}]) + "\nHope that helps."
+    plan = parse_group_plan(raw, C, 3)
+    assert plan.degraded is False
+    assert plan.groups[0]["refs"] == ["o/r#2", "o/r#9"]
+
+
+def test_parse_still_degrades_when_no_reply_object_has_a_groups_list():
+    raw = 'thinking {"note": "x"} and {"groups": "nope"} then [1, 2]'
+    plan = parse_group_plan(raw, C, 3)
+    assert plan.degraded is True
+    assert [g["refs"] for g in plan.groups] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+
+
 def test_parse_treats_no_bundles_as_a_real_plan_not_a_degraded_one():
     """Under the bundle-only contract an empty ``groups`` list is the model
     saying "nothing belongs together" — every issue proceeds alone, and that is
