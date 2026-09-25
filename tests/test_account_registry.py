@@ -269,6 +269,30 @@ def test_runner_reads_the_snapshot_and_reconciles_only_in_memory(monkeypatch):
         assert paths.accounts_manifest_path().read_text() == before
 
 
+def test_runner_logs_a_lagging_slot_once_per_distinct_set(monkeypatch, caplog):
+    """ensure_manifest runs on every read; a lagging slot must not log per read,
+    and must not be a WARNING (auto-filed) — it is an expected self-healing lag."""
+    import logging
+
+    with temp_env():
+        _mk_anthropic("work")
+        account_registry.import_filesystem_accounts()
+        monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+        _mk_anthropic("appeared-late")
+        with caplog.at_level(logging.DEBUG, logger=account_registry.log.name):
+            for _ in range(3):
+                assert account_registry.has_account("appeared-late")
+            recs = [r for r in caplog.records if "missing" in r.getMessage()]
+            assert len(recs) == 1
+            assert recs[0].levelno == logging.INFO
+            assert "appeared-late" in recs[0].getMessage()
+            # A different lagging set is a new condition and logs again.
+            _mk_anthropic("also-late")
+            account_registry.all_entries()
+            recs = [r for r in caplog.records if "missing" in r.getMessage()]
+            assert len(recs) == 2
+
+
 # --- resilience -----------------------------------------------------------
 
 

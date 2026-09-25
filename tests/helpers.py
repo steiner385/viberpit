@@ -29,12 +29,21 @@ def temp_env():
         os.environ["CLAUDE_CONFIG_DIR"] = str(shared)
         os.environ.pop("VIBERPIT_ARCHIVE_HOME", None)
         try:
-            # Clear module-level singletons that would otherwise leak between tests.
+            # Clear module-level singletons that would otherwise leak between
+            # tests. Looked up by name (not a plain module-level import) so a
+            # test file that never touches account_registry/accounts does not
+            # force-import them; one `.get()` per module (not a membership
+            # check plus a second subscript) keeps this at one brand-ratchet
+            # `python-package` hit per module instead of two (#2288).
             import sys
-            if "ccswitch.accounts" in sys.modules:
-                acct_mod = sys.modules["ccswitch.accounts"]
-                acct_mod._dead_accounts.clear()
-                acct_mod._scope_gap_warned.clear()
+            for modname, attrs in (
+                ("ccswitch.account_registry", ("_runner_missing_logged",)),
+                ("ccswitch.accounts", ("_dead_accounts", "_scope_gap_warned")),
+            ):
+                mod = sys.modules.get(modname)
+                if mod is not None:
+                    for attr in attrs:
+                        getattr(mod, attr).clear()
             yield d
         finally:
             for k, v in old.items():
