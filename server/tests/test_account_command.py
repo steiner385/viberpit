@@ -86,3 +86,25 @@ async def test_run_command_account_refuses_honestly_when_the_engine_cannot_switc
     text = result["data"]["text"]
     assert not text.startswith("Account →"), "must not claim the switch happened"
     assert "Can't switch" in text
+
+
+@pytest.mark.asyncio
+async def test_run_command_account_reports_wrong_engine_target(monkeypatch):
+    """#2002: a target account that can't run this session's engine gets its own
+    message — "end this session and start a new one on <acct>" (the generic
+    refusal text) is wrong advice here, since <acct> can't run this engine at
+    all, in a new session or otherwise."""
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CODEX, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch._records = {"s1": rec}
+    orch._drivers = {"s1": object()}
+    async def _switch(self, sid, acct):
+        return "invalid_target"
+    monkeypatch.setattr(SessionOrchestrator, "switch_account_manual", _switch)
+
+    result = await orch.run_command("s1", "account", "acct-b")
+    text = result["data"]["text"]
+    assert not text.startswith("Account →")
+    assert "acct-b" in text
+    assert "codex" in text.lower()

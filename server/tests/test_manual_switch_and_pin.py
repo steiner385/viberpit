@@ -20,13 +20,17 @@ def _orch_with(rec):
     return orch
 
 
-def _mock_known_accounts(monkeypatch, names, *, before_read=lambda: None):
-    """Make ccswitch_accounts.list_accounts() return the given account names."""
+def _mock_known_accounts(monkeypatch, names, *, before_read=lambda: None, eligible=None):
+    """Make ccswitch_accounts.list_accounts() return the given account names, and
+    eligible_enabled_accounts() report every one of them as engine-eligible unless
+    `eligible` overrides that (see test_switch_account_manual_rejects_wrong_engine)."""
     def list_accounts():
         before_read()
         return [{"name": n} for n in names]
 
     monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts", list_accounts)
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "eligible_enabled_accounts",
+                        lambda **_kw: list(names if eligible is None else eligible))
 
 
 @pytest.mark.asyncio
@@ -154,6 +158,34 @@ async def test_switch_account_manual_rejects_path_traversal(monkeypatch):
         await orch.switch_account_manual("s1", "../evil")
     assert called["reassign"] is False
     assert rec.account_pinned is False  # never pinned on a rejected switch
+
+
+@pytest.mark.asyncio
+async def test_switch_account_manual_rejects_wrong_engine(monkeypatch, caplog):
+    """#2002: a manual /account switch onto an account that can't run this
+    session's engine (e.g. a Claude-only account on a Codex session) must be
+    refused BEFORE _reassign ever touches the live driver — not discovered only
+    after the credential authority rejects the login and the old driver is
+    already gone."""
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CODEX, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch = _orch_with(rec)
+    # "b" is a known account (passes the ledger-membership check) but not
+    # eligible for Codex (e.g. it's a Claude-only account) — the real-world
+    # shape of #2002.
+    _mock_known_accounts(monkeypatch, ["a", "b"], eligible=["a"])
+    called = {"reassign": False}
+    async def _reassign(self, r, new, *, reason): called["reassign"] = True
+    monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
+
+    with caplog.at_level("WARNING"):
+        result = await orch.switch_account_manual("s1", "b")
+
+    assert result == "invalid_target"
+    assert called["reassign"] is False, "the old driver must never be touched"
+    assert rec.account_pinned is False
+    assert rec.account == "a", "the session must stay on its original account"
+    assert not caplog.records, "a config mismatch must not log at WARNING+ (auto-files as an error)"
 
 
 @pytest.mark.asyncio

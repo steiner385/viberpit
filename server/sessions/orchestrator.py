@@ -18233,6 +18233,8 @@ class SessionOrchestrator:
             elif result == "rotated_new_thread":
                 text = (f"Account → {acct} — this engine can't carry a live "
                         f"conversation across accounts, so this started a new one")
+            elif result == "invalid_target":
+                text = f"{acct} can't run {self._engine_of(session_id).value} sessions"
             else:
                 text = (f"Can't switch accounts on a running session for this engine "
                         f"({result}). End this session and start a new one on {acct} "
@@ -19317,6 +19319,27 @@ class SessionOrchestrator:
         known = {a["name"] for a in accounts}
         if new_account not in known:
             raise KeyError(f"Unknown account: {new_account}")
+        # Validate: reject a target that can't run this session's engine.
+        # Auto-rotation only ever offers a candidate from
+        # select_account(engine=record.engine), which filters through this same
+        # primitive; /account is free-text, so it's the one path that reached
+        # _reassign with a same-engine assumption nothing had checked. That let a
+        # Codex session's /account move onto a Claude-only account: the Codex
+        # credential authority correctly refused it, but only after the old
+        # (healthy) driver had already been torn down (#2002). Checking here,
+        # before the record lookup below ever reaches _reassign, keeps that
+        # driver untouched — unlike _reassign's own invalid_target branch, this
+        # is a config mismatch, not a broken session, so it must not pause.
+        eligible = await asyncio.to_thread(
+            ccswitch_accounts.eligible_enabled_accounts,
+            require_engine=record.engine.value,
+            default_engine=AgentEngine.CLAUDE_CODE.value,
+        )
+        if new_account not in eligible:
+            log.info("switch_account_manual.invalid_target session=%s account=%s "
+                     "engine=%s — account can't run this engine",
+                     session_id, new_account, record.engine.value)
+            return "invalid_target"
         # Enumeration yields: closing or replacing the session invalidates the
         # earlier record. Never rotate a detached snapshot back into existence.
         record = self._records[session_id]
