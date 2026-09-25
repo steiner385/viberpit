@@ -139,6 +139,12 @@ def warn_once(key: str, msg: str, *args: Any) -> None:
     log.warning(msg, *args, exc_info=True)
 
 
+# Distinct sets of account names a RUNNER has already logged as "in the store,
+# not yet in accounts.json". ``ensure_manifest`` runs on every registry read, so
+# one lagging slot would otherwise log once per read. Log-rate guard only.
+_runner_missing_logged: set[frozenset[str]] = set()
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -542,9 +548,15 @@ def ensure_manifest() -> Manifest:
         _import_into(manifest, missing, _utcnow())
         return manifest
     if not is_manifest_writer():
-        log.warning("accounts.json on this runner is missing %d account(s) the "
-                    "credential store has — applying in memory only; the primary "
-                    "owns the file", len(missing))
+        # INFO, once per distinct set: this is the expected seconds-long lag
+        # between a store change and the primary's reconcile, not a fault (a
+        # WARNING would be auto-filed once per registry read).
+        names = frozenset(n for n, _ in missing)
+        if names not in _runner_missing_logged:
+            _runner_missing_logged.add(names)
+            log.info("accounts.json on this runner is missing %d account(s) the "
+                     "credential store has (%s) — applying in memory only; the "
+                     "primary owns the file", len(names), ", ".join(sorted(names)))
         _import_into(manifest, missing, _utcnow())
         return manifest
     import_filesystem_accounts(now=_utcnow())
