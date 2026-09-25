@@ -25,6 +25,12 @@ No prose, no preamble, no code fences.
   over asserting the cache is right.
 - `verdict_reason` / `verdict_remedy` explain why completion was rejected — use
   them as input, not as the message.
+- When the only remaining step belongs to a machine — CI still running on a PR that
+  is ready with auto-merge armed, or the merge itself — that IS the finished state.
+  Direct the session to finish (call `mark_complete`, or emit the completion marker
+  if it has no tools), never to "report the current state and stop": a status
+  report with nothing needed from the user ends up as a hand-back the user has to
+  read and dismiss.
 - `transcript` entries are EXCERPTS. A long entry is shortened by the harness with an
   inline marker — `[… N chars omitted here by the … harness … not the reply
   ending …]`. That is the harness cutting the excerpt, never the session's reply being

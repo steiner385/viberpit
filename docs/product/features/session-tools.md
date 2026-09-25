@@ -213,16 +213,25 @@ like any other tool call.
 | The session… | Signal (Claude) | Marker (Codex / fallback) | Wire status | Board |
 |---|---|---|---|---|
 | declared the objective met | `mark_complete` / `mark_no_pr` | `<!-- viberpit:complete -->` / `<!-- viberpit:no-pr -->` | `complete` | "Complete"; auto-archive once the completion bar is met |
-| needs the user | `hand_back(reason)` | `<!-- viberpit:hand-back reason="…" -->` | `waiting_question` | "Answer needed", amber, push alert |
+| needs the user | `hand_back(reason)` | `<!-- viberpit:hand-back reason="…" -->` | `handed_back` | "Handed back" plus the one-sentence reason, amber, push alert |
 | just stopped | nothing | nothing | `done` | "Your turn", calm |
 
 Precedence within one turn: a failed turn > `hand_back` > completion > plain success; tool
 beats marker. A turn carrying both a hand-back and a completion signal reads as a hand-back and
 logs `sessions.hand_back_over_completion` — keeping a session on the board is the recoverable
-error. `hand_back` reuses `waiting_question` rather than adding a status: the harness already
-persists that status without a structured question card (the parked-`done` overlay and the
-completion open-question hold), so push alerts, the PM "Held" view, autopilot, the deploy
-drain and the restart normaliser all already handle it. The reason rides `turnEnd` as
+error. `hand_back` has its own `handed_back` status since #2326: it used to borrow
+`waiting_question`, which promised a card to tap that was never rendered. The two cardless
+prose paths (the parked-`done` overlay and the completion open-question hold) land there too.
+
+**What "finished" means.** The completion bar (`completion_bar.met_bar`) reads a PR that is
+open, ready, auto-merge armed and without a failing required check as the goal met, so the
+`mark_complete` description and the completion marker instruction say so in the same words
+(`completion.FINISHED_STATE_CLAUSE`): a session must not wait for CI or the merge, and must
+not hand back a status report about it. Its twin, `completion.STATUS_ONLY_CLAUSE`, rides the
+`hand_back` description and marker instruction: a hand-back must ask for something. Both
+came from prod 2026-09-25, when a session with one PR merged and the next armed under a
+still-running CI ended with `hand_back("Status only, no action needed: …")` — the tool
+contract had offered it no finishing signal it was allowed to use. The reason rides `turnEnd` as
 `handBackReason` and is audited as `session.hand_back`; nothing in the web reads it yet.
 Spec: `docs/superpowers/specs/2026-09-08-hand-back-signal-tool-design.md`.
 

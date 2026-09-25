@@ -14,7 +14,9 @@ from ccswitch import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
 from server.sessions.child_sessions import ChildSessionLimit
-from server.sessions.completion import NO_PR_RESOLUTIONS, parse_hand_back, parse_mark_no_pr
+from server.sessions.completion import (FINISHED_STATE_CLAUSE, NO_PR_RESOLUTIONS,
+                                        STATUS_ONLY_CLAUSE, parse_hand_back,
+                                        parse_mark_no_pr)
 from server.sessions.permissions import MODE_WIDTH
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
@@ -136,10 +138,11 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "Signal that you have FULLY accomplished the objective of this session. "
                + _THREE_WAYS +
                "Call this only when the work is genuinely complete — never for an interim "
-               "step, never while you are still working or waiting on something, and never "
-               "in the same turn as a question to the user: if you need an answer, call "
-               "`hand_back` instead. Optional follow-ups belong in prose as statements ('I "
-               "can also do X if wanted'), not questions.",
+               "step, never while you are still working, and never in the same turn as a "
+               "question to the user: if you need an answer, call `hand_back` instead. "
+               + FINISHED_STATE_CLAUSE +
+               " Optional follow-ups belong in prose as statements ('I can also do X if "
+               "wanted'), not questions.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def mark_complete(args: dict[str, Any]) -> Any:
@@ -174,9 +177,10 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "need. "
                + _THREE_WAYS +
                "Ending your message with a question and calling nothing is NOT a hand-back: "
-               "the session reads as calmly idle and nobody is alerted. Call `hand_back` in "
-               "the same message as your question, and never in the same turn as "
-               "`mark_complete` or `mark_no_pr`.",
+               "the session reads as calmly idle and nobody is alerted. "
+               + STATUS_ONLY_CLAUSE +
+               " Call `hand_back` in the same message as your question, and never in the "
+               "same turn as `mark_complete` or `mark_no_pr`.",
                {"type": "object",
                 "properties": {"reason": {"type": "string"}},
                 "required": ["reason"]})

@@ -257,6 +257,22 @@ def test_instruction_is_an_index_and_the_tool_description_carries_the_rules():
     assert "keep working" in desc["report_feedback"].lower()
 
 
+def test_finishing_descriptions_name_the_armed_pr_as_finished_and_refuse_status_only_hand_backs():
+    """Prod 2026-09-25 (session 2971d6a6): with one PR merged and the next ready, armed
+    and CI still running, the session called `hand_back` with the reason "Status only,
+    no action needed". `mark_complete` said "never while … waiting on something" and
+    `hand_back` never said a hand-back has to ask for anything, so a session waiting on
+    CI was left with no signal it was allowed to use. The clauses are the SAME constants
+    the marker instructions carry (test_hand_back_marker.py), so the two worlds agree."""
+    from server.sessions.completion import FINISHED_STATE_CLAUSE, STATUS_ONLY_CLAUSE
+    from server.sessions.tools.tools import build_session_tools
+    desc = {t.name: t.description
+            for t in build_session_tools(_ctx(signalling_tools=True))}
+    assert FINISHED_STATE_CLAUSE in desc["mark_complete"]
+    assert "waiting on something" not in desc["mark_complete"]
+    assert STATUS_ONLY_CLAUSE in desc["hand_back"]
+
+
 def test_set_hold_is_mounted_with_the_signalling_tools():
     from server.sessions.tools.registry import mounted_names
     assert "set_hold" in mounted_names(signalling_tools=True, self_model_switch=False)
