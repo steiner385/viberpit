@@ -143,6 +143,9 @@ def test_web_brand_matches_python_brand():
     assert name_m.group(1) == brand.NAME
     assert prefix_m.group(1) == brand.MCP_TOOL_PREFIX
     assert legacy_m.group(1) == brand.LEGACY_MCP_TOOL_PREFIX
+    ns_m = re.search(r"export const REPO_NAMESPACES = \[([^\]]*)\]", ts)
+    assert ns_m, "REPO_NAMESPACES export not found in web/src/brand.ts"
+    assert tuple(re.findall(r"'([^']*)'", ns_m.group(1))) == brand.REPO_NAMESPACES
 
 
 def test_assistant_options_mount_the_one_mcp_server_name():

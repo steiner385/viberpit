@@ -181,7 +181,7 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
 
 
 def _repo_root() -> str:
-    """The repo root whose ``.ccswitch/`` namespace the clone commands act on.
+    """The repo root whose namespace dot-dir (``paths.repo_namespace``) the clone commands act on.
 
     Mirrors the server's ``VIBERPIT_REPO_ROOT`` setting (server/config.py) so the
     CLI operates on exactly the clones and worktrees the daemon does — the CLI is

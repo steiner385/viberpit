@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+from . import brand
+
 
 def root() -> Path:
     return Path(os.environ.get("VIBERPIT_HOME", str(Path.home() / ".claude-accounts")))
@@ -143,12 +145,51 @@ def attachments_dir() -> Path:
     return d
 
 
-def codex_attachment_staging_dirname() -> str:
-    """Dirname ``CodexAgentDriver`` stages workspace-local attachment copies
-    under, inside a session's cwd (never a full path: callers join it under
-    different roots — the driver at a live session's cwd,
-    ``worktrees.remove_worktree`` at the worktree root as a pre-removal
-    safety net). Kept here, not in ``server/codex/driver.py``, so
-    ``src/ccswitch`` never has to import ``server`` to agree on the name.
+def _resolve_dot_dir(parent: str | os.PathLike[str], emitted: str, legacy: str) -> str:
+    """*emitted*, unless *parent* holds ONLY the *legacy* dir — then *legacy*.
+
+    The rebrand's new-dirs-only rule (#1373): an existing legacy dir is never
+    moved or shadowed, so one parent never ends up with two namespaces, and a
+    parent carrying both (created out-of-band) resolves to the emitted one
+    deterministically.
     """
-    return ".ccswitch-codex-attachments"
+    base = Path(parent).expanduser()
+    if (base / legacy).is_dir() and not (base / emitted).exists():
+        return legacy
+    return emitted
+
+
+def repo_namespace(repo_root: str | os.PathLike[str]) -> str:
+    """The per-repo namespace dot-dir NAME for *repo_root* (``.viberpit`` or legacy)."""
+    return _resolve_dot_dir(repo_root, brand.REPO_NAMESPACE, brand.LEGACY_REPO_NAMESPACE)
+
+
+def repo_namespace_dir(repo_root: str | os.PathLike[str]) -> Path:
+    """Where NEW clones, worktrees and scratch dirs for *repo_root* are created."""
+    return Path(repo_root).expanduser() / repo_namespace(repo_root)
+
+
+def repo_namespace_dirs(repo_root: str | os.PathLike[str]) -> tuple[Path, ...]:
+    """Every namespace dir a READER must consider for *repo_root*, resolved one first.
+
+    Writers use :func:`repo_namespace_dir`; anything that scans, looks up, or
+    guards existing clones/worktrees uses this, so a directory created under the
+    other spelling is never invisible to the janitor or the clone doctor.
+    """
+    root_dir = Path(repo_root).expanduser()
+    resolved = repo_namespace(repo_root)
+    return (root_dir / resolved,) + tuple(
+        root_dir / ns for ns in brand.REPO_NAMESPACES if ns != resolved)
+
+
+def codex_attachment_staging_dirname(workspace: str | os.PathLike[str]) -> str:
+    """Dirname ``CodexAgentDriver`` stages workspace-local attachment copies
+    under, inside *workspace* (a session's cwd). Resolved per workspace by the
+    same new-dirs-only rule as :func:`repo_namespace`, so a live session that
+    already staged under the legacy name keeps using it. Kept here, not in
+    ``server/codex/driver.py``, so ``src/ccswitch`` never has to import
+    ``server`` to agree on the name; ``worktrees.remove_worktree`` clears
+    every spelling in ``brand.CODEX_ATTACHMENTS_DIRNAMES``.
+    """
+    return _resolve_dot_dir(
+        workspace, brand.CODEX_ATTACHMENTS_DIRNAME, brand.LEGACY_CODEX_ATTACHMENTS_DIRNAME)

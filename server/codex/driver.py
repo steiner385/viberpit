@@ -126,14 +126,6 @@ _TEXT_INLINE_MIMES: Final[frozenset[str]] = frozenset(
 #: it rather than reading its contents (see claude_driver._start_turn).
 _ZIP_MIME: Final = "application/zip"
 
-#: Content-addressed staging dir created INSIDE a session's cwd so an
-#: attachment that lives in the global store (outside cwd) can still satisfy
-#: Codex's own realpath(cwd) containment for `localImage`. Dot-prefixed and
-#: registered in `.git/info/exclude` (best-effort, see `_ensure_staging_ignored`)
-#: so it never appears in `git status` for the user's repo. Name is shared
-#: with `worktrees.remove_worktree`'s pre-removal safety net — see
-#: `paths.codex_attachment_staging_dirname`.
-_STAGING_DIRNAME: Final = paths.codex_attachment_staging_dirname()
 
 #: Events that reconstruct a turn's transcript — the only ones retained in the
 #: in-progress-turn buffer and replayed to a late subscriber. Mirrors
@@ -1189,7 +1181,14 @@ class CodexAgentDriver:
         data = Path(source).read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         ext = Path(source).suffix
-        staging_dir = Path(root) / _STAGING_DIRNAME
+        # Content-addressed staging dir INSIDE the session's cwd, so an attachment
+        # from the global store (outside cwd) still satisfies Codex's own
+        # realpath(cwd) containment for `localImage`. Name resolved per workspace
+        # (a legacy-named dir already there keeps being used) and shared with
+        # `worktrees.remove_worktree`'s pre-removal sweep — see
+        # `paths.codex_attachment_staging_dirname`.
+        dirname = paths.codex_attachment_staging_dirname(root)
+        staging_dir = Path(root) / dirname
         staging_dir.mkdir(parents=True, exist_ok=True)
         dest = staging_dir / f"{digest}{ext}"
         if not dest.exists():
@@ -1197,7 +1196,7 @@ class CodexAgentDriver:
             tmp.write_bytes(data)
             tmp.replace(dest)
         if not self._staging_ignored:
-            _ensure_staging_ignored(root)
+            _ensure_staging_ignored(root, dirname)
             self._staging_ignored = True
         return str(dest)
 
@@ -2472,8 +2471,8 @@ class CodexAgentDriver:
         return self._thread_id
 
 
-def _ensure_staging_ignored(root: str) -> None:
-    """Best-effort: hide `_STAGING_DIRNAME` from `git status` for *root*.
+def _ensure_staging_ignored(root: str, dirname: str) -> None:
+    """Best-effort: hide the *dirname* staging dir from `git status` for *root*.
 
     Written to `.git/info/exclude` (the common git dir, shared by every linked
     worktree of the same repo) rather than the repo's tracked `.gitignore` —
@@ -2494,7 +2493,7 @@ def _ensure_staging_ignored(root: str) -> None:
             return
         exclude_path = Path(common.stdout.strip()) / "info" / "exclude"
         exclude_path.parent.mkdir(parents=True, exist_ok=True)
-        line = f"/{_STAGING_DIRNAME}/"
+        line = f"/{dirname}/"
         existing = exclude_path.read_text() if exclude_path.exists() else ""
         if line in existing.splitlines():
             return

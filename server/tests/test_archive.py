@@ -514,10 +514,16 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     assert not archive_exists      # nothing was ever moved into the archive home
 
 
-def test_permanent_delete_new_style_removes_worktree(tmp_path):
+# Both per-repo namespace spellings (#1373): a repo root that already had the legacy
+# dot-dir keeps using it, so the purge guard must recognise either one.
+_NAMESPACES = pytest.mark.parametrize("namespace", [".viberpit", ".ccswitch"])
+
+
+@_NAMESPACES
+def test_permanent_delete_new_style_removes_worktree(tmp_path, namespace):
     """Purging a status-flip archived session deletes its worktree at cwd."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    cwd = tmp_path / ".ccswitch" / "worktrees" / "s30"
+    cwd = tmp_path / namespace / "worktrees" / "s30"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
@@ -580,7 +586,8 @@ def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
     assert (cwd / "precious.txt").exists()  # directory untouched
 
 
-def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path):
+@_NAMESPACES
+def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path, namespace):
     """Containment guard: a cwd that IS the shared clone root is never deleted.
 
     A queued session (and a backlog dispatch that never got to spawn) records the
@@ -591,7 +598,7 @@ def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path):
     directory does not exist". The row must still be purged; the clone must stay.
     """
     db_url, _archive_base, orch = _make_orch(tmp_path)
-    clone = tmp_path / "GitHub" / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+    clone = tmp_path / "GitHub" / namespace / "clones" / "cairnea" / "KinDash"
 
     async def run():
         clone.mkdir(parents=True)

@@ -3,7 +3,7 @@
 These replace the old local-scan ``/api/repos`` endpoints.  ViberPit no longer
 scans the user's local ``~/GitHub`` checkouts; it lists the GitHub repos the
 user's ``gh`` credentials can access and clones-on-select into a ViberPit-owned
-namespace under ``<repo_root>/.ccswitch/clones``.
+namespace under ``<repo_root>/<namespace>/clones`` (``paths.repo_namespace``).
 """
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ async def list_github_repos(
     """List GitHub repos accessible to the user's gh creds (pushedAt-desc).
 
     Each repo is annotated with ``cloned`` — whether a ViberPit-owned clone
-    already exists under ``<repo_root>/.ccswitch/clones/<owner>/<name>``.
+    already exists under ``<repo_root>/<namespace>/clones/<owner>/<name>`` (either
+    namespace spelling — ``gitrepos.clone_path`` reuses whichever holds it).
 
     On a GitHub failure, falls back to the last-good list (within
     ``_REPOS_MAX_STALE_SECONDS``) so a rate-limit blip doesn't 502-storm the UI.
