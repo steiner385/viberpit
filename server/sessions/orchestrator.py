@@ -20485,7 +20485,9 @@ class SessionOrchestrator:
         if stored_root is None and cwd_path is not None and cwd_path.exists():
             # New-style archive: the worktree is still at cwd (same NULL-root +
             # present-cwd marker as unarchive).
-            if not await self._delete_worktree_at_cwd(session_id, cwd_path):
+            if not await self._delete_worktree_at_cwd(
+                session_id, cwd_path, kind=row.kind
+            ):
                 return False
         else:
             # Legacy archive (moved into an archive home) — including ancient
@@ -20521,7 +20523,8 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> bool:
+    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path,
+                                      kind: str | None = None) -> bool:
         """Delete a new-style archived session's worktree (still at its cwd).
 
         Returns True when it is safe for the caller to drop the DB row, False when the
@@ -20541,8 +20544,20 @@ class SessionOrchestrator:
         worktree. Purging such a row must never rmtree the clone — on 2026-09-08 it
         did, orphaning 77 KinDash worktrees and failing every queued pm session at
         spawn with "Working directory does not exist".
+
+        The AI-drawer assistant is the expected exception: its cwd is a per-identity
+        scratch dir under ``cfg_root()/assistant/<hash>`` (no ``.ccswitch`` segment),
+        shared by every thread that identity ever opens, so it is deliberately left in
+        place — logged at INFO, since a WARNING auto-files an issue per purge (#2029).
         """
         if ".ccswitch" not in cwd_path.parts:
+            if is_assistant_kind(kind):
+                log.info(
+                    "session.permanent_delete id=%s cwd=%s is the shared assistant "
+                    "scratch directory — leaving it in place, deleting the row only",
+                    session_id, cwd_path,
+                )
+                return True
             log.warning(
                 "session.permanent_delete id=%s cwd=%s is not a managed worktree "
                 "directory — leaving it in place, deleting the row only",
