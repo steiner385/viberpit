@@ -21,6 +21,7 @@ them to a process it can no longer hear.
 import asyncio
 import logging
 
+from server.obs.jsonlog import ContextFilter
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.events import ErrorEvent, TurnFailure
 from server.sessions.permissions import PermissionRegistry
@@ -236,3 +237,79 @@ def test_a_recoverable_drain_error_is_not_signalled_twice_by_the_eof_behind_it()
         assert failures == [("s-dead", "process_crash", None)]
         await d.aclose()
     asyncio.run(run())
+
+
+def _stream_records(caplog) -> list[logging.LogRecord]:
+    """Every WARNING+ record the driver logged — i.e. every one error triage files."""
+    return [r for r in caplog.records
+            if r.name == _DRIVER_LOGGER and r.levelno >= logging.WARNING]
+
+
+def test_mid_turn_reader_death_is_reported_once_with_its_cause(caplog):
+    """#1707: the raised error frame used to be logged twice — ``driver.drain`` (with
+    the traceback) and then ``driver.stream_ended`` for the same loss — so error triage
+    filed one incident as two issues (#1707 and #2331). The drain now logs nothing of
+    its own; the one ``driver.stream_ended`` record carries the cause instead, so the
+    "JSON message exceeded maximum buffer size" text is not lost with the traceback."""
+    client = _ReaderDiesClient([f.tool_use("t1", "Bash", {"command": "ls"}, uuid="a1"), _DIE])
+    failures: list = []
+
+    async def run():
+        d = _build(client, failures)
+        await d.start()
+        await d.send_prompt("go")
+        await _wait_until(lambda: failures)
+        await _wait_until(lambda: not d.drain_alive, timeout=1.0)
+        await d.aclose()
+
+    # The prod handlers stamp the session from the contextvar (ContextFilter); an
+    # `extra=` or %s-only id never reaches the filed issue's "Sessions" row.
+    caplog.handler.addFilter(ContextFilter())
+    with caplog.at_level(logging.DEBUG, logger=_DRIVER_LOGGER):
+        asyncio.run(run())
+
+    recs = _stream_records(caplog)
+    assert [r.getMessage().split(":")[0] for r in recs] == ["driver.stream_ended"], \
+        [r.getMessage() for r in recs]
+    assert "mid_turn=True" in recs[0].getMessage()
+    assert "maximum buffer size" in recs[0].getMessage()
+    assert recs[0].session_id == "s-dead"
+
+
+def test_idle_reader_death_by_raised_error_recomposes(caplog):
+    """#1885: the CLI exited between turns and the SDK surfaced it as a RAISED error
+    frame ("Command failed with exit code 1"), not a bare EOF. ``_idle_listen`` only
+    handled the EOF shape — the raise fell to its catch-all, which logged
+    ``driver.idle_listen`` at ERROR and returned without marking the stream dead or
+    signalling recovery: the pre-#1895 black hole, reopened by the other way a
+    generator can end. Same contract as an idle EOF: one ``stream_lost``, one record."""
+    client = _ReaderDiesClient([])
+    failures: list = []
+
+    async def run():
+        d = _build(client, failures)
+        await d.start()
+        await asyncio.sleep(0.01)
+        assert d.turn_active is False
+        client._q().put_nowait(_DIE)
+        await _wait_until(lambda: failures)
+        assert failures == [("s-dead", "stream_lost", None)]
+        assert d.stream_ended is True
+        # Held, not written into a process nobody can hear.
+        await d.send_prompt("continue")
+        assert client.sent == []
+        await asyncio.sleep(0.02)
+        await d.aclose()
+        assert failures == [("s-dead", "stream_lost", None)]
+
+    with caplog.at_level(logging.DEBUG, logger=_DRIVER_LOGGER):
+        asyncio.run(run())
+
+    # The held prompt logs its own line (a separate, prompt-scoped condition); the
+    # stream death itself must be exactly one record, and no `driver.idle_listen`.
+    recs = [r for r in _stream_records(caplog)
+            if not r.getMessage().startswith("driver.send_prompt")]
+    assert [r.getMessage().split(":")[0] for r in recs] == ["driver.stream_ended"], \
+        [r.getMessage() for r in recs]
+    assert "mid_turn=False" in recs[0].getMessage()
+    assert "maximum buffer size" in recs[0].getMessage()

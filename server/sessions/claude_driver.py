@@ -23,6 +23,7 @@ from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
+from server.obs.context import bind_session
 from .automation_execution import AutomationExecutionFence
 from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
@@ -1284,7 +1285,8 @@ class ClaudeAgentDriver:
                 log.warning("driver.on_recoverable_failure failed session=%s",
                             self.session_id, exc_info=True)
 
-    async def _on_stream_ended(self, *, mid_turn: bool) -> None:
+    async def _on_stream_ended(self, *, mid_turn: bool,
+                               cause: BaseException | None = None) -> None:
         """The SDK cursor ended with nobody closing this driver.
 
         Two causes, one consequence. The CLI process exited — or (2026-09-16, session
@@ -1302,12 +1304,21 @@ class ClaudeAgentDriver:
         Mid-turn it is a ``process_crash`` (recompose and replay the cut-off prompt);
         idle it is ``stream_lost`` (recompose, nothing to replay). The orchestrator's
         crash cap bounds a stream that keeps dying.
+
+        This is the ONE record of a stream death. ``cause`` is the SDK's raised error
+        frame when the stream ended by raising rather than at a bare EOF; it rides on
+        this line (message + traceback) instead of a second log line at the reader,
+        which error triage would file as a separate issue for the same incident
+        (#1707 beside #2331).
         """
         self._stream_ended = True
         if self._closing:
             return
-        log.error("driver.stream_ended: SDK stream ended outside a close session=%s "
-                  "mid_turn=%s — recomposing", self.session_id, mid_turn)
+        reason = f" cause={type(cause).__name__}: {cause}" if cause is not None else ""
+        with bind_session(self.session_id):
+            log.error("driver.stream_ended: SDK stream ended outside a close session=%s "
+                      "mid_turn=%s — recomposing%s", self.session_id, mid_turn, reason,
+                      exc_info=cause)
         await self._signal_recovery(
             TurnFailure(kind="process_crash" if mid_turn else "stream_lost"))
 
@@ -1325,6 +1336,7 @@ class ClaudeAgentDriver:
         ResultMessage (the CLI closes every turn with one), then settle the turn."""
         assert self._source is not None  # only started after start() built the cursor
         ended = False
+        cause: BaseException | None = None
         try:
             while True:
                 try:
@@ -1333,10 +1345,10 @@ class ClaudeAgentDriver:
                     # The SDK reports a dead reader as ONE raised error frame, after
                     # which the cursor is at EOF for good (a generator that raised is
                     # finished). Surface the real cause on the turn, then treat it as
-                    # the stream ending: this turn can never complete.
-                    log.exception("driver.drain session=%s", self.session_id)
+                    # the stream ending: this turn can never complete. No log of our
+                    # own: _on_stream_ended records this death, with `cause` (#1707).
                     await self._surface_drain_error(exc)
-                    ended = True
+                    ended, cause = True, exc
                     break
                 if msg is _EOF:
                     ended = True
@@ -1354,7 +1366,7 @@ class ClaudeAgentDriver:
                 self._stream_ended = True
             await self._end_turn()
             if ended:
-                await self._on_stream_ended(mid_turn=True)
+                await self._on_stream_ended(mid_turn=True, cause=cause)
 
     async def _handle_msg(self, msg) -> None:
         """Route ONE SDK message through the translator and the per-event side effects.
@@ -1591,7 +1603,25 @@ class ClaudeAgentDriver:
         me = asyncio.current_task()
         try:
             while self._listener is me:
-                msg = await self._source.next()
+                try:
+                    msg = await self._source.next()
+                except Exception as exc:
+                    # The other way the cursor ends: a RAISED error frame (the CLI
+                    # exited between turns — "Command failed with exit code 1" — or its
+                    # reader died on an oversized line), after which the generator is
+                    # finished for good. It used to fall to the catch-all below, which
+                    # logged and returned without marking the stream dead or
+                    # signalling recovery: the pre-#1895 black hole again (#1885).
+                    # Same exit as the EOF branch, surfacing the cause on an open
+                    # autonomous turn first, as _drain does for a prompt turn.
+                    if self._closing:
+                        return
+                    self._stream_ended = True
+                    if self._turn_active:
+                        await self._surface_drain_error(exc)
+                        await self._end_turn()
+                    await self._on_stream_ended(mid_turn=False, cause=exc)
+                    return
                 if msg is _EOF:
                     if self._closing:
                         return
