@@ -581,6 +581,29 @@ async def test_a_changed_skip_set_reports_immediately():
 
 
 @pytest.mark.asyncio
+async def test_a_readme_index_is_not_reported_as_a_skipped_doc(caplog):
+    """#2478: docs/product/features/README.md has no frontmatter and "README"
+    isn't a valid slug — an intentional non-doc, not a malformed one. It must
+    not inflate the skipped-doc count, appear in the persisted unindexed list,
+    or fire the WARNING that ViberPit's error-triage auto-files."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    docs = [("docs/product/features/a.md", _fdoc("a", "A")),
+            ("docs/product/features/README.md", "# Feature registry\n\nSee below.\n")]
+
+    loop, _saved, _upserted, _applied = _loop(ctx, [view], pages, feature_docs=docs)
+    with caplog.at_level(logging.DEBUG, logger="server.automations.pm_sync"):
+        await loop.tick()
+
+    assert not any(kw.get("kind") == "feature_doc_skipped" for _, _, kw in ctx.events)
+    assert loop.unindexed_saved[-1] == ("p1", [])
+    assert not any(r.getMessage().startswith("pm_sync.bad_feature_doc")
+                   for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_skipped_docs_are_persisted_onto_the_project_row():
     """Issue #2166: roadmap_health reads Project.unindexed_docs, so a skipped
     doc must be saved as structured (path, error) pairs, not just logged."""
@@ -1012,6 +1035,30 @@ async def test_persona_index_runs_and_applies_a_plan():
     assert len(loop.persona_applied) == 1
     _, plan = loop.persona_applied[0]
     assert plan.upserts[0].slug == "teen"
+
+
+@pytest.mark.asyncio
+async def test_a_readme_index_is_not_reported_as_a_bad_persona_doc(caplog):
+    """#2478: docs/product/personas/README.md has no frontmatter and "README"
+    isn't a valid slug — an intentional non-doc, not a malformed one. It must
+    not be indexed and must not fire the WARNING that ViberPit's error-triage
+    auto-files."""
+    ctx = Ctx()
+    persona_docs = [
+        ("docs/product/personas/teen.md", "---\nslug: teen\ntitle: Teen\n---\nbody\n"),
+        ("docs/product/personas/README.md", "# Persona registry\n\nSee below.\n"),
+    ]
+    loop, _, _, _ = _loop(
+        ctx, [_view(repo="o/r", backfill_done=True)],
+        [_issue_page([], None, False), _pr_page([], None, False)],
+        persona_docs=persona_docs)
+    with caplog.at_level(logging.DEBUG, logger="server.automations.pm_sync"):
+        await loop.tick()
+
+    _, plan = loop.persona_applied[0]
+    assert [u.slug for u in plan.upserts] == ["teen"]
+    assert not any(r.getMessage().startswith("pm_sync.bad_persona_doc")
+                   for r in caplog.records)
 
 
 @pytest.mark.asyncio

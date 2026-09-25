@@ -76,6 +76,13 @@ class FeatureDocError(ValueError):
     must never poison the whole index (spec §4)."""
 
 
+class NotAFeatureDoc(FeatureDocError):
+    """Raised when *text* isn't shaped like a feature doc at all: no
+    frontmatter fence, and the path's stem isn't a valid slug either (e.g. a
+    directory ``README.md``). This is expected, deliberate filtering, not a
+    malformed doc — callers should skip it quietly rather than warn (#2478)."""
+
+
 @dataclass(frozen=True)
 class FeatureLinkRef:
     kind: str
@@ -201,7 +208,7 @@ def parse_feature_doc(text: str, *, path: str | None = None) -> FeatureDoc:
         # repos that have no CI guard over their own docs.
         body = text.lstrip("\n")
     else:
-        raise FeatureDocError("missing frontmatter fence")
+        raise NotAFeatureDoc("missing frontmatter fence")
 
     # Accept the `capability:`/`status:` spelling and an H1-only title.
     # Agent-authored docs converge on that shape because the prompt that asks

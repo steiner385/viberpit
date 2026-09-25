@@ -21,7 +21,7 @@ from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.pm.feature_index import (
     FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.evidence import PathResolution
-from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
+from server.pm.featuredoc import FeatureDoc, FeatureDocError, NotAFeatureDoc, parse_feature_doc
 from server.pm.artifactdoc import ArtifactDocError, parse_artifact_doc
 from server.pm.artifact_sync_seams import ArtifactFrontmatterResult
 from server.pm.gh_projects import (
@@ -35,7 +35,7 @@ from server.pm.github_sync import (
 from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
 from server.pm.mirror_store import ProductSyncView
 from server.pm.persona_index import PersonaIndexPlan, PersonaRowView, plan_persona_index
-from server.pm.personadoc import PersonaDoc, PersonaDocError, parse_persona_doc
+from server.pm.personadoc import NotAPersonaDoc, PersonaDoc, PersonaDocError, parse_persona_doc
 from server.sdlc.constitution_status import classify_document
 
 from .base import AutomationStatus, ConfigField
@@ -700,6 +700,10 @@ class PmSyncLoop:
         for path, text in read.docs:
             try:
                 docs.append((path, parse_persona_doc(text, path=path)))
+            except NotAPersonaDoc:
+                # Deliberately not a persona doc (e.g. a directory README) —
+                # expected filtering, not a failure worth warning about (#2478).
+                continue
             except PersonaDocError as e:
                 log_event_throttled(log, self._bad_persona_doc_log, f"{view.repo}\0{path}\0{e}",
                                     logging.WARNING, "pm_sync.bad_persona_doc",
@@ -739,6 +743,10 @@ class PmSyncLoop:
         for path, text in main.docs:
             try:
                 doc = parse_feature_doc(text, path=path)
+            except NotAFeatureDoc:
+                # Deliberately not a feature doc (e.g. a directory README) —
+                # expected filtering, not a failure worth reporting (#2478).
+                continue
             except FeatureDocError as e:
                 # repo and path are names, so a plain message would give every
                 # broken doc its own fingerprint and its own filed issue — the
@@ -778,6 +786,8 @@ class PmSyncLoop:
                     for path, text in branch.docs:
                         try:
                             doc = parse_feature_doc(text, path=path)
+                        except NotAFeatureDoc:
+                            continue  # expected non-doc filtering (#2478)
                         except FeatureDocError as e:
                             skipped.append(f"{path}: {e}")
                             skipped_pairs.append((path, str(e)))
