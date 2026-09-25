@@ -346,22 +346,42 @@ def test_pull_request_info_repo_defaults_empty_for_old_payload():
     assert PullRequestInfo.from_dict(d).repo == ""
 
 
-from server.github.pr_status import build_population_query, parse_population_response
+from server.github.pr_status import (
+    build_population_merged_query, build_population_open_query, parse_population_response,
+)
 
 
-def test_build_population_query_scopes_to_repo_and_date():
-    q = build_population_query("steiner385/viberpit", "2026-06-18")
+def test_build_population_open_query_scopes_to_repo():
+    q = build_population_open_query("steiner385/viberpit")
     assert 'repository(owner: "steiner385", name: "viberpit")' in q
     assert "pullRequests(states: OPEN" in q
-    assert 'is:pr is:merged merged:>=2026-06-18' in q
     assert "statusCheckRollup" in q  # shared node fields are present
+
+
+def test_build_population_merged_query_scopes_to_repo_and_date():
+    q = build_population_merged_query("steiner385/viberpit", "2026-06-18")
+    assert 'repo:steiner385/viberpit is:pr is:merged merged:>=2026-06-18' in q
+    assert "statusCheckRollup" in q  # shared node fields are present
+
+
+def test_population_open_and_merged_queries_are_separate_documents():
+    """Regression (cairnea/KinDash pipeline blank): both halves select the full
+    _PR_NODE_FIELDS (files + check contexts), and for a big repo the COMBINED
+    document exceeded GitHub's edge timeout and 504'd every poll — no usable data,
+    repo silently absent from the board. The open-PR block and the merged-PR search
+    must therefore never share one GraphQL document."""
+    open_q = build_population_open_query("o/r")
+    merged_q = build_population_merged_query("o/r", "2026-06-18")
+    assert "merged: search(" not in open_q
+    assert "pullRequests(states: OPEN" not in merged_q
+    assert "repo: repository(" not in merged_q
 
 
 def test_pr_node_fields_include_created_at_and_merge_commit():
     """createdAt + mergeCommit.oid are timeline waypoints (SPEC §2); both the
     per-branch and population queries share _PR_NODE_FIELDS, so both carry them."""
     per_branch = build_pr_query([("o/r", "br")])
-    population = build_population_query("o/r", "2026-06-18")
+    population = build_population_open_query("o/r")
     for q in (per_branch, population):
         assert "createdAt" in q
         assert "mergeCommit { oid }" in q
@@ -470,7 +490,7 @@ def _repo_node(deploy_nodes, env_names, pr_nodes=()):
 
 
 def test_population_query_lists_environments():
-    q = build_population_query("o/r", "2026-07-01")
+    q = build_population_open_query("o/r")
     assert "environments(first: 100)" in q
 
 
@@ -601,11 +621,11 @@ def test_parse_pr_detail_response_missing_pr_degrades_empty():
     assert parse_pr_detail_response({}) == {"checks": [], "reviews": [], "mergeable": None}
 
 
-def test_build_population_query_isolates_deploy_fields():
+def test_build_population_open_query_isolates_deploy_fields():
     """deployments/environments must live in a SEPARATE aliased repository block so
     a forbidden Deployments/Environments permission null-propagates only that alias,
     not the `repo:` block that carries the PR population (issue: blank pipeline)."""
-    q = build_population_query("o/r", "2026-06-18")
+    q = build_population_open_query("o/r")
     assert "deploys: repository(" in q
     repo_block = q[q.index("repo: repository("):q.index("deploys: repository(")]
     assert "pullRequests" in repo_block

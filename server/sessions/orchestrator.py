@@ -15051,15 +15051,23 @@ class SessionOrchestrator:
         return sorted(repos)
 
     @staticmethod
-    def _stage_models_sync(pop: dict, history) -> "dict[str, StageModel]":
+    def _stage_models_sync(
+        pop: dict, history, errors: dict[str, str] | None = None,
+    ) -> "dict[str, StageModel]":
         """The blocking half of ``all_repos_stage_models``: one ``ci_graph``
         SQLite read per repo plus pure compute.
 
         Runs on a worker thread (RC1) — it must not touch the event loop,
         awaitables, or any asyncio primitive. ``pop`` is the already-snapshotted
         PR population, so nothing here reads mutable orchestrator state.
+
+        ``errors`` (repo -> last refresh-failure reason) adds a degraded,
+        empty-nodes entry for a watched repo that has NO ``pop`` entry at all —
+        i.e. its population has never once fetched successfully — so it still
+        appears on the board with a reason instead of being silently absent
+        (issue: cairnea/KinDash, every poll 504'd).
         """
-        from server.pipeline.track import build_stage_model, order_deploy_envs
+        from server.pipeline.track import StageModel, build_stage_model, order_deploy_envs
         models: dict = {}
         for repo in list(pop.keys()):
             prs = pop.get(repo, ())
@@ -15072,6 +15080,9 @@ class SessionOrchestrator:
                 repo, ci_graph=ci_graph, has_queue=has_queue,
                 deploy_envs=order_deploy_envs(repo_envs),
             )
+        for repo, reason in (errors or {}).items():
+            if repo not in models:
+                models[repo] = StageModel(repo=repo, nodes=(), sync_error=reason)
         return models
 
     async def all_repos_stage_models(self) -> "dict[str, StageModel]":
@@ -15085,7 +15096,8 @@ class SessionOrchestrator:
         """
         pop = self._pr_population.all()
         history = self._pr_population.history_store()
-        return await asyncio.to_thread(self._stage_models_sync, pop, history)
+        errors = self._pr_population.errors()
+        return await asyncio.to_thread(self._stage_models_sync, pop, history, errors)
 
     async def all_merge_trains(self) -> "dict[str, MergeTrainState]":
         """Merge-train state for every watched repo, derived from the 24-hour
@@ -15153,13 +15165,22 @@ class SessionOrchestrator:
         `session`/`node_states`/etc. come for free — composed with a live
         checks+reviews+mergeability fetch (the population poll never fetches
         reviews, and its own checks fetch has no per-check url). Returns None
-        when the PR isn't in the cached population; the route 404s on that."""
+        when the PR isn't in the cached population; the route 404s on that —
+        UNLESS the repo's most recent population refresh FAILED, in which case
+        "not in the cache" says nothing about whether the PR exists (the cache
+        is missing or stale), and this returns a ``pr_not_synced`` marker dict
+        carrying the reason so the route can 502 with it instead of an
+        indistinguishable bare 404 (issue: cairnea/KinDash — every poll 504'd,
+        so the repo had no cache entry at all and every PR read as "not found")."""
         match = None
         for p in await self.all_prs():
             if p.pr.repo == repo and p.pr.number == number:
                 match = p
                 break
         if match is None:
+            sync_error = self._pr_population.last_error(repo)
+            if sync_error is not None:
+                return {"pr_not_synced": True, "syncError": sync_error}
             return None
         out = match.to_dict()
         out["sessionId"] = match.session_id

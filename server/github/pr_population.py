@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import random
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Union
@@ -27,7 +28,8 @@ from .pr_status import (
     PullRequestInfo,
     build_env_deployments_query,
     build_eta_checks_query,
-    build_population_query,
+    build_population_merged_query,
+    build_population_open_query,
     merge_env_deployments,
     missing_active_envs,
     parse_eta_checks_response,
@@ -51,14 +53,47 @@ def _merged_since(retention_days: int) -> str:
     return since.date().isoformat()
 
 
-def _default_query(repo: str, retention_days: int) -> dict:
-    query = build_population_query(repo, _merged_since(retention_days))
-    token = app_auth.token_for_owner(repo.split("/", 1)[0])
+def _run_population_graphql(
+    query: str, token: str | None,
+) -> tuple[dict, subprocess.CompletedProcess[str]]:
+    """Run one ``gh api graphql`` call, returning ``(response, proc)``.
+
+    ``response`` is the parsed JSON body (``{}`` if it didn't parse); ``proc``
+    is the raw completed process so callers can inspect ``returncode``/``stderr``.
+    """
     proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
     try:
         response = json.loads(proc.stdout or "{}")
     except (json.JSONDecodeError, TypeError):
         response = {}
+    return (response if isinstance(response, dict) else {}), proc
+
+
+def _default_query(repo: str, retention_days: int) -> dict:
+    """Fetch one repo's PR population as TWO separate ``gh api graphql`` calls —
+    open PRs + deploys, then recently-merged PRs — merged into the single
+    ``{"data": {"repo", "deploys"/folded, "merged"}}`` shape
+    ``parse_population_response`` expects.
+
+    Split (rather than one combined document) because both halves select the
+    full, expensive ``_PR_NODE_FIELDS`` (files + check contexts) — for a big
+    enough repo the combined document's execution time exceeds GitHub's edge
+    timeout and the whole request 504s with no usable data at all, silently
+    emptying that repo from the pipeline board every cycle (verified live
+    against ``cairnea/KinDash``: the combined query 504s 100% of the time;
+    each half alone comfortably succeeds). See
+    :func:`server.github.pr_status.build_population_merged_query`.
+
+    The OPEN half is the fatal one (no PRs at all without it, same as
+    before the split). The MERGED half is best-effort: on failure this
+    degrades to "no recently-merged PRs this cycle" rather than blanking the
+    whole repo, and is retried again next poll cycle.
+    """
+    owner = repo.split("/", 1)[0]
+    token = app_auth.token_for_owner(owner)
+
+    open_query = build_population_open_query(repo)
+    response, proc = _run_population_graphql(open_query, token)
     data = response.get("data") if isinstance(response, dict) else None
     # gh exits non-zero whenever the GraphQL response carries an `errors` array —
     # even when partial `data` is usable. That happens when the App lacks
@@ -66,7 +101,7 @@ def _default_query(repo: str, retention_days: int) -> dict:
     # statusCheckRollup contexts) null out, but the PR population survives. Only
     # treat a non-zero exit as fatal when there is no usable data at all; otherwise
     # degrade gracefully so the pipeline still renders PRs (issue: blank pipeline).
-    usable = isinstance(data, dict) and (data.get("repo") or data.get("merged"))
+    usable = isinstance(data, dict) and data.get("repo")
     if proc.returncode != 0 and not usable:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
     if proc.returncode != 0:
@@ -74,7 +109,31 @@ def _default_query(repo: str, retention_days: int) -> dict:
         log.warning("pr_population.partial_graphql repo=%s errors=%s", repo, errs)
     _fold_deploys(response)
     _supplement_env_deployments(response, repo, token)
+
+    if not isinstance(response.get("data"), dict):
+        response["data"] = {}
+    response["data"]["merged"] = _fetch_merged(repo, retention_days, token)
     return response
+
+
+def _fetch_merged(repo: str, retention_days: int, token: str | None) -> dict | None:
+    """The ``data.merged`` block for ``repo``, or ``None`` if the (best-effort)
+    merged-PR search failed — the caller then simply has no recently-merged PRs
+    this cycle and tries again on the next poll."""
+    query = build_population_merged_query(repo, _merged_since(retention_days))
+    try:
+        response, proc = _run_population_graphql(query, token)
+        data = response.get("data")
+        merged = data.get("merged") if isinstance(data, dict) else None
+        if proc.returncode != 0 and not merged:
+            raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merged) failed")
+        return merged
+    except Exception as exc:
+        log_gh_failure(
+            log, str(exc), "pr_population.merged_fetch_failed repo=%s",
+            repo, exc_info=True,
+        )
+        return None
 
 
 def _fold_deploys(response: dict) -> None:
@@ -288,6 +347,12 @@ class PrPopulationPoller:
         self._fail_count = 0
         self._cooldown_until = 0.0
         self._cache: dict[str, tuple[PullRequestInfo, ...]] = {}
+        # repo -> the last refresh_failed reason, so a repo that never once
+        # succeeds (e.g. every fetch 504s) still shows up as "sync failing:
+        # <reason>" rather than being silently absent from `all()`/`cached()`
+        # with no trace beyond a WARNING log line. Cleared on that repo's next
+        # successful refresh.
+        self._last_error: dict[str, str] = {}
         self._repos_provider: (
             Callable[[], list[str]] | Callable[[], Awaitable[list[str]]] | None
         ) = None
@@ -342,6 +407,17 @@ class PrPopulationPoller:
 
     def all(self) -> dict[str, tuple[PullRequestInfo, ...]]:
         return dict(self._cache)
+
+    def last_error(self, repo: str | None) -> str | None:
+        """The most recent refresh failure reason for ``repo``, or ``None`` if
+        its last refresh succeeded (or it has never been polled)."""
+        if not repo:
+            return None
+        return self._last_error.get(repo)
+
+    def errors(self) -> dict[str, str]:
+        """Every repo whose most recent refresh failed, mapped to the reason."""
+        return dict(self._last_error)
 
     def _store(self):
         """Lazy-initialize the HistoryStore (once only).  Returns None if unavailable."""
@@ -628,6 +704,7 @@ class PrPopulationPoller:
                 response = await asyncio.to_thread(self._query_fn, repo)
                 new_cache[repo] = parse_population_response(response, repo)
                 any_ok = True
+                self._last_error.pop(repo, None)
             except Exception as exc:
                 # ``_default_query`` raises ``GhError`` carrying gh's stderr, so
                 # a host condition (offline, rate-limited, no credential) is
@@ -637,6 +714,12 @@ class PrPopulationPoller:
                 log_gh_failure(log, str(exc), "pr_population.refresh_failed repo=%s",
                                repo, exc_info=True)
                 any_fail = True
+                # Recorded even though the repo keeps its stale cache entry (if
+                # any) below — a repo that has NEVER once succeeded has no
+                # cache entry to fall back on, so without this it just vanishes
+                # from all()/cached() with only a log line to explain why
+                # (issue: cairnea/KinDash invisible on the pipeline board).
+                self._last_error[repo] = str(exc)
         # Enrich open PRs with ETA (best-effort; never propagates failures).
         if new_cache:
             try:
@@ -662,6 +745,9 @@ class PrPopulationPoller:
         except Exception:
             log.warning("pr_population.timeline_capture_failed", exc_info=True)
         self._cache.update(new_cache)
+        # Drop error entries for repos no longer watched — same bound-the-map
+        # rule as `_eta_cache`/`_prev_stage` (`_evict_stale`).
+        self._last_error = {r: e for r, e in self._last_error.items() if r in repos}
         if any_fail and not any_ok:
             self._fail_count += 1
             self._cooldown_until = self._clock() + min(

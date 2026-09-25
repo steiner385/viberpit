@@ -57,6 +57,9 @@ class _Pop:
     def history_store(self):
         return _BlockingStore()
 
+    def errors(self):
+        return {}
+
 
 def _orch(population=None):
     orch = object.__new__(SessionOrchestrator)  # skip heavy __init__

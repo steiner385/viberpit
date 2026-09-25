@@ -21,6 +21,9 @@ class _FakePop:
     def history_store(self):
         return _FakeStore()
 
+    def errors(self):
+        return {}
+
 
 def _mk_orch(monkeypatch_or_population, population=None):
     # Support both old call style _mk_orch(population) and new _mk_orch(monkeypatch, population)

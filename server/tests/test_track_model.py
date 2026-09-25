@@ -15,6 +15,16 @@ def test_stage_model_roundtrip():
     assert StageModel.from_dict(d) == m
 
 
+def test_stage_model_sync_error_roundtrip_and_omitted_when_healthy():
+    healthy = StageModel(repo="o/r", nodes=(StageNode("ci", "CI", "ci", 0),))
+    assert "syncError" not in healthy.to_dict()  # healthy payload is unchanged
+
+    failing = StageModel(repo="o/r", nodes=(), sync_error="gh: HTTP 504")
+    d = failing.to_dict()
+    assert d == {"repo": "o/r", "nodes": [], "syncError": "gh: HTTP 504"}
+    assert StageModel.from_dict(d) == failing
+
+
 def test_node_status_roundtrip():
     s = NodeStatus(id="ci", state="active")
     assert s.to_dict() == {"id": "ci", "state": "active"}
