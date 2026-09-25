@@ -190,6 +190,8 @@ async def test_switch_account_manual_works_when_no_driver(monkeypatch, tmp_path)
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", spy_persist_pin)
     monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts",
                         lambda: [{"name": "copilot_acct"}, {"name": "tony_kindash"}])
+    monkeypatch.setattr(orch_mod, "_eligible_enabled_accounts",
+                        lambda **_kw: ["copilot_acct", "tony_kindash"])
 
     await o.switch_account_manual("s1", "tony_kindash")
 
@@ -273,6 +275,8 @@ async def test_run_command_account_works_without_driver(monkeypatch):
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", spy_persist_pin)
     monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts",
                         lambda: [{"name": "copilot_acct"}, {"name": "tony_kindash"}])
+    monkeypatch.setattr(orch_mod, "_eligible_enabled_accounts",
+                        lambda **_kw: ["copilot_acct", "tony_kindash"])
 
     result = await o.run_command("s1", "/account", "tony_kindash")
 
