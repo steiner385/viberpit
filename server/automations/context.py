@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from ccswitch import brand
 from server.db import db_session
@@ -180,14 +181,21 @@ class AutomationContext:
                    target: str | None = None, session_id: str | None = None,
                    detail: dict | None = None) -> None:
         """Append one activity event, then prune to the cap. Best-effort:
-        swallows + logs all errors; never propagates into the caller."""
+        swallows + logs all errors; never propagates into the caller.
+
+        ``session_id`` is a FK to ``sessions``, and the session an automation is
+        acting on can be deleted between its decision and this write (a
+        permanent-delete mid-tick). That is an expected race, not a defect: the
+        event is kept without the link (the id moves to ``detail.session_gone``) instead of being lost behind a WARNING that auto-files
+        an issue (#1815)."""
         try:
-            async with db_session() as db:
-                db.add(AutomationEvent(
-                    automation_id=self.automation_id, level=level, summary=summary,
-                    kind=kind, target=target, session_id=session_id, detail=detail))
-                await db.flush()
-                await self._prune(db)
+            try:
+                await self._append(level, summary, kind, target, session_id, detail)
+            except IntegrityError:
+                if session_id is None:
+                    raise
+                await self._append(level, summary, kind, target, None,
+                                   {**(detail or {}), "session_gone": session_id})
         except Exception:
             log.warning("automation emit failed (automation=%s)", self.automation_id,
                         exc_info=True)
@@ -207,6 +215,16 @@ class AutomationContext:
                     automation=self.automation_id, fanout_when_unconfigured=False)
             except Exception:
                 log.debug("automation notify_event failed", exc_info=True)
+
+    async def _append(self, level: str, summary: str, kind: str | None,
+                      target: str | None, session_id: str | None,
+                      detail: dict | None) -> None:
+        async with db_session() as db:
+            db.add(AutomationEvent(
+                automation_id=self.automation_id, level=level, summary=summary,
+                kind=kind, target=target, session_id=session_id, detail=detail))
+            await db.flush()
+            await self._prune(db)
 
     async def _prune(self, db) -> None:
         ids = (await db.execute(

@@ -97,3 +97,40 @@ def test_target_state_round_trip(tmp_path):
         assert await ctx.get_target_state("a/b#1") == {"attempts": 3}
 
     asyncio.run(run())
+
+
+def test_emit_for_a_deleted_session_keeps_the_event_without_the_link(tmp_path, caplog):
+    """#1815: the session is deleted between the automation's decision and its
+    emit. Postgres rejects the FK; the event must still land, unlinked, and the
+    race must not log the WARNING that auto-files an issue."""
+    import logging
+
+    from sqlalchemy import event
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'fk.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        from server import db as db_mod
+        from server.db.models import Automation
+        from server.automations.context import AutomationContext
+
+        # SQLite ignores FKs by default; enforce them the way Postgres does.
+        @event.listens_for(db_mod._engine.sync_engine, "connect")
+        def _fk_on(dbapi_conn, _rec):
+            dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
+        await db_mod._engine.dispose()  # drop pooled conns so the pragma applies
+        async with db_session() as db:
+            db.add(Automation(id="autopilot"))
+        ctx = AutomationContext("autopilot")
+        with caplog.at_level(logging.WARNING, logger="server.automations.context"):
+            await ctx.emit("info", "gone: goal met", kind="complete",
+                           session_id="no-such-session", detail={"a": 1})
+        events = await ctx.list_events()
+        assert [e["summary"] for e in events] == ["gone: goal met"]
+        assert events[0]["sessionId"] is None
+        assert events[0]["detail"] == {"a": 1, "session_gone": "no-such-session"}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    asyncio.run(run())
