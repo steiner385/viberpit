@@ -48,6 +48,7 @@ from server.codex import manager as mgr_mod
 from server.codex import protocol as codex_protocol
 from server.codex import redaction, schema
 from server.codex.capabilities import CodexAvailability
+from server.codex.driver import CodexRunnerUnavailable
 from server.codex.external_auth import ExternalAuthUnavailable
 from server.obs.context import log_event
 from server.obs.error_signature import signature_of
@@ -74,6 +75,7 @@ from server.tests.fakes.fake_codex_app_server import FakeCodexAppServer
         (codex_protocol.CodexProtocolError("other"), "protocol_error"),
         (codex_protocol.CodexRequestUnrouted("nobody"), "unrouted"),
         (ExternalAuthUnavailable("authority refused"), "external_auth_unavailable"),
+        (CodexRunnerUnavailable("gone"), "runner_unavailable"),
     ],
 )
 def test_each_app_server_failure_reduces_to_its_own_category(exc, category):
@@ -102,6 +104,7 @@ def test_every_protocol_category_is_distinguishable():
         codex_protocol.CodexProtocolError("x"),
         codex_protocol.CodexRequestUnrouted("x"),
         ExternalAuthUnavailable("x"),
+        CodexRunnerUnavailable("x"),
     ]
     categories = [redaction.scrub_exception(e) for e in excs]
     assert len(set(categories)) == len(categories), f"categories collide: {categories}"

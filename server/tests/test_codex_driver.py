@@ -398,6 +398,62 @@ async def test_a_prompt_starts_a_turn_and_streams_its_answer(harness):
 
 
 @pytest.mark.asyncio
+async def test_a_prompt_is_requeued_without_an_error_card_when_the_runner_died_first(
+    harness,
+):
+    """#1971: the runner can die in the window between the orchestrator's ensure
+    and `_start_turn` actually calling it. That must re-queue the prompt via the
+    same path `_drain_queue` already had for this — not drop it behind a generic
+    `codex_turn_start_failed` card mislabelled `runtime_error`."""
+    driver = await harness.boot()
+    await harness.manager.stop(ACCOUNT)
+
+    # The runner is gone, so nothing more crosses the wire: no `harness.settle()`,
+    # which waits on that transport and would just time out.
+    await driver.send_prompt("hello")
+
+    assert driver.queued() == ["hello"]
+    assert harness.of(ev.ErrorEvent) == []
+    # No echo yet either: the runner check happens before the user message is
+    # emitted, so a retry after recovery cannot double it.
+    assert harness.of(ev.UserMessage) == []
+    assert driver.turn_active is False
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_prompt_is_echoed_exactly_once_after_the_runner_recovers(
+    harness,
+):
+    """The other half of #1971: once the runner is back, draining the requeued
+    entry must produce exactly one echo and one `turn/start` — never two."""
+    driver = await harness.boot()
+    real_client = driver._client
+    should_fail = True
+
+    def flaky_client():
+        nonlocal should_fail
+        if should_fail:
+            should_fail = False
+            raise CodexRunnerUnavailable("test: runner not back yet")
+        return real_client()
+
+    driver._client = flaky_client  # type: ignore[method-assign]
+
+    await driver.send_prompt("hello")
+    await harness.settle()
+    assert driver.queued() == ["hello"]
+    assert harness.of(ev.UserMessage) == []
+
+    await driver._drain_queue()
+    harness.notify_turn_started()
+    await harness.settle()
+
+    assert [e.text for e in harness.of(ev.UserMessage)] == ["hello"]
+    assert driver.queued() == []
+    assert driver.turn_active is True
+
+
+@pytest.mark.asyncio
 async def test_a_no_pr_marker_turn_latches_the_resolution_and_its_note(harness):
     """#1963: Codex has no `mark_no_pr` tool, so the driver must latch the
     resolution AND the note off the marker text alone — the same pair

@@ -122,9 +122,11 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
     error=runtime_error`` was the whole content of #1485.
 
     Built on demand rather than at import: ``server.codex.protocol`` imports this
-    module, so a module-level import of it would be circular.
+    module, so a module-level import of it would be circular. ``server.codex.driver``
+    imports this module too, for the same reason.
     """
     from server.codex import protocol as _p
+    from server.codex.driver import CodexRunnerUnavailable
     from server.codex.external_auth import ExternalAuthUnavailable
 
     return (
@@ -138,6 +140,12 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
         # Authority refused / unreachable / degraded at login or refresh. A
         # RuntimeError, so without its own name it read `runtime_error` (#1942).
         (ExternalAuthUnavailable, "external_auth_unavailable"),
+        # The account's app-server died/was restarted between the orchestrator's
+        # ensure and a driver call needing it — a supervision race, not a
+        # protocol fault. Named specifically (not the `CodexDriverError` base,
+        # which also covers unrelated policy-transition failures) so it no
+        # longer collapses onto `runtime_error` (#1971).
+        (CodexRunnerUnavailable, "runner_unavailable"),
     )
 
 
