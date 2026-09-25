@@ -7,7 +7,7 @@ import pytest
 
 CFG = {"target_repo": "steiner385/viberpit", "min_count_error": 1, "min_count_warning": 3,
        "warning_window_h": 24, "daily_cap": 10, "comment_every_h": 24,
-       "ignore_loggers": "uvicorn.error,websockets", "retention_days": 90}
+       "ignore_loggers": "uvicorn.error,websockets,claude_agent_sdk", "retention_days": 90}
 
 
 def _row(**kw):
@@ -57,6 +57,15 @@ def test_is_ignored_prefix_match():
     assert is_ignored("uvicorn.error", CFG) and is_ignored("websockets.server", CFG)
     assert not is_ignored("server.sessions", CFG) and not is_ignored(None, CFG)
     assert not is_ignored("uvicorn.error", {**CFG, "ignore_loggers": ""})
+
+
+def test_is_ignored_claude_agent_sdk_reader_noise():
+    # #1886: the vendored SDK's own "Fatal error in message reader" ERROR is a
+    # duplicate of the one record claude_driver already logs for the same dead
+    # cursor (#1885) — ignored here so triage never files it as a second issue.
+    from server.automations.error_triage import is_ignored
+    assert is_ignored("claude_agent_sdk._internal.query", CFG)
+    assert not is_ignored("claude_agent_sdk", {**CFG, "ignore_loggers": ""})
 
 
 def test_issue_title_and_labels():

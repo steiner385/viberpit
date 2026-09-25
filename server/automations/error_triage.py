@@ -59,8 +59,14 @@ class ErrorTriage:
         ConfigField(key="daily_cap", label="New issues per day", type="int", default=10),
         ConfigField(key="comment_every_h", label="Recurrence comment gap (hours)",
                     type="int", default=24),
+        # claude_agent_sdk: the vendored SDK logs its own ERROR ("Fatal error in
+        # message reader: …") whenever the CLI subprocess exits between turns —
+        # the exact RAISED-cursor-end condition claude_driver._idle_listen/_drain
+        # already catch and settle with one canonical record of their own (#1885).
+        # Left un-ignored, error triage fingerprinted the vendor's log line as a
+        # second, separate incident for the same event (#1886).
         ConfigField(key="ignore_loggers", label="Ignored logger prefixes", type="string",
-                    default="uvicorn.error,websockets",
+                    default="uvicorn.error,websockets,claude_agent_sdk",
                     help="Comma-separated; still counted, never filed."),
         ConfigField(key="retention_days", label="Retention (days)", type="int", default=90,
                     help="Unfiled/resolved signatures not seen this long are deleted."),
