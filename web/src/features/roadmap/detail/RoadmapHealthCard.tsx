@@ -38,14 +38,17 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
 
   const {
     unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs, governance,
-    // Defaulted: an edge predating #2162 omits them.
+    // Defaulted: an edge predating #2162/#2161 omits them.
     danglingEvidence = [], untestedCapabilities = [], codeWithoutSpecs = [], stateBehindSpec = [],
+    artifactsEpicClosedNotDone = [], artifactsUnknownCapability = [], artifactsMissingFrontmatter = [],
   } = health
   const nothingToSay =
     unparentedCapabilities.length === 0 && unlinkedInitiatives.length === 0 &&
     staleProposed.length === 0 && staleInbox === 0 && unindexedDocs.length === 0 && !governance &&
     danglingEvidence.length === 0 && untestedCapabilities.length === 0 &&
-    codeWithoutSpecs.length === 0 && stateBehindSpec.length === 0
+    codeWithoutSpecs.length === 0 && stateBehindSpec.length === 0 &&
+    artifactsEpicClosedNotDone.length === 0 && artifactsUnknownCapability.length === 0 &&
+    artifactsMissingFrontmatter.length === 0
   if (nothingToSay) return null
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
@@ -118,6 +121,29 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
           <li>
             {stateBehindSpec.length} {stateBehindSpec.length === 1 ? 'capability has' : 'capabilities have'} a state older than {stateBehindSpec.length === 1 ? 'its' : 'their'} newest spec: {' '}
             <SlugLinks slugs={stateBehindSpec} path={capPath} />
+          </li>
+        )}
+        {artifactsEpicClosedNotDone.length > 0 && (
+          <li>
+            {artifactsEpicClosedNotDone.length} {artifactsEpicClosedNotDone.length === 1 ? 'initiative' : 'initiatives'} {artifactsEpicClosedNotDone.length === 1 ? "has" : "have"} a closed epic but {artifactsEpicClosedNotDone.length === 1 ? "isn't" : "aren't"} marked done: {' '}
+            <SlugLinks slugs={artifactsEpicClosedNotDone} path={initiativePath} />
+          </li>
+        )}
+        {artifactsUnknownCapability.length > 0 && (
+          <li>
+            {artifactsUnknownCapability.length} artifact frontmatter {artifactsUnknownCapability.length === 1 ? 'capability names' : 'capabilities name'} no indexed feature: {' '}
+            {artifactsUnknownCapability.map((a, i) => (
+              <Fragment key={`${a.initiative}:${a.capability}`}>
+                {i > 0 && ', '}
+                <Link to={initiativePath(a.initiative)} className="underline" title={a.initiative}>{a.capability}</Link>
+              </Fragment>
+            ))}
+          </li>
+        )}
+        {artifactsMissingFrontmatter.length > 0 && (
+          <li>
+            {artifactsMissingFrontmatter.length} {artifactsMissingFrontmatter.length === 1 ? 'initiative has' : 'initiatives have'} a committed artifact with no frontmatter: {' '}
+            <SlugLinks slugs={artifactsMissingFrontmatter} path={initiativePath} />
           </li>
         )}
       </ul>

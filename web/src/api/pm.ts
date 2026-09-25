@@ -386,6 +386,13 @@ export interface DanglingEvidence {
   path: string
 }
 
+/** A frontmatter `capabilities:` entry (issue #2161) that names no indexed
+ *  Feature in the project. */
+export interface ArtifactUnknownCapability {
+  initiative: string
+  capability: string
+}
+
 export interface ProjectHealth {
   unparentedCapabilities: string[]
   unlinkedInitiatives: string[]
@@ -397,6 +404,13 @@ export interface ProjectHealth {
   untestedCapabilities: string[]
   codeWithoutSpecs: string[]
   stateBehindSpec: string[]
+  /** Artifact frontmatter contract (issue #2161): initiatives whose committed
+   *  artifact names an `epic:` that's closed while the initiative isn't `done`. */
+  artifactsEpicClosedNotDone?: string[]
+  /** Frontmatter `capabilities:` entries naming no indexed Feature. */
+  artifactsUnknownCapability?: ArtifactUnknownCapability[]
+  /** Initiatives with a committed artifact but no frontmatter fence at all. */
+  artifactsMissingFrontmatter?: string[]
   generatedAt: string
 }
 

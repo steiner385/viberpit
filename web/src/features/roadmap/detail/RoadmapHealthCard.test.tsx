@@ -144,4 +144,31 @@ describe('RoadmapHealthCard', () => {
     expect(screen.getByText(/1 capability cites code but no spec/)).toBeInTheDocument()
     expect(screen.getByText(/1 capability has a state older than its newest spec/)).toBeInTheDocument()
   })
+
+  it('lists artifact frontmatter findings, linking back to the initiative (#2161)', () => {
+    Object.assign(health, {
+      data: {
+        unparentedCapabilities: [],
+        unlinkedInitiatives: [],
+        staleProposed: [],
+        staleInbox: 0,
+        unindexedDocs: [],
+        governance: null,
+        artifactsEpicClosedNotDone: ['task-views'],
+        artifactsUnknownCapability: [{ initiative: 'task-views', capability: 'ghost-capability' }],
+        artifactsMissingFrontmatter: ['old-init'],
+        generatedAt: 'x',
+      },
+    })
+    mount()
+    expect(screen.getByText(/1 initiative has a closed epic but isn't marked done/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'task-views' }))
+      .toHaveAttribute('href', '/initiatives/task-views')
+    expect(screen.getByText(/1 artifact frontmatter capability names no indexed feature/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ghost-capability' }))
+      .toHaveAttribute('href', '/initiatives/task-views')
+    expect(screen.getByText(/1 initiative has a committed artifact with no frontmatter/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'old-init' }))
+      .toHaveAttribute('href', '/initiatives/old-init')
+  })
 })
