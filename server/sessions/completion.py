@@ -18,11 +18,34 @@ from ccswitch import brand
 COMPLETION_MARKER = brand.marker("complete")
 COMPLETION_MARKER_RE = brand.marker_re("complete")
 
+#: What "finished" means when the last step is a machine's, not the session's. Shared
+#: verbatim by the completion marker instruction and the ``mark_complete`` tool
+#: description (``tools/tools.py``) so the two worlds cannot disagree. Prod 2026-09-25
+#: (session 2971d6a6): one PR merged, the follow-up ready with auto-merge armed and CI
+#: still running, and the session ended with a hand-back whose reason began "Status
+#: only, no action needed". The completion bar (``completion_bar.met_bar``) already
+#: reads an armed PR with no red required check as met, but the instruction said "never
+#: while … waiting on something", so a session waiting on CI had no finishing signal it
+#: was allowed to use and fell through to the only ending left.
+FINISHED_STATE_CLAUSE = (
+    "A pull request that is open, marked ready, with auto-merge armed and no failing "
+    "required check IS the finished state: do not wait for CI or for the merge itself, "
+    "and do not hand back a status report about it."
+)
+
+#: The other half of the same incident, shared by the hand-back marker instruction and
+#: the ``hand_back`` tool description: a hand-back is an ASK, never a progress report.
+STATUS_ONLY_CLAUSE = (
+    "A hand-back must ask for something. 'Status only, nothing needed from you' is not "
+    "a hand-back: if the objective is met, finish with the completion signal; if it is "
+    "not, keep working."
+)
+
 COMPLETION_INSTRUCTION = (
     "When you have fully accomplished the objective of this session, end your "
     f"final message with `{COMPLETION_MARKER}` on its own line. Emit it ONLY "
     "when the work is genuinely complete — never for an interim step, and never "
-    "while you are still working or waiting on something. Never emit it in a "
+    f"while you are still working. {FINISHED_STATE_CLAUSE} Never emit it in a "
     "message that asks the user a question: if you need an answer, ask and emit "
     f'the hand-back marker (`<!-- {brand.SLUG}:hand-back reason="…" -->`) instead; '
     "phrase optional follow-ups as statements ('I can also do X if wanted'), not "
@@ -86,7 +109,8 @@ HAND_BACK_INSTRUCTION = (
     "finished — a decision, a review, an approval, or information you do not have — "
     f'end the message that asks with `<!-- {brand.SLUG}:hand-back reason="<one sentence: '
     'what you need>" -->` on its own line. '
-    f"{_THREE_WAYS_MARKER} Never combine the hand-back marker with either finishing marker."
+    f"{_THREE_WAYS_MARKER} {STATUS_ONLY_CLAUSE} Never combine the hand-back marker with "
+    "either finishing marker."
 )
 
 _CANCEL_RE = re.compile(

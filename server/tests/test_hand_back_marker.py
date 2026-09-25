@@ -81,3 +81,20 @@ def test_marker_instructions_include_the_hand_back_instruction():
 def test_the_finishing_instructions_point_at_the_hand_back_marker():
     for text in (COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION):
         assert "viberpit:hand-back" in text
+
+
+def test_the_marker_instructions_carry_the_finished_state_and_no_status_only_clauses():
+    """Prod 2026-09-25 (session 2971d6a6): PR merged, follow-up PR ready with auto-merge
+    armed and CI still running, and the session ended with a hand-back whose reason began
+    "Status only, no action needed". The completion bar already reads an armed PR as met,
+    but the instruction said "never while … waiting on something", so a session waiting
+    on CI had no finishing signal it was allowed to use and fell through to the only one
+    left. Both clauses are shared constants so the marker world and the tool
+    descriptions (test_session_tools.py) cannot drift."""
+    from server.sessions.completion import FINISHED_STATE_CLAUSE, STATUS_ONLY_CLAUSE
+    assert FINISHED_STATE_CLAUSE in COMPLETION_INSTRUCTION
+    assert STATUS_ONLY_CLAUSE in HAND_BACK_INSTRUCTION
+    assert "waiting on something" not in COMPLETION_INSTRUCTION
+    low = FINISHED_STATE_CLAUSE.lower()
+    assert "auto-merge" in low and "finished" in low
+    assert "must ask" in STATUS_ONLY_CLAUSE.lower()
