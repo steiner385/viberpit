@@ -7657,7 +7657,20 @@ class SessionOrchestrator:
                     db, await load_policies(db), best_effort=True)
         except Exception:
             log.warning("backlog_runner.policy_snapshot_read_failed", exc_info=True)
-            return {}
+            # ``{}`` is NOT the safe fallback (#1960 ladder default change, a
+            # narrow relapse of the clamp this method exists for):
+            # ``policy_for_product({}, …)`` falls all the way through to the
+            # bare, UNCLAMPED ``effective_policy(None)`` — ``ladder_top =
+            # fable`` — the exact bug documented above, just reached via a
+            # SECOND failure (this read) instead of a cold cache. Fail toward
+            # the same safe direction ``clamp_ladder_top`` picks when nothing
+            # is allowed: the cheapest tier, under the no-product key every
+            # fallback chain (``policy_for_product``) reads.
+            from server.automations.product_policy import (
+                NO_PRODUCT_POLICY_KEY, effective_policy)
+            from server.sessions.model_catalog import TIER_ORDER
+            return {NO_PRODUCT_POLICY_KEY: {
+                **effective_policy(None), "ladder_top": TIER_ORDER[0]}}
 
     async def _backlog_tier_floor(self, product_slug: "str | None",
                                   primary_ref: str) -> str | None:
@@ -7925,8 +7938,18 @@ class SessionOrchestrator:
                    and getattr(rec, "id", None) == getattr(existing_before, "id", None))
         if rec is not None and rung and not deduped:
             # The dispatch the hold asked for has happened, so the hold is spent
-            # (spec §4): every issue of the batch parked ``stronger_model`` is
-            # released as the runner, audited ``dispatch``.
+            # (spec §4): the PRIMARY's ``stronger_model`` hold is released as the
+            # runner, audited ``dispatch``.
+            #
+            # Only the primary (#1960 series-level gap 2), not every issue of the
+            # batch: ``rung`` is read off the primary alone
+            # (``_backlog_ladder_rung(batch.product, batch.primary, …)``), so a
+            # secondary that happens to carry its OWN ``stronger_model`` hold —
+            # set by its own session's bounce, for a climb this dispatch never
+            # made — would be consumed by a dispatch that never climbed for it.
+            # Releasing the whole batch reads as "the ladder progressed" for an
+            # issue whose real climb is still owed; the secondary stays held and
+            # is re-claimed (and correctly released) on its own dispatch instead.
             #
             # Guarded on a real record, a real rung and a NEW session — the hold is
             # consumed only by a dispatch that actually CLIMBED (review F1, final
@@ -7950,7 +7973,7 @@ class SessionOrchestrator:
             from datetime import datetime, timezone
 
             from server.pm.holds import release_on_dispatch
-            issues, now = list(batch.issues), datetime.now(timezone.utc)
+            issues, now = [batch.primary], datetime.now(timezone.utc)
             try:
                 async with db_session() as db:
                     released = await db.run_sync(

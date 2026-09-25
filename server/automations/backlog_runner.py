@@ -24,17 +24,43 @@ from .engine_policy import EnginePolicy
 from .product_policy import (
     NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
 from server.pm.outcomes import (
+    NEVER_RAN_CAUSE,
     bounced_out,
     dispatch_kind_for_hold,
     gated_ladder_top,
     next_rung,
     top_tier,
 )
+from server.sessions.engine import AgentEngine, parse_agent_engine
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
 
 _DAY_SECONDS = 24 * 3600
+
+# The never-ran path (#1960 ladder default change) consults no dial today: with
+# ``give_up_after_bounces`` defaulting to 0 (never), a target whose sessions never
+# start turn one is re-dispatched, no-penalty, until ``max_spawns_per_day`` and no
+# further — this bounds it independently of that dial. A fixed cap rather than a
+# policy field (the issue's own simpler option): the failure mode this guards is
+# "nothing ever runs", which a product's bounce tolerance has no opinion about.
+NEVER_RAN_CAP = 3
+
+
+def _dispatch_engine(st: dict) -> AgentEngine:
+    """The engine *st*'s dispatch actually ran on (#1960 series-level gap 1): the
+    model ladder is Claude tiers only, so the sweep needs to tell a Codex bounce
+    apart from a Claude one before it climbs a rung or consumes a
+    ``stronger_model`` hold for it.
+
+    Defaults to Claude — the same direction ``parse_agent_engine``'s
+    ``legacy_default`` already takes for every other engine read — for a claim
+    settled before ``_settle_dispatch`` stamped ``engine`` onto the row, or a
+    value that fails to parse; either way that is today's behaviour, unchanged."""
+    try:
+        return parse_agent_engine(st.get("engine"), legacy_default=True)
+    except Exception:
+        return AgentEngine.CLAUDE_CODE
 
 # Spawn-failure damping (2026-07-21 incident: ENOSPC spawn retries every tick
 # churned gigabytes of checkout page cache into the daemon cgroup's MemoryHigh
@@ -1591,10 +1617,19 @@ class BacklogRunnerLoop:
         # recovers is read off the kind the CLAIM seeded there.
         kind = dispatch_kind or intent.get("dispatch_kind") or "implement"
         state = dict(intent["expected"])
+        # The engine this dispatch actually ran on (#1960 series-level gap 1): the
+        # ladder is Claude-only, and the sweep needs to tell a Codex bounce apart
+        # from a Claude one WITHOUT a second DB read — carried the same way
+        # ``model``/``branch`` are, off the session row this settle already
+        # fetched. Missing (a claim settled before this column existed, or no
+        # session at all) reads as Claude at the sweep (``parse_agent_engine``'s
+        # ``legacy_default``), preserving today's behaviour for old rows.
+        engine = session.engine if session is not None else None
         # The APPLIED model, not the policy's ``default_model``: the ladder's
         # ``next_rung`` (spec 2026-09-18 §4) climbs from what this attempt
         # actually ran on, read back off the sweep's ``st.get("model")``.
-        state.update(session_id=sid, branch=branch, model=model, dispatch_kind=kind)
+        state.update(session_id=sid, branch=branch, model=model, dispatch_kind=kind,
+                     engine=engine)
         state.pop("proposed", None)
         try:
             async with tx.db.begin_nested():
@@ -2115,6 +2150,13 @@ class BacklogRunnerLoop:
                 await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             return
         if target in gave_up_targets:
+            # A stale PR-Doctor ``gave_up`` event from a PREVIOUS claim (#1960
+            # runner edges 1): the same no-penalty release the no-PR branch below
+            # already gives a session that never started turn one, not a bounce —
+            # nothing was attempted for THIS claim to have failed at.
+            if not await self._session_ever_ran(st):
+                await self._release_never_ran(target, st)
+                return
             # PR Doctor gave up: the same ladder path as a no-PR bounce (spec
             # 2026-09-18 §4) — this is still an implement attempt that failed to
             # land, not a person's decision, so it climbs a rung rather than
@@ -2122,13 +2164,22 @@ class BacklogRunnerLoop:
             cause = "pr-doctor gave up"
             previous = st.get("model")
             ladder_policy = self._policy_for(st.get("product"))
-            rung = next_rung(previous, floor=None,
-                             default_model=ladder_policy["default_model"],
-                             top=top_tier(ladder_policy))
             pd_outcome = {
                 "outcome": "pr_gave_up", "cause": cause,
                 "pr_number": info.number if info else None,
                 "pr_url": info.url if info else None, "fallback": fallback}
+            if _dispatch_engine(st) is not AgentEngine.CLAUDE_CODE:
+                # The ladder is Claude-only (#1960 series-level gap 1, decision:
+                # skip the ladder, hand off at the first bounce): a Codex dispatch
+                # has no rung to climb and no ``stronger_model`` hold to consume,
+                # so the SAME give-up every top-of-ladder bounce gets fires here
+                # instead, at the first one.
+                await self._give_up(target, st, "PR Doctor gave up (Codex: no model ladder)",
+                                    outcome=pd_outcome)
+                return
+            rung = next_rung(previous, floor=None,
+                             default_model=ladder_policy["default_model"],
+                             top=top_tier(ladder_policy))
             if rung is None:
                 # Bounced at the top: the EXISTING give-up path (review R1 I2
                 # item 1) — owner_action hold + comment + the retried ``held``
@@ -2150,9 +2201,16 @@ class BacklogRunnerLoop:
             # pr-doctor-gave-up event) re-fires next tick and the claim is
             # untouched meanwhile. If the release fails (stale ownership /
             # native work not yet observed stopped), stop — nothing else.
-            await self._escalate(target, f"PR Doctor gave up; next attempt on {rung}", rung)
+            reason = f"PR Doctor gave up; next attempt on {rung}"
+            await self._escalate(target, reason, rung)
             if not await self._write_state(target, st, None, outcome=pd_outcome):
                 return  # release lost the fence — leave it for the next sweep
+            # A rung climb wrote a ``stronger_model`` hold and released the row
+            # with no other trace between "session ended" and the next spawn
+            # (#1960 runner edges 2) — the activity feed is silent about the retry
+            # until then. The hold itself remains the durable record; this is only
+            # the feed's account of it.
+            await self._ctx.emit("info", f"{target}: {reason}", kind="ladder_climb", target=target)
             return
         if info is not None and info.state == "closed":
             # A PERSON closed the PR unmerged: their decision, not a failed
@@ -2193,10 +2251,20 @@ class BacklogRunnerLoop:
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
         top = top_tier(ladder_policy)
-        rung = next_rung(previous, floor=None,
-                         default_model=ladder_policy["default_model"], top=top)
         no_pr_outcome = {"outcome": "no_pr", "cause": "session ended without a mergeable PR",
                          "fallback": fallback}
+        if _dispatch_engine(st) is not AgentEngine.CLAUDE_CODE:
+            # The ladder is Claude-only (#1960 series-level gap 1, decision: skip
+            # the ladder, hand off at the first bounce): a Codex dispatch never
+            # climbs and never parks a ``stronger_model`` hold, so its bounce
+            # hand-off is the SAME give-up a Claude bounce at the top gets.
+            await self._give_up(
+                target, st,
+                f"no mergeable PR after {attempts} attempts (Codex: no model ladder)",
+                outcome=no_pr_outcome)
+            return
+        rung = next_rung(previous, floor=None,
+                         default_model=ladder_policy["default_model"], top=top)
         if rung is None:
             # Bounced at the top: the EXISTING give-up path (review R1 I2
             # item 1), not the (now rung-only) escalate seam. A top the
@@ -2233,6 +2301,9 @@ class BacklogRunnerLoop:
         await self._escalate(target, reason, rung)
         if not await self._write_state(target, st, None, outcome=no_pr_outcome):
             return  # release lost the fence — leave it for the next sweep
+        # See the ``pr_gave_up`` climb above (#1960 runner edges 2): same silent
+        # gap, same feed entry.
+        await self._ctx.emit("info", f"{target}: {reason}", kind="ladder_climb", target=target)
 
     async def _release_never_ran(self, target: str, st: dict) -> None:
         """The no-penalty release for a dispatch whose session never started turn
@@ -2251,10 +2322,24 @@ class BacklogRunnerLoop:
         found could only ever belong to a PREVIOUS claim cycle, whose bounce survives
         re-queueing and would be rewritten as this dispatch's "never ran a turn".
         With the running row missing (§13) the fallback insert is the right recovery:
-        it is guarded by THIS dispatch's session id, so it can add at most one row."""
-        if await self._write_state(target, st, None, outcome={
-                "outcome": "abandoned", "cause": "session never ran a turn",
-                "fallback": self._outcome_fallback(st)}):
+        it is guarded by THIS dispatch's session id, so it can add at most one row.
+
+        Bounded by ``NEVER_RAN_CAP`` (#1960 ladder default change): the no-penalty
+        release consults no dial, so a target whose sessions never start turn one
+        would otherwise ride this branch until ``max_spawns_per_day`` and no
+        further, forever. ``NEVER_RAN_CAP`` never-ran releases IN A ROW on the
+        CURRENT body (the same fingerprint scoping every D8 count uses — an
+        edited body re-arms it) hands off instead, through the existing
+        ``_give_up`` path rather than a second hand-off shape."""
+        outcome = {"outcome": "abandoned", "cause": NEVER_RAN_CAUSE,
+                  "fallback": self._outcome_fallback(st)}
+        count = await self._ctx.never_ran_count_for(target) + 1
+        if count >= NEVER_RAN_CAP:
+            await self._give_up(
+                target, st, f"session never ran a turn {count} times in a row",
+                outcome=outcome)
+            return
+        if await self._write_state(target, st, None, outcome=outcome):
             await self._ctx.emit("info", f"released {target} (session never ran a turn)",
                                  kind="unclaimed", target=target)
 

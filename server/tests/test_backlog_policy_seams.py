@@ -1163,6 +1163,33 @@ def test_a_tap_before_the_first_queue_read_still_gets_a_clamped_ladder_top(tmp_p
     asyncio.run(run())
 
 
+def test_a_snapshot_read_failure_fails_toward_the_clamped_cheapest_tier_not_unclamped(
+        tmp_path, monkeypatch):
+    """#1960 ladder default change: a failed read inside ``_backlog_policy_snapshot``
+    itself (not just a cold cache) used to answer ``{}``, and
+    ``policy_for_product({}, …)`` falls all the way through to the bare, UNCLAMPED
+    ``effective_policy(None)`` — ``ladder_top = fable`` — a narrow relapse of the
+    same clamp final review M4 fixed for the cold-cache case above. The seam must
+    fail toward the SAME safe direction ``clamp_ladder_top`` picks when nothing is
+    allowed: the cheapest tier."""
+    from server.automations import product_policy as pp
+    from server.sessions.model_catalog import TIER_ORDER
+
+    async def run():
+        await _init(tmp_path, "ladder_snapshot_read_failed.db")
+
+        async def boom(_db):
+            raise RuntimeError("policy read down (injected)")
+        monkeypatch.setattr(pp, "load_policies", boom)
+
+        orch = _orch_with_ctx()
+        assert orch._backlog_last_policies == {}      # no tick has run in this process
+        policies = await orch._backlog_policy_snapshot()
+        assert policies[pp.NO_PRODUCT_POLICY_KEY]["ladder_top"] == TIER_ORDER[0]
+
+    asyncio.run(run())
+
+
 def test_a_verdict_read_that_never_succeeded_leaves_the_queue_snapshot_unclamped(
         tmp_path, monkeypatch):
     """The one case the queue read cannot improve on: no verdict has ever been

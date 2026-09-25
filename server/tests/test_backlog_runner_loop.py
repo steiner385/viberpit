@@ -4163,6 +4163,115 @@ def test_any_other_no_pr_ending_still_climbs_the_ladder(tmp_path):
     asyncio.run(run())
 
 
+def test_a_ladder_climb_is_announced_on_the_activity_feed(tmp_path):
+    """#1960 runner edges: between "session ended" and the next spawn the feed said
+    nothing about the retry at a stronger tier (the ``stronger_model`` hold was the
+    only record)."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "ladder_climb_event.db", "not-needed")
+
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        events = await ctx.list_events(kind="ladder_climb")
+        assert [e["target"] for e in events] == ["o/r#1"]
+        assert "next attempt on opus" in events[0]["summary"]
+
+    asyncio.run(run())
+
+
+def test_a_codex_bounce_skips_the_ladder_and_hands_off_at_the_first_one(tmp_path):
+    """#1960 series-level gap 1: the ladder is Claude tiers only, so a Codex dispatch
+    neither climbs a rung nor parks a ``stronger_model`` hold — its first bounce is
+    the owner's."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'codex_bounce.db'}")
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+            spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        await loop.tick()
+        st = await ctx.get_target_state("o/r#1")
+        st["engine"] = "codex"
+        st["_ended"] = True
+        await _set_owned_state(ctx, "o/r#1", st)
+        await loop.tick()
+
+        assert rec.escalations == []
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert "no model ladder" in rec.needs_humans[0][1]
+
+    asyncio.run(run())
+
+
+def test_a_stale_pr_doctor_give_up_on_a_never_ran_claim_is_a_no_penalty_release(tmp_path):
+    """#1960 runner edges: the ``pr_gave_up`` bounce skipped the never-ran guard, so
+    a stale ``gave_up`` event from a prior claim charged a bounce and a rung to a
+    session that never started turn one."""
+    async def run():
+        from server.db.models import Automation, AutomationEvent
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'pd_never_ran.db'}")
+        await _seed_row()
+        await _seed_product()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            db.add(AutomationEvent(
+                automation_id="pr-doctor", level="warn", summary="gave up",
+                kind="gave_up", target="o/r#1", detail={"origin_ref": "o/r#1"}))
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
+            pr_status={}, session_ran=False,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+            spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        await loop.tick()
+        await loop.tick()
+
+        assert rec.escalations == [] and rec.needs_humans == []
+        assert not await ctx.get_target_state("o/r#1")
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("abandoned", "session never ran a turn")]
+
+    asyncio.run(run())
+
+
+def test_a_target_that_never_runs_is_handed_off_after_the_never_ran_cap(tmp_path):
+    """#1960 ladder default change: the never-ran release consulted no dial, so with
+    ``give_up_after_bounces`` at its default of 0 a target whose sessions never start
+    turn one was re-dispatched until ``max_spawns_per_day``. ``NEVER_RAN_CAP``
+    releases on the same body hand it to the owner instead."""
+    async def run():
+        from server.automations.backlog_runner import NEVER_RAN_CAP
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'never_ran_cap.db'}")
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1") for _ in range(NEVER_RAN_CAP)], pr_status={},
+            session_ran=False, policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+            spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+
+        for cycle in range(1, NEVER_RAN_CAP + 1):
+            rec.in_flight = 0
+            await loop.tick()                    # dispatch
+            await _mark_session_ended(ctx, "o/r#1")
+            await loop.tick()                    # sweep: never ran a turn
+            if cycle < NEVER_RAN_CAP:
+                assert rec.needs_humans == []    # still the no-penalty release
+                assert not await ctx.get_target_state("o/r#1")
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert "never ran a turn" in rec.needs_humans[0][1]
+        assert rec.escalations == []
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("abandoned", "session never ran a turn")] * NEVER_RAN_CAP
+
+    asyncio.run(run())
+
+
 def test_a_failing_resolution_read_falls_back_to_the_ladder(tmp_path):
     """A seam failure must not stall the sweep or invent a decision: the read is
     best-effort and the branch declines, leaving the bounce exactly as it was before

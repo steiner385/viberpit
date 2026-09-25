@@ -99,16 +99,15 @@ async def test_a_second_record_supersedes_the_running_row_it_replaces(db_env):
 
 
 @pytest.mark.asyncio
-async def test_finalize_upgrades_an_already_closed_bounce_row(db_env):
-    """The runner's give-up branches fire a SWEEP LATER than the bounce they
-    escalate: the sweep that charged the last attempt already closed this
-    dispatch's row as ``no_pr``, and nothing re-dispatches in between. Without
-    ``upgrade_from`` the ``needs_human`` finalise found no running row and was a
-    logged no-op, so an escalated issue stayed recorded as a plain bounce (R3-7).
-
-    An upgrade RE-finalises that row in place — one row per dispatch, never a
-    second bounce for the same session — and keeps ``ended_at``: the dispatch
-    ended when the session did, not when the loop noticed."""
+async def test_finalize_with_no_running_row_leaves_an_already_closed_bounce_alone(db_env):
+    """No ``upgrade_from`` (#1960 runner edges 3, retired): it used to re-finalise
+    the newest listed-outcome row in place when no running row existed, for a
+    verdict that arrived a sweep late. Its only candidate production caller
+    (the never-ran release) deliberately never passed it — final review M3
+    found that a recovered row could belong to a PREVIOUS claim cycle and would
+    be mislabelled as this dispatch's verdict — and nothing else ever did. A
+    late finalise with no running row is therefore a no-op, full stop: it must
+    never reach back and rewrite an already-closed bounce."""
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
@@ -116,70 +115,13 @@ async def test_finalize_upgrades_an_already_closed_bounce_row(db_env):
     await ctx.finalize_outcome("o/r#7", outcome="no_pr",
                                cause="session ended without a mergeable PR")
     (bounced,) = await _rows()
-    ended, duration = bounced.ended_at, bounced.duration_s
+    ended, duration, cause = bounced.ended_at, bounced.duration_s, bounced.cause
 
     await ctx.finalize_outcome("o/r#7", outcome="needs_human",
-                               cause="max attempts (2) reached with no mergeable PR",
-                               upgrade_from=("no_pr",))
-    rows = await _rows()
-    assert len(rows) == 1
-    r = rows[0]
-    assert r.outcome == "needs_human"
-    assert r.cause == "max attempts (2) reached with no mergeable PR"
-    assert r.ended_at == ended and r.duration_s == duration
-    assert r.updated_at is not None and r.session_id == "s1"
-
-
-@pytest.mark.asyncio
-async def test_an_upgrade_never_touches_a_row_outside_upgrade_from(db_env):
-    """Only the listed outcomes are upgradable. A merged dispatch is finished
-    history: a late escalation with nothing running must leave it alone rather
-    than rewrite a landed PR as a needs-human bounce."""
-    await _seed(db_env)
-    ctx = AutomationContext("backlog-runner")
-    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
-                             model="sonnet", attempt_no=0)
-    await ctx.finalize_outcome("o/r#7", outcome="merged", pr_number=42,
-                               pr_url="https://example/pr/42", first_pass_merge=True)
-
-    await ctx.finalize_outcome("o/r#7", outcome="needs_human", cause="too late",
-                               upgrade_from=("no_pr",))
-    rows = await _rows()
-    assert len(rows) == 1
-    assert rows[0].outcome == "merged" and rows[0].pr_number == 42
-    assert rows[0].first_pass_merge is True
-
-    # Nothing running and nothing upgradable for an unknown target: still a no-op.
-    await ctx.finalize_outcome("o/r#404", outcome="needs_human", cause="none",
-                               upgrade_from=("no_pr",))
-    assert len(await _rows()) == 1
-
-
-@pytest.mark.asyncio
-async def test_an_upgrade_prefers_a_running_row_and_takes_the_newest_bounce(db_env):
-    """``upgrade_from`` is a FALLBACK: a live dispatch still wins, and when there
-    is none the NEWEST upgradable row is the one this give-up is about — an older
-    attempt's bounce keeps its own history."""
-    await _seed(db_env)
-    ctx = AutomationContext("backlog-runner")
-    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
-                             model="sonnet", attempt_no=0)
-    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="first bounce")
-    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s2",
-                             model="sonnet", attempt_no=1)
-
-    # A running row exists → it is finalised, the earlier bounce is untouched.
-    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="second bounce",
-                               upgrade_from=("no_pr",))
-    first, second = await _rows()
-    assert first.cause == "first bounce" and second.cause == "second bounce"
-
-    # Now nothing runs → the NEWEST bounce is the one that escalates.
-    await ctx.finalize_outcome("o/r#7", outcome="needs_human", cause="gave up",
-                               upgrade_from=("no_pr",))
-    first, second = await _rows()
-    assert first.outcome == "no_pr" and first.cause == "first bounce"
-    assert second.outcome == "needs_human" and second.cause == "gave up"
+                               cause="max attempts (2) reached with no mergeable PR")
+    (row,) = await _rows()
+    assert row.outcome == "no_pr" and row.cause == cause
+    assert row.ended_at == ended and row.duration_s == duration
 
 
 @pytest.mark.asyncio
@@ -383,12 +325,13 @@ async def test_a_fallback_dispatch_kind_is_checked_like_record_outcomes(db_env):
 
 @pytest.mark.asyncio
 async def test_a_fallback_is_only_a_last_resort(db_env):
-    """The fallback NEVER adds a second row: a running row still wins, and so does
-    an upgradable one. One row per dispatch is the invariant every reader leans
-    on, and a fallback that raced it would double-count the bounce."""
+    """The fallback NEVER adds a second row for a dispatch that already has one:
+    a running row still wins over it. One row per dispatch is the invariant
+    every reader leans on, and a fallback that raced it would double-count the
+    bounce."""
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
-    fallback = {"product_slug": "viberpit", "session_id": "s9", "model": "opus",
+    fallback = {"product_slug": "viberpit", "session_id": "s1", "model": "opus",
                 "attempt_no": 3}
 
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
@@ -397,11 +340,6 @@ async def test_a_fallback_is_only_a_last_resort(db_env):
                                fallback=fallback)
     (row,) = await _rows()
     assert row.session_id == "s1" and row.model == "sonnet"    # the running row won
-
-    await ctx.finalize_outcome("o/r#7", outcome="needs_human", cause="gave up",
-                               upgrade_from=("no_pr",), fallback=fallback)
-    (row,) = await _rows()
-    assert row.outcome == "needs_human" and row.session_id == "s1"
 
 
 @pytest.mark.asyncio
