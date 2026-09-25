@@ -141,6 +141,71 @@ def test_create_conflicting_slug_409():
         assert r2.status_code == 409, r2.text
 
 
+def test_adopt_artifact_records_path_and_sha_with_no_session():
+    """POST .../artifacts adopts an already-committed doc (#2160): no session_id,
+    commit_sha set immediately, and the next detail GET already treats it as
+    merged (materialize/advance-eligible, never await_approval)."""
+    with _client() as c:
+        created = c.post("/api/sdlc/initiatives",
+                         json={"title": "Shared task model", "repo": "steiner385/viberpit"},
+                         headers=IDENTITY_HEADERS)
+        slug = created.json()["slug"]
+
+        r = c.post(f"/api/sdlc/initiatives/{slug}/artifacts",
+                   json={"kind": "intent", "repoPath": "specs/007-shared-task-model/spec.md",
+                         "commitSha": "deadbeef"},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 201, r.text
+        art = r.json()
+        assert art["kind"] == "intent"
+        assert art["repoPath"] == "specs/007-shared-task-model/spec.md"
+        assert art["commitSha"] == "deadbeef"
+        assert art["sessionId"] is None
+
+        detail = c.get(f"/api/sdlc/initiatives/{slug}", headers=IDENTITY_HEADERS)
+        assert detail.status_code == 200, detail.text
+        # With no adoption the engine would still say `propose` (no artifact yet,
+        # spawn a synthesizer session); adopting a merged doc skips straight past
+        # that to "wait for the human tap" (or auto-advance).
+        assert detail.json()["nextAction"] != {"type": "propose", "kind": "intent"}
+
+
+def test_adopt_artifact_rejects_unknown_kind_missing_initiative_and_duplicate():
+    with _client() as c:
+        r = c.post("/api/sdlc/initiatives/no-such-slug/artifacts",
+                   json={"kind": "intent", "repoPath": "docs/x.md", "commitSha": "abc"},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 404, r.text
+
+        created = c.post("/api/sdlc/initiatives",
+                         json={"title": "Task views", "repo": "steiner385/viberpit"},
+                         headers=IDENTITY_HEADERS)
+        slug = created.json()["slug"]
+
+        bad_kind = c.post(f"/api/sdlc/initiatives/{slug}/artifacts",
+                          json={"kind": "design", "repoPath": "docs/x.md", "commitSha": "abc"},
+                          headers=IDENTITY_HEADERS)
+        assert bad_kind.status_code == 422, bad_kind.text
+
+        traversal = c.post(f"/api/sdlc/initiatives/{slug}/artifacts",
+                           json={"kind": "spec", "repoPath": "../secrets.md", "commitSha": "abc"},
+                           headers=IDENTITY_HEADERS)
+        assert traversal.status_code == 422, traversal.text
+
+        first = c.post(f"/api/sdlc/initiatives/{slug}/artifacts",
+                       json={"kind": "spec",
+                             "repoPath": "docs/superpowers/specs/task-views-design.md",
+                             "commitSha": "abc"},
+                       headers=IDENTITY_HEADERS)
+        assert first.status_code == 201, first.text
+
+        dup = c.post(f"/api/sdlc/initiatives/{slug}/artifacts",
+                     json={"kind": "spec", "repoPath": "docs/sdlc/task-views/spec.md",
+                           "commitSha": "def"},
+                     headers=IDENTITY_HEADERS)
+        assert dup.status_code == 409, dup.text
+
+
 def test_get_detail_includes_chain_and_action():
     """Seed Initiative + intent artifact; GET detail → artifacts[0].kind=='intent',
     nextAction == {'type': 'await_approval', 'kind': 'intent'}."""

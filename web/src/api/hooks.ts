@@ -25,10 +25,12 @@ import {
   fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, decomposeAgain,
   createInitiative,
   updateInitiative,
+  adoptArtifact,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
   fetchGates, type GateRegistry,
   type Initiative, type CreateInitiativeInput, type UpdateInitiativeInput,
+  type InitiativeArtifact, type AdoptArtifactInput,
   type MaterializationProposal, type MaterializationApplied,
   type Incident, type IncidentActionInput,
 } from './sdlc'
@@ -1755,6 +1757,20 @@ export function useUpdateInitiative() {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the initiative')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Adopt an already-committed doc as a stage artifact (#2160). The detail carries
+ *  the artifact chain and the next-action; the map's stage track summarizes it. */
+export function useAdoptArtifact() {
+  const qc = useQueryClient()
+  return useMutation<InitiativeArtifact, ApiRequestError, { slug: string; input: AdoptArtifactInput }>({
+    mutationFn: ({ slug, input }) => adoptArtifact(slug, input),
+    onSuccess: (_result, { slug }) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
     meta: PM_MUTATION_META,
   })
 }

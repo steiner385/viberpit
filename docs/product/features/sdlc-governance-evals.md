@@ -26,6 +26,8 @@ links:
     - .claude/REVIEW.md
     - evals/README.md
     - web/src/features/roadmap/InitiativePage.tsx
+    - web/src/features/roadmap/detail/AdoptArtifactDialog.tsx
+    - server/sdlc/paths.py
   prs: [808, 810, 812, 813, 814, 819, 824, 818, 809]
 ---
 
@@ -109,6 +111,24 @@ out-of-band.
   (`web/src/features/roadmap/InitiativePage.tsx`, `/roadmap`) — the old standalone
   Automations tab this doc originally pointed at was retired by the finish-line
   migration; the human gate tap is `POST /initiatives/{slug}/advance`.
+- **Adopting an existing document as a stage artifact (#2160).** The default artifact
+  layout (`server/sdlc/paths.py`, `docs/sdlc/<slug>/<kind>.md`) assumes the synthesizer wrote
+  the document; a repo that already produces specs/plans elsewhere — a spec-kit feature
+  directory (`specs/<NNN>-<slug>/{spec,plan,tasks}.md`), a brainstorming-skill design doc
+  (`docs/superpowers/specs/*-design.md`), or a GitHub epic body — has nothing to register it
+  with. `POST /api/sdlc/initiatives/{slug}/artifacts` (`{kind, repoPath, commitSha}`, 201/409)
+  records the committed path/sha directly as `intent`/`spec`/`plan`, with no session spawned:
+  the engine's `next_action` only ever reads a `commit_sha` off the row (`_find_artifact`), so
+  a non-null one is indistinguishable from an artifact a session's PR merged, and the loop
+  picks the initiative up at its next real decision (materialize/advance) immediately. One row
+  per kind — adopting a kind that already has an artifact is a 409, not a silent overwrite. The
+  ladder this enables: a brainstorm design becomes the adopted `spec`; a spec-kit directory's
+  `spec.md`/`plan.md` become the adopted `spec`/`plan` (its `tasks.md`, if present, still needs
+  a human to decompose it — Materialize does not yet read `tasks.md` directly, tracked
+  separately). The web equivalent is the initiative detail page's "Adopt document" button
+  (`web/src/features/roadmap/detail/AdoptArtifactDialog.tsx`). Per-product artifact layout
+  (letting a product declare `specs/<NNN>-<slug>/` as its own convention rather than adopting
+  into the `docs/sdlc` one) is a separate follow-up, not covered here.
 
 **Evidence** —
 - Engine / prompts / governance / review / evals:

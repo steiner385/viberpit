@@ -13,6 +13,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
+    INITIATIVE_ARTIFACT_KINDS,
     TRIAGE_STATUSES,
     Feature,
     GhProjectItem,
@@ -347,6 +348,12 @@ class InitiativeCreateBody(BaseModel):
     capabilityIds: list[str] = []
 
 
+class ArtifactAdoptBody(BaseModel):
+    kind: str
+    repoPath: str
+    commitSha: str
+
+
 @router.get("/initiatives")
 async def list_initiatives(
     _identity: str = Depends(current_identity),
@@ -431,6 +438,61 @@ async def create_initiative(
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d
+
+
+@router.post("/initiatives/{slug}/artifacts", status_code=status.HTTP_201_CREATED)
+async def adopt_artifact(
+    slug: str,
+    body: ArtifactAdoptBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Adopt an already-committed document as *slug*'s ``kind`` stage artifact
+    (#2160), without spawning a synthesizer session: a repo that produces its
+    specs/plans elsewhere (spec-kit, a brainstorm design doc, a GitHub epic
+    body) records the path/sha it already has instead of the loop generating
+    one. ``commit_sha`` is required — the engine treats a non-null commit_sha
+    as "merged" (``next_action``'s ``art.commit_sha is None`` branch), which is
+    exactly right for a document that is already on the default branch: the
+    loop picks the initiative up at its NEXT decision (materialize/advance)
+    with no propose step to wait through.
+
+    409 when the kind already has an artifact — ``_find_artifact`` assumes one
+    row per kind per initiative; overwriting one out from under the loop is a
+    replace, not an adopt, and has no UI or audit story yet."""
+    ini = await _load_initiative(db, slug)
+    kind = body.kind
+    if kind not in INITIATIVE_ARTIFACT_KINDS:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_kind",
+            "message": f"kind must be one of {INITIATIVE_ARTIFACT_KINDS}"})
+    repo_path = body.repoPath.strip()
+    commit_sha = body.commitSha.strip()
+    if not repo_path or repo_path.startswith("/") or ".." in repo_path.split("/"):
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_repo_path", "message": "repoPath must be a repo-relative path"})
+    if not commit_sha:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_commit_sha", "message": "commitSha is required"})
+    existing = (await db.execute(select(InitiativeArtifact).where(
+        InitiativeArtifact.initiative_id == ini.id,
+        InitiativeArtifact.kind == kind,
+    ))).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "artifact_exists",
+            "message": f"a {kind} artifact already exists for '{slug}'"})
+    art = InitiativeArtifact(
+        initiative_id=ini.id, kind=kind, repo_path=repo_path, commit_sha=commit_sha)
+    db.add(art)
+    await db.flush()
+    await record_audit(
+        db=db,
+        type="sdlc.artifact.adopt",
+        identity=identity,
+        detail={"slug": slug, "kind": kind, "repoPath": repo_path, "commitSha": commit_sha},
+    )
+    return _artifact_to_dict(art)
 
 
 @router.get("/initiatives/{slug}")

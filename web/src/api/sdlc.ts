@@ -213,6 +213,24 @@ export function updateInitiative(slug: string, input: UpdateInitiativeInput): Pr
   return api.patch<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}`, input)
 }
 
+/** Adopt an already-committed doc (spec-kit, a brainstorm design, an epic body)
+ *  as one of `slug`'s stage artifacts, without a synthesizer session (#2160).
+ *  `commitSha` is required — the server records it as already-merged, so the
+ *  loop's next tick treats the stage as ready to advance/materialize rather
+ *  than proposing a session to (re)write a document that already exists. */
+export interface AdoptArtifactInput {
+  kind: ArtifactKind
+  repoPath: string
+  commitSha: string
+}
+
+/** 422 on an unknown kind, a non-repo-relative path, or a blank sha; 409 when
+ *  that kind already has an artifact (adopt is a create, not a replace). */
+export function adoptArtifact(slug: string, input: AdoptArtifactInput): Promise<InitiativeArtifact> {
+  return api.post<InitiativeArtifact>(
+    `/sdlc/initiatives/${encodeURIComponent(slug)}/artifacts`, input)
+}
+
 /** The human-gate tap: walk the initiative's stage forward one step. */
 export function advanceInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/advance`)
