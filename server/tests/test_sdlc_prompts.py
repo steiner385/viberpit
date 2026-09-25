@@ -99,6 +99,23 @@ def test_spec_flags_policy_concerns():
     assert "policy" in p and ("constraint" in p or "flag" in p)
 
 
+# --------------------------------------------------------------------------- #
+# spec — stable requirement IDs (issue #2163)                                  #
+# --------------------------------------------------------------------------- #
+
+def test_spec_asks_for_stable_requirement_ids():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG)
+    assert "FR-NNN" in p
+    assert "AC-NNN" in p
+    assert "US-N" in p
+    assert "## Requirements" in p
+
+
+def test_spec_says_ids_are_permanent():
+    p = build_spec_prompt(INTENT_MD, SKILLS, slug=SLUG).lower()
+    assert "never renumber" in p or "never reuse" in p
+
+
 def test_spec_with_no_skills_is_still_valid():
     p = build_spec_prompt(INTENT_MD, [], slug=SLUG)
     assert isinstance(p, str) and p.strip()
@@ -168,6 +185,12 @@ def test_plan_asks_for_files_order_tests_risks():
     p = build_plan_prompt(SPEC_MD, slug=SLUG).lower()
     for token in ("file", "order", "test", "risk"):
         assert token in p
+
+
+def test_plan_tests_section_maps_tests_to_requirement_ids():
+    p = build_plan_prompt(SPEC_MD, slug=SLUG)
+    assert "FR-" in p and "AC-" in p and "US-" in p
+    assert "proves" in p.lower()
 
 
 # --------------------------------------------------------------------------- #
