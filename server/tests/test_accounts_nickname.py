@@ -43,8 +43,12 @@ def _seed_slot(name: str) -> None:
 def _make_client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
+    # Always inject a fake usage_fn: the poller's startup sweep otherwise runs the
+    # real usage_for() on a detached thread that outlives the TestClient and writes
+    # into the next test's temp_env mid-rmtree — Errno 39 (#1647).
     orch = SessionOrchestrator(
         sdk_factory=fake_sdk_factory(),
+        usage_fn=lambda name: make_usage(session=10.0),
         poll_interval=9999.0,
     )
     app = create_app(orchestrator=orch)

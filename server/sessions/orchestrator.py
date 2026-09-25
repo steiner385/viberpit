@@ -12849,40 +12849,52 @@ class SessionOrchestrator:
             log.debug("pr_doctor.stash_counts_failed", exc_info=True)
 
     async def _pr_doctor_clear_observed(self, target: str, state: dict, *, clear_counters: bool = True) -> None:
-        """Clear only stopped work, while fencing the original retry snapshot."""
-        from server.automations.ownership import owned, ReleaseProof
+        """Clear only stopped work, while fencing the original retry snapshot.
+
+        A concurrent write to the same target (another cycle observing the same
+        recovery, or a fresh break landing mid-clear) can race the claim/owned
+        fence below and raise StaleOwnership/OwnershipConflict. The state already
+        moved on, so there is nothing stale left to clear, and the next
+        ``_on_pr_change``/``_pr_doctor_sweep`` tick reconciles fresh state
+        regardless — swallow the race here rather than let it surface as a
+        ``pr_poller.on_change`` callback failure (#1853).
+        """
+        from server.automations.ownership import owned, OwnershipConflict, ReleaseProof, StaleOwnership
         from server.db.models import AutomationTargetState, AutomationOperation
-        token = state.get("ownership_token")
-        if not token:
-            repo, _, number = target.rpartition("#")
-            expected = await self._pr_doctor_claim(repo, [int(number)], target)
-            # Re-read acquisition is not permission to clear a newer decision.
-            if {k: v for k, v in expected.items() if k != "ownership_token"} != state:
-                await self._pr_doctor_finish(target, expected, expected)
+        try:
+            token = state.get("ownership_token")
+            if not token:
+                repo, _, number = target.rpartition("#")
+                expected = await self._pr_doctor_claim(repo, [int(number)], target)
+                # Re-read acquisition is not permission to clear a newer decision.
+                if {k: v for k, v in expected.items() if k != "ownership_token"} != state:
+                    await self._pr_doctor_finish(target, expected, expected)
+                    return
+                await self._pr_doctor_finish(target, expected, self._pr_doctor_lifetime_carry(state))
                 return
-            await self._pr_doctor_finish(target, expected, self._pr_doctor_lifetime_carry(state))
-            return
-        async with db_session() as db:
-            operation = await db.get(AutomationOperation, token)
-            sid = (operation.session_id or operation.reserved_session_id) if operation else None
-        if not sid or not await self._automation_session_work_stopped(sid):
-            return
-        async with owned(token) as tx:
-            row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
-            if row is None or row.state != state:
+            async with db_session() as db:
+                operation = await db.get(AutomationOperation, token)
+                sid = (operation.session_id or operation.reserved_session_id) if operation else None
+            if not sid or not await self._automation_session_work_stopped(sid):
                 return
-            tx._validate_release(ReleaseProof.WORK_STOPPED, "observed recovered stopped repair")
-            from server.automations.pr_accounting import account
-            if not await account(tx, target):
-                return
-            state = dict(row.state)
-            carry = (self._pr_doctor_lifetime_carry(state) if clear_counters else
-                     {k: v for k, v in state.items() if k not in ("ownership_token", "session_id")})
-            if tx.operation.provenance.get("runner_target"):
-                row.state = {**carry, "ownership_token": token, "session_id": sid}
-            else:
-                tx.release(ReleaseProof.WORK_STOPPED, "observed stopped standalone PR work")
-                row.state = carry
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if row is None or row.state != state:
+                    return
+                tx._validate_release(ReleaseProof.WORK_STOPPED, "observed recovered stopped repair")
+                from server.automations.pr_accounting import account
+                if not await account(tx, target):
+                    return
+                state = dict(row.state)
+                carry = (self._pr_doctor_lifetime_carry(state) if clear_counters else
+                         {k: v for k, v in state.items() if k not in ("ownership_token", "session_id")})
+                if tx.operation.provenance.get("runner_target"):
+                    row.state = {**carry, "ownership_token": token, "session_id": sid}
+                else:
+                    tx.release(ReleaseProof.WORK_STOPPED, "observed stopped standalone PR work")
+                    row.state = carry
+        except (StaleOwnership, OwnershipConflict):
+            log.debug("pr_doctor.clear_observed_raced target=%s", target, exc_info=True)
 
     async def _pr_doctor_claim(self, repo, numbers, target, *, source="automatic", expected_state=None):
         """Resolve every PR and verified closing issue before the one DB fence."""

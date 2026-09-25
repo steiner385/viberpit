@@ -48,10 +48,14 @@ def _seed_slot(name: str) -> None:
 def _make_client(usage_fn=None):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
-    kwargs = dict(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
-    if usage_fn is not None:
-        kwargs["usage_fn"] = usage_fn
-    orch = SessionOrchestrator(**kwargs)
+    # Always inject a fake usage_fn: the poller's startup sweep otherwise runs the
+    # real usage_for() on a detached thread that outlives the TestClient and writes
+    # into the next test's temp_env mid-rmtree — Errno 39 (#1647).
+    orch = SessionOrchestrator(
+        sdk_factory=fake_sdk_factory(),
+        usage_fn=usage_fn or (lambda name: make_usage(session=10.0)),
+        poll_interval=9999.0,
+    )
     app = create_app(orchestrator=orch)
     return TestClient(app, raise_server_exceptions=False)
 
