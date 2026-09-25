@@ -745,24 +745,46 @@ class AutomationContext:
                             detail={"policy": exc.policy.value})
             return None
 
-    async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
+    async def spawn_session(self, **kwargs: Any) -> Any:
+        """``spawn_or_join_session(**kwargs)``, discarding the ``created`` flag.
+
+        For a caller that only needs "the session for this target", not whether
+        THIS call minted it. A caller that chains a follow-up action (an ingest
+        poll, a spawn-cap counter) onto the spawn must use
+        ``spawn_or_join_session`` instead — a dedupe hit here is indistinguishable
+        from a fresh spawn, which is exactly the shape that re-chained an ingest
+        onto someone else's already-running session (#2235)."""
+        rec, _created = await self.spawn_or_join_session(**kwargs)
+        return rec
+
+    async def spawn_or_join_session(self, *, origin_ref: str, dedupe_key: str | None = None,
                             detail: dict | None = None, engine: Any = None,
                             ownership_token: str | None = None,
-                            **create_kwargs) -> Any:
-        """Find-or-create a session for this automation. If a NON-terminal session
-        with the same (origin, dedupe_key) already exists, return it and emit a
-        'skipped_duplicate' event instead of creating a second. Otherwise create
-        via the injected create_session (which stamps origin/origin_ref), then emit
-        a linked 'spawned' event (carrying the optional ``detail`` payload).
+                            **create_kwargs) -> tuple[Any, bool]:
+        """Find-or-create a session for this automation, reporting which one
+        happened as ``(rec, created)``. If a NON-terminal session with the same
+        (origin, dedupe_key) already exists, return it with ``created=False`` and
+        emit a 'skipped_duplicate' event instead of creating a second. Otherwise
+        create via the injected create_session (which stamps origin/origin_ref),
+        emit a linked 'spawned' event (carrying the optional ``detail`` payload),
+        and return ``created=True``.
+
+        A caller that chains a one-shot follow-up onto the spawn (an ingest poll,
+        a daily spawn-cap counter) MUST gate that follow-up on ``created`` — every
+        dedupe hit hands back a session some earlier call already chained/counted,
+        and re-chaining a second poller or re-counting the cap on the same session
+        is exactly the double-ingest / cap-burn bug this return shape exists to
+        prevent (#2235). A caller that only wants "the session for this target"
+        regardless of who minted it should use ``spawn_session`` instead.
 
         *engine* is an already-resolved answer from ``launch_plan``, for a caller
         that needed it to build the seed prompt; leave it unset and this resolves
-        it. Returns ``None`` without spawning when the origin's engine policy
-        refuses the launch, when the resolved engine/permission-mode pair
+        it. Returns ``(None, False)`` without spawning when the origin's engine
+        policy refuses the launch, when the resolved engine/permission-mode pair
         could not complete an automation's contract (see
         ``unattended_launch_blocker``), or when the fleet has no capacity right now
         (``NoHostAvailable`` — logged as an "info" event, not raised: the caller's
-        own schedule retries next tick). Every caller must treat ``None`` as
+        own schedule retries next tick). Every caller must treat a ``None`` rec as
         "no session exists" and release only a proven unstarted claim.
 
         With ``ownership_token``, the create boundary joins only the operation's
@@ -776,7 +798,7 @@ class AutomationContext:
         if existing is not None:
             await self.emit("info", f"skipped duplicate spawn for {key}",
                             kind="skipped_duplicate", target=key, session_id=existing.id)
-            return existing
+            return existing, False
         if self._create_session is None:
             raise RuntimeError("AutomationContext has no create_session bound")
         # Engine BEFORE permission mode and before any create_session work: the
@@ -788,7 +810,7 @@ class AutomationContext:
         )
         plan = await self.launch_plan_or_refuse(origin_ref)
         if plan is None:
-            return None
+            return None, False
         resolved, config = plan
         engine = resolved if engine is None else engine
         _kwargs, dropped = sanitize_launch_for_engine(engine, create_kwargs, config=config)
@@ -831,7 +853,7 @@ class AutomationContext:
             await self.emit("error", f"refused spawn for {origin_ref}: {blocker}",
                             kind="engine_launch_refused", target=origin_ref,
                             detail={"engine": engine.value, "permissionMode": mode})
-            return None
+            return None, False
         if ownership_token is not None:
             create_kwargs["ownership_token"] = ownership_token
         from server.sessions.fleet_router import NoHostAvailable
@@ -849,8 +871,8 @@ class AutomationContext:
             await self.emit("info", f"spawn deferred for {origin_ref}: {exc}",
                             kind="spawn_deferred", target=origin_ref,
                             detail={"reason": "fleet_at_capacity"})
-            return None
+            return None, False
         await self.emit("info", f"spawned session for {origin_ref}",
                         kind="spawned", target=origin_ref,
                         session_id=getattr(rec, "id", None), detail=detail)
-        return rec
+        return rec, True

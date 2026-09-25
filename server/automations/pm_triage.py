@@ -324,6 +324,15 @@ class PmTriageLoop:
         if not batch:
             return
         session = await self._classify(batch, count)
+        if not session:
+            # A falsy result means the seam spawned NOTHING this call — no
+            # project owns the batch's repo, the engine policy refused the
+            # launch, the fleet had no capacity, or (#2235) the batch's dedupe
+            # key already matched a session an earlier tick spawned and is
+            # still ingesting. None of those burn a spawn: counting them against
+            # ``_spawns_today`` would exhaust the daily cap on ticks that
+            # dispatched nothing, starving the ones that could.
+            return
         self._spawns_today.append(self._clock())
         await self._ctx.emit(
             "info", f"classifying {len(batch)} items",

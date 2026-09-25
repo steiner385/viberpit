@@ -60,6 +60,31 @@ def test_spawn_dedups_non_terminal(tmp_path):
     asyncio.run(run())
 
 
+def test_spawn_or_join_session_reports_created(tmp_path):
+    """#2235: a caller that chains a follow-up (an ingest poll, a spawn-cap
+    counter) onto the spawn must be able to tell a fresh spawn from a dedupe
+    hit — ``spawn_session`` alone cannot, which is what let a busy tick chain a
+    second ingest onto a session an earlier tick already spawned."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawn_e.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        from server.db.models import Automation
+        from server.automations.context import AutomationContext
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+        ctx = AutomationContext("pr-doctor", create_session=_fake_create_session)
+        first, created_first = await ctx.spawn_or_join_session(
+            origin_ref="a/b#1", name="auto")
+        second, created_second = await ctx.spawn_or_join_session(
+            origin_ref="a/b#1", name="auto")
+        assert created_first is True
+        assert created_second is False
+        assert second.id == first.id
+
+    asyncio.run(run())
+
+
 def test_spawn_ignores_inactive_duplicates(tmp_path):
     """An archived (or ended) prior session for the same target must NOT block a
     re-spawn — regression for the Resolve-conflicts button silently returning an

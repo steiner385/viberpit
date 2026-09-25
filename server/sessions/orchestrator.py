@@ -9886,7 +9886,7 @@ class SessionOrchestrator:
             f"synthesise the feature map for {slug} from {repo} "
             f"({open_count} open / {closed_count} closed items)")
         detail.update(choice.detail)
-        rec = await self._pm_onboard_ctx.spawn_session(
+        rec, created = await self._pm_onboard_ctx.spawn_or_join_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
             repo=repo, cwd=cwd, account=account, engine=engine,
@@ -9900,10 +9900,15 @@ class SessionOrchestrator:
                 if proj is not None:
                     proj.onboarding_state = "map_proposed"
                     await db.commit()
-            from server.pm.classification import map_branch_name
-            self._spawn(
-                self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
-                name=f"pm-critic-chain-{slug}")
+            # Only THIS spawn's caller chains its critic — a re-tap while the
+            # session is still live hands back the same dedupe hit (created=False)
+            # every re-tap, and re-chaining a second critic poller onto it each
+            # time is the same double-ingest shape as the classify chain (#2235).
+            if created:
+                from server.pm.classification import map_branch_name
+                self._spawn(
+                    self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
+                    name=f"pm-critic-chain-{slug}")
         return rec
 
     async def pm_onboard_spawn_constitution(self, slug: str):
@@ -10118,7 +10123,7 @@ class SessionOrchestrator:
             f"classify {len(chunk)} backlog items in {repo or slug} against "
             f"{len(feat_briefs)} features")
         detail.update(choice.detail)
-        rec = await self._pm_classify_ctx.spawn_session(
+        rec, created = await self._pm_classify_ctx.spawn_or_join_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
             repo=repo or None, cwd=cwd, account=account, engine=engine,
@@ -10134,6 +10139,15 @@ class SessionOrchestrator:
                     "map_merged", "map_proposed"):
                 proj.onboarding_state = "classifying"
                 await db.commit()
+        if not created:
+            # A busy triage tick can re-call this seam for the same chunk before
+            # its first harvest lands — the dedupe key is the chunk's identity, so
+            # `spawn_or_join_session` hands back the ALREADY-CHAINED session
+            # instead of a new one. Chaining a second ingest onto it produces N
+            # settle-polls/harvests per session, and reporting `len(chunk)` back
+            # to the triage loop would burn its daily spawn cap on a call that
+            # spawned nothing (#2235).
+            return 0
         # Harvest wiring (dogfood bug: sessions completed but _pm_classify_ingest
         # had no caller, so 0 proposals ever landed). Chained daemon-side like the
         # map-critic chain; tracked via _spawn so stop() can cancel it.

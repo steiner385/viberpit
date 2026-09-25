@@ -205,6 +205,27 @@ async def test_classify_run_accepts_injected_batch(db_env):
 
 
 @pytest.mark.asyncio
+async def test_classify_run_never_rechains_a_deduped_session(db_env):
+    """#2235: a busy triage tick can re-call ``pm_classify_run`` for a chunk
+    whose first harvest has not landed yet. ``spawn_or_join_session`` hands
+    back the SAME session (created=False) — chaining a second ingest onto it
+    produces N settle-polls/harvests per session, and reporting the chunk size
+    back to the caller would burn a daily spawn-cap slot that spawned nothing."""
+    await _seed(db_env)
+    orch = _bare_orch()
+    existing = SimpleNamespace(id="already-chained", status="working")
+    orch._pm_classify_ctx = FakeAutomationContext(existing=existing)
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        n = await orch.pm_classify_run("viberpit")
+    assert n == 0            # nothing NEW was dispatched — must not burn the cap
+    assert scheduled == []   # no second ingest chained onto the joined session
+
+
+@pytest.mark.asyncio
 async def test_classify_ingest_writes_pending_proposals(db_env):
     await _seed(db_env)
     orch = _bare_orch()
@@ -1177,6 +1198,26 @@ async def test_initial_map_spawn_schedules_critic_chain(db_env):
     await scheduled[0]                  # run it
     assert chained == [("viberpit", "steiner385/viberpit",
                         "pm/feature-map-viberpit")]
+
+
+@pytest.mark.asyncio
+async def test_initial_map_spawn_never_rechains_critic_on_a_dedupe_hit(db_env):
+    """#2235: a re-tap while the map session is still live gets the SAME session
+    back from the dedupe (created=False). It must still return that session (the
+    caller's contract) but must not chain a second critic poller onto it."""
+    await _seed_project_for_map(db_env)
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    existing = SimpleNamespace(id="live-map-session", status="working")
+    orch._pm_onboard_ctx = FakeAutomationContext(existing=existing)
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        rec = await orch.pm_onboard_spawn_map("viberpit", scope="initial")
+    assert rec is existing   # the caller still gets the session back
+    assert scheduled == []   # ...but no second critic chain
 
 
 @pytest.mark.asyncio

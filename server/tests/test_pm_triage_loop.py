@@ -39,12 +39,14 @@ def _item(number, kind="issue", links=()):
 def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
           autolink_pred=None, clock=None, list_pending=None,
           policies=None, candidates=None, accept_fails=(), accept_none=(),
-          candidate_list_fails=False):
+          candidate_list_fails=False, classify_spawns=True):
     """Wire a loop over recorder fakes. Returns (loop, rec).
 
     The auto-accept seams are wired whenever *candidates* is given; ``policies=None``
     then makes the policy read RAISE, and ``candidate_list_fails=True`` makes the
-    candidate read raise (the two failure cases the pass must survive)."""
+    candidate read raise (the two failure cases the pass must survive).
+    ``classify_spawns=False`` makes the classify seam answer falsy — the shape of
+    a dedupe hit / refusal that spawned nothing (#2235)."""
     rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
            "auto_accepted": []}
     cfg = dict(config or {"drift_threshold": 5, "batch_size": 50,
@@ -72,7 +74,7 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
 
     async def classify(items, count):
         rec["classified"].append([i.number for i in items[:count]])
-        return _Sess()
+        return _Sess() if classify_spawns else 0
 
     async def propose_map_diff(suggestion, numbers, repo):
         rec["map_diffs"].append((suggestion, numbers, repo))
@@ -234,6 +236,24 @@ async def test_loop_own_spawn_count_caps_the_day_even_when_the_seam_reports_zero
     await loop.tick()
     assert len(rec["classified"]) == 3  # cap reached — no fourth spawn
     assert any(kw.get("kind") == "ceiling" for _, _, kw in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_a_classify_that_spawned_nothing_does_not_burn_the_daily_cap():
+    """#2235: a tick that re-calls classify for a batch whose session an earlier
+    tick already spawned (dedupe hit → the seam answers falsy) spawned nothing,
+    so it must not consume a slot of the daily cap — otherwise a busy tick
+    exhausts the day's budget on calls that dispatched no work."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=[_item(1)], classify_spawns=False,
+                      config={"batch_size": 1, "drift_threshold": 5,
+                              "max_spawns_per_day": 1, "stale_days": 14})
+    for _ in range(3):
+        await loop.tick()
+    # The cap is 1, yet every tick got to call classify: no slot was ever spent.
+    assert len(rec["classified"]) == 3
+    assert loop._spawns_today == []
+    assert not any(kw.get("kind") == "classify" for _, _, kw in ctx.events)
 
 
 @pytest.mark.asyncio
