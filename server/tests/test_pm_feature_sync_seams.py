@@ -142,3 +142,36 @@ async def test_persona_link_scoped_to_same_project_only(isolated_db):
             select(PersonaFeature).where(PersonaFeature.feature_id == feat.id)
         )).scalars().all()
         assert links == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_persona_slug_in_one_doc_applies_cleanly(isolated_db):
+    """A doc declaring the same persona slug twice (a realistic copy-paste
+    error — nothing upstream in the frontmatter parser dedupes `personas:`)
+    must not raise IntegrityError on the PersonaFeature
+    UniqueConstraint("persona_id", "feature_id") and must not abort the whole
+    apply. Exactly one PersonaFeature row results, not two."""
+    async with db_session() as db:
+        proj = Project(slug="p4", name="P4")
+        db.add(proj)
+        await db.flush()
+        project_id = proj.id
+        db.add(Persona(project_id=project_id, slug="teen", title="Teen"))
+        await db.flush()
+
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(slug="chores", title="Chores", state="live", summary="",
+                               repo_path="p", parent_slug=None, links=(),
+                               personas=("teen", "teen")),),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await apply_feature_plan(project_id, plan)  # must not raise
+
+    async with db_session() as db:
+        feat = (await db.execute(
+            select(Feature).where(Feature.project_id == project_id, Feature.slug == "chores")
+        )).scalar_one()
+        assert feat.persona_slugs == ["teen", "teen"]
+        links = (await db.execute(
+            select(PersonaFeature).where(PersonaFeature.feature_id == feat.id)
+        )).scalars().all()
+        assert len(links) == 1

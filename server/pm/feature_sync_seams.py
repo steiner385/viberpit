@@ -168,7 +168,7 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
                 feat = mine.get(up.slug)
                 if feat is None:
                     continue
-                for pslug in up.personas:
+                for pslug in dict.fromkeys(up.personas):
                     pid = personas_by_slug.get(pslug)
                     if pid is not None:
                         db.add(PersonaFeature(persona_id=pid, feature_id=feat.id))
