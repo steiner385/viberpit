@@ -658,6 +658,38 @@ async def _lease_state(session_id: str):
         return None
 
 
+async def _dispatch_outcome_ids_for(db, session_id: str) -> list[str]:
+    """Ids of the Backlog Runner history rows pointing at *session_id*."""
+    from sqlalchemy import select as sa_select
+
+    from server.db.models import DispatchOutcome
+    return list((await db.execute(
+        sa_select(DispatchOutcome.id).where(DispatchOutcome.session_id == session_id)
+    )).scalars())
+
+
+async def _reattach_dispatch_outcomes(session_id: str, outcome_ids: list[str]) -> None:
+    """Re-point the dispatch_outcomes rows in *outcome_ids* at *session_id*.
+
+    A launch-time approval deletes the pending_approval placeholder row and
+    re-INSERTs the session under the same id; the FK's ON DELETE SET NULL has
+    blanked the history rows' session_id in between. Best-effort: the session is
+    live either way, so a failure here is logged rather than raised."""
+    if not outcome_ids:
+        return
+    from sqlalchemy import update as sa_update
+
+    from server.db.models import DispatchOutcome
+    try:
+        async with db_session() as db:
+            await db.execute(
+                sa_update(DispatchOutcome).where(DispatchOutcome.id.in_(outcome_ids))
+                .values(session_id=session_id))
+    except Exception:
+        log.warning("session.model_approval_reattach_outcomes_failed id=%s rows=%d",
+                    session_id, len(outcome_ids), exc_info=True)
+
+
 def _limiting_window(usage, ceiling: float, model: str | None = None):
     """The window that is actually holding *model* back on this account, or None.
 
@@ -3769,13 +3801,23 @@ class SessionOrchestrator:
             # durability philosophy: on failure, RESTORE the pending_approval hold so
             # the human can retry the approval, then re-raise so the API surfaces the
             # error. We snapshot the provenance the row needs to be rebuilt first.
+            #
+            # The Backlog Runner's dispatch_outcomes row already points at this id
+            # (written at dispatch time, before the hold). Its FK is ON DELETE SET
+            # NULL, so the placeholder delete detaches it rather than failing — but
+            # the session is about to exist again under the SAME id, so the history
+            # must be re-attached once the spawn/enqueue (or the restore) has
+            # re-INSERTed the row. Snapshot the ids first; the FK has blanked the
+            # session_id by the time we could otherwise look them up.
             requested_by = None
             requested_at = None
+            outcome_ids: list[str] = []
             async with db_session() as db:
                 row = await db.get(DbSession, session_id)
                 if row is not None:
                     requested_by = row.pending_model_requested_by
                     requested_at = row.pending_model_requested_at
+                    outcome_ids = await _dispatch_outcome_ids_for(db, session_id)
                     await db.delete(row)
             spawn_kwargs = dict(kwargs)
             spawn_kwargs.pop("model", None)
@@ -3783,10 +3825,11 @@ class SessionOrchestrator:
                      session_id, approved_model)
             try:
                 if self._active_session_count() >= await self._max_active_sessions():
-                    return await self._enqueue_session(
+                    launched = await self._enqueue_session(
                         session_id, model=approved_model, **spawn_kwargs)
-                return await self._spawn_session(
-                    session_id, model=approved_model, **spawn_kwargs)
+                else:
+                    launched = await self._spawn_session(
+                        session_id, model=approved_model, **spawn_kwargs)
             except Exception as exc:
                 # Spawn/enqueue failed after the placeholder was already deleted.
                 # Restore the pending_approval hold (row + in-memory record + the
@@ -3811,7 +3854,10 @@ class SessionOrchestrator:
                 await self._restore_hold_after_failed_approve(
                     session_id, model=approved_model, kwargs=kwargs,
                     requested_by=requested_by, requested_at=requested_at)
+                await _reattach_dispatch_outcomes(session_id, outcome_ids)
                 raise
+            await _reattach_dispatch_outcomes(session_id, outcome_ids)
+            return launched
 
         # Mid-session hold — a live session with a parked switch.
         if rec.pending_model:
@@ -21085,12 +21131,13 @@ class SessionOrchestrator:
             # Remove the session's attachment rows + (dedup-aware) on-disk files
             # before the session row itself.
             n_att = await _attachments.delete_for_session(db, session_id)
-            # Detach (never delete) dispatch-outcome history: DispatchOutcome.session_id
-            # FK-references this row with no ON DELETE clause, so on Postgres the row
-            # delete below throws ForeignKeyViolationError for any purged session that
-            # was ever dispatched — silently wedging the archive cap purge on exactly
-            # the automation-origin sessions it prioritizes first (#921). SQLite tests
-            # never caught this: FK enforcement isn't on by default there.
+            # Detach (never delete) dispatch-outcome history. The FK is ON DELETE SET
+            # NULL now (it was bare, and on Postgres the row delete below threw
+            # ForeignKeyViolationError for any purged session that was ever dispatched
+            # — silently wedging the archive cap purge on exactly the automation-origin
+            # sessions it prioritizes first, #921/#2074). The explicit detach stays so
+            # the purge does not depend on the live constraint having been rewritten,
+            # and behaves the same on SQLite, where FKs are not enforced by default.
             await db.execute(
                 sa_update(DispatchOutcome).where(DispatchOutcome.session_id == session_id)
                 .values(session_id=None)
