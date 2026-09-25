@@ -146,6 +146,7 @@ def build_spec_prompt(
     constitution: str | None = None,
     constitution_path: str = ".specify/memory/constitution.md",
     layout: str | None = None,
+    personas: list[tuple[str, str]] | None = None,
 ) -> str:
     """Seed prompt for the Synthesizer (Design): ``intent.md`` → ``spec.md``.
 
@@ -155,11 +156,35 @@ def build_spec_prompt(
     or None when it could not be read — decides the fallback: a ratified
     constitution's real path and principle headings, or an explicit
     governance-gap instruction (issue #2165).
+
+    *personas* is ``[(slug, doc_body), ...]`` for every live persona linked to
+    this initiative's primary capability (issue #2447), each injected as its
+    own read-only block mirroring the UPSTREAM INTENT convention above it —
+    or ``None``/empty when the initiative has no primary capability or that
+    capability links no persona, in which case the section is omitted
+    entirely rather than rendered empty.
     """
     if skills:
         skills_block = "\n".join(f"- {name}" for name in skills)
     else:
         skills_block = _constitution_block(constitution, constitution_path)
+    if personas:
+        persona_blocks = "\n\n".join(
+            f"PERSONA `{pslug}` (read-only — do not edit docs/product/personas/{pslug}.md):\n"
+            f"-----8<----- docs/product/personas/{pslug}.md -----8<-----\n"
+            f"{body}\n"
+            "-----8<--------------------------------------8<-----"
+            for pslug, body in personas
+        )
+        persona_section = (
+            f"{persona_blocks}\n\n"
+            "Every `US-N` user story and `AC-NNN` acceptance criterion in the "
+            "`## Requirements` section below must name which persona above it "
+            "serves, e.g. `US-1: ... (persona: <slug>)`. If a requirement serves "
+            "none of the personas above, say so explicitly rather than guessing.\n\n"
+        )
+    else:
+        persona_section = ""
     return (
         "You are running the **Design** stage of an AI-native SDLC loop. Turn the "
         "approved intent below into a specification.\n\n"
@@ -167,6 +192,7 @@ def build_spec_prompt(
         "-----8<----- intent.md -----8<-----\n"
         f"{intent_md}\n"
         "-----8<----------------------8<-----\n\n"
+        + persona_section +
         "ORG SKILLS — treat each as a binding constraint the spec must satisfy:\n"
         f"{skills_block}\n\n"
         f"Produce `{_artifact_path(slug, 'spec', layout)}` covering: functional behavior, "

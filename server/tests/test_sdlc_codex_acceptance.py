@@ -406,7 +406,7 @@ def test_a_refused_synth_launch_pays_for_no_clone_probe_or_remote_read(monkeypat
     assert touched == [], f"a refused launch did work first: {touched}"
 
 
-def test_the_synth_account_gate_is_asked_for_the_engine_that_was_resolved(monkeypatch):
+def test_the_synth_account_gate_is_asked_for_the_engine_that_was_resolved(monkeypatch, isolated_db):
     """Once the plan is resolved first, the account probe must reuse it rather
     than resolving the origin's engine a third time."""
     orch_mod, orch = _bare_orchestrator(monkeypatch)
@@ -454,7 +454,7 @@ def test_the_synth_account_gate_is_asked_for_the_engine_that_was_resolved(monkey
     assert commit_trailer(AgentEngine.CODEX) in captured["spawn"]["initial_prompt"]
 
 
-def test_the_spec_spawn_reads_the_real_constitution_into_its_prompt(monkeypatch):
+def test_the_spec_spawn_reads_the_real_constitution_into_its_prompt(monkeypatch, isolated_db):
     """``_sdlc_spawn_synth`` must read ``.specify/memory/constitution.md`` off the
     same committed-file seam it already uses for the upstream intent, and hand
     it to ``build_spec_prompt`` so the fallback names the real principles
