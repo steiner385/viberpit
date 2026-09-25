@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -17,7 +18,11 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import MergedPr, RepoDeployConfig
 from server.pipeline import timeline
-from server.pipeline.deploy_watch import DeployWatcher, _DEPLOY_INTERVAL_S
+from server.pipeline.deploy_watch import (
+    DeployWatcher,
+    _caused_by_cancellation,
+    _DEPLOY_INTERVAL_S,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -459,5 +464,101 @@ def test_compare_status_passes_app_token():
 
         assert result == "ahead"
         assert tokens == ["tok-acme"]
+
+    asyncio.run(go())
+
+
+# --------------------------------------------------------------------------- #
+# run() — a driver-wrapped cancellation is not an auto-error (#1950)          #
+# --------------------------------------------------------------------------- #
+
+def test_caused_by_cancellation_detects_bare():
+    assert _caused_by_cancellation(asyncio.CancelledError()) is True
+
+
+def test_caused_by_cancellation_detects_chained_cause():
+    """asyncpg/uvloop pattern: ``raise ConcreteError(...) from cancelled_error``."""
+    try:
+        try:
+            raise asyncio.CancelledError()
+        except asyncio.CancelledError as cancelled:
+            raise ConnectionResetError("connection lost") from cancelled
+    except ConnectionResetError as exc:
+        assert _caused_by_cancellation(exc) is True
+
+
+def test_caused_by_cancellation_detects_implicit_context():
+    try:
+        try:
+            raise asyncio.CancelledError()
+        except asyncio.CancelledError:
+            raise ConnectionResetError("connection lost")  # noqa: B904 (intentional)
+    except ConnectionResetError as exc:
+        assert _caused_by_cancellation(exc) is True
+
+
+def test_caused_by_cancellation_false_for_unrelated_error():
+    assert _caused_by_cancellation(ValueError("nope")) is False
+
+
+def test_caused_by_cancellation_self_referential_chain_terminates():
+    """A cycle in __context__ must not recurse forever."""
+    exc = ValueError("cycle")
+    exc.__context__ = exc
+    assert _caused_by_cancellation(exc) is False
+
+
+def test_run_does_not_file_auto_error_for_driver_wrapped_cancellation(caplog):
+    """poll_once() raising an exception whose cause is our own task's
+    CancelledError (asyncpg/uvloop mid-handshake, #1950) must end the run loop
+    as a real cancellation — no ERROR log (that's what files the auto-error) —
+    so ``stop()``/``cancel_and_reap`` reaps it quietly instead."""
+    async def go():
+        w = DeployWatcher(http_get=_http_map({}), gh_run=_gh_status("ahead"))
+
+        async def _wrapped_cancellation() -> None:
+            try:
+                raise asyncio.CancelledError()
+            except asyncio.CancelledError as cancelled:
+                raise ConnectionResetError("connection lost") from cancelled
+
+        w.poll_once = _wrapped_cancellation  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.ERROR, logger="server.pipeline.deploy_watch"):
+            await w.start()
+            await asyncio.sleep(0)  # let the task actually run poll_once() once
+            await w.stop()  # cancel_and_reap: task is already done+cancelled
+
+        assert w._task is None
+        assert "deploy watcher poll failed" not in caplog.text
+
+    asyncio.run(go())
+
+
+def test_run_still_files_auto_error_for_a_real_failure(caplog):
+    """A genuine poll_once() failure (no cancellation anywhere in its chain)
+    keeps logging via log.exception — only the cancellation case is special."""
+    async def go():
+        w = DeployWatcher(http_get=_http_map({}), gh_run=_gh_status("ahead"))
+        calls = 0
+
+        async def _flaky() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("boom")
+
+        w.poll_once = _flaky  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.ERROR, logger="server.pipeline.deploy_watch"):
+            await w.start()
+            # Give the loop a tick to hit poll_once, log, then block on sleep.
+            for _ in range(50):
+                if calls >= 1:
+                    break
+                await asyncio.sleep(0)
+            await w.stop()
+
+        assert "deploy watcher poll failed" in caplog.text
 
     asyncio.run(go())
