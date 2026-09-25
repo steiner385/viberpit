@@ -56,6 +56,64 @@ def test_health_governance_defaults_to_none():
     assert h.governance is None
 
 
+def test_health_flags_artifact_with_closed_epic_on_a_not_done_initiative():
+    inits = [("proj-a", 1, False, False)]  # not done
+    artifacts = [("proj-a", True, "o/r#1", ())]
+    h = roadmap_health(capabilities=[], initiatives=inits, proposals=[], now=NOW,
+                       artifacts=artifacts, epic_state={"o/r#1": "closed"})
+    assert h.artifacts_epic_closed_not_done == ("proj-a",)
+
+
+def test_health_does_not_flag_closed_epic_when_initiative_is_done():
+    inits = [("proj-a", 1, False, True)]  # done
+    artifacts = [("proj-a", True, "o/r#1", ())]
+    h = roadmap_health(capabilities=[], initiatives=inits, proposals=[], now=NOW,
+                       artifacts=artifacts, epic_state={"o/r#1": "closed"})
+    assert h.artifacts_epic_closed_not_done == ()
+
+
+def test_health_does_not_flag_an_open_epic():
+    inits = [("proj-a", 1, False, False)]
+    artifacts = [("proj-a", True, "o/r#1", ())]
+    h = roadmap_health(capabilities=[], initiatives=inits, proposals=[], now=NOW,
+                       artifacts=artifacts, epic_state={"o/r#1": "open"})
+    assert h.artifacts_epic_closed_not_done == ()
+
+
+def test_health_flags_capability_named_by_frontmatter_but_not_indexed():
+    artifacts = [("proj-a", True, None, ("ghost-capability",))]
+    h = roadmap_health(capabilities=[("real-cap", None, "live", NEW)], initiatives=[],
+                       proposals=[], now=NOW, artifacts=artifacts)
+    assert h.artifacts_unknown_capability == (("proj-a", "ghost-capability"),)
+
+
+def test_health_does_not_flag_an_indexed_capability():
+    artifacts = [("proj-a", True, None, ("real-cap",))]
+    h = roadmap_health(capabilities=[("real-cap", None, "live", NEW)], initiatives=[],
+                       proposals=[], now=NOW, artifacts=artifacts)
+    assert h.artifacts_unknown_capability == ()
+
+
+def test_health_flags_initiative_with_committed_artifact_but_no_frontmatter():
+    artifacts = [("proj-a", False, None, ())]
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW, artifacts=artifacts)
+    assert h.artifacts_missing_frontmatter == ("proj-a",)
+
+
+def test_health_never_checked_frontmatter_is_not_flagged_missing():
+    # None = never successfully read yet, distinct from a confirmed absence.
+    artifacts = [("proj-a", None, None, ())]
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW, artifacts=artifacts)
+    assert h.artifacts_missing_frontmatter == ()
+
+
+def test_health_artifact_fields_default_to_empty():
+    h = roadmap_health(capabilities=[], initiatives=[], proposals=[], now=NOW)
+    assert h.artifacts_epic_closed_not_done == ()
+    assert h.artifacts_unknown_capability == ()
+    assert h.artifacts_missing_frontmatter == ()
+
+
 def test_health_accepts_naive_utc_timestamps():
     # Every DB column is `DateTime(timezone=True)`, naive UTC on SQLite (the
     # dialect has no native timezone type and hands the value back

@@ -1097,6 +1097,85 @@ async def test_read_constitution_returns_none_when_file_absent(db_env):
     assert text is None
 
 
+def _make_repo_with_artifact(root: str, path: str, text: str | None) -> str:
+    """A real git repo, optionally with *path* committed, plus
+    `refs/remotes/origin/master` — mirrors `_make_repo_with_constitution` for
+    `_pm_sync_read_artifact_doc` (issue #2161), which shares its git plumbing."""
+    import os
+    import subprocess
+    clone = os.path.join(root, "clone")
+    os.makedirs(clone)
+    subprocess.run(["git", "init", "-q", clone], check=True, capture_output=True, text=True)
+    _git("config", "user.email", "t@t", cwd=clone)
+    _git("config", "user.name", "t", cwd=clone)
+    if text is not None:
+        full = os.path.join(clone, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(text)
+    else:
+        with open(os.path.join(clone, "README.md"), "w") as fh:
+            fh.write("no artifact here\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "-m", "init", cwd=clone)
+    head = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    _git("update-ref", "refs/remotes/origin/master", head, cwd=clone)
+    return clone
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_doc_returns_text_when_present(db_env):
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    path = "docs/sdlc/my-init/spec.md"
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_repo_with_artifact(root, path, "---\ninitiative: my-init\nkind: spec\n---\nbody\n")
+        with patch(_ENSURE_CLONE, return_value=clone):
+            text = await orch._pm_sync_read_artifact_doc("o/r", path)
+    assert text == "---\ninitiative: my-init\nkind: spec\n---\nbody\n"
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_doc_returns_none_when_file_absent(db_env):
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    path = "docs/sdlc/my-init/spec.md"
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_repo_with_artifact(root, path, None)
+        with patch(_ENSURE_CLONE, return_value=clone):
+            text = await orch._pm_sync_read_artifact_doc("o/r", path)
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_list_committed_artifacts_delegates_to_the_seam_module(db_env, monkeypatch):
+    orch = _bare_orch()
+    calls = []
+
+    async def fake_list(project_id, repo):
+        calls.append((project_id, repo))
+        return ["row"]
+
+    monkeypatch.setattr("server.pm.artifact_sync_seams.list_committed_artifacts", fake_list)
+    out = await orch._pm_sync_list_committed_artifacts("proj-1", "o/r")
+    assert out == ["row"]
+    assert calls == [("proj-1", "o/r")]
+
+
+@pytest.mark.asyncio
+async def test_apply_artifact_frontmatter_delegates_to_the_seam_module(db_env, monkeypatch):
+    orch = _bare_orch()
+    calls = []
+
+    async def fake_apply(project_id, results):
+        calls.append((project_id, results))
+
+    monkeypatch.setattr("server.pm.artifact_sync_seams.apply_artifact_frontmatter", fake_apply)
+    await orch._pm_sync_apply_artifact_frontmatter("proj-1", ["result"])
+    assert calls == [("proj-1", ["result"])]
+
+
 @pytest.mark.asyncio
 async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
     orch = _bare_orch()

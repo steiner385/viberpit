@@ -57,7 +57,8 @@ def _named(page, name):
 
 def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
           read_feature_docs=None, read_map_changes=None, refresh_map_changes=None,
-          read_constitution=None):
+          read_constitution=None, list_committed_artifacts=None, read_artifact_doc=None,
+          apply_artifact_frontmatter=None):
     """Wire a loop over canned data. `pages` is a list popped per fetch call.
 
     ``read_feature_docs``/``read_map_changes`` let a test fully replace the
@@ -110,7 +111,9 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
         save_unindexed_docs=save_unindexed,
         rename_repo=rename_repo, read_map_changes=read_map_changes,
         refresh_map_changes=refresh_map_changes,
-        read_constitution=read_constitution, save_constitution_status=save_constitution)
+        read_constitution=read_constitution, save_constitution_status=save_constitution,
+        list_committed_artifacts=list_committed_artifacts, read_artifact_doc=read_artifact_doc,
+        apply_artifact_frontmatter=apply_artifact_frontmatter)
     # Not part of the 4-tuple every existing caller unpacks — tests that care
     # about the persisted unindexed-docs list read it off the loop instance.
     loop.unindexed_saved = unindexed_saved
@@ -657,6 +660,115 @@ async def test_governance_check_is_best_effort_on_read_failure():
         read_constitution=read_constitution)
     await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
     assert loop.constitution_saved == []  # never saved, but the pass must not raise
+
+
+class _Art:
+    def __init__(self, artifact_id, initiative_id, initiative_slug, kind, repo_path):
+        self.artifact_id = artifact_id
+        self.initiative_id = initiative_id
+        self.initiative_slug = initiative_slug
+        self.kind = kind
+        self.repo_path = repo_path
+
+
+@pytest.mark.asyncio
+async def test_artifact_frontmatter_sync_applies_a_parsed_batch():
+    ctx = Ctx()
+    view = _view()
+    art = _Art("art-1", "ini-1", "my-init", "spec", "docs/sdlc/my-init/spec.md")
+    applied = []
+
+    async def list_artifacts(project_id, repo):
+        return [art]
+
+    async def read_doc(repo, path, ref=None):
+        return "---\ninitiative: my-init\nkind: spec\nepic: o/r#7\n---\nbody\n"
+
+    async def apply(project_id, results):
+        applied.append((project_id, results))
+
+    loop, *_ = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        list_committed_artifacts=list_artifacts, read_artifact_doc=read_doc,
+        apply_artifact_frontmatter=apply)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+
+    assert len(applied) == 1
+    project_id, results = applied[0]
+    assert project_id == "p1"
+    assert len(results) == 1
+    r = results[0]
+    assert r.artifact_id == "art-1"
+    assert r.frontmatter_present is True
+    assert r.epic == "o/r#7"
+
+
+@pytest.mark.asyncio
+async def test_artifact_frontmatter_sync_skipped_for_non_primary_repo():
+    ctx = Ctx()
+    view = _view(is_primary=False)
+
+    async def list_artifacts(project_id, repo):
+        raise AssertionError("must not be called for a non-primary repo")
+
+    loop, *_ = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        list_committed_artifacts=list_artifacts)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_artifact_frontmatter_sync_skips_a_doc_that_fails_to_read():
+    ctx = Ctx()
+    view = _view()
+    art = _Art("art-1", "ini-1", "my-init", "spec", "docs/sdlc/my-init/spec.md")
+    applied = []
+
+    async def list_artifacts(project_id, repo):
+        return [art]
+
+    async def read_doc(repo, path, ref=None):
+        raise RuntimeError("git show failed")
+
+    async def apply(project_id, results):
+        applied.append((project_id, results))
+
+    loop, *_ = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        list_committed_artifacts=list_artifacts, read_artifact_doc=read_doc,
+        apply_artifact_frontmatter=apply)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))  # must not raise
+    assert applied == []  # nothing to apply — the one doc's read failed
+
+
+@pytest.mark.asyncio
+async def test_artifact_frontmatter_sync_skips_unparseable_doc_without_poisoning_batch():
+    ctx = Ctx()
+    view = _view()
+    bad = _Art("art-bad", "ini-bad", "bad-init", "spec", "docs/sdlc/bad-init/spec.md")
+    good = _Art("art-good", "ini-good", "good-init", "spec", "docs/sdlc/good-init/spec.md")
+    applied = []
+
+    async def list_artifacts(project_id, repo):
+        return [bad, good]
+
+    async def read_doc(repo, path, ref=None):
+        if "bad-init" in path:
+            return "---\n[unclosed\n---\nbody\n"
+        return "---\ninitiative: good-init\nkind: spec\n---\nbody\n"
+
+    async def apply(project_id, results):
+        applied.append((project_id, results))
+
+    loop, *_ = _loop(
+        ctx, [view], [_issue_page([], None, False), _pr_page([], None, False)],
+        list_committed_artifacts=list_artifacts, read_artifact_doc=read_doc,
+        apply_artifact_frontmatter=apply)
+    await loop._incremental(view, datetime(2026, 2, 1, tzinfo=timezone.utc))
+
+    assert len(applied) == 1
+    _, results = applied[0]
+    assert [r.artifact_id for r in results] == ["art-good"]
 
 
 @pytest.mark.asyncio

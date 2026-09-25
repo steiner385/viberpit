@@ -1262,6 +1262,9 @@ class SessionOrchestrator:
             save_relations=self._pm_sync_save_relations,
             rename_repo=self._pm_sync_rename_repo,
             adopt_epics=self._pm_sync_adopt_epics,
+            list_committed_artifacts=self._pm_sync_list_committed_artifacts,
+            read_artifact_doc=self._pm_sync_read_artifact_doc,
+            apply_artifact_frontmatter=self._pm_sync_apply_artifact_frontmatter,
         )
         self._pm_sync_task: asyncio.Task | None = None
         # GitHub Reconcile control loop (spec 003 §6): the WRITE half of the mirror —
@@ -8942,16 +8945,18 @@ class SessionOrchestrator:
 
     _PM_SYNC_CONSTITUTION_PATH = ".specify/memory/constitution.md"
 
-    async def _pm_sync_read_constitution(
-        self, repo: str, ref: str | None = None
+    async def _pm_sync_read_repo_file(
+        self, repo: str, path: str, ref: str | None = None
     ) -> str | None:
-        """Read `.specify/memory/constitution.md` at *ref* (default: origin's
-        default branch) in the shared clone — same git-plumbing-only approach as
-        `_pm_sync_read_feature_docs`, but single-file and best-effort: unlike that
-        reader's atomic-or-raise contract (a partial feature-doc read would orphan
-        capabilities), a repo with NO constitution at all is the expected common
-        case for issue #2165, not a read failure — this returns None rather than
-        raising."""
+        """Read one file's text at *ref* (default: origin's default branch) in
+        the shared clone — git-plumbing-only, same approach as
+        `_pm_sync_read_feature_docs` but single-file and best-effort: a file
+        that doesn't exist at that ref is the expected common case for every
+        caller of this helper (no constitution, no committed artifact yet
+        this pass), not a read failure — returns None rather than raising.
+        Shared by `_pm_sync_read_constitution` (issue #2165) and
+        `_pm_sync_read_artifact_doc` (issue #2161) so the git plumbing has one
+        definition (constitution VI)."""
         import subprocess
 
         async def _read() -> str | None:
@@ -8976,8 +8981,7 @@ class SessionOrchestrator:
                 resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
             show = await asyncio.to_thread(
                 subprocess.run,
-                ["git", "-C", clone, "show",
-                 f"{resolved_ref}:{self._PM_SYNC_CONSTITUTION_PATH}"],
+                ["git", "-C", clone, "show", f"{resolved_ref}:{path}"],
                 capture_output=True, text=True, timeout=30,
             )
             if show.returncode != 0:
@@ -8985,6 +8989,35 @@ class SessionOrchestrator:
             return show.stdout
 
         return await _read()
+
+    async def _pm_sync_read_constitution(
+        self, repo: str, ref: str | None = None
+    ) -> str | None:
+        """Read `.specify/memory/constitution.md` at *ref* — see
+        `_pm_sync_read_repo_file` for the shared git plumbing and the
+        best-effort contract (issue #2165)."""
+        return await self._pm_sync_read_repo_file(repo, self._PM_SYNC_CONSTITUTION_PATH, ref)
+
+    async def _pm_sync_read_artifact_doc(
+        self, repo: str, path: str, ref: str | None = None
+    ) -> str | None:
+        """Read one committed `docs/sdlc/<slug>/<kind>.md` at *ref* — see
+        `_pm_sync_read_repo_file` for the shared git plumbing and the
+        best-effort contract (issue #2161)."""
+        return await self._pm_sync_read_repo_file(repo, path, ref)
+
+    async def _pm_sync_list_committed_artifacts(self, project_id: str, repo: str) -> list:
+        """Thin wrapper over `server/pm/artifact_sync_seams.py` — pure DB
+        work, no local clone, kept as a method for the same reason as
+        `_pm_sync_list_feature_rows` (bound-method call site + test monkeypatch)."""
+        from server.pm.artifact_sync_seams import list_committed_artifacts
+        return await list_committed_artifacts(project_id, repo)
+
+    async def _pm_sync_apply_artifact_frontmatter(self, project_id: str, results: list) -> None:
+        """Thin wrapper over `server/pm/artifact_sync_seams.py` — see
+        `_pm_sync_list_committed_artifacts` above."""
+        from server.pm.artifact_sync_seams import apply_artifact_frontmatter
+        await apply_artifact_frontmatter(project_id, results)
 
     async def _pm_sync_save_constitution_status(
         self, project_id: str, status: str | None,
