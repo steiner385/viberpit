@@ -146,3 +146,24 @@ def test_backlog_returns_none_when_selection_fails(orch, monkeypatch):
     orch.live_session_load = lambda: {}
     orch._recovery.quarantined = lambda now=None: set()
     assert asyncio.run(orch._backlog_healthy_account()) is None
+
+
+def test_backlog_healthy_account_selects_off_event_loop(orch, monkeypatch):
+    """select_account does blocking oauth usage I/O; it must never run on the
+    daemon's event loop thread. Confirmed live on dobby (#2223): the backlog
+    tick's synchronous select_account call starved the FastAPI /info handler
+    (the fleet health prober polls it every 30s) for 12-38s at a time."""
+    import threading
+    loop_thread = threading.get_ident()
+    seen_threads = []
+
+    def _select(**kw):
+        seen_threads.append(threading.get_ident())
+        return Picked(name="work", optimistic=False)
+
+    monkeypatch.setattr(orch_mod, "select_account", _select)
+    orch.live_session_load = lambda: {}
+    orch._recovery.quarantined = lambda now=None: set()
+    _cache(orch, work=anthropic_snapshot(20.0, None, 30.0, None))
+    assert asyncio.run(orch._backlog_healthy_account()) == "work"
+    assert seen_threads and seen_threads[0] != loop_thread
