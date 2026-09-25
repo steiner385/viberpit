@@ -411,6 +411,16 @@ class CodexAppServerClient:
         """The latched error's message (typed, never a wire value), or None."""
         return str(self._closed_error) if self._closed_error is not None else None
 
+    @property
+    def closed_by_transport(self) -> bool:
+        """True when the latch is the stream ending or failing, not a protocol fault.
+
+        EOF, a failed read and a failed write all mean the pipe went away — which is
+        also what a dying process looks like a few milliseconds before it is reaped.
+        A framing fault is the peer misbehaving on a pipe that still works.
+        """
+        return isinstance(self._closed_error, CodexTransportClosed)
+
     async def wait_closed(self) -> None:
         """Block until the client latches closed (EOF, read/write failure, aclose)."""
         await self._closed_event.wait()

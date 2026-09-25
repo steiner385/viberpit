@@ -100,6 +100,7 @@ def _manager(**kw):
     kw.setdefault("idle_grace_s", 60.0)
     kw.setdefault("backoff_base_s", 0.0)
     kw.setdefault("backoff_max_s", 0.0)
+    kw.setdefault("exit_grace_s", 0.05)
     manager = mgr_mod.CodexRunnerManager(process_factory=factory, **kw)
     return manager, spawned
 
@@ -871,6 +872,69 @@ def test_a_latched_client_reports_the_latch_not_a_process_exit(caplog):
         assert record.fields["reason"] == "client_closed"
         assert record.fields["detail"], "a latch with no reason diagnoses nothing"
         assert spawned[0].stopped, "the still-live process must still be reaped"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def _exit_after_eof(child: FakeCodexProcess, rc: int, delay_s: float) -> None:
+    """stdout closes now and the process is reaped `delay_s` later — a real exit."""
+    child.server.eof()
+    asyncio.get_running_loop().call_later(delay_s, child.crash, rc)
+
+
+def test_eof_followed_by_a_clean_exit_is_reported_as_the_exit_not_a_latch(caplog):
+    """#2313: stdout EOF beats the reaped status by milliseconds. That is a
+    process exiting, not the #1444 latch, and must carry the real exit code."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            _exit_after_eof(spawned[0], rc=0, delay_s=0.01)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_exited"
+        assert record.levelno == logging.WARNING
+        assert record.fields["exit_code"] == 0
+        assert record.fields["reason"] == "process_exited_clean"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_eof_followed_by_a_crash_reports_the_real_status(caplog):
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            _exit_after_eof(spawned[0], rc=139, delay_s=0.01)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_crashed"
+        assert record.fields["exit_code"] == 139
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_eof_with_the_process_alive_past_the_grace_is_still_a_latch(caplog):
+    """The #1444 shape survives the grace: the process outlives it, so the ending
+    is still `client_closed` and the live process is still reaped."""
+
+    async def go():
+        manager, spawned = _manager(exit_grace_s=0.02)
+        await manager.ensure("a")
+        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+            _exit_after_eof(spawned[0], rc=0, delay_s=30.0)  # far beyond the grace
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_client_closed"
+        assert record.fields["exit_code"] == mgr_mod.CLIENT_CLOSED_EXIT_CODE
+        assert spawned[0].stopped
         await manager.stop_all()
 
     asyncio.run(go())

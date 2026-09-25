@@ -97,6 +97,12 @@ RECOVER_VIA_THREAD_READ: Final = "thread/read"
 #: closed while its process was still alive (#1444). Negative like a signal
 #: death, and distinct from the -1 an unwaitable child gets.
 CLIENT_CLOSED_EXIT_CODE: Final = -2
+#: How long a transport latch (EOF) waits for the process to be reaped before the
+#: runner is declared alive-but-disconnected. stdout EOF and the exit status land
+#: milliseconds apart when the app-server simply exits, so without a wait the
+#: latch wins that race and the ending is reported as `client_closed` with a
+#: fabricated -2 instead of the real status (#2313).
+DEFAULT_EXIT_GRACE_S: Final = 1.5
 
 
 class RunnerEnding(StrEnum):
@@ -319,6 +325,7 @@ class CodexRunnerManager:
         healthy_uptime_s: float = DEFAULT_HEALTHY_UPTIME_S,
         stop_timeout_s: float = DEFAULT_STOP_TIMEOUT_S,
         login_timeout_s: float = DEFAULT_LOGIN_TIMEOUT_S,
+        exit_grace_s: float = DEFAULT_EXIT_GRACE_S,
         jitter: Callable[[], float] = random.random,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -338,6 +345,7 @@ class CodexRunnerManager:
         self._backoff_max_s = max(0.0, backoff_max_s)
         self._healthy_uptime_s = healthy_uptime_s
         self._stop_timeout_s = stop_timeout_s
+        self._exit_grace_s = max(0.0, exit_grace_s)
         self._login_timeout_s = login_timeout_s
         self._jitter = jitter
         self._sleep = sleep
@@ -1056,20 +1064,25 @@ class CodexRunnerManager:
         that, so the account served a dead client indefinitely. Returns the exit
         code for the first, `CLIENT_CLOSED_EXIT_CODE` for the second; the caller's
         `_discard` stops the still-live process on that path.
+
+        A transport latch is not proof the process is alive: stdout EOF precedes
+        the reaped exit status by milliseconds, so it is given `exit_grace_s` to
+        turn into a real status before it is called a latch (#2313).
         """
         exited = asyncio.ensure_future(runner.process.wait())
         latched = asyncio.ensure_future(runner.client.wait_closed())
         try:
-            done, _ = await asyncio.wait(
-                {exited, latched}, return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait({exited, latched}, return_when=asyncio.FIRST_COMPLETED)
+            if not exited.done() and runner.client.closed_by_transport:
+                await asyncio.wait({exited}, timeout=self._exit_grace_s)
+            process_exited = exited.done()
         finally:
             for waiter in (exited, latched):
                 if not waiter.done():
                     await cancel_and_reap(
                         waiter, phase=f"codex.supervisor.wait:{runner.account}"
                     )
-        if exited in done:
+        if process_exited:
             try:
                 return exited.result()
             except Exception:  # noqa: BLE001 -- treat an unwaitable child as dead

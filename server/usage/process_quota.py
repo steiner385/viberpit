@@ -42,6 +42,7 @@ from ccswitch.config import load_config as _default_load_config
 from ccswitch.quota import QuotaSnapshot
 
 from server.aio import cancel_and_reap
+from server.codex.manager import CodexStartError
 
 log = logging.getLogger(__name__)
 
@@ -251,6 +252,15 @@ class ProcessQuotaRefresher:
         if not running:
             try:
                 await source.start(account)
+            except CodexStartError as exc:
+                # The manager already reported this at ERROR (`codex.manager.
+                # start_failed`, with the real cause). Logging it again at WARNING
+                # with a traceback minted a second auto-filed issue for one
+                # incident (#2054); the cooldown below is the visible back-off.
+                log.info("process quota: could not start the %s process for %s: %s",
+                         source.provider, account, exc)
+                await asyncio.to_thread(self._note_failure, account)
+                return None
             except Exception:  # noqa: BLE001 — one account must never fail the sweep
                 log.warning("process quota: could not start the %s process for %s",
                             source.provider, account, exc_info=True)
