@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the ViberPit AI assistant eval nightly
+Documentation=https://github.com/steiner385/viberpit
+
+[Timer]
+# 03:30 host-local time (America/New_York on the fleet), jittered; Persistent catches up
+# once after the host was off at the scheduled time.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=viberpit-assistant-eval.service
+
+[Install]
+WantedBy=timers.target

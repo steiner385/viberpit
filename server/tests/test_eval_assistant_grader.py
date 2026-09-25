@@ -27,7 +27,7 @@ select_cases = eval_assistant.select_cases
 
 def _case(**kw):
     defaults = dict(id="c1", prompt="p", route="/sessions",
-                    expect_tools=(), forbid_tools=(), rubric="", operator=False)
+                    expect_tools=(), forbid_tools=(), rubric="", operator=False, pack="V1")
     defaults.update(kw)
     return EvalCase(**defaults)
 
@@ -77,8 +77,8 @@ def test_case_id_is_carried_onto_the_grade():
 def test_load_cases_rejects_duplicate_ids(tmp_path):
     path = tmp_path / "dupe.jsonl"
     path.write_text(
-        '{"id": "a", "prompt": "x", "route": "/sessions"}\n'
-        '{"id": "a", "prompt": "y", "route": "/sessions"}\n'
+        '{"id": "a", "prompt": "x", "route": "/sessions", "pack": "V1"}\n'
+        '{"id": "a", "prompt": "y", "route": "/sessions", "pack": "V1"}\n'
     )
     with pytest.raises(ValueError, match="duplicate case id"):
         load_cases(path)
@@ -86,7 +86,7 @@ def test_load_cases_rejects_duplicate_ids(tmp_path):
 
 def test_load_cases_skips_blank_lines_and_defaults_missing_fields(tmp_path):
     path = tmp_path / "cases.jsonl"
-    path.write_text('\n{"id": "a", "prompt": "x", "route": "/sessions"}\n\n')
+    path.write_text('\n{"id": "a", "prompt": "x", "route": "/sessions", "pack": "V1"}\n\n')
     cases = load_cases(path)
     assert len(cases) == 1
     assert cases[0].expect_tools == ()
@@ -97,7 +97,7 @@ def test_load_cases_skips_blank_lines_and_defaults_missing_fields(tmp_path):
 
 def test_load_cases_reads_the_operator_flag(tmp_path):
     path = tmp_path / "cases.jsonl"
-    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "operator": true}\n')
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "pack": "O", "operator": true}\n')
     cases = load_cases(path)
     assert cases[0].operator is True
 
@@ -116,6 +116,87 @@ def test_select_cases_default_run_excludes_operator_cases():
 def test_select_cases_operator_run_includes_only_operator_cases():
     cases = [_case(id="a"), _case(id="b", operator=True)]
     assert [c.id for c in select_cases(cases, operator=True)] == ["b"]
+
+
+# ---------------------------------------------------------------------------
+# Packs (plan Task 10.4): every case is tagged with the capability pack it exercises so
+# a run can be filtered (--pack) and the results file breaks the pass rate down per pack.
+# ---------------------------------------------------------------------------
+
+
+def test_load_cases_rejects_a_missing_pack(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions"}\n')
+    with pytest.raises(ValueError, match=r"cases\.jsonl:1: .*pack"):
+        load_cases(path)
+
+
+def test_load_cases_rejects_an_unknown_pack(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "pack": "V1"}\n'
+                    '{"id": "b", "prompt": "x", "route": "/sessions", "pack": "Z"}\n')
+    with pytest.raises(ValueError, match=r"cases\.jsonl:2: .*'Z'"):
+        load_cases(path)
+
+
+def test_load_cases_rejects_an_operator_case_outside_pack_o(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "pack": "V1", '
+                    '"operator": true}\n')
+    with pytest.raises(ValueError, match=r"cases\.jsonl:1: .*operator"):
+        load_cases(path)
+
+
+def test_load_cases_reads_the_pack(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "pack": "N"}\n')
+    assert load_cases(path)[0].pack == "N"
+
+
+_PACKED = [_case(id="v", pack="V1"), _case(id="n", pack="N"), _case(id="g", pack="G"),
+           _case(id="o", pack="O", operator=True)]
+
+
+def test_select_cases_without_packs_keeps_every_pack():
+    assert [c.id for c in select_cases(_PACKED, operator=False)] == ["v", "n", "g"]
+    assert [c.id for c in select_cases(_PACKED, operator=False, packs=None)] == ["v", "n", "g"]
+
+
+def test_select_cases_filters_to_one_pack():
+    assert [c.id for c in select_cases(_PACKED, operator=False, packs=["N"])] == ["n"]
+
+
+def test_select_cases_filters_to_several_packs():
+    assert [c.id for c in select_cases(_PACKED, operator=False, packs=["G", "V1"])] == ["v", "g"]
+
+
+def test_select_cases_pack_filter_composes_with_operator():
+    assert [c.id for c in select_cases(_PACKED, operator=True, packs=["O"])] == ["o"]
+    assert select_cases(_PACKED, operator=True, packs=["N"]) == []
+    assert select_cases(_PACKED, operator=False, packs=["O"]) == []
+
+
+def test_cli_rejects_an_unknown_pack(capsys):
+    with pytest.raises(SystemExit) as exc:
+        eval_assistant.main(["--pack", "Z"])
+    assert exc.value.code == 2
+    assert "--pack" in capsys.readouterr().err
+
+
+def test_results_file_breaks_the_pass_rate_down_per_pack(tmp_path):
+    def result(case_id, pack, passed):
+        case = _case(id=case_id, pack=pack)
+        grade = grade_tool_sequence(case, [])
+        return eval_assistant.CaseResult(case, grade, passed, "PASS" if passed else "FAIL", "")
+
+    out = eval_assistant.write_results(
+        [result("a", "N", True), result("b", "V1", True), result("c", "N", False)],
+        tmp_path, model="sonnet")
+    text = out.read_text()
+    assert "| pack | cases | passed | pass rate |" in text
+    # PACKS order (V1 before N), only packs present in the run.
+    assert text.index("| V1 | 1 | 1 | 100% |") < text.index("| N | 2 | 1 | 50% |")
+    assert "| G |" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +219,23 @@ def test_shipped_case_file_has_around_fifty_cases():
     # for three commits, 2026-09-06). Truncation shows up as a count near zero and
     # duplication as a doubled count, so a generous ceiling loses nothing.
     assert 45 <= len(_SHIPPED_CASES) <= 400
+
+
+def test_shipped_case_file_meets_the_v2_corpus_floor():
+    # Plan Task 10.4: the v2 corpus is at least 80 cases.
+    assert len(_SHIPPED_CASES) >= 80
+
+
+def test_every_shipped_case_is_tagged_with_a_known_pack():
+    for case in _SHIPPED_CASES:
+        assert case.pack in eval_assistant.PACKS, f"{case.id}: pack {case.pack!r}"
+
+
+def test_shipped_operator_cases_are_pack_o():
+    operator = [c for c in _SHIPPED_CASES if c.operator]
+    assert operator, "the corpus lost its operator-tier cases"
+    assert {c.pack for c in operator} == {"O"}
+    assert {c.id for c in _SHIPPED_CASES if c.pack == "O"} == {c.id for c in operator}
 
 
 def test_shipped_case_file_has_at_least_six_injection_cases():

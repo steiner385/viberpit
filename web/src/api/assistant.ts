@@ -3,7 +3,8 @@
 // The AI assistant's status + session lifecycle, fetched/posted in ONE place —
 // colocated hooks pattern (see fleet.ts). Mirrors server/assistant/api.py's
 // endpoints: GET /assistant/status, POST /assistant/session, GET
-// /assistant/history and POST /assistant/session/{id}/resume.
+// /assistant/history, POST /assistant/session/{id}/resume and GET
+// /assistant/gaps.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type { ApiRequestError } from '@/api/client'
@@ -143,6 +144,34 @@ export function useResumeAssistantSession() {
       void qc.invalidateQueries({ queryKey: ASSISTANT_STATUS_KEY })
       void qc.invalidateQueries({ queryKey: ASSISTANT_HISTORY_KEY })
     },
+  })
+}
+
+/** One capability users asked the assistant for that no tool could do — the
+ * `assistant.gap` audit rows (its `report_gap` tool), grouped by capability.
+ * `lastSeen` is an ISO UTC timestamp. */
+export interface AssistantGap {
+  capability: string
+  count: number
+  lastSeen: string
+}
+
+/** GET /assistant/gaps — gaps in the last `days` days, most-reported first. */
+export interface AssistantGapsReport {
+  days: number
+  total: number
+  gaps: AssistantGap[]
+}
+
+/** The gaps report's query key, per window. */
+export const assistantGapsKey = (days: number) => ['assistant', 'gaps', days] as const
+
+/** The assistant's reported capability gaps over the last `days` days. */
+export function useAssistantGaps(days = 30) {
+  return useQuery<AssistantGapsReport>({
+    queryKey: assistantGapsKey(days),
+    queryFn: () => api.get<AssistantGapsReport>(`/assistant/gaps?days=${days}`),
+    staleTime: 5 * 60_000,
   })
 }
 

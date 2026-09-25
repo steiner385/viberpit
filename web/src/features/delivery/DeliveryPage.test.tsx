@@ -64,6 +64,15 @@ vi.mock('@/api/hooks', () => ({
   useUpdateProductPolicy: () => ({ mutate: vi.fn() }),
   useProject: () => ({ data: undefined }),
 }))
+// The CI welcome pane's assistant-gaps table — its states are covered by
+// `ci/AssistantGapsTable.test.tsx`; here it only needs to render.
+vi.mock('@/api/assistant', () => ({
+  useAssistantGaps: () => ({
+    data: { days: 30, total: 1, gaps: [{ capability: 'rotate github token', count: 1, lastSeen: '2026-09-01T00:00:00Z' }] },
+    isLoading: false,
+    isError: false,
+  }),
+}))
 vi.mock('./automation/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
 vi.mock('./automation/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
 // Renders the `open` prop rather than nothing, so a test can tell whether
@@ -162,6 +171,18 @@ describe('DeliveryPage', () => {
     expect(h1()).toHaveTextContent('Delivery')
     expect(screen.getByText('Pick a repository')).toBeInTheDocument()
     expect(screen.getByText(/1 with pipeline history/)).toBeInTheDocument()
+  })
+
+  it('the CI scope welcome shows the assistant-gaps table', () => {
+    mount('/delivery?scope=ci')
+    expect(screen.getByRole('table', { name: 'Assistant gaps' })).toBeInTheDocument()
+    expect(screen.getByText('rotate github token')).toBeInTheDocument()
+  })
+
+  it('the automations scope welcome has no assistant-gaps table', () => {
+    mount('/delivery')
+    expect(screen.getByText('Pick an automation')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Assistant gaps' })).not.toBeInTheDocument()
   })
 
   it('an open automation names itself, carries its controls in the header, and shows Overview', () => {

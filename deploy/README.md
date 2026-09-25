@@ -579,6 +579,36 @@ instead of being OOM-killed. On an already-running host apply it live without a 
 
     sudo systemctl set-property --runtime viberpit-daemon.service MemoryHigh=10G
 
+## Assistant nightly eval (`viberpit-assistant-eval.timer`)
+
+A nightly oneshot (03:30 local, up to 15 min jitter, `Persistent=true`) that runs
+`scripts/eval_assistant.py` — the AI assistant's full case corpus
+(`docs/superpowers/evals/assistant/cases.jsonl`, ~126 cases, each tagged with a capability
+pack) as real one-shot assistant turns against an in-memory fixture. It needs no edge or
+daemon, only an enabled Anthropic account on the host (`pick_helper_config_dir()`), so
+**it spends real account quota every night**: one sonnet turn plus one haiku judge call
+per case. That is why it is opt-in and not wired into CI — no CI runner has the accounts.
+
+Install (rewrite `WorkingDirectory` / `ExecStart` to this host's deploy checkout first,
+like the daemon unit):
+
+    sudo install -m644 deploy/viberpit-assistant-eval.service /etc/systemd/system/
+    sudo install -m644 deploy/viberpit-assistant-eval.timer   /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now viberpit-assistant-eval.timer
+
+Kick a run by hand with `sudo systemctl start viberpit-assistant-eval.service` and follow
+it with `journalctl -u viberpit-assistant-eval -f`.
+
+Results land in `/home/tony/.claude-accounts/evals/assistant/results-<date>-<suffix>.md`
+— outside the deploy worktree, so a run never dirties it. The newest file **is the
+record**: its header line carries the overall pass rate and a `| pack | cases | passed |
+pass rate |` table breaks it down per pack. There is no metrics push path for a oneshot,
+so nothing is exported to `/metrics`. The unit exits non-zero (shows `failed` in
+`systemctl status`) when the pass rate is under the script's 90% threshold or a case
+could not run. Operator-tier cases (pack O) only run with `--operator`, which the unit
+does not pass.
+
 ## Hardware watchdog reachability test (`deploy/watchdog/test-reachability.sh`)
 
 This is a **host-level** hardware-watchdog test, separate from the application health
