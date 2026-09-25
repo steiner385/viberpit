@@ -52,7 +52,10 @@ if TYPE_CHECKING:
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import brand
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
-from ccswitch.accounts import provider_or_none as _provider_of
+from ccswitch.accounts import (
+    eligible_enabled_accounts as _eligible_enabled_accounts,
+    provider_or_none as _provider_of,
+)
 from ccswitch.account_names import (
     assert_valid_account_name, validate_account_name, InvalidAccountName,
 )
@@ -19331,7 +19334,7 @@ class SessionOrchestrator:
         # driver untouched — unlike _reassign's own invalid_target branch, this
         # is a config mismatch, not a broken session, so it must not pause.
         eligible = await asyncio.to_thread(
-            ccswitch_accounts.eligible_enabled_accounts,
+            _eligible_enabled_accounts,
             require_engine=record.engine.value,
             default_engine=AgentEngine.CLAUDE_CODE.value,
         )

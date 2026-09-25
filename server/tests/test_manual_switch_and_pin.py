@@ -29,7 +29,7 @@ def _mock_known_accounts(monkeypatch, names, *, before_read=lambda: None, eligib
         return [{"name": n} for n in names]
 
     monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts", list_accounts)
-    monkeypatch.setattr(orch_mod.ccswitch_accounts, "eligible_enabled_accounts",
+    monkeypatch.setattr(orch_mod, "_eligible_enabled_accounts",
                         lambda **_kw: list(names if eligible is None else eligible))
 
 
@@ -186,6 +186,37 @@ async def test_switch_account_manual_rejects_wrong_engine(monkeypatch, caplog):
     assert rec.account_pinned is False
     assert rec.account == "a", "the session must stay on its original account"
     assert not caplog.records, "a config mismatch must not log at WARNING+ (auto-files as an error)"
+
+
+@pytest.mark.asyncio
+async def test_switch_account_manual_rejects_codex_account_on_claude_session(monkeypatch, caplog):
+    """#1998: the mirror of #2002 — a Claude Code session's /account onto an
+    OpenAI/Codex account has no Claude credential slot, so composing its config
+    dir raised FileNotFoundError out of _reassign_locked (an ERROR auto-error).
+    It must be a clean, INFO-level refusal before _reassign runs."""
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch = _orch_with(rec)
+    _mock_known_accounts(monkeypatch, ["a", "chatgpt-x"], eligible=["a"])
+    seen = {}
+
+    def eligible(**kw):
+        seen.update(kw)
+        return ["a"]
+
+    monkeypatch.setattr(orch_mod, "_eligible_enabled_accounts", eligible)
+    called = {"reassign": False}
+    async def _reassign(self, r, new, *, reason): called["reassign"] = True
+    monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
+
+    with caplog.at_level("WARNING"):
+        result = await orch.switch_account_manual("s1", "chatgpt-x")
+
+    assert result == "invalid_target"
+    assert seen["require_engine"] == AgentEngine.CLAUDE_CODE.value
+    assert called["reassign"] is False
+    assert rec.account == "a" and rec.account_pinned is False
+    assert not caplog.records
 
 
 @pytest.mark.asyncio
