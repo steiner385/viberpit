@@ -89,10 +89,18 @@ pre-rebrand directory name; either path works — the env var decides).
 
 ```bash
 # 1. Auth into a dedicated config dir with storage on disk rather than in the keyring.
+#    Storage is chosen by the login flag --insecure-storage. `secure_storage` is NOT a gh config
+#    key (gh 2.88.1 warns "not a known configuration key"), so `gh config set secure_storage false`
+#    does nothing and the token still lands in the keyring.
 export GH_CONFIG_DIR=~/.config/viberpit/gh
 mkdir -p "$GH_CONFIG_DIR" && chmod 700 "$GH_CONFIG_DIR"
-gh config set -h github.com secure_storage false
-gh auth login --hostname github.com --git-protocol https --web   # interactive; owner only
+gh auth login --hostname github.com --git-protocol https --insecure-storage --web   # interactive; owner only
+
+# 1b. Or, non-interactively, while the login keyring is unlocked (someone is logged in at the
+#     console): re-store the token gh already holds. This was the route used on dobby (#2118).
+#       gh auth token > /tmp/.ghtok && \
+#       GH_CONFIG_DIR=~/.config/viberpit/gh gh auth login --hostname github.com \
+#         --git-protocol https --insecure-storage --with-token < /tmp/.ghtok; rm -f /tmp/.ghtok
 
 # 2. Confirm the token actually landed in the file, not the keyring.
 grep -q oauth_token "$GH_CONFIG_DIR/hosts.yml" && chmod 600 "$GH_CONFIG_DIR/hosts.yml"
