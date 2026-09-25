@@ -34,6 +34,8 @@ from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
 from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
 from server.pm.mirror_store import ProductSyncView
+from server.pm.persona_index import PersonaIndexPlan, PersonaRowView, plan_persona_index
+from server.pm.personadoc import PersonaDoc, PersonaDocError, parse_persona_doc
 from server.sdlc.constitution_status import classify_document
 
 from .base import AutomationStatus, ConfigField
@@ -133,6 +135,8 @@ SaveSyncState = Callable[..., Awaitable[None]]
 ReadFeatureDocs = Callable[..., Awaitable[FeatureDocsRead]]
 ListFeatureRows = Callable[[str], Awaitable[list[FeatureRowView]]]
 ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
+ListPersonaRows = Callable[[str], Awaitable[list[PersonaRowView]]]
+ApplyPersonaPlan = Callable[[str, PersonaIndexPlan], Awaitable[None]]
 # Persist this pass's (path, error) pairs for docs that could not be parsed
 # (issue #2166) onto the project row. None ⇒ no-op — every pre-existing
 # PmSyncLoop caller keeps today's behaviour (feed event + log only).
@@ -224,6 +228,9 @@ class PmSyncLoop:
         list_committed_artifacts: ListCommittedArtifacts | None = None,
         read_artifact_doc: ReadArtifactDoc | None = None,
         apply_artifact_frontmatter: ApplyArtifactFrontmatter | None = None,
+        read_persona_docs: ReadFeatureDocs | None = None,
+        list_persona_rows: ListPersonaRows | None = None,
+        apply_persona_plan: ApplyPersonaPlan | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -237,6 +244,12 @@ class PmSyncLoop:
         self._now_utc = now_utc
         self._save_unindexed_docs = save_unindexed_docs
         self._resolve_evidence_paths = resolve_evidence_paths
+        # None ⇒ no persona pass — personas are default-branch-only, unlike
+        # the feature index's map-changes-branch/evidence machinery (#2164).
+        self._read_persona_docs = read_persona_docs
+        self._list_persona_rows = list_persona_rows
+        self._apply_persona_plan = apply_persona_plan
+        self._bad_persona_doc_log = LogThrottle()
         # None ⇒ no governance status pass (issue #2165) — pm_sync predates this
         # check and every test that doesn't care about it should keep working.
         self._read_constitution = read_constitution
@@ -592,6 +605,7 @@ class PmSyncLoop:
                     view, backfill_done=True, backfill_cursor=None,
                     backfill_phase="prs", watermark=max_seen or now,
                     last_synced_at=now, sync_requested_at=None)
+                await self._persona_index(view)
                 await self._feature_index(view)
                 await self._governance_check(view)
                 await self._artifact_frontmatter_sync(view)
@@ -640,6 +654,7 @@ class PmSyncLoop:
         # otherwise this pass indexes its docs as still-proposed (and reads a
         # branch abandon has just deleted) for one whole tick.
         await self._map_changes_lifecycle(view)
+        await self._persona_index(view)
         await self._feature_index(view)
         await self._governance_check(view)
         await self._artifact_frontmatter_sync(view)
@@ -665,6 +680,33 @@ class PmSyncLoop:
             await self._ctx.emit(
                 "warn", f"map-changes PR refresh failed for {view.repo}",
                 kind="map_changes_refresh_error", target=view.repo)
+
+    async def _persona_index(self, view: RepoSyncView) -> None:
+        """Personas run BEFORE the feature index (called first in tick() below)
+        so a capability doc citing a persona added the same tick still links —
+        apply_feature_plan resolves `personas:` slugs against live Persona rows
+        at apply time (#2164)."""
+        if (not view.is_primary or self._read_persona_docs is None
+                or self._list_persona_rows is None or self._apply_persona_plan is None):
+            return
+        try:
+            read = await self._read_persona_docs(view.repo)
+        except Exception:
+            self._observation_degraded = True
+            log.warning("pm_sync.persona_read_failed repo=%s — skipping reindex",
+                        view.repo, exc_info=True)
+            return
+        docs: list[tuple[str, PersonaDoc]] = []
+        for path, text in read.docs:
+            try:
+                docs.append((path, parse_persona_doc(text, path=path)))
+            except PersonaDocError as e:
+                log_event_throttled(log, self._bad_persona_doc_log, f"{view.repo}\0{path}\0{e}",
+                                    logging.WARNING, "pm_sync.bad_persona_doc",
+                                    exc_info=True, repo=view.repo, path=path)
+        rows = await self._list_persona_rows(view.project_id)
+        plan = plan_persona_index(rows, docs)
+        await self._apply_persona_plan(view.project_id, plan)
 
     async def _feature_index(self, view: RepoSyncView) -> None:
         if not view.is_primary:

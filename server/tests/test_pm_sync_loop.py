@@ -58,7 +58,7 @@ def _named(page, name):
 def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
           read_feature_docs=None, read_map_changes=None, refresh_map_changes=None,
           read_constitution=None, list_committed_artifacts=None, read_artifact_doc=None,
-          apply_artifact_frontmatter=None):
+          apply_artifact_frontmatter=None, persona_docs=None, read_persona_docs=None):
     """Wire a loop over canned data. `pages` is a list popped per fetch call.
 
     ``read_feature_docs``/``read_map_changes`` let a test fully replace the
@@ -71,6 +71,7 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     applied = []
     unindexed_saved = []
     constitution_saved = []
+    persona_applied = []
 
     async def read_config():
         return "on", dict(config or {})
@@ -102,6 +103,15 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def save_constitution(project_id, status):
         constitution_saved.append((project_id, status))
 
+    async def read_persona_docs_fake(repo, ref=None):
+        return FeatureDocsRead(sha="sha-fake", docs=list(persona_docs or []))
+
+    async def list_persona_rows_fake(project_id):
+        return []
+
+    async def apply_persona_plan_fake(project_id, plan):
+        persona_applied.append((project_id, plan))
+
     loop = PmSyncLoop(
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
         upsert_items=upsert, save_sync_state=save,
@@ -113,11 +123,16 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
         refresh_map_changes=refresh_map_changes,
         read_constitution=read_constitution, save_constitution_status=save_constitution,
         list_committed_artifacts=list_committed_artifacts, read_artifact_doc=read_artifact_doc,
-        apply_artifact_frontmatter=apply_artifact_frontmatter)
+        apply_artifact_frontmatter=apply_artifact_frontmatter,
+        read_persona_docs=read_persona_docs or read_persona_docs_fake,
+        list_persona_rows=list_persona_rows_fake,
+        apply_persona_plan=apply_persona_plan_fake,
+    )
     # Not part of the 4-tuple every existing caller unpacks — tests that care
     # about the persisted unindexed-docs list read it off the loop instance.
     loop.unindexed_saved = unindexed_saved
     loop.constitution_saved = constitution_saved
+    loop.persona_applied = persona_applied
     return loop, saved, upserted, applied
 
 
@@ -980,3 +995,85 @@ async def test_a_failing_map_changes_refresh_is_best_effort():
     assert any("watermark" in u for _, u in saved)
     assert any(kw.get("kind") == "map_changes_refresh_error" for _, _, kw in ctx.events)
     assert not any(kw.get("kind") == "sync_error" for _, _, kw in ctx.events)
+
+
+# --- persona index (issue #2164) ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_persona_index_runs_and_applies_a_plan():
+    ctx = Ctx()
+    persona_docs = [("docs/product/personas/teen.md",
+                     "---\nslug: teen\ntitle: Teen\n---\nbody\n")]
+    loop, _, _, _ = _loop(
+        ctx, [_view(repo="o/r", backfill_done=True)],
+        [_issue_page([], None, False), _pr_page([], None, False)],
+        persona_docs=persona_docs)
+    await loop.tick()
+    assert len(loop.persona_applied) == 1
+    _, plan = loop.persona_applied[0]
+    assert plan.upserts[0].slug == "teen"
+
+
+@pytest.mark.asyncio
+async def test_persona_index_runs_before_feature_index_same_tick():
+    """A capability doc citing a persona added in the SAME tick must see it —
+    Persona rows have to exist before the feature plan is applied."""
+    ctx = Ctx()
+    order = []
+
+    async def read_persona(repo, ref=None):
+        order.append("persona")
+        return FeatureDocsRead(sha="s", docs=[])
+
+    async def read_feature(repo, ref=None):
+        order.append("feature")
+        return FeatureDocsRead(sha="s", docs=[])
+
+    loop, _, _, _ = _loop(
+        ctx, [_view(repo="o/r", backfill_done=True)],
+        [_issue_page([], None, False), _pr_page([], None, False)],
+        read_persona_docs=read_persona, read_feature_docs=read_feature)
+    await loop.tick()
+    assert order == ["persona", "feature"]
+
+
+@pytest.mark.asyncio
+async def test_persona_index_is_a_noop_when_seam_not_wired():
+    """Every pre-existing PmSyncLoop caller (no persona seams passed) must be
+    unaffected — the seams default to None."""
+    from server.automations.pm_sync import PmSyncLoop
+
+    ctx = Ctx()
+
+    async def read_config():
+        return "on", {}
+
+    async def list_repos():
+        return [_view(repo="o/r", backfill_done=True)]
+
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def fetch(query):
+        return pages.pop(0)
+
+    async def upsert(items):
+        pass
+
+    async def save(view, **updates):
+        pass
+
+    async def read_docs(repo, ref=None):
+        return FeatureDocsRead(sha="s", docs=[])
+
+    async def list_rows(project_id):
+        return []
+
+    async def apply_plan(project_id, plan):
+        pass
+
+    loop = PmSyncLoop(
+        ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
+        upsert_items=upsert, save_sync_state=save, read_feature_docs=read_docs,
+        list_feature_rows=list_rows, apply_feature_plan=apply_plan,
+        now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc))
+    await loop.tick()  # must not raise
