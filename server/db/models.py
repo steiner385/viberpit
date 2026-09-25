@@ -1820,6 +1820,13 @@ class Feature(Base):
     # means "routes something."
     route_labels: Mapped[list | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
+    # `personas:` frontmatter (issue #2164) — the doc's declared persona slugs
+    # verbatim, mirroring `route_labels`: a raw mirror of what the doc says,
+    # not the resolved graph. `PersonaFeature` (below) is the resolved graph —
+    # only slugs that matched a live Persona row at apply time. Declared-but-
+    # unresolved is what `roadmap_health`'s `unlinked_personas` surfaces.
+    persona_slugs: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -1872,6 +1879,56 @@ class FeatureLink(Base):
     dst_feature_id: Mapped[str] = mapped_column(
         String, ForeignKey("features.id"), nullable=True, index=True)
     kind: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LINK_KINDS
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class Persona(Base):
+    """Index row for one ``docs/product/personas/<slug>.md`` (issue #2164):
+    the identity a capability's `personas:` frontmatter cites and a spec's
+    acceptance criteria can name. Default-branch-only — unlike Feature there
+    is no map-changes-branch PR-proposal flow and no evidence citation; a
+    persona is an identity doc, not a code capability. ``orphaned`` marks a
+    doc that disappeared from the repo (row kept so PersonaFeature links never
+    dangle, same as Feature/orphaned)."""
+
+    __tablename__ = "personas"
+    __table_args__ = (UniqueConstraint("project_id", "slug", name="uq_persona_slug"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    age_band: Mapped[str | None] = mapped_column(String, nullable=True)
+    tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    orphaned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PersonaFeature(Base):
+    """Resolved persona→capability edge (issue #2164): a capability's
+    `personas:` frontmatter slug that matched a live Persona row in the same
+    project at the last pm-sync apply. REWRITTEN on every feature-plan apply,
+    same as FeatureEvidence/FeatureLink — the docs are truth. First
+    consumers: steiner385/viberpit#2446 (roadmap filter), #2447 (spec-prompt
+    injection)."""
+
+    __tablename__ = "persona_features"
+    __table_args__ = (
+        UniqueConstraint("persona_id", "feature_id", name="uq_persona_feature"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    persona_id: Mapped[str] = mapped_column(
+        String, ForeignKey("personas.id"), nullable=True, index=True)
+    feature_id: Mapped[str] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
 

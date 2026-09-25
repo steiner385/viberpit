@@ -36,6 +36,7 @@ from server.db.models import (
     Initiative,
     InitiativeArtifact,
     InitiativeFeature,
+    Persona,
     Project,
     ProjectEdge,
     ProjectRepo,
@@ -381,13 +382,17 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             WorkItem.repo.in_(repo_names)))).all()]
     now = datetime.now(timezone.utc)
     unindexed = [(d.get("path", ""), d.get("error", "")) for d in (p.unindexed_docs or [])]
+    persona_pairs = [(f.slug, tuple(f.persona_slugs or ())) for f in feats if f.persona_slugs]
+    known_personas = [pr.slug for pr in (await db.execute(select(Persona).where(
+        Persona.project_id == p.id, Persona.orphaned.isnot(True)))).scalars().all()]
     h = roadmap_health(capabilities=caps,
                        initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
                                     i.stage == "done" or i.status == "done") for i in inits],
                        proposals=props, now=now, unindexed_docs=unindexed,
                        governance=p.constitution_status, evidence=evidence,
                        doc_committed={f.slug: f.doc_committed_at for f in feats},
-                       artifacts=artifacts, epic_state=epic_state)
+                       artifacts=artifacts, epic_state=epic_state,
+                       capability_personas=persona_pairs, known_personas=known_personas)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
@@ -402,7 +407,22 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             "artifactsUnknownCapability": [{"initiative": i, "capability": c}
                                           for i, c in h.artifacts_unknown_capability],
             "artifactsMissingFrontmatter": list(h.artifacts_missing_frontmatter),
+            "unlinkedPersonas": [{"capability": c, "persona": pslug} for c, pslug in h.unlinked_personas],
             "generatedAt": now.isoformat()}
+
+
+@router.get("/projects/{slug}/personas")
+async def list_project_personas(slug: str, _identity: str = Depends(current_identity),
+                                db=Depends(get_db)) -> list[dict]:
+    """Indexed personas for one product (issue #2164) — the identity a
+    capability's `personas:` frontmatter and a spec's acceptance criteria
+    can cite."""
+    p = await _load_project(db, slug)
+    rows = (await db.execute(select(Persona).where(
+        Persona.project_id == p.id, Persona.orphaned.isnot(True)
+    ).order_by(Persona.slug))).scalars().all()
+    return [{"slug": r.slug, "title": r.title, "role": r.role, "ageBand": r.age_band,
+            "tier": r.tier, "summary": r.summary} for r in rows]
 
 
 @router.get("/policy-schema")

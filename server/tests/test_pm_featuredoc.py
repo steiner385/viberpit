@@ -353,3 +353,34 @@ def test_path_derived_slug_must_look_like_a_slug():
 def test_unterminated_fence_still_raises():
     with pytest.raises(FeatureDocError, match="unterminated"):
         parse_feature_doc("---\nslug: a\ntitle: A\n", path="docs/product/features/a.md")
+
+
+# --- Personas (mirrors labels exactly) ----------------------------------------- #
+
+
+def test_parses_personas_list():
+    doc = parse_feature_doc(
+        "---\nslug: chores\ntitle: Chores\npersonas: [teen, parent-admin]\n---\nbody\n")
+    assert doc.personas == ("teen", "parent-admin")
+
+
+def test_personas_defaults_to_empty_tuple():
+    doc = parse_feature_doc("---\nslug: chores\ntitle: Chores\n---\nbody\n")
+    assert doc.personas == ()
+
+
+def test_personas_non_list_value_yields_empty_tuple():
+    doc = parse_feature_doc(
+        "---\nslug: chores\ntitle: Chores\npersonas: teen\n---\nbody\n")
+    assert doc.personas == ()
+
+
+def test_serialize_round_trips_personas():
+    doc = parse_feature_doc(
+        "---\nslug: chores\ntitle: Chores\nstate: live\n---\nbody\n")
+    doc_with_personas = type(doc)(
+        slug=doc.slug, title=doc.title, state=doc.state, links=doc.links,
+        body=doc.body, parent=doc.parent, labels=doc.labels, evidence=doc.evidence,
+        personas=("teen", "parent-admin"))
+    reparsed = parse_feature_doc(serialize_feature_doc(doc_with_personas))
+    assert reparsed.personas == ("teen", "parent-admin")

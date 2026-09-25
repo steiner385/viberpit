@@ -98,6 +98,129 @@ def test_project_health_surfaces_governance_status():
                 assert health["governance"] == "missing"
 
 
+def test_health_endpoint_includes_unlinked_personas():
+    """A capability's `persona_slugs` (#2164 `personas:` frontmatter) naming a
+    slug with no matching live `Persona` row surfaces as `unlinkedPersonas`."""
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Project
+
+    async def _seed(db_url):
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash", onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(Feature(project_id=p.id, slug="chores", title="Chores", state="live",
+                           persona_slugs=["ghost"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+            with TestClient(app, raise_server_exceptions=False) as c:
+                health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+                assert health["unlinkedPersonas"] == [{"capability": "chores", "persona": "ghost"}]
+
+
+def test_personas_endpoint_lists_indexed_personas():
+    """`GET /api/pm/projects/{slug}/personas` lists non-orphaned `Persona`
+    rows for a product (#2164)."""
+    from server.db import db_session, init_db
+    from server.db.models import Persona, Project
+
+    async def _seed(db_url):
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash", onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(Persona(project_id=p.id, slug="teen", title="Teen", role="teen"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+            with TestClient(app, raise_server_exceptions=False) as c:
+                resp = c.get("/api/pm/projects/kindash/personas", headers=IDENTITY_HEADERS)
+                assert resp.json() == [{"slug": "teen", "title": "Teen", "role": "teen",
+                                        "ageBand": None, "tier": None, "summary": None}]
+
+
+def test_health_endpoint_ignores_persona_slugs_on_an_orphaned_capability():
+    """An orphaned `Feature`'s stale `persona_slugs` must never surface in
+    `unlinkedPersonas` — orphaned capabilities are excluded from the
+    `feats`/`persona_pairs` query before `roadmap_health` ever sees them."""
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Project
+
+    async def _seed(db_url):
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash", onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(Feature(project_id=p.id, slug="chores", title="Chores", state="live",
+                           orphaned=True, persona_slugs=["ghost"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+            with TestClient(app, raise_server_exceptions=False) as c:
+                health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+                assert health["unlinkedPersonas"] == []
+
+
+def test_health_endpoint_does_not_let_an_orphaned_persona_cover_a_capability():
+    """An orphaned `Persona` row must not silently satisfy a capability's
+    declared slug — `known_personas` excludes orphaned rows, so the
+    capability still reports as unlinked."""
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Persona, Project
+
+    async def _seed(db_url):
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash", onboarding_state="live")
+            db.add(p)
+            await db.flush()
+            db.add(Feature(project_id=p.id, slug="chores", title="Chores", state="live",
+                           persona_slugs=["teen"]))
+            db.add(Persona(project_id=p.id, slug="teen", title="Teen", role="teen", orphaned=True))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url, "VIBERPIT_DEV": "1",
+                                     "VIBERPIT_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            app = create_app(orchestrator=SessionOrchestrator(sdk_factory=fake_sdk_factory()))
+            with TestClient(app, raise_server_exceptions=False) as c:
+                health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+                assert health["unlinkedPersonas"] == [{"capability": "chores", "persona": "teen"}]
+
+
 def test_leaves_of_a_program_lists_the_phases_leaf_issue_not_the_sub_epic():
     """`/api/pm/leaves?initiative=<program>` must match `epic.total` (the leaf
     roll-up): the direct sub-issues of a program's own epic are its phases'

@@ -44,6 +44,10 @@ class RoadmapHealth:
     # Initiative slugs with a committed artifact whose last frontmatter read
     # found no `---` fence at all.
     artifacts_missing_frontmatter: tuple[str, ...] = ()
+    # capabilities citing a persona slug (#2164 `personas:` frontmatter) that
+    # no live (non-orphaned) Persona row resolves — declared before the
+    # persona doc landed, or after it was removed.
+    unlinked_personas: tuple[tuple[str, str], ...] = ()
 
 
 def _evidence_health(
@@ -104,6 +108,8 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
                    doc_committed: Mapping[str, datetime | None] | None = None,
                    artifacts: Iterable[tuple[str, bool | None, str | None, tuple[str, ...]]] = (),
                    epic_state: Mapping[str, str] | None = None,
+                   capability_personas: Iterable[tuple[str, tuple[str, ...]]] = (),
+                   known_personas: Iterable[str] = (),
                    ) -> RoadmapHealth:
     caps = list(capabilities)
     inits = list(initiatives)
@@ -126,9 +132,16 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
     known_caps = {s for s, _, _, _ in caps}
     epic_closed, unknown_cap, missing_fm = _artifact_health(
         known_caps, done_by_slug, artifacts, epic_state or {})
+    known_p = set(known_personas)
+    unlinked_personas = tuple(sorted(
+        (slug, pslug) for slug, pslugs in capability_personas for pslug in pslugs
+        if pslug not in known_p))
     return RoadmapHealth(unparented, unlinked, stale, stale_inbox, unindexed, governance,
                          dangling, untested, unspecced, behind,
-                         epic_closed, unknown_cap, missing_fm)
+                         artifacts_epic_closed_not_done=epic_closed,
+                         artifacts_unknown_capability=unknown_cap,
+                         artifacts_missing_frontmatter=missing_fm,
+                         unlinked_personas=unlinked_personas)
 
 
 def _aware(dt: datetime) -> datetime:

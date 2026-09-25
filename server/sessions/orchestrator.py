@@ -1254,6 +1254,9 @@ class SessionOrchestrator:
             read_map_changes=self._pm_sync_read_map_changes,
             refresh_map_changes=self._pm_sync_refresh_map_changes,
             resolve_evidence_paths=self._pm_sync_resolve_evidence_paths,
+            read_persona_docs=self._pm_sync_read_persona_docs,
+            list_persona_rows=self._pm_sync_list_persona_rows,
+            apply_persona_plan=self._pm_sync_apply_persona_plan,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -8839,11 +8842,12 @@ class SessionOrchestrator:
             for key, value in updates.items():
                 setattr(row, key, value)
 
-    async def _pm_sync_read_feature_docs(
-        self, repo: str, ref: str | None = None
+    async def _pm_sync_read_docs_at_ref(
+        self, repo: str, subdir: str, ref: str | None = None,
     ) -> "FeatureDocsRead":
-        """Read docs/product/features/*.md at *ref* (default: origin's default
-        branch) in the shared clone. Uses git plumbing only — no GitHub API cost.
+        """Read every ``.md`` file under *subdir* at *ref* (default: origin's
+        default branch) in the shared clone. Uses git plumbing only — no
+        GitHub API cost.
 
         ATOMIC-OR-RAISE for the default-branch read (``ref is None``): it
         resolves the branch to an IMMUTABLE commit SHA once, then reads every
@@ -8861,7 +8865,11 @@ class SessionOrchestrator:
         fetches every remote branch, so the ref resolves once that has run. A
         branch that does not exist on the remote raises here too — the caller
         (``_feature_index``) treats this read as best-effort and does not let
-        it poison the default-branch plan."""
+        it poison the default-branch plan.
+
+        Shared by ``_pm_sync_read_feature_docs`` (``docs/product/features/``)
+        and ``_pm_sync_read_persona_docs`` (``docs/product/personas/``,
+        #2164) — same ATOMIC-OR-RAISE contract for both."""
         from server.pm.feature_index import FeatureDocsRead
 
         async def _read() -> FeatureDocsRead:
@@ -8896,18 +8904,17 @@ class SessionOrchestrator:
             )
             if rp.returncode != 0:
                 raise RuntimeError(
-                    f"pm_sync.read_feature_docs: cannot resolve {resolved_ref} in "
+                    f"pm_sync.read_docs_at_ref: cannot resolve {resolved_ref} in "
                     f"{repo}: {(rp.stderr or '').strip()[:200]}")
             sha = rp.stdout.strip()
             ls = await asyncio.to_thread(
                 subprocess.run,
-                ["git", "-C", clone, "ls-tree", "-r", "--name-only", sha,
-                 "docs/product/features/"],
+                ["git", "-C", clone, "ls-tree", "-r", "--name-only", sha, subdir],
                 capture_output=True, text=True, timeout=30,
             )
             if ls.returncode != 0:
                 raise RuntimeError(
-                    f"pm_sync.read_feature_docs: ls-tree failed for {repo}: "
+                    f"pm_sync.read_docs_at_ref: ls-tree failed for {repo}: "
                     f"{(ls.stderr or '').strip()[:200]}")
             out: list[tuple[str, str]] = []
             for path in ls.stdout.splitlines():
@@ -8922,12 +8929,28 @@ class SessionOrchestrator:
                     # One unreadable blob makes the whole read untrustworthy —
                     # raise so the caller skips rather than orphaning the rest.
                     raise RuntimeError(
-                        f"pm_sync.read_feature_docs: read failed for {path} in "
+                        f"pm_sync.read_docs_at_ref: read failed for {path} in "
                         f"{repo}: {(show.stderr or '').strip()[:200]}")
                 out.append((path, show.stdout))
             return FeatureDocsRead(sha=sha, docs=out)
 
         return await _read()
+
+    async def _pm_sync_read_feature_docs(
+        self, repo: str, ref: str | None = None
+    ) -> "FeatureDocsRead":
+        """Read docs/product/features/*.md — see _pm_sync_read_docs_at_ref for
+        the ATOMIC-OR-RAISE contract this relies on (the dogfood bug this
+        guards against, R8b-4 branch-ref resolution)."""
+        return await self._pm_sync_read_docs_at_ref(repo, "docs/product/features/", ref)
+
+    async def _pm_sync_read_persona_docs(
+        self, repo: str, ref: str | None = None
+    ) -> "FeatureDocsRead":
+        """Read docs/product/personas/*.md (#2164) — same contract as
+        _pm_sync_read_feature_docs; personas are default-branch-only so *ref*
+        is passed through only for interface symmetry with ReadFeatureDocs."""
+        return await self._pm_sync_read_docs_at_ref(repo, "docs/product/personas/", ref)
 
     async def _pm_sync_resolve_evidence_paths(
         self, repo: str, sha: str, paths: list[str], timed: set[str],
@@ -9125,6 +9148,17 @@ class SessionOrchestrator:
         ``_pm_sync_list_feature_rows`` above for why this stays a method."""
         from server.pm.feature_sync_seams import apply_feature_plan
         await apply_feature_plan(project_id, plan)
+
+    async def _pm_sync_list_persona_rows(self, project_id: str) -> list:
+        """Thin wrapper over server/pm/persona_sync_seams.py (#2164) — see
+        _pm_sync_list_feature_rows above for why this stays a bound method."""
+        from server.pm.persona_sync_seams import list_persona_rows
+        return await list_persona_rows(project_id)
+
+    async def _pm_sync_apply_persona_plan(self, project_id: str, plan) -> None:
+        """Thin wrapper over server/pm/persona_sync_seams.py (#2164)."""
+        from server.pm.persona_sync_seams import apply_persona_plan
+        await apply_persona_plan(project_id, plan)
 
     async def _pm_sync_tick_loop(self, interval: float) -> None:
         """Periodic driver for the pm-sync control loop (mirrors _sdlc_intake_tick_loop)."""

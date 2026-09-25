@@ -101,6 +101,7 @@ class FeatureDoc:
     parent: str | None = None
     labels: tuple[str, ...] = ()
     evidence: tuple[FeatureEvidenceRef, ...] = ()
+    personas: tuple[str, ...] = ()
 
 
 def _title_from_body(body: str) -> str:
@@ -248,9 +249,12 @@ def parse_feature_doc(text: str, *, path: str | None = None) -> FeatureDoc:
     raw_labels = meta.get("labels")
     labels = tuple(str(x).strip() for x in raw_labels if str(x).strip()) if isinstance(raw_labels, list) else ()
 
+    raw_personas = meta.get("personas")
+    personas = tuple(str(x).strip() for x in raw_personas if str(x).strip()) if isinstance(raw_personas, list) else ()
+
     return FeatureDoc(
         slug=slug, title=title, state=state, links=tuple(links), body=body, parent=parent or None,
-        labels=labels, evidence=_parse_evidence(meta),
+        labels=labels, evidence=_parse_evidence(meta), personas=personas,
     )
 
 
@@ -260,6 +264,8 @@ def serialize_feature_doc(doc: FeatureDoc) -> str:
         meta["parent"] = doc.parent
     if doc.labels:
         meta["labels"] = list(doc.labels)
+    if doc.personas:
+        meta["personas"] = list(doc.personas)
     if doc.links:
         meta["links"] = [
             {"kind": link.kind, "project": link.project, "feature": link.feature}

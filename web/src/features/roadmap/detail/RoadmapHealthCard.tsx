@@ -38,9 +38,10 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
 
   const {
     unparentedCapabilities, unlinkedInitiatives, staleProposed, staleInbox, unindexedDocs, governance,
-    // Defaulted: an edge predating #2162/#2161 omits them.
+    // Defaulted: an edge predating #2162/#2161/#2164 omits them.
     danglingEvidence = [], untestedCapabilities = [], codeWithoutSpecs = [], stateBehindSpec = [],
     artifactsEpicClosedNotDone = [], artifactsUnknownCapability = [], artifactsMissingFrontmatter = [],
+    unlinkedPersonas = [],
   } = health
   const nothingToSay =
     unparentedCapabilities.length === 0 && unlinkedInitiatives.length === 0 &&
@@ -48,7 +49,7 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
     danglingEvidence.length === 0 && untestedCapabilities.length === 0 &&
     codeWithoutSpecs.length === 0 && stateBehindSpec.length === 0 &&
     artifactsEpicClosedNotDone.length === 0 && artifactsUnknownCapability.length === 0 &&
-    artifactsMissingFrontmatter.length === 0
+    artifactsMissingFrontmatter.length === 0 && unlinkedPersonas.length === 0
   if (nothingToSay) return null
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
@@ -144,6 +145,17 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
           <li>
             {artifactsMissingFrontmatter.length} {artifactsMissingFrontmatter.length === 1 ? 'initiative has' : 'initiatives have'} a committed artifact with no frontmatter: {' '}
             <SlugLinks slugs={artifactsMissingFrontmatter} path={initiativePath} />
+          </li>
+        )}
+        {unlinkedPersonas.length > 0 && (
+          <li>
+            {unlinkedPersonas.length} unresolved persona {unlinkedPersonas.length === 1 ? 'reference' : 'references'}: {' '}
+            {unlinkedPersonas.map((u, i) => (
+              <Fragment key={`${u.capability}:${u.persona}`}>
+                {i > 0 && ', '}
+                <Link to={capPath(u.capability)} className="underline" title={u.capability}>{u.persona}</Link>
+              </Fragment>
+            ))}
           </li>
         )}
       </ul>

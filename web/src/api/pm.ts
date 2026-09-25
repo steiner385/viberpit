@@ -393,6 +393,23 @@ export interface ArtifactUnknownCapability {
   capability: string
 }
 
+/** A capability whose frontmatter cites a persona slug not present in the
+ *  product's persona index (#2164). */
+export interface UnlinkedPersona {
+  capability: string
+  persona: string
+}
+
+/** One entry from the product's persona index (#2164). */
+export interface Persona {
+  slug: string
+  title: string | null
+  role: string | null
+  ageBand: string | null
+  tier: string | null
+  summary: string | null
+}
+
 export interface ProjectHealth {
   unparentedCapabilities: string[]
   unlinkedInitiatives: string[]
@@ -411,11 +428,17 @@ export interface ProjectHealth {
   artifactsUnknownCapability?: ArtifactUnknownCapability[]
   /** Initiatives with a committed artifact but no frontmatter fence at all. */
   artifactsMissingFrontmatter?: string[]
+  unlinkedPersonas: UnlinkedPersona[]
   generatedAt: string
 }
 
 export function fetchProjectHealth(slug: string): Promise<ProjectHealth> {
   return api.get<ProjectHealth>(`/pm/projects/${encodeURIComponent(slug)}/health`)
+}
+
+// Consumed by the persona filter chip — see steiner385/viberpit#2446
+export function fetchProjectPersonas(slug: string): Promise<Persona[]> {
+  return api.get<Persona[]>(`/pm/projects/${encodeURIComponent(slug)}/personas`)
 }
 
 // --- dispatch outcome history (spec §6/§7; server contract `server/pm/outcomes.py`,

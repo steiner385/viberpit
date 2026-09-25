@@ -259,6 +259,11 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     # #2162 capability evidence: last_commit_at puts it in the datetime sweep;
     # id/created_at are its only NOT NULL columns and both are defaulted.
     "feature_evidence": {"feature_id": "features"},
+    # #2164 persona layer: personas hang off a product; persona_features is the
+    # resolved persona→capability edge. Neither needs a _REQUIRED_EXTRAS entry —
+    # id/created_at(/updated_at) are their only NOT NULL columns, all defaulted.
+    "personas": {"project_id": "projects"},
+    "persona_features": {"persona_id": "personas", "feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
     # hold ladder spec 2026-09-18 §6: one decision proposal per parked work item.
