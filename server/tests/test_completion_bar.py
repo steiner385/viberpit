@@ -3,6 +3,7 @@ from server.automations.completion_bar import (
     PrFact,
     PrFacts,
     _has_explicit_arm_step,
+    _has_no_pr_dispatch,
     is_unverified_self_resolution,
     met_bar,
 )
@@ -348,3 +349,82 @@ def test_a_tool_sourced_not_needed_does_not_short_circuit_met_bar():
                 pr_resolution_source="tool")
     assert v.met is False
     assert v.confidence != "high"
+
+
+# ---------------------------------------------------------------------------
+# no-PR dispatch instructions (#2474): three sessions since 2026-09-24
+# (5a756926, ae34025a, 366e8a65) were dispatched "investigate only, do not
+# implement" yet their code-flavored goal title made the bar demand a PR anyway,
+# forcing a `hand_back` to report the contradiction between dispatch and gate.
+# ---------------------------------------------------------------------------
+
+_INVESTIGATE_ONLY_DISPATCH = (
+    "Investigate; do not implement. Read-only on code: open no PR, push nothing."
+)
+_OPEN_NO_PR_DISPATCH = (
+    "Investigate #1978. Open no PR — leave the fix for the runner's implementation "
+    "session."
+)
+_INVESTIGATE_ONLY_LABEL_DISPATCH = (
+    "This is an investigate-only dispatch: look into the #2243 log-throttle issue "
+    "and report back."
+)
+
+
+def test_has_no_pr_dispatch_detects_all_four_phrasings():
+    assert _has_no_pr_dispatch(_INVESTIGATE_ONLY_DISPATCH) is True
+    assert _has_no_pr_dispatch(_OPEN_NO_PR_DISPATCH) is True
+    assert _has_no_pr_dispatch(_INVESTIGATE_ONLY_LABEL_DISPATCH) is True
+    assert _has_no_pr_dispatch("read only access to the report") is True
+
+
+def test_has_no_pr_dispatch_false_without_pattern():
+    assert _has_no_pr_dispatch("Implement the issue and open a PR.") is False
+
+
+def test_has_no_pr_dispatch_empty():
+    assert _has_no_pr_dispatch("") is False
+
+
+def test_no_pr_dispatch_overrides_code_flavored_goal_no_pr_resolution():
+    """A code-flavored goal title with no PR is met=True/high when the dispatch
+    instructions explicitly forbid implementation — the #2474 contradiction."""
+    v = met_bar("fix the resource leak", "explicit", _facts([], has_repo=True),
+                instructions=_INVESTIGATE_ONLY_DISPATCH)
+    assert v.met is True and v.confidence == "high"
+
+
+def test_no_pr_dispatch_overrides_self_declared_no_pr_on_code_goal():
+    """A `mark_no_pr` tool-sourced claim on a code goal is normally unverified
+    (low confidence, ask); an investigate-only dispatch verifies it instead."""
+    v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=True),
+                pr_resolution="not-needed", pr_resolution_source="tool",
+                instructions=_OPEN_NO_PR_DISPATCH)
+    assert v.met is True and v.confidence == "high"
+
+
+def test_no_pr_dispatch_open_no_pr_wording():
+    v = met_bar("fix the #1978 bug", "explicit", _facts([], has_repo=True),
+                instructions=_OPEN_NO_PR_DISPATCH)
+    assert v.met is True and v.confidence == "high"
+
+
+def test_no_pr_dispatch_investigate_only_label_wording():
+    v = met_bar("fix the log-throttle issue", "explicit", _facts([], has_repo=True),
+                instructions=_INVESTIGATE_ONLY_LABEL_DISPATCH)
+    assert v.met is True and v.confidence == "high"
+
+
+def test_no_pr_dispatch_does_not_override_a_real_open_unarmed_pr():
+    """A real PR fact always wins — a no-PR dispatch cannot mask an actual PR."""
+    v = met_bar("fix the resource leak", "explicit",
+                _facts([_pr(state="open", auto_merge=False)]),
+                instructions=_INVESTIGATE_ONLY_DISPATCH)
+    assert v.met is False and v.confidence == "high"
+
+
+def test_no_pr_dispatch_does_not_override_a_merged_pr():
+    v = met_bar("fix the resource leak", "explicit",
+                _facts([_pr(state="merged")]),
+                instructions=_INVESTIGATE_ONLY_DISPATCH)
+    assert v.met is True and "merged" in v.reason
