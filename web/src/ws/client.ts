@@ -226,8 +226,12 @@ export class SessionSocket {
       // the socket, a deploy restart). It carries no server-side signal at all (unlike
       // e.g. 1011 = server error), reconnect already handles it, and it fired ~250+
       // times/day of pure noise with nothing actionable in it (#1489) — same shape as
-      // the onerror demotion in #1570. Anything else unexpected still warns.
-      if (!expected && e.code === 1006) {
+      // the onerror demotion in #1570. 1012 = SERVICE_RESTART, which uvicorn sends to
+      // every open socket on each planned edge/daemon restart; the IPC layer already
+      // treats it as an expected reconnect (server/ipc/client.py _EXPECTED_RECONNECT_CODES)
+      // and it WARNed once per open tab per deploy (#2470). Anything else unexpected
+      // still warns.
+      if (!expected && (e.code === 1006 || e.code === 1012)) {
         clientLogger.info(`ws closed code=${e.code}`, {
           sessionId: this._activeSessionId ?? undefined,
           stack: e.reason || undefined,
