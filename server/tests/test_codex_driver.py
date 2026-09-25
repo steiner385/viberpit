@@ -317,7 +317,9 @@ async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
         True, True, True, True,
     )
     assert caps.questions
-    assert not caps.self_model_switch and not caps.fork
+    # #1273: Codex sessions CAN self-direct a model change now — as a tier
+    # mapped onto the account's live effort catalog, never a Claude alias.
+    assert caps.self_model_switch and not caps.fork
 
 
 @pytest.mark.asyncio
@@ -336,8 +338,9 @@ async def test_start_opens_a_thread_with_the_mode_s_sandbox_and_markers(harness)
     assert params["sandbox"] == "workspace-write"
     assert params["approvalPolicy"] == "untrusted"
     assert COMPLETION_MARKER in params["developerInstructions"]
-    # Codex cannot act on a self-directed model request, so it is never asked for one.
-    assert MODEL_REQUEST_INSTRUCTION not in params["developerInstructions"]
+    # #1273: Codex can now act on a self-directed model request, so it is told
+    # about the marker exactly as a Claude session is.
+    assert MODEL_REQUEST_INSTRUCTION in params["developerInstructions"]
     assert driver.engine_session_id == THREAD
     # thread/start alone is not durable across an app-server restart.
     assert harness.engine_ids == []

@@ -88,6 +88,7 @@ from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import ClaudeAgentDriverFactory
 from server.sessions.engine import (
+    EFFORT_UNCHANGED,
     AgentCapabilities,
     AgentDriver,
     AgentDriverConfig,
@@ -98,6 +99,7 @@ from server.sessions.engine import (
     AsyncCloser,
     InvalidAgentEngine,
     SuggestionProvider,
+    _EffortUnchanged,
     parse_agent_engine,
 )
 from server.sessions.model_policy import quota_model
@@ -3774,12 +3776,20 @@ class SessionOrchestrator:
         # Mid-session hold — a live session with a parked switch.
         if rec.pending_model:
             pending = rec.pending_model
+            # A Codex hold parks a TIER (the session asked in the shared vocabulary),
+            # so approving it means the effort that tier maps to for this session's
+            # model — resolved before the write, and never a model switch (#1273).
+            codex_effort: str | None = None
+            is_codex = rec.engine is AgentEngine.CODEX
+            if is_codex and decision == "approve":
+                codex_effort = await self._resolve_codex_self_tier(rec, pending)
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
                 await record_audit(
                     db, type=f"model_approval.{decision}", identity=identity,
                     detail={"session_id": session_id, "model": pending,
-                            "requested": requested_model, "applied": pending})
+                            "requested": requested_model, "applied": pending,
+                            **({"effort": codex_effort} if is_codex else {})})
                 values: dict = {
                     "pending_model": None,
                     "pending_model_reason": None,
@@ -3787,14 +3797,28 @@ class SessionOrchestrator:
                     "pending_model_requested_at": None,
                 }
                 if decision == "approve":
-                    values["model"] = pending
+                    if not is_codex:
+                        values["model"] = pending
+                    elif codex_effort is not None:
+                        values["reasoning_effort"] = codex_effort
                 await db.execute(
                     sa_update(DbSession).where(DbSession.id == session_id).values(**values))
             if decision == "approve":
                 driver = self._drivers.get(session_id)
-                if driver is not None:
-                    await driver.set_model(pending)
-                rec.model = pending
+                if not is_codex:
+                    if driver is not None:
+                        await driver.set_model(pending)
+                    rec.model = pending
+                elif codex_effort is not None:
+                    if driver is not None:
+                        await driver.set_model(rec.model, effort=codex_effort)
+                    rec.reasoning_effort = codex_effort
+                    from server.sessions.self_model_guards import SelfModelState
+                    self._self_model_state.setdefault(
+                        session_id, SelfModelState()).codex_tier = pending
+                # else: the catalog could not be read right now. The hold is cleared
+                # and the approval audited, but nothing was dispatched — the session
+                # keeps its current effort rather than take a guessed one.
             rec.pending_model = None
             rec.pending_model_reason = None
             # Live-push a status frame (unchanged status) so the dashboard reconciles
@@ -19170,6 +19194,7 @@ class SessionOrchestrator:
     async def set_model_for_session(
         self, session_id: str, model: str | None, *, when: str = "now",
         identity: str = SYSTEM_IDENTITY,
+        reasoning_effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
     ) -> bool:
         """Set the live model AND persist it, so it survives rehydrate and every
         driver rebuild (rotation/recovery re-applies record.model in _reassign).
@@ -19190,6 +19215,12 @@ class SessionOrchestrator:
           the in-flight turn finish on the old model. ``record.model_pending`` is
           set so the UI can say "switches after this turn"; _settle_model_pending
           clears it when the driver reports the turn over.
+
+        ``reasoning_effort`` rides the SAME switch for engines with that dial (Codex):
+        left unset it changes nothing, so every ordinary model switch keeps the
+        session's effort. Only a self-directed Codex request (#1273) sets it — with
+        the CURRENT model, since a session never moves itself to a different Codex
+        model.
 
         Record update + persistence run in every case, including driverless
         (detached), so the model applies when the session resumes."""
@@ -19229,28 +19260,47 @@ class SessionOrchestrator:
             return False
         restarted = False
         pending = False
+
+        async def _set_driver_model(d: AgentDriver) -> None:
+            # ``effort=`` is passed ONLY when actually changing it: a test double (or
+            # a future engine) implementing the Protocol's plain ``set_model(model)``
+            # shape must keep working for every call that never touches effort —
+            # which is every call except a Codex self-directed one (#1273).
+            if isinstance(reasoning_effort, _EffortUnchanged):
+                await d.set_model(model)
+            else:
+                await d.set_model(model, effort=reasoning_effort)
+
         driver = self._drivers.get(session_id)
         if driver is not None:
             if driver.turn_active and when == "after_turn":
-                await driver.set_model(model)
+                await _set_driver_model(driver)
                 pending = True
             elif driver.turn_active:
                 # Stamp BEFORE the interrupt: its status flap fires the autopilot nudge
                 # tick, and autopilot must already see the swap as in flight by then.
                 self._turn_restart_at[session_id] = self._clock()
                 await driver.interrupt()
-                await driver.set_model(model)
+                await _set_driver_model(driver)
                 last = self._last_prompt.get(session_id)
                 if last:
                     await driver.send_prompt(last)
                     restarted = True
             else:
-                await driver.set_model(model)
+                await _set_driver_model(driver)
         record = self._records.get(session_id)
         if record is not None:
             record.model = model
             record.model_pending = pending
-        await self._persist_model(session_id, model)
+            if not isinstance(reasoning_effort, _EffortUnchanged):
+                record.reasoning_effort = reasoning_effort
+        # Same "only pass what changed" discipline as `_set_driver_model` above, and
+        # for the same reason: a test double's ``_persist_model(session_id, model)``
+        # stub must keep working for every call that never touches effort.
+        if isinstance(reasoning_effort, _EffortUnchanged):
+            await self._persist_model(session_id, model)
+        else:
+            await self._persist_model(session_id, model, reasoning_effort=reasoning_effort)
         return restarted
 
     def _settle_model_pending(self, session_id: str, status: str) -> None:
@@ -19285,6 +19335,40 @@ class SessionOrchestrator:
         self._handled_model_requests[session_id] = turn_id
         self._spawn(self._apply_model_request(session_id, req))
 
+    async def _resolve_codex_self_tier(self, rec: "SessionRecord", tier: str) -> str | None:
+        """The concrete reasoning effort a self-directed *tier* means for *rec*.
+
+        A Codex session asks in the shared haiku/sonnet/opus/fable vocabulary, but
+        what is dispatched must be a value the account's LIVE ``model/list`` offers
+        for the model the session is actually on (#1273; the spawn-time counterpart
+        is ``_resolve_codex_auto_effort``). The projection is
+        ``model_pick.tier_to_effort`` — one function for both.
+
+        ``None`` when nothing honest can be dispatched: no runner, the catalog is
+        unreadable, or the model declares no efforts. Callers treat that as "do not
+        apply", never as a cue to pick a default.
+        """
+        codex = self._codex
+        if codex is None or not codex.available or rec.account is None:
+            return None
+        from server.automations.model_pick import tier_to_effort
+        from server.codex.catalog import ModelCatalogError
+        try:
+            await codex.ensure(rec.account)
+            models = await self._codex_catalog().models(
+                rec.account, client=codex.client_for(rec.account),
+                cli_version=codex.availability.cli_version or "")
+        except ModelCatalogError as exc:
+            log.warning("codex self-model tier resolution degraded for %s: %s",
+                        rec.account, exc)
+            return None
+        if not models:
+            return None
+        option = next((m for m in models if m.id == rec.model), None)
+        if option is None:
+            option = next((m for m in models if m.default), models[0])
+        return tier_to_effort(tier, option.reasoning_efforts)
+
     async def _apply_model_request(self, session_id: str, req: dict) -> None:
         """Guards -> policy -> apply or park. Never raises into the caller.
 
@@ -19296,7 +19380,8 @@ class SessionOrchestrator:
         from server.config import get_settings
         from server.sessions.model_catalog import model_tier
         from server.sessions.model_policy import resolve_self_directed_model_policy
-        from server.sessions.self_model_guards import SelfModelState, evaluate_guards
+        from server.sessions.self_model_guards import (
+            CODEX_BASELINE_TIER, SelfModelState, evaluate_guards)
         try:
             cfg = get_settings()
             if not cfg.self_model_switch_enabled:
@@ -19315,6 +19400,13 @@ class SessionOrchestrator:
                 return
             current = rec.model
             state = self._self_model_state.setdefault(session_id, SelfModelState())
+            is_codex = rec.engine is AgentEngine.CODEX
+            if is_codex:
+                # A Codex model id carries no tier and its effort dial has no tier
+                # names, so the baseline the direction rule needs is tracked on the
+                # guard state (#1273). Both sides are then bare tiers, which the
+                # policy and guards below already resolve — they are engine-neutral.
+                current = state.codex_tier or CODEX_BASELINE_TIER
 
             guard = evaluate_guards(
                 state, current_tier=model_tier(current),
@@ -19344,8 +19436,25 @@ class SessionOrchestrator:
                 await self._park_self_model_request(session_id, requested, reason)
                 return
 
-            await self.set_model_for_session(
-                session_id, requested, when="after_turn", identity="session:self")
+            audit_extra: dict = {}
+            if is_codex:
+                effort = await self._resolve_codex_self_tier(rec, requested)
+                if effort is None:
+                    # The live catalog is unreadable or this model declares no
+                    # efforts: there is nothing honest to dispatch. Drop, like any
+                    # other failure here — never invent a value.
+                    log.info("session.self_model_request_undeliverable id=%s tier=%s",
+                             session_id, requested)
+                    return
+                await self.set_model_for_session(
+                    session_id, rec.model, when="after_turn",
+                    identity="session:self", reasoning_effort=effort)
+                state.codex_tier = requested
+                audit_extra = {"engine": AgentEngine.CODEX.value, "effort": effort,
+                               "model_id": rec.model}
+            else:
+                await self.set_model_for_session(
+                    session_id, requested, when="after_turn", identity="session:self")
             state.auto_applied += 1
             current_tier = model_tier(current)
             if current_tier:
@@ -19354,7 +19463,7 @@ class SessionOrchestrator:
                 await record_audit(
                     db, type="self_model_switch.applied", identity="session:self",
                     detail={"session_id": session_id, "from": current,
-                            "model": requested, "reason": reason})
+                            "model": requested, "reason": reason, **audit_extra})
             log.info("session.self_model_switch_applied id=%s %s -> %s",
                      session_id, current, requested)
         except Exception:
@@ -19436,11 +19545,17 @@ class SessionOrchestrator:
                           "source": "session"})
         log.info("session.self_model_request_parked id=%s model=%s", session_id, model)
 
-    async def _persist_model(self, session_id: str, model: str | None) -> None:
+    async def _persist_model(
+        self, session_id: str, model: str | None, *,
+        reasoning_effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
+    ) -> None:
+        values: dict = {"model": model}
+        if not isinstance(reasoning_effort, _EffortUnchanged):
+            values["reasoning_effort"] = reasoning_effort
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
 
     async def set_goal_for_session(self, session_id: str, goal: str | None) -> None:

@@ -13,6 +13,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+#: The tier a Codex session is presumed to run at before it has applied a request: the
+#: middle one, "a typical single-concern change". Only the direction of a first request
+#: depends on it (haiku is a downgrade and auto-applies, opus/fable park), and a wrong
+#: guess can only park a request that could have applied — never apply one that needed
+#: a human — because the costlier tiers sit above it.
+CODEX_BASELINE_TIER = "sonnet"
+
+
 @dataclass
 class SelfModelState:
     """Per-session history of self-directed model moves."""
@@ -24,6 +32,12 @@ class SelfModelState:
     tiers_left: set[str] = field(default_factory=set)
     # Tiers a human answered with a different model — the session must not re-ask.
     amended_away: set[str] = field(default_factory=set)
+    # The tier a Codex session is currently running at, in the shared vocabulary.
+    # Claude's baseline is derived from ``record.model`` (an alias or pinned id carries
+    # its tier); a Codex model id carries none, and the effort dial has no tier names,
+    # so the baseline is tracked here instead. ``None`` until this session's first
+    # applied/approved request — callers then assume the middle tier.
+    codex_tier: str | None = None
 
 
 def evaluate_guards(

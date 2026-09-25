@@ -277,6 +277,25 @@ async def resolve_model(
     return pick.applied, pick.source
 
 
+def tier_to_effort(tier: str, efforts: Sequence[str]) -> str | None:
+    """Map an ``AUTO_MODEL_POOL`` tier onto one of *efforts*, ordinally.
+
+    The pure projection ``assess_codex_effort`` (spawn-time, Haiku-assessed) and
+    ``orchestrator._resolve_codex_self_tier`` (mid-session, self-directed — issue
+    #1273) both need: "given a complexity tier in the shared haiku/sonnet/opus/
+    fable vocabulary, which of THIS model's live reasoning efforts is its
+    counterpart?" *efforts* is assumed cheapest-first, the order the app-server
+    returns them in (the same assumption ``assess_codex_effort`` already made
+    before this was split out). ``None`` when *tier* is not in
+    ``AUTO_MODEL_POOL`` or *efforts* is empty — never a guessed value.
+    """
+    if not efforts or tier not in AUTO_MODEL_POOL:
+        return None
+    tier_idx = AUTO_MODEL_POOL.index(tier)
+    scaled = min(len(efforts) - 1, (tier_idx * len(efforts)) // len(AUTO_MODEL_POOL))
+    return efforts[scaled]
+
+
 async def assess_codex_effort(
     task_summary: str,
     efforts: Sequence[str],
@@ -290,10 +309,10 @@ async def assess_codex_effort(
 
     Reuses ``assess_model``'s Haiku complexity classifier: judging how hard a
     job is does not depend on which engine will run it, only the OUTPUT does —
-    the picked ``AUTO_MODEL_POOL`` tier is mapped ordinally onto *efforts*
-    rather than returned as a Claude alias, so the result is always a value
-    the live catalog actually offers (issue #1289: no Claude alias may reach a
-    Codex dispatch).
+    the picked ``AUTO_MODEL_POOL`` tier is mapped ordinally onto *efforts* via
+    ``tier_to_effort`` rather than returned as a Claude alias, so the result is
+    always a value the live catalog actually offers (issue #1289: no Claude
+    alias may reach a Codex dispatch).
 
     Fails open like ``assess_model``: ``None`` when *efforts* is empty (nothing
     to map onto — the model has a fixed effort, or the catalog could not be
@@ -306,9 +325,7 @@ async def assess_codex_effort(
     tier = await assess(task_summary)
     if tier is None:
         return None
-    tier_idx = AUTO_MODEL_POOL.index(tier)
-    scaled = min(len(efforts) - 1, (tier_idx * len(efforts)) // len(AUTO_MODEL_POOL))
-    return efforts[scaled]
+    return tier_to_effort(tier, efforts)
 
 
 async def resolve_codex_model(

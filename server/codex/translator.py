@@ -28,9 +28,12 @@ Two rules here are policy, not preference:
 * only the reasoning *summary* is ever forwarded. `item/reasoning/textDelta`
   (raw chain of thought) is deliberately absent from
   :data:`TRANSLATED_NOTIFICATIONS`, so a caller that hands it in gets `[]`;
-* `TurnEnd.model_request` is always `None`. Codex has no self-directed model
-  switching (`AgentCapabilities.self_model_switch=False`), so the instruction is
-  never sent and a marker that appears anyway must never be honoured.
+* `TurnEnd.model_request` is the turn's `<!-- viberpit:model=<tier> -->` marker,
+  scanned exactly as the Claude translator scans it. Codex keeps the marker
+  contract (`AgentCapabilities.durable_tool_surface=False`), and since #1273 it
+  is told about the marker (`self_model_switch=True`). The tier is a request in
+  the shared haiku/sonnet/opus/fable vocabulary; mapping it onto the live Codex
+  effort catalog is the orchestrator's job, not this pure module's.
 """
 from __future__ import annotations
 
@@ -43,6 +46,7 @@ from server.sessions import events as ev
 from server.sessions.prompt_origin import strip_origin_header
 from server.sessions.completion import (has_completion_marker, parse_hand_back_marker,
                                         resolution_from_text)
+from server.sessions.model_request import parse_model_request
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
 #: payload. The payload rides the WebSocket to every attached client and then
@@ -392,8 +396,7 @@ class CodexEventTranslator:
                 usage=self._state.usage_by_turn.get(turn.id),
                 outcome=outcome,
                 pr_resolution=pr_resolution,
-                # Never honoured for Codex — see the module docstring.
-                model_request=None,
+                model_request=parse_model_request(text),
                 hand_back_reason=hand_back.get("reason") if hand_back else None,
             )
         )

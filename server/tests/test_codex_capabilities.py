@@ -63,7 +63,10 @@ def test_codex_advertises_the_planned_controls():
     assert CODEX_CAPABILITIES.questions
     # Claude-CLI-private surfaces have no app-server equivalent in v1.
     assert not CODEX_CAPABILITIES.fork
-    assert not CODEX_CAPABILITIES.self_model_switch
+    # #1273: self-directed model requests now resolve against the live Codex
+    # model/effort catalog rather than a Claude alias — see capabilities.py's
+    # module comment for the design.
+    assert CODEX_CAPABILITIES.self_model_switch
     # `subAgentActivity`/`collabAgentToolCall` are real (#1274) and already
     # normalized to `Task` events, but multi-call identity collapsing and
     # transcript drill-down are unverified against a live binary — stays
@@ -142,7 +145,8 @@ def test_wire_form_is_json_safe_and_names_the_engine():
     assert wire["available"] is True
     assert wire["reason"] is None
     assert wire["capabilities"]["reasoningEffort"] is True
-    assert wire["capabilities"]["selfModelSwitch"] is False
+    # #1273: Codex sessions can now self-direct a model change.
+    assert wire["capabilities"]["selfModelSwitch"] is True
     assert set(wire["acceptedDrift"]) == {
         schema.ContractDriftReason.CLI_VERSION.value,
         schema.ContractDriftReason.CONTRACT_HASH.value,
