@@ -107,7 +107,8 @@ def test_get_context_hand_back_without_driver_has_empty_reason():
     orch._drivers = {}
     ctx = asyncio.run(orch._autopilot_get_context("s1"))
     assert ctx is not None
-    assert ctx.stuck == {"kind": "handed_back", "hand_back_reason": ""}
+    assert ctx.stuck == {"kind": "handed_back", "hand_back_reason": "",
+                         "suspected_complete": ""}
 
 
 def test_get_context_other_statuses_carry_no_hand_back_key():

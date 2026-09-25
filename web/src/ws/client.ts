@@ -20,7 +20,7 @@ import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean; suspectedCompleteReason?: string | null }
 export interface WsUsageMsg        { type: 'usage';         account: string; usage: AccountUsage }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 // `questionId` / `permId` are set only for a refused answerQuestion / permissionResponse
@@ -825,7 +825,7 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled'>) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled' | 'suspectedCompleteReason'>) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
@@ -847,6 +847,12 @@ export class SessionSocket {
                  // and the Rotate-stalled count update without waiting for the poll.
                  ...(stall?.usageStalled !== undefined
                      ? { usageStalled: stall.usageStalled, pausedReason: stall.pausedReason ?? null, pausedUntil: stall.pausedUntil ?? null }
+                     : {}),
+                 // The suspected-complete overlay rides the status frame too: every
+                 // status write clears it (null) and the judge's own frame sets it,
+                 // so the "likely complete" hint appears and drops without the poll.
+                 ...(stall?.suspectedCompleteReason !== undefined
+                     ? { suspectedCompleteReason: stall.suspectedCompleteReason ?? null }
                      : {}) }
       })
     })

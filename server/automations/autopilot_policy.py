@@ -225,8 +225,13 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
     # (_autopilot_get_context), so the absence guard is no longer load-bearing.
     if stuck.get("kind") == "handed_back":
         reason = (stuck.get("hand_back_reason") or "").strip()
-        return Decision(action="escalate",
-                        reason="handed back to the user" + (f": {reason[:200]}" if reason else ""))
+        text = "handed back to the user" + (f": {reason[:200]}" if reason else "")
+        # The suspected-complete overlay rides the escalation so the notification
+        # names the verdict; autopilot still never archives on suspicion.
+        likely = (stuck.get("suspected_complete") or "").strip()
+        if likely:
+            text += f" (likely complete: {likely[:120]})"
+        return Decision(action="escalate", reason=text)
 
     # 2. Destructive deny-list (permission/plan only).
     if stuck.get("kind") in ("permission", "plan"):

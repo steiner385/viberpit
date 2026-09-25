@@ -5498,6 +5498,10 @@ class SessionOrchestrator:
             # the previous one the moment the session moves on. A resumed session must
             # never keep showing what it wanted two turns ago.
             rec.hand_back_reason = hand_back_reason
+            # The suspected-complete overlay is a verdict ON a hand-back, so it lives
+            # exactly as long as the hand-back it judged: every status write clears
+            # it, and the judge re-derives it (off the pump, below) for the new one.
+            rec.suspected_complete_reason = None
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
@@ -5506,6 +5510,7 @@ class SessionOrchestrator:
             # Mirrors the in-memory assignment above, and unconditional for the same
             # reason: the row must clear the old ask, not just gain a new one.
             values["hand_back_reason"] = hand_back_reason
+            values["suspected_complete_reason"] = None
             if status in _STALLED_STATUSES:
                 if rec is not None:
                     values["paused_reason"] = rec.paused_reason
@@ -5551,6 +5556,11 @@ class SessionOrchestrator:
                     await db.commit()
             except Exception:  # noqa: BLE001 - audit must never fail the status write
                 log.warning("session.hand_back audit failed sid=%s", session_id, exc_info=True)
+            # Suspected-complete overlay: is this hand-back a status report on a
+            # finished objective? Off the pump — it may refresh PR facts over the
+            # network — and guarded by still-current checks inside.
+            self._spawn(self._judge_suspected_complete(session_id, hand_back_reason),
+                        name=f"suspected_complete:{session_id}")
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
         # Deferred to a background task — _persist_sub_agents reads the full transcript
@@ -5566,6 +5576,9 @@ class SessionOrchestrator:
         self._publish_event({"type": "status", "sessionId": session_id, "status": status,
                              "updatedAt": rec.updated_at_iso if rec is not None else None,
                              "revAt": rec.rev_at if rec is not None else None,
+                             # Cleared above on every write; the judge re-publishes
+                             # its own frame when it sets one.
+                             "suspectedCompleteReason": None,
                              "interruptedByRestart": (
                                  rec.interrupted_by_restart if rec is not None else False),
                              "pausedReason": rec.paused_reason if rec is not None else None,
@@ -5980,6 +5993,112 @@ class SessionOrchestrator:
             await self._backlog_ctx.emit(
                 "info", f"archived completed run {session_id}",
                 kind="archived", session_id=session_id)
+
+    async def _judge_suspected_complete(self, session_id: str, reason: str) -> None:
+        """Flag a handed-back session as *likely complete* when its hand-back was a
+        status report on a finished objective — never act on it.
+
+        Prod 2026-09-25 (session 2971d6a6): PR merged, follow-up PR ready with
+        auto-merge armed, CI still running, and the session ended with
+        ``hand_back("Status only, no action needed: …")``. PR #2473 fixed the tool
+        contract that produced it; this is the safety net for the shape recurring.
+
+        Two conditions, both deterministic and cheap, in the order that fails fastest:
+
+        1. The REASON asks for nothing — neither ``hand_back_reason_asks`` (the
+           precision guard, broad in the ask direction) nor ``text_awaits_user`` (the
+           completion path's recall floor) sees an ask. A hand-back is an ask by
+           contract, so any doubt keeps it a plain hand-back.
+        2. A merged or armed PR says the objective is met: the SAME ``met_bar`` the
+           completion auto-archive path runs, restricted to its two PR-backed verdicts.
+           A research goal's "non-code goal — no PR expected" is a bar verdict too,
+           but not evidence the session finished, so it does not qualify. Facts are
+           refreshed once on a miss, exactly as ``_auto_archive_completed`` does.
+
+        The verdict is the bar's own reason, persisted beside ``hand_back_reason`` with
+        the same lifetime (``_persist_status`` clears it on every write) and cleared by
+        the user's "Not done" (``dismiss_suspected_complete``). Still-current checks
+        bracket every await: a session that resumed while the judge ran must not gain
+        a stale verdict. Audited so the confirm/dismiss ratio can be measured before
+        anyone proposes acting on the verdict automatically."""
+        from server.automations.completion_bar import met_bar
+        from server.sessions.goals import effective_goal
+        from .background_tasks import text_awaits_user
+        from .completion import hand_back_reason_asks
+        rec = self._records.get(session_id)
+        if rec is None or is_assistant(rec) or not reason:
+            return
+        if hand_back_reason_asks(reason) or text_awaits_user(reason):
+            return
+
+        def still_current() -> bool:
+            return (self._records.get(session_id) is rec and rec.status == "handed_back"
+                    and rec.hand_back_reason == reason)
+
+        if not still_current():
+            return
+        try:
+            goal_text, goal_source = effective_goal(rec)
+            pr = self._autopilot_pr_facts(rec)
+            if pr.merged_pr is None and pr.armed_pr is None:
+                refreshed = await self._autopilot_refresh_pr_facts(session_id)
+                if refreshed is not None:
+                    pr = refreshed
+            if pr.merged_pr is None and pr.armed_pr is None:
+                return
+            verdict = met_bar(goal_text, goal_source, pr, getattr(rec, "pr_resolution", None),
+                              pr_resolution_source=getattr(rec, "pr_resolution_source", None),
+                              instructions=getattr(rec, "initial_prompt", None))
+            if not verdict.met or not still_current():
+                return
+            rec.suspected_complete_reason = verdict.reason
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                # Status-guarded: the row must not gain a verdict for a hand-back it
+                # has already left (the in-memory check above cannot see a write that
+                # raced this one on the DB).
+                await db.execute(
+                    sa_update(DbSession)
+                    .where(DbSession.id == session_id, DbSession.status == "handed_back")
+                    .values(suspected_complete_reason=verdict.reason))
+            log.info("session.suspected_complete sid=%s bar=%s", session_id, verdict.reason)
+            try:
+                async with db_session() as db:
+                    await record_audit(db, "session.suspected_complete", SYSTEM_IDENTITY,
+                                       {"session_id": session_id, "reason": verdict.reason,
+                                        "hand_back_reason": reason}, via="session")
+                    await db.commit()
+            except Exception:  # noqa: BLE001 - audit must never fail the verdict write
+                log.warning("session.suspected_complete audit failed sid=%s", session_id,
+                            exc_info=True)
+            self._publish_event({"type": "status", "sessionId": session_id,
+                                 "status": "handed_back", "revAt": rec.rev_at,
+                                 "updatedAt": rec.updated_at_iso,
+                                 "suspectedCompleteReason": verdict.reason})
+        except Exception:  # noqa: BLE001 - a hint must never break the session loop
+            log.warning("session.suspected_complete judge failed sid=%s", session_id,
+                        exc_info=True)
+
+    async def dismiss_suspected_complete(self, session_id: str) -> bool:
+        """The user's "Not done" on a likely-complete hand-back: clear the overlay on
+        the record and the row, and push the change so the pill drops without waiting
+        for the poll. Returns False when the session is unknown here (fleet routes
+        this to the owning host, so that means unknown everywhere)."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.suspected_complete_reason = None
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(suspected_complete_reason=None))
+        if rec is None:
+            return False
+        self._publish_event({"type": "status", "sessionId": session_id,
+                             "status": rec.status, "revAt": rec.rev_at,
+                             "updatedAt": rec.updated_at_iso,
+                             "suspectedCompleteReason": None})
+        return True
 
     async def _completion_open_question(self, session_id: str) -> str | None:
         """The status a completed session must be handed back at because its final
@@ -12336,6 +12455,9 @@ class SessionOrchestrator:
                 driver = getattr(self, "_drivers", {}).get(session_id)
                 stuck["hand_back_reason"] = (
                     getattr(driver, "last_hand_back_reason", None) or "")
+                # The overlay's verdict rides along so the escalation names it.
+                stuck["suspected_complete"] = (
+                    getattr(rec, "suspected_complete_reason", None) or "")
         from datetime import datetime as _dtmod
         _last = getattr(rec, "last_user_interaction_at", None)
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None

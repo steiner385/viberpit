@@ -515,6 +515,19 @@ export function useSetAutoArchiveOptOut() {
   })
 }
 
+/** The user's answer to a "likely complete" hand-back: confirm archives, reject
+ *  clears the hint. Invalidates the list either way — confirm removes the card,
+ *  reject drops the pill. */
+export function useResolveSuspectedComplete() {
+  const qc = useQueryClient()
+  return useMutation<{ decision: 'confirm' | 'reject'; sessionId: string }, ApiRequestError,
+                     { id: string; decision: 'confirm' | 'reject' }>({
+    mutationFn: ({ id, decision }) =>
+      api.post<{ decision: 'confirm' | 'reject'; sessionId: string }>(`/sessions/${id}/suspected-complete`, { decision }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useQueueMove() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; op: 'up' | 'down' | 'top' | 'position'; position?: number }>({

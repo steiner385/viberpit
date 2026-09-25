@@ -329,6 +329,49 @@ def parse_hand_back(args: dict | None) -> dict:
     return {"reason": reason.strip()[:HAND_BACK_REASON_MAX]}
 
 
+#: Negated need-phrases in a hand-back reason ("no action needed", "nothing further
+#: needed from you", "not required") are the SIGNATURE of a status-only hand-back, so
+#: they are removed before the ask scan below can trip on the "need" inside them.
+_HAND_BACK_NEGATED_NEED_RE = re.compile(
+    r"\b(?:no|nothing|not|without|none)\b[^.;:!?]{0,40}?\b(?:needed|required|necessary|need)\b",
+    re.IGNORECASE,
+)
+
+#: Ask-shaped words for a hand-back REASON. Deliberately broad in the ask direction —
+#: this is the precision guard for the suspected-complete overlay, where the cost of a
+#: missed ask (a "likely complete" pill on a real hand-back) is higher than the cost
+#: of a missed status report (no pill). "you"/"your" count: a reason that addresses
+#: the user is asking them something often enough that the doubt goes to the ask.
+_HAND_BACK_ASK_RE = re.compile(
+    r"\?|\b(?:you|your|i need|needs?\s+(?:a|an|the|to know|go-ahead|approval|decision)|"
+    r"please|approve|approval|go-ahead|go ahead|confirm|decide|decision|choose|choice|"
+    r"pick|which|whether|should i|shall i|sign[- ]?off|ok(?:ay)?\s+to|permission|"
+    r"want me|do you|would you|let me know|or stop|options?)\b",
+    re.IGNORECASE,
+)
+
+
+def hand_back_reason_asks(reason: str | None) -> bool:
+    """Does a ``hand_back`` REASON ask the user for anything?
+
+    The precision guard of the suspected-complete overlay
+    (``SessionOrchestrator._judge_suspected_complete``). A hand-back is an ask by
+    contract (``STATUS_ONLY_CLAUSE``), so the default answer is True; only a reason
+    that reads as a pure status report — no question mark, no ask-shaped word, its
+    only "need" inside a negation like "no action needed" — answers False. A blank
+    reason answers True: a silent hand-back gives the overlay nothing to judge.
+
+    NOT a second copy of ``background_tasks.text_awaits_user``: that one is a recall
+    FLOOR for a Haiku judge over a message tail and is deliberately narrow so it
+    rarely fires; this scans a ≤300-char declared reason for the opposite purpose
+    and errs toward "ask". The orchestrator consults both.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        return True
+    scrubbed = _HAND_BACK_NEGATED_NEED_RE.sub(" ", reason)
+    return _HAND_BACK_ASK_RE.search(scrubbed) is not None
+
+
 def parse_hand_back_marker(text: str | None) -> dict | None:
     """Extract the LAST hand-back marker from *text*, or None when absent.
 

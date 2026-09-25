@@ -199,6 +199,14 @@ class Session(Base):
     # existed only in an audit row and a log line. Nullable so init_db backfills it on
     # existing rows without a migration.
     hand_back_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The suspected-complete overlay on a handed-back session: the completion bar's
+    # own reason ("PR #N open with auto-merge armed") when the session's hand_back
+    # reason asked for nothing and a merged/armed PR says the objective is met.
+    # Written by _judge_suspected_complete, cleared on every status write like
+    # hand_back_reason, and by the user's "Not done" (dismiss_suspected_complete).
+    # Never acted on automatically — it is the card's "likely complete" hint and the
+    # user's one-tap confirm. Nullable so init_db backfills it on both dialects.
+    suspected_complete_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Provenance of the LAST archive: "user" | "autopilot" | "backlog-runner". Lets
     # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
     # Cleared on unarchive. Nullable so init_db backfills without a migration.
