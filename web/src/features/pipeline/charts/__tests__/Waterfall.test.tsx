@@ -134,3 +134,30 @@ describe('Waterfall — a11y: per-segment texture for colour-vision deficiency (
     expect(getByTestId('waterfall-seg-toFirstGreen').querySelectorAll('rect').length).toBe(1);
   });
 });
+
+// #2418 (G09 follow-up): every <text> resolves its size through the SAME --fs-*/
+// --scale mechanism plotroom.css uses for the other three charts, instead of the
+// old bare unitless FONT attribute — so kiosk's `--scale: 1.25` (AppShell.tsx)
+// enlarges this chart's labels too. jsdom never lays out SVG (see plotroom.test.ts's
+// comment on why #1407 uses a structural check rather than a rendered one), so this
+// asserts the CSS property directly rather than a computed pixel size.
+describe('Waterfall — #2418: label text scales with kiosk --scale, not a literal px', () => {
+  it('every <text> sets a CSS font-size reading var(--fs-base) — never the fontSize attribute', () => {
+    const { container } = render(<Waterfall timeline={FULL} />);
+    const texts = container.querySelectorAll('svg text');
+    expect(texts.length).toBeGreaterThan(0);
+    for (const t of texts) {
+      expect(t.getAttribute('fontSize')).toBeNull();
+      expect((t as SVGTextElement).style.fontSize).toBe('var(--fs-base)');
+    }
+  });
+
+  it('bars stay vertically centered in their row after the geometry re-derive (equal top/bottom padding)', () => {
+    const { getByTestId } = render(<Waterfall timeline={FULL} />);
+    const barY = (id: string) => Number(getByTestId(`waterfall-seg-${id}`).querySelector('rect')!.getAttribute('y'));
+    const barHeight = Number(getByTestId('waterfall-seg-toFirstGreen').querySelector('rect')!.getAttribute('height'));
+    const rowH = barY('greenToEnqueued') - barY('toFirstGreen'); // consecutive rows are ROW_H apart
+    expect(rowH).toBeGreaterThan(barHeight); // the bar must be strictly smaller than its row
+    expect((rowH - barHeight) % 2).toBe(0);  // padding splits evenly above/below → centered
+  });
+});
