@@ -250,7 +250,7 @@ def test_every_status_write_clears_the_verdict_and_a_hand_back_schedules_the_jud
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
     async def run():
-        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}")
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'sc.db'}")
         async with db_session() as db:
             db.add(DbSession(id="s1", name="New Session", account_name="acct1",
                              engine_session_id="claude-s1", status="handed_back", cwd="/repo/s1",
