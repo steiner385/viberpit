@@ -88,7 +88,8 @@ def _grouping_prompt(candidates: list[dict], max_k: int) -> str:
         f"the normal case. Order refs within a group so the primary issue comes "
         f'first. If nothing belongs together, reply {{"groups": []}}.\n\n'
         f"Issues:\n\n{issues}\n\n"
-        f'Reply with ONLY this JSON, no code fences, no prose:\n'
+        f'Reply once, with ONLY this JSON, no code fences, no prose. Do not '
+        f'revise or comment after the JSON:\n'
         f'{{"groups": [{{"refs": ["owner/repo#1", "owner/repo#2"], '
         f'"rationale": "why these belong together"}}]}}'
     )
@@ -111,6 +112,31 @@ class RefreshSummary:
 
     groups: int
     degraded: bool = False
+
+
+def _last_groups_object(text: str) -> dict | None:
+    """Recover a plan when the model second-guesses itself in the same reply
+    (#2228): a clean ``{"groups": [...]}``, then prose ("Wait, let me
+    reconsider…"), then a corrected object. ``json.loads`` rejects the whole
+    reply as "Extra data" even though the model's own final answer is right
+    there.
+
+    Decodes from every ``{`` with :class:`json.JSONDecoder` and keeps the LAST
+    dict whose ``groups`` is a list — the settled answer, since it follows any
+    earlier draft. Prose brackets and unrelated objects are ignored. ``None``
+    when nothing qualifies, so genuine garbage still degrades."""
+    decoder = json.JSONDecoder()
+    best: dict | None = None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("groups"), list):
+            best = obj
+    return best
 
 
 def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> ParsedPlan:
@@ -146,11 +172,15 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> ParsedPlan
     degraded = False
     try:
         payload = json.loads(text)
+    except (json.JSONDecodeError, AttributeError):
+        payload = _last_groups_object(text)
+
+    if isinstance(payload, (dict, list)):
         raw_groups = payload.get("groups") if isinstance(payload, dict) else payload
         if not isinstance(raw_groups, list):
             raw_groups = []
             degraded = True
-    except (json.JSONDecodeError, AttributeError):
+    else:
         raw_groups = []
         degraded = True
 
