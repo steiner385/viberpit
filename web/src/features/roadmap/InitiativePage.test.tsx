@@ -112,6 +112,7 @@ vi.mock('@/api/hooks', () => ({
   useUnblockInitiative: () => ({ mutate: h.unblockMutate, isPending: false, isError: false, error: null }),
   useDecomposeAgain: () => ({ mutate: h.retryMutate, isPending: false, isError: false, error: null }),
   useUpdateInitiative: () => ({ mutate: h.updateMutate, isPending: false, isError: false, error: null }),
+  useAdoptArtifact: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 function mount(initial = '/initiatives/views') {

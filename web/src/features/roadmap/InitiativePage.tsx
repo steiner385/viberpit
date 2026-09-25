@@ -15,7 +15,7 @@ import {
 import { ApiRequestError } from '@/api/client'
 import type { ProductNode } from '@/api/roadmap'
 import { BRAND_NAME } from '@/brand'
-import { createdIssueCount, type Initiative, type InitiativeArtifact, type InitiativeGuidance } from '@/api/sdlc'
+import { createdIssueCount, INITIATIVE_ARTIFACT_KINDS, type Initiative, type InitiativeArtifact, type InitiativeGuidance } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -40,6 +40,7 @@ import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
 import { LeafList } from './detail/LeafList'
 import { EditInitiativeDialog } from './detail/EditInitiativeDialog'
+import { AdoptArtifactDialog } from './detail/AdoptArtifactDialog'
 import { ConsequenceList } from './guidance/ConsequenceList'
 import { WhatHappensNext } from './guidance/WhatHappensNext'
 
@@ -425,6 +426,7 @@ function InitiativePageContent() {
   const [confirmingUnblock, setConfirmingUnblock] = useState(false)
   const [confirmingRetry, setConfirmingRetry] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [adopting, setAdopting] = useState(false)
 
   // The slug is the fallback title, so a deep link names something rather than
   // rendering a blank heading while the detail is in flight.
@@ -541,6 +543,17 @@ function InitiativePageContent() {
               onClick={() => setEditing(true)}
             >
               Edit
+            </Button>
+            {/* Record a document the repo already has (spec-kit, a brainstorm
+                design) as a stage artifact instead of the synthesizer writing
+                one (#2160). Disabled once every kind is recorded. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={initiative.artifacts.length >= INITIATIVE_ARTIFACT_KINDS.length}
+              onClick={() => setAdopting(true)}
+            >
+              Adopt document
             </Button>
             {/* The undo for a mis-tapped Advance. Disabled, not absent, at intake
                 for the same reason Advance is at done: the row of controls must
@@ -793,6 +806,9 @@ function InitiativePageContent() {
           open
           onClose={() => setEditing(false)}
         />
+      )}
+      {initiative && adopting && (
+        <AdoptArtifactDialog initiative={initiative} open onClose={() => setAdopting(false)} />
       )}
     </div>
   )
