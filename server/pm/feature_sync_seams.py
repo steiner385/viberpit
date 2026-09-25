@@ -67,7 +67,8 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
     REWRITTEN each apply — the docs are truth, so a link that left the
     frontmatter leaves the table — and resolve by (project slug, Feature.slug),
     where the project slug may also be one the target has been renamed away
-    from (``server/pm/project_slugs.py``); an unresolvable target is skipped
+    from (``server/pm/project_slugs.py``) and an omitted one means this
+    project; an unresolvable target is skipped
     with a warning rather than failing the apply. Plan warnings (unknown
     parent, cycle) are logged the same way.
 
@@ -164,6 +165,9 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
             # just a warning (#1881).
             projects = await resolve_project_slugs(
                 db, {link.project for _, link in wanted})
+            # A link with no `project:` names a feature of this doc's own
+            # product, as `parent:` always does (#2257) — `""` is not a slug.
+            projects[""] = project_id
             targets = {(f.project_id, f.slug): f.id for f in (await db.execute(
                 select(Feature).where(Feature.project_id.in_(list(projects.values()))))).scalars().all()}
             for src_slug, link in wanted:
