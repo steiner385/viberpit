@@ -190,7 +190,7 @@ describe('RoadmapHealthCard', () => {
       },
     })
     mount()
-    expect(screen.getByText(/1 capability cites an unindexed persona/)).toBeInTheDocument()
+    expect(screen.getByText(/1 unresolved persona reference/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ghost' }))
       .toHaveAttribute('href', '/roadmap/kindash/capabilities/chores')
   })

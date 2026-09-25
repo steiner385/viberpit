@@ -436,6 +436,7 @@ export function fetchProjectHealth(slug: string): Promise<ProjectHealth> {
   return api.get<ProjectHealth>(`/pm/projects/${encodeURIComponent(slug)}/health`)
 }
 
+// Consumed by the persona filter chip — see steiner385/viberpit#2446
 export function fetchProjectPersonas(slug: string): Promise<Persona[]> {
   return api.get<Persona[]>(`/pm/projects/${encodeURIComponent(slug)}/personas`)
 }

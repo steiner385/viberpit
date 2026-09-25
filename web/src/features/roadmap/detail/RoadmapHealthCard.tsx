@@ -149,7 +149,7 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
         )}
         {unlinkedPersonas.length > 0 && (
           <li>
-            {unlinkedPersonas.length} {unlinkedPersonas.length === 1 ? 'capability cites' : 'capabilities cite'} an unindexed persona: {' '}
+            {unlinkedPersonas.length} unresolved persona {unlinkedPersonas.length === 1 ? 'reference' : 'references'}: {' '}
             {unlinkedPersonas.map((u, i) => (
               <Fragment key={`${u.capability}:${u.persona}`}>
                 {i > 0 && ', '}

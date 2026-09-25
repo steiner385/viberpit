@@ -47,17 +47,20 @@ engineering issues stay with the initiative and their durable capability homes.
 
 ## Personas
 
-A capability's `## Target users` prose may also name persona slugs in its
-`personas:` frontmatter list. Each slug indexes to a
-`docs/product/personas/<slug>.md` document (issue #2164), parsed the same way
-capability docs are: YAML frontmatter (`slug`, `title`, `role`, `age_band`,
-`tier` — all but `slug`/`title` optional) plus a free-form body (goals,
-constraints, protections). pm-sync indexes personas into a `Persona` table per
-product, default-branch-only — there is no map-changes-branch proposal flow
+A capability whose bold **Target users** paragraph describes a persona may
+also name that persona's slug in its `personas:` frontmatter list. Each slug indexes
+to a `docs/product/personas/<slug>.md` document (issue #2164), parsed the same
+way capability docs are: YAML frontmatter (`slug`, `title`, `role`, `age_band`,
+`tier`) plus a free-form body (goals, constraints, protections). Only `slug` is
+always required, and it falls back to the filename; a doc with a frontmatter
+fence also needs a `title` (or a `# heading` to fall back to), while a fenceless
+doc may have none. The rest are optional. pm-sync indexes personas into a
+`Persona` table per product, default-branch-only — there is no map-changes-branch proposal flow
 for personas, unlike capabilities. A capability's declared `personas:` slug
 that doesn't resolve to a live Persona row surfaces on `GET
 /pm/projects/{slug}/health` as `unlinkedPersonas`, rendered on the roadmap
-hygiene banner.
+hygiene banner. `GET /pm/projects/{slug}/personas` lists a product's indexed
+(non-orphaned) personas.
 
 ViberPit does not run persona reviews itself — this just gives the persona an
 indexed identity a capability doc, a spec's acceptance criteria, or a test can

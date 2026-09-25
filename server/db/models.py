@@ -1916,7 +1916,9 @@ class PersonaFeature(Base):
     """Resolved persona→capability edge (issue #2164): a capability's
     `personas:` frontmatter slug that matched a live Persona row in the same
     project at the last pm-sync apply. REWRITTEN on every feature-plan apply,
-    same as FeatureEvidence/FeatureLink — the docs are truth."""
+    same as FeatureEvidence/FeatureLink — the docs are truth. First
+    consumers: steiner385/viberpit#2446 (roadmap filter), #2447 (spec-prompt
+    injection)."""
 
     __tablename__ = "persona_features"
     __table_args__ = (
