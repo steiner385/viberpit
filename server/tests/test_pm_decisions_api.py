@@ -311,6 +311,33 @@ def test_an_unattributed_loopback_caller_may_not_resolve(monkeypatch):
         assert _hold_of(c, wid)[0] == "decision"
 
 
+def test_a_real_bound_assistant_token_may_accept_on_a_persons_behalf(monkeypatch):
+    """Issue #2006: the ``may_resolve`` assistant carve-out was pinned by a unit
+    test on the bare predicate only — nothing drove a REAL drawer token through
+    ``IdentityMiddleware`` -> ``_assistant_claims`` -> ``actor_for_request`` ->
+    ``may_resolve``. Mint one exactly as the daemon does (``mint_token``, spec
+    §4.3) and present it as a bearer header on the real ASGI app; the middleware
+    must set ``request.state.via = "assistant"`` from the signed claims alone."""
+    from server.assistant.token import mint_token
+
+    calls = _stub_announce(monkeypatch)
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pid = _propose(c, wid).json()["id"]
+
+        token = mint_token(IDENTITY_HEADERS["Tailscale-User-Login"], "drawer-session-1")
+        acc = c.post(f"/api/pm/decisions/{pid}/accept", json={"chosen_key": "pg"},
+                     headers={"Authorization": f"Bearer {token}"})
+        assert acc.status_code == 200, acc.text
+        assert acc.json()["status"] == "accepted"
+        assert acc.json()["resolvedBy"] == (
+            f"assistant:{IDENTITY_HEADERS['Tailscale-User-Login']}")
+        assert _hold_of(c, wid)[0] is None
+        assert calls == [("o/r#1", "Move to Postgres", "concurrent writers",
+                          f"assistant:{IDENTITY_HEADERS['Tailscale-User-Login']}")]
+
+
 def test_a_reject_after_an_accept_is_refused_and_leaves_the_item_moving(monkeypatch):
     """F3's practical shape: the loser of an accept/reject race must re-read the
     row as resolved and answer 409. Were it not refused, the proposal would read
