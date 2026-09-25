@@ -528,3 +528,57 @@ def test_two_unresolved_parents_share_one_fingerprint_but_each_report(caplog):
         assert len(records) == 2
         sigs = {signature_of(r, source="daemon", host="h").fingerprint for r in records}  # type: ignore[union-attr]
         assert len(sigs) == 1
+
+
+def test_a_link_with_no_project_resolves_within_the_doc_s_own_product(caplog):
+    """#2257: a link that omits ``project:`` names a feature of the doc's OWN
+    product, the same way ``parent:`` always does. FridgeSheet's whole feature
+    map writes intra-product links that way (``- kind: powered_by`` +
+    ``feature:`` only); read as the literal project slug ``""`` it never
+    resolved, so every such edge was dropped with a warning naming
+    ``dst_project=""``."""
+    from sqlalchemy import select
+    from server.pm import feature_sync_seams as seams_mod
+    from server.db import db_session
+    from server.db.models import Feature, FeatureLink, Project
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    seams_mod._PM_SYNC_LINK_LOG.clear()
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                prod = Project(slug="example-product", name="Example product")
+                db.add(prod)
+                await db.flush()
+                pid = str(prod.id)
+                await db.commit()
+                return pid
+        prod_id = asyncio.run(_seed())
+
+        def _up(slug, links=()):
+            return FeatureUpsert(slug=slug, title=slug, state="live", summary="",
+                                 repo_path=f"d/{slug}.md", parent_slug=None,
+                                 links=tuple(links))
+
+        plan = FeatureIndexPlan(
+            upserts=(_up("all-work-table-ux",
+                         [FeatureLinkRef("powered_by", "", "actionable-work-model")]),
+                     _up("actionable-work-model")),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        async def _edges() -> list[tuple[str | None, str, str]]:
+            async with db_session() as db:
+                by_id = {f.id: str(f.slug) for f in (await db.execute(select(Feature).where(
+                    Feature.project_id == prod_id))).scalars().all()}
+                rows = (await db.execute(select(FeatureLink))).scalars().all()
+                return [(r.kind, by_id[r.src_feature_id], by_id[r.dst_feature_id]) for r in rows]
+
+        assert asyncio.run(_edges()) == [
+            ("powered_by", "all-work-table-ux", "actionable-work-model")]
+        assert [r for r in caplog.records
+                if "feature_link_unresolved" in r.getMessage()] == []

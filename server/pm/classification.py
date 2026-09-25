@@ -288,7 +288,7 @@ def build_map_synthesis_prompt(
         "  labels: [<GitHub labels whose issues ALWAYS belong here, e.g. flaky>]  # optional\n"
         "  links:  # optional — feature-to-feature relationships ONLY\n"
         f"    - kind: <one of {list(FEATURE_LINK_KINDS)}>\n"
-        "      project: <repo-slug>\n"
+        "      project: <repo-slug; omit for a capability of this product>\n"
         "      feature: <feature-slug>\n"
         + EVIDENCE_FRONTMATTER_HELP + "\n"
         "Never invent other frontmatter keys (`area`, `owner`, `category`): the "
