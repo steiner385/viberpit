@@ -44,7 +44,9 @@ def _slug_from_path(path: str | None) -> str:
 
 def parse_persona_doc(text: str, *, path: str | None = None) -> PersonaDoc:
     meta: dict = {}
+    has_frontmatter = False
     if text.startswith("---"):
+        has_frontmatter = True
         lines = text.split("\n")
         try:
             close = next(i for i, ln in enumerate(lines[1:], start=1) if ln.strip() == "---")
@@ -66,8 +68,16 @@ def parse_persona_doc(text: str, *, path: str | None = None) -> PersonaDoc:
 
     slug = str(meta.get("slug") or "").strip() or _slug_from_path(path)
     title = str(meta.get("title") or "").strip() or _title_from_body(body)
-    if not slug:
-        raise PersonaDocError("slug and title are required")
+
+    # When frontmatter is present, both slug and title are required (mirrors featuredoc.py).
+    # When there's no frontmatter (fenceless/path-derived-slug), only slug is required,
+    # since title is optional metadata and can be empty.
+    if has_frontmatter:
+        if not slug or not title:
+            raise PersonaDocError("slug and title are required")
+    else:
+        if not slug:
+            raise PersonaDocError("slug is required")
 
     def _opt(key: str) -> str | None:
         v = meta.get(key)

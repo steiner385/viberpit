@@ -62,3 +62,9 @@ def test_bad_yaml_raises():
 def test_invalid_slug_from_path_is_not_indexed():
     with pytest.raises(PersonaDocError):
         parse_persona_doc("body only\n", path="docs/product/personas/README.md")
+
+
+def test_frontmatter_without_title_raises():
+    """Frontmatter docs require title even if body has no H1."""
+    with pytest.raises(PersonaDocError):
+        parse_persona_doc("---\nslug: nofrontmatter\n---\nbody\n")
