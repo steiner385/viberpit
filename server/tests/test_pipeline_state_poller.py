@@ -129,11 +129,14 @@ async def test_start_runs_loop_and_stop_cancels_cleanly():
 
 
 @pytest.mark.asyncio
-async def test_daemon_unavailable_is_a_throttled_warning_not_an_error(caplog):
+async def test_daemon_unavailable_is_a_throttled_info_not_an_error(caplog):
     """A daemon restart/deploy window makes every 10 s build hit DaemonUnavailable.
     That is an expected transient, not a pipeline bug: #1656 was 92+ ERROR records
-    (with a full httpx traceback each) for it. It must log at WARNING, once per
-    throttle window, then demote repeats to DEBUG — and still carry forward."""
+    (with a full httpx traceback each) for it, and demoting only the *repeats* to
+    DEBUG (#2310) still left the first occurrence of every window at WARNING — the
+    filing decision for server.obs.errsink, so every restart re-filed #2361. A
+    short window must log at INFO, once per throttle window, then demote repeats
+    to DEBUG — and still carry forward."""
     import logging
 
     import server.pipeline.state_poller as mod
@@ -155,18 +158,80 @@ async def test_daemon_unavailable_is_a_throttled_warning_not_an_error(caplog):
         await poller.poll_once()
 
     records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
-    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+    assert [r.levelno for r in records] == [logging.INFO, logging.DEBUG]
     assert all(r.exc_info is None for r in records)  # no traceback spam
     assert poller.snapshot() == {"ok": True}
     assert poller.generation == 1
 
 
 @pytest.mark.asyncio
-async def test_daemon_connect_timeout_is_a_throttled_warning_not_an_error(caplog):
+async def test_daemon_unavailable_escalates_to_one_warning_after_sustained_outage(
+    caplog,
+):
+    """A restart/deploy window is a few ticks and stays at INFO (previous test).
+    An outage that outlasts _DAEMON_UNAVAILABLE_ESCALATE_AFTER consecutive polls is
+    a genuine signal and must still surface as a WARNING — but exactly once per
+    outage, not once per tick past the threshold, or the flood #1656 fixed comes
+    back in a new shape."""
+    import logging
+
+    import server.pipeline.state_poller as mod
+    from server.ipc.client import DaemonUnavailable
+
+    mod._DAEMON_UNAVAILABLE_LOG.clear()
+
+    async def builder():
+        raise DaemonUnavailable("All connection attempts failed")
+
+    poller = PipelineStatePoller(builder)
+    with caplog.at_level(logging.DEBUG, logger="server.pipeline.state_poller"):
+        for _ in range(mod._DAEMON_UNAVAILABLE_ESCALATE_AFTER + 5):
+            await poller.poll_once()
+
+    records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
+    warnings = [r for r in records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "consecutive polls" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_daemon_unavailable_escalation_resets_on_recovery(caplog):
+    """A successful build (the daemon comes back) must reset the streak, so a
+    second later outage escalates again instead of the counter staying latched."""
+    import logging
+
+    import server.pipeline.state_poller as mod
+    from server.ipc.client import DaemonUnavailable
+
+    mod._DAEMON_UNAVAILABLE_LOG.clear()
+    fail = True
+
+    async def builder():
+        if fail:
+            raise DaemonUnavailable("All connection attempts failed")
+        return {"ok": True}
+
+    poller = PipelineStatePoller(builder)
+    with caplog.at_level(logging.DEBUG, logger="server.pipeline.state_poller"):
+        for _ in range(mod._DAEMON_UNAVAILABLE_ESCALATE_AFTER):
+            await poller.poll_once()
+        fail = False
+        await poller.poll_once()  # recovers: resets the streak
+        fail = True
+        for _ in range(mod._DAEMON_UNAVAILABLE_ESCALATE_AFTER):
+            await poller.poll_once()
+
+    records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
+    warnings = [r for r in records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2  # one per outage, not a single latched escalation
+
+
+@pytest.mark.asyncio
+async def test_daemon_connect_timeout_is_a_throttled_info_not_an_error(caplog):
     """#1726: a TLS-connect timeout to the daemon (httpx.ConnectTimeout) reaches the
     poller as ``DaemonTimeout`` — a *subclass* of DaemonUnavailable — and filed 48
     ERROR records with full httpx tracebacks. It is the same expected transient as
-    an outright connect failure and must take the same throttled-WARNING path."""
+    an outright connect failure and must take the same throttled-INFO path."""
     import logging
 
     import httpx
@@ -188,7 +253,7 @@ async def test_daemon_connect_timeout_is_a_throttled_warning_not_an_error(caplog
         await poller.poll_once()
 
     records = [r for r in caplog.records if r.name == "server.pipeline.state_poller"]
-    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+    assert [r.levelno for r in records] == [logging.INFO, logging.DEBUG]
     assert all(r.exc_info is None for r in records)
     assert poller.snapshot() is None  # nothing published; loop survives
 

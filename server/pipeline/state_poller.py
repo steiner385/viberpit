@@ -37,7 +37,19 @@ Builder = Callable[[], Awaitable[dict]]
 # traceback). One key: the poller is a singleton and the condition is host-wide.
 # Only the exception *class* is logged: raw httpx text varies per failure shape
 # and would split one condition into several auto-error fingerprints.
+#
+# #2361: the throttled WARNING is itself the auto-error filing decision (WARNING+
+# is what server.obs.errsink files), so the *first* occurrence of every restart
+# window still filed one issue. A restart/deploy window is a few ticks and is not
+# worth reporting at all — demoted to INFO. A genuine outage is still worth one
+# WARNING, so consecutive failures are tracked and escalate exactly once past the
+# threshold below, reset on the next successful publish.
 _DAEMON_UNAVAILABLE_LOG = LogThrottle()
+
+# 30 consecutive failed 10 s ticks ~= 5 minutes: long enough that a normal daemon
+# restart/deploy window (observed well under a minute) never trips it, short
+# enough that a genuine outage still reports promptly.
+_DAEMON_UNAVAILABLE_ESCALATE_AFTER = 30
 
 
 class PipelineStatePoller:
@@ -61,6 +73,10 @@ class PipelineStatePoller:
         self._generation = 0
         self._task: asyncio.Task | None = None
         self._cond = asyncio.Condition()
+        # Consecutive DaemonUnavailable failures and whether this outage already
+        # escalated to a WARNING — both reset the moment a build succeeds.
+        self._daemon_failure_streak = 0
+        self._daemon_escalated = False
 
     # ------------------------------------------------------------------ #
     # Reads                                                               #
@@ -115,13 +131,25 @@ class PipelineStatePoller:
         try:
             state = await self._builder()
         except DaemonUnavailable as exc:
-            log_throttled(log, _DAEMON_UNAVAILABLE_LOG, "daemon", logging.WARNING,
+            self._daemon_failure_streak += 1
+            if (self._daemon_failure_streak >= _DAEMON_UNAVAILABLE_ESCALATE_AFTER
+                    and not self._daemon_escalated):
+                # Fires once per outage, not once per tick: a persistent outage is
+                # a genuine signal and is worth its own auto-error fingerprint.
+                self._daemon_escalated = True
+                log.warning(
+                    "pipeline state build still skipped after %d consecutive polls: "
+                    "session daemon unavailable (%s)",
+                    self._daemon_failure_streak, type(exc).__name__)
+            log_throttled(log, _DAEMON_UNAVAILABLE_LOG, "daemon", logging.INFO,
                           "pipeline state build skipped: session daemon unavailable "
                           "(%s)", type(exc).__name__)  # carry-forward last frame
             return
         except Exception:
             log.exception("pipeline state build failed")  # carry-forward last frame
             return
+        self._daemon_failure_streak = 0
+        self._daemon_escalated = False
         await self._publish(state)
 
     async def _publish(self, state: dict) -> None:
