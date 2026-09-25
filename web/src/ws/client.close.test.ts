@@ -52,6 +52,25 @@ describe('SessionSocket close logging', () => {
     sock.destroy()
   })
 
+  it('logs a planned service restart (1012) at info, not warn (#2470)', async () => {
+    const warnSpy = vi.spyOn(clientLogger, 'warn')
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const { SessionSocket } = await import('@/ws/client')
+    const sock = new SessionSocket('ws://localhost/ws')
+    sock.connect()
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
+    ws.onclose?.({ code: 1012, reason: '' } as CloseEvent)
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('1012'),
+      expect.any(Object),
+    )
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('code='),
+      expect.any(Object),
+    )
+    sock.destroy()
+  })
+
   it('warns on a server-signalled unexpected close code (1011)', async () => {
     const spy = vi.spyOn(clientLogger, 'warn')
     const { SessionSocket } = await import('@/ws/client')
