@@ -239,6 +239,11 @@ class CapabilityIn:
     parent_slug: str | None
     issue_tiers: tuple[str, ...]          # one tier per OPEN issue classified under it
     links: tuple[tuple[str, str, str], ...] = ()   # (kind, project slug, feature slug)
+    # Resolved PersonaFeature edges (issue #2164/#2453), live personas only —
+    # NOT the raw Feature.persona_slugs mirror (that's `unlinked_personas`'
+    # source in server/pm/health.py, a different concern: declared-but-
+    # unresolved). First consumer: steiner385/viberpit#2446's filter chip.
+    persona_slugs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -359,6 +364,7 @@ def _capability_node(cap: CapabilityIn, children: list[dict],
         "prNumber": cap.pr_number, "parentSlug": cap.parent_slug, "tier": tier,
         "counts": counts,
         "links": [{"kind": k, "projectSlug": p, "featureSlug": f} for k, p, f in cap.links],
+        "personaSlugs": list(cap.persona_slugs),
         "initiatives": touching,
         "children": children,
     }

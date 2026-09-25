@@ -13,7 +13,7 @@ from server.auth.middleware import current_identity
 from server.automations.product_policy import effective_policy
 from server.db import get_db
 from server.db.models import (
-    Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
+    Feature, FeatureLink, GhProjectItem, Initiative, Persona, PersonaFeature, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.map_changes import Pointer, open_pointer_rows
@@ -120,6 +120,19 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
         links_by_src.setdefault(link.src_feature_id, []).append(
             (link.kind or "", slug_of.get(dst.project_id) or "", dst.slug or ""))
 
+    # Resolved persona links (#2164/#2453) — same batching shape as links_by_src
+    # just above: one query scoped to this request's features, live personas
+    # only (an orphaned Persona's leftover PersonaFeature row must never surface
+    # in the filter — steiner385/viberpit#2446).
+    persona_rows = (await db.execute(select(PersonaFeature.feature_id, Persona.slug).join(
+        Persona, PersonaFeature.persona_id == Persona.id).where(
+        PersonaFeature.feature_id.in_(list(feat_by_id)),
+        Persona.orphaned.isnot(True)))).all() if feat_by_id else []
+    personas_by_feature: dict[str, list[str]] = {}
+    for fid, pslug in persona_rows:
+        if pslug:
+            personas_by_feature.setdefault(fid, []).append(pslug)
+
     open_items = (await db.execute(select(WorkItem).where(
         WorkItem.feature_id.in_(list(feat_by_id)), WorkItem.state == "open",
         WorkItem.kind == "issue"))).scalars().all() \
@@ -192,6 +205,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             parent_slug=slug_by_fid.get(f.parent_feature_id) if f.parent_feature_id else None,
             issue_tiers=tuple(tiers_by_feature.get(f.id, [])),
             links=tuple(links_by_src.get(f.id, [])),
+            persona_slugs=tuple(personas_by_feature.get(f.id, [])),
         ) for f in my_feats)
         ini_inputs = []
         for i in initiatives:
