@@ -51,7 +51,18 @@ def is_running(name: str) -> bool:
 
 # One status read per burst of failures, not one per failure: a restart window fails
 # two RPCs every 5 s plus the probe, and the controller is busy driving the deploy.
-_CONTROLLER_STATUS_TTL_S = 5.0
+#
+# Kept well under that ~5 s retry cadence — not equal to it. `_on_host_progress`
+# writes a host's "running" transition into the controller's `/status` the instant
+# a runner's deploy step begins, but this cache is pulled on a TIMER, not pushed on
+# that write, so it can still be serving the pre-transition snapshot for up to one
+# whole TTL after the transition. A failure landing in that gap reads the host as
+# "no deploy touching it" and gets logged at WARNING instead of the INFO a
+# controller-driven restart deserves (#2112). The within-burst calls this cache
+# exists to collapse land milliseconds apart (same event loop pass, or the same
+# 5 s retry tick); a 1 s TTL still merges those into one fetch while cutting the
+# blind spot 5x versus the old 5 s value.
+_CONTROLLER_STATUS_TTL_S = 1.0
 _controller_cache: dict[str, Any] = {"at": 0.0, "hosts": {}}
 _controller_client: DeployControllerClient | None = None
 
