@@ -125,6 +125,7 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
     module, so a module-level import of it would be circular.
     """
     from server.codex import protocol as _p
+    from server.codex.external_auth import ExternalAuthUnavailable
 
     return (
         (_p.CodexRequestTimeout, "timeout"),
@@ -134,6 +135,9 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
         (_p.CodexRequestOverloaded, "overloaded"),
         (_p.CodexExternalAuthDisabled, "external_auth_disabled"),
         (_p.CodexRequestUnrouted, "unrouted"),
+        # Authority refused / unreachable / degraded at login or refresh. A
+        # RuntimeError, so without its own name it read `runtime_error` (#1942).
+        (ExternalAuthUnavailable, "external_auth_unavailable"),
     )
 
 

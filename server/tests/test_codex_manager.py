@@ -241,6 +241,29 @@ def test_a_failed_login_tears_the_process_back_down():
     asyncio.run(go())
 
 
+def test_a_refused_login_is_not_reported_as_a_credential_leak(caplog):
+    """#1942: an authority refusal used to log `runner_holds_credential`."""
+    from server.codex.external_auth import ExternalAuthUnavailable
+
+    async def go():
+        manager, spawned = _manager()
+
+        async def refuse(account: str):
+            raise ExternalAuthUnavailable("the credential authority refused a")
+
+        manager._credential_supplier = refuse
+        with pytest.raises(mgr_mod.CodexStartError) as exc:
+            await manager.ensure("a")
+        assert "credential cache" not in str(exc.value)
+        assert spawned[0].stopped
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(go())
+    logged = " ".join(r.getMessage() + str(getattr(r, "__dict__", "")) for r in caplog.records)
+    assert "runner_holds_credential" not in logged
+    assert "external_auth_unavailable" in logged
+
+
 def test_cancelling_startup_discards_the_half_started_client_and_process():
     async def go():
         entered_supplier = asyncio.Event()
