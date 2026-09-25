@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+SyslogIdentifier=viberpit-deploy-controller
 User=tony
 EnvironmentFile=/etc/viberpit/viberpit.env
 # Paths match the sibling units (viberpit.service / viberpit-daemon.service). Adjust

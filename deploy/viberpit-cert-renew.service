@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+SyslogIdentifier=viberpit-cert-renew
 # tailscale cert is idempotent: only fetches a new cert when near expiry.
 # ExecStartPost only runs if ExecStart succeeds, so nginx is not reloaded
 # with a bad or missing cert.
