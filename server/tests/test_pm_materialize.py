@@ -9,12 +9,15 @@ from server.pm.gh_mutations import build_batch
 from server.pm.materialize import (
     Decomposition,
     MaterializationParseError,
+    MaterializedDirectly,
     TaskSpec,
     blocked_by_mutation,
     build_create_issue,
     build_materialize_prompt,
     chain_edges,
+    decomposition_payload,
     parse_materialization_output,
+    parse_tasks_markdown,
 )
 from server.pm.reconcile_diff import DepView, compile_edges
 
@@ -204,3 +207,77 @@ def test_blocked_by_mutation_renders_through_the_shared_batch_builder():
     assert doc == ('mutation { m0: addBlockedBy(input: {issueId: "I_b", '
                    'blockingIssueId: "I_a"}) { clientMutationId } }')
     assert list(aliases) == ["m0"]
+
+
+# --------------------------------------------------------------------------- #
+# tasks.md — an already-decomposed plan (#2417)                               #
+# --------------------------------------------------------------------------- #
+
+TASKS_MD = """# Tasks: Dark mode
+
+**Input**: the merged plan
+
+## Phase 3.1: Setup
+- [ ] T001 Create the toggle component in src/Toggle.tsx
+- [ ] T002 [P] Wire the theme store
+    Covers: FR-001
+
+## Phase 3.2: Tests
+- [X] T003 Add a snapshot test
+"""
+
+
+def test_parse_tasks_markdown_reads_every_task_in_order():
+    d = parse_tasks_markdown(TASKS_MD)
+    assert d.epic_title == "Dark mode"
+    assert [t.title for t in d.tasks] == [
+        "T001: Create the toggle component in src/Toggle.tsx",
+        "T002: Wire the theme store",
+        "T003: Add a snapshot test",
+    ]
+    # Sibling order carries the dependency, same as a decompose session's
+    # output — no explicit `depends_on` is recovered from the checklist.
+    assert all(t.depends_on == () for t in d.tasks)
+
+
+def test_parse_tasks_markdown_keeps_the_phase_and_covers_line_in_the_body():
+    d = parse_tasks_markdown(TASKS_MD)
+    assert "Phase: Phase 3.1: Setup" in d.tasks[0].body
+    assert "Covers: FR-001" in d.tasks[1].body
+
+
+def test_parse_tasks_markdown_falls_back_to_the_slug_with_no_heading():
+    d = parse_tasks_markdown("- [ ] T001 Do the thing\n", slug="dark-mode")
+    assert d.epic_title == "Materialize dark-mode"
+
+
+def test_parse_tasks_markdown_rejects_a_file_with_no_task_lines():
+    with pytest.raises(MaterializationParseError):
+        parse_tasks_markdown("# Tasks: Dark mode\n\nNothing here.\n")
+
+
+def test_chain_edges_still_chains_tasks_parsed_from_a_file():
+    """`parse_tasks_markdown`'s output must feed `chain_edges` exactly like a
+    decompose session's `Decomposition` does — sibling order becomes the
+    blocked-by chain."""
+    d = parse_tasks_markdown(TASKS_MD)
+    assert chain_edges(d) == [(1, 0), (2, 1)]
+
+
+def test_decomposition_payload_matches_the_session_ingest_shape():
+    d = Decomposition(epic_title="Dark mode", epic_body="body",
+                      tasks=(TaskSpec(title="t1", body="b1"),))
+    session_payload = decomposition_payload(d, source_session="sess-9")
+    assert session_payload == {
+        "epic_title": "Dark mode", "epic_body": "body",
+        "tasks": [{"title": "t1", "body": "b1", "depends_on": []}],
+        "source_session": "sess-9",
+    }
+    direct_payload = decomposition_payload(d, source_session=None, source="tasks_file")
+    assert direct_payload["source_session"] is None
+    assert direct_payload["source"] == "tasks_file"
+    assert "source" not in session_payload
+
+
+def test_materialized_directly_carries_the_proposal_id():
+    assert MaterializedDirectly(proposal_id="p1").proposal_id == "p1"

@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from server.pipeline.track import StageModel
     from server.pm.feature_index import FeatureDocsRead
     from server.pm.map_changes import MapChangesService, Pointer
+    from server.pm.materialize import MaterializedDirectly
     from server.pm.onboarding import ProjectOnboardingView
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
@@ -1393,6 +1394,9 @@ class SessionOrchestrator:
         #: ``__new__``, which never runs this constructor.
         self._materialize_unreadable_slugs: set[str] = set()
         self._materialize_deduped_keys: set[str] = set()
+        #: Slugs already warned about a tasks.md that does not parse (#2417) —
+        #: same once-per-slug shape as the two sets above.
+        self._materialize_tasks_unreadable: set[str] = set()
         #: One lock per proposal id being applied, so two accepts of the same
         #: proposal cannot both read "nothing created yet" and create two epics
         #: (C4-R17). Lazily created at its use site for the same reason.
@@ -11282,7 +11286,11 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
         default_branch = await self._sdlc_default_branch(repo)
-        upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
+        # #2416: the resolved layout rides on `ini` — the synthesizer loop's
+        # `_run()` already read the product's policy once this tick and set it
+        # there, the same way `origin`/`epic_repo` already ride on `ini`.
+        layout = ini.get("artifact_layout")
+        upstream = artifact_path(slug, "intent" if kind == "spec" else "spec", layout)
         # Epic-adopted initiatives (#2159) enter the chain directly at Design —
         # the intake stage that would have written intent.md never ran, so
         # there is nothing on disk to read. The plan stage needs no equivalent
@@ -11306,10 +11314,11 @@ class SessionOrchestrator:
                              else raw_const_text)
                 return build_spec_prompt(
                     content, [], slug=slug, repo=repo, default_branch=default_branch,
-                    engine=engine, constitution=const_text, constitution_path=const_path)
+                    engine=engine, constitution=const_text, constitution_path=const_path,
+                    layout=layout)
             return build_plan_prompt(
                 content, slug=slug, repo=repo, default_branch=default_branch,
-                engine=engine)
+                engine=engine, layout=layout)
 
         prompt = await asyncio.to_thread(build, cwd, default_branch)
         detail: dict = {"initiative": slug, "kind": kind, "engine": engine.value}
@@ -11447,7 +11456,10 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
         default_branch = await self._sdlc_default_branch(repo)
-        path = artifact_path(slug, "plan")
+        # #2416: same `ini`-carried layout the spec/plan spawn reads — a plan
+        # committed under a product's configured layout lives there, not at
+        # the historical default.
+        path = artifact_path(slug, "plan", ini.get("artifact_layout"))
         plan_markdown = await asyncio.to_thread(
             self._sdlc_show_committed_file, cwd, f"origin/{default_branch}", path)
         if plan_markdown.startswith(_SDLC_UNREADABLE_PREFIX):
@@ -11472,6 +11484,11 @@ class SessionOrchestrator:
                     kind="materialization_plan_unreadable", target=slug,
                     detail={"path": path, "ref": f"origin/{default_branch}"})
             return None
+        direct = await self._sdlc_materialize_from_tasks_file(
+            initiative_id=str(ini.get("id") or ""), slug=slug, cwd=cwd,
+            default_branch=default_branch, plan_path=path)
+        if direct is not None:
+            return direct
         # The decomposition contract lives in the prompt builder (one source of
         # truth); only the operational shape of THIS session is added here.
         prompt = build_materialize_prompt(slug, repo, plan_markdown) + (
@@ -11512,6 +11529,59 @@ class SessionOrchestrator:
         self._spawn(self._sdlc_materialize_chain_ingest(rec.id, slug),
                     name=f"sdlc-materialize-ingest-{slug}")
         return rec
+
+    async def _sdlc_materialize_from_tasks_file(
+            self, *, initiative_id: str, slug: str, cwd: str, default_branch: str,
+            plan_path: str) -> MaterializedDirectly | None:
+        """Parse the merged plan's sibling ``tasks.md`` directly into a pending
+        ``MaterializationProposal`` (#2417), instead of spawning a decompose
+        session to re-derive a breakdown a human (or spec-kit) already made.
+
+        Returns ``None`` — meaning "fall back to the normal decompose spawn" —
+        when there is no readable ``tasks.md`` next to the plan (the common
+        case: most plans are not on a layout that produces one) or it does not
+        parse as one; a malformed file must degrade to the existing agent path,
+        never block materialization outright."""
+        import posixpath
+        from server.db.models import MaterializationProposal
+        from server.pm.materialize import (
+            MaterializationParseError, MaterializedDirectly, decomposition_payload,
+            parse_tasks_markdown)
+        tasks_path = posixpath.join(posixpath.dirname(plan_path), "tasks.md")
+        text = await asyncio.to_thread(
+            self._sdlc_show_committed_file, cwd, f"origin/{default_branch}", tasks_path)
+        if text.startswith(_SDLC_UNREADABLE_PREFIX):
+            return None
+        try:
+            decomposition = parse_tasks_markdown(text, slug=slug)
+        except MaterializationParseError as e:
+            # Same once-per-slug warn shape as the plan-unreadable case above —
+            # the condition persists across ticks until the file is fixed.
+            warned: set[str] | None = getattr(self, "_materialize_tasks_unreadable", None)
+            if warned is None:
+                warned = self._materialize_tasks_unreadable = set()
+            if slug not in warned:
+                warned.add(slug)
+                await self._sdlc_emit(
+                    "warn", f"{slug}: {tasks_path} does not parse as a task list — "
+                            "decomposing with an agent session instead",
+                    kind="materialization_tasks_unreadable", target=slug,
+                    detail={"path": tasks_path, "error": str(e)})
+            return None
+        async with db_session() as db:
+            proposal = MaterializationProposal(
+                initiative_id=initiative_id,
+                status="pending",
+                session_id=None,
+                payload=decomposition_payload(
+                    decomposition, source_session=None, source="tasks_file"),
+                rationale=f"parsed directly from `{tasks_path}`"[:500],
+            )
+            db.add(proposal)
+            await db.commit()
+        log.info("sdlc_materialize.direct: slug=%s tasks=%d path=%s",
+                 slug, len(decomposition.tasks), tasks_path)
+        return MaterializedDirectly(proposal_id=proposal.id)
 
     async def _sdlc_materialize_chain_ingest(
             self, session_id: str, slug: str, *,
@@ -11784,7 +11854,7 @@ class SessionOrchestrator:
         from sqlalchemy import select
         from server.db.models import Initiative, MaterializationProposal
         from server.pm.materialize import (
-            MaterializationParseError, parse_materialization_output)
+            MaterializationParseError, decomposition_payload, parse_materialization_output)
         text = await self._chained_session_output_text(session_id)
         async with db_session() as db:
             initiative_id = (await db.execute(select(Initiative.id).where(
@@ -11820,14 +11890,7 @@ class SessionOrchestrator:
                 initiative_id=initiative_id,
                 status="pending",
                 session_id=session_id,
-                payload={
-                    "epic_title": decomposition.epic_title,
-                    "epic_body": decomposition.epic_body,
-                    "tasks": [{"title": t.title, "body": t.body,
-                               "depends_on": list(t.depends_on)}
-                              for t in decomposition.tasks],
-                    "source_session": session_id,
-                },
+                payload=decomposition_payload(decomposition, source_session=session_id),
                 # The prose the session wrote before the fence — the only place
                 # its reasoning survives, and what the human reads next to the
                 # task list.

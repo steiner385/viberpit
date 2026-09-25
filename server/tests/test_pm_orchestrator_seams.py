@@ -2360,6 +2360,108 @@ async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
     assert orch.chained == [("sess-1", "dark-mode")]
 
 
+_TASKS_MD = """# Tasks: Dark mode
+
+## Phase 3.1: Setup
+- [ ] T001 Create the toggle component in src/Toggle.tsx
+- [ ] T002 [P] Wire the theme store
+
+## Phase 3.2: Tests
+- [ ] T003 Add a snapshot test
+   Covers: FR-001, AC-001
+"""
+
+
+def _spawn_materialize_orch_with_tasks(ctx=None, *, plan_body="# the plan", tasks_md=_TASKS_MD):
+    """Same fake as `_spawn_materialize_orch`, but the committed-file seam tells
+    plan.md and tasks.md apart by path (#2417) instead of returning the same
+    body for every path."""
+    orch = _spawn_materialize_orch(ctx, plan_body=plan_body)
+
+    def show(cwd, ref, path):
+        if path.endswith("tasks.md"):
+            return f"{tasks_md}\n<!-- {ref}:{path} -->"
+        return f"{plan_body} at {ref}:{path}"
+
+    orch._sdlc_show_committed_file = show
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_parses_tasks_md_directly_and_skips_the_session(db_env):
+    """#2417: a merged plan whose directory already has a `tasks.md` is
+    materialized straight into a pending proposal — no decompose session, no
+    chained ingest."""
+    from server.db.models import MaterializationProposal
+    from server.pm.materialize import MaterializedDirectly
+    ini_id = await _seed_initiative(db_env)
+    ctx = FakeAutomationContext()
+    orch = _spawn_materialize_orch_with_tasks(ctx)
+    ini = dict(_MAT_INI, id=ini_id)
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        result = await orch._sdlc_spawn_materialize(ini)
+    assert isinstance(result, MaterializedDirectly)
+    assert ctx.calls == []       # no decompose session spawned
+    assert orch.scheduled == []  # no ingest chained onto anything
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = (await db.execute(select(MaterializationProposal))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id == result.proposal_id
+    assert row.initiative_id == ini_id
+    assert row.status == "pending"
+    assert row.session_id is None
+    assert [t["title"] for t in row.payload["tasks"]] == [
+        "T001: Create the toggle component in src/Toggle.tsx",
+        "T002: Wire the theme store",
+        "T003: Add a snapshot test",
+    ]
+    assert "Covers: FR-001, AC-001" in row.payload["tasks"][2]["body"]
+    assert row.payload["source"] == "tasks_file"
+    assert row.payload["source_session"] is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_falls_back_to_a_session_with_no_tasks_md(db_env):
+    """The common case (no tasks.md next to the plan) must behave exactly as
+    before #2417 — a decompose session, not a silent no-op."""
+    await _seed_initiative(db_env)
+    orch = _spawn_materialize_orch()
+    from server.sessions import orchestrator as orch_mod
+
+    # `_spawn_materialize_orch`'s default fake returns plan text for EVERY
+    # path; swap in one that tells the plan and a missing tasks.md apart, the
+    # real shape `_sdlc_show_committed_file` returns for a file that isn't there.
+
+    def show(cwd, ref, path):
+        if path.endswith("tasks.md"):
+            return f"{orch_mod._SDLC_UNREADABLE_PREFIX} `{path}` from `{ref}`"
+        return f"# the plan at {ref}:{path}"
+
+    orch._sdlc_show_committed_file = show
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        rec = await orch._sdlc_spawn_materialize(_MAT_INI)
+    assert rec is not None
+    assert len(orch._sdlc_synth_ctx.calls) == 1
+    assert len(orch.scheduled) == 1
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_falls_back_when_tasks_md_does_not_parse(db_env):
+    """A `tasks.md` that exists but has no `T###` lines must degrade to the
+    normal decompose session rather than blocking materialization outright."""
+    await _seed_initiative(db_env)
+    ctx = FakeAutomationContext()
+    orch = _spawn_materialize_orch_with_tasks(ctx, tasks_md="# Tasks: Dark mode\n\nNothing to see here.\n")
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        rec = await orch._sdlc_spawn_materialize(_MAT_INI)
+    assert rec is not None
+    assert len(ctx.calls) == 1
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert "materialization_tasks_unreadable" in kinds
+
+
 async def _seed_materialize_session(status: str, *, attempt: int = 0) -> str:
     """A decompose session for dark-mode in *status*, as the spawn gate sees it."""
     from server.db.models import Session as DbSession

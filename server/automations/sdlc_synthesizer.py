@@ -23,6 +23,7 @@ from server.sdlc.engine import (
     MergeArtifact, NeedsHuman, Propose, next_action)
 from server.sdlc.gates import auto_gate_record, effective_tolerance
 from server.sdlc.prompts import artifact_path
+from server.pm.materialize import MaterializedDirectly
 
 from .base import AutomationStatus, ConfigField
 from .context import observation_failed, publish_observation
@@ -357,6 +358,11 @@ class SdlcSynthesizerLoop:
             state, arts = _to_views(ini, artifacts)
             key = ini.get("project_slug")
             policy = effective_policy(policies.get(key) if key else None)
+            # #2416: the spawn seam has no policy read of its own — it takes the
+            # resolved layout off `ini`, the same way it already takes `origin`/
+            # `epic_repo` (constitution VI: one policy read per tick, not a
+            # second one inside the orchestrator's spawn method).
+            ini["artifact_layout"] = policy.get("artifact_layout")
             tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
             action = next_action(state, arts, mode, tolerance)
             if isinstance(action, AwaitApproval) or (
@@ -390,7 +396,8 @@ class SdlcSynthesizerLoop:
                         slug = str(ini.get("slug") or "")
                         await self._record_artifact(
                             initiative_id=ini["id"], kind=action.kind,
-                            repo_path=artifact_path(slug, action.kind),
+                            repo_path=artifact_path(slug, action.kind,
+                                                    policy.get("artifact_layout")),
                             session_id=getattr(rec, "id", None),
                             model=getattr(rec, "model", None),
                             upstream_ref=getattr(rec, "upstream_ref", None))
@@ -555,6 +562,14 @@ class SdlcSynthesizerLoop:
         if rec is None:  # no headroom / refused launch — retry next tick
             return None
         await self._set_status(ini["id"], "awaiting_human")
+        if isinstance(rec, MaterializedDirectly):
+            # #2417: the plan's own tasks.md already carried the decomposition —
+            # no session was spawned, the proposal is already on record.
+            await self._emit(
+                "info", f"materialized {slug} directly from its plan's tasks.md — "
+                        "no decompose session was needed",
+                kind="materialization_proposed", target=slug)
+            return "proposed"
         sid = getattr(rec, "id", None)
         await self._emit("info", f"decomposing the merged plan for {slug} (session {sid})",
                          kind="materialization_proposed", target=slug, session_id=sid)

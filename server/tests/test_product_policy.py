@@ -12,7 +12,8 @@ def test_schema_keys_and_defaults():
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
                     "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "skip_labels", "triage_auto_accept",
-                    "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
+                    "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor",
+                    "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
@@ -20,7 +21,7 @@ def test_schema_keys_and_defaults():
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
         "respect_dependencies": True, "skip_labels": [], "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
-        "unattended_model_floor": "none"}
+        "unattended_model_floor": "none", "artifact_layout": "docs_sdlc"}
 
 
 def test_skip_labels_is_additive_string_list_defaulting_empty():

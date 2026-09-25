@@ -5,6 +5,7 @@ import pytest
 
 from server.automations.sdlc_synthesizer import (
     MaterializeAttempts, SdlcSynthesizer, SdlcSynthesizerLoop)
+from server.pm.materialize import MaterializedDirectly
 
 
 class Ctx:
@@ -155,6 +156,16 @@ async def test_design_stage_proposes_spec():
 
 
 @pytest.mark.asyncio
+async def test_design_stage_uses_the_products_configured_artifact_layout():
+    """#2416: a product on `artifact_layout: speckit` gets its Propose'd spec
+    recorded at that layout's path, not the hard-coded docs/sdlc default."""
+    rec = Recorder([_ini("design", project_slug="proj-x")])
+    rec.policies = {"proj-x": {"artifact_layout": "speckit"}}
+    await _loop(rec).tick()
+    assert rec.recorded[0]["repo_path"] == "specs/dark-mode/spec.md"
+
+
+@pytest.mark.asyncio
 async def test_design_stage_records_no_upstream_ref_by_default():
     """The common case (a real committed intent.md) — the spawn result carries
     no ``upstream_ref``, and the recorded artifact reflects that (#2159)."""
@@ -259,6 +270,23 @@ async def test_merged_plan_spawns_a_decompose_session():
     assert "materialization_proposed" in kinds
     ev = next(e for e in ctx.events if e[2].get("kind") == "materialization_proposed")
     assert "dark-mode" in ev[1] and ev[2].get("session_id") == "sess-9"
+
+
+@pytest.mark.asyncio
+async def test_materialize_direct_result_reports_proposed_with_no_session():
+    """#2417: when the spawn seam materialized straight from `tasks.md` it
+    returns a `MaterializedDirectly`, not a session record — the loop must
+    still park the initiative and count the tick as `proposed`, without
+    treating the sentinel as `None` (headroom refusal, retry next tick)."""
+    rec = _merged_plan(Recorder([_ini("plan")]))
+    rec.materialize_result = MaterializedDirectly(proposal_id="prop-1")
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert rec.materialized == ["dark-mode"]
+    assert rec.statuses == [("i1", "awaiting_human")]
+    ev = next(e for e in ctx.events if e[2].get("kind") == "materialization_proposed")
+    assert "dark-mode" in ev[1]
+    assert ev[2].get("session_id") is None
 
 
 @pytest.mark.asyncio

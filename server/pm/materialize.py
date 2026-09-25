@@ -11,6 +11,7 @@ reconciler owns every board field (spec §6).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .fenced_json import FencedJsonError, extract_fenced_json
@@ -34,6 +35,16 @@ class Decomposition:
     epic_title: str
     epic_body: str
     tasks: tuple[TaskSpec, ...]
+
+
+@dataclass(frozen=True)
+class MaterializedDirectly:
+    """`_sdlc_spawn_materialize` wrote a `MaterializationProposal` straight from
+    an adopted plan's `tasks.md` instead of spawning a decompose session
+    (#2417). Distinguishes "a proposal already exists — nothing more to do
+    this tick" from the spawn seam's `None` ("no headroom, retry next tick")
+    for the synthesizer loop's `_materialize`."""
+    proposal_id: str
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +138,90 @@ def parse_materialization_output(text: str) -> Decomposition:
         epic_body=str(data.get("epic_body") or "").strip(),
         tasks=tuple(_to_task(row) for row in tasks),
     )
+
+
+def decomposition_payload(d: Decomposition, *, source_session: str | None,
+                          source: str | None = None) -> dict:
+    """The ``MaterializationProposal.payload`` shape for *d* — the ONE builder
+    both a decompose session's ingest and a directly-parsed ``tasks.md``
+    (#2417) write through, so a human reviewing either kind of proposal never
+    sees two different shapes (constitution VI)."""
+    payload: dict = {
+        "epic_title": d.epic_title,
+        "epic_body": d.epic_body,
+        "tasks": [{"title": t.title, "body": t.body, "depends_on": list(t.depends_on)}
+                  for t in d.tasks],
+        "source_session": source_session,
+    }
+    if source:
+        payload["source"] = source
+    return payload
+
+
+# --------------------------------------------------------------------------- #
+# tasks.md — a plan already decomposed by a human or an earlier tool (#2417)  #
+# --------------------------------------------------------------------------- #
+
+_TASKS_HEADING_RE = re.compile(r"^#\s+Tasks:\s*(.+)$", re.MULTILINE)
+_PHASE_HEADING_RE = re.compile(r"^##\s+(.+)$")
+_TASK_LINE_RE = re.compile(r"^-\s*\[([ xX])\]\s*(T\d+)\s*(\[P\])?\s*(.+?)\s*$")
+
+
+def parse_tasks_markdown(text: str, *, slug: str = "") -> Decomposition:
+    """Parse a spec-kit-style ``tasks.md`` (``- [ ] T### ...`` items, optionally
+    grouped under ``## Phase`` headings) directly into a `Decomposition` — the
+    same shape a decompose SESSION's fenced JSON produces.
+
+    Sibling order is the checklist's own document order, matching
+    ``chain_edges``' default blocker chain (task *k* is blocked by task
+    *k − 1*), so no ``depends_on`` needs to be recovered from the file — a
+    spec-kit ``tasks.md`` states dependency through phase/list order, not
+    through an explicit graph.
+
+    Raises `MaterializationParseError` when the file has no readable ``T###``
+    line — a file that merely happens to be named ``tasks.md`` but is not
+    this shape must never be silently swallowed into an empty proposal; the
+    caller falls back to spawning a decompose session instead."""
+    phase = ""
+    tasks: list[TaskSpec] = []
+    current: list[str] | None = None
+    current_title = ""
+
+    def flush() -> None:
+        nonlocal current, current_title
+        if current is not None:
+            tasks.append(TaskSpec(title=current_title, body="\n".join(current).strip()))
+        current = None
+        current_title = ""
+
+    for raw in text.splitlines():
+        heading = _PHASE_HEADING_RE.match(raw)
+        if heading:
+            flush()
+            phase = heading.group(1).strip()
+            continue
+        m = _TASK_LINE_RE.match(raw)
+        if m:
+            flush()
+            _checked, task_id, parallel, desc = m.groups()
+            desc = desc.strip()
+            current_title = f"{task_id}: {desc}"[:200]
+            current = ([f"Phase: {phase}"] if phase else [])
+            current.append(f"Source: tasks.md {task_id}{' [P]' if parallel else ''}")
+            continue
+        if current is not None and raw.strip():
+            current.append(raw.rstrip())
+    flush()
+
+    if not tasks:
+        raise MaterializationParseError("no `T###` task lines found")
+
+    heading_match = _TASKS_HEADING_RE.search(text)
+    epic_title = (heading_match.group(1).strip() if heading_match and heading_match.group(1).strip()
+                  else f"Materialize {slug}".strip() or "Materialize plan")
+    epic_body = (f"Materialized directly from `tasks.md` ({len(tasks)} tasks) — no "
+                 "decompose session was spawned (#2417).")
+    return Decomposition(epic_title=epic_title, epic_body=epic_body, tasks=tuple(tasks))
 
 
 # --------------------------------------------------------------------------- #
