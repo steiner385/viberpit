@@ -159,6 +159,19 @@ def test_labels_are_carried_onto_the_upsert():
     assert plan.upserts[0].labels == ("flaky",)
 
 
+def test_plan_carries_personas_through_from_doc():
+    doc = FeatureDoc(slug="chores", title="Chores", state="live", links=(), body="x",
+                     personas=("teen", "parent-admin"))
+    plan = plan_feature_index([], [("docs/product/features/chores.md", doc)])
+    assert plan.upserts[0].personas == ("teen", "parent-admin")
+
+
+def test_plan_personas_defaults_to_empty_tuple():
+    doc = _doc("chores")
+    plan = plan_feature_index([], [("docs/product/features/chores.md", doc)])
+    assert plan.upserts[0].personas == ()
+
+
 def test_every_checked_in_feature_doc_is_canonical():
     """Guards #1634 and keeps its teeth after #1874/#1903 widened the reader.
 

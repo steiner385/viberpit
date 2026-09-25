@@ -27,7 +27,7 @@ import logging
 from sqlalchemy import delete, func, select
 
 from server.db import db_session
-from server.db.models import Feature, FeatureEvidence, FeatureLink, Project
+from server.db.models import Feature, FeatureEvidence, FeatureLink, Persona, PersonaFeature, Project
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 from .feature_index import FeatureIndexPlan, FeatureRowView
@@ -104,6 +104,7 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
             row.pr_number = up.pr_number
             row.pr_url = up.pr_url
             row.route_labels = list(up.labels) or None
+            row.persona_slugs = list(up.personas) or None
             if up.doc_committed_at is not None:
                 # None = this read could not tell (the edge's GitHub-API read);
                 # keep the last clone-backed answer rather than erasing it.
@@ -150,6 +151,27 @@ async def apply_feature_plan(project_id: str, plan: FeatureIndexPlan) -> None:
                         missing, when = old.missing, old.last_commit_at
                     db.add(FeatureEvidence(feature_id=feat.id, kind=ev.kind, path=ev.path,
                                            missing=missing, last_commit_at=when))
+
+        # Personas (#2164): rewritten per upserted feature, resolved WITHIN
+        # this project only (unlike FeatureLink, personas are not cross-
+        # project) — a declared slug that doesn't resolve to a live Persona
+        # row is simply dropped from the link table; `persona_slugs` above
+        # still carries the raw declaration for roadmap_health to flag.
+        if up_ids:
+            await db.execute(delete(PersonaFeature).where(
+                PersonaFeature.feature_id.in_(up_ids)))
+            personas_by_slug = {p.slug: p.id for p in (await db.execute(
+                select(Persona).where(
+                    Persona.project_id == project_id, Persona.orphaned.isnot(True),
+                ))).scalars().all()}
+            for up in plan.upserts:
+                feat = mine.get(up.slug)
+                if feat is None:
+                    continue
+                for pslug in up.personas:
+                    pid = personas_by_slug.get(pslug)
+                    if pid is not None:
+                        db.add(PersonaFeature(persona_id=pid, feature_id=feat.id))
 
         # Links: rewrite every outgoing edge of this project's features.
         src_ids = [f.id for f in mine.values()]

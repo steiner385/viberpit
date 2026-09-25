@@ -55,6 +55,7 @@ class FeatureUpsert:
     parent_slug: str | None
     links: tuple[FeatureLinkRef, ...]
     labels: tuple[str, ...] = ()
+    personas: tuple[str, ...] = ()
     # R8b-4: a doc proposed on the map-changes branch gets pr_number/pr_url and
     # commit_sha=None; a doc read off the default branch gets commit_sha (the
     # SHA it was read at) and no PR fields. Defaulted so every pre-existing
@@ -222,6 +223,7 @@ def plan_feature_index(
             slug=doc.slug, title=doc.title, state=doc.state,
             summary=_summary(doc.body), repo_path=path,
             parent_slug=parent_of.get(doc.slug), links=doc.links, labels=doc.labels,
+            personas=doc.personas,
             commit_sha=None if doc.slug in proposed_map else read_sha,
             pr_number=proposed_map[doc.slug][0] if doc.slug in proposed_map else None,
             pr_url=proposed_map[doc.slug][1] if doc.slug in proposed_map else None,
