@@ -193,3 +193,71 @@ def test_titling_sweep_skips_when_cwd_missing(tmp_path):
     n_calls, name = asyncio.run(run())
     assert n_calls == 0  # the cwd-bound generator is never invoked
     assert name == "New Session"  # name left unchanged
+
+
+def test_turn_end_auto_name_does_not_block_the_status_pump(tmp_path):
+    """#2180: the turn-end fallback title runs a Haiku `claude -p` helper whose SDK
+    teardown can outlast the driver pump's 5s cancel grace. _persist_status(done)
+    must hand it to a background task instead of awaiting it on the pump — and the
+    title must still land once the helper answers."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+    )
+    release = asyncio.Event()
+
+    async def blocking_title_fn(prompts, *, account, cwd):
+        await release.wait()
+        return "Fix the nightly build"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=blocking_title_fn, cwd=str(tmp_path))
+        orch.transcript_path = lambda sid: str(transcript)
+        await asyncio.wait_for(orch._persist_status("s1", "done"), timeout=2.0)
+        before = orch.record("s1").name
+        release.set()
+        for _ in range(200):
+            if orch.record("s1").name != before:
+                break
+            await asyncio.sleep(0.01)
+        return before, orch.record("s1").name
+
+    before, after = asyncio.run(run())
+    assert before == "New Session"
+    assert after == "Fix the nightly build"
+
+
+def test_turn_end_and_sweep_share_one_in_flight_title_query(tmp_path):
+    """A turn-end spawn and a titling sweep racing on the same session must not both
+    run a Haiku query: the second caller skips while the first is in flight."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+    )
+    release = asyncio.Event()
+    called = {"n": 0}
+
+    async def blocking_title_fn(prompts, *, account, cwd):
+        called["n"] += 1
+        await release.wait()
+        return "Fix the nightly build"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=blocking_title_fn, cwd=str(tmp_path))
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._persist_status("s1", "done")
+        for _ in range(200):
+            if called["n"]:
+                break
+            await asyncio.sleep(0.01)
+        await orch._titling_sweep()   # in flight already — must not start a second query
+        release.set()
+        for _ in range(200):
+            if orch.record("s1").name != "New Session":
+                break
+            await asyncio.sleep(0.01)
+        return called["n"], orch.record("s1").name
+
+    n_calls, name = asyncio.run(run())
+    assert n_calls == 1
+    assert name == "Fix the nightly build"
