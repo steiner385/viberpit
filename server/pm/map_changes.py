@@ -33,6 +33,7 @@ from server.db.models import (
     FeatureLink,
     FeatureMapChange,
     InitiativeFeature,
+    PersonaFeature,
     Project,
     ProjectRepo,
     TriageProposal,
@@ -986,8 +987,11 @@ class MapChangesService:
         that capability. The remaining incoming FKs are not decisions and are
         cleared so the delete is legal on Postgres: ``feature_links`` rows are
         rewritten wholesale by every index pass, a child's ``parent_feature_id``
-        is re-resolved by the same pass, and a triage proposal's
-        ``proposed_feature_id`` pointed at a capability that never existed."""
+        is re-resolved by the same pass, ``feature_evidence`` and
+        ``persona_features`` rows are derived from the doc's own frontmatter
+        (``persona_features`` from its ``personas:``) and rewritten by that
+        pass too, and a triage proposal's ``proposed_feature_id`` pointed at a
+        capability that never existed."""
         if not pr_number:
             return {"deleted": 0, "orphaned": 0}
         rows = (await db.execute(select(Feature).where(
@@ -1016,6 +1020,8 @@ class MapChangesService:
                     FeatureLink.dst_feature_id.in_(dead))))
             await db.execute(delete(FeatureEvidence).where(
                 FeatureEvidence.feature_id.in_(dead)))
+            await db.execute(delete(PersonaFeature).where(
+                PersonaFeature.feature_id.in_(dead)))
             await db.execute(update(TriageProposal).where(
                 TriageProposal.proposed_feature_id.in_(dead)).values(
                     proposed_feature_id=None))

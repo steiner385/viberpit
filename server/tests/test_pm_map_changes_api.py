@@ -1322,6 +1322,57 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
                                     "proposed_feature_id": None}
 
 
+def test_delete_clears_persona_features_into_a_deleted_proposal():
+    """#2164: a proposed capability citing a live persona has a
+    ``persona_features`` row. Its ``feature_id`` FK is real on Postgres, so
+    abandon cleanup must delete that edge before the Feature — SQLite enforces
+    no FKs, so only this explicit assertion catches a missed clear. The edge on
+    a surviving (merged) capability is untouched."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Persona, PersonaFeature, Project
+
+    gh = FakeGh([*_first_create_answers(), _OK, _OK])
+    with _seeded(gh) as (c, db_url, orch):
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _seed_proposed_capabilities(c)
+
+        async def _seed_personas() -> tuple[str, str]:
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == SLUG))).scalars().one()
+                feats = {f.slug: f for f in (await db.execute(select(Feature).where(
+                    Feature.project_id == p.id))).scalars().all()}
+                parent = Persona(project_id=p.id, slug="parent", title="Parent")
+                db.add(parent)
+                await db.flush()
+                db.add(PersonaFeature(persona_id=parent.id,
+                                      feature_id=feats["payments"].id))
+                db.add(PersonaFeature(persona_id=parent.id,
+                                      feature_id=feats["sessions"].id))
+                await db.commit()
+                return feats["payments"].id, feats["sessions"].id
+
+        payments_id, sessions_id = c.portal.call(_seed_personas)
+
+        r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["cleanup"] == {"deleted": 1, "orphaned": 1}
+
+        async def _read() -> tuple[set[str], set[str]]:
+            async with db_session() as db:
+                edges = {fid for (fid,) in (await db.execute(
+                    select(PersonaFeature.feature_id))).all()}
+                live = {fid for (fid,) in (await db.execute(select(Feature.id))).all()}
+                return edges, live
+
+        edges, live = c.portal.call(_read)
+        assert payments_id not in live
+        assert edges <= live            # no persona_features row dangles
+        assert edges == {sessions_id}   # the surviving capability's edge is kept
+
+
 # -- retire (capability-management spec) --------------------------------------
 
 
