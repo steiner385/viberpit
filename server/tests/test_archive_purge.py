@@ -202,7 +202,7 @@ def test_purge_absent_archive_dir_with_recorded_root_still_warns(tmp_path, caplo
 
 
 def _unmanaged_cwd_purge_records(tmp_path, caplog, *, kind: str | None) -> tuple[list, bool]:
-    """Purge one archived row whose cwd exists but has no ``.ccswitch`` segment; return
+    """Purge one archived row whose cwd exists outside the managed worktree tree; return
     the containment-guard log records and whether the directory survived."""
     import logging
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
@@ -224,7 +224,7 @@ def _unmanaged_cwd_purge_records(tmp_path, caplog, *, kind: str | None) -> tuple
 
 
 def test_purge_assistant_scratch_dir_is_not_a_warning(tmp_path, caplog):
-    """The assistant's per-identity scratch dir never sits under ``.ccswitch``; leaving it
+    """The assistant's per-identity scratch dir never sits in a managed worktree; leaving it
     in place is the expected behavior, so it must not log at WARNING (which auto-files an
     issue per purge, #2029)."""
     import logging
@@ -234,7 +234,7 @@ def test_purge_assistant_scratch_dir_is_not_a_warning(tmp_path, caplog):
 
 
 def test_purge_unmanaged_non_assistant_cwd_still_warns(tmp_path, caplog):
-    """A non-assistant row pointing outside ``.ccswitch`` is a genuinely misconfigured
+    """A non-assistant row pointing outside the managed worktree tree is a genuinely misconfigured
     row and stays a WARNING."""
     import logging
     records, survived = _unmanaged_cwd_purge_records(tmp_path, caplog, kind=None)

@@ -20546,7 +20546,7 @@ class SessionOrchestrator:
         spawn with "Working directory does not exist".
 
         The AI-drawer assistant is the expected exception: its cwd is a per-identity
-        scratch dir under ``cfg_root()/assistant/<hash>`` (no ``.ccswitch`` segment),
+        scratch dir under ``cfg_root()/assistant/<hash>`` (outside the managed worktree tree),
         shared by every thread that identity ever opens, so it is deliberately left in
         place — logged at INFO, since a WARNING auto-files an issue per purge (#2029).
         """
