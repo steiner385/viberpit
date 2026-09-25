@@ -564,3 +564,63 @@ async def test_project_failure_survives_skipped_tick_and_independent_repo_refres
     await loop.tick()
     assert len(fetch_calls) > call_count
     assert observed_status(ctx, PmSync().status(ctx)).level != "warn"
+
+
+# ---- issue #1937: a host-level gh outage must not mint a per-product WARNING ----
+
+
+@pytest.fixture
+def _fresh_host_throttle():
+    from server.github import host_failures
+    host_failures._HOST_THROTTLE.clear()
+    yield
+    host_failures._HOST_THROTTLE.clear()
+
+
+async def _tick_with_board_fetch_error(message: str):
+    """One tick where discovery succeeds but the product's board fetch raises
+    *message* — the ``pm_sync.project_error`` path of #1937."""
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        raise RuntimeError(message)
+
+    ctx = Ctx()
+    loop, _ = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                    repo_fetch=lambda _: _relations_payload())
+    await loop.tick()
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_unreachable_github_files_the_host_record_not_a_project_warning(
+        caplog, _fresh_host_throttle):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    ctx = await _tick_with_board_fetch_error(
+        "gh graphql failed: error connecting to api.github.com\n"
+        "check your internet connection or https://githubstatus.com")
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not [r for r in warnings if r.name == "server.automations.pm_sync"]
+    host = [r for r in warnings if r.name == "server.github.host"]
+    assert len(host) == 1
+    # the operator-facing event still degrades the status card
+    assert any(level == "warn" for level, _, _ in ctx.events)
+    # per-target detail is demoted, not dropped
+    assert any(r.name == "server.automations.pm_sync" and r.levelno == logging.DEBUG
+               and "pm_sync.project_error" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_about_the_board_still_warns_per_project(
+        caplog, _fresh_host_throttle):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    await _tick_with_board_fetch_error("board fields unavailable")
+
+    assert [r for r in caplog.records
+            if r.name == "server.automations.pm_sync"
+            and r.levelno == logging.WARNING
+            and "pm_sync.project_error" in r.getMessage()]
+    assert not [r for r in caplog.records if r.name == "server.github.host"]
