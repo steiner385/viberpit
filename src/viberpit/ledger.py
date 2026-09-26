@@ -361,6 +361,26 @@ def cached_usage(led: dict, name: str, cfg, now: datetime) -> QuotaSnapshot | No
         return None
 
 
+def last_recorded_usage(led: dict, name: str) -> QuotaSnapshot | None:
+    """The most recently persisted usage snapshot, ignoring the cache TTL.
+
+    Unlike ``cached_usage``, staleness is irrelevant here: callers use this to
+    check what was last *written* about an account (e.g. "was this fault
+    already recorded?"), not whether the reading is still fresh enough to
+    serve. A process restart resets any in-memory dedup state but not this —
+    it survives exactly as long as the ledger entry does.
+    """
+    blob = _acct(led, name).get("usage")
+    if not blob:
+        return None
+    try:
+        return usage_from_blob(name, blob)
+    except (KeyError, TypeError, ValueError):
+        log.warning("ledger: unreadable cached usage for %s — treating as unknown",
+                    name, exc_info=True)
+        return None
+
+
 def stale_usage(led: dict, name: str, now: datetime,
                  max_age_sec: float) -> tuple[QuotaSnapshot, datetime] | None:
     """Last-known usage past the normal TTL, capped at ``max_age_sec``.

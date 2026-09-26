@@ -12,6 +12,7 @@ import socket
 import time
 import unittest
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from viberpit import accounts, crypto, ledger, oauth, paths, selector
@@ -222,6 +223,43 @@ class TestUsageFetchBackoff(unittest.TestCase):
             self.assertEqual(scope_gap_levels(), ["INFO"])
             accounts.mark_reauthenticated("alpha")
             self.assertEqual(scope_gap_levels(), ["WARNING"])
+
+    def test_setup_token_scope_gap_survives_daemon_restart(self):
+        """A daemon restart clears the process-local ``_scope_gap_warned`` dedup set,
+        but the persisted ledger snapshot from the earlier detection must still
+        suppress the WARNING — otherwise every restart re-files an auto-error for
+        an already-known, unresolved scope gap (#2505).
+
+        Unlike ``test_setup_token_scope_gap_warns_once_then_logs_info``, the TTL
+        lapse here is real: the cached snapshot ages past ``usage_cache_ttl_sec``
+        (so ``usage_for`` re-fetches) but stays in the ledger (it is not popped),
+        exactly like a real cache expiry.
+        """
+        def scope_gap_levels():
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=False), \
+                 mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")), \
+                 self.assertLogs(accounts.__name__, level="INFO") as cm:
+                accounts.usage_for("alpha")
+            return [r.levelname for r in cm.records
+                    if "lacks the user:profile scope" in r.getMessage()]
+
+        def _age_cached_usage_past_ttl(name):
+            with ledger.locked_ledger() as led:
+                led["accounts"][name]["usage"]["fetched_at"] = (
+                    datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+
+        with temp_env():
+            _seed_account("alpha", expires_in_ms=-1)
+            self.assertEqual(scope_gap_levels(), ["WARNING"])
+            # Simulate a daemon restart: the in-process dedup set is gone, but the
+            # ledger (a separate file) is untouched.
+            accounts._scope_gap_warned.clear()
+            _age_cached_usage_past_ttl("alpha")
+            self.assertEqual(scope_gap_levels(), ["INFO"])
 
     def test_setup_token_scope_probe_failure_is_transient_not_unsupported(self):
         """If the scope oracle itself cannot answer (network, 5xx), we do not know —

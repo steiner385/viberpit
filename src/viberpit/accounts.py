@@ -41,11 +41,14 @@ _auth_failure_sink: Callable[[AuthFailure], None] | None = None
 # only by mark_reauthenticated() so the fast-skip is sticky until the user re-auths.
 _dead_accounts: set[str] = set()
 
-# Process-local set of accounts whose setup-token scope gap has already been logged
-# at WARNING. The gap is permanent until a re-auth, but its UNSUPPORTED snapshot
-# only caches for the usage TTL, so every lapse re-detects it — repeats log at INFO
-# rather than re-filing an auto-error per TTL (#1575). Cleared when the token proves
-# scoped or by mark_reauthenticated().
+# Process-local FAST PATH for accounts whose setup-token scope gap has already been
+# logged at WARNING this process. The gap is permanent until a re-auth, but its
+# UNSUPPORTED snapshot only caches for the usage TTL, so every lapse re-detects it —
+# repeats log at INFO rather than re-filing an auto-error per TTL (#1575). This set
+# is NOT the sole source of truth for the log-level decision: it resets on every
+# daemon restart, so _setup_token_usage_fallback also checks the ledger's persisted
+# snapshot (ledger.last_recorded_usage), which survives a restart (#2505). Cleared
+# when the token proves scoped or by mark_reauthenticated().
 _scope_gap_warned: set[str] = set()
 
 
@@ -351,7 +354,12 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
                 ledger.note_usage_fetch_failure(led, name, time.time())
                 ledger.set_status(led, name, "ok")
             return None
-        log.log(logging.INFO if name in _scope_gap_warned else logging.WARNING,
+        with ledger.locked_ledger() as led:
+            prev = ledger.last_recorded_usage(led, name)
+        already_recorded = (prev is not None and prev.availability == UNSUPPORTED
+                            and prev.reason == REASON_SETUP_TOKEN_SCOPE)
+        log.log(logging.INFO if (name in _scope_gap_warned or already_recorded)
+                else logging.WARNING,
                 "usage_for(%s): setup-token lacks the user:profile scope (usage endpoint "
                 "said: %s); keeping ok, quota UNSUPPORTED until the account is "
                 "re-authenticated", name, e)
