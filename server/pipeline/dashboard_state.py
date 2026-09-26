@@ -1,4 +1,4 @@
-"""Assemble plotroom-shaped DashboardState JSON from ccswitch pipeline data.
+"""Assemble plotroom-shaped DashboardState JSON from ViberPit pipeline data.
 
 Vocabulary contract: plotroom@5166b52 frontend/src/types.ts. Keys are
 camelCase (this is a wire format, not internal state). Fields ViberPit
