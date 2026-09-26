@@ -73,12 +73,6 @@ ceiling = 124
 # ── Tracked: each category has the issue that removes it ───────────────────────
 
 [[allow]]
-id = "agent-roles"
-pattern = 'ccswitch-(implementer|reviewer)'
-issue = 1376
-ceiling = 8
-
-[[allow]]
 id = "http-auth-compat"
 # Phase 2b landed: the cookie and both attribution headers now EMIT the new
 # spelling. What is left is the accept side — the two legacy header names in
