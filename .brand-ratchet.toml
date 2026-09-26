@@ -50,7 +50,7 @@ ceiling = 55
 id = "rebrand-narrative"
 paths = ["docs/product/guides/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
 permanent = "Text that names the old brand in order to explain the rename (the migration guide, README's 'formerly' line, the ratchet and its tests)."
-ceiling = 84
+ceiling = 78
 
 [[allow]]
 id = "ratchet-rule"
@@ -123,13 +123,13 @@ id = "branch-prefix"
 # #1373 / #1592 / #1374; re-pointed at the epic, since #1369 is closed.
 pattern = '\bccswitch/'
 issue = 1365
-ceiling = 190
+ceiling = 183
 
 [[allow]]
 id = "repo-namespace"
 pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
 issue = 1373
-ceiling = 36
+ceiling = 35
 
 [[allow]]
 # #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b
@@ -164,7 +164,7 @@ ceiling = 132
 id = "host-legacy-aliases"
 paths = ["deploy/ccswitch*", "deploy/bin-ccswitch-mounts.sh", "scripts/ccswitch-*", "scripts/viberpit-host-aliases.py", "scripts/viberpit-host-cutover.py", "tests/test_host_aliases.py", "tests/test_host_cutover.py", "docs/runbooks/viberpit-host-cutover.md"]
 issue = 1592
-ceiling = 173
+ceiling = 172
 
 [[allow]]
 id = "host-legacy-names"
@@ -188,7 +188,7 @@ issue = 1374
 # strings that the compat shim's meta_path finder resolves to the identical
 # `viberpit.<mod>` module object either name is imported under, and the
 # handful of literal-string survivors the pattern above already names.
-ceiling = 379
+ceiling = 378
 
 [[allow]]
 id = "python-package-shim"
