@@ -1,5 +1,5 @@
 ---
-name: ccswitch-implementer
+name: viberpit-implementer
 description: Implement one bounded ViberPit task from an existing plan, including focused verification and a concise handoff.
 ---
 

@@ -1,4 +1,4 @@
-name = "ccswitch-reviewer"
+name = "viberpit-reviewer"
 description = "Review a ViberPit task or branch for spec compliance, correctness, security, and repository-policy violations."
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"

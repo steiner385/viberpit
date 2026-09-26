@@ -1,5 +1,5 @@
 {
-  "name": "ccswitch-reviewer",
+  "name": "viberpit-reviewer",
   "description": "Review a ViberPit task or branch for spec compliance, correctness, security, and repository-policy violations.",
   "instructions": "instructions.md",
   "claude": {
