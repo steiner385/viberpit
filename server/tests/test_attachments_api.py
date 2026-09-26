@@ -125,7 +125,7 @@ def test_upload_declared_not_equal_sniffed_rejected(tmp_path, monkeypatch):
 
 def test_upload_dedup_same_bytes_reuses_row_and_file(tmp_path, monkeypatch):
     """Uploading identical bytes twice yields ONE on-disk file and ONE DB row."""
-    from ccswitch import paths
+    from viberpit import paths
     client = _client(tmp_path, monkeypatch)
     with client:
         r1 = client.post("/api/attachments", headers=IDENT,

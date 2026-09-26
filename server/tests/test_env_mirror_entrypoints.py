@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 
-from ccswitch import env_compat
+from viberpit import env_compat
 from server.config import get_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,9 +22,9 @@ ENTRYPOINTS = (
     "server/codex/auth_main.py",
     "server/db/migrations/env.py",
     "server/config.py",
-    "src/ccswitch/cli.py",
-    "src/ccswitch/runner.py",
-    "src/ccswitch/launcher.py",
+    "src/viberpit/cli.py",
+    "src/viberpit/runner.py",
+    "src/viberpit/launcher.py",
 )
 
 

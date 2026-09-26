@@ -18,13 +18,13 @@ class TestReconcileLinks(unittest.TestCase):
     # helpers
     # -------------------------------------------------------------------------
     def _seed_slot(self, name: str) -> None:
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.slot_path(name), {"accessToken": "A", "expiresAt": 9})
 
     def _seed_shared_base_entries(self, extras: list[str] | None = None) -> None:
         """Create extra entries in shared_base() to test isolation."""
-        from ccswitch import paths
+        from viberpit import paths
         base = paths.shared_base()
         # The helpers.temp_env already creates settings.json and projects/
         # Add any additional extras for this test
@@ -41,7 +41,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_allowlist_entries_are_symlinked(self):
         """settings.json and projects/ (seeded by temp_env) must be symlinked."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
             shared = paths.shared_base()
@@ -62,7 +62,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_optional_allowlist_entries_symlinked_when_present(self):
         """plugins/, commands/, and settings.local.json are symlinked when they exist."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             base = paths.shared_base()
             # create optional allowlisted entries
             (base / "plugins").mkdir()
@@ -85,7 +85,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_credentials_json_is_never_a_symlink(self):
         """.credentials.json must be a real file after compose()."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
             cred = cfg_dir / ".credentials.json"
@@ -95,7 +95,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_claude_json_is_never_a_symlink(self):
         """.claude.json must be a real file after compose(), never a symlink."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
             cj = cfg_dir / ".claude.json"
@@ -108,7 +108,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_non_allowlist_entries_not_symlinked(self):
         """Dirs like sessions/, agents/, tasks/ must NOT appear as symlinks in the cfg dir."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             base = paths.shared_base()
             # create non-allowlisted entries in shared_base
             (base / "sessions").mkdir()
@@ -131,7 +131,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_reconcile_links_is_idempotent(self):
         """Calling reconcile_links multiple times must not raise and must leave stable links."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
             # call reconcile again
@@ -145,7 +145,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_reconcile_links_replaces_wrong_symlink(self):
         """A symlink pointing to the wrong target is corrected by reconcile_links."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             base = paths.shared_base()
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
@@ -174,8 +174,8 @@ class TestReconcileLinks(unittest.TestCase):
         (.credentials.json, .claude.json) must be untouched.
         """
         with temp_env():
-            from ccswitch import configdir, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
 
             base = paths.shared_base()
 
@@ -235,8 +235,8 @@ class TestReconcileLinks(unittest.TestCase):
         """Each account's cfg dir is isolated — symlinks point to the same shared base but real
         files (.credentials.json, .claude.json) are separate files."""
         with temp_env():
-            from ccswitch import configdir, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
             for name in ("alpha", "beta"):
                 write_json_secure(paths.slot_path(name),
                                   {"accessToken": f"{name}-A", "expiresAt": 9})

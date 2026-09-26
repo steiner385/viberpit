@@ -57,7 +57,7 @@ import logging
 import re
 from typing import Any
 
-from ccswitch import gh_credential
+from viberpit import gh_credential
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 #: Not ``__name__``: the record is about the host, so it must read as the host's

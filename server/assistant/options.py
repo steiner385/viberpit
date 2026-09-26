@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ccswitch import brand
+from viberpit import brand
 from .prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
                      OPERATOR_TOOLS_ENABLED_LINE)
 
@@ -91,7 +91,7 @@ def assistant_overlay_for(engine: Any, *, api: Any, server: Any, max_turns: int,
     Claude path needs; the Codex path builds its specs from *api* directly and
     ignores it.
     """
-    from ccswitch.engines import AgentEngine, parse_agent_engine
+    from viberpit.engines import AgentEngine, parse_agent_engine
 
     selected = parse_agent_engine(engine, legacy_default=True)
     if selected is AgentEngine.CODEX:

@@ -3,8 +3,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from ccswitch import ledger as _ledger
-from ccswitch.quota import anthropic_snapshot
+from viberpit import ledger as _ledger
+from viberpit.quota import anthropic_snapshot
 
 from server.sessions import helper_call
 from server.sessions.helper_call import run_helper_call

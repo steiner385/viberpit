@@ -2,7 +2,7 @@
 
 This module owns only the native boundary and its short last-good cache. The
 provider-neutral DTO, persistence shape, selector semantics, and API vocabulary
-all live in :mod:`ccswitch.quota`.
+all live in :mod:`viberpit.quota`.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Final, Protocol
 
-from ccswitch.quota import (
+from viberpit.quota import (
     AUTH_ERROR,
     AVAILABLE,
     SCOPE_ACCOUNT,

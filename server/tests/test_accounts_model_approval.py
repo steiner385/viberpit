@@ -19,7 +19,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 def _seed_slot(name: str) -> None:
-    from ccswitch import paths
+    from viberpit import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
     slot = store / f"{name}.cred.json"

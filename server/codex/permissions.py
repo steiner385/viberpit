@@ -59,7 +59,7 @@ scope: ViberPit has no vocabulary for per-capability grants (the same reason
 """
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum

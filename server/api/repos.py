@@ -14,7 +14,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.auth.middleware import current_identity
 from server.github import ci_issues
 from server.ipc.client import DaemonError, DaemonUnavailable

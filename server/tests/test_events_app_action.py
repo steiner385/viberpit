@@ -1,5 +1,5 @@
 """Task 2.4 (spec §4.4/§4.8): APP_ACTION tool kind + PermissionRequest.always_allowed."""
-from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 from server.sessions.events import PermissionRequest, ToolKind, tool_kind
 
 

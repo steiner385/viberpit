@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from itertools import islice
 from typing import Any, Awaitable, Callable
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase

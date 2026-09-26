@@ -55,7 +55,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
-from ccswitch import brand
+from viberpit import brand
 from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
@@ -1459,7 +1459,7 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
     # The identity every other Codex series joins against. Set once, here, because
     # a daemon serves exactly one host with exactly one binary — see the comment on
     # `codex_build_info` for why these are not per-observation labels.
-    from ccswitch.account_registry import PROVIDER_OPENAI
+    from viberpit.account_registry import PROVIDER_OPENAI
 
     codex_build_info.labels(
         CODEX_ENGINE.value, PROVIDER_OPENAI, socket.gethostname(),

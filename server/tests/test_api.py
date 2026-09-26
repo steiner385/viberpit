@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from tests.helpers import temp_env, usage as make_usage
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -67,7 +67,7 @@ def _make_usage_fn(accounts: dict):
 def _busy_usage():
     """100% usage on both dimensions — account is at ceiling."""
     reset = datetime.now(timezone.utc) + timedelta(hours=4)
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     return anthropic_snapshot(
         session_pct=100.0,
         session_resets_at=reset,
@@ -82,7 +82,7 @@ def _seed_slot(name: str) -> None:
 
     Must be called with temp_env() active (so VIBERPIT_HOME is set).
     """
-    from ccswitch import paths
+    from viberpit import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
     slot = store / f"{name}.cred.json"
@@ -127,7 +127,7 @@ def _make_app_and_client(usage_fn=None, extra_env: dict | None = None):
 def test_get_accounts_returns_usage_shape():
     """GET /api/accounts returns usage shape with no token material."""
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
 
     fake_usage = anthropic_snapshot(
         session_pct=42.0,
@@ -181,7 +181,7 @@ def test_get_accounts_returns_usage_shape():
 
 def test_get_accounts_includes_live_sessions_and_rank():
     """GET /api/accounts returns liveSessions, rank, rankReason for each account."""
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
     low = anthropic_snapshot(session_pct=10.0, session_resets_at=reset, weekly_pct=5.0,
                 weekly_resets_at=reset, extra_usage_enabled=False)
@@ -221,7 +221,7 @@ def test_get_accounts_includes_live_sessions_and_rank():
 
 def test_get_accounts_at_ceiling_has_null_rank():
     """GET /api/accounts returns rank=None and rankReason=None for accounts at ceiling."""
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
     busy = anthropic_snapshot(session_pct=100.0, session_resets_at=reset, weekly_pct=50.0,
                  weekly_resets_at=reset, extra_usage_enabled=False)
@@ -386,7 +386,7 @@ def test_post_sessions_409_when_all_busy():
     """POST /api/sessions returns 409 with earliestReset when all accounts are at ceiling."""
     reset_dt = datetime.now(timezone.utc) + timedelta(hours=2)
 
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
 
     with temp_env():
         with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
@@ -419,7 +419,7 @@ def test_post_sessions_409_when_all_busy():
 
 def test_post_sessions_409_null_earliest_reset():
     """POST /api/sessions returns 409 with null earliestReset when reset time is unknown."""
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
 
     with temp_env():
         with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
@@ -449,7 +449,7 @@ def test_post_sessions_409_null_earliest_reset():
 
 def test_create_optimistic_sets_usage_unverified():
     """Usage unreadable but account healthy → 201 with usageUnverified true."""
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
 
     with temp_env() as d:
         _seed_slot("acct-a")

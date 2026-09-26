@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ccswitch import brand
-from ccswitch.engines import AgentEngine
+from viberpit import brand
+from viberpit.engines import AgentEngine
 
 from server.db.models import (
     FEATURE_EVIDENCE_KINDS, FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS)

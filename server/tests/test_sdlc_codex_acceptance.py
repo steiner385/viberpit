@@ -21,7 +21,7 @@ import inspect
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.automations.engine_policy import (
     EnginePolicy,
     unattended_launch_blocker,

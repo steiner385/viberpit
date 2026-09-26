@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from claude_agent_sdk import TextBlock
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 

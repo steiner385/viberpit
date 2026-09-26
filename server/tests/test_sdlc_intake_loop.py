@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.automations.context import AutomationContext
 from server.db import db_session, init_db
 from server.sdlc.engine import ArtifactView, InitiativeView

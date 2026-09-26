@@ -1,6 +1,6 @@
 """Durable audit of needs-reauth flips emitted by the DB-free core.
 
-The core (ccswitch.accounts) calls a sink with an AuthFailure at each flip; the
+The core (viberpit.accounts) calls a sink with an AuthFailure at each flip; the
 sink (registered here) enqueues it, and an async drainer writes an
 `account.needs_reauth` AuditEvent through the redaction layer. Decoupling via a
 thread-safe queue handles the sync-worker-thread → async-DB boundary cleanly.
@@ -12,7 +12,7 @@ import logging
 import queue
 from typing import Any, Callable
 
-from ccswitch.accounts import AuthFailure, set_auth_failure_sink
+from viberpit.accounts import AuthFailure, set_auth_failure_sink
 from server.audit import record_audit
 
 log = logging.getLogger("server")

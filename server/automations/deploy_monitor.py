@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from ccswitch import brand, gitrepos
+from viberpit import brand, gitrepos
 from server.github import ci_issues
 from server.github.deploy_envs import classify_env
 from server.github.deployments import Deployment, by_env, parse_iso

@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-import ccswitch.gitrepos as gitrepos
+import viberpit.gitrepos as gitrepos
 import server.automations.model_pick as model_pick
 from server.github.pr_status import PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator

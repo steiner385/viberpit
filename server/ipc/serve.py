@@ -74,7 +74,7 @@ def build_daemon(orchestrator=None):
     orchestrator._native = build_native_display(get_settings())
     from server.sessions.copilot_proxy import build_copilot_proxy_manager
     from server.sessions.copilot_auth import CopilotAuthManager
-    from ccswitch import paths as _ccswitch_paths
+    from viberpit import paths as _ccswitch_paths
     orchestrator._copilot = build_copilot_proxy_manager(get_settings())
     orchestrator._copilot_auth = CopilotAuthManager(
         token_dir_for=_ccswitch_paths.copilot_token_dir

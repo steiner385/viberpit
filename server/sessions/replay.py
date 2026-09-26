@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
-from ccswitch import brand
+from viberpit import brand
 from server.assistant.context import strip_context_header
 from server.sessions.prompt_origin import strip_origin_header
 from server.config import env_float

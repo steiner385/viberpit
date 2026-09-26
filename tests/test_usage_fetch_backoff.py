@@ -14,12 +14,12 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from ccswitch import accounts, crypto, ledger, oauth, paths, selector
+from viberpit import accounts, crypto, ledger, oauth, paths, selector
 from tests.helpers import temp_env, usage
 
 
 def _seed_account(name, expires_in_ms=10_000_000):
-    from ccswitch.creds import write_json_secure
+    from viberpit.creds import write_json_secure
     now_ms = int(time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-A", "refreshToken": f"{name}-R",
@@ -121,7 +121,7 @@ class TestUsageFetchBackoff(unittest.TestCase):
         profile endpoint, which refuses a scope-less token explicitly.
         """
         with temp_env():
-            from ccswitch.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED
+            from viberpit.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
             with mock.patch.object(
                     oauth, "refresh_access_token",
@@ -248,7 +248,7 @@ class TestUsageFetchBackoff(unittest.TestCase):
         regress: an account with unreadable quota must not be scored as if it had
         headroom.
         """
-        from ccswitch.quota import UNSUPPORTED, unknown_snapshot
+        from viberpit.quota import UNSUPPORTED, unknown_snapshot
         from datetime import datetime, timezone
         snap = unknown_snapshot("anthropic", fetched_at=datetime.now(timezone.utc),
                                 availability=UNSUPPORTED)
@@ -329,7 +329,7 @@ class TestTransientUsageLogLevel(unittest.TestCase):
     """A handled throttle logs at INFO: WARNING is the auto-error filing floor (#1638)."""
 
     def _levels(self, **usage_kw):
-        with self.assertLogs("ccswitch.accounts", level="INFO") as cm:
+        with self.assertLogs("viberpit.accounts", level="INFO") as cm:
             self.assertIsNone(accounts.usage_for("alpha", **usage_kw))
         return [r.levelname for r in cm.records if r.getMessage().startswith("usage_for(alpha")]
 

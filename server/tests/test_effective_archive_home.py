@@ -98,7 +98,7 @@ def test_effective_archive_home_falls_back_to_default(tmp_path):
         with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}, clear=False):
             result = asyncio.run(_run())
             # Capture expected inside the same env context so VIBERPIT_HOME matches
-            from ccswitch import paths
+            from viberpit import paths
             import importlib
             importlib.reload(paths)
             expected = paths.root() / "archive"

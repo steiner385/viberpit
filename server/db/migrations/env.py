@@ -17,7 +17,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit.env_compat import mirror_legacy_env
 from server.db.models import Base
 from server.config import get_settings
 

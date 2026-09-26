@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 from server.sessions.completion import NO_PR_MARKER, commit_trailer
 

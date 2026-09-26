@@ -14,8 +14,8 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import TextBlock
 
-from ccswitch import brand
-from ccswitch.selector import Picked
+from viberpit import brand
+from viberpit.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import ASSISTANT_KIND
 from server.tests.fakes import fake_sdk as f
@@ -26,8 +26,8 @@ def _seed_account(name: str) -> None:
     """Mirrors test_assistant_orchestrator.py's helper: a real cred slot so
     ``select_account`` (unpatched paths in ``_isolated_dir_for``) has something
     to isolate."""
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(time.time() * 1000) + 9_000_000, "subscriptionType": "max",

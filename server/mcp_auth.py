@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
-from ccswitch import accounts, configdir, paths
-from ccswitch.config import load_config
-from ccswitch.creds import write_json_secure
+from viberpit import accounts, configdir, paths
+from viberpit.config import load_config
+from viberpit.creds import write_json_secure
 from server.aio import cancel_and_reap
 from server.library import scan
 from server.library.scan import read_json_safe

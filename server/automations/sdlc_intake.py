@@ -26,7 +26,7 @@ from .context import observation_failed, publish_observation
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.sdlc import engine
 from server.sdlc.prompts import artifact_path, build_intent_prompt
 

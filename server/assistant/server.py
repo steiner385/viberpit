@@ -4,7 +4,7 @@ from __future__ import annotations
 from claude_agent_sdk import create_sdk_mcp_server
 from claude_agent_sdk.types import McpSdkServerConfig
 
-from ccswitch import brand
+from viberpit import brand
 from server.version import running_git_sha
 
 from .client import AssistantApi
@@ -17,7 +17,7 @@ def build_server(api: AssistantApi, *, operator: bool = False,
 
     ``read_only`` serves only ``ToolClass.READ`` tools. The drawer never needs it —
     its mutations are gated by the permission layer — but `ccswitch mcp`
-    (src/ccswitch/assistant_mcp.py) has no such gate in front of it, so it starts
+    (src/viberpit/assistant_mcp.py) has no such gate in front of it, so it starts
     read-only and takes `--allow-mutations` to opt in.
     """
     tools = build_tools(api, operator=operator)

@@ -8,8 +8,8 @@ from tests.helpers import temp_env
 
 
 def _seed(name):
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {"accessToken": f"{name}A", "refreshToken": f"{name}R",
                                                "expiresAt": int(time.time()*1000)+9_000_000, "subscriptionType": "max"})
     write_json_secure(paths.shared_mcp_path(), {})
@@ -18,7 +18,7 @@ def _seed(name):
 class TestRunner(unittest.TestCase):
     def test_runs_on_selected_account(self):
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
             os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
@@ -28,7 +28,7 @@ class TestRunner(unittest.TestCase):
 
     def test_retries_next_account_on_limit(self):
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
             os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
@@ -40,7 +40,7 @@ class TestRunner(unittest.TestCase):
 
     def test_all_accounts_limited_no_wait_returns_2(self):
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
             os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
@@ -54,7 +54,7 @@ class TestRunner(unittest.TestCase):
     def test_setup_token_injected_into_env(self):
         """Runner injects CLAUDE_CODE_OAUTH_TOKEN when account has a setup-token."""
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha")
             captured_envs: list[dict] = []
@@ -75,7 +75,7 @@ class TestRunner(unittest.TestCase):
     def test_setup_token_absent_when_no_token_stored(self):
         """Runner does not set CLAUDE_CODE_OAUTH_TOKEN when no setup-token is available."""
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha")
             captured_envs: list[dict] = []
@@ -97,7 +97,7 @@ class TestRunner(unittest.TestCase):
         """--engine codex fails closed on the canonical 'no usable accounts' error
         when no Codex-provider account is registered — never falls back to Claude."""
         with temp_env():
-            from ccswitch import runner
+            from viberpit import runner
             _seed("alpha")  # a Claude-only account; not eligible for engine=codex
             with mock.patch.object(runner, "run_claude") as fake_run:
                 rc = runner.main(["--engine", "codex", "--", "-p", "hi"])
@@ -108,8 +108,8 @@ class TestRunner(unittest.TestCase):
         """A configured Codex account still gets an explicit 'not supported yet'
         refusal — ccrun has no synchronous Codex launch surface — not a Claude run."""
         with temp_env():
-            from ccswitch import runner, account_registry
-            from ccswitch.engines import AgentEngine
+            from viberpit import runner, account_registry
+            from viberpit.engines import AgentEngine
             account_registry.register_account(
                 "codexy", account_registry.PROVIDER_OPENAI, engine=AgentEngine.CODEX.value)
             with mock.patch.object(runner, "run_claude") as fake_run:
@@ -120,7 +120,7 @@ class TestRunner(unittest.TestCase):
     def test_engine_defaults_to_claude_when_unspecified(self):
         """No --engine flag preserves the exact legacy Claude behaviour."""
         with temp_env():
-            from ccswitch import runner, accounts
+            from viberpit import runner, accounts
             from tests.helpers import usage
             _seed("alpha")
             os.environ["VIBERPIT_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
@@ -130,14 +130,14 @@ class TestRunner(unittest.TestCase):
 
     def test_engine_rejects_unknown_value(self):
         with temp_env():
-            from ccswitch import runner
+            from viberpit import runner
             with mock.patch.object(runner, "run_claude") as fake_run:
                 rc = runner.main(["--engine", "bogus", "--", "-p", "hi"])
             self.assertEqual(rc, 64)
             fake_run.assert_not_called()
 
     def test_last_result_ignores_non_json_and_non_result_lines(self):
-        from ccswitch.runner import _last_result
+        from viberpit.runner import _last_result
         stdout = "\n".join([
             "not json at all",
             json.dumps({"type": "text", "text": "hello"}),

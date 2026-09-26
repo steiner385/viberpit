@@ -66,7 +66,7 @@ class _FakeSessions:
 
 def _seed_copilot_token_dir(name: str) -> None:
     """Create the copilot token directory so the slot appears to exist."""
-    from ccswitch import paths
+    from viberpit import paths
     d = paths.copilot_token_dir(name)
     d.mkdir(parents=True, exist_ok=True)
 

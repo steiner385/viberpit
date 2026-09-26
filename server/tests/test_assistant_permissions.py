@@ -26,7 +26,7 @@ import asyncio
 
 import pytest
 
-from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 
 from server.assistant.tools import ToolClass, ToolSpec, TOOL_SPECS
 from server.sessions.permissions import PermissionRegistry

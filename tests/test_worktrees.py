@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ccswitch import brand, worktrees
+from viberpit import brand, worktrees
 
 
 def _git(*args: str, cwd: str) -> None:
@@ -334,7 +334,7 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         """
         _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"),
              cwd=str(self.repo))
-        with self.assertLogs("ccswitch.worktrees", level="WARNING") as cm:
+        with self.assertLogs("viberpit.worktrees", level="WARNING") as cm:
             info = worktrees.create_worktree(str(self.repo), "main", "aaaaaaaa-0001", str(self.root))
         # Session started, based on the LOCAL ref (origin tip was never reachable).
         self.assertEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
@@ -573,7 +573,7 @@ class WorktreeFetchCredentialsTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.repo = Path(self._tmp.name) / "clone"
@@ -586,7 +586,7 @@ class WorktreeFetchCredentialsTests(unittest.TestCase):
 
     def test_fetch_carries_the_app_credential_env(self) -> None:
         from unittest import mock
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         gitrepos.set_token_provider(lambda owner: "ghs_wt")
         seen: dict = {}
 
@@ -605,7 +605,7 @@ class WorktreeFetchCredentialsTests(unittest.TestCase):
 
     def test_fetch_without_a_provider_inherits_ambient_env(self) -> None:
         from unittest import mock
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         gitrepos.set_token_provider(None)
         seen: list = []
 

@@ -5,7 +5,7 @@ import asyncio
 import json
 import re
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 # Module-attribute access, not `from … import owned`: this module is only ever
 # imported lazily, so a module-level name would freeze whatever `owned` was
 # installed at that first import — see the note in ownership_reconciliation.

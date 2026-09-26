@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ccswitch import paths
+from viberpit import paths
 from server.app import create_app
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "libtest@example.com"}
@@ -143,7 +143,7 @@ def test_toggle_plugin_corrupt_settings_returns_409(
 def test_put_mcp_corrupt_shared_returns_409(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ccswitch import paths as cpaths
+    from viberpit import paths as cpaths
 
     base = tmp_path / "shared"
     base.mkdir()
@@ -169,7 +169,7 @@ def test_put_mcp_corrupt_shared_returns_409(
 def test_delete_mcp_corrupt_shared_returns_409(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from ccswitch import paths as cpaths
+    from viberpit import paths as cpaths
 
     base = tmp_path / "shared"
     base.mkdir()

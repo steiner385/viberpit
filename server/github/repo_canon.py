@@ -26,7 +26,7 @@ import json
 import logging
 from collections.abc import Callable, Sequence
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 log = logging.getLogger(__name__)
 

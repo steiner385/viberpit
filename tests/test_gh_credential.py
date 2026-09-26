@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from ccswitch import gh_credential as ghc, gitrepos
+from viberpit import gh_credential as ghc, gitrepos
 
 
 # The exact strings gh emits. Byte-for-byte from the incident (issue #2052) —

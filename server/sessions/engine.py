@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
-from ccswitch.engines import (
+from viberpit.engines import (
     AgentEngine,
     InvalidAgentEngine as InvalidAgentEngine,
     parse_agent_engine,

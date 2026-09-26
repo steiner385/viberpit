@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete as sa_delete, select as sa_select, update as sa_update
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.auth.middleware import current_identity
 from server.db import db_session
 from server.db.models import Host

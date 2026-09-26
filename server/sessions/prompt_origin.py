@@ -30,7 +30,7 @@ import re
 from typing import Any, NotRequired, TypedDict
 from xml.sax.saxutils import quoteattr, unescape
 
-from ccswitch import brand
+from viberpit import brand
 
 # The closed set of senders. A kind that is not listed here yields no origin (the
 # marker is still stripped), so adding a sender means adding it HERE and giving it a

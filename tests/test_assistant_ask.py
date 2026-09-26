@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 
-from ccswitch import assistant_ask, cli
+from viberpit import assistant_ask, cli
 
 
 class FakeWS:

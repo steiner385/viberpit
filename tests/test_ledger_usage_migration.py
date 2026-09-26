@@ -7,9 +7,9 @@ deploy; misreading them would feed the selector garbage.
 import json
 from datetime import datetime, timedelta, timezone
 
-from ccswitch import account_registry, ledger, paths
-from ccswitch.config import load_config
-from ccswitch.quota import QUOTA_BLOB_VERSION
+from viberpit import account_registry, ledger, paths
+from viberpit.config import load_config
+from viberpit.quota import QUOTA_BLOB_VERSION
 from tests.helpers import temp_env
 
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)

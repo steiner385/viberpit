@@ -540,7 +540,7 @@ def git_env_for_remote(url: str) -> dict[str, str] | None:
     """Credential env for a network git op against ``url`` (None = use ambient auth).
 
     The entry point for callers that hold a remote URL rather than an
-    ``<owner>/<name>`` — notably the worktree fetch in :mod:`ccswitch.worktrees`.
+    ``<owner>/<name>`` — notably the worktree fetch in :mod:`viberpit.worktrees`.
     Routes through the same :func:`_git_env` so there is one definition of how a
     token reaches git, not one per call site.
     """
@@ -758,7 +758,7 @@ def _relink_orphaned_worktrees(repo_root: str, clone_dir: str) -> None:
     """
     # Deferred: clone_doctor imports this module, so importing it at module
     # scope would be a cycle.
-    from ccswitch import clone_doctor
+    from viberpit import clone_doctor
 
     try:
         orphans = [

@@ -9,7 +9,7 @@ stdin via ``gh api graphql -F query=@-`` sidesteps the argv size limit entirely.
 """
 from __future__ import annotations
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.github import pr_poller
 
 

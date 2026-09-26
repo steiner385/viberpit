@@ -32,9 +32,9 @@ from __future__ import annotations
 import logging
 import os
 
-from ccswitch import accounts as _accounts
-from ccswitch import crypto
-from ccswitch import paths as _paths
+from viberpit import accounts as _accounts
+from viberpit import crypto
+from viberpit import paths as _paths
 from server.sessions.adopt import _map_account
 from server.sessions.scratch_config import helper_config_dir
 

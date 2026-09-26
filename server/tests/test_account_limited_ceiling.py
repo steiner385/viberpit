@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from ccswitch.quota import (QuotaWindow, SCOPE_MODEL, anthropic_snapshot,
+from viberpit.quota import (QuotaWindow, SCOPE_MODEL, anthropic_snapshot,
                             copilot_snapshot, unknown_snapshot)
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATION_CEILING

@@ -18,16 +18,17 @@ SLUG = "viberpit"
 LEGACY_SLUG = "ccswitch"
 
 #: Environment-variable prefix. Both prefixes are live for the whole rebrand:
-#: ``ccswitch.env_compat.mirror_legacy_env()`` fills each from the other at process
+#: ``viberpit.env_compat.mirror_legacy_env()`` fills each from the other at process
 #: start, so an ``/etc`` env file may spell either one. The reverse direction retires
 #: in Phase 7, once every host's env file is confirmed migrated.
 ENV_PREFIX = f"{SLUG.upper()}_"
 #: The pre-rebrand environment-variable prefix, still read everywhere.
 LEGACY_ENV_PREFIX = f"{LEGACY_SLUG.upper()}_"
 
-#: The installed console script. CLI message prefixes name the binary the user ran,
-#: so this flips in Phase 5 when the ``viberpit`` entry point is added.
-CLI_NAME = LEGACY_SLUG
+#: The installed console script. CLI message prefixes name the binary the user ran.
+#: Flipped in Phase 5a now that the ``viberpit`` entry point is added
+#: (``ccswitch`` remains a permanent-for-one-release alias entry point).
+CLI_NAME = SLUG
 #: Stem of /etc, /run, /var/lib, /var/log paths and systemd units. Flips in Phase 3
 #: together with the unit files and the per-host migration runbook.
 HOST_SLUG = SLUG

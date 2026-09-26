@@ -9,7 +9,7 @@ from tests.helpers import temp_env
 class TestPaths(unittest.TestCase):
     def test_root_honours_env(self):
         with temp_env():
-            from ccswitch import paths
+            from viberpit import paths
             self.assertEqual(paths.root(), Path(os.environ["VIBERPIT_HOME"]))
             self.assertEqual(paths.slot_path("alpha"), paths.store_dir() / "alpha.cred.json")
             self.assertEqual(paths.account_cfg_dir("alpha"), paths.cfg_root() / "alpha")
@@ -18,13 +18,13 @@ class TestPaths(unittest.TestCase):
     def test_archive_dir_default(self):
         """archive_dir() defaults to $VIBERPIT_HOME/archive when VIBERPIT_ARCHIVE_HOME is unset."""
         with temp_env():
-            from ccswitch import paths
+            from viberpit import paths
             self.assertEqual(paths.archive_dir(), paths.root() / "archive")
 
     def test_archive_dir_honours_archive_home(self):
         """VIBERPIT_ARCHIVE_HOME redirects archive_dir() to a custom path."""
         with temp_env():
-            from ccswitch import paths
+            from viberpit import paths
             with tempfile.TemporaryDirectory() as custom:
                 with patch.dict(os.environ, {"VIBERPIT_ARCHIVE_HOME": custom}):
                     self.assertEqual(paths.archive_dir(), Path(custom))

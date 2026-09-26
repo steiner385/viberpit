@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import auth_login, paths
+from viberpit import auth_login, paths
 
 ONEP = "aeblfdkhhhdcdjpifhhbdiojplfjncoa"
 

@@ -35,11 +35,11 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from ccswitch import account_registry, ledger
-from ccswitch import copilot as _copilot
-from ccswitch.accounts import list_accounts as _default_list_accounts
-from ccswitch.config import load_config as _default_load_config
-from ccswitch.quota import QuotaSnapshot
+from viberpit import account_registry, ledger
+from viberpit import copilot as _copilot
+from viberpit.accounts import list_accounts as _default_list_accounts
+from viberpit.config import load_config as _default_load_config
+from viberpit.quota import QuotaSnapshot
 
 from server.aio import cancel_and_reap
 from server.codex.manager import CodexStartError

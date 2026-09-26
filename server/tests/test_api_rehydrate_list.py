@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from server.app import create_app
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -65,8 +65,8 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
     one has nothing to run and is 'idle'.
     """
     import time as _time
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
 
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     store_home = tmp_path / "store"
@@ -80,7 +80,7 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
 
     def _fake_usage(account):
         from datetime import timedelta, timezone
-        from ccswitch.quota import anthropic_snapshot
+        from viberpit.quota import anthropic_snapshot
         reset = datetime.now(timezone.utc) + timedelta(hours=5)
         return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 

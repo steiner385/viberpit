@@ -3,10 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 from tests.helpers import temp_env, usage
 
-from ccswitch import selector
-from ccswitch.config import Config, load_config
-from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot, copilot_snapshot
-from ccswitch.selector import (
+from viberpit import selector
+from viberpit.config import Config, load_config
+from viberpit.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot, copilot_snapshot
+from viberpit.selector import (
     AllAccountsBusy,
     Picked,
     at_ceiling,

@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 import jsonschema
 import pytest
 from mcp.types import ListToolsRequest

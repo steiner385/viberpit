@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
-from ccswitch.selector import rank_accounts
-from ccswitch.quota import anthropic_snapshot
-from ccswitch.config import Config
+from viberpit.selector import rank_accounts
+from viberpit.quota import anthropic_snapshot
+from viberpit.config import Config
 
 NOW = datetime(2026, 7, 6, tzinfo=timezone.utc)
 

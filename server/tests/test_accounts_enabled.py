@@ -29,7 +29,7 @@ def _fresh_db(isolated_db):
 
 
 def _seed_slot(name: str) -> None:
-    from ccswitch import paths
+    from viberpit import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
     slot = store / f"{name}.cred.json"
@@ -95,7 +95,7 @@ def test_patch_enabled_persists_to_ledger():
         with client:
             client.patch("/api/accounts/carol/enabled",
                          json={"enabled": False}, headers=IDENTITY_HEADERS)
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             assert ledger.is_account_enabled(led, "carol") is False
 

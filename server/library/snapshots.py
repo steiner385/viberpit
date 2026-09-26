@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ccswitch import paths
+from viberpit import paths
 
 # Top-level path segments that are heavy/ephemeral and never captured.
 _EXCLUDED_TOP_DIRS = {

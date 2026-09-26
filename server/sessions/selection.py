@@ -8,9 +8,9 @@ Thin wrapper around ``ccswitch.accounts.pick_account_detailed`` that:
 """
 from __future__ import annotations
 
-from ccswitch.accounts import eligible_enabled_accounts, pick_account_detailed
-from ccswitch.config import load_config
-from ccswitch.selector import AllAccountsBusy, Picked  # re-exported so callers only import from here
+from viberpit.accounts import eligible_enabled_accounts, pick_account_detailed
+from viberpit.config import load_config
+from viberpit.selector import AllAccountsBusy, Picked  # re-exported so callers only import from here
 from server.sessions.engine import AgentEngine
 
 

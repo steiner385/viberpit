@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from ccswitch import brand
+from viberpit import brand
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
@@ -375,7 +375,7 @@ async def list_marketplace(
     Reads from the shared plugin-catalog-cache.json written by the Claude Code
     plugin system. Returns an empty list if the cache does not exist yet.
     """
-    from ccswitch import paths as _paths
+    from viberpit import paths as _paths
     catalog_path = _paths.shared_base() / "plugins" / "plugin-catalog-cache.json"
     if not catalog_path.exists():
         return {"plugins": [], "lastUpdated": None}

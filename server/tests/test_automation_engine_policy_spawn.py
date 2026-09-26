@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.automations.engine_policy import EnginePolicy
 from server.db import db_session, init_db
 

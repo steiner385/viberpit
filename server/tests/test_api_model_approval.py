@@ -19,15 +19,15 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 def _seed_account(name: str, tmp_path: Path) -> None:
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
 
     write_json_secure(
         paths.slot_path(name),
@@ -44,7 +44,7 @@ def _seed_account(name: str, tmp_path: Path) -> None:
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
 
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)

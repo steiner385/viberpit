@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
-from ccswitch import brand
+from viberpit import brand
 
 # The registry primitives live in server.mcp_spec, which every surface shares — this
 # module owns the drawer's TOOL_SPECS table and nothing else. MCP_PREFIX/annotation_for

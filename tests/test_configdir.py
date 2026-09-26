@@ -9,14 +9,14 @@ from tests.helpers import temp_env
 
 class TestConfigDir(unittest.TestCase):
     def _seed_store(self):
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
         write_json_secure(paths.shared_mcp_path(), {"srv": {"k": 1}})
 
     def test_compose_creates_symlinks_and_credentials(self):
         with temp_env():
-            from ccswitch import paths, configdir
+            from viberpit import paths, configdir
             self._seed_store()
             cfg_dir = configdir.compose("alpha")
             # settings.json + projects mirrored from shared base as symlinks
@@ -31,7 +31,7 @@ class TestConfigDir(unittest.TestCase):
 
     def test_reconcile_is_idempotent(self):
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_store()
             configdir.compose("alpha")
             configdir.reconcile_links("alpha")  # second run must not raise
@@ -42,7 +42,7 @@ class TestConfigDir(unittest.TestCase):
         an account dir. shared_base() must NOT treat an account dir as the mirror
         source (doing so symlinked accounts to themselves -> a plugins symlink loop)."""
         with temp_env():
-            from ccswitch import paths
+            from viberpit import paths
             acct = paths.account_cfg_dir("alpha")
             acct.mkdir(parents=True, exist_ok=True)
             os.environ["CLAUDE_CONFIG_DIR"] = str(acct)
@@ -54,7 +54,7 @@ class TestConfigDir(unittest.TestCase):
         account dir must mirror plugins from the canonical ~/.claude, never produce
         a self-referential or into-the-store symlink."""
         with temp_env() as d:
-            from ccswitch import paths, configdir
+            from viberpit import paths, configdir
             self._seed_store()
             real_home = d / "real-home"
             (real_home / ".claude" / "plugins").mkdir(parents=True)
@@ -80,7 +80,7 @@ class TestConfigDir(unittest.TestCase):
         repaired on the next compose() — the stale link no longer matches the
         corrected source, so it is unlinked and recreated against ~/.claude."""
         with temp_env() as d:
-            from ccswitch import paths, configdir
+            from viberpit import paths, configdir
             self._seed_store()
             real_home = d / "real-home"
             (real_home / ".claude" / "plugins").mkdir(parents=True)

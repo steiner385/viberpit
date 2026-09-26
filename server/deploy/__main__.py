@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit.env_compat import mirror_legacy_env
 from server.deploy.controller import DeployController
 from server.host_units import resolve_unit
 

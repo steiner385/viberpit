@@ -41,7 +41,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from ccswitch import brand
+from viberpit import brand
 from server.db.models import TRIAGE_TERMINAL_STATUSES
 from server.sdlc.bands import BandsConfig, BandTier, MetricBand
 from server.sdlc.control_bands import Breach, Sample, evaluate

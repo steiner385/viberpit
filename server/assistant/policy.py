@@ -51,7 +51,7 @@ def assistant_engine():
     value resolves to Claude with a warning: the failure mode of a typo must be
     "the drawer runs on the audited engine", never "the drawer refuses to open".
     """
-    from ccswitch.engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
+    from viberpit.engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 
     raw = get_settings().assistant_engine
     try:

@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ccswitch import brand
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit import brand
+from viberpit.env_compat import mirror_legacy_env
 from server.obs.logdir import default_log_dir
 
 # Every alias below spells the legacy prefix, and this module reads os.environ in its
@@ -58,7 +58,7 @@ def opt_csv_items(raw: str | None) -> list[str] | None:
 
 def _reauth_chrome_profile_default() -> Path:
     """Dedicated reauth Chrome profile path, via the core's single definition."""
-    from ccswitch.paths import reauth_chrome_profile_dir
+    from viberpit.paths import reauth_chrome_profile_dir
 
     return reauth_chrome_profile_dir()
 
@@ -117,11 +117,11 @@ try:
             alias="VIBERPIT_CHROME_PROFILE",
         )
         # Extension ids carried into the temp login profile (comma list). Unset → the
-        # core default (1Password, ccswitch.auth_login.REAUTH_EXTENSION_IDS); set but
+        # core default (1Password, viberpit.auth_login.REAUTH_EXTENSION_IDS); set but
         # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
         reauth_extension_ids: str | None = Field(default=None, alias="VIBERPIT_REAUTH_EXTENSIONS")
         # Domains whose cookies are carried into the temp login profile (comma list).
-        # Unset → the core default (ccswitch.auth_login.REAUTH_COOKIE_HOSTS, empty);
+        # Unset → the core default (viberpit.auth_login.REAUTH_COOKIE_HOSTS, empty);
         # set but empty → carry none. Setting e.g. "google.com" re-presents that
         # session from a throwaway profile — see the warning on REAUTH_COOKIE_HOSTS.
         reauth_cookie_hosts: str | None = Field(

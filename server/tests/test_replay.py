@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from ccswitch import brand
+from viberpit import brand
 from server.sessions.replay import replay_events, replay_window, _parse
 from server.sessions.events import ToolCall, ToolResult, TextDelta, ThinkingDelta
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 from server.sdlc.constitution_status import classify_document
 from server.sessions.completion import commit_trailer

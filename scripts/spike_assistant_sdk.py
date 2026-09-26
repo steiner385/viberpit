@@ -23,7 +23,7 @@ from claude_agent_sdk import (
 )
 from mcp.types import ToolAnnotations
 
-from ccswitch import brand
+from viberpit import brand
 
 SEEN_TOOL_CALLS: list[tuple[str, dict]] = []
 

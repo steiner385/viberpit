@@ -24,7 +24,7 @@ async def test_project_mcp_server_and_our_server_coexist(tmp_path):
     than passing only via the dual-accept compat path."""
     from claude_agent_sdk import (AssistantMessage, ClaudeSDKClient, ClaudeAgentOptions,
                                   PermissionResultAllow, PermissionResultDeny, ToolUseBlock)
-    from ccswitch import brand
+    from viberpit import brand
     from server.mcp_spec import MCP_PREFIX
     from server.sessions.claude_bin import cli_path_kwargs
     from server.sessions.permissions import PermissionRegistry

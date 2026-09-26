@@ -1,6 +1,6 @@
 """UsagePoller delegates backoff to usage_fn — it must not gate fetches itself.
 
-The fetch-failure backoff is owned by ccswitch.accounts.usage_for via the
+The fetch-failure backoff is owned by viberpit.accounts.usage_for via the
 ledger (usageFetchFails/usageFetchCooldownUntil, PR #539): one cooldown per
 account shared by every caller in every process. The poller keeping its OWN
 in-memory cooldown was a parallel implementation of the same concept, and it

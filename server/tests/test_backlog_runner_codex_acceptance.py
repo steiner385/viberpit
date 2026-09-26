@@ -25,7 +25,7 @@ import asyncio
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.automations.backlog_prompt import build_implement_prompt
 from server.automations.backlog_selection import Batch
 from server.automations.engine_policy import (

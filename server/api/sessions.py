@@ -23,8 +23,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ccswitch import accounts as _accounts
-from ccswitch import gitrepos
+from viberpit import accounts as _accounts
+from viberpit import gitrepos
 from server.auth.middleware import current_client_node, current_identity
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
@@ -744,7 +744,7 @@ async def create_session(
     # account is explicitly pinned); "account default" otherwise.
     _resolved_model = body.model
     if body.account and not _resolved_model:
-        from ccswitch import ledger as _ledger
+        from viberpit import ledger as _ledger
         with _ledger.locked_ledger() as _led:
             _resolved_model = _ledger.get_account_defaults(_led, body.account).get("defaultModel")
     _resolved_effort = body.reasoningEffort

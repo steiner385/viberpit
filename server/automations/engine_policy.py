@@ -39,7 +39,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
-from ccswitch.engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
+from viberpit.engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 
 from .base import ConfigField, ConfigSchema
 
@@ -268,7 +268,7 @@ def unattended_launch_blocker(engine: AgentEngine, permission_mode: str) -> str 
 
 
 def _default_provider_of(name: str) -> str | None:
-    from ccswitch import accounts as _accts
+    from viberpit import accounts as _accts
 
     for account_name, provider in _accts.all_accounts():
         if account_name == name:

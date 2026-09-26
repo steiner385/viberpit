@@ -9,14 +9,14 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from tests.helpers import temp_env
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 # Every orchestrator below MUST be built with a fake usage_fn, as UsagePoller's
-# docstring requires. The default is the production ccswitch.accounts.usage_for:
+# docstring requires. The default is the production viberpit.accounts.usage_for:
 # the tests that plant a live-looking `<account>.cred.json` would send its refresh
 # token to the real Anthropic endpoint, and the 400 that comes back writes the
 # ledger (ledger.json, its .lock, a temp file — via paths.ensure_root(), which
@@ -93,7 +93,7 @@ def test_list_github_repos_annotates_cloned(tmp_path):
 
 def test_list_github_repos_gh_error_502(tmp_path):
     """GhError with no cached list (cold) surfaces as HTTP 502."""
-    from ccswitch.gitrepos import GhError
+    from viberpit.gitrepos import GhError
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_accessible_repos", side_effect=GhError("not logged in")):
@@ -107,7 +107,7 @@ def test_list_github_repos_serves_cached_on_gh_error(tmp_path):
     """A GitHub failure (e.g. rate limit) after a prior success serves the last-good
     list as 200 (stale) instead of a 502 — so the browser doesn't enter a retry storm.
     Regression for the GraphQL-rate-limit "UI freaking out" incident."""
-    from ccswitch.gitrepos import GhError
+    from viberpit.gitrepos import GhError
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
@@ -214,7 +214,7 @@ def test_list_github_branches_bad_name_400(tmp_path):
 
 
 def test_list_github_branches_gh_error_502(tmp_path):
-    from ccswitch.gitrepos import GhError
+    from viberpit.gitrepos import GhError
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             with patch("ccswitch.gitrepos.list_remote_branches", side_effect=GhError("404")):
@@ -232,7 +232,7 @@ def test_list_github_branches_gh_error_502(tmp_path):
 def test_credential_alerts_lists_and_dismisses(tmp_path):
     """The banner endpoint surfaces stale-credential repos from the registry,
     and DELETE clears one."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     gitrepos._stale_credentials.clear()
     gitrepos.record_fetch_result(
         "cairnea/KinDash", ok=False,
@@ -263,7 +263,7 @@ def test_credential_alerts_lists_and_dismisses(tmp_path):
 
 
 def test_credential_alerts_empty_when_clean(tmp_path):
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     gitrepos._stale_credentials.clear()
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
@@ -305,7 +305,7 @@ def test_get_config_returns_repo_root(tmp_path):
 
 def test_create_session_with_repo_clones(tmp_path):
     """POST /api/sessions with repo= clones into the ViberPit namespace and runs there."""
-    from ccswitch import paths
+    from viberpit import paths
     import time as _time
 
     # A real local clone dir that ensure_clone will "return". It needs at least one
@@ -367,7 +367,7 @@ def test_create_session_accepts_attachment_ids(tmp_path):
     prompt right away — nothing is parked for a first attach."""
     import base64
     import time as _time
-    from ccswitch import paths
+    from viberpit import paths
 
     # 1×1 PNG used for a real upload.
     PNG = base64.b64decode(
@@ -413,7 +413,7 @@ def test_create_session_accepts_attachment_ids(tmp_path):
 
 def test_create_session_clone_error_502(tmp_path):
     """A CloneError from gitrepos.ensure_clone → HTTP 502."""
-    from ccswitch.gitrepos import CloneError
+    from viberpit.gitrepos import CloneError
     with temp_env():
         with patch("ccswitch.gitrepos.ensure_clone", side_effect=CloneError("boom")), \
              patch.dict(os.environ, {"VIBERPIT_REPO_ROOT": str(tmp_path), "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):

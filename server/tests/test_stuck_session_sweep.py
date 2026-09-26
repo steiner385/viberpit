@@ -12,7 +12,7 @@ import pytest
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
-from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
+from viberpit.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
 
 
 def _make_orch():

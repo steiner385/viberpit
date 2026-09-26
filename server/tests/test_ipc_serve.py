@@ -118,7 +118,7 @@ def test_build_daemon_registers_the_app_token_provider():
     Without this wiring git fetch falls back to the machine's ambient credential
     helper — the failure mode that pauses the backlog with a stale-credential
     banner (issue #887)."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     gitrepos.set_token_provider(None)
     try:
         orch = mock.MagicMock()

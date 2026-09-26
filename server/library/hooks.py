@@ -16,8 +16,8 @@ import subprocess
 import tempfile
 from typing import Any
 
-from ccswitch import paths
-from ccswitch.creds import write_json_secure
+from viberpit import paths
+from viberpit.creds import write_json_secure
 
 from .scan import read_json_safe
 

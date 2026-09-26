@@ -10,7 +10,7 @@ thing).
 """
 from __future__ import annotations
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
 from server.sessions.host_engines import (
     ENGINES_INFO_KEY,

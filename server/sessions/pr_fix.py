@@ -9,7 +9,7 @@ a Codex session must not be told to co-author its commits as Claude.
 """
 from __future__ import annotations
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 from server.github.pr_status import PullRequestInfo
 from server.sessions.completion import commit_trailer

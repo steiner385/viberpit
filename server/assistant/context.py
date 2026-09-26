@@ -5,7 +5,7 @@ import re
 from typing import Any, NotRequired, TypedDict   # Python 3.12 — NotRequired is stdlib
 from xml.sax.saxutils import quoteattr, unescape
 
-from ccswitch import brand
+from viberpit import brand
 
 # \Z (not $): `$` matches just before a single trailing "\n" too, so a route or
 # sessionId with a smuggled newline would pass validation and reach the wire

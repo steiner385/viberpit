@@ -21,7 +21,7 @@ from server.sessions.orchestrator import SessionOrchestrator, _ROTATION_CEILING
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
-from ccswitch.quota import (QuotaSnapshot, QuotaWindow, SCOPE_MODEL,
+from viberpit.quota import (QuotaSnapshot, QuotaWindow, SCOPE_MODEL,
                             anthropic_snapshot)
 
 

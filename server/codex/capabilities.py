@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from ccswitch import brand
+from viberpit import brand
 from server.codex import redaction, schema
 from server.sessions.engine import AgentCapabilities, AgentEngine, capabilities_to_wire
 

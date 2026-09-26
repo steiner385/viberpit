@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ccswitch import ledger
-from ccswitch.quota import (QUOTA_BLOB_VERSION, anthropic_snapshot,
+from viberpit import ledger
+from viberpit.quota import (QUOTA_BLOB_VERSION, anthropic_snapshot,
                             copilot_snapshot)
 from tests.helpers import temp_env
 

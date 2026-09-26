@@ -262,7 +262,7 @@ def _client(db_url: str, gh):
     every edit here would otherwise read the App's private key, sign a JWT and
     call api.github.com, and capture the host's real project PAT into
     ``GhWrite._pat``."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     from fastapi.testclient import TestClient
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator

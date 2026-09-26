@@ -1,4 +1,4 @@
-from ccswitch import paths
+from viberpit import paths
 
 
 def test_copilot_dirs_nest_under_store():

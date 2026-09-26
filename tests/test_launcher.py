@@ -5,8 +5,8 @@ from tests.helpers import temp_env, usage
 
 
 def _seed(name):
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {"accessToken": f"{name}A", "refreshToken": f"{name}R",
                                                "expiresAt": int(time.time()*1000)+9_000_000, "subscriptionType": "max"})
     write_json_secure(paths.shared_mcp_path(), {})
@@ -29,12 +29,12 @@ class FakeProc:
 class TestLauncher(unittest.TestCase):
     def test_switch_when_limit_detected(self):
         with temp_env():
-            from ccswitch import launcher, accounts
+            from viberpit import launcher, accounts
             _seed("alpha"); _seed("beta")
             # First spawn (alpha) trips the limit on first scan; second spawn (beta) exits clean.
             first_proc = FakeProc(turns=99)
             spawns = [first_proc, FakeProc(turns=0)]
-            from ccswitch.detect import ResetInfo
+            from viberpit.detect import ResetInfo
             scan_results = [ResetInfo(resets_at=None, scope=None), None]
             with mock.patch.object(accounts, "usage_for", side_effect=lambda n: usage(session=5.0 if n == "alpha" else 50.0)), \
                  mock.patch.object(launcher, "spawn_claude", side_effect=lambda cmd, env: spawns.pop(0)), \
@@ -48,7 +48,7 @@ class TestLauncher(unittest.TestCase):
 
     def test_proactive_no_switch_when_no_less_loaded_account(self):
         with temp_env():
-            from ccswitch import launcher, accounts
+            from viberpit import launcher, accounts
             _seed("alpha"); _seed("beta")
             # Active (alpha) is 95% — over soft — but the only other account (beta) is 99%,
             # i.e. MORE loaded. _proactive_target returns None → no switch, single proc exits.
@@ -67,7 +67,7 @@ class TestLauncher(unittest.TestCase):
     def test_setup_token_injected_into_env(self):
         """Launcher injects CLAUDE_CODE_OAUTH_TOKEN when account has a setup-token."""
         with temp_env():
-            from ccswitch import launcher, accounts
+            from viberpit import launcher, accounts
             _seed("alpha")
             captured_envs: list[dict] = []
 
@@ -89,7 +89,7 @@ class TestLauncher(unittest.TestCase):
     def test_setup_token_absent_when_no_token_stored(self):
         """Launcher does not set CLAUDE_CODE_OAUTH_TOKEN when no setup-token is available."""
         with temp_env():
-            from ccswitch import launcher, accounts
+            from viberpit import launcher, accounts
             _seed("alpha")
             captured_envs: list[dict] = []
 
@@ -112,7 +112,7 @@ class TestLauncher(unittest.TestCase):
         """--engine codex fails closed on the canonical 'no usable accounts' error
         when no Codex-provider account is registered — never falls back to Claude."""
         with temp_env():
-            from ccswitch import launcher
+            from viberpit import launcher
             _seed("alpha")  # a Claude-only account; not eligible for engine=codex
             with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
                 rc = launcher.main(["--engine", "codex"])
@@ -123,8 +123,8 @@ class TestLauncher(unittest.TestCase):
         """A configured Codex account still gets an explicit 'not supported yet'
         refusal — ccmax has no synchronous Codex launch surface — not a Claude run."""
         with temp_env():
-            from ccswitch import launcher, account_registry
-            from ccswitch.engines import AgentEngine
+            from viberpit import launcher, account_registry
+            from viberpit.engines import AgentEngine
             account_registry.register_account(
                 "codexy", account_registry.PROVIDER_OPENAI, engine=AgentEngine.CODEX.value)
             with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
@@ -134,7 +134,7 @@ class TestLauncher(unittest.TestCase):
 
     def test_engine_rejects_unknown_value(self):
         with temp_env():
-            from ccswitch import launcher
+            from viberpit import launcher
             with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
                 rc = launcher.main(["--engine", "bogus"])
             self.assertEqual(rc, 64)
@@ -142,7 +142,7 @@ class TestLauncher(unittest.TestCase):
 
     def test_proactive_switch_when_less_loaded_account_exists(self):
         with temp_env():
-            from ccswitch import launcher, accounts
+            from viberpit import launcher, accounts
             _seed("alpha"); _seed("beta")
             # Active (alpha) is 95% — over soft — and beta is 10% (strictly less loaded)
             # → _proactive_target picks beta, one switch, then clean exit.

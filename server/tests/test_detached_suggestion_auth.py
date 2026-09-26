@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ccswitch.oauth import AuthError
+from viberpit.oauth import AuthError
 import server.sessions.orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
 

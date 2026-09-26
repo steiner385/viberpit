@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from ccswitch import copilot
-from ccswitch.quota import WINDOW_PREMIUM
+from viberpit import copilot
+from viberpit.quota import WINDOW_PREMIUM
 
 NOW = datetime(2026, 7, 6, tzinfo=timezone.utc)
 

@@ -5,12 +5,12 @@ request, either through markers or through the signalling tools, never both.
 Detail lives in the tool descriptions, which the model reads at call time; the paragraph
 here is an index naming what is mounted, not a spec.
 
-Both the product name and the MCP server name come from ``ccswitch.brand``: this
+Both the product name and the MCP server name come from ``viberpit.brand``: this
 paragraph tells the model which server to look under, so a hand-typed name would
 point it at a server that is not mounted."""
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 
 from ..completion import marker_instructions
 from .registry import mounted_names

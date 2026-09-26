@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 from server.mcp_spec import ToolClass, ToolSpec, register_surface
 
 # READ for both: neither changes anything a user can see. `report_feedback` writes a

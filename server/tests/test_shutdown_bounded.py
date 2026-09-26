@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.permissions import PermissionRegistry
@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
 
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 

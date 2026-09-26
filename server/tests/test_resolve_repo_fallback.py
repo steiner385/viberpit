@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import types
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.api import sessions as sessions_api
 
 

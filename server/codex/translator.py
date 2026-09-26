@@ -40,7 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from ccswitch import brand
+from viberpit import brand
 from server.codex import schema
 from server.sessions import events as ev
 from server.sessions.prompt_origin import strip_origin_header

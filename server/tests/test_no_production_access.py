@@ -13,7 +13,7 @@ production default reappears and these fail loudly.
 """
 from pathlib import Path
 
-from ccswitch import paths
+from viberpit import paths
 from server.config import get_settings
 
 _REAL_HOME = (Path.home() / ".claude-accounts").resolve()

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-from ccswitch import brand
+from viberpit import brand
 
 log = logging.getLogger("server.github.app_auth")
 
@@ -290,7 +290,7 @@ def installation_repos() -> list[dict] | None:
     None when no App is configured, so standalone CLI usage keeps the viewer path. When
     an App IS configured but enumeration fails, raises ``gitrepos.GhError`` so the chooser
     fails loudly rather than degrading to the ambient user credential (issue #912)."""
-    from ccswitch.gitrepos import GhError
+    from viberpit.gitrepos import GhError
 
     cfg = _load_app_config()
     if cfg is None:
@@ -335,7 +335,7 @@ def register_git_providers() -> None:
     repos the App can reach. Both are read through the module attributes so the App
     config is consulted at call time, and both no-op to ambient/viewer when no App
     is configured."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     gitrepos.set_token_provider(lambda owner: token_for_owner(owner))
     gitrepos.set_installations_provider(installation_repos)

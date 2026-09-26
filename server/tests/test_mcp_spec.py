@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccswitch import brand
+from viberpit import brand
 
 
 def test_assistant_surface_is_registered_and_unchanged():

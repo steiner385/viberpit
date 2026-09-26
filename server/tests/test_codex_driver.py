@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from ccswitch import paths as ccswitch_paths
+from viberpit import paths as ccswitch_paths
 from server.codex import schema
 from server.codex.capabilities import CodexAvailability
 from server.codex.driver import (
@@ -1099,7 +1099,7 @@ async def test_staging_a_resent_image_reuses_the_same_file(
 async def test_staging_registers_a_git_exclude_entry(harness, tmp_path, monkeypatch):
     """The staging dir must never surface in `git status` for the user's repo
     — otherwise it reads as uncommitted work and blocks worktree cleanup
-    (src/ccswitch/worktrees.py:remove_worktree)."""
+    (src/viberpit/worktrees.py:remove_worktree)."""
     store = tmp_path / "store"
     store.mkdir()
     monkeypatch.setattr(ccswitch_paths, "attachments_dir", lambda: store)

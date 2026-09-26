@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from ccswitch import brand
+from viberpit import brand
 
 # Matches: <!-- viberpit:model=<alias-or-id> [reason="..."] --> and its pre-rebrand
 # `ccswitch:model=` spelling, permanently (stored transcripts are re-parsed on replay).

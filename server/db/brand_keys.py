@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ccswitch import brand
+from viberpit import brand
 
 #: What a key written before the rebrand starts with. Only ever matched, never emitted.
 LEGACY_KEY_PREFIX = f"{brand.LEGACY_SLUG}:"

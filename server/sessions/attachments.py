@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from ccswitch import paths
+from viberpit import paths
 from server.db.models import Attachment
 
 # Per-message limits (confirmed product decision): 10 MB / 5 attachments per message.

@@ -13,7 +13,7 @@ import logging
 
 from sqlalchemy import func, select as sa_select
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.db import db_session
 from server.db.models import Host
 from server.sessions.fleet import HostCandidate, engine_rejection, rank_hosts

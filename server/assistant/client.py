@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from ccswitch import brand
+from viberpit import brand
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.auth.middleware import ASSISTANT_SESSION_HEADER, VIA_HEADER
 from server.http_keepalive import CLIENT_KEEPALIVE_EXPIRY_S

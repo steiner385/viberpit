@@ -12,8 +12,8 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
-from ccswitch import worktrees
-from ccswitch.selector import Picked
+from viberpit import worktrees
+from viberpit.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -37,8 +37,8 @@ def _make_repo(path: Path) -> None:
 
 def _seed_account(name: str) -> None:
     import time as _time
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(_time.time() * 1000) + 9_000_000, "subscriptionType": "max",
@@ -49,7 +49,7 @@ def _seed_account(name: str) -> None:
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 

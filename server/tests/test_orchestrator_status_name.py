@@ -160,7 +160,7 @@ def _parked_asking_with_marker_transcript(tmp_path):
     already strips for, on the other prose path."""
     import json
 
-    from ccswitch import brand
+    from viberpit import brand
     text = ('I can rebase onto master or revert the merge. Which of those '
             'matches your intent?\n\n'
             f'<!-- {brand.SLUG}:model=opus reason="conflict resolution" -->')
@@ -180,7 +180,7 @@ def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(
     """A trailing marker must not hide the closing "?" from the parked overlay.
     Both prose paths judge the same text the same way — this one used to skip the
     strip and silently demote a real question to "Waiting…"."""
-    from ccswitch import brand
+    from viberpit import brand
     seen: list[str] = []
     _stub_classifier(monkeypatch, True, seen)
 

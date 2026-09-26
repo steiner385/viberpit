@@ -1,5 +1,5 @@
 import subprocess
-from ccswitch import worktrees
+from viberpit import worktrees
 
 
 def _git(cwd, *args):

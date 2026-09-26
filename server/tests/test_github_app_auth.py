@@ -225,7 +225,7 @@ def test_installation_repos_enumerates_per_installation(monkeypatch):
 def test_installation_repos_raises_when_app_broken(monkeypatch):
     """A configured-but-broken App fails loud (GhError), so the chooser 502s
     instead of silently degrading to the ambient user credential (issue #912)."""
-    from ccswitch.gitrepos import GhError
+    from viberpit.gitrepos import GhError
     A.reset()
     _key, pem = _keypair()
     rest = _FakeRest({("GET", "/app/installations"): GhAppError("boom")})
@@ -238,7 +238,7 @@ def test_installation_repos_raises_when_app_broken(monkeypatch):
 def test_register_git_providers_wires_both_seams(monkeypatch):
     """register_git_providers registers BOTH the token and installations seams so
     the edge/daemon/deploy processes authenticate as the App (issue #912)."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     gitrepos.set_token_provider(None)
     gitrepos.set_installations_provider(None)
     try:

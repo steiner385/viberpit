@@ -6,7 +6,7 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "viberpit-reauth-browser"
 
 def _env(tmp_path, prof, fake, **extra):
     # VIBERPIT_HOME pins the reauth-tmp root the launcher will accept, mirroring
-    # ccswitch.paths.root(). Explicitly set it so a VIBERPIT_HOME leaking in from
+    # viberpit.paths.root(). Explicitly set it so a VIBERPIT_HOME leaking in from
     # the test runner's environment can't change the guard's decision.
     return dict(
         os.environ,
@@ -63,14 +63,14 @@ def test_launcher_passes_anti_throttling_flags(tmp_path):
 
 
 def test_launcher_accepts_real_reauth_tmp_dir(tmp_path):
-    """Regression: the launcher's allowed root must match ccswitch.paths.reauth_tmp_dir().
+    """Regression: the launcher's allowed root must match viberpit.paths.reauth_tmp_dir().
 
     The launcher previously hardcoded ~/.config/ccswitch/reauth-tmp while
     paths.root() resolves to ~/.claude-accounts, so every real profile was
     refused (exit 2) and Chrome never opened. Pin VIBERPIT_HOME and confirm a
     profile under the path Python would actually create is accepted.
     """
-    from ccswitch import paths
+    from viberpit import paths
 
     home = tmp_path / "home"
     fake = _fake_browser(tmp_path)

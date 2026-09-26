@@ -1,6 +1,6 @@
 # server/tests/test_auth_failure_audit.py
 import pytest
-from ccswitch.accounts import AuthFailure
+from viberpit.accounts import AuthFailure
 from server.usage.auth_failure_audit import build_needs_reauth_detail
 
 

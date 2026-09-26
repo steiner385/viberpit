@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ccswitch import worktree_transfer as wt, worktrees
+from viberpit import worktree_transfer as wt, worktrees
 
 
 def _git(*args: str, cwd: str) -> str:

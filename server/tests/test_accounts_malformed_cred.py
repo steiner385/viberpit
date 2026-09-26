@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from ccswitch import accounts, ledger, oauth, paths
+from viberpit import accounts, ledger, oauth, paths
 
 
 def _write_raw_slot(name: str, blob: dict) -> None:

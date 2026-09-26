@@ -13,7 +13,7 @@ form, so a parser that stopped accepting it would strand those sessions in
 from __future__ import annotations
 import re
 
-from ccswitch import brand
+from viberpit import brand
 
 COMPLETION_MARKER = brand.marker("complete")
 COMPLETION_MARKER_RE = brand.marker_re("complete")

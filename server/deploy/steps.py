@@ -33,7 +33,7 @@ def _gh_api_via_app(args: list[str], *, input: str | None = None) -> str:
     otherwise). Non-zero still raises ``CalledProcessError`` — the contract
     ``err_reason`` and the ``ci_verdict``/``publish_deployment`` callers rely on
     (they read ``.stderr`` and treat any raise as unavailable)."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     r = gitrepos._run_gh(args, token=gitrepos.app_token_for_owner(_DEPLOY_OWNER), input=input)
     if r.returncode != 0:

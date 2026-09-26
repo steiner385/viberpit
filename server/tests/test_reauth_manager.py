@@ -248,7 +248,7 @@ async def test_runner_cleans_the_profile_when_the_display_fails(tmp_path, monkey
     profile copies on disk — the profile must be removed on that path too."""
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
@@ -426,7 +426,7 @@ def test_sweep_stale_removes_old_dirs(tmp_path, monkeypatch):
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
 
@@ -453,7 +453,7 @@ def test_sweep_stale_covers_capture_dirs(tmp_path, monkeypatch):
     import os, time
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
@@ -474,7 +474,7 @@ def test_sweep_stale_spares_the_in_flight_profile(tmp_path, monkeypatch):
     import os, time
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
@@ -496,7 +496,7 @@ def test_start_sweeps_before_creating_a_new_profile(tmp_path, monkeypatch):
     import os, time
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
@@ -612,7 +612,7 @@ def test_sweep_stale_removes_symlinks(tmp_path, monkeypatch):
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
 
@@ -702,7 +702,7 @@ async def test_success_writes_audit_row_no_token_material():
 # Phase B2b (new): in-process OAuth exchange via setup_token_oauth
 # ---------------------------------------------------------------------------
 
-import ccswitch.setup_token_oauth as _sto
+import viberpit.setup_token_oauth as _sto
 
 
 @pytest.fixture(autouse=True)
@@ -715,7 +715,7 @@ def _token_has_usage_scope(monkeypatch):
 def _make_manager(monkeypatch, tmp_path):
     """Construct a ReauthManager with key available and setup_token_oauth.begin() mocked."""
     from server.reauth import ReauthManager
-    from ccswitch.setup_token_oauth import SetupTokenChallenge
+    from viberpit.setup_token_oauth import SetupTokenChallenge
 
     fake_challenge = SetupTokenChallenge(
         authorize_url="https://claude.com/cai/oauth/authorize?state=FAKE",
@@ -879,7 +879,7 @@ async def test_setup_token_cancel_during_awaiting_code_returns_idle(monkeypatch,
 @pytest.mark.asyncio
 async def test_start_mode_login_uses_login_runner(monkeypatch):
     """mode='login' (default) still uses the login runner, not setup_token."""
-    from ccswitch import auth_login
+    from viberpit import auth_login
     from server.reauth import ReauthManager
 
     setup_token_begin_called = []
@@ -1082,7 +1082,7 @@ async def test_cancel_cleans_up_temp_profile(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
 
@@ -1117,7 +1117,7 @@ async def test_timeout_cleans_up_temp_profile(tmp_path, monkeypatch):
     """_run() timeout must remove the temp profile directory."""
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)
 

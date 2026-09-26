@@ -7,7 +7,7 @@ edge — not as an exception.
 import json
 from datetime import datetime, timezone
 
-from ccswitch.quota import QUOTA_BLOB_VERSION, QuotaSnapshot, anthropic_snapshot, copilot_snapshot
+from viberpit.quota import QUOTA_BLOB_VERSION, QuotaSnapshot, anthropic_snapshot, copilot_snapshot
 
 NOW = datetime(2026, 6, 22, 9, 0, tzinfo=timezone.utc)
 
@@ -40,7 +40,7 @@ def test_usage_to_dict_is_json_safe():
 def test_wire_dict_carries_the_reason_behind_an_unavailable_read():
     """The accounts API must forward ``reason`` so the browser can say WHY an
     account's quota is unreadable (re-authenticate vs. nothing to do)."""
-    from ccswitch.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, unknown_snapshot
+    from viberpit.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, unknown_snapshot
     from server.api.accounts import _usage_to_dict
 
     gap = _usage_to_dict(unknown_snapshot("anthropic", fetched_at=NOW, availability=UNSUPPORTED,

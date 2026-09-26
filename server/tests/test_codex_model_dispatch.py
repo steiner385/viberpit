@@ -274,7 +274,7 @@ def test_stale_invalid_account_default_is_validated_before_dispatch():
     }
     with temp_env():
         register_accounts("chatgpt-pro", provider="openai")
-        from ccswitch import ledger
+        from viberpit import ledger
 
         with ledger.locked_ledger() as led:
             ledger.set_account_defaults(

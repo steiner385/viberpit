@@ -221,7 +221,7 @@ def test_engine_forwarded_and_reasoning_effort_preserved_for_an_audited_origin(
     itself rather than re-exercising the sanitize/permission-mode machinery."""
 
     async def run():
-        from ccswitch.engines import AgentEngine
+        from viberpit.engines import AgentEngine
         from server.automations.context import AutomationContext
 
         await _init_db(tmp_path)

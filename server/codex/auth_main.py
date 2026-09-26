@@ -22,7 +22,7 @@ import os
 import signal
 import sys
 
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit.env_compat import mirror_legacy_env
 from server.codex import auth_endpoint, process as codex_process
 from server.codex.auth_authority import CredentialAuthority, InstanceLock
 from server.codex.auth_server import AuthorityServer

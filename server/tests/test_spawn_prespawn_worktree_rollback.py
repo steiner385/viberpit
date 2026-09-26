@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch.selector import AllAccountsBusy
+from viberpit.selector import AllAccountsBusy
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.orchestrator import SessionOrchestrator
 

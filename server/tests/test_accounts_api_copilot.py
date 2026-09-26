@@ -35,7 +35,7 @@ def _fresh_db(isolated_db):
 
 def _seed_copilot_account(name: str) -> None:
     """Create a copilot token-dir with a credentials.json (no .cred.json slot)."""
-    from ccswitch import paths
+    from viberpit import paths
     token_dir = paths.copilot_token_dir(name)
     token_dir.mkdir(parents=True, exist_ok=True)
     (token_dir / "credentials.json").write_text(

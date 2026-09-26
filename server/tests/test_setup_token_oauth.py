@@ -1,6 +1,6 @@
 import base64, hashlib
 from urllib.parse import urlparse, parse_qs
-from ccswitch import setup_token_oauth as sto
+from viberpit import setup_token_oauth as sto
 
 
 def _b64url_nopad(b: bytes) -> str:

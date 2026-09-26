@@ -5,7 +5,7 @@ without two live hosts (spec: "Dispatch logic must be unit testable without two
 live hosts").
 
 Repo locality is deliberately **not** an input. ``ensure_clone``
-(``src/ccswitch/gitrepos.py``) is lazy and idempotent, so a cold host clones on
+(``src/viberpit/gitrepos.py``) is lazy and idempotent, so a cold host clones on
 demand; filtering on locality would strand nearly every session on dobby and
 defeat the offload goal (spec open question 1, resolved 2026-08-21).
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.sessions.host_engines import (
     EngineAvailability,
     LEGACY_ENGINES,

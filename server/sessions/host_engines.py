@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 __all__ = [
     "ENGINES_INFO_KEY",

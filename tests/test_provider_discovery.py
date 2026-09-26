@@ -1,5 +1,5 @@
 import json
-from ccswitch import accounts, paths, copilot
+from viberpit import accounts, paths, copilot
 
 def _mk_anthropic(tmp, name):
     (paths.store_dir()).mkdir(parents=True, exist_ok=True)

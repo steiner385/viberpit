@@ -6,8 +6,8 @@ overwrite what the process was launched with, and cover dynamically-built names.
 """
 import os
 
-from ccswitch import brand, env_compat
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit import brand, env_compat
+from viberpit.env_compat import mirror_legacy_env
 
 
 def test_prefixes_come_from_brand():

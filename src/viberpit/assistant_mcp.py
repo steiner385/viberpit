@@ -32,7 +32,7 @@ DEFAULT_TOKEN_ENV = "VIBERPIT_ASSISTANT_TOKEN"
 
 _NEEDS_SERVER_EXTRA = (
     f"{_P} mcp: the assistant tool table needs the server extra — "
-    "install it with `pip install 'ccswitch[server]'`"
+    "install it with `pip install 'viberpit[server]'`"
 )
 
 

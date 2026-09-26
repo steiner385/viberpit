@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import paths
+from viberpit import paths
 from server.library import scan
 
 
@@ -119,7 +119,7 @@ def test_list_commands_nested(shared: Path):
 
 def test_list_mcp_servers_user_plugin_and_auth(shared: Path, tmp_path: Path):
     _seed_plugin(shared, "alpha")
-    from ccswitch.creds import write_json_secure
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.shared_claude_json_path(), {"mcpServers": {
         "mine": {"type": "http", "url": "https://x.example/mcp"},
     }})

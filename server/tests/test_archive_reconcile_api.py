@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from tests.helpers import temp_env, usage as make_usage
 from server.ipc.client import DaemonUnavailable
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -43,7 +43,7 @@ def _make_usage_fn(accounts: dict):
 
 def _seed_slot(name: str) -> None:
     import time as _time
-    from ccswitch import paths
+    from viberpit import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
     now_ms = int(_time.time() * 1000)

@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.github import ci_issues
 
 

@@ -47,9 +47,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from ccswitch import brand
-from ccswitch.gitrepos import clones_base, clones_bases
-from ccswitch.worktrees import lock_worktree, worktrees_bases
+from viberpit import brand
+from viberpit.gitrepos import clones_base, clones_bases
+from viberpit.worktrees import lock_worktree, worktrees_bases
 
 log = logging.getLogger(__name__)
 
@@ -375,7 +375,7 @@ def repair(
     remote is not the public GitHub HTTPS URL — a self-hosted remote, or a
     test fixture — without which recovery would be hard-wired to github.com.
     """
-    from ccswitch import gitrepos  # deferred: gitrepos calls back into this module
+    from viberpit import gitrepos  # deferred: gitrepos calls back into this module
 
     out: list[dict] = []
     for report in diagnose(repo_root):

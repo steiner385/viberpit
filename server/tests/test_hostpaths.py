@@ -1,7 +1,7 @@
 # server/tests/test_hostpaths.py
 """Host paths were spelled in four modules; Phase 3 renames them on every host, so
 they must come from one place and, until then, equal the literals the units use."""
-from ccswitch import brand
+from viberpit import brand
 from server import hostpaths
 from server.deploy import serve
 from server.ipc import paths as ipc_paths

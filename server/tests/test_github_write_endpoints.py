@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch import brand  # noqa: E402
+from viberpit import brand  # noqa: E402
 from server.app import create_app  # noqa: E402
 from server.github import ci_issues  # noqa: E402
 from server.sessions.orchestrator import SessionOrchestrator  # noqa: E402

@@ -95,7 +95,7 @@ def test_redact_event_cookie_shape_scrubbed():
 
 def test_create_worktree_rejects_dash_branch():
     """create_worktree raises WorktreeError for branch names starting with '-'."""
-    from ccswitch.worktrees import create_worktree, WorktreeError
+    from viberpit.worktrees import create_worktree, WorktreeError
     import tempfile, subprocess
     from pathlib import Path
 
@@ -132,7 +132,7 @@ def api_client(tmp_path):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     from fastapi.testclient import TestClient
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     from datetime import datetime, timedelta, timezone
 
     store = tmp_path / "store"

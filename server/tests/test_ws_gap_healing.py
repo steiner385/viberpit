@@ -219,15 +219,15 @@ _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str, tmp_path) -> None:
     import time as _time
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     now_ms = int(_time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok",
@@ -290,7 +290,7 @@ def test_detach_then_attach_on_live_session_emits_replay_complete(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"
     cfg_dir.mkdir(parents=True)
 
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
 
     env_patch = patch.dict(os.environ, {
         "VIBERPIT_HOME": str(store_home),

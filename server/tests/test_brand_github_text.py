@@ -3,7 +3,7 @@ These strings are public (issue comments, label descriptions), so the flip is
 asserted here rather than left to a grep."""
 from types import SimpleNamespace
 
-from ccswitch import brand
+from viberpit import brand
 from server.automations import backlog_github
 from server.automations.cicd import findings
 from server.github import ci_issues

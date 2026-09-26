@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ccswitch import paths
-from ccswitch.creds import write_json_secure
+from viberpit import paths
+from viberpit.creds import write_json_secure
 
 from .names import resolve_under
 from .scan import installed_registry, read_json_safe

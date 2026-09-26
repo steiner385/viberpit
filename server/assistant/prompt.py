@@ -23,7 +23,7 @@ win over anything it inherited.
 """
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 
 ASSISTANT_SYSTEM_PROMPT = f"""You are the {brand.NAME} assistant: an operator's aide for a fleet of Claude Code sessions.
 

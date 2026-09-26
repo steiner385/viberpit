@@ -27,7 +27,7 @@ from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions import orchestrator as orch_mod
 from server.sessions.model_policy import quota_model
-from ccswitch.selector import AllAccountsBusy, Picked
+from viberpit.selector import AllAccountsBusy, Picked
 
 
 CURRENT = "acct-rate-limited"
