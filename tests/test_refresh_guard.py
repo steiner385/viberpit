@@ -27,7 +27,7 @@ def test_refresh_guard_holds_crossprocess_flock():
     """While the guard is held, a second fd's non-blocking flock must fail —
     proving the lock excludes a separate process (which uses a separate fd)."""
     with temp_env():
-        from ccswitch import accounts, paths
+        from viberpit import accounts, paths
 
         with accounts._refresh_guard("alpha"):
             lock_path = paths.store_dir() / "alpha.refresh.lock"
@@ -48,7 +48,7 @@ def test_refresh_guard_holds_crossprocess_flock():
 def test_refresh_guard_released_after_block():
     """After the guard exits, the lock is free again (a fresh fd can acquire it)."""
     with temp_env():
-        from ccswitch import accounts, paths
+        from viberpit import accounts, paths
 
         with accounts._refresh_guard("beta"):
             pass
@@ -65,8 +65,8 @@ def test_concurrent_ensure_valid_token_refreshes_once():
     """Two threads racing an expired token must trigger exactly ONE refresh; the
     loser re-reads the freshly-persisted rotated token under the guard."""
     with temp_env():
-        from ccswitch import accounts, paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import accounts, paths
+        from viberpit.creds import write_json_secure
 
         write_json_secure(paths.slot_path("gamma"), _make_token(-10_000, access="old", refresh="R0"))
 

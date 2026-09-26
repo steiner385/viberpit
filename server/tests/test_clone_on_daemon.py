@@ -38,8 +38,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch import gitrepos
-from ccswitch.selector import Picked
+from viberpit import gitrepos
+from viberpit.selector import Picked
 from server.ipc.client import DaemonError
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
@@ -50,14 +50,14 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "clonetest@example.com"}
 
 def _fake_usage(account: str):
     from datetime import timedelta
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(_time.time() * 1000) + 9_000_000, "subscriptionType": "max",
@@ -274,7 +274,7 @@ def test_api_create_session_clone_error_still_502(tmp_path):
 
 def test_api_create_session_never_calls_ensure_clone_itself(tmp_path):
     from tests.helpers import temp_env
-    from ccswitch import paths
+    from viberpit import paths
 
     clone_dir = tmp_path / ".ccswitch" / "clones" / "acme" / "widget"
     _init_bare_clone(clone_dir)

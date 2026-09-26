@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.codex.permissions import profile_for_mode
 from server.sdlc.prompts import artifact_path, build_intent_prompt, build_plan_prompt, build_spec_prompt
 from server.sessions.completion import commit_trailer

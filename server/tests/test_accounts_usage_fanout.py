@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from datetime import datetime, timezone
 
-from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+from viberpit.quota import QuotaSnapshot, anthropic_snapshot
 
 NOW = datetime(2026, 9, 5, tzinfo=timezone.utc)
 

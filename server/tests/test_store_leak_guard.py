@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch import paths
-from ccswitch.creds import write_json_secure
+from viberpit import paths
+from viberpit.creds import write_json_secure
 
 
 def test_guard_blocks_write_to_real_store():

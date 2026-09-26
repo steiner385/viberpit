@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import account_registry, accounts, ledger, paths
+from viberpit import account_registry, accounts, ledger, paths
 from tests.helpers import register_accounts, temp_env
 
 pytestmark = pytest.mark.skipif(
@@ -223,7 +223,7 @@ def test_accounts_import_reports_a_corrupt_manifest_instead_of_crashing(capsys):
     """``ccswitch accounts import`` is the documented repair command, so a corrupt
     file must produce its actionable message and exit 2 — not a traceback, and
     (per the fix above) not a silent overwrite."""
-    from ccswitch import cli
+    from viberpit import cli
     with temp_env():
         register_accounts("work")
         path = paths.accounts_manifest_path()

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch.configdir import CLAUDE_JSON_NAME, CREDENTIALS_NAME
+from viberpit.configdir import CLAUDE_JSON_NAME, CREDENTIALS_NAME
 from server.sessions import scratch_config
 
 

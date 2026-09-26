@@ -74,7 +74,7 @@ def test_by_env_groups_preserving_newest_first():
 
 
 def test_fetch_groups_by_token_and_maps_failures_to_none(monkeypatch):
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     monkeypatch.setattr(gitrepos, "app_token_for_repo",
                         lambda repo: "tok-c" if repo.startswith("cairnea/") else None)
     calls: list[tuple[list[str], str | None]] = []

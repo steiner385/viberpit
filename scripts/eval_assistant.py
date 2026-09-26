@@ -1406,7 +1406,7 @@ async def run_turn(
 ) -> tuple[TurnEvidence, Any]:
     from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server
 
-    from ccswitch import brand
+    from viberpit import brand
     from server.assistant.context import render_context_header
     from server.assistant.options import assistant_options
     from server.sessions.claude_bin import cli_path_kwargs

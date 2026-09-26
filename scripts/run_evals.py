@@ -25,7 +25,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from ccswitch import brand  # noqa: E402
+from viberpit import brand  # noqa: E402
 from server.sdlc.evals import DEFAULT_THRESHOLD, EvalCase, EvalResult, aggregate  # noqa: E402
 
 _CASE_DIRS = ("evals/cases", "evals/regressions")

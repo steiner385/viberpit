@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timedelta  # noqa: F401
 from typing import Any, Awaitable, Callable  # noqa: F401
 
-from ccswitch import gitrepos  # noqa: F401
+from viberpit import gitrepos  # noqa: F401
 from server.audit import redact_text
 from server.github import ci_issues
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.db import db_session, init_db
 from server.db.models import Host
 from server.sessions.engine import AgentEngineUnavailable

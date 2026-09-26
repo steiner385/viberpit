@@ -228,8 +228,8 @@ def test_usage_for_allow_refresh_false_skips_refresh():
     from tests.helpers import temp_env
 
     with temp_env():
-        from ccswitch import accounts, oauth, paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import accounts, oauth, paths
+        from viberpit.creds import write_json_secure
 
         # Seed an expired slot
         write_json_secure(paths.slot_path("alpha"), {
@@ -257,7 +257,7 @@ def test_usage_for_allow_refresh_false_skips_refresh():
         assert refresh_calls == [], "oauth.refresh_access_token must NOT be called"
 
         # Must not have marked needs-reauth
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             status = led.get("accounts", {}).get("alpha", {}).get("status")
         assert status != "needs-reauth", "allow_refresh=False must not mark needs-reauth"
@@ -272,9 +272,9 @@ def test_usage_for_allow_refresh_true_default_unchanged():
     from datetime import datetime, timedelta, timezone
 
     with temp_env():
-        from ccswitch import accounts, oauth, paths
-        from ccswitch.creds import write_json_secure
-        from ccswitch.quota import anthropic_snapshot
+        from viberpit import accounts, oauth, paths
+        from viberpit.creds import write_json_secure
+        from viberpit.quota import anthropic_snapshot
 
         write_json_secure(paths.slot_path("beta"), {
             "accessToken": "expired-access",

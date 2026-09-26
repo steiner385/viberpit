@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Union
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.aio import cancel_and_reap
 from server.github import app_auth
 from .api_budget import PriorityGate

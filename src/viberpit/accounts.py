@@ -145,7 +145,7 @@ def provider_of(name: str) -> str:
     This used to answer ``"anthropic"`` for any name it did not recognise, so a
     typo, a stale session row, or an account type this build predates all resolved
     silently to the Claude OAuth launch path. It now raises
-    :class:`~ccswitch.account_registry.UnknownAccountError`; callers that must
+    :class:`~viberpit.account_registry.UnknownAccountError`; callers that must
     degrade (the usage sweep) catch it and report "unknown", which is safe,
     instead of acting on a wrong provider.
     """

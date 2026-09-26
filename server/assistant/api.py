@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
-from ccswitch.selector import AllAccountsBusy
+from viberpit.selector import AllAccountsBusy
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.assistant.token import mint_user_token
 from server.audit import record_audit
@@ -53,7 +53,7 @@ def _err(code: str, message: str, http: int) -> JSONResponse:
 
 
 def _scratch_cwd(identity: str) -> str:
-    from ccswitch import paths as _paths
+    from viberpit import paths as _paths
     h = hashlib.sha256(identity.encode()).hexdigest()[:16]
     p = os.path.join(str(_paths.cfg_root()), "assistant", h)
     os.makedirs(p, exist_ok=True)

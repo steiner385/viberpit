@@ -10,7 +10,7 @@ from typing import Any
 
 from claude_agent_sdk import SdkMcpTool, tool
 
-from ccswitch import brand
+from viberpit import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
 from server.sessions.child_sessions import ChildSessionLimit

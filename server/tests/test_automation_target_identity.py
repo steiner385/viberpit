@@ -103,7 +103,7 @@ async def test_default_transport_pins_authority_and_reuses_owner_credentials(mon
     import subprocess
     from unittest.mock import Mock
 
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     token = Mock(return_value="installation-token")
     run = Mock(return_value=subprocess.CompletedProcess(

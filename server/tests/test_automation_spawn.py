@@ -151,7 +151,7 @@ def test_spawn_defers_when_no_host_can_run_the_engine(tmp_path):
         from server.db.models import Automation
         from server.automations.context import AutomationContext
         from server.sessions.fleet_router import NoEngineHostAvailable
-        from ccswitch.engines import AgentEngine
+        from viberpit.engines import AgentEngine
         async with db_session() as db:
             db.add(Automation(id="pm-classify"))
 

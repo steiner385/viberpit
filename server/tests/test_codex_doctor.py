@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from ccswitch import account_registry
+from viberpit import account_registry
 from server.codex import doctor
 from server.codex.auth_endpoint import AuthorityClientTLSFiles, AuthorityConfigError
 from server.codex.auth_types import AuthorityHealth

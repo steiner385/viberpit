@@ -1,4 +1,4 @@
-"""Tests for ccswitch.crypto — envelope encryption (AES-256-GCM)."""
+"""Tests for viberpit.crypto — envelope encryption (AES-256-GCM)."""
 import base64
 import json
 import os
@@ -42,7 +42,7 @@ class TestCryptoModule(unittest.TestCase):
     def test_module_imports_without_raising(self):
         """Importing crypto must never raise even with no key / no cryptography."""
         # The import already happened above; just verify the module is accessible.
-        import ccswitch.crypto  # noqa: F401
+        import viberpit.crypto  # noqa: F401
 
     # ------------------------------------------------------------------
     # master_key / key_available
@@ -50,7 +50,7 @@ class TestCryptoModule(unittest.TestCase):
 
     @_with_key
     def test_master_key_from_env(self):
-        from ccswitch.crypto import master_key
+        from viberpit.crypto import master_key
         key = master_key()
         self.assertEqual(key, _TEST_KEY_BYTES)
 
@@ -59,13 +59,13 @@ class TestCryptoModule(unittest.TestCase):
         # mock secret-tool to return non-zero (not found)
         with mock.patch("subprocess.run") as m:
             m.return_value = mock.Mock(returncode=1, stdout="")
-            from ccswitch.crypto import master_key
+            from viberpit.crypto import master_key
             self.assertIsNone(master_key())
 
     def test_master_key_malformed_base64_returns_none(self):
         os.environ["VIBERPIT_MASTER_KEY"] = "not-valid-base64!!!"
         try:
-            from ccswitch.crypto import master_key
+            from viberpit.crypto import master_key
             # malformed → _decode_key returns None
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
@@ -78,7 +78,7 @@ class TestCryptoModule(unittest.TestCase):
         short = base64.b64encode(b"x" * 16).decode()
         os.environ["VIBERPIT_MASTER_KEY"] = short
         try:
-            from ccswitch.crypto import master_key
+            from viberpit.crypto import master_key
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 self.assertIsNone(master_key())
@@ -87,14 +87,14 @@ class TestCryptoModule(unittest.TestCase):
 
     @_with_key
     def test_key_available_true_when_key_set(self):
-        from ccswitch.crypto import key_available
+        from viberpit.crypto import key_available
         self.assertTrue(key_available())
 
     def test_key_available_false_when_no_key(self):
         self._clear_key()
         with mock.patch("subprocess.run") as m:
             m.return_value = mock.Mock(returncode=1, stdout="")
-            from ccswitch.crypto import key_available
+            from viberpit.crypto import key_available
             self.assertFalse(key_available())
 
     # ------------------------------------------------------------------
@@ -102,7 +102,7 @@ class TestCryptoModule(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_is_encrypted_detects_sentinel(self):
-        from ccswitch.crypto import is_encrypted
+        from viberpit.crypto import is_encrypted
         self.assertTrue(is_encrypted("ccenc1:AAAABBBB"))
         self.assertFalse(is_encrypted("plain-token"))
         self.assertFalse(is_encrypted(""))
@@ -114,7 +114,7 @@ class TestCryptoModule(unittest.TestCase):
 
     @_with_key
     def test_encrypt_decrypt_roundtrip(self):
-        from ccswitch.crypto import encrypt, decrypt
+        from viberpit.crypto import encrypt, decrypt
         pt = "my-secret-refresh-token-abc123"
         ct = encrypt(pt)
         self.assertTrue(ct.startswith("ccenc1:"))
@@ -124,7 +124,7 @@ class TestCryptoModule(unittest.TestCase):
 
     @_with_key
     def test_encrypt_produces_different_nonce_each_time(self):
-        from ccswitch.crypto import encrypt
+        from viberpit.crypto import encrypt
         pt = "same-plaintext"
         ct1 = encrypt(pt)
         ct2 = encrypt(pt)
@@ -132,7 +132,7 @@ class TestCryptoModule(unittest.TestCase):
 
     @_with_key
     def test_decrypt_passes_through_legacy_plaintext(self):
-        from ccswitch.crypto import decrypt
+        from viberpit.crypto import decrypt
         plain = "legacy-refresh-token"
         self.assertEqual(decrypt(plain), plain)
 
@@ -140,13 +140,13 @@ class TestCryptoModule(unittest.TestCase):
         self._clear_key()
         with mock.patch("subprocess.run") as m:
             m.return_value = mock.Mock(returncode=1, stdout="")
-            from ccswitch.crypto import decrypt, CryptoUnavailable
+            from viberpit.crypto import decrypt, CryptoUnavailable
             with self.assertRaises(CryptoUnavailable):
                 decrypt("ccenc1:AAAAAAAAAAAAAAAAAAAAAA==")
 
     @_with_key
     def test_decrypt_raises_crypto_error_on_tampered_ciphertext(self):
-        from ccswitch.crypto import encrypt, decrypt, CryptoError
+        from viberpit.crypto import encrypt, decrypt, CryptoError
         ct = encrypt("secret")
         # Tamper with the last byte of the base64 payload
         payload = ct[len("ccenc1:"):]
@@ -160,7 +160,7 @@ class TestCryptoModule(unittest.TestCase):
         self._clear_key()
         with mock.patch("subprocess.run") as m:
             m.return_value = mock.Mock(returncode=1, stdout="")
-            from ccswitch.crypto import encrypt, CryptoUnavailable
+            from viberpit.crypto import encrypt, CryptoUnavailable
             with self.assertRaises(CryptoUnavailable):
                 encrypt("plaintext")
 
@@ -169,13 +169,13 @@ class TestCryptoModule(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_generate_key_returns_valid_32_byte_base64(self):
-        from ccswitch.crypto import generate_key
+        from viberpit.crypto import generate_key
         k = generate_key()
         raw = base64.b64decode(k)
         self.assertEqual(len(raw), 32)
 
     def test_generate_key_is_random(self):
-        from ccswitch.crypto import generate_key
+        from viberpit.crypto import generate_key
         self.assertNotEqual(generate_key(), generate_key())
 
     # ------------------------------------------------------------------
@@ -186,14 +186,14 @@ class TestCryptoModule(unittest.TestCase):
         self._clear_key()
         with mock.patch("subprocess.run") as m:
             m.return_value = mock.Mock(returncode=0, stdout=_TEST_KEY_B64 + "\n")
-            from ccswitch.crypto import master_key
+            from viberpit.crypto import master_key
             key = master_key()
         self.assertEqual(key, _TEST_KEY_BYTES)
 
     def test_master_key_secret_tool_missing_returns_none(self):
         self._clear_key()
         with mock.patch("subprocess.run", side_effect=FileNotFoundError()):
-            from ccswitch.crypto import master_key
+            from viberpit.crypto import master_key
             self.assertIsNone(master_key())
 
     # ------------------------------------------------------------------
@@ -202,7 +202,7 @@ class TestCryptoModule(unittest.TestCase):
 
     def test_store_and_read_oauth_token_roundtrip(self):
         """Keyring fallback: when no master key is available, store/read use secret-tool."""
-        from ccswitch import crypto
+        from viberpit import crypto
         calls = []
         def fake_run(argv, **kw):
             calls.append((argv, kw.get("input")))
@@ -220,7 +220,7 @@ class TestCryptoModule(unittest.TestCase):
     def test_read_oauth_token_missing_returns_none(self):
         import tempfile
         from pathlib import Path
-        from ccswitch import crypto, paths
+        from viberpit import crypto, paths
         class R: returncode = 1; stdout = ""; stderr = ""
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(paths, "store_dir", return_value=Path(d)):
@@ -229,7 +229,7 @@ class TestCryptoModule(unittest.TestCase):
 
     def test_read_oauth_token_secret_tool_absent_returns_none(self):
         """When no key and no secret-tool, read returns None (keyring fallback path)."""
-        from ccswitch import crypto
+        from viberpit import crypto
         with mock.patch("ccswitch.crypto.key_available", return_value=False):
             with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
                 assert crypto.read_oauth_token("primary") is None
@@ -238,7 +238,7 @@ class TestCryptoModule(unittest.TestCase):
         import tempfile
         import os as _os
         from pathlib import Path
-        from ccswitch import crypto, paths
+        from viberpit import crypto, paths
         _os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
         try:
             with tempfile.TemporaryDirectory() as d:
@@ -254,7 +254,7 @@ class TestCryptoModule(unittest.TestCase):
 
     def test_oauth_token_env_override_wins(self):
         import os as _os
-        from ccswitch import crypto
+        from viberpit import crypto
         _os.environ["VIBERPIT_OAT_SECONDARY"] = "sk-ant-oat01-ENV"
         try:
             assert crypto.read_oauth_token("secondary") == "sk-ant-oat01-ENV"
@@ -265,7 +265,7 @@ class TestCryptoModule(unittest.TestCase):
         import tempfile
         import os as _os
         from pathlib import Path
-        from ccswitch import crypto, paths
+        from viberpit import crypto, paths
         _os.environ.pop("VIBERPIT_OAT_GHOST", None)
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(paths, "store_dir", return_value=Path(d)):
@@ -291,9 +291,9 @@ class TestReadWriteCredentials(unittest.TestCase):
     @_with_key
     def test_write_credentials_encrypts_refresh_token(self):
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import write_credentials, read_json
-            from ccswitch.crypto import is_encrypted
+            from viberpit import paths
+            from viberpit.creds import write_credentials, read_json
+            from viberpit.crypto import is_encrypted
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             slot = paths.slot_path("alpha")
             data = {"accessToken": "at", "refreshToken": "secret-rt", "expiresAt": 42}
@@ -309,8 +309,8 @@ class TestReadWriteCredentials(unittest.TestCase):
             os.environ.pop("VIBERPIT_MASTER_KEY", None)
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
-                from ccswitch import paths
-                from ccswitch.creds import write_credentials, read_json
+                from viberpit import paths
+                from viberpit.creds import write_credentials, read_json
                 import sys, io
                 paths.store_dir().mkdir(parents=True, exist_ok=True)
                 slot = paths.slot_path("alpha")
@@ -319,7 +319,7 @@ class TestReadWriteCredentials(unittest.TestCase):
                 err = io.StringIO()
                 with mock.patch.object(sys, "stderr", err):
                     # Reset the one-time warning flag so it fires in this test
-                    import ccswitch.crypto as _c
+                    import viberpit.crypto as _c
                     _c._warned_no_key = False
                     write_credentials(slot, data)
                 on_disk = read_json(slot)
@@ -330,9 +330,9 @@ class TestReadWriteCredentials(unittest.TestCase):
     @_with_key
     def test_read_credentials_decrypts_encrypted_slot(self):
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import write_credentials, read_credentials
-            from ccswitch.crypto import is_encrypted
+            from viberpit import paths
+            from viberpit.creds import write_credentials, read_credentials
+            from viberpit.crypto import is_encrypted
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             slot = paths.slot_path("alpha")
             # First write (encrypts)
@@ -346,8 +346,8 @@ class TestReadWriteCredentials(unittest.TestCase):
     def test_read_credentials_legacy_plaintext_passthrough(self):
         """read_credentials must handle legacy plaintext slots silently."""
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import read_credentials
+            from viberpit import paths
+            from viberpit.creds import read_credentials
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             slot = paths.slot_path("alpha")
             self._seed_slot(slot, "legacy-plain-rt")
@@ -358,9 +358,9 @@ class TestReadWriteCredentials(unittest.TestCase):
     def test_write_credentials_already_encrypted_is_idempotent(self):
         """If the refreshToken is already encrypted, don't double-encrypt."""
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import write_credentials, read_credentials
-            from ccswitch.crypto import encrypt
+            from viberpit import paths
+            from viberpit.creds import write_credentials, read_credentials
+            from viberpit.crypto import encrypt
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             slot = paths.slot_path("alpha")
             already_enc = encrypt("my-rt")
@@ -377,9 +377,9 @@ class TestComposePlaintext(unittest.TestCase):
     @_with_key
     def test_compose_writes_plaintext_credentials_when_slot_encrypted(self):
         with temp_env():
-            from ccswitch import paths, configdir
-            from ccswitch.creds import write_credentials
-            from ccswitch.crypto import is_encrypted
+            from viberpit import paths, configdir
+            from viberpit.creds import write_credentials
+            from viberpit.crypto import is_encrypted
 
             # Seed an encrypted store slot
             paths.store_dir().mkdir(parents=True, exist_ok=True)
@@ -405,7 +405,7 @@ class TestCryptoCLI(unittest.TestCase):
         with temp_env():
             os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 out = io.StringIO()
@@ -418,7 +418,7 @@ class TestCryptoCLI(unittest.TestCase):
     def test_crypto_status_with_key(self):
         with temp_env():
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
             out = io.StringIO()
             with mock.patch.object(sys, "stdout", out):
                 rc = main(["crypto", "status"])
@@ -429,7 +429,7 @@ class TestCryptoCLI(unittest.TestCase):
         with temp_env():
             os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
             with mock.patch("subprocess.run") as m:
                 # secret-tool lookup → not found; secret-tool store → success
                 m.side_effect = [
@@ -446,7 +446,7 @@ class TestCryptoCLI(unittest.TestCase):
     def test_crypto_init_noop_when_key_exists(self):
         with temp_env():
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
             out = io.StringIO()
             with mock.patch.object(sys, "stdout", out):
                 rc = main(["crypto", "init"])
@@ -456,11 +456,11 @@ class TestCryptoCLI(unittest.TestCase):
     @_with_key
     def test_crypto_migrate_encrypts_plaintext_slots(self):
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import read_json, write_json_secure
-            from ccswitch.crypto import is_encrypted
+            from viberpit import paths
+            from viberpit.creds import read_json, write_json_secure
+            from viberpit.crypto import is_encrypted
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
 
             # Seed two plaintext slots
             paths.store_dir().mkdir(parents=True, exist_ok=True)
@@ -483,10 +483,10 @@ class TestCryptoCLI(unittest.TestCase):
     def test_crypto_migrate_idempotent(self):
         """Running migrate twice doesn't error or double-encrypt."""
         with temp_env():
-            from ccswitch import paths
-            from ccswitch.creds import write_json_secure, read_credentials
+            from viberpit import paths
+            from viberpit.creds import write_json_secure, read_credentials
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
 
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             write_json_secure(paths.slot_path("alpha"),
@@ -507,7 +507,7 @@ class TestCryptoCLI(unittest.TestCase):
         with temp_env():
             os.environ.pop("VIBERPIT_MASTER_KEY", None)
             import io, sys
-            from ccswitch.cli import main
+            from viberpit.cli import main
             with mock.patch("subprocess.run") as m:
                 m.return_value = mock.Mock(returncode=1, stdout="")
                 err = io.StringIO()

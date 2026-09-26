@@ -45,7 +45,7 @@ def test_log_event_shapes_session_start(caplog):
 def test_create_session_emits_session_start(tmp_path, caplog):
     """create_session emits a session.start breadcrumb with to='idle'."""
     from unittest.mock import patch
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
     from server.db import init_db
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -60,7 +60,7 @@ def test_create_session_emits_session_start(tmp_path, caplog):
 
     def _fake_usage(account: str):
         from datetime import datetime, timedelta, timezone
-        from ccswitch.quota import anthropic_snapshot
+        from viberpit.quota import anthropic_snapshot
         reset = datetime.now(timezone.utc) + timedelta(hours=5)
         return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 

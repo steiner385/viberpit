@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ccswitch import brand
+from viberpit import brand
 
 
 def prefer_existing(canonical: str, legacy: str) -> str:

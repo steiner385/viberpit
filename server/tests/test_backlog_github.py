@@ -16,7 +16,7 @@ import json
 import subprocess
 from typing import Callable
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.automations.backlog_github import (
     announce_claim,
     announce_needs_human,

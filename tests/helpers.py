@@ -8,7 +8,7 @@ from pathlib import Path
 # see `python-package` in `.brand-ratchet.toml`, which is already at its ceiling)
 # so other test modules can import these quota-building blocks from here rather
 # than each adding a second copy of that import (#2032).
-from ccswitch.quota import QuotaWindow, anthropic_snapshot  # noqa: F401 - re-exported for callers
+from viberpit.quota import QuotaWindow, anthropic_snapshot  # noqa: F401 - re-exported for callers
 
 
 @contextlib.contextmanager
@@ -37,8 +37,8 @@ def temp_env():
             # `python-package` hit per module instead of two (#2288).
             import sys
             for modname, attrs in (
-                ("ccswitch.account_registry", ("_runner_missing_logged",)),
-                ("ccswitch.accounts", ("_dead_accounts", "_scope_gap_warned")),
+                ("viberpit.account_registry", ("_runner_missing_logged",)),
+                ("viberpit.accounts", ("_dead_accounts", "_scope_gap_warned")),
             ):
                 mod = sys.modules.get(modname)
                 if mod is not None:
@@ -65,7 +65,7 @@ def register_accounts(*names, provider="anthropic", engine=None):
     ``account_registry.register_account`` accepts, exposed here so a caller
     needing an explicit engine (e.g. a Codex account) does not need a second
     copy of the registry import (#2032)."""
-    from ccswitch import account_registry
+    from viberpit import account_registry
     from dataclasses import replace
     with account_registry.locked_manifest() as manifest:
         for n in names:

@@ -20,16 +20,16 @@ class TestComposeClaudioJson(unittest.TestCase):
     # ------------------------------------------------------------------
     def _seed_per_account(self, name: str, identity: dict, shared_mcp: dict | None = None) -> None:
         """Write a store/<name>.claude.json and optionally store/claude.shared.json."""
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.store_claude_json_path(name), identity)
         if shared_mcp is not None:
             write_json_secure(paths.shared_claude_json_path(), {"mcpServers": shared_mcp})
 
     def _seed_slot(self, name: str) -> None:
         """Write a minimal .cred.json so compose() can build .credentials.json."""
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.slot_path(name), {"accessToken": "A", "expiresAt": 9})
 
     # ------------------------------------------------------------------
@@ -38,7 +38,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_writes_real_claude_json_not_symlink(self):
         """compose() must write .claude.json as a real file, never a symlink."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             self._seed_per_account("alpha", {
                 "oauthAccount": {"emailAddress": "a@example.com", "accountUuid": "uuid-a"},
@@ -52,7 +52,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_claude_json_identity_from_per_account_store(self):
         """Identity (oauthAccount/userID) must come from the per-account store file."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             self._seed_per_account("alpha", {
                 "oauthAccount": {"emailAddress": "a@example.com", "accountUuid": "uuid-a"},
@@ -69,7 +69,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_claude_json_overlays_shared_mcp_servers(self):
         """mcpServers from the shared overlay must appear in the composed .claude.json."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             self._seed_per_account("alpha", {
                 "oauthAccount": {"emailAddress": "a@example.com", "accountUuid": "uuid-a"},
@@ -85,11 +85,11 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_claude_json_shared_overlay_wins_for_mcp(self):
         """Shared mcpServers overlay replaces any mcpServers in the per-account file."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             # per-account file has stale mcpServers
-            from ccswitch import paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import paths
+            from viberpit.creds import write_json_secure
             write_json_secure(paths.store_claude_json_path("alpha"), {
                 "oauthAccount": {"emailAddress": "a@example.com", "accountUuid": "uuid-a"},
                 "userID": "user-a",
@@ -109,7 +109,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_falls_back_to_global_claude_json_when_no_store(self):
         """Migration path: if no store/<name>.claude.json, use global HOME/.claude.json."""
         with temp_env() as d:
-            from ccswitch import configdir
+            from viberpit import configdir
             self._seed_slot("alpha")
             # Write a fake global .claude.json by monkeypatching global_claude_json()
             global_data = {
@@ -129,8 +129,8 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_migration_overlays_shared_onto_global(self):
         """Migration path: shared overlay mcpServers applied even when falling back to global."""
         with temp_env() as d:
-            from ccswitch import configdir, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
             self._seed_slot("alpha")
             global_data = {
                 "oauthAccount": {"emailAddress": "global@example.com", "accountUuid": "uuid-g"},
@@ -154,7 +154,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_produces_valid_claude_json_when_nothing_exists(self):
         """When no store file and no global file, compose() writes an empty but valid dict."""
         with temp_env() as d:
-            from ccswitch import configdir
+            from viberpit import configdir
             import unittest.mock as mock
             self._seed_slot("alpha")
             missing = d / "nonexistent.json"
@@ -180,7 +180,7 @@ class TestComposeClaudioJson(unittest.TestCase):
         """Seed alpha with a backups/ dir containing (name, age_seconds) and compose()."""
         import os
         import time
-        from ccswitch import configdir, paths
+        from viberpit import configdir, paths
         self._seed_slot("alpha")
         self._seed_per_account("alpha", {"userID": "u"})
         cfg_dir = paths.account_cfg_dir("alpha")
@@ -230,7 +230,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_count_recent_corruptions_counts_only_corruption_artifacts_in_window(self):
         """The number the watchdog alerts on (#1005 ask 3)."""
         with temp_env():
-            from ccswitch import configdir
+            from viberpit import configdir
             self._compose_with_backups([
                 (".claude.json.corrupted.a", 60),
                 (".claude.json.corrupted.b", 120),
@@ -243,7 +243,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_removes_a_symlinked_backups_path(self):
         """A symlink there redirects writes out of the cfg dir — remove, never follow."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             self._seed_slot("alpha")
             self._seed_per_account("alpha", {"userID": "u"})
             cfg_dir = paths.account_cfg_dir("alpha")
@@ -269,7 +269,7 @@ class TestComposeClaudioJson(unittest.TestCase):
         import os
         import time
         with temp_env():
-            from ccswitch import configdir, paths
+            from viberpit import configdir, paths
             self._seed_slot("alpha")
             self._seed_per_account("alpha", {"userID": "u"})
             cfg_dir = paths.account_cfg_dir("alpha")

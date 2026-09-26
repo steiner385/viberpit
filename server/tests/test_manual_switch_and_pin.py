@@ -4,8 +4,8 @@ import threading
 from unittest import mock
 
 import pytest
-from ccswitch.account_names import InvalidAccountName
-from ccswitch.selector import Picked
+from viberpit.account_names import InvalidAccountName
+from viberpit.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.model_policy import quota_model

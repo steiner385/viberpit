@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, or_, select, update
 
-from ccswitch import brand
-from ccswitch import gitrepos
+from viberpit import brand
+from viberpit import gitrepos
 from server.audit import record_audit
 from server.db.models import (
     FEATURE_MAP_CHANGE_STATUSES,

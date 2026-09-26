@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from ccswitch import accounts, paths
+from viberpit import accounts, paths
 
 
 def _mk_copilot(name):
@@ -10,7 +10,7 @@ def _mk_copilot(name):
 def test_usage_for_copilot_serves_the_refresher_persisted_snapshot(tmp_path, monkeypatch):
     """The proxy read lives in server/usage/process_quota.py; the core reads
     the ledger it wrote (see tests/test_process_quota_ttl.py for the TTL)."""
-    from ccswitch import copilot, ledger
+    from viberpit import copilot, ledger
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_copilot("c1")
     now = datetime.now(timezone.utc)

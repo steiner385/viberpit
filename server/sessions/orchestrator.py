@@ -50,21 +50,21 @@ if TYPE_CHECKING:
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
-from ccswitch import accounts as ccswitch_accounts
-from ccswitch import brand
-from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
-from ccswitch.accounts import (
+from viberpit import accounts as ccswitch_accounts
+from viberpit import brand
+from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
+from viberpit.accounts import (
     eligible_enabled_accounts as _eligible_enabled_accounts,
     provider_or_none as _provider_of,
 )
-from ccswitch.account_names import (
+from viberpit.account_names import (
     assert_valid_account_name, validate_account_name, InvalidAccountName,
 )
-from ccswitch.config import load_config
-from ccswitch.configdir import compose
-from ccswitch.paths import account_cfg_dir, shared_base
-from ccswitch.quota import QuotaSnapshot
-from ccswitch.selector import at_ceiling, exhausted, usage_known
+from viberpit.config import load_config
+from viberpit.configdir import compose
+from viberpit.paths import account_cfg_dir, shared_base
+from viberpit.quota import QuotaSnapshot
+from viberpit.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
@@ -12980,7 +12980,7 @@ class SessionOrchestrator:
         to :func:`pick_helper_config_dir`, the same engine-safe helper identity
         ``model_pick`` already uses for its Haiku complexity assessor.
         """
-        from ccswitch import accounts as _accts
+        from viberpit import accounts as _accts
         from server.sessions.helper_call import is_account_helper_ready, pick_helper_config_dir
         try:
             if (_accts.provider_or_none(account) == "anthropic"
@@ -14190,7 +14190,7 @@ class SessionOrchestrator:
         Fail-open throughout: any lookup failure degrades to ``None`` rather than raising —
         this is a best-effort title generator.
         """
-        from ccswitch.oauth import AuthError
+        from viberpit.oauth import AuthError
         try:
             await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, account)
         except (AuthError, FileNotFoundError) as exc:
@@ -16555,7 +16555,7 @@ class SessionOrchestrator:
         on the same page load, and they are all cheap — splitting them would cost
         three round trips per account per refresh for no gain.
         """
-        from ccswitch.quota import UNSUPPORTED, unknown_snapshot
+        from viberpit.quota import UNSUPPORTED, unknown_snapshot
 
         codex = self._codex
         if codex is None or not codex.available:
@@ -17399,7 +17399,7 @@ class SessionOrchestrator:
         import shutil
         from pathlib import Path
 
-        from ccswitch.paths import archive_dir
+        from viberpit.paths import archive_dir
 
         old_dir = Path(old_home) if old_home else archive_dir()
         new_dir = Path(new_home) if new_home else archive_dir()
@@ -17452,7 +17452,7 @@ class SessionOrchestrator:
         case-variant repo name badges the clone that actually exists (#1003)
         instead of a path nothing will ever write to.
         """
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         from server.config import get_settings
 
         repo_root = get_settings().repo_root
@@ -18001,7 +18001,7 @@ class SessionOrchestrator:
             if self._suggester is None:
                 self._detached_suggestions[session_id] = (signature, [])
                 return
-            from ccswitch.oauth import AuthError
+            from viberpit.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
             except (AuthError, FileNotFoundError):
@@ -18144,7 +18144,7 @@ class SessionOrchestrator:
         if rec is None or rec.status not in ("done", "idle"):
             return []
         try:
-            from ccswitch.oauth import AuthError
+            from viberpit.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
             except (AuthError, FileNotFoundError):
@@ -18883,7 +18883,7 @@ class SessionOrchestrator:
         without requiring a daemon restart or manual rotation.
         """
         def _read_disabled() -> set[str]:
-            from ccswitch import ledger as _ledger
+            from viberpit import ledger as _ledger
             with _ledger.locked_ledger() as led:
                 return {n for n, _ in ccswitch_accounts.all_accounts()
                         if not _ledger.is_account_enabled(led, n)}
@@ -19178,7 +19178,7 @@ class SessionOrchestrator:
         best-effort False on any read error only costs a rotation we would have
         done before this fix anyway.
         """
-        from ccswitch import ledger as _ledger
+        from viberpit import ledger as _ledger
         try:
             with _ledger.locked_ledger() as led:
                 return _ledger.get_allow_extra_usage(led, account)
@@ -19579,7 +19579,7 @@ class SessionOrchestrator:
         stops reporting a falsely-healthy 'ok' for an account whose creds are dead.
         A transient 429 never reaches here — only a 401 that survives a recompose."""
         try:
-            from ccswitch import ledger
+            from viberpit import ledger
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, account, "needs-reauth")
         except Exception:
@@ -19590,7 +19590,7 @@ class SessionOrchestrator:
 
     async def _mark_needs_reauth_audit(self, account: str) -> None:
         """Write an account.needs_reauth audit row for the in-session 401 flip site."""
-        from ccswitch.accounts import AuthFailure
+        from viberpit.accounts import AuthFailure
         from server.audit import record_audit
         from server.usage.auth_failure_audit import build_needs_reauth_detail
         from server.db import db_session, _session_factory
@@ -19611,7 +19611,7 @@ class SessionOrchestrator:
         cut off (#2244). A distinct status from 'needs-reauth': re-logging in cannot
         fix an org policy, and the dashboard must not tell the operator to try it."""
         try:
-            from ccswitch import ledger
+            from viberpit import ledger
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, account, "org-denied")
         except Exception:
@@ -20606,7 +20606,7 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
-        from ccswitch.paths import archive_dir
+        from viberpit.paths import archive_dir
         from server.db.models import AppSettings
         try:
             async with db_session() as db:
@@ -20807,7 +20807,7 @@ class SessionOrchestrator:
         worktrees are protected even though archived sessions are absent from
         ``_records`` (#921).
         """
-        from ccswitch.worktrees_janitor import sweep_orphaned_worktrees
+        from viberpit.worktrees_janitor import sweep_orphaned_worktrees
 
         live_cwds: frozenset[str] = frozenset(
             os.path.abspath(rec.cwd)

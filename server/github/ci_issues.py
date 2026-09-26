@@ -16,7 +16,7 @@ import logging
 import re
 from collections.abc import Sequence
 
-from ccswitch import brand, gitrepos
+from viberpit import brand, gitrepos
 
 from .host_failures import log_gh_failure
 

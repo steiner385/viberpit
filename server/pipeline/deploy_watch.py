@@ -114,7 +114,7 @@ async def _default_http_get(url: str) -> object:
 
 
 def _default_gh_run(args: list[str], token: str | None = None) -> object:
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     return gitrepos._run_gh(args, token=token)
 
@@ -243,7 +243,7 @@ class DeployWatcher:
 
     async def _compare_status(self, repo: str, base: str, head: str) -> str | None:
         """Return the compare API ``status`` (base...head), or None on failure."""
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
 
         args = ["api", f"repos/{repo}/compare/{base}...{head}"]
         token = gitrepos.app_token_for_repo(repo)

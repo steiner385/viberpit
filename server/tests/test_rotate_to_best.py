@@ -9,7 +9,7 @@ import datetime as _dt
 
 import pytest
 
-from ccswitch.selector import AllAccountsBusy, Picked
+from viberpit.selector import AllAccountsBusy, Picked
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATE_REPLAY_STATUSES, _REPLAY_STATUSES
 from server.sessions.engine import AgentEngine

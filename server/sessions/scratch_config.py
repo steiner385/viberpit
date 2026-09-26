@@ -71,8 +71,8 @@ import re
 import time
 from pathlib import Path
 
-from ccswitch import brand, paths as _paths
-from ccswitch.configdir import CLAUDE_JSON_NAME, CREDENTIALS_NAME, SHARE_ALLOWLIST
+from viberpit import brand, paths as _paths
+from viberpit.configdir import CLAUDE_JSON_NAME, CREDENTIALS_NAME, SHARE_ALLOWLIST
 
 log = logging.getLogger(__name__)
 

@@ -27,13 +27,13 @@ class _Orch:
 
     async def usage(self, name):
         self.calls.append(name)
-        from ccswitch.quota import anthropic_snapshot
+        from viberpit.quota import anthropic_snapshot
         return anthropic_snapshot(99.0, None, 99.0, None, False)
 
 
 def test_fresh_local_usage_skips_the_rpc(monkeypatch):
     """A fresh ledger entry must be served locally — no RPC at all."""
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
 
     monkeypatch.setattr(acct_api, "_local_cached_usage",
                         lambda name: anthropic_snapshot(7.0, None, 12.0, None, False) if name == "a" else None)
@@ -83,7 +83,7 @@ def test_rpc_timeout_degrades_to_stale_ledger_or_none(monkeypatch, tmp_path):
 
 def test_rpc_timeout_serves_labelled_stale_usage_when_ledger_has_one(monkeypatch, tmp_path):
     """A timed-out RPC must serve the last ledger reading, labelled stale."""
-    from ccswitch import ledger
+    from viberpit import ledger
 
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
@@ -114,7 +114,7 @@ def test_real_local_read_returns_a_usage_object(tmp_path, monkeypatch):
     the wrong contract. Exercise the real path so the type is actually checked.
     """
 
-    from ccswitch import ledger
+    from viberpit import ledger
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     now = datetime.now(timezone.utc).isoformat()

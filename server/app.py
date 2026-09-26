@@ -22,7 +22,7 @@ from server.stt.ws import build_stt_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
 from server.sessions.failure import classify as classify_turn_failure
-from ccswitch import brand
+from viberpit import brand
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 from server.version import running_git_sha
@@ -756,7 +756,7 @@ def create_app(
     if not getattr(app.state, "remote_mode", False) and orchestrator is not None:
         from server.sessions.copilot_proxy import build_copilot_proxy_manager
         from server.sessions.copilot_auth import CopilotAuthManager
-        from ccswitch import paths as _cc_paths
+        from viberpit import paths as _cc_paths
         orchestrator._copilot = build_copilot_proxy_manager(_gs())
         orchestrator._copilot_auth = CopilotAuthManager(
             token_dir_for=_cc_paths.copilot_token_dir

@@ -12,7 +12,7 @@ def test_default_gh_api_authenticates_as_app(monkeypatch):
     Non-zero must still raise CalledProcessError (the ci_verdict/publish contract)."""
     from types import SimpleNamespace
 
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
     monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
     seen = {}
 

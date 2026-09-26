@@ -15,9 +15,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ccswitch import account_registry, accounts, ledger, paths
-from ccswitch.config import load_config
-from ccswitch.quota import (
+from viberpit import account_registry, accounts, ledger, paths
+from viberpit.config import load_config
+from viberpit.quota import (
     AUTH_ERROR,
     UNKNOWN,
     UNSUPPORTED,

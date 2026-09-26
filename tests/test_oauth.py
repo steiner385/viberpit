@@ -7,10 +7,10 @@ import urllib.parse
 from datetime import timezone
 from unittest import mock
 
-from ccswitch import oauth
-from ccswitch.config import Config
-from ccswitch.oauth import parse_usage
-from ccswitch.quota import SCOPE_ACCOUNT, SCOPE_MODEL
+from viberpit import oauth
+from viberpit.config import Config
+from viberpit.oauth import parse_usage
+from viberpit.quota import SCOPE_ACCOUNT, SCOPE_MODEL
 
 
 class _FakeResp:

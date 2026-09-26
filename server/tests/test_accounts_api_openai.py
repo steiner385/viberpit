@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch import account_registry, ledger  # noqa: E402
+from viberpit import account_registry, ledger  # noqa: E402
 
 from tests.helpers import temp_env  # noqa: E402
 
@@ -648,7 +648,7 @@ def test_codex_status_outage_overrides_prior_available_usage(authority):
     """A dead status RPC must not leave stale AVAILABLE quota selectable."""
     from datetime import datetime, timezone
 
-    from ccswitch.quota import QuotaSnapshot, QuotaWindow
+    from viberpit.quota import QuotaSnapshot, QuotaWindow
 
     prior = QuotaSnapshot(
         provider="openai",

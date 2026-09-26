@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from ccswitch import paths
+from viberpit import paths
 from server.library.names import resolve_under
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)

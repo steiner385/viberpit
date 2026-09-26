@@ -15,8 +15,8 @@ import uuid
 from contextvars import ContextVar
 from typing import Any, Iterator
 
-session_id_var: ContextVar[str | None] = ContextVar("ccswitch_session_id", default=None)
-request_id_var: ContextVar[str | None] = ContextVar("ccswitch_request_id", default=None)
+session_id_var: ContextVar[str | None] = ContextVar("viberpit_session_id", default=None)
+request_id_var: ContextVar[str | None] = ContextVar("viberpit_request_id", default=None)
 
 # start-time(ms, hex) + pid: enough to tell two daemon generations apart.
 PROC_EPOCH: str = f"{int(time.time() * 1000):x}-{os.getpid()}"

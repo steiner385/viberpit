@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import paths
+from viberpit import paths
 from server.library import hooks
 
 

@@ -126,7 +126,7 @@ def fetch_deployments(repos: list[str], *, run=None) -> dict[str, list[Deploymen
     """Fetch every repo's newest deployments. One GraphQL call per distinct App
     token (repos of one owner share one), ambient gh auth when there is none.
     Never raises: a group whose call fails maps each of its repos to ``None``."""
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     runner = run or gitrepos._run_gh
     groups: dict[str | None, list[str]] = {}

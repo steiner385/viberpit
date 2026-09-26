@@ -11,7 +11,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.github.pr_status import PullRequestInfo, _classify_checks, _rollup_state
 from server.github.parity.harness import ParityReport, diff_snapshots
 from server.github.parity.normalize import normalize_state

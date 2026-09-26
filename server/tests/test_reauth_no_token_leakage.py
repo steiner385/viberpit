@@ -20,7 +20,7 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from ccswitch import auth_login, paths
+from viberpit import auth_login, paths
 from server.reauth import ReauthManager
 
 
@@ -35,7 +35,7 @@ async def test_capture_login_no_token_leakage_in_logs(tmp_path, monkeypatch, cap
 
     Sets up:
       - VIBERPIT_HOME under tmp_path
-      - Captures DEBUG logs from ccswitch.auth_login
+      - Captures DEBUG logs from viberpit.auth_login
       - Calls capture_login with the fake claude that writes
         accessToken:"fake-at", refreshToken:"fake-rt"
 
@@ -45,9 +45,9 @@ async def test_capture_login_no_token_leakage_in_logs(tmp_path, monkeypatch, cap
     """
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    # Capture DEBUG logs from the auth_login module + the parent `ccswitch` package logger
-    caplog.set_level(logging.DEBUG, logger="ccswitch")
-    caplog.set_level(logging.DEBUG, logger="ccswitch.auth_login")
+    # Capture DEBUG logs from the auth_login module + the parent `viberpit` package logger
+    caplog.set_level(logging.DEBUG, logger="viberpit")
+    caplog.set_level(logging.DEBUG, logger="viberpit.auth_login")
 
     ok = auth_login.capture_login("primary", claude_bin=[sys.executable, FAKE_CLAUDE])
     assert ok is True, "capture_login must succeed with the fake claude"
@@ -166,7 +166,7 @@ def test_sweep_stale_removes_aged_dir_leaves_fresh(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
 
-    from ccswitch.paths import reauth_tmp_dir
+    from viberpit.paths import reauth_tmp_dir
 
     rtd = reauth_tmp_dir()
     rtd.mkdir(parents=True, exist_ok=True)

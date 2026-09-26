@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from unittest import mock
 
-from ccswitch.quota import anthropic_snapshot
+from viberpit.quota import anthropic_snapshot
 from server.api import accounts as accounts_api
 from server.sessions.orchestrator import SessionOrchestrator
 

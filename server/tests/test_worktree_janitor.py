@@ -4,11 +4,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-from ccswitch.worktrees_janitor import sweep_orphaned_worktrees
+from viberpit.worktrees_janitor import sweep_orphaned_worktrees
 
 # One spelling of the module path, reused: each literal counts against the
 # brand ratchet's "python-package" ceiling, which sits at its limit.
-_MOD = "ccswitch.worktrees_janitor"
+_MOD = "viberpit.worktrees_janitor"
 _RUN = f"{_MOD}._run"
 _REMOVE = f"{_MOD}.remove_worktree"
 
@@ -689,7 +689,7 @@ class TestOrphanedWorktrees:
         criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
         assert len(criticals) == 1
         assert "orphaned=3" in criticals[0].getMessage()
-        assert "ccswitch clones repair" in criticals[0].getMessage()
+        assert "viberpit clones repair" in criticals[0].getMessage()
 
     def test_one_active_orphan_keeps_the_whole_set_critical(self, tmp_path, caplog):
         """A clone that went away under a working session is the outage.
@@ -737,7 +737,7 @@ class TestOrphanedWorktrees:
         assert "orphaned=4" in msg
         # Still the remedy the count is actionable through — demoting the level
         # must not cost the operator the command that clears it.
-        assert "ccswitch clones repair" in msg
+        assert "viberpit clones repair" in msg
 
     def test_orphan_alert_is_one_triage_fingerprint(self, tmp_path, caplog):
         """#1992: the clone paths must stay out of the CRITICAL text.

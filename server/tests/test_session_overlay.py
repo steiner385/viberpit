@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccswitch import brand
+from viberpit import brand
 from server.sessions.types import ASSISTANT_KIND
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.test_assistant_reap import _boot_orch, _capturing_factory, _teardown

@@ -7,10 +7,10 @@ UI's rank tooltip all read them.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from ccswitch.quota import (AUTH_ERROR, QuotaSnapshot, QuotaWindow, SCOPE_MODEL,
+from viberpit.quota import (AUTH_ERROR, QuotaSnapshot, QuotaWindow, SCOPE_MODEL,
                             UNKNOWN, anthropic_snapshot, copilot_snapshot,
                             unknown_snapshot)
-from ccswitch.selector import (AllAccountsBusy, at_ceiling, binding_window,
+from viberpit.selector import (AllAccountsBusy, at_ceiling, binding_window,
                                exhausted, rank_accounts, select_best,
                                select_picked, usage_known)
 from tests.helpers import temp_env, usage
@@ -19,7 +19,7 @@ from tests.helpers import temp_env, usage
 class _Base(unittest.TestCase):
     def setUp(self):
         with temp_env():
-            from ccswitch.config import load_config
+            from viberpit.config import load_config
             self.cfg = load_config()
         self.now = datetime.now(timezone.utc)
 

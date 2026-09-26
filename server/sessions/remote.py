@@ -9,7 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from ccswitch.quota import QuotaSnapshot
+from viberpit.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable, reconstruct_create_session_error
 from server.sessions.facade import rpc_deadline
@@ -309,7 +309,7 @@ class RemoteOrchestrator:
         # which patching after import cannot reach).
         import os
 
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         self._gh_run = gitrepos._run_gh
         self._gh_token_provider = gitrepos.app_token_for_repo
         self._gh_env = os.environ

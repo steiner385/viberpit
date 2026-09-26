@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+from viberpit.quota import QuotaSnapshot, anthropic_snapshot
 from server.usage.poller import UsagePoller
 
 

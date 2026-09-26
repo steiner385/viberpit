@@ -14,7 +14,7 @@ import secrets as _secrets
 import shutil
 from dataclasses import dataclass
 
-from ccswitch import copilot as _copilot
+from viberpit import copilot as _copilot
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 log = logging.getLogger("server.copilot_proxy")
@@ -304,7 +304,7 @@ def build_copilot_proxy_manager(settings) -> "CopilotProxyManager | None":
             PROXY_EXE,
         )
         return None
-    from ccswitch import paths
+    from viberpit import paths
     return CopilotProxyManager(
         ProxyPortAllocator(settings.copilot_port_base, settings.copilot_port_count),
         token_dir_for=paths.copilot_token_dir,

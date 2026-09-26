@@ -35,7 +35,7 @@ exclude = [
 
 [[allow]]
 id = "brand-module"
-paths = ["src/ccswitch/brand.py", "web/src/brand.ts"]
+paths = ["src/viberpit/brand.py", "web/src/brand.ts"]
 permanent = "The LEGACY_* constants are the one place the old spelling may be defined (design §1)."
 # 5th: web/src/brand.ts REPO_NAMESPACES, the web mirror of brand.REPO_NAMESPACES (#1373).
 ceiling = 5
@@ -143,7 +143,7 @@ ceiling = 36
 id = "env-prefix-mirror"
 pattern = '\bCCSWITCH_[A-Z0-9_]*'
 paths = [
-  "src/ccswitch/env_compat.py",
+  "src/viberpit/env_compat.py",
   "tests/test_env_compat.py",
   "server/tests/test_env_mirror_entrypoints.py",
   "server/tests/conftest.py",
@@ -181,7 +181,27 @@ issue = 1374
 # tests/test_cli.py::TestLintCommands test needs its own `from ccswitch import
 # cli` like every other test class in that file — the package name is not
 # renameable (this category's own reason for existing).
-ceiling = 1288
+# #1374 (Phase 5a) renamed the real package src/ccswitch/ -> src/viberpit/ and
+# rewrote every live import to match, which is most of what this ceiling used
+# to carry. What is left: the kept `ccswitch` console-script alias, plus the
+# permanent `patch("ccswitch.<mod>...")` / `__import__("ccswitch.<mod>", ...)`
+# strings that the compat shim's meta_path finder resolves to the identical
+# `viberpit.<mod>` module object either name is imported under, and the
+# handful of literal-string survivors the pattern above already names.
+ceiling = 379
+
+[[allow]]
+id = "python-package-shim"
+paths = ["src/ccswitch/__init__.py"]
+issue = 1374
+# Phase 5a (#1374) moved the real package to src/viberpit/ and left this thin
+# compat package in its place: a sys.meta_path finder aliasing `ccswitch.*` to
+# the identical `viberpit.*` module object for one release. Its own docstring
+# and comments have to spell the legacy name to say what it aliases — the
+# `python-package` pattern above deliberately does not chase RST double-backtick
+# prose, so this file gets its own path-scoped entry instead of widening that
+# pattern for everyone. Retires with the rest of the shim.
+ceiling = 5
 
 [[allow]]
 id = "constitution"

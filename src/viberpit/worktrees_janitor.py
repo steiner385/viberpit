@@ -48,12 +48,12 @@ import subprocess
 from pathlib import Path
 from typing import Iterator
 
-from ccswitch.clone_doctor import (
+from viberpit.clone_doctor import (
     clone_dir_from_gitdir,
     clone_is_repairable,
     read_gitdir_pointer,
 )
-from ccswitch.worktrees import remove_worktree, worktrees_bases
+from viberpit.worktrees import remove_worktree, worktrees_bases
 
 from . import brand
 

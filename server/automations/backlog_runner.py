@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
-from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
+from viberpit.worktrees import DISK_EXHAUSTION_MARKERS
 from server.db.models import DECISION_PROPOSED_CAUSE
 from server.github.pr_status import PullRequestInfo
 

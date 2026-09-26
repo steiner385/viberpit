@@ -10,9 +10,9 @@ the REST TTL, which would declare every cold reading stale 60s after it landed.
 """
 from datetime import datetime, timedelta, timezone
 
-from ccswitch import account_registry, accounts, ledger, paths
-from ccswitch.config import load_config
-from ccswitch.quota import copilot_snapshot
+from viberpit import account_registry, accounts, ledger, paths
+from viberpit.config import load_config
+from viberpit.quota import copilot_snapshot
 from tests.helpers import temp_env, usage
 
 NOW = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)

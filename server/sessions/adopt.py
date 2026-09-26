@@ -17,7 +17,7 @@ import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from ccswitch import paths as _paths
+from viberpit import paths as _paths
 
 _HELPER_FLAGS = ("--bg-pty-host", "--bg-spare")
 

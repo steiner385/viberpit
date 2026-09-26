@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccswitch import brand
+from viberpit import brand
 from server.sessions.prompt_origin import (
     ORIGIN_KINDS,
     render_origin_header,

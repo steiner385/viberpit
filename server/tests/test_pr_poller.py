@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.github.pr_poller import PrStatusPoller
 from server.github.pr_status import PullRequestInfo
 

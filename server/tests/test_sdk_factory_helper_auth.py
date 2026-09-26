@@ -13,7 +13,7 @@ import pytest
 
 import server.sessions.account_auth as aa
 import server.sessions.claude_sdk_factory as sf
-from ccswitch.configdir import CLAUDE_JSON_NAME
+from viberpit.configdir import CLAUDE_JSON_NAME
 
 
 def _patch_sdk_client(monkeypatch):

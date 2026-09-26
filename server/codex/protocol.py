@@ -77,7 +77,7 @@ from typing import Any, Final, Protocol
 from server.codex import redaction, schema
 from server.obs.context import log_event
 from server.obs.metrics import codex_request_ms
-from ccswitch import brand
+from viberpit import brand
 
 logger = logging.getLogger(__name__)
 

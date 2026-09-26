@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Callable
 
-from ccswitch.gitrepos import _run_gh
+from viberpit.gitrepos import _run_gh
 from server.github.host_failures import log_gh_failure
 
 log = logging.getLogger(__name__)

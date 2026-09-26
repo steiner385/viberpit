@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ccswitch import brand, gitrepos, paths, worktrees
+from viberpit import brand, gitrepos, paths, worktrees
 
 NEW, OLD = brand.REPO_NAMESPACE, brand.LEGACY_REPO_NAMESPACE
 

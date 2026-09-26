@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from ccswitch import brand
+from viberpit import brand
 from server.assistant.options import DISALLOWED_BUILTINS, assistant_options
 from server.assistant.prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
                                      OPERATOR_TOOLS_ENABLED_LINE)
@@ -112,7 +112,7 @@ def test_disallowed_builtins_is_the_single_list():
 
 def _seed_account_dir(root: Path) -> Path:
     """An account-shaped config dir with every SHARE_ALLOWLIST entry present."""
-    from ccswitch.configdir import SHARE_ALLOWLIST
+    from viberpit.configdir import SHARE_ALLOWLIST
     src = root / "acct"
     src.mkdir(parents=True, exist_ok=True)
     (src / ".claude.json").write_text("{}")
@@ -130,7 +130,7 @@ def _seed_account_dir(root: Path) -> Path:
 
 
 def test_normal_helper_config_dir_keeps_shared_entries(tmp_path, monkeypatch):
-    from ccswitch.configdir import SHARE_ALLOWLIST
+    from viberpit.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import helper_config_dir
 
     monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
@@ -152,7 +152,7 @@ def test_assistant_scratch_config_dir_drops_customisation_but_keeps_projects(
     after an idle reap or a daemon restart runs against a config dir that has never seen
     that session id — a silently blank conversation.
     """
-    from ccswitch.configdir import SHARE_ALLOWLIST
+    from viberpit.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
     monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
@@ -180,7 +180,7 @@ def test_assistant_scratch_dir_is_distinct_from_the_shared_one(tmp_path, monkeyp
 
 
 def test_assistant_scratch_dir_prunes_links_left_by_an_earlier_build(tmp_path, monkeypatch):
-    from ccswitch.configdir import SHARE_ALLOWLIST
+    from viberpit.configdir import SHARE_ALLOWLIST
     from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
     monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
@@ -202,14 +202,14 @@ def test_assistant_scratch_dir_prunes_links_left_by_an_earlier_build(tmp_path, m
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(time.time() * 1000) + 9_000_000, "subscriptionType": "max",
@@ -659,8 +659,8 @@ def _make_real_configdir_env(*, tmp_path):
     ordering regression below was invisible: with `trust_project` a Mock, nothing ever
     writes the entry that `compose` would clobber.
     """
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
 
     store_home = tmp_path / "home"
     store_home.mkdir(exist_ok=True)
@@ -698,7 +698,7 @@ def test_isolated_dir_keeps_the_pre_trust_entry(tmp_path):
     Asserted for a normal session AND for the assistant, whose isolated `.claude.json`
     is copied from the composed file and so must carry the entry too.
     """
-    from ccswitch import configdir, paths
+    from viberpit import configdir, paths
     from server.sessions.orchestrator import SessionOrchestrator
 
     env_patch = _make_real_configdir_env(tmp_path=tmp_path)
@@ -725,7 +725,7 @@ def test_isolated_dir_keeps_the_pre_trust_entry(tmp_path):
 def test_the_reverse_order_really_does_lose_the_trust_entry(tmp_path):
     """Pins WHY the ordering matters, so the test above cannot be "fixed" by loosening
     it. This is the regression, reproduced deliberately."""
-    from ccswitch import configdir, paths
+    from viberpit import configdir, paths
 
     env_patch = _make_real_configdir_env(tmp_path=tmp_path)
     try:

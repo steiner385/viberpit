@@ -58,8 +58,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from ccswitch import brand
-from ccswitch import paths
+from viberpit import brand
+from viberpit import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header

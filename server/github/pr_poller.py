@@ -14,7 +14,7 @@ import random
 import time
 from typing import Awaitable, Callable, Union
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.aio import cancel_and_reap
 
 from .api_budget import PriorityGate

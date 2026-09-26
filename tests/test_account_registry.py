@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from ccswitch import account_registry, accounts, paths
-from ccswitch.account_registry import (AccountEntry, ManifestNotWritable,
+from viberpit import account_registry, accounts, paths
+from viberpit.account_registry import (AccountEntry, ManifestNotWritable,
                                        UnknownAccountError)
 from tests.helpers import temp_env
 
@@ -41,7 +41,7 @@ def test_entry_carries_the_full_identity_record():
         assert e.provider == account_registry.PROVIDER_ANTHROPIC
         # engine is nullable: None means "the engine registry's default"
         # (engine_from_wire(None) -> claude_code), reusing that single branch
-        # instead of copying the engine strings into src/ccswitch.
+        # instead of copying the engine strings into src/viberpit.
         assert e.engine is None
         assert e.user_auth_mode == account_registry.USER_AUTH_CLAUDE_OAUTH
         assert e.runner_auth_mode == account_registry.RUNNER_AUTH_CONFIG_DIR
@@ -191,7 +191,7 @@ def test_remove_account_drops_the_manifest_entry():
 
 def test_needs_reauth_flip_records_health_in_the_manifest(monkeypatch):
     """The health field is not decoration — the auth path writes it."""
-    from ccswitch import oauth
+    from viberpit import oauth
 
     with temp_env():
         _mk_anthropic("work")
@@ -226,7 +226,7 @@ def test_reauth_clears_health_and_advances_the_generation():
 
 
 def test_health_write_never_breaks_the_auth_path_on_a_runner(monkeypatch):
-    from ccswitch import oauth
+    from viberpit import oauth
 
     with temp_env():
         _mk_anthropic("work")
@@ -358,7 +358,7 @@ def test_set_enabled_ignores_an_account_that_is_not_registered():
 
 def test_accounts_set_account_enabled_writes_both_stores():
     """The ledger is operative; the manifest is its mirror. Both, one call."""
-    from ccswitch import ledger
+    from viberpit import ledger
 
     with temp_env():
         _mk_anthropic("work")
@@ -374,7 +374,7 @@ def test_accounts_set_account_enabled_writes_both_stores():
 def test_a_manifest_fault_does_not_block_the_operative_ledger_write(monkeypatch):
     """Ledger first, deliberately: the mirror failing must not leave an account
     half-disabled where it actually matters."""
-    from ccswitch import ledger
+    from viberpit import ledger
 
     with temp_env():
         _mk_anthropic("work")

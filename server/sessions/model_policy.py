@@ -75,7 +75,7 @@ def inherited_default_model() -> str | None:
     env_model = os.environ.get("ANTHROPIC_MODEL", "").strip()
     if env_model:
         return env_model
-    from ccswitch import paths
+    from viberpit import paths
     base = paths.shared_base()
     for name in ("settings.local.json", "settings.json"):
         model = _settings_model(base / name)
@@ -147,7 +147,7 @@ async def resolve_model_policy(db, *, model: str | None, account: str | None = N
         return "allow"
 
     if account:
-        from ccswitch import ledger as _ledger
+        from viberpit import ledger as _ledger
         with _ledger.locked_ledger() as led:
             acct_action = _ledger.get_account_defaults(led, account).get("modelApprovalAction")
         if acct_action in VALID_ACTIONS:

@@ -112,7 +112,7 @@ class ReauthManager:
         x11: "Callable[[], Any] | None" = None,
     ) -> None:
         if key_available is None:
-            from ccswitch.crypto import key_available as _ka
+            from viberpit.crypto import key_available as _ka
             key_available = _ka
 
         self._key_available = key_available
@@ -149,7 +149,7 @@ class ReauthManager:
         manager = self
 
         async def _production_runner(name: str) -> bool:
-            from ccswitch import auth_login
+            from viberpit import auth_login
             from server.config import get_settings
 
             settings = get_settings()
@@ -210,7 +210,7 @@ class ReauthManager:
                 if ok:
                     # Clear the stale needs-reauth status synchronously so the
                     # UI's post-success refetch shows the account as healthy.
-                    from ccswitch import accounts
+                    from viberpit import accounts
 
                     await asyncio.to_thread(accounts.mark_reauthenticated, name)
                 return ok
@@ -258,7 +258,7 @@ class ReauthManager:
             if mode == "setup_token":
                 # In-process PKCE flow — no PTY/subprocess needed.
                 # begin() is fast (pure crypto), safe to call under the lock.
-                from ccswitch import setup_token_oauth
+                from viberpit import setup_token_oauth
                 challenge = setup_token_oauth.begin()
                 self._setup_challenge = challenge
                 self._setup_scope_fallback_used = False
@@ -366,7 +366,7 @@ class ReauthManager:
         The profile of a run that is still in flight is skipped, so a login that
         outlives the TTL cannot have the directory pulled out from under it.
         """
-        from ccswitch.paths import reauth_tmp_dir
+        from viberpit.paths import reauth_tmp_dir
 
         tmp = reauth_tmp_dir()
         if not tmp.exists():
@@ -472,7 +472,7 @@ class ReauthManager:
             self._state.state = "running"
             self._state.message = None
 
-        from ccswitch import accounts, crypto, setup_token_oauth
+        from viberpit import accounts, crypto, setup_token_oauth
 
         try:
             token = await asyncio.to_thread(setup_token_oauth.exchange, code, challenge)
@@ -519,7 +519,7 @@ class ReauthManager:
         either way; an oracle that cannot answer says nothing. NEVER logs the
         token.
         """
-        from ccswitch import oauth
+        from viberpit import oauth
 
         try:
             if oauth.has_usage_scope(token):
@@ -548,7 +548,7 @@ class ReauthManager:
         on a genuine ``invalid_scope`` (not an expired code), only when the
         broadened scope was actually in play, and at most once per run.
         """
-        from ccswitch import setup_token_oauth
+        from viberpit import setup_token_oauth
 
         if self._setup_scope_fallback_used or not exc.is_scope_rejection:
             return False
@@ -588,7 +588,7 @@ class ReauthManager:
         if temp is None:
             return
         try:
-            from ccswitch import auth_login
+            from viberpit import auth_login
             auth_login.cleanup_reauth_profile(temp)
             log.info("reauth: removed temp profile %s", temp)
         except Exception:

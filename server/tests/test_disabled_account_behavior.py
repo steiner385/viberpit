@@ -94,7 +94,7 @@ def test_token_refresh_skips_disabled():
             {"name": "alice", "status": "ok", "enabled": True},
             {"name": "bob",   "status": "ok", "enabled": False},
         ]
-        import ccswitch.accounts as ca
+        import viberpit.accounts as ca
         with patch.object(ca, "list_accounts", return_value=accounts), \
              patch.object(ca, "ensure_valid_token", side_effect=refreshed.append):
             await o._refresh_idle_tokens_once()
@@ -115,8 +115,8 @@ def test_check_disabled_rotates_live_sessions():
         o = _make_orch()
         rec = _rec(o, "disabled-acct", status="idle")
 
-        from ccswitch import ledger
-        import ccswitch.accounts as ca
+        from viberpit import ledger
+        import viberpit.accounts as ca
 
         def fake_all_accounts():
             return [("disabled-acct", "anthropic"), ("other-acct", "anthropic")]
@@ -153,8 +153,8 @@ def test_check_disabled_skips_inactive():
         o = _make_orch()
         rec = _rec(o, "disabled-acct", status="archived")
 
-        from ccswitch import ledger
-        import ccswitch.accounts as ca
+        from viberpit import ledger
+        import viberpit.accounts as ca
 
         with patch.object(ca, "all_accounts", return_value=[("disabled-acct", "anthropic")]), \
              patch.object(ledger, "locked_ledger") as mock_ll:
@@ -176,8 +176,8 @@ def test_check_disabled_noop_when_all_enabled():
         o = _make_orch()
         _rec(o, "good-acct", status="idle")
 
-        from ccswitch import ledger
-        import ccswitch.accounts as ca
+        from viberpit import ledger
+        import viberpit.accounts as ca
 
         with patch.object(ca, "all_accounts", return_value=[("good-acct", "anthropic")]), \
              patch.object(ledger, "locked_ledger") as mock_ll:

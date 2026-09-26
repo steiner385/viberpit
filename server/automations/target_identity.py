@@ -11,7 +11,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 from server.automations.ownership import CanonicalTarget
 from server.pm.gh_mutations import payload_from_gh

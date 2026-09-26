@@ -21,10 +21,10 @@ import pytest
 from tests.helpers import temp_env
 from server.sessions.engine import AgentEngine
 
-from ccswitch import account_registry, paths
-from ccswitch.creds import write_json_secure
-from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
-from ccswitch.selector import Picked
+from viberpit import account_registry, paths
+from viberpit.creds import write_json_secure
+from viberpit.quota import QuotaSnapshot, anthropic_snapshot
+from viberpit.selector import Picked
 
 
 # ---------------------------------------------------------------------------

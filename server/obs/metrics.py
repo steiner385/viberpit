@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 
-from ccswitch import brand
+from viberpit import brand
 
 LabelValues = tuple[str, ...]
 

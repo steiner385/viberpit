@@ -710,7 +710,7 @@ async def test_codex_status_fanout_returns_but_never_persists_a_degraded_merge()
     "unknown", but writing it to the ledger every 30 s poll kept the entry
     fresh, so no runner ever re-read and the account never recovered. Uses the
     real persist helper: the refusal lives there, not in this caller."""
-    from ccswitch import account_registry, ledger
+    from viberpit import account_registry, ledger
     from tests.helpers import temp_env
 
     degraded = {

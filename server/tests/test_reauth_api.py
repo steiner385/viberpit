@@ -101,7 +101,7 @@ class FakeReauthManager:
 
 def _seed_slot(name: str) -> None:
     """Write a minimal credential file so the slot exists (uses active VIBERPIT_HOME)."""
-    from ccswitch import paths
+    from viberpit import paths
     store = paths.store_dir()
     store.mkdir(parents=True, exist_ok=True)
     slot = store / f"{name}.cred.json"

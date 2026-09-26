@@ -380,7 +380,7 @@ def lock_worktree(repo_top: str, dest: Path) -> None:
     """Lock a session worktree so a sibling session's global ``git worktree
     prune`` can never reap its admin record mid-session (#177).
 
-    Public because recovery re-locks too: :mod:`ccswitch.clone_doctor` re-creates
+    Public because recovery re-locks too: :mod:`viberpit.clone_doctor` re-creates
     admin records for worktrees orphaned by a deleted clone (#1003), and a
     recovered record must carry the same protection a freshly-created one does.
 

@@ -9,7 +9,7 @@ claim (:func:`verify_ready_live`, fails closed), announcing the claim and the
 needs-human handoff, and closing out on a merged PR.
 
 Every GitHub call is routed through an injected ``gh_run`` seam (default
-:func:`ccswitch.gitrepos._run_gh`) so tests never hit the network.  The seam is
+:func:`viberpit.gitrepos._run_gh`) so tests never hit the network.  The seam is
 ``gh_run(args: list[str]) -> subprocess.CompletedProcess`` — the ``gh`` binary
 with ``GITHUB_TOKEN`` stripped, exactly as the rest of ViberPit shells it.
 
@@ -26,7 +26,7 @@ import logging
 import re
 from typing import Callable, Iterable
 
-from ccswitch import brand, gitrepos
+from viberpit import brand, gitrepos
 from server.github.host_failures import log_gh_failure
 
 from . import backlog_deps

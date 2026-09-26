@@ -1,4 +1,4 @@
-from ccswitch import copilot
+from viberpit import copilot
 
 
 def test_launch_env_points_at_loopback_proxy():

@@ -7,7 +7,7 @@ async behaviour and the @rpc_deadline marker are preserved for free.
 import asyncio
 import logging
 
-from ccswitch.quota import QuotaSnapshot
+from viberpit.quota import QuotaSnapshot
 from server.ipc.client import DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.usage.process_quota import persist_quota_snapshot

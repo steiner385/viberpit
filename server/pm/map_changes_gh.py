@@ -22,7 +22,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 log = logging.getLogger(__name__)
 

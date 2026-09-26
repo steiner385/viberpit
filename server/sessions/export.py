@@ -11,7 +11,7 @@ safe_filename() — sanitise a string into a filesystem-safe filename stem.
 """
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 import json
 from typing import Any
 

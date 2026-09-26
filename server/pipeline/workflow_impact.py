@@ -54,7 +54,7 @@ class GhBlobs:
     """
 
     def __init__(self, run=None):
-        from src.ccswitch import gitrepos
+        from viberpit import gitrepos
 
         self._run = run or gitrepos._run_gh
 

@@ -58,7 +58,7 @@ async def test_retry_reconstructs_all_accounts_busy_from_old_daemon(caplog):
     CloneError/GhError reconstruction as the original — a genuine error from
     an old daemon's retry response must not propagate as a raw DaemonError."""
     from datetime import datetime, timezone
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
     from server.ipc.client import DaemonError
 
     reset = datetime(2026, 7, 8, 21, 0, tzinfo=timezone.utc)

@@ -96,7 +96,7 @@ def test_has_live_session_uses_snapshot_survives_concurrent_mutation():
 def test_poller_closure_passes_allow_refresh_false_when_live_session():
     """When has_live_session(name) is True, the poller usage_fn must call
     usage_for(name, allow_refresh=False)."""
-    import ccswitch.accounts as acct_mod
+    import viberpit.accounts as acct_mod
 
     allow_refresh_calls: list[bool] = []
 
@@ -126,7 +126,7 @@ def test_poller_closure_passes_allow_refresh_false_when_live_session():
 def test_poller_closure_passes_allow_refresh_true_when_no_live_session():
     """When has_live_session(name) is False, the poller usage_fn must call
     usage_for(name, allow_refresh=True)."""
-    import ccswitch.accounts as acct_mod
+    import viberpit.accounts as acct_mod
 
     allow_refresh_calls: list[bool] = []
 

@@ -65,7 +65,7 @@ def accounts_manifest_path() -> Path:
     known failure mode is a lost update. Identity metadata (which accounts exist,
     what provider/engine/auth mode each one is) must not share that write pattern,
     so the manifest has ONE writer (the primary/dobby host) and every runner reads
-    the snapshot. See ``ccswitch.account_registry``.
+    the snapshot. See ``viberpit.account_registry``.
     """
     return root() / "accounts.json"
 
@@ -187,7 +187,7 @@ def codex_attachment_staging_dirname(workspace: str | os.PathLike[str]) -> str:
     under, inside *workspace* (a session's cwd). Resolved per workspace by the
     same new-dirs-only rule as :func:`repo_namespace`, so a live session that
     already staged under the legacy name keeps using it. Kept here, not in
-    ``server/codex/driver.py``, so ``src/ccswitch`` never has to import
+    ``server/codex/driver.py``, so ``src/viberpit`` never has to import
     ``server`` to agree on the name; ``worktrees.remove_worktree`` clears
     every spelling in ``brand.CODEX_ATTACHMENTS_DIRNAMES``.
     """

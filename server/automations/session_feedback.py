@@ -28,7 +28,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
-from ccswitch import brand, gitrepos
+from viberpit import brand, gitrepos
 from server.audit import redact_text
 from server.github import ci_issues
 

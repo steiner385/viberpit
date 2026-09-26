@@ -13,7 +13,7 @@ import ast
 import re
 from pathlib import Path
 
-from ccswitch import brand
+from viberpit import brand
 from server.assistant import tools
 from server.assistant.options import assistant_options
 from server.sessions import events
@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCAN = (("server", "*.py"), ("scripts", "*.py"), ("src", "*.py"),
          ("web/src", "*.ts"), ("web/src", "*.tsx"), ("web/e2e", "*.ts"))
 #: Files that OWN a spelling, and so may legitimately contain the literals.
-_BRAND_MODULES = ("src/ccswitch/brand.py", "web/src/brand.ts")
+_BRAND_MODULES = ("src/viberpit/brand.py", "web/src/brand.ts")
 #: Any wire string, in EITHER spelling. The new one is gated as tightly as the old:
 #: the failure this prevents is a hand-typed copy drifting from the constant, and a
 #: copy of the current spelling drifts just as readily as a copy of the legacy one.
@@ -129,7 +129,7 @@ def test_the_gate_would_catch_a_hand_typed_copy():
 
 
 def test_web_brand_matches_python_brand():
-    """web/src/brand.ts is the web mirror of src/ccswitch/brand.py — the two must
+    """web/src/brand.ts is the web mirror of src/viberpit/brand.py — the two must
     never disagree on the wire-visible name (spec §4 risk 2). Both halves of the
     dual-accept are checked: a web app that dropped the legacy prefix would render
     replayed pre-rebrand tool calls as raw `mcp__` names."""

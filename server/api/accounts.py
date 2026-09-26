@@ -25,15 +25,15 @@ from typing import Any, TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from ccswitch.accounts import (list_accounts, provider_of, remove_account,
+from viberpit.accounts import (list_accounts, provider_of, remove_account,
                                set_account_enabled, set_allow_extra_usage, set_nickname,
                                set_weekly_reserve)
-from ccswitch import account_registry, copilot, paths
-from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
-from ccswitch.account_registry import UnknownAccountError
-from ccswitch.config import load_config
-from ccswitch.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
-from ccswitch.selector import at_ceiling, rank_accounts, reserve_pct
+from viberpit import account_registry, copilot, paths
+from viberpit.account_names import assert_valid_account_name, InvalidAccountName
+from viberpit.account_registry import UnknownAccountError
+from viberpit.config import load_config
+from viberpit.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
+from viberpit.selector import at_ceiling, rank_accounts, reserve_pct
 from server.audit import record_audit
 from server.automations.capacity_governor import CapacityGovernor
 from server.automations.capacity_plan import RESERVE_PCT, normalise_push_level, push_level_of
@@ -134,11 +134,11 @@ def _local_cached_usage(name: str):
     """
     from datetime import datetime, timezone
 
-    from ccswitch import ledger
-    from ccswitch.config import load_config
+    from viberpit import ledger
+    from viberpit.config import load_config
 
     with ledger.locked_ledger() as led:
-        # Returns a ccswitch.quota.QuotaSnapshot (or None) — the SAME type
+        # Returns a viberpit.quota.QuotaSnapshot (or None) — the SAME type
         # orch.usage() yields. _safe_usage's callers convert with _usage_to_dict
         # downstream, so returning a raw dict here would break the accounts page.
         return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
@@ -152,7 +152,7 @@ def _local_stale_usage(name: str):
     the fresh path (``_local_cached_usage``, then the daemon RPC) must already
     have failed before this is consulted.
     """
-    from ccswitch import ledger
+    from viberpit import ledger
 
     with ledger.locked_ledger() as led:
         return ledger.stale_usage(led, name, datetime.now(timezone.utc),
@@ -352,7 +352,7 @@ async def account_headroom(orch, *, push_level: str,
 
 
 def _usage_to_dict(usage, stale_as_of: datetime | None = None) -> dict[str, Any] | None:
-    """Convert a ``ccswitch.quota.QuotaSnapshot`` to the wire-format dict.
+    """Convert a ``viberpit.quota.QuotaSnapshot`` to the wire-format dict.
 
     ``windows`` is a LIST, not two named dimensions: a provider reports the
     allowances it actually meters, so an Anthropic account sends session+weekly
@@ -1014,7 +1014,7 @@ async def update_account(
         set_allow_extra_usage(name, bool(body.allowExtraUsage))
     if any(f in body.model_fields_set for f in ("defaultModel", "defaultPermissionMode", "envOverrides", "modelApprovalAction")):
         _validate_env_overrides(body.envOverrides)
-        from ccswitch.accounts import set_account_defaults
+        from viberpit.accounts import set_account_defaults
         set_account_defaults(
             name,
             default_model=body.defaultModel if "defaultModel" in body.model_fields_set else None,

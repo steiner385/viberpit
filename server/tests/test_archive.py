@@ -666,7 +666,7 @@ def test_permanent_delete_containment_guard(tmp_path):
             ])
 
             # Verify archive_dir() / "safe-uuid-1234" stays inside archive_dir().
-            from ccswitch.paths import archive_dir
+            from viberpit.paths import archive_dir
             base = archive_dir().resolve()
             candidate = (base / "safe-uuid-1234").resolve()
             # Should NOT raise ValueError (i.e., is contained).

@@ -439,7 +439,7 @@ def test_url_guard_blocks_dangerous_targets_allows_tailnet():
 def test_compare_status_passes_app_token():
     """_compare_status threads the repo owner's App token to gh_run."""
     import contextlib
-    from ccswitch import gitrepos
+    from viberpit import gitrepos
 
     @contextlib.contextmanager
     def _app_tokens():

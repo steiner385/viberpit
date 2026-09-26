@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from ccswitch import brand
+from viberpit import brand
 from server.auth.identity import client_node_name, host_is_loopback, verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
@@ -137,7 +137,7 @@ def _signing_secret() -> str | bytes:
         return settings.master_key
     # Fall back to the envelope master key (env or keyring) if configured.
     try:
-        from ccswitch.crypto import master_key as _envelope_key  # noqa: PLC0415
+        from viberpit.crypto import master_key as _envelope_key  # noqa: PLC0415
 
         k = _envelope_key()
         if k:

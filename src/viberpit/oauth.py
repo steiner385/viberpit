@@ -14,7 +14,7 @@ from .quota import (QuotaSnapshot, QuotaWindow, SCOPE_MODEL, anthropic_snapshot,
                     _FIVE_HOURS_S, _SEVEN_DAYS_S)
 
 try:
-    _VERSION = importlib.metadata.version("ccswitch")
+    _VERSION = importlib.metadata.version("viberpit")
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover — running from a non-installed tree
     _VERSION = "0.0.0+unknown"
 

@@ -4,14 +4,14 @@ from enum import Enum
 import time
 from typing import TYPE_CHECKING
 
-from ccswitch import brand
+from viberpit import brand
 
 if TYPE_CHECKING:
     # Typing-only, so this module's runtime imports stay free of server.* imports. PromptContext is
     # a leaf TypedDict (server/assistant/context.py imports nothing from
     # server.sessions), so this direction can never form a cycle.
     from server.assistant.context import PromptContext
-    # Same leaf-TypedDict rule: prompt_origin imports only stdlib + ccswitch.brand.
+    # Same leaf-TypedDict rule: prompt_origin imports only stdlib + viberpit.brand.
     from server.sessions.prompt_origin import PromptOrigin
 
 

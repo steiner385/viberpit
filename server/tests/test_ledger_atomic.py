@@ -21,7 +21,7 @@ import os
 
 import pytest
 
-from ccswitch import ledger, paths
+from viberpit import ledger, paths
 
 
 @pytest.fixture()

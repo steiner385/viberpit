@@ -13,8 +13,8 @@ from tests.helpers import temp_env
 
 
 def _seed_account(name, expires_in_ms=10_000_000):
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     now_ms = int(time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-A", "refreshToken": f"{name}-R",
@@ -26,8 +26,8 @@ def _seed_account(name, expires_in_ms=10_000_000):
 class TestMarkReauthenticated(unittest.TestCase):
     def test_clears_needs_reauth_status_and_cached_usage(self):
         with temp_env():
-            from ccswitch import accounts, ledger
-            from ccswitch.quota import anthropic_snapshot
+            from viberpit import accounts, ledger
+            from viberpit.quota import anthropic_snapshot
             _seed_account("kindash")
             # Simulate a dead account: needs-reauth status + stale cached usage.
             now = datetime.now(timezone.utc)
@@ -44,7 +44,7 @@ class TestMarkReauthenticated(unittest.TestCase):
 
     def test_idempotent_on_healthy_account(self):
         with temp_env():
-            from ccswitch import accounts
+            from viberpit import accounts
             _seed_account("primary")
             accounts.mark_reauthenticated("primary")
             result = {a["name"]: a for a in accounts.list_accounts()}["primary"]

@@ -32,7 +32,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch import worktrees, worktrees_janitor
+from viberpit import worktrees, worktrees_janitor
 
 from server.tests.conftest import (
     _drain_real_worktree_violations,

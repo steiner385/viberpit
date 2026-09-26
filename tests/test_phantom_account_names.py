@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from ccswitch import accounts, paths
+from viberpit import accounts, paths
 
 
 def _mk_anthropic(name):
@@ -67,7 +67,7 @@ def test_provider_of_blank_name_is_not_copilot(tmp_path, monkeypatch):
     act on. ``provider_or_none`` is the degrade-gracefully door, and it answers
     None — never a default provider.
     """
-    from ccswitch.account_registry import UnknownAccountError
+    from viberpit.account_registry import UnknownAccountError
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_copilot("copilot1")
@@ -86,7 +86,7 @@ def test_provider_of_unknown_name_does_not_fall_back_to_anthropic(tmp_path, monk
     typo or a stale session row routed straight to the Claude OAuth launch path
     with a credential directory that belonged to nobody.
     """
-    from ccswitch.account_registry import UnknownAccountError
+    from viberpit.account_registry import UnknownAccountError
 
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     _mk_anthropic("work")

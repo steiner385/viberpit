@@ -14,9 +14,9 @@ from claude_agent_sdk import (AssistantMessage, PermissionResultAllow, Permissio
                               ResultMessage, TaskStartedMessage, TaskUpdatedMessage,
                               TaskNotificationMessage, TERMINAL_TASK_STATUSES)
 from claude_agent_sdk._errors import CLIConnectionError
-from ccswitch import brand
-from ccswitch import copilot as _copilot_mod
-from ccswitch.accounts import provider_or_none as _provider_of
+from viberpit import brand
+from viberpit import copilot as _copilot_mod
+from viberpit.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap, format_task_dump
 from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header

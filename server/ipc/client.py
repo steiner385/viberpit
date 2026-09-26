@@ -251,7 +251,7 @@ def reconstruct_create_session_error(exc: DaemonError) -> Exception:
         # see AllAccountsBusy above for the pattern once a caller actually needs to.
         return NoHostAvailable(exc.message)
     if exc.err_type in ("CloneError", "GhError"):
-        from ccswitch import gitrepos
+        from viberpit import gitrepos
         exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
         return exc_cls(exc.message)
     return exc

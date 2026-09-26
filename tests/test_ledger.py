@@ -7,8 +7,8 @@ from tests.helpers import temp_env, usage
 class TestLedger(unittest.TestCase):
     def test_record_and_read_back_usage(self):
         with temp_env():
-            from ccswitch import ledger
-            from ccswitch.config import load_config
+            from viberpit import ledger
+            from viberpit.config import load_config
             cfg = load_config()
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
@@ -19,8 +19,8 @@ class TestLedger(unittest.TestCase):
 
     def test_cache_expires_after_ttl(self):
         with temp_env():
-            from ccswitch import ledger
-            from ccswitch.config import load_config
+            from viberpit import ledger
+            from viberpit.config import load_config
             cfg = load_config()
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
@@ -32,7 +32,7 @@ class TestLedger(unittest.TestCase):
 
     def test_stale_usage_returns_snapshot_and_fetch_time_within_cap(self):
         with temp_env():
-            from ccswitch import ledger
+            from viberpit import ledger
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
                 ledger.record_usage(led, "alpha", usage(session=42.0), now)
@@ -47,7 +47,7 @@ class TestLedger(unittest.TestCase):
 
     def test_stale_usage_none_past_the_cap(self):
         with temp_env():
-            from ccswitch import ledger
+            from viberpit import ledger
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
                 ledger.record_usage(led, "alpha", usage(), now)
@@ -58,14 +58,14 @@ class TestLedger(unittest.TestCase):
 
     def test_stale_usage_none_when_absent(self):
         with temp_env():
-            from ccswitch import ledger
+            from viberpit import ledger
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
                 self.assertIsNone(ledger.stale_usage(led, "nobody", now, max_age_sec=3600))
 
     def test_reservation_lifecycle(self):
         with temp_env():
-            from ccswitch import ledger
+            from viberpit import ledger
             now = time.time()
             with ledger.locked_ledger() as led:
                 ledger.reserve(led, "alpha", now + 100)
@@ -78,7 +78,7 @@ class TestLedger(unittest.TestCase):
 
 def test_weekly_reserve_set_read_clear():
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             ledger.set_weekly_reserve(led, "a", 90.0)
         with ledger.locked_ledger() as led:
@@ -93,7 +93,7 @@ def test_weekly_reserve_set_read_clear():
 
 def test_weekly_reserve_non_numeric_treated_as_unset():
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             led["accounts"]["junk"] = {"weeklyReservePct": "ninety"}
             led["accounts"]["boolish"] = {"weeklyReservePct": True}
@@ -104,7 +104,7 @@ def test_weekly_reserve_non_numeric_treated_as_unset():
 
 def test_list_accounts_includes_weekly_reserve():
     with temp_env():
-        from ccswitch import paths, accounts
+        from viberpit import paths, accounts
         store = paths.store_dir()
         store.mkdir(parents=True, exist_ok=True)
         (store / "a.cred.json").write_text(
@@ -122,7 +122,7 @@ def test_list_accounts_includes_weekly_reserve():
 
 def test_allow_extra_usage_set_read_clear():
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             ledger.set_allow_extra_usage(led, "a", True)
         with ledger.locked_ledger() as led:
@@ -139,7 +139,7 @@ def test_allow_extra_usage_set_read_clear():
 def test_allow_extra_usage_defaults_false_when_absent():
     """Opting in must be explicit: an untouched account never spends credits."""
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             led["accounts"]["fresh"] = {}
             assert ledger.get_allow_extra_usage(led, "fresh") is False
@@ -149,7 +149,7 @@ def test_allow_extra_usage_defaults_false_when_absent():
 
 def test_allow_extra_usage_non_boolean_treated_as_unset():
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             led["accounts"]["junk"] = {"allowExtraUsage": "yes"}
             led["accounts"]["numeric"] = {"allowExtraUsage": 1}
@@ -160,7 +160,7 @@ def test_allow_extra_usage_non_boolean_treated_as_unset():
 
 def test_list_accounts_includes_allow_extra_usage():
     with temp_env():
-        from ccswitch import paths, accounts
+        from viberpit import paths, accounts
         store = paths.store_dir()
         store.mkdir(parents=True, exist_ok=True)
         (store / "a.cred.json").write_text(
@@ -182,7 +182,7 @@ def test_account_enabled_defaults_true_when_absent():
     """A ledger entry with no ``enabled`` key is treated as enabled (back-compat:
     existing ledgers predate the field and must not silently disable accounts)."""
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             led["accounts"]["a"] = {}  # no "enabled" key
             assert ledger.is_account_enabled(led, "a") is True
@@ -192,7 +192,7 @@ def test_account_enabled_defaults_true_when_absent():
 
 def test_set_account_enabled_persists_and_reads_back():
     with temp_env():
-        from ccswitch import ledger
+        from viberpit import ledger
         with ledger.locked_ledger() as led:
             ledger.set_account_enabled(led, "a", False)
         with ledger.locked_ledger() as led:
@@ -206,7 +206,7 @@ def test_set_account_enabled_persists_and_reads_back():
 
 def test_list_accounts_includes_enabled():
     with temp_env():
-        from ccswitch import paths, accounts
+        from viberpit import paths, accounts
         store = paths.store_dir()
         store.mkdir(parents=True, exist_ok=True)
         (store / "a.cred.json").write_text(

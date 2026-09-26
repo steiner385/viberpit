@@ -1,4 +1,4 @@
-from ccswitch.account_names import validate_account_name, assert_valid_account_name, InvalidAccountName
+from viberpit.account_names import validate_account_name, assert_valid_account_name, InvalidAccountName
 import pytest
 
 

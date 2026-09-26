@@ -46,7 +46,7 @@ class TestAddAccountCapturesClaudioJson(unittest.TestCase):
     def test_add_account_captures_claude_json_to_store(self):
         """add_account must copy .claude.json from the capture dir to store/<name>.claude.json."""
         with temp_env():
-            from ccswitch import accounts, paths
+            from viberpit import accounts, paths
             cred_data = {
                 "claudeAiOauth": {
                     "accessToken": "A", "refreshToken": "R",
@@ -72,7 +72,7 @@ class TestAddAccountCapturesClaudioJson(unittest.TestCase):
     def test_add_account_stored_claude_json_has_mode_0600(self):
         """store/<name>.claude.json must be written with mode 0600."""
         with temp_env():
-            from ccswitch import accounts, paths
+            from viberpit import accounts, paths
             cred_data = {
                 "claudeAiOauth": {
                     "accessToken": "A", "refreshToken": "R",
@@ -94,7 +94,7 @@ class TestAddAccountCapturesClaudioJson(unittest.TestCase):
     def test_add_account_merges_shareable_keys_into_shared_store(self):
         """Shareable keys from the captured .claude.json are merged into store/claude.shared.json."""
         with temp_env():
-            from ccswitch import accounts, paths
+            from viberpit import accounts, paths
             cred_data = {
                 "claudeAiOauth": {
                     "accessToken": "A", "refreshToken": "R",
@@ -129,8 +129,8 @@ class TestAddAccountCapturesClaudioJson(unittest.TestCase):
     def test_add_account_merges_shared_preserves_existing_keys(self):
         """Merging into claude.shared.json preserves keys from previously added accounts."""
         with temp_env():
-            from ccswitch import accounts, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import accounts, paths
+            from viberpit.creds import write_json_secure
 
             # pre-seed shared with an existing server from a prior account
             write_json_secure(paths.shared_claude_json_path(), {
@@ -163,7 +163,7 @@ class TestAddAccountCapturesClaudioJson(unittest.TestCase):
     def test_add_account_no_claude_json_does_not_raise(self):
         """If the capture dir has no .claude.json (old binary), add_account must not raise."""
         with temp_env():
-            from ccswitch import accounts, paths
+            from viberpit import accounts, paths
             cred_data = {
                 "claudeAiOauth": {
                     "accessToken": "A", "refreshToken": "R",

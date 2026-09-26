@@ -30,7 +30,7 @@ import logging
 from collections.abc import Iterable
 from typing import Any, Final
 
-from ccswitch import account_registry, ledger
+from viberpit import account_registry, ledger
 from server.codex.auth_types import AuthorizationRecord, AuthorizationSync
 from server.obs.context import log_event
 
@@ -77,7 +77,7 @@ def _enabled_flags() -> dict[str, bool]:
     """``{account: enabled}`` from the ledger, or an empty map on a read fault.
 
     An empty map means "the manifest mirror decides", which is the same degrade
-    the rest of ``src/ccswitch`` takes on a store-mount fault: the account store
+    the rest of ``src/viberpit`` takes on a store-mount fault: the account store
     lives on an sshfs mount whose transient EIO is an observed failure (#1005),
     and an authorization sync must degrade rather than mass-disable the fleet.
     """

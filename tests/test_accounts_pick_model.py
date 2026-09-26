@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 from tests.helpers import temp_env, usage
 
-from ccswitch import accounts
-from ccswitch.config import load_config
-from ccswitch.selector import Picked
+from viberpit import accounts
+from viberpit.config import load_config
+from viberpit.selector import Picked
 
 
 class TestPickModel(unittest.TestCase):

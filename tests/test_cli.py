@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest import mock
 from tests.helpers import temp_env
-from ccswitch import brand
+from viberpit import brand
 
 _TEST_KEY_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
@@ -13,15 +13,15 @@ class TestFmtReset(unittest.TestCase):
     'fresh' state when there is no active window (resets_at is None/empty)."""
 
     def test_none_renders_fresh(self):
-        from ccswitch.cli import _fmt_reset
+        from viberpit.cli import _fmt_reset
         self.assertEqual(_fmt_reset(None, "America/New_York"), "fresh")
 
     def test_empty_string_renders_fresh(self):
-        from ccswitch.cli import _fmt_reset
+        from viberpit.cli import _fmt_reset
         self.assertEqual(_fmt_reset("", "America/New_York"), "fresh")
 
     def test_iso_rendered_in_local_tz(self):
-        from ccswitch.cli import _fmt_reset
+        from viberpit.cli import _fmt_reset
         # 18:30 UTC -> 13:30 (1:30 PM) in America/New_York (EST, UTC-5).
         out = _fmt_reset("2026-01-15T18:30:00+00:00", "America/New_York")
         self.assertEqual(out, "Thu 1:30 PM EST")
@@ -30,25 +30,25 @@ class TestFmtReset(unittest.TestCase):
 class TestCli(unittest.TestCase):
     def test_list_runs(self):
         with temp_env():
-            from ccswitch import cli
+            from viberpit import cli
             self.assertEqual(cli.main(["list"]), 0)
 
     def test_add_invokes_capture(self):
         with temp_env():
-            from ccswitch import cli, accounts
+            from viberpit import cli, accounts
             with mock.patch.object(accounts, "add_account") as add:
                 self.assertEqual(cli.main(["add", "alpha"]), 0)
                 add.assert_called_once_with("alpha", email=None)
 
     def _seed(self, name):
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.slot_path(name), {"accessToken": "a", "refreshToken": "r",
                                                   "expiresAt": 9_999_999_999_999, "subscriptionType": "max"})
 
     def test_list_refreshes_usage_by_default(self):
         with temp_env():
-            from ccswitch import cli, accounts
+            from viberpit import cli, accounts
             from tests.helpers import usage
             self._seed("alpha")
             with mock.patch.object(accounts, "usage_for", return_value=usage(session=12.0)) as uf:
@@ -57,7 +57,7 @@ class TestCli(unittest.TestCase):
 
     def test_list_no_refresh_skips_fetch(self):
         with temp_env():
-            from ccswitch import cli, accounts
+            from viberpit import cli, accounts
             self._seed("alpha")
             with mock.patch.object(accounts, "usage_for") as uf:
                 self.assertEqual(cli.main(["list", "--no-refresh"]), 0)
@@ -66,8 +66,8 @@ class TestCli(unittest.TestCase):
 
 class TestCliUse(unittest.TestCase):
     def _seed(self, name):
-        from ccswitch import paths
-        from ccswitch.creds import write_json_secure
+        from viberpit import paths
+        from viberpit.creds import write_json_secure
         write_json_secure(paths.slot_path(name), {"accessToken": "a", "refreshToken": "r",
                                                   "expiresAt": 9_999_999_999_999, "subscriptionType": "max"})
         write_json_secure(paths.shared_mcp_path(), {})
@@ -75,7 +75,7 @@ class TestCliUse(unittest.TestCase):
     def test_use_named_prints_export(self):
         import contextlib, io
         with temp_env():
-            from ccswitch import cli, paths
+            from viberpit import cli, paths
             self._seed("secondary")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -89,7 +89,7 @@ class TestCliUse(unittest.TestCase):
     def test_use_dir_prints_only_path(self):
         import contextlib, io
         with temp_env():
-            from ccswitch import cli, paths
+            from viberpit import cli, paths
             self._seed("secondary")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -101,14 +101,14 @@ class TestCliUse(unittest.TestCase):
 
     def test_use_unknown_account_errors(self):
         with temp_env():
-            from ccswitch import cli
+            from viberpit import cli
             self._seed("secondary")
             self.assertEqual(cli.main(["use", "nope"]), 1)
 
     def test_use_default_picks_best(self):
         import contextlib, io
         with temp_env():
-            from ccswitch import cli, accounts
+            from viberpit import cli, accounts
             self._seed("alpha"); self._seed("beta")
             from tests.helpers import usage
             with mock.patch.object(accounts, "usage_for",
@@ -144,7 +144,7 @@ class TestClonesCommands(unittest.TestCase):
         import os
         from contextlib import redirect_stdout
 
-        from ccswitch import cli
+        from viberpit import cli
 
         old = os.environ.get("VIBERPIT_REPO_ROOT")
         os.environ["VIBERPIT_REPO_ROOT"] = str(self.root)
@@ -164,7 +164,7 @@ class TestClonesCommands(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("cairnea/KinDash", out)
         self.assertIn("MISSING", out)
-        self.assertIn("ccswitch clones repair", out)
+        self.assertIn("viberpit clones repair", out)
 
     def test_doctor_json_lists_broken_worktrees(self):
         import json
@@ -216,7 +216,7 @@ class TestCliReauth(unittest.TestCase):
     """
 
     def test_no_key_refuses_without_starting_the_exchange(self):
-        from ccswitch import cli, setup_token_oauth
+        from viberpit import cli, setup_token_oauth
 
         os.environ.pop("VIBERPIT_MASTER_KEY", None)
         with temp_env():
@@ -229,7 +229,7 @@ class TestCliReauth(unittest.TestCase):
         import io
         import contextlib
 
-        from ccswitch import cli, setup_token_oauth
+        from viberpit import cli, setup_token_oauth
 
         old = os.environ.get("VIBERPIT_MASTER_KEY")
         os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
@@ -259,7 +259,7 @@ class TestCliReauth(unittest.TestCase):
         self.assertIn("recovered", buf.getvalue())
 
     def test_invalid_code_does_not_store_anything(self):
-        from ccswitch import cli, setup_token_oauth
+        from viberpit import cli, setup_token_oauth
 
         old = os.environ.get("VIBERPIT_MASTER_KEY")
         os.environ["VIBERPIT_MASTER_KEY"] = _TEST_KEY_B64
@@ -303,7 +303,7 @@ class TestLintCommands(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
 
-        from ccswitch import cli
+        from viberpit import cli
 
         buf = io.StringIO()
         with temp_env(), redirect_stdout(buf):

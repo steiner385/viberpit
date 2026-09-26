@@ -7,7 +7,7 @@ import logging
 import zipfile
 from types import SimpleNamespace
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 from server.github.actions_api import (
     junit_artifacts, list_completed_runs, list_jobs, repo_ci_meta, workflow_texts,
 )

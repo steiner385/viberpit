@@ -495,7 +495,7 @@ fi
 # Any non-zero count in the last hour is worth an alert: the healthy steady state is 0.
 CONFIG_TORN_WARN="${VIBERPIT_CONFIG_TORN_WARN:-${CCSWITCH_CONFIG_TORN_WARN:-1}}"
 config_counts=$(cd "$HEALTH_REPO_ROOT" 2>/dev/null && timeout 15 "$HEALTH_PYTHON" - <<'PY' 2>/dev/null
-from ccswitch import accounts, configdir
+from viberpit import accounts, configdir
 from server.sessions.scratch_config import recent_torn_reads
 
 try:

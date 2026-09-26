@@ -6,7 +6,7 @@ real profile (spec 2026-09-04-reauth-profile-fidelity-design.md).
 """
 import socket
 
-from ccswitch.auth_login import session_bus_env
+from viberpit.auth_login import session_bus_env
 
 
 def _bus(tmp_path, uid=1000):

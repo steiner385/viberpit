@@ -14,14 +14,14 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(time.time() * 1000) + 9_000_000, "subscriptionType": "max",

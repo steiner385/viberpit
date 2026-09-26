@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -23,8 +23,8 @@ def _seed_account(name: str) -> None:
     """Mirrors test_assistant_orchestrator.py's helper: a real cred slot so
     ``select_account`` (unpatched paths in ``_isolated_dir_for``) has something
     to isolate."""
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok", "refreshToken": f"{name}-ref",
         "expiresAt": int(time.time() * 1000) + 9_000_000, "subscriptionType": "max",

@@ -8,7 +8,7 @@ import socket
 import sys
 from pathlib import Path
 
-from ccswitch import auth_login, paths
+from viberpit import auth_login, paths
 
 FAKE = str(
     Path(__file__).parent.parent / "server" / "tests" / "fakes" / "fake_claude_login.py"

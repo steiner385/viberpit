@@ -335,7 +335,7 @@ def _reset_gh_credential_health():
     # unauthenticated" (#2052), and any test whose fake gh returns a 401 would
     # otherwise leave every LATER test on that xdist worker having its gh calls
     # suppressed — an order-dependent failure that looks nothing like its cause.
-    from ccswitch import gh_credential
+    from viberpit import gh_credential
     gh_credential.host_health().reset()
     yield
     gh_credential.host_health().reset()
@@ -436,7 +436,7 @@ _REAL_STORE = (Path.home() / ".claude-accounts").resolve()
 
 
 def _install_real_store_write_guard():
-    import ccswitch.creds as _creds
+    import viberpit.creds as _creds
 
     _orig = _creds.write_json_secure
 
@@ -464,10 +464,10 @@ def _install_real_store_write_guard():
     # function-local imports) plus the src modules that captured it at import
     # time via `from .creds import write_json_secure`.
     for _modname in (
-        "ccswitch.creds",
-        "ccswitch.configdir",
-        "ccswitch.auth_login",
-        "ccswitch.accounts",
+        "viberpit.creds",
+        "viberpit.configdir",
+        "viberpit.auth_login",
+        "viberpit.accounts",
     ):
         try:
             _m = importlib.import_module(_modname)
@@ -540,7 +540,7 @@ def _record_real_worktree_access(what: str, path) -> RuntimeError:
 
 
 def _install_real_worktree_guard():
-    from ccswitch import worktree_transfer, worktrees, worktrees_janitor
+    from viberpit import worktree_transfer, worktrees, worktrees_janitor
 
     _orig_remove = worktrees.remove_worktree
     if getattr(_orig_remove, "_is_real_worktree_guard", False):

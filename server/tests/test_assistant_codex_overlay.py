@@ -18,8 +18,8 @@ from typing import Any
 
 import pytest
 
-from ccswitch import brand
-from ccswitch.engines import AgentEngine
+from viberpit import brand
+from viberpit.engines import AgentEngine
 from server.assistant import options_codex as oc
 from server.assistant.options import assistant_options, assistant_overlay_for
 from server.assistant.prompt import (ASSISTANT_SYSTEM_PROMPT,

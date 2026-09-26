@@ -1,4 +1,4 @@
-"""Tests for ccswitch.clone_doctor — the #1003 clone guard + worktree recovery.
+"""Tests for viberpit.clone_doctor — the #1003 clone guard + worktree recovery.
 
 These run against REAL git (constitution III): the whole point is that
 ``git worktree repair`` alone cannot recover a worktree whose clone was deleted,
@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ccswitch import clone_doctor, gitrepos, worktrees
+from viberpit import clone_doctor, gitrepos, worktrees
 
 
 def _git(*args: str, cwd: str) -> subprocess.CompletedProcess:
@@ -276,7 +276,7 @@ class CloneDoctorTests(unittest.TestCase):
 
     def test_remove_clone_logs_the_block_with_counts(self) -> None:
         self._add_worktree()
-        with self.assertLogs("ccswitch.clone_doctor", level="ERROR") as logs:
+        with self.assertLogs("viberpit.clone_doctor", level="ERROR") as logs:
             with self.assertRaises(clone_doctor.CloneInUseError):
                 clone_doctor.remove_clone(str(self.root), self.clone, reason="pytest")
         line = "\n".join(logs.output)
@@ -285,7 +285,7 @@ class CloneDoctorTests(unittest.TestCase):
         self.assertIn("reason=pytest", line)
 
     def test_remove_clone_allows_unreferenced_clone_and_audits_it(self) -> None:
-        with self.assertLogs("ccswitch.clone_doctor", level="INFO") as logs:
+        with self.assertLogs("viberpit.clone_doctor", level="INFO") as logs:
             result = clone_doctor.remove_clone(
                 str(self.root), self.clone, reason="operator cleanup")
         self.assertTrue(result["removed"])
@@ -296,7 +296,7 @@ class CloneDoctorTests(unittest.TestCase):
 
     def test_remove_clone_force_overrides_but_warns(self) -> None:
         self._add_worktree()
-        with self.assertLogs("ccswitch.clone_doctor", level="WARNING") as logs:
+        with self.assertLogs("viberpit.clone_doctor", level="WARNING") as logs:
             result = clone_doctor.remove_clone(
                 str(self.root), self.clone, reason="test", force=True)
         self.assertTrue(result["removed"])

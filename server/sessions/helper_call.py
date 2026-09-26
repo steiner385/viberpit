@@ -47,7 +47,7 @@ Failure classification is delegated to :func:`server.sessions.failure.classify`
 
 State is process-global and in-memory: helper calls run only in the single
 daemon event loop, so no cross-process sharing (unlike the usage-fetch cooldown
-in ``ccswitch.ledger``, a different concern) and no lock is needed.
+in ``viberpit.ledger``, a different concern) and no lock is needed.
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
-from ccswitch import ledger as _ledger
+from viberpit import ledger as _ledger
 
 from . import failure
 
@@ -98,7 +98,7 @@ def _account_cfg_dir(name: str) -> str | None:
     the same string ``run_helper_call`` receives as ``account_key``.
     """
     try:
-        from ccswitch import paths as _paths
+        from viberpit import paths as _paths
         return str(_paths.account_cfg_dir(name))
     except Exception:
         return None
@@ -146,7 +146,7 @@ def _pick_enabled_account(provider: str) -> str | None:
     rather than raising out of a best-effort helper call.
     """
     try:
-        from ccswitch import accounts as _accts
+        from viberpit import accounts as _accts
         for name, acct_provider in _accts.all_accounts():
             if acct_provider != provider:
                 continue
@@ -182,7 +182,7 @@ def pick_helper_openai_account() -> str | None:
     """
     return _pick_enabled_account("openai")
 
-# Backoff budget: 3 retries at 1s/2s/4s. Mirrors ccswitch.config.retry_max_retries.
+# Backoff budget: 3 retries at 1s/2s/4s. Mirrors viberpit.config.retry_max_retries.
 _MAX_RETRIES = 3
 _BASE_DELAY_S = 1.0
 

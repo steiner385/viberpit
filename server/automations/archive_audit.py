@@ -13,7 +13,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 from .base import AutomationStatus, ConfigField
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar

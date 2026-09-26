@@ -6,7 +6,7 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               RateLimitEvent, TaskStartedMessage, TaskProgressMessage,
                               TaskUpdatedMessage, TaskNotificationMessage,
                               TERMINAL_TASK_STATUSES)
-from ccswitch import brand
+from viberpit import brand
 from . import events as ev
 from .completion import (has_completion_marker, parse_hand_back, parse_hand_back_marker,
                          parse_mark_no_pr, resolution_from_text)

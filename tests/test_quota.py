@@ -1,8 +1,8 @@
 """The QuotaSnapshot contract: window lists, binding window, availability."""
 from datetime import datetime, timedelta, timezone
 
-from ccswitch import quota
-from ccswitch.quota import (AUTH_ERROR, AVAILABLE, QuotaSnapshot, QuotaWindow,
+from viberpit import quota
+from viberpit.quota import (AUTH_ERROR, AVAILABLE, QuotaSnapshot, QuotaWindow,
                             SCOPE_MODEL, UNKNOWN, UNSUPPORTED, anthropic_snapshot,
                             copilot_snapshot, unknown_snapshot)
 

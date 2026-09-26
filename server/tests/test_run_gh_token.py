@@ -1,6 +1,6 @@
 import os
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 
 def test_run_gh_sets_gh_token_when_provided(monkeypatch):

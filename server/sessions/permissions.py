@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio, logging, os, time, uuid as _uuid
 from pathlib import Path
 
-from ccswitch import paths as _paths
+from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
 
 log = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def resolve_permission_mode(db, *, explicit: str | None = None,
     if explicit:
         return explicit
     if account:
-        from ccswitch import ledger as _ledger
+        from viberpit import ledger as _ledger
         with _ledger.locked_ledger() as led:
             acct_mode = _ledger.get_account_defaults(led, account).get("defaultPermissionMode")
         if acct_mode:

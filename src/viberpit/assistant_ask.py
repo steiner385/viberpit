@@ -16,16 +16,18 @@ import json
 import sys
 from typing import Any, TextIO
 
-from ccswitch import assistant_mcp
+from viberpit import assistant_mcp, brand
 
 # Same defaults as `ccswitch mcp` — both are external `ccas2:` clients of the same edge,
 # and a second pair of constants would just be a second thing to keep in sync.
 DEFAULT_URL = assistant_mcp.DEFAULT_URL
 DEFAULT_TOKEN_ENV = assistant_mcp.DEFAULT_TOKEN_ENV
 
+_P = brand.CLI_NAME
+
 _NEEDS_SERVER_EXTRA = (
-    "ccswitch ask: reaching the assistant needs httpx and websockets — install "
-    "them with `pip install 'ccswitch[server]'`"
+    f"{_P} ask: reaching the assistant needs httpx and websockets — install "
+    "them with `pip install 'viberpit[server]'`"
 )
 
 
@@ -114,7 +116,7 @@ async def run_ask(
                                   transport=http_transport) as http:
         resp = await http.post("/api/assistant/session", json={"fresh": fresh})
         if resp.status_code not in (200, 201):
-            print(f"ccswitch ask: could not open the assistant thread "
+            print(f"{_P} ask: could not open the assistant thread "
                   f"(HTTP {resp.status_code}): {resp.text[:200]}", file=err)
             return 1
         session_id = resp.json()["id"]
@@ -164,7 +166,7 @@ def _finish(result: AskResult, *, json_out: bool, out: TextIO, err: TextIO) -> i
     else:
         print(file=out)  # the streamed text has no trailing newline of its own
         if result.failure is not None:
-            print(f"ccswitch ask: turn failed: {result.failure}", file=err)
+            print(f"{_P} ask: turn failed: {result.failure}", file=err)
     return 1 if result.failure is not None else 0
 
 
@@ -173,7 +175,7 @@ def run(args: argparse.Namespace) -> int:
 
     token = os.environ.get(args.token_env, "").strip()
     if not token:
-        print(f"ccswitch ask: no token in ${args.token_env} — mint one with "
+        print(f"{_P} ask: no token in ${args.token_env} — mint one with "
               f"`POST /api/assistant/tokens` and export it", file=sys.stderr)
         return 2
 

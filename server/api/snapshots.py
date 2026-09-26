@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ccswitch import brand
+from viberpit import brand
 from server.auth.middleware import current_identity
 from server.library import snapshots
 

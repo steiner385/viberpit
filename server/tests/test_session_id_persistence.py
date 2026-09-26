@@ -1,6 +1,6 @@
 """Tests for Task 1: persist engine_session_id to DB the moment the driver captures it."""
 import asyncio
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd

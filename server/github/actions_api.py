@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 from .host_failures import log_gh_failure
 

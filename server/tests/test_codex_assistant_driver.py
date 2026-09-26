@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 from server.assistant import options_codex as oc
 from server.codex import schema
 from server.sessions import events as ev

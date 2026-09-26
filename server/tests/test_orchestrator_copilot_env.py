@@ -112,7 +112,7 @@ def test_factory_closure_injects_copilot_env(tmp_path):
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
@@ -142,7 +142,7 @@ async def test_create_session_calls_ensure(tmp_path):
         seen["extra_env"] = extra_env
         return _inner(cwd, cfg, cut, mode, resume, extra_env=extra_env, on_pre_compact=on_pre_compact)
 
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
     from server.db import init_db
 
     env_patch = patch.dict(os.environ, {
@@ -234,7 +234,7 @@ async def test_create_session_start_failure_leaves_no_record(tmp_path):
     def failing_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
         return _FailingSDKClient([])
 
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
     from server.db import init_db
 
     env_patch = patch.dict(os.environ, {

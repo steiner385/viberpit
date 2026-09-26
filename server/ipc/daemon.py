@@ -13,7 +13,7 @@ from collections import deque
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from server.ipc import protocol as proto
-from ccswitch import brand
+from viberpit import brand
 
 log = logging.getLogger("server.ipc.daemon")
 

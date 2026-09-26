@@ -7,7 +7,7 @@ they must NOT share is a duplicated copy of these primitives. The permission lay
 keys its read/mutation/destructive rule on ``annotation_for``, so every surface
 registers its spec table here and the lookup consults all of them.
 
-The wire name itself is NOT spelled here: ``src/ccswitch/brand.py`` owns it, and the
+The wire name itself is NOT spelled here: ``src/viberpit/brand.py`` owns it, and the
 names below are aliases so a reader of this module does not have to know which of the
 two dual-accept prefixes is the emitted one.
 """
@@ -20,9 +20,9 @@ from typing import Any
 
 from mcp.types import ToolAnnotations
 
-from ccswitch.brand import MCP_SERVER_NAME as SERVER_NAME
-from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
-from ccswitch.brand import MCP_TOOL_PREFIXES, is_mcp_tool, mcp_tool_stem
+from viberpit.brand import MCP_SERVER_NAME as SERVER_NAME
+from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from viberpit.brand import MCP_TOOL_PREFIXES, is_mcp_tool, mcp_tool_stem
 
 __all__ = ["MCP_PREFIX", "MCP_TOOL_PREFIXES", "SERVER_NAME", "ToolArgError", "ToolClass",
            "ToolSpec", "annotation_for", "annotations_for", "is_mcp_tool",

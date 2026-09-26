@@ -41,7 +41,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from ccswitch import paths as _paths
+from viberpit import paths as _paths
 
 from server.sessions.adopt import (
     ProcInfo,

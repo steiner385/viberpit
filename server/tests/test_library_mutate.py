@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import paths
+from viberpit import paths
 from server.library import mutate, scan
 
 
@@ -79,7 +79,7 @@ def test_mcp_crud(shared: Path):
 
 
 def test_mcp_preserves_other_shared_keys(shared: Path):
-    from ccswitch.creds import write_json_secure
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.shared_claude_json_path(), {"projects": {"/x": {}}})
     mutate.put_mcp_server("srv", {"command": "bin"})
     data = json.loads(paths.shared_claude_json_path().read_text())
@@ -105,7 +105,7 @@ def test_set_plugin_enabled_corrupt_settings_raises(shared: Path):
 
 
 def test_put_mcp_server_corrupt_shared_raises(shared: Path):
-    from ccswitch import paths as cpaths
+    from viberpit import paths as cpaths
     shared_path = cpaths.shared_claude_json_path()
     shared_path.parent.mkdir(parents=True, exist_ok=True)
     shared_path.write_text("not json")
@@ -115,7 +115,7 @@ def test_put_mcp_server_corrupt_shared_raises(shared: Path):
 
 
 def test_delete_mcp_server_corrupt_shared_raises(shared: Path):
-    from ccswitch import paths as cpaths
+    from viberpit import paths as cpaths
     shared_path = cpaths.shared_claude_json_path()
     shared_path.parent.mkdir(parents=True, exist_ok=True)
     shared_path.write_text("not json")

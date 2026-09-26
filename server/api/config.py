@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy import select as sa_select
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import db_session

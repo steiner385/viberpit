@@ -56,8 +56,8 @@ from typing import Any
 from claude_agent_sdk import SdkMcpTool
 from claude_agent_sdk import _python_type_to_json_schema
 
-from ccswitch import brand
-from ccswitch import paths as _paths
+from viberpit import brand
+from viberpit import paths as _paths
 from server.codex import schema
 from server.codex.permissions import ASSISTANT_PROFILE
 

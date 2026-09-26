@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch.selector import Picked
+from viberpit.selector import Picked
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator

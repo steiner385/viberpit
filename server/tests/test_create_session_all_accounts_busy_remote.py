@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ccswitch.selector import AllAccountsBusy
+from viberpit.selector import AllAccountsBusy
 from server.ipc.client import DaemonClient, DaemonError
 from server.sessions.remote import RemoteOrchestrator
 

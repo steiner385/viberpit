@@ -11,7 +11,7 @@ from typing import Any, Callable
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from ccswitch import brand
+from viberpit import brand
 from server.db import db_session
 from server.db.models import (
     DISPATCH_KINDS,
@@ -133,7 +133,7 @@ def _account_defaults_for(account: str) -> dict:
     Mirrors server/api/sessions.py's account-default resolution (same ledger call,
     same lock) so the two cannot disagree about what an operator pinned.
     """
-    from ccswitch import ledger as _ledger
+    from viberpit import ledger as _ledger
 
     with _ledger.locked_ledger() as _led:
         return _ledger.get_account_defaults(_led, account) or {}

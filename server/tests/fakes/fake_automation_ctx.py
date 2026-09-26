@@ -27,7 +27,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 
 class FakeAutomationContext:

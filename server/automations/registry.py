@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from ccswitch import brand
+from viberpit import brand
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 

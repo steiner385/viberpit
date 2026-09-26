@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from typing import Callable
 
-from ccswitch import brand
+from viberpit import brand
 
 Run = Callable[..., subprocess.CompletedProcess]
 _SUFFIXES = {'edge': '', 'daemon': '-daemon', 'controller': '-deploy-controller'}

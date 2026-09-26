@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json as _json
 
-from ccswitch import brand
+from viberpit import brand
 
 from .types import Finding, GateThresholds
 

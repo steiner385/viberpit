@@ -6,7 +6,7 @@ import pytest
 from server.sessions.engine import AgentEngine
 from server.sessions.model_policy import quota_model
 
-from ccswitch import paths
+from viberpit import paths
 
 
 @pytest.mark.parametrize("model, expected", [

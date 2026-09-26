@@ -40,7 +40,7 @@ class FakeX11:
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.quota import anthropic_snapshot
+    from viberpit.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
     return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
@@ -99,7 +99,7 @@ def spawn_env(tmp_path):
     cfg_dir = tmp_path / "cfg" / "acct"; cfg_dir.mkdir(parents=True)
     (tmp_path / "repos").mkdir()
     db_url = f"sqlite+aiosqlite:///{tmp_path / 't.db'}"
-    from ccswitch.selector import Picked
+    from viberpit.selector import Picked
     patches = [
         patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path / "home"),
                                 "CLAUDE_CONFIG_DIR": str(shared), "VIBERPIT_DB_URL": db_url,

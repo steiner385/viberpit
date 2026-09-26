@@ -24,7 +24,7 @@ class TestJanitorLoop:
     async def test_janitor_sweep_once_collects_records_and_worktrees(self, tmp_path):
         """Both _records (rehydrated idle sessions) and _worktrees (live drivers)
         must contribute their cwds to the live_cwds frozenset."""
-        from ccswitch.worktrees import WorktreeInfo
+        from viberpit.worktrees import WorktreeInfo
 
         orch = await _build_orch(tmp_path)
         # Fake a record (rehydrated idle, no driver)

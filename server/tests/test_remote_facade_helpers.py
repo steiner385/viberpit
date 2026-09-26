@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from unittest import mock
 import pytest
-from ccswitch.quota import anthropic_snapshot
+from viberpit.quota import anthropic_snapshot
 from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc

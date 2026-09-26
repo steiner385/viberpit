@@ -1,4 +1,4 @@
-"""UsagePoller — async wrapper around ccswitch.accounts.usage_for.
+"""UsagePoller — async wrapper around viberpit.accounts.usage_for.
 
 Responsibilities:
 - Deduplicate concurrent per-account fetches (one in-flight request per account).
@@ -22,9 +22,9 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from ccswitch.accounts import list_accounts
-from ccswitch.accounts import usage_for as _default_usage_fn
-from ccswitch.quota import QuotaSnapshot
+from viberpit.accounts import list_accounts
+from viberpit.accounts import usage_for as _default_usage_fn
+from viberpit.quota import QuotaSnapshot
 
 from server.aio import cancel_and_reap
 
@@ -37,7 +37,7 @@ class UsagePoller:
     Args:
         poll_interval: Seconds between background sweeps (default 60).
         usage_fn: Callable ``(account: str) -> QuotaSnapshot | None``.  Defaults to
-            ``ccswitch.accounts.usage_for``; replace in tests with a fake.
+            ``viberpit.accounts.usage_for``; replace in tests with a fake.
     """
 
     def __init__(

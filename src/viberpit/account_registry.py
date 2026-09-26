@@ -31,7 +31,7 @@ Vocabularies
 integration plan's "Fixed contracts" block and are defined ONCE, here.
 
 ``engine`` is deliberately **nullable** and is not re-declared here. The engine
-vocabulary's single definition is ``ccswitch.engines.AgentEngine``; the server
+vocabulary's single definition is ``viberpit.engines.AgentEngine``; the server
 driver registry re-exports that same enum. An entry stores ``engine=None`` to
 mean "resolve through the engine registry", which
 ``parse_agent_engine(None, legacy_default=True)`` answers as ``claude_code``.

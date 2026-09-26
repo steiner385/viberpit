@@ -18,8 +18,8 @@ import httpx
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-import ccswitch
-from ccswitch import assistant_mcp
+import viberpit
+from viberpit import assistant_mcp
 
 
 def _api(handler, **kw):
@@ -116,7 +116,7 @@ async def test_calling_a_withheld_mutation_is_an_error():
 
 
 def test_cli_requires_a_token(monkeypatch, capsys):
-    from ccswitch import cli
+    from viberpit import cli
 
     monkeypatch.delenv("VIBERPIT_ASSISTANT_TOKEN", raising=False)
     assert cli.main(["mcp", "--url", "http://127.0.0.1:1"]) == 2
@@ -126,7 +126,7 @@ def test_cli_requires_a_token(monkeypatch, capsys):
 
 def test_cli_reads_the_named_token_env_var(monkeypatch, capsys):
     """`--token-env` names the variable; its absence is reported by NAME."""
-    from ccswitch import cli
+    from viberpit import cli
 
     monkeypatch.delenv("MY_TOKEN", raising=False)
     assert cli.main(["mcp", "--token-env", "MY_TOKEN"]) == 2
@@ -161,7 +161,7 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     the server instead: `stdio_server`'s reader closes the read stream at EOF, ending
     the session loop, which cancels a request it has dispatched but not yet answered.
     """
-    src_root = str(Path(ccswitch.__file__).resolve().parents[1])
+    src_root = str(Path(viberpit.__file__).resolve().parents[1])
     repo_root = str(Path(__file__).resolve().parents[1])   # `server` package lives here
     env = {**os.environ,
            "PYTHONPATH": os.pathsep.join([src_root, repo_root]),
@@ -175,7 +175,7 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     ]
 
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import sys; from ccswitch.cli import main; sys.exit(main())",
+        [sys.executable, "-c", "import sys; from viberpit.cli import main; sys.exit(main())",
          "mcp", "--url", "http://127.0.0.1:1"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=env)
@@ -225,12 +225,12 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     assert "list_sessions" in tools and "archive_session" not in tools
     assert tools["get_session"]["inputSchema"]["properties"] == {"id": {"type": "string"}}
     assert tools["get_session"]["annotations"]["readOnlyHint"] is True
-    assert "ccswitch mcp: serving read-only tools" in stderr
+    assert "viberpit mcp: serving read-only tools" in stderr
 
 
 def test_cli_serves_and_banners_on_stderr(monkeypatch, capsys):
     """The banner must never touch stdout: stdout IS the JSON-RPC channel."""
-    from ccswitch import cli
+    from viberpit import cli
 
     served = {}
 

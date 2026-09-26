@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from ccswitch import brand
+from viberpit import brand
 
 from server.assistant.context import render_context_header, strip_context_header
 from server.assistant.tools import TOOL_SPECS, ToolClass, ToolSpec, annotation_for

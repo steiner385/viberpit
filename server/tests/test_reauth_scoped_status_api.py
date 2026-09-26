@@ -14,7 +14,7 @@ from server.api.accounts import router
 from server.auth.middleware import current_identity
 from server.reauth import ReauthManager, ReauthState
 from server.reauth_remote import InProcessReauthAdapter
-from ccswitch import paths
+from viberpit import paths
 
 
 def _make_client(tmp_home, monkeypatch, *, state: ReauthState):

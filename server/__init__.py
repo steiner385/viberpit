@@ -7,6 +7,6 @@
 # process can mirror — strictly earlier than app.py could. It is idempotent, so
 # the per-entrypoint calls (server/ipc, server/deploy, server/codex.auth_main,
 # alembic env.py, Settings) are cheap no-ops after it.
-from ccswitch.env_compat import mirror_legacy_env
+from viberpit.env_compat import mirror_legacy_env
 
 mirror_legacy_env()

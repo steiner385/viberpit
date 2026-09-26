@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from ccswitch import brand
+from viberpit import brand
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "bin-viberpit-mounts.sh"

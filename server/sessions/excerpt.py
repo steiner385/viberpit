@@ -15,7 +15,7 @@ guidance files quote the marker's wording, so a prompt reader knows what it is.
 """
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 
 
 def elide_middle(text: str, max_chars: int) -> str:

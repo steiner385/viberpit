@@ -1,4 +1,4 @@
-"""Tests for ccswitch.gitrepos — clones + gh-backed repo/branch listing."""
+"""Tests for viberpit.gitrepos — clones + gh-backed repo/branch listing."""
 import json
 import os
 import subprocess
@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ccswitch import gitrepos
+from viberpit import gitrepos
 
 
 def _git(*args: str, cwd: str) -> None:
@@ -647,7 +647,7 @@ class StaleCredentialRegistryTests(unittest.TestCase):
             return real_run(args, owner=owner)
 
         with mock.patch.object(gitrepos, "_run_git", side_effect=fake_run):
-            with self.assertLogs("ccswitch.gitrepos", level="ERROR") as cm:
+            with self.assertLogs("viberpit.gitrepos", level="ERROR") as cm:
                 dest = gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
         self.assertTrue(Path(dest, ".git").exists())
         self.assertTrue(gitrepos.has_stale_credentials("acme/widget"))

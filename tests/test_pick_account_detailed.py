@@ -1,14 +1,14 @@
 from unittest.mock import patch
 import pytest
 
-from ccswitch.config import Config
-from ccswitch.selector import AllAccountsBusy, Picked
-from ccswitch import accounts
+from viberpit.config import Config
+from viberpit.selector import AllAccountsBusy, Picked
+from viberpit import accounts
 from tests.helpers import temp_env
 
 
 def _legacy_entries():
-    from ccswitch import account_registry
+    from viberpit import account_registry
 
     return [
         account_registry.entry_for(name, account_registry.PROVIDER_ANTHROPIC)
@@ -33,7 +33,7 @@ def test_pick_account_detailed_optimistic_when_usage_none(monkeypatch):
 
 
 def test_pick_account_detailed_skips_needs_reauth(monkeypatch):
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
     import pytest
     monkeypatch.setattr(accounts, "_account_names", lambda: ["a"])
     _patch_legacy_entries(monkeypatch)
@@ -57,8 +57,8 @@ def test_pick_account_str_wrapper_returns_name(monkeypatch):
 
 
 def test_pick_account_wrapper_never_selects_a_codex_account():
-    from ccswitch import account_registry
-    from ccswitch.engines import AgentEngine
+    from viberpit import account_registry
+    from viberpit.engines import AgentEngine
 
     with temp_env():
         account_registry.register_account(
@@ -116,7 +116,7 @@ def test_pick_account_detailed_skips_disabled(monkeypatch):
 
 
 def test_pick_account_detailed_all_disabled_raises(monkeypatch):
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
     import pytest
     monkeypatch.setattr(accounts, "_account_names", lambda: ["a"])
     _patch_legacy_entries(monkeypatch)
@@ -205,7 +205,7 @@ def _pick(monkeypatch, usages, **kwargs):
 def test_exclude_is_never_relaxed_back_onto_the_excluded_account(monkeypatch):
     """`exclude` is the caller's own knowledge ("this one just failed on me").
     It must survive every fallback tier, even when it leaves nothing pickable."""
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
     import pytest
     usages = {"current": _healthy(), "other": _at_ceiling()}
     with pytest.raises(AllAccountsBusy) as ei:
@@ -245,7 +245,7 @@ def test_a_growing_exclude_set_is_honoured_in_full(monkeypatch):
     tried, so `len(tried)` stopped growing and the "all accounts tried" exit was
     never reached — the loop respawned on a failing account instead of raising
     AllAccountsBusy for the --wait branch to sleep on."""
-    from ccswitch.selector import AllAccountsBusy
+    from viberpit.selector import AllAccountsBusy
     import pytest
     usages = {"a": _healthy(), "b": _healthy(), "c": _at_ceiling()}
     assert _pick(monkeypatch, usages, exclude={"a"}).name == "b"

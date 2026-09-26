@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from ccswitch import brand
+from viberpit import brand
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db

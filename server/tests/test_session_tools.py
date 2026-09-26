@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ccswitch.engines import AgentEngine
+from viberpit.engines import AgentEngine
 
 CASES = Path("docs/superpowers/evals/session-tools/cases.jsonl")
 
@@ -234,7 +234,7 @@ async def test_handler_exception_never_escapes(isolated_db, monkeypatch):
 
 
 def test_server_is_named_from_the_brand():
-    from ccswitch import brand
+    from viberpit import brand
     from server.sessions.tools.server import build_session_server
     cfg = build_session_server(_ctx())
     assert cfg["type"] == "sdk" and cfg["name"] == brand.MCP_SERVER_NAME

@@ -5,7 +5,7 @@ this same id. Behavior currently lives in the orchestrator's _on_pr_change
 (see Task 9); this class supplies identity, modes, config schema, and status."""
 from __future__ import annotations
 
-from ccswitch import brand
+from viberpit import brand
 from server.sessions.pr_fix import VALID_AUTOFIX_MODES
 
 from .base import AutomationStatus, ConfigField

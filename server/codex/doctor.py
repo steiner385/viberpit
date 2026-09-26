@@ -596,7 +596,7 @@ def check_manifest(load_entries: ManifestLoader, *, enabled: bool) -> DoctorResu
         )
 
     try:
-        from ccswitch import account_registry
+        from viberpit import account_registry
 
         entries = list(load_entries())
     except Exception as exc:  # noqa: BLE001 -- an unreadable manifest is not fatal
@@ -713,7 +713,7 @@ async def run_doctor(
         load_tls_files = authority_client_tls_files
     if load_manifest_entries is None:
         def load_manifest_entries() -> Sequence[Any]:
-            from ccswitch import account_registry
+            from viberpit import account_registry
 
             return account_registry.all_entries()
     if authority_health is None and authority_configured:

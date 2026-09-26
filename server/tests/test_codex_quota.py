@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 import pytest
 
 from tests.helpers import temp_env
-from ccswitch import account_registry
-from ccswitch import accounts as ccswitch_accounts
-from ccswitch.quota import (
+from viberpit import account_registry
+from viberpit import accounts as ccswitch_accounts
+from viberpit.quota import (
     AUTH_ERROR,
     AVAILABLE,
     SCOPE_MODEL,
@@ -397,7 +397,7 @@ async def test_last_good_display_is_preserved_but_selection_fails_closed() -> No
     assert snapshot.fetched_at == datetime.fromtimestamp(NOW, tz=timezone.utc)
     assert snapshot.windows[0].used_pct == 42
 
-    from ccswitch.selector import usage_known
+    from viberpit.selector import usage_known
 
     assert usage_known(snapshot) is False
 

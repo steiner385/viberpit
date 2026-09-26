@@ -15,8 +15,8 @@ def _make_token(expires_delta_ms: int, access: str = "A", refresh: str = "R") ->
 
 
 def _seed(name):
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     write_json_secure(paths.slot_path(name), {"accessToken": f"{name}A", "refreshToken": f"{name}R",
                                               "expiresAt": int(time.time()*1000)+9_000_000, "subscriptionType": "max"})
     write_json_secure(paths.shared_mcp_path(), {})
@@ -33,8 +33,8 @@ class TestSyncBackLock(unittest.TestCase):
         to reproduce the actual race — we just confirm the lock wraps the write.
         """
         with temp_env():
-            from ccswitch import accounts, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import accounts, paths
+            from viberpit.creds import write_json_secure
 
             # Seed a slot so read_credentials doesn't short-circuit.
             write_json_secure(paths.slot_path("alpha"), _make_token(9_000_000))
@@ -94,8 +94,8 @@ class TestSyncBackLock(unittest.TestCase):
         import json
 
         with temp_env():
-            from ccswitch import accounts, paths
-            from ccswitch.creds import write_json_secure
+            from viberpit import accounts, paths
+            from viberpit.creds import write_json_secure
 
             # Seed the initial slot.
             write_json_secure(paths.slot_path("beta"), _make_token(1_000_000, access="init"))
@@ -161,7 +161,7 @@ class TestSyncBackLock(unittest.TestCase):
 class TestConcurrency(unittest.TestCase):
     def test_parallel_picks_do_not_double_assign_when_one_clear_winner(self):
         with temp_env():
-            from ccswitch import accounts
+            from viberpit import accounts
             _seed("alpha"); _seed("beta"); _seed("gamma")
             # beta has by far the most headroom; with reservations, only ONE picker should get beta.
             # Mock is applied OUTSIDE the threads so only one patch+unpatch happens on the

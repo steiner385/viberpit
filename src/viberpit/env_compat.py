@@ -28,7 +28,7 @@ import logging
 import os
 from collections.abc import MutableMapping
 
-from ccswitch import brand
+from viberpit import brand
 
 logger = logging.getLogger(__name__)
 

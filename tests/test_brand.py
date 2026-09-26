@@ -2,7 +2,7 @@
 what every later rename phase relies on."""
 import re
 
-from ccswitch import brand
+from viberpit import brand
 
 _SLUG = re.compile(r"^[a-z][a-z0-9]*$")
 

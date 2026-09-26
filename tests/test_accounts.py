@@ -6,8 +6,8 @@ from tests.helpers import temp_env, usage
 
 
 def _seed_account(name, expires_in_ms=10_000_000):
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
     now_ms = int(time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-A", "refreshToken": f"{name}-R",
@@ -19,7 +19,7 @@ def _seed_account(name, expires_in_ms=10_000_000):
 class TestAccounts(unittest.TestCase):
     def test_ensure_valid_token_refreshes_when_expired(self):
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha", expires_in_ms=-1)  # already expired
             new_blob = {"accessToken": "fresh", "refreshToken": "r2", "expiresAt": int(time.time()*1000)+9_000_000, "subscriptionType": "max"}
             with mock.patch.object(oauth, "refresh_access_token", return_value=new_blob) as rt:
@@ -27,12 +27,12 @@ class TestAccounts(unittest.TestCase):
                 rt.assert_called_once()
                 self.assertEqual(blob["accessToken"], "fresh")
             # persisted to slot
-            from ccswitch import paths
+            from viberpit import paths
             self.assertEqual(json.loads(paths.slot_path("alpha").read_text())["accessToken"], "fresh")
 
     def test_usage_for_uses_cache_then_fetches(self):
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(oauth, "fetch_usage", return_value=usage(session=33.0)) as fu:
                 u1 = accounts.usage_for("alpha")
@@ -42,7 +42,7 @@ class TestAccounts(unittest.TestCase):
 
     def test_usage_for_autherror_marks_needs_reauth(self):
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha")
             with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
@@ -57,7 +57,7 @@ class TestAccounts(unittest.TestCase):
         misclassified as a dead credential. The token is fine — leave status alone.
         """
         with temp_env():
-            from ccswitch import accounts, oauth, ledger
+            from viberpit import accounts, oauth, ledger
             _seed_account("alpha", expires_in_ms=-1)  # expired → forces a refresh
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "alpha", "ok")
@@ -75,7 +75,7 @@ class TestAccounts(unittest.TestCase):
         grant, and every idle account in the sweep flipped to needs-reauth in the same
         second. A 403 is environmental — leave the status alone."""
         with temp_env():
-            from ccswitch import accounts, oauth, ledger
+            from viberpit import accounts, oauth, ledger
             _seed_account("alpha", expires_in_ms=-1)  # expired → forces a refresh
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "alpha", "ok")
@@ -90,7 +90,7 @@ class TestAccounts(unittest.TestCase):
         """A transient usage-endpoint error (429/5xx) returns None and leaves status
         unchanged — it must NOT mark needs-reauth or propagate (which 500s the list)."""
         with temp_env():
-            from ccswitch import accounts, oauth, ledger
+            from viberpit import accounts, oauth, ledger
             _seed_account("alpha")
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "alpha", "ok")
@@ -105,7 +105,7 @@ class TestAccounts(unittest.TestCase):
         surfaces as TransientError from fetch_usage. usage_for must treat it like a
         rate-limit: return None, leave status unchanged, never 500 or mark reauth."""
         with temp_env():
-            from ccswitch import accounts, oauth, ledger
+            from viberpit import accounts, oauth, ledger
             _seed_account("alpha")
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "alpha", "ok")
@@ -117,7 +117,7 @@ class TestAccounts(unittest.TestCase):
         """Expired token + dead refresh: ensure_valid_token raises AuthError → needs-reauth,
         fetch_usage is never called, refresh_access_token called exactly once."""
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha", expires_in_ms=-1)  # force token expiry
             fetch_spy = mock.patch.object(oauth, "fetch_usage", side_effect=AssertionError("fetch_usage must not be called"))
             refresh_mock = mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead"))
@@ -133,10 +133,10 @@ class TestAccounts(unittest.TestCase):
         This set_status(needs-reauth) is otherwise silent, which makes a recurring
         re-auth loss undebuggable from the service logs (the original kindash bug)."""
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha", expires_in_ms=-1)  # force a refresh attempt
             with mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("invalid_grant")):
-                with self.assertLogs("ccswitch.accounts", level="WARNING") as cm:
+                with self.assertLogs("viberpit.accounts", level="WARNING") as cm:
                     self.assertIsNone(accounts.usage_for("alpha"))
             joined = "\n".join(cm.output)
             self.assertIn("alpha", joined)
@@ -146,11 +146,11 @@ class TestAccounts(unittest.TestCase):
     def test_usage_for_post_401_refresh_autherror_logs_account(self):
         """The post-401 second-refresh-failure branch must also log account + cause."""
         with temp_env():
-            from ccswitch import accounts, oauth
+            from viberpit import accounts, oauth
             _seed_account("alpha")  # token fresh → ensure_valid_token passes
             with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("invalid_grant")):
-                with self.assertLogs("ccswitch.accounts", level="WARNING") as cm:
+                with self.assertLogs("viberpit.accounts", level="WARNING") as cm:
                     self.assertIsNone(accounts.usage_for("alpha"))
             joined = "\n".join(cm.output)
             self.assertIn("alpha", joined)
@@ -159,7 +159,7 @@ class TestAccounts(unittest.TestCase):
 
     def test_pick_account_reserves_winner(self):
         with temp_env():
-            from ccswitch import accounts
+            from viberpit import accounts
             _seed_account("alpha"); _seed_account("beta")
             def fake_usage(name):
                 return usage(session=80.0) if name == "alpha" else usage(session=5.0)
@@ -176,7 +176,7 @@ class TestAccounts(unittest.TestCase):
         succeed by ignoring the reservation rather than raising AllAccountsBusy.
         """
         with temp_env():
-            from ccswitch import accounts
+            from viberpit import accounts
             _seed_account("solo")
             _seed_account("maxed")
             def fake_usage(name):
@@ -194,7 +194,7 @@ class TestAccounts(unittest.TestCase):
 
     def test_pick_account_forwards_load_to_selector(self):
         with temp_env():
-            from ccswitch import accounts
+            from viberpit import accounts
             _seed_account("alpha"); _seed_account("beta")
             # Equal usage so load is the deciding factor; alpha carries live load.
             def fake_usage(name):
@@ -206,7 +206,7 @@ class TestAccounts(unittest.TestCase):
 
     def test_sync_back_splits_live_creds(self):
         with temp_env():
-            from ccswitch import accounts, paths, configdir
+            from viberpit import accounts, paths, configdir
             _seed_account("alpha")
             cfg_dir = configdir.compose("alpha")
             # simulate claude refreshing the token + an MCP login in the live file
@@ -221,7 +221,7 @@ class TestAccounts(unittest.TestCase):
 
 
 def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     from tests.helpers import temp_env
     captured = []
     accounts.set_auth_failure_sink(captured.append)
@@ -246,7 +246,7 @@ def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
 def test_usage_for_400_in_step2_emits_auth_failure(monkeypatch):
     """When the ONE retry-refresh in Step 2 returns 400, emit_auth_failure must fire
     so the frontend gets the reauth prompt without waiting for the next poller cycle."""
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     from tests.helpers import temp_env
     captured = []
     accounts.set_auth_failure_sink(captured.append)
@@ -270,7 +270,7 @@ def test_usage_for_400_in_step2_emits_auth_failure(monkeypatch):
 def test_usage_for_400_adds_to_dead_accounts(monkeypatch):
     """After a 400 on the refresh token, the account lands in _dead_accounts so
     subsequent calls in the same process skip the network immediately."""
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     from tests.helpers import temp_env
     with temp_env():
         _seed_account("alpha")
@@ -293,7 +293,7 @@ def test_usage_for_400_adds_to_dead_accounts(monkeypatch):
 def test_mark_reauthenticated_clears_dead_accounts():
     """mark_reauthenticated() must evict the account from _dead_accounts so the
     next usage_for call re-tries the network after a successful re-login."""
-    from ccswitch import accounts
+    from viberpit import accounts
     from tests.helpers import temp_env
     with temp_env():
         _seed_account("alpha")
@@ -305,7 +305,7 @@ def test_mark_reauthenticated_clears_dead_accounts():
 def test_usage_for_401_survives_refresh_emits_auth_failure(monkeypatch):
     """When the refresh succeeds but the usage endpoint still returns 401, the
     Step-2 handler must emit_auth_failure (it was missing before this fix)."""
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     from tests.helpers import temp_env
     captured = []
     accounts.set_auth_failure_sink(captured.append)
@@ -331,7 +331,7 @@ def test_usage_for_401_survives_refresh_emits_auth_failure(monkeypatch):
 
 
 def test_set_sink_none_is_noop(monkeypatch):
-    from ccswitch import accounts
+    from viberpit import accounts
     accounts.set_auth_failure_sink(None)  # unset
     # emit must not raise even with no sink:
     accounts.emit_auth_failure(accounts.AuthFailure(
@@ -339,7 +339,7 @@ def test_set_sink_none_is_noop(monkeypatch):
 
 
 def test_acquire_valid_token_recovers_via_sync_back(monkeypatch):
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     state = {"synced": False}
     def boom(name):
         raise oauth.AuthError("token refresh failed with 400", status=400, body="{}")
@@ -356,7 +356,7 @@ def test_acquire_valid_token_recovers_via_sync_back(monkeypatch):
     assert out["accessToken"] == "new" and state["synced"] is True
 
 def test_acquire_valid_token_reraises_when_no_fresher_copy(monkeypatch):
-    from ccswitch import accounts, oauth
+    from viberpit import accounts, oauth
     import pytest
     def boom(name):
         raise oauth.AuthError("token refresh failed with 400", status=400, body="{}")
@@ -372,8 +372,8 @@ class TestRefreshSerialization(unittest.TestCase):
     def test_concurrent_refresh_happens_once(self):
         import threading, time as _t
         with temp_env():
-            from ccswitch import accounts, oauth, paths
-            from ccswitch.creds import write_credentials
+            from viberpit import accounts, oauth, paths
+            from viberpit.creds import write_credentials
             now_ms = int(_t.time() * 1000)
             write_credentials(paths.slot_path("alpha"), {
                 "accessToken": "old", "refreshToken": "r",
@@ -409,7 +409,7 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
         # site 1: expired slot token + dead refresh; setup-token exists and the
         # usage API accepts it → real usage, status ok.
         with temp_env():
-            from ccswitch import accounts, oauth, crypto
+            from viberpit import accounts, oauth, crypto
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
@@ -427,8 +427,8 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
         # (a narrow-scope setup-token can never read usage — see
         # setup_token_oauth.DEFAULT_SCOPE), never a fabricated 0%.
         with temp_env():
-            from ccswitch import accounts, oauth, crypto
-            from ccswitch.quota import UNSUPPORTED
+            from viberpit import accounts, oauth, crypto
+            from viberpit.quota import UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
@@ -442,7 +442,7 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
     def test_no_setup_token_still_marks_needs_reauth(self):
         # Guardrail: without a setup-token the dead-refresh path is unchanged.
         with temp_env():
-            from ccswitch import accounts, oauth, crypto
+            from viberpit import accounts, oauth, crypto
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(crypto, "read_oauth_token", return_value=None), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
@@ -453,9 +453,9 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
         # site 2: fresh slot token, usage 401s, forced refresh+refetch also 401s.
         # With a setup-token present, keep ok instead of needs-reauth.
         with temp_env():
-            from ccswitch import accounts, oauth, crypto
+            from viberpit import accounts, oauth, crypto
             _seed_account("alpha")  # fresh
-            from ccswitch.quota import UNSUPPORTED
+            from viberpit.quota import UNSUPPORTED
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
                  mock.patch.object(oauth, "has_usage_scope", return_value=False), \
@@ -471,7 +471,7 @@ class TestRemoveAccount(unittest.TestCase):
         alerts on ledger status, so residue (e.g. needs-reauth) alerts forever
         for an account that no longer exists (2026-07-21 primary/secondary)."""
         with temp_env():
-            from ccswitch import accounts, ledger, paths
+            from viberpit import accounts, ledger, paths
             _seed_account("doomed")
             paths.account_cfg_dir("doomed").mkdir(parents=True)
             with ledger.locked_ledger() as led:
@@ -486,7 +486,7 @@ class TestRemoveAccount(unittest.TestCase):
 
     def test_remove_account_preserves_other_ledger_entries(self):
         with temp_env():
-            from ccswitch import accounts, ledger
+            from viberpit import accounts, ledger
             _seed_account("doomed")
             _seed_account("kept")
             with ledger.locked_ledger() as led:

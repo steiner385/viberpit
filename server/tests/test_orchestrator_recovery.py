@@ -146,7 +146,7 @@ def test_mark_needs_reauth_sets_ledger_status(tmp_path, monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._mark_needs_reauth("kindash")
-    from ccswitch import ledger
+    from viberpit import ledger
     with ledger.locked_ledger() as led:
         assert led["accounts"]["kindash"]["status"] == "needs-reauth"
 
@@ -742,7 +742,7 @@ def test_mark_org_denied_sets_ledger_status(tmp_path, monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path))
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._mark_org_denied("kindash")
-    from ccswitch import ledger
+    from viberpit import ledger
     with ledger.locked_ledger() as led:
         assert led["accounts"]["kindash"]["status"] == "org-denied"
 
