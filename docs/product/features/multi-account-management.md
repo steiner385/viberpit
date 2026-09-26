@@ -5,12 +5,12 @@ title: Multi-Account Management
 state: live
 links:
   code:
-    - src/ccswitch/accounts.py
-    - src/ccswitch/account_names.py
-    - src/ccswitch/creds.py
-    - src/ccswitch/crypto.py
-    - src/ccswitch/configdir.py
-    - src/ccswitch/ledger.py
+    - src/viberpit/accounts.py
+    - src/viberpit/account_names.py
+    - src/viberpit/creds.py
+    - src/viberpit/crypto.py
+    - src/viberpit/configdir.py
+    - src/viberpit/ledger.py
     - server/api/accounts.py
   prs: ['#352', '#345', '#685', '#873', '#627', '#558', '#565', '#878']
 ---
@@ -30,7 +30,7 @@ anyone hosting a shared session daemon across a fleet.
 
 **Desired outcome** — Each account is a first-class, named entity backed by its own
 `CLAUDE_CONFIG_DIR`, with strict per-process isolation (constitution Principle II). Users capture
-an account once via browser login (`ccswitch add <name>`), then list, nickname, enable/disable,
+an account once via browser login (`viberpit add <name>`), then list, nickname, enable/disable,
 and remove accounts through the CLI or web Settings tab. Credentials live in one encrypted store,
 never in the responses the API returns.
 
@@ -63,8 +63,8 @@ accounts (usage is billed per account, so a view inherits one account by design 
   JSON ledger; `remove_account` drops both the store slot and the ledger entry (#627).
 
 **Evidence** — `add_account`/`list_accounts`/`remove_account`/`set_nickname` in
-`src/ccswitch/accounts.py`; validation in `src/ccswitch/account_names.py`; credential split and
-secure write in `src/ccswitch/creds.py`; envelope encryption in `src/ccswitch/crypto.py`; REST
+`src/viberpit/accounts.py`; validation in `src/viberpit/account_names.py`; credential split and
+secure write in `src/viberpit/creds.py`; envelope encryption in `src/viberpit/crypto.py`; REST
 surface (list/refresh/delete/patch, no tokens) in `server/api/accounts.py`. PRs: #352 (encrypted
 setup-token capture), #345 (daemon-readable encrypted-file store), #685 (enable/disable without
 deleting), #873 (phantom empty-named account fix), #627 (remove_account drops ledger entry), #565

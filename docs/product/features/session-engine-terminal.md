@@ -17,8 +17,8 @@ links:
     - server/ipc/drain_on_signal.py
     - server/bridge/ws.py
     - server/bridge/vnc_ws.py
-    - src/ccswitch/launcher.py
-    - src/ccswitch/runner.py
+    - src/viberpit/launcher.py
+    - src/viberpit/runner.py
     - web/src/ws/client.ts
     - web/src/components/session/TranscriptView.tsx
   prs: [853, 681, 517, 363, 365, 140, 118, 737]
@@ -74,8 +74,8 @@ Principle I).
   from live driver signals, by precedence (roughly): plan-approval pending → question pending →
   permission pending → condensing (auto-compaction) → retrying → turn active → complete/done →
   idle. The orchestrator overlays account-level states such as `limited` and lifecycle states
-  such as `archived`/`ended`. `completion.py` owns the `<!-- ccswitch:complete -->` /
-  `<!-- ccswitch:no-pr -->` completion markers; `failure.py` classifies turn failures
+  such as `archived`/`ended`. `completion.py` owns the `<!-- viberpit:complete -->` /
+  `<!-- viberpit:no-pr -->` completion markers; `failure.py` classifies turn failures
   (rate-limit, auth-401, crash, dropped, overloaded) to drive recovery.
 - **Replay / multiplexing.** The daemon keeps a per-stream bounded replay ring (default 8192
   events) with monotonic `seq`; on attach the edge (`server/bridge/ws.py`) replays the transcript
@@ -83,7 +83,7 @@ Principle I).
   by re-syncing from disk and resetting on daemon epoch change (#363, #365, #140, #514). Multiple
   browsers can watch the same session concurrently via the subscriber fan-out (#363, #681). See
   `transcript-replay-archive` for the replay/transcript detail.
-- **CLI launchers.** `src/ccswitch/launcher.py` (`ccmax`) and `runner.py` (`ccrun`) are the
+- **CLI launchers.** `src/viberpit/launcher.py` (`ccmax`) and `runner.py` (`ccrun`) are the
   standalone single-session CLI paths that auto-rotate one session on a limit; the web engine is
   the multi-session, daemon-owned path.
 

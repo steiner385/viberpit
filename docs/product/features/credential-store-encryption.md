@@ -28,4 +28,4 @@ Protect stored account credentials with encryption and make migration and encryp
 
 **Notes** — exposed through the CLI `crypto` subcommand: `status` (key source + slot counts), `init` (generate a master key, store in keyring), `migrate` (encrypt all plaintext slots, idempotent). Envelope encryption = per-slot data keys wrapped by a keyring-held master key, so rotating/backing up is tractable.
 
-**Evidence** — `src/ccswitch/crypto.py` (envelope encryption + keyring master key), `src/ccswitch/creds.py` (credential store read/write), `src/ccswitch/cli.py` `crypto {status,init,migrate}` subcommands (`_cmd_crypto`). (Reconstructed in curation — a stable security foundation with low recent churn that the churn-weighted archaeology omitted; see #903-adjacent.)
+**Evidence** — `src/viberpit/crypto.py` (envelope encryption + keyring master key), `src/viberpit/creds.py` (credential store read/write), `src/viberpit/cli.py` `crypto {status,init,migrate}` subcommands (`_cmd_crypto`). (Reconstructed in curation — a stable security foundation with low recent churn that the churn-weighted archaeology omitted; see #903-adjacent.)

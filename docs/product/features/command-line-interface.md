@@ -23,12 +23,12 @@ Manage and switch accounts from a shell without requiring the web interface or s
 
 **Target users** — operators setting up ViberPit on a new host, power users who script account operations, and anyone who wants to launch or switch a `claude` account from a plain shell without the web UI or daemon.
 
-**Desired outcome** — the `ccswitch` CLI manages the full account lifecycle and produces a shell-consumable account switch (`ccswitch use <account>` prints an export line) with no dependency on the web/daemon stack.
+**Desired outcome** — the `viberpit` CLI manages the full account lifecycle and produces a shell-consumable account switch (`viberpit use <account>` prints an export line) with no dependency on the web/daemon stack.
 
-**Success metrics** — every account operation (add/list/remove/link/use) is doable from the CLI alone; `ccswitch use` output can be `eval`'d to switch the active account in one line; the CLI runs on a fresh checkout before any daemon exists.
+**Success metrics** — every account operation (add/list/remove/link/use) is doable from the CLI alone; `viberpit use` output can be `eval`'d to switch the active account in one line; the CLI runs on a fresh checkout before any daemon exists.
 
 **Non-goals** — running or streaming live sessions (that is the session engine + web terminal); rotation logic (usage-aware rotation); serving the dashboard.
 
-**Notes** — the CLI is the console entry point `ccswitch` (`ccswitch.cli:main` in `pyproject.toml`) and is intentionally dependency-light (stdlib `argparse`) so it works on a bare host. Subcommands: `list`, `add <name>`, `remove <name>`, `link [name]`, `use` (compose a config dir for an account and print its export line), and `crypto {status,init,migrate}` (credential-store encryption management).
+**Notes** — the CLI is the console entry point `viberpit` (`viberpit.cli:main` in `pyproject.toml`; the legacy `ccswitch` command stays as a one-release alias) and is intentionally dependency-light (stdlib `argparse`) so it works on a bare host. Subcommands: `list`, `add <name>`, `remove <name>`, `link [name]`, `use` (compose a config dir for an account and print its export line), and `crypto {status,init,migrate}` (credential-store encryption management).
 
-**Evidence** — `src/ccswitch/cli.py` (argparse `list`/`add`/`remove`/`link`/`use`/`crypto` subcommands); `pyproject.toml` console script `ccswitch` (`ccswitch.cli:main`); delegates to `src/ccswitch/accounts.py`, `src/ccswitch/configdir.py`, `src/ccswitch/creds.py`, `src/ccswitch/crypto.py`. (Reconstructed in the feature-map curation pass — the CLI is a stable, low-churn foundation the churn-weighted archaeology under-represented; see #903-adjacent curation.)
+**Evidence** — `src/viberpit/cli.py` (argparse `list`/`add`/`remove`/`link`/`use`/`crypto` subcommands); `pyproject.toml` console script `viberpit` (`viberpit.cli:main`; the old console script `ccswitch` is a one-release alias); delegates to `src/viberpit/accounts.py`, `src/viberpit/configdir.py`, `src/viberpit/creds.py`, `src/viberpit/crypto.py`. (Reconstructed in the feature-map curation pass — the CLI is a stable, low-churn foundation the churn-weighted archaeology under-represented; see #903-adjacent curation.)
