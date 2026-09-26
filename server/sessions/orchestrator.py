@@ -10500,6 +10500,12 @@ class SessionOrchestrator:
     _CHAINED_SESSION_SETTLED = ("complete", "done", "idle", "ended", "archived")
     # ...and the subset after which nothing will ever run under this id again.
     _CHAINED_SESSION_TERMINAL = ("ended", "archived")
+    # Not admitted yet — held in the admission queue or parked for a human. The
+    # settle budget measures how long a turn may RUN, so these polls don't spend it
+    # (#2494: classify sessions queued 36 min–10.5 h, the chain gave up at 30 min,
+    # each then finished in ~2 min and nothing harvested it). Bounded separately
+    # below so a row stuck pre-admission can't pin the chain forever.
+    _CHAINED_SESSION_PRE_ADMISSION = ("queued", "pending_approval")
 
     async def _session_settle_signal(self, session_id: str) -> tuple[str, bool] | None:
         """(status, ran) straight off the shared DB row, or None if no such row.
@@ -10521,7 +10527,8 @@ class SessionOrchestrator:
         return status, last_turn_at is not None
 
     async def _await_session_settled(self, session_id: str, *, attempts: int = 60,
-                                     interval_s: float = 30.0) -> bool:
+                                     interval_s: float = 30.0,
+                                     max_pre_admission_polls: int = 2880) -> bool:
         """Poll until *session_id* has finished a turn; False if it never does.
 
         The one settle-poll for every chained ingest (classify, materialize) —
@@ -10543,13 +10550,29 @@ class SessionOrchestrator:
         one place a session spawned onto a non-primary fleet host is actually
         visible: ``_persist_status`` writes both columns to this shared row from
         whichever host owns the session's driver, so a chain running on the
-        primary can settle-poll a session it never held in memory."""
-        for _ in range(attempts):
+        primary can settle-poll a session it never held in memory.
+
+        *attempts* counts only polls of an ADMITTED session: a ``queued`` /
+        ``pending_approval`` row has not started its turn, so waiting on it spends
+        *max_pre_admission_polls* instead (default a day at 30 s) — see
+        ``_CHAINED_SESSION_PRE_ADMISSION`` (#2494)."""
+        pre_admission_polls = 0
+        polls = 0
+        while polls < attempts:
             signal = await self._session_settle_signal(session_id)
             if signal is None:
                 log.warning("chain_ingest: session %s vanished — giving up", session_id)
                 return False
             status, ran = signal
+            if status in self._CHAINED_SESSION_PRE_ADMISSION:
+                pre_admission_polls += 1
+                if pre_admission_polls >= max_pre_admission_polls:
+                    log.warning("chain_ingest: session %s still %s after %d polls — "
+                                "giving up", session_id, status, pre_admission_polls)
+                    return False
+                await asyncio.sleep(interval_s)
+                continue
+            polls += 1
             if status in self._CHAINED_SESSION_SETTLED and ran:
                 return True
             if status in self._CHAINED_SESSION_TERMINAL and not ran:

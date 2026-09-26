@@ -11,6 +11,7 @@ import pytest
 
 
 
+import logging
 import os
 import tempfile
 from types import SimpleNamespace
@@ -575,6 +576,80 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
                                                   attempts=10, delay=0.0)
     assert written == 1
     assert ingested == [("sess-1", "viberpit", '```json\n[{"number": 1}]\n```')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_status", ["queued", "pending_approval"])
+async def test_classify_chain_ingest_waits_out_a_queued_session(
+        db_env, monkeypatch, pre_status):
+    """#2494: polls of a not-yet-admitted session don't spend the settle budget.
+
+    Prod shape — classify sessions sat in the admission queue 36 min–10.5 h, the
+    30-min budget ran out while they were still ``queued``, and each then finished
+    in ~2 min with nobody left to harvest it (0 proposals from three sessions)."""
+    orch = _bare_orch()
+    orch._records = {}
+    statuses = [pre_status] * 5 + ["running", "done"]
+
+    async def fake_settle_signal(sid):
+        s = statuses.pop(0) if statuses else "done"
+        return _rec(s, ran=s == "done")
+
+    orch._session_settle_signal = fake_settle_signal
+    orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
+    ingested = []
+
+    async def fake_ingest(*a):
+        ingested.append(a)
+        return 0
+
+    orch._pm_classify_ingest = fake_ingest
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    # attempts=3 < 5 queued polls: before the fix this gave up while still queued.
+    await orch._pm_classify_chain_ingest("sess-q", "viberpit", attempts=3, delay=0.0)
+    assert len(ingested) == 1
+
+
+@pytest.mark.asyncio
+async def test_await_settled_bounds_a_session_stuck_in_the_queue(db_env, monkeypatch, caplog):
+    """The pre-admission wait is bounded on its own so a row nothing ever admits
+    can't pin the chain task forever."""
+    orch = _bare_orch()
+    calls = []
+
+    async def fake_settle_signal(sid):
+        calls.append(sid)
+        return _rec("queued", ran=False)
+
+    orch._session_settle_signal = fake_settle_signal
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    with caplog.at_level(logging.WARNING):
+        assert await orch._await_session_settled(
+            "stuck", attempts=3, interval_s=0.0, max_pre_admission_polls=7) is False
+    assert len(calls) == 7
+    assert "still queued" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_await_settled_budget_counts_only_admitted_polls(db_env, monkeypatch, caplog):
+    """An admitted session that never finishes still times out after *attempts*."""
+    orch = _bare_orch()
+    calls = []
+
+    async def fake_settle_signal(sid):
+        calls.append(sid)
+        return _rec("queued" if len(calls) <= 4 else "running", ran=False)
+
+    orch._session_settle_signal = fake_settle_signal
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    with caplog.at_level(logging.WARNING):
+        assert await orch._await_session_settled(
+            "slow", attempts=3, interval_s=0.0) is False
+    assert len(calls) == 4 + 3
+    assert "never settled after 3 attempts" in caplog.text
 
 
 @pytest.mark.asyncio
