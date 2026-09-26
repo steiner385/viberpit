@@ -116,6 +116,15 @@ _HOST_THROTTLE = LogThrottle()
 #: itself by simply trying again next tick.
 _RE_TRANSIENT_5XX = re.compile(r"\bHTTP 5\d\d\b")
 
+#: gh's Go JSON decoder's wording when GitHub's edge cut a response short
+#: before it finished — the request reached GitHub, but the body never
+#: completed. Same underlying condition as :data:`_RE_TRANSIENT_5XX` (a
+#: heavy/slow query hitting GitHub's edge timeout), just a different gh error
+#: string: ``encoding/json`` reports the truncation as "unexpected end of JSON
+#: input" rather than a ``gh: ... (HTTP 5xx)``-style message, so it slipped
+#: past every call site that only checked :func:`is_transient_5xx` (#2490).
+_RE_TRUNCATED_JSON = re.compile(r"unexpected end of JSON input")
+
 
 def is_transient_5xx(stderr: str) -> bool:
     """Whether *stderr* is gh reporting a GitHub-side 5xx: the request reached
@@ -123,6 +132,15 @@ def is_transient_5xx(stderr: str) -> bool:
     :data:`_RE_TRANSIENT_5XX`) — just a shared read of when a per-target
     failure is GitHub's outage rather than a defect to chase."""
     return bool(_RE_TRANSIENT_5XX.search(stderr))
+
+
+def is_transient_github_edge_failure(stderr: str) -> bool:
+    """Whether *stderr* is GitHub's own edge failing a request that reached
+    it — either a bare 5xx (:func:`is_transient_5xx`) or a response body cut
+    short by the same edge timeout (:data:`_RE_TRUNCATED_JSON`). Not a host
+    condition — just the shared read of when a per-target failure is GitHub's
+    outage rather than a defect to chase."""
+    return is_transient_5xx(stderr) or bool(_RE_TRUNCATED_JSON.search(stderr))
 
 
 def log_gh_failure(

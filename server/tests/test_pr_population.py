@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import subprocess
 
 import server.github.pr_population as pop
 from server.github.pr_population import PrPopulationPoller
@@ -129,3 +130,42 @@ def test_non_5xx_failure_still_warns(caplog):
     warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warned) == 1
     assert "pr_population.refresh_failed repo=o/bad" in warned[0].getMessage()
+
+
+def test_fetch_merged_truncated_json_logs_info_not_a_warning(caplog, monkeypatch):
+    """#2490: GitHub's edge can cut the merged-half response short before gh's
+    Go JSON decoder finishes reading it, which surfaces as "unexpected end of
+    JSON input" rather than a ``gh: ... (HTTP 5xx)``-style message — the same
+    self-healing edge condition as a bare 5xx (#1839's read), just a different
+    gh error string. This loop retries every poll, so it must not also file an
+    auto-error."""
+    def fake_run_gh(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, "", "unexpected end of JSON input")
+
+    monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
+
+    with caplog.at_level(logging.DEBUG):
+        merged = pop._fetch_merged("o/bad", 14, token=None)
+
+    assert merged is None
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], f"a truncated response must not warn: {[r.getMessage() for r in warned]}"
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("pr_population.merged_fetch_unavailable" in r.getMessage() for r in info)
+
+
+def test_fetch_merged_non_transient_failure_still_warns(caplog, monkeypatch):
+    """The demotion is specific to a transient GitHub-edge failure — any other
+    target-specific failure keeps reporting at WARNING with repo= as before."""
+    def fake_run_gh(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, "", "gh: not found (HTTP 404)")
+
+    monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
+
+    with caplog.at_level(logging.DEBUG):
+        merged = pop._fetch_merged("o/bad", 14, token=None)
+
+    assert merged is None
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+    assert "pr_population.merged_fetch_failed repo=o/bad" in warned[0].getMessage()
