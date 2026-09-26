@@ -22,7 +22,7 @@ from ccswitch import gitrepos
 from server.aio import cancel_and_reap
 from server.github import app_auth
 from .api_budget import PriorityGate
-from .host_failures import is_transient_5xx, log_gh_failure
+from .host_failures import is_transient_github_edge_failure, log_gh_failure
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
@@ -129,10 +129,15 @@ def _fetch_merged(repo: str, retention_days: int, token: str | None) -> dict | N
             raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merged) failed")
         return merged
     except Exception as exc:
-        log_gh_failure(
-            log, str(exc), "pr_population.merged_fetch_failed repo=%s",
-            repo, exc_info=True,
-        )
+        if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
+            # GitHub's own outage, not ours (#1839's read) — this loop retries
+            # every poll, so don't also file an auto-error (#2490).
+            log.info("pr_population.merged_fetch_unavailable repo=%s: %s", repo, exc)
+        else:
+            log_gh_failure(
+                log, str(exc), "pr_population.merged_fetch_failed repo=%s",
+                repo, exc_info=True,
+            )
         return None
 
 
@@ -533,7 +538,7 @@ class PrPopulationPoller:
             # Fresh fetch failed even after a jittered retry. Rather than blank
             # the board, re-serve each open PR's last-good ETA marked stale
             # (issue #671 — stale-while-revalidate).
-            if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+            if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
                 # GitHub's own outage, not ours (#1839's read) — this loop
                 # retries every tick, so don't also file an auto-error (#1681).
                 log.info("pr_population.eta_fetch_unavailable: %s", exc)
@@ -719,7 +724,7 @@ class PrPopulationPoller:
                 # every tick, so filing it at WARNING just re-mints the same
                 # non-actionable issue on a schedule (#1681). Anything else
                 # keeps reporting at WARNING with repo= exactly as before.
-                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
                     log.info("pr_population.refresh_unavailable repo=%s: %s",
                              repo, exc)
                 else:
@@ -748,7 +753,7 @@ class PrPopulationPoller:
                 captured_at = int(self._now_fn().timestamp())
                 await self._merge_queue_sink(by_repo, captured_at)
             except Exception as exc:
-                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
                     log.info("pr_population.merge_queue_unavailable: %s", exc)
                 else:
                     log_gh_failure(log, str(exc), "pr_population.merge_queue_failed",

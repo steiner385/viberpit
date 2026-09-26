@@ -18,7 +18,7 @@ from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
 from .issue_filing import Decision, Linked, apply, decide
-from server.github.host_failures import is_transient_5xx
+from server.github.host_failures import is_transient_github_edge_failure
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ class CicdDoctorLoop:
                 candidates += c
             except Exception as exc:  # one repo must never stall the tick
                 errors += 1
-                if isinstance(exc, gitrepos.GhError) and is_transient_5xx(str(exc)):
+                if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
                     # GitHub's own outage, not ours — every tick re-ingests each
                     # repo, so filing it at WARNING re-mints the same
                     # non-actionable auto-error until GitHub recovers (#2051).

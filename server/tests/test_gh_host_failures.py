@@ -377,6 +377,19 @@ def test_is_transient_5xx_matches_gh_server_errors():
     assert host_failures.is_transient_5xx("") is False
 
 
+def test_is_transient_github_edge_failure_also_matches_truncated_json():
+    """#2490: a heavy query that GitHub's edge cuts short arrives as gh's Go
+    JSON decoder complaining, not as an HTTP 5xx — same underlying condition,
+    different wording, so it needs its own match alongside is_transient_5xx."""
+    assert host_failures.is_transient_github_edge_failure(
+        "unexpected end of JSON input") is True
+    assert host_failures.is_transient_github_edge_failure("gh: HTTP 502") is True
+    assert host_failures.is_transient_github_edge_failure(STDERR_UNREACHABLE) is False
+    assert host_failures.is_transient_github_edge_failure(
+        "gh: not found (HTTP 404)") is False
+    assert host_failures.is_transient_github_edge_failure("") is False
+
+
 def test_success_is_untouched():
     url = ci_issues.comment_on_issue(
         "o/r", 7, "hi",
