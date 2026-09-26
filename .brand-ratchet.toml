@@ -44,13 +44,13 @@ ceiling = 5
 id = "wire-dual-accept"
 pattern = '<!--\s*ccswitch:|</?ccswitch-context|mcp__ccswitch__|\bccswitch:(complete|no-pr|model|hand-back)\b'
 permanent = "Markers, context headers and MCP tool names live in stored transcripts that are re-parsed on replay; the accept side never comes out (design Phase 7 'keep forever')."
-ceiling = 55
+ceiling = 48
 
 [[allow]]
 id = "rebrand-narrative"
 paths = ["docs/product/guides/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
 permanent = "Text that names the old brand in order to explain the rename (the migration guide, README's 'formerly' line, the ratchet and its tests)."
-ceiling = 78
+ceiling = 51
 
 [[allow]]
 id = "ratchet-rule"
@@ -117,13 +117,13 @@ id = "branch-prefix"
 # #1373 / #1592 / #1374; re-pointed at the epic, since #1369 is closed.
 pattern = '\bccswitch/'
 issue = 1365
-ceiling = 183
+ceiling = 119
 
 [[allow]]
 id = "repo-namespace"
 pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
 issue = 1373
-ceiling = 35
+ceiling = 34
 
 [[allow]]
 # #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b
@@ -164,7 +164,7 @@ ceiling = 172
 id = "host-legacy-names"
 pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv)/ccswitch|\.(cache|local/lib)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
 issue = 1592
-ceiling = 296
+ceiling = 290
 
 [[allow]]
 id = "python-package"
@@ -182,7 +182,7 @@ issue = 1374
 # strings that the compat shim's meta_path finder resolves to the identical
 # `viberpit.<mod>` module object either name is imported under, and the
 # handful of literal-string survivors the pattern above already names.
-ceiling = 378
+ceiling = 342
 
 [[allow]]
 id = "python-package-shim"

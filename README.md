@@ -3,21 +3,23 @@
 </p>
 <p align="center"><em>Code it. Vibe it. Ship it.</em></p>
 
-# ViberPit (formerly cc-account-switcher / `ccswitch`)
+# ViberPit
+
+*Formerly ccswitch / cc-account-switcher.*
 
 The open source cockpit for builders who'd rather create than click around: run and switch
 between live AI coding-agent sessions across several accounts, with automatic usage-aware
-account rotation. The CLI is still installed as `ccswitch` until the package rename lands.
+account rotation. The CLI is installed as `viberpit`; `ccswitch` remains an alias for one release.
 See `docs/` for the design spec and `docs/product/guides/viberpit-rebrand.md` for the brand.
 
 ## Usage
 
 ```bash
-ccswitch add <name> --email you@gmail.com   # capture an account (browser login)
-ccswitch list                               # live usage + reset times (America/New_York)
+viberpit add <name> --email you@gmail.com   # capture an account (browser login)
+viberpit list                               # live usage + reset times (America/New_York)
 ccrun -- -p "prompt"                         # headless: best account, auto-retry on limit
 ccmax                                        # interactive: best account, auto switch + --resume on limit
-ccswitch use [name]                          # print `export CLAUDE_CONFIG_DIR=…` for a chosen/best account
+viberpit use [name]                          # print `export CLAUDE_CONFIG_DIR=…` for a chosen/best account
 ```
 
 ### Using with `claude agents` (and multiple concurrent sessions)
@@ -28,16 +30,16 @@ dispatches, those sessions' sub-agents, and the supervising daemon all share the
 of 5h/weekly limits). Views under different config dirs are fully isolated (separate daemons,
 separate token lineages) and run concurrently without interference.
 
-Pin a shell (and anything you launch from it) to a chosen account with `ccswitch use`:
+Pin a shell (and anything you launch from it) to a chosen account with `viberpit use`:
 
 ```bash
 # Most-headroom account:
-eval "$(ccswitch use)"        # sets CLAUDE_CONFIG_DIR in this shell
+eval "$(viberpit use)"        # sets CLAUDE_CONFIG_DIR in this shell
 claude agents                 # agent view + all dispatched sessions run on that account
 # or: claude          (interactive)   /   claude -p "…"   (headless)
 
 # A specific account:
-eval "$(ccswitch use secondary)"
+eval "$(viberpit use secondary)"
 claude agents
 ```
 
@@ -46,21 +48,21 @@ its own terminal/shell:
 
 ```bash
 # terminal 1
-eval "$(ccswitch use primary)";   claude agents
+eval "$(viberpit use primary)";   claude agents
 # terminal 2
-eval "$(ccswitch use secondary)"; claude agents
+eval "$(viberpit use secondary)"; claude agents
 # terminal 3
-eval "$(ccswitch use kindash)";   claude agents
+eval "$(viberpit use kindash)";   claude agents
 ```
 
 Notes:
 - You cannot split one view's sub-agents across accounts — they inherit the view's account by
   design (usage is billed per account). Spread *views*, not sub-agents.
-- `ccswitch use` (no name) picks the most-headroom account and places a short soft reservation,
+- `viberpit use` (no name) picks the most-headroom account and places a short soft reservation,
   so running it back-to-back for several terminals spreads them across different accounts.
 - `ccmax`/`ccrun` are for a *single* session that should auto-rotate on a limit; the agent view
-  is long-lived and manages many sessions, so pin it with `ccswitch use` and re-pin a new view
-  to a fresher account when `ccswitch list` shows the current one running low.
+  is long-lived and manages many sessions, so pin it with `viberpit use` and re-pin a new view
+  to a fresher account when `viberpit list` shows the current one running low.
 
 ## ViberPit web
 
@@ -81,18 +83,18 @@ on your Tailscale network — including a phone or tablet.
 
 ```bash
 # Required in production; optional in local dev (credentials will be stored unencrypted if unset)
-export CCSWITCH_MASTER_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export VIBERPIT_MASTER_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 
 # Recommended — signs the HTTP session cookie
-export CCSWITCH_SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export VIBERPIT_SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 
 # Restrict access to your own tailnet identity (comma-separated node names or email addresses)
-export CCSWITCH_TAILNET_ALLOWLIST="you@example.com"
+export VIBERPIT_TAILNET_ALLOWLIST="you@example.com"
 
 # Optional overrides (defaults shown)
-# CCSWITCH_HOST=127.0.0.1
-# CCSWITCH_PORT=8787
-# CCSWITCH_DB_URL=sqlite+aiosqlite:///~/.claude-accounts/ccswitch.db
+# VIBERPIT_HOST=127.0.0.1
+# VIBERPIT_PORT=8787
+# VIBERPIT_DB_URL=sqlite+aiosqlite:///~/.claude-accounts/ccswitch.db
 ```
 
 Or copy `.env.example` → `.env` and fill in values; the server loads it automatically.
@@ -122,11 +124,11 @@ The server binds to `127.0.0.1:8787`. Expose it over HTTPS on the tailnet via ng
 ```bash
 # One-time setup on the host (requires root)
 sudo tailscale cert \
-    --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
-    --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+    --cert-file /etc/viberpit/dobby.tail0dd570.ts.net.crt \
+    --key-file  /etc/viberpit/dobby.tail0dd570.ts.net.key \
     dobby.tail0dd570.ts.net
-sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
-sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
+sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailnet
+sudo ln -sf /etc/nginx/sites-available/viberpit-tailnet /etc/nginx/sites-enabled/
 sudo nginx -t && sudo nginx -s reload
 sudo cp deploy/viberpit-cert-renew.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now viberpit-cert-renew.timer
@@ -163,7 +165,7 @@ The server identifies callers via two mechanisms, in order:
 
 A peer is **trusted** when it is loopback (the whole `127.0.0.0/8` block plus `::1`,
 including the IPv4-mapped `::ffff:127.0.0.1` form a dual-stack listener reports), or
-when it falls inside `CCSWITCH_TRUSTED_PROXY_IPS` — a comma-separated list of addresses
+when it falls inside `VIBERPIT_TRUSTED_PROXY_IPS` — a comma-separated list of addresses
 or CIDR ranges for the case where the proxy is not on the same host. Both header classes
 share this one boundary: a proxy is trusted for both or for neither.
 
@@ -171,15 +173,15 @@ This is **only safe when uvicorn is bound to `127.0.0.1`** (the default) and fro
 reverse proxy (nginx, as configured in `deploy/viberpit-tailnet.nginx`). Binding to
 `0.0.0.0` without a proxy bypasses both guards.
 
-- **Set `CCSWITCH_TAILNET_ALLOWLIST`** to your own tailnet identity (e.g. `you@gmail.com`). An
+- **Set `VIBERPIT_TAILNET_ALLOWLIST`** to your own tailnet identity (e.g. `you@gmail.com`). An
   empty allowlist permits all authenticated tailnet nodes — only safe on a single-person tailnet.
 - **Refresh tokens are encrypted at rest** using AES-256-GCM with a key derived from
-  `CCSWITCH_MASTER_KEY` (via keyring or env). Without `CCSWITCH_MASTER_KEY` in production,
+  `VIBERPIT_MASTER_KEY` (via keyring or env). Without `VIBERPIT_MASTER_KEY` in production,
   credentials are stored in plaintext at `~/.claude-accounts/store/` (mode 0600).
 - **Composed config-dir credentials** (the per-account `CLAUDE_CONFIG_DIR` assembled by
   `compose()`) are plaintext on disk at mode 0600. They are the only unencrypted secret at rest
   and are re-composed from the encrypted source on each session launch.
-- **App-level passkey/WebAuthn auth** is implemented but disabled (`CCSWITCH_WEBAUTHN_ENABLED`).
+- **App-level passkey/WebAuthn auth** is implemented but disabled (`VIBERPIT_WEBAUTHN_ENABLED`).
   It is the required gate before exposing the server to any network that is not your personal
   tailnet. This path is deferred to a future release (P4).
 

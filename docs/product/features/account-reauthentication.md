@@ -8,8 +8,8 @@ links:
     - server/reauth.py
     - server/reauth_remote.py
     - server/ipc/reauth_rpc.py
-    - src/ccswitch/setup_token_oauth.py
-    - src/ccswitch/auth_login.py
+    - src/viberpit/setup_token_oauth.py
+    - src/viberpit/auth_login.py
     - server/mcp_auth.py
     - server/sessions/account_auth.py
     - server/usage/auth_failure_audit.py
@@ -89,8 +89,8 @@ Running re-auth on a worker — it must run on the master and stream the display
   per-account caches — the same headless paste-back shape, across accounts.
 
 **Evidence** — State machine in `server/reauth.py`; RPC projection in `server/reauth_remote.py` and
-`server/ipc/reauth_rpc.py`; PKCE setup-token flow in `src/ccswitch/setup_token_oauth.py`; browser
-profile prep/cleanup in `src/ccswitch/auth_login.py`; token→env in
+`server/ipc/reauth_rpc.py`; PKCE setup-token flow in `src/viberpit/setup_token_oauth.py`; browser
+profile prep/cleanup in `src/viberpit/auth_login.py`; token→env in
 `server/sessions/account_auth.py`; MCP paste-back in `server/mcp_auth.py`; failure audit in
 `server/usage/auth_failure_audit.py`. PRs: #354/#357/#355/#358 (setup-token reauth phases), #366
 (in-process PKCE), #387 (reauth button on all accounts), #877 (MCP auth across accounts, headless

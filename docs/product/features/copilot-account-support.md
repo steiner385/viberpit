@@ -5,7 +5,7 @@ title: GitHub Copilot Account Support
 state: live
 links:
   code:
-    - src/ccswitch/copilot.py
+    - src/viberpit/copilot.py
     - server/sessions/copilot_auth.py
     - server/sessions/copilot_proxy.py
     - server/api/accounts.py
@@ -48,7 +48,7 @@ single ~monthly premium allowance instead.
   (`bash scripts/fetch-copilot-proxy.sh`, or `VIBERPIT_COPILOT_PROXY_BIN=/path`). Routing Claude
   through the Copilot API may violate GitHub's ToS or Anthropic's usage policies — provided for
   personal experimentation; users own compliance (CLAUDE.md § Copilot).
-- Provider constant + usage mapping live in `src/ccswitch/copilot.py` (single source of truth):
+- Provider constant + usage mapping live in `src/viberpit/copilot.py` (single source of truth):
   `usage_from_proxy` maps the premium-request quota to exactly one `premium` window of the shared
   `QuotaSnapshot`, so the selector's binding-window logic works unchanged; a garbage payload
   returns None (degrades to "usage unknown", not a false ceiling).
@@ -71,7 +71,7 @@ single ~monthly premium allowance instead.
 - Suggestions/auto-summaries are gated off for Copilot sessions (#659); the usage poller covers
   Copilot fetches through the same ledger-backed backoff (#540).
 
-**Evidence** — Provider constant, `usage_from_proxy`, launch-env builder in `src/ccswitch/copilot.py`;
+**Evidence** — Provider constant, `usage_from_proxy`, launch-env builder in `src/viberpit/copilot.py`;
 device-flow scraping state machine in `server/sessions/copilot_auth.py`; per-account proxy
 supervision/resolution in `server/sessions/copilot_proxy.py`; add-copilot device-flow routes in
 `server/api/accounts.py`; provisioning in `scripts/fetch-copilot-proxy.sh`. PRs: #515 (add GitHub

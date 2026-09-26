@@ -18,7 +18,7 @@ links:
     - server/assistant/server.py
     - server/assistant/token.py
     - server/assistant/tools.py
-    - src/ccswitch/assistant_mcp.py
+    - src/viberpit/assistant_mcp.py
     - web/src/features/assistant/AssistantSheet.tsx
     - web/src/features/assistant/AssistantHeader.tsx
     - web/src/features/assistant/StarterChips.tsx
@@ -126,7 +126,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   tools are client-declared `dynamicTools` that ViberPit itself executes (`item/tool/call`), and the
   built-ins are held by `sandbox: read-only` + `approvalPolicy: untrusted` + a handler that declines
   every approval. Both route tool calls through the same `PermissionRegistry` under the same
-  `mcp__ccswitch__*` names, so the permission cards are identical. Two Codex-only consequences worth
+  `mcp__viberpit__*` names, so the permission cards are identical. Two Codex-only consequences worth
   knowing: an assistant thread starts in a repository-free `cwd` (`thread/start` otherwise folds the
   repo's `AGENTS.md` into thread context on its own), and it is never resumed (`thread/resume`
   cannot re-declare `dynamicTools`, so a resume would return the built-ins and drop the tools).
@@ -161,7 +161,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   HMAC-signed `ccas1:` bearer token, never persisted, accepted only from loopback by
   `IdentityMiddleware` (spec §4.3). It cannot authenticate a request that didn't originate from the
   assistant's own tool call.
-- **Permission posture** — `mcp__ccswitch__*` tools are the one exception to the blanket MCP
+- **Permission posture** — `mcp__viberpit__*` tools are the one exception to the blanket MCP
   auto-allow in `PermissionRegistry.request`; they're gated by MCP `ToolAnnotations` per tool class
   (read / mutation / destructive), so mutations surface the same permission card a coding session
   would, and destructive tools can never be marked "always allow".
@@ -210,8 +210,8 @@ assistant mutation does not make subsequent harness cleanup safe.
   Sanitized public summaries get unique `results-<date>-<suffix>.md` filenames. Redacted private
   JSONL traces are flushed incrementally to a unique temporary directory (0700, files 0600),
   whose location is printed at startup; never commit these traces.
-- **Use from other agents** — see the sections below: `ccswitch mcp` serves the same tool table to
-  any MCP client over stdio, and `ccswitch ask` sends one prompt from a shell — both authenticated
+- **Use from other agents** — see the sections below: `viberpit mcp` serves the same tool table to
+  any MCP client over stdio, and `viberpit ask` sends one prompt from a shell — both authenticated
   by a user-scoped `ccas2:` token.
 - Delivered across Phases 0–4 of `docs/superpowers/plans/2026-09-04-ai-assistant.md`: Phase 0
   verified the SDK tool-restriction + in-process MCP approach against the real binary (#1087)
@@ -222,7 +222,7 @@ assistant mutation does not make subsequent harness cleanup safe.
 
 ## Use from other agents
 
-`ccswitch mcp` (`src/ccswitch/assistant_mcp.py`) serves the assistant's tool table to **any** MCP
+`viberpit mcp` (`src/viberpit/assistant_mcp.py`) serves the assistant's tool table to **any** MCP
 client — Claude Code, Codex, an editor — over stdio. It is the drawer's own tools reached from
 outside the drawer: same handlers, same schemas, same trimming and untrusted-data framing, because
 it builds the identical MCP server (`server/assistant/server.py:build_server`) rather than
@@ -232,8 +232,8 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
 {
   "mcpServers": {
     "viberpit": {
-      "command": "ccswitch",
-      "args": ["mcp", "--url", "https://ccswitch.tailnet.ts.net"],
+      "command": "viberpit",
+      "args": ["mcp", "--url", "https://viberpit.tailnet.ts.net"],
       "env": { "VIBERPIT_ASSISTANT_TOKEN": "ccas2:…" }
     }
   }
@@ -256,18 +256,18 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
 - **Operator-tier tools are never served** — `start_deploy`, `upgrade_host`, `refresh_account`,
   `set_account_enabled` and `start_reauth` are withheld regardless of flags, matching the
   middleware, which pins `operator=False` for every `ccas2:` request.
-- **Needs the `[server]` extra** (`pip install 'ccswitch[server]'`) — the tool table lives in
+- **Needs the `[server]` extra** (`pip install 'viberpit[server]'`) — the tool table lives in
   `server/assistant/`; without it the command exits 3 with that instruction. Diagnostics and the
   startup banner go to **stderr**: stdout is the JSON-RPC channel.
 
 ## Use from scripts
 
-`ccswitch ask "<prompt>"` (`src/ccswitch/assistant_ask.py`) sends one prompt to the assistant thread
+`viberpit ask "<prompt>"` (`src/viberpit/assistant_ask.py`) sends one prompt to the assistant thread
 and prints the answer — a one-shot alternative to `mcp` for a shell script or a cron job that just
 wants a text answer, not a live tool connection.
 
 ```
-VIBERPIT_ASSISTANT_TOKEN=ccas2:… ccswitch ask "Which sessions need my attention?"
+VIBERPIT_ASSISTANT_TOKEN=ccas2:… viberpit ask "Which sessions need my attention?"
 ```
 
 It creates or resumes the caller's assistant thread (`POST /api/assistant/session`), attaches over
@@ -277,10 +277,10 @@ at" reflects a shell rather than a stale browser route. A tool call that needs a
 prints the card to stderr and answers it: `--yes` always allows, `--no-input` always denies, and
 with neither it prompts the TTY. `--fresh` starts a new thread instead of resuming the existing one.
 
-- **Authentication** — the same `ccas2:` token `ccswitch mcp` uses, but `/ws` (unlike an HTTP route)
+- **Authentication** — the same `ccas2:` token `viberpit mcp` uses, but `/ws` (unlike an HTTP route)
   has no per-message-type allowlist to gate a `read`-scope token against, so `require_ws_identity`
-  refuses one outright: `ccswitch ask` needs a token minted with `"scope": "act"`. Permission answers
+  refuses one outright: `viberpit ask` needs a token minted with `"scope": "act"`. Permission answers
   sent over this socket are audited `via="cli"`, distinguishing a shell answer from one clicked in
   the drawer.
-- **Needs the `[server]` extra** — same reasoning as `ccswitch mcp`: httpx and websockets live behind
+- **Needs the `[server]` extra** — same reasoning as `viberpit mcp`: httpx and websockets live behind
   it, and the command exits 3 with instructions when it's missing.

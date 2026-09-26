@@ -276,7 +276,7 @@ compatibility audit; API-key authentication in v1.
 
 **Evidence** — current engine and normalized stream in `server/sessions/claude_driver.py` and
 `server/sessions/events.py`; orchestration/fleet routing in `server/sessions/orchestrator.py` and
-`server/sessions/fleet_orchestrator.py`; account discovery/selection in `src/ccswitch/accounts.py`;
+`server/sessions/fleet_orchestrator.py`; account discovery/selection in `src/viberpit/accounts.py`;
 current Copilot translating-proxy behavior in `server/sessions/copilot_proxy.py`; official Codex
 app-server/auth contracts at <https://learn.chatgpt.com/docs/app-server> and
 <https://learn.chatgpt.com/docs/auth>. Full design:

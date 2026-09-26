@@ -22,8 +22,8 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 
 ## Architecture map
 
-- `src/ccswitch/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees. Entry points: the `ccswitch` command, `ccrun`, `ccmax`
-  (`pyproject.toml`). Tests in `tests/`.
+- `src/viberpit/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees. Entry points: the `viberpit` command, `ccrun`,
+  `ccmax` (`pyproject.toml`). Tests in `tests/`.
 - `server/app.py` — the **edge**: FastAPI `create_app()`; `app = create_app()` runs at import, so importing the module already reads
   `VIBERPIT_*` env (see the test note below).
 - `server/ipc/` — the **session daemon** (`python -m server.ipc`, `viberpit-daemon.service`). It owns every live `claude` process; the edge
@@ -107,10 +107,10 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   (#1164). Blocked by `server/tests/test_no_swallowed_outer_cancellation.py`.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk). Run against the main checkout's prebuilt
   env (`<main-checkout>/.venv/bin/python -m pytest …`) and symlink `web/node_modules` from the main checkout.
-- **The shared `.venv` imports the `ccswitch` package from the DEPLOY worktree, not your checkout.** `site-packages/__editable__.ccswitch-0.1.0.pth`
-  points at `cc-account-switcher-deploy/src`, so edits under your own `src/ccswitch/` are silently ignored by tests — they pass or fail
-  against *production* code. `server/*` is unaffected (pytest's rootdir wins). When touching `src/ccswitch/`, run with
-  `PYTHONPATH=<your-checkout>/src` and confirm with `python -c "import ccswitch.ledger as m; print(m.__file__)"`. CI is unaffected: it
+- **The shared `.venv` imports the `viberpit` package from ANOTHER checkout, not yours.** `site-packages/__editable__.viberpit-0.1.0.pth`
+  points at the main clone's `src`, so edits under your own `src/viberpit/` are silently ignored by tests — they pass or fail against
+  someone else's code. `server/*` is unaffected (pytest's rootdir wins). When touching `src/viberpit/`, run with
+  `PYTHONPATH=<your-checkout>/src` and confirm with `python -c "import viberpit.ledger as m; print(m.__file__)"`. CI is unaffected: it
   installs from the checkout under test.
 - API auth tests 401 unless `VIBERPIT_TAILNET_ALLOWLIST` includes the test identity (the real shell env sets a live allowlist). Pin it
   per-test, or run the full suite with `env -u VIBERPIT_TAILNET_ALLOWLIST VIBERPIT_DEV=1 pytest` (empty allowlist needs `VIBERPIT_DEV=1`).
@@ -231,7 +231,7 @@ provisioning, add flow, and caveat.
 - Suggestions and auto-summaries are disabled (`_pre_record` skips `suggester`/`summarizer`).
 - `ENABLE_TOOL_SEARCH=true` is injected — Claude Code disables MCP tool search for non-first-party base URLs, so this restores it for
   Copilot sessions.
-- Usage is reported as premium-request quota (mapped to the `Usage` dataclass via `src/ccswitch/copilot.py:usage_from_proxy`), not
+- Usage is reported as premium-request quota (mapped to the `Usage` dataclass via `src/viberpit/copilot.py:usage_from_proxy`), not
   session-reset tokens.
 - The proxy runs as a supervised subprocess per account (see `CopilotProxyManager`), health-gated on `GET /usage`, with idle teardown after
   `VIBERPIT_COPILOT_IDLE_GRACE_S` (default 300 s).
@@ -264,7 +264,7 @@ bypass the model. Kill switch `VIBERPIT_ASSISTANT_ENABLED`; evals under
 ## Self-directed model switching
 
 To ask for a different model, Claude calls the `request_model(model, reason)` session tool;
-Codex ends a message with `<!-- ccswitch:model=<tier> reason="..." -->` (parsed permanently). Both live in
+Codex ends a message with `<!-- viberpit:model=<tier> reason="..." -->` (parsed permanently). Both live in
 `server/sessions/model_request.py` so the prompt and scan halves cannot drift.
 
 - **Downgrades auto-apply** on the next turn; **upgrades park** for human approval in the existing `pending_model` columns.
@@ -282,7 +282,7 @@ Codex ends a message with `<!-- ccswitch:model=<tier> reason="..." -->` (parsed 
 
 ## Session tool surface
 
-Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `ccswitch.brand`) with
+Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `viberpit.brand`) with
 `session_context`/`report_feedback` (READ-class, no card). Engines with `AgentCapabilities.durable_tool_surface` (Claude)
 also get the SIGNAL-class `mark_complete()`, `mark_no_pr(resolution, note?)`, `hand_back(reason)` and `request_model(model, reason)`, which
 replaced the HTML-comment markers. Codex lacks the capability and keeps the markers —

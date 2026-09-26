@@ -5,9 +5,9 @@ title: Git Worktree Isolation
 state: live
 links:
   code:
-    - src/ccswitch/worktrees.py
-    - src/ccswitch/worktrees_janitor.py
-    - src/ccswitch/gitrepos.py
+    - src/viberpit/worktrees.py
+    - src/viberpit/worktrees_janitor.py
+    - src/viberpit/gitrepos.py
     - server/api/repos.py
   prs: [425, 630, 678, 656, 625, 621, 590, 127]
 ---
@@ -41,18 +41,19 @@ closed by the janitor (#630); no `config.lock` race across concurrent per-clone 
 worktrees are max-age evicted (stashing first) rather than kept forever (#678).
 
 **Non-goals** — Not a general git GUI or a replacement for the user's own checkouts — ViberPit
-worktrees live under a managed namespace (`<repo_root>/.ccswitch/worktrees/…`, clones under
-`.ccswitch/clones/<owner>/<name>`) and never mutate the user's `~/GitHub/<repo>` HEAD or branch.
+worktrees live under a managed namespace (`<repo_root>/.viberpit/worktrees/…`, clones under
+`.viberpit/clones/<owner>/<name>`; pre-rebrand `.ccswitch` trees are still recognized) and never
+mutate the user's `~/GitHub/<repo>` HEAD or branch.
 Not a credential manager beyond what git/gh operations need (tokens are injected per-op via env,
 never written to `.git/config`).
 
 **Notes**
-- **Isolation.** `create_worktree()` (`src/ccswitch/worktrees.py`) builds a per-session worktree
-  at `<repo_root>/.ccswitch/worktrees/<repo>/<short-session-id>`, off the shared clone's object
+- **Isolation.** `create_worktree()` (`src/viberpit/worktrees.py`) builds a per-session worktree
+  at `<repo_root>/.viberpit/worktrees/<repo>/<short-session-id>`, off the shared clone's object
   store; a per-clone lock (`_clone_lock`) serializes concurrent creates on the same clone while
   leaving different repos parallel (#656). Fresh worktrees are locked (`_lock_worktree`,
   `git worktree lock`) so a stray global prune can't reap a live one (#425).
-- **Janitor.** `sweep_orphaned_worktrees()` (`src/ccswitch/worktrees_janitor.py`) runs at startup
+- **Janitor.** `sweep_orphaned_worktrees()` (`src/viberpit/worktrees_janitor.py`) runs at startup
   then periodically; it reclaims a worktree only when it is **not** in the live-cwd set, old
   enough (default 24 h), clean (`git status --porcelain` empty), and fully pushed (or its upstream
   is `[gone]` after a squash-merge). Dirty, abandoned worktrees are stashed and force-evicted only
@@ -75,5 +76,5 @@ refs #177); daemon orphaned-worktree janitor closing the inode leak (#630, refs 
 eviction for dirty worktrees (#678); serialize per-clone git mutations to prevent the config.lock
 race (#656); statvfs byte+inode preflight before `worktree add` (#625) and inode-exhaustion
 detection surfacing 507 (#621); prune regenerable deps on same-device archive moves (#590);
-fetch-failure fallback to local ref instead of fatal (#127). Code: `src/ccswitch/worktrees.py`,
+fetch-failure fallback to local ref instead of fatal (#127). Code: `src/viberpit/worktrees.py`,
 `worktrees_janitor.py`, `gitrepos.py`; `server/api/repos.py`.

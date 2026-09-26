@@ -5,11 +5,11 @@ title: Usage-Aware Account Rotation
 state: live
 links:
   code:
-    - src/ccswitch/selector.py
-    - src/ccswitch/oauth.py
-    - src/ccswitch/ledger.py
-    - src/ccswitch/runner.py
-    - src/ccswitch/launcher.py
+    - src/viberpit/selector.py
+    - src/viberpit/oauth.py
+    - src/viberpit/ledger.py
+    - src/viberpit/runner.py
+    - src/viberpit/launcher.py
     - server/usage/poller.py
     - server/api/accounts.py
   prs: ['#558', '#537', '#531', '#534', '#540', '#539', '#680', '#90']
@@ -26,7 +26,7 @@ session at a hard ceiling.
 
 **Target users** — Anyone running long or bursty Claude work across a multi-account pool: headless
 scripts (`ccrun`), interactive sessions (`ccmax`), the web session daemon auto-rotating live
-sessions, and shells pinned via `ccswitch use`.
+sessions, and shells pinned via `viberpit use`.
 
 **Desired outcome** — The system tracks per-account session/weekly usage percentages and reset
 times, automatically picks the account with the most usable (most-perishable) headroom, and rotates
@@ -52,7 +52,7 @@ per-caller backoff logic.
   `AllAccountsBusy` carries the earliest reset and a `kind` (`at_ceiling` vs usage-unreadable vs
   needs-reauth, #239) so the edge renders a clear message across the RPC boundary.
 - Soft reservations: `ledger.reserve`/`reservation_active` place a short hold on a just-picked
-  account so running `ccswitch use` back-to-back for several terminals spreads them out (README).
+  account so running `viberpit use` back-to-back for several terminals spreads them out (README).
 - Weekly reserve (#558, meaning fixed by spec 2026-09-20 D4): a per-account `weeklyReservePct` is
   the share of the weekly allowance KEPT BACK (the capacity governor's push level supplies the
   default: conserve 40 / steady 20 / max 5). Once weekly usage reaches `100 − reserve`, the
@@ -71,10 +71,10 @@ per-caller backoff logic.
   consecutive failures as a rotation-monitor input. Copilot usage is mapped onto the same `Usage`
   dataclass so the selector ranks it unchanged.
 
-**Evidence** — Ranking/perishability/`AllAccountsBusy` in `src/ccswitch/selector.py`; usage fetch +
-retry in `src/ccswitch/oauth.py`; reservations, reserve thresholds, and usage cache in
-`src/ccswitch/ledger.py`; CLI rotation loops in `src/ccswitch/runner.py` (ccrun) and
-`src/ccswitch/launcher.py` (ccmax); async poller in `server/usage/poller.py`. PRs: #558
+**Evidence** — Ranking/perishability/`AllAccountsBusy` in `src/viberpit/selector.py`; usage fetch +
+retry in `src/viberpit/oauth.py`; reservations, reserve thresholds, and usage cache in
+`src/viberpit/ledger.py`; CLI rotation loops in `src/viberpit/runner.py` (ccrun) and
+`src/viberpit/launcher.py` (ccmax); async poller in `server/usage/poller.py`. PRs: #558
 (per-account weekly reserve), #537 (stop sole-headroom starvation, surface AllAccountsBusy), #531
 (self-heal sessions on dead/exhausted accounts), #534 (auto-recover needs_attention on free-up),
 #540/#539 (ledger-shared usage-fetch backoff), #680 (short-circuit on 400 refresh failure), #90
