@@ -10,6 +10,7 @@ import { useAutomationActionable, useAutomationTrigger } from '@/api/hooks'
 import { fetchPrDoctorJob, type ActionSpec } from '@/api/automations'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
+import { SectionHeading } from '@/ui/SectionHeading'
 
 function outcomeToast(r: { level: string; message: string }) {
   if (r.level === 'ok') toast.success(r.message)
@@ -134,8 +135,8 @@ export function AutomationActions({ automationId, enabled }: { automationId: str
   // empty state.
   if (list.length === 0) return null
   return (
-    <section>
-      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Actionable items</h4>
+    <section className="space-y-2">
+      <SectionHeading>Actionable items</SectionHeading>
       <div className="max-h-48 overflow-y-auto rounded-md border border-edge p-2">
         <ul className="space-y-1.5 text-sm">
           {list.map((item) => (

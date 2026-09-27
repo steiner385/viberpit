@@ -1,8 +1,8 @@
 /**
- * The automation detail pane: Overview · Queue · Schedule · Events ·
- * Sessions · Config (`docs/PAGE-TABS.md`) over one automation, re-homing both
- * the deleted monitor page (`automations/AutomationsTab.tsx`) and the old
- * Settings card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
+ * The automation detail pane: Overview · Queue · Schedule · Config · Events ·
+ * Sessions (`docs/PAGE-TABS.md`) over one automation, re-homing both the
+ * deleted monitor page (`automations/AutomationsTab.tsx`) and the old Settings
+ * card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
  * (finish-line spec §4.4). `AutomationControls` (header actions) is a sibling
  * component, not rendered here — the page assembling this pane puts it beside
  * the automation's name.
@@ -10,12 +10,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Automation, AutomationStatusProduct } from '@/api/automations'
+import { useAutomationSessions } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
 import { automationPath } from '../deliveryNavState'
 import { productPath } from '@/features/roadmap/roadmapNavState'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { Tabs } from '@/ui/Tabs'
 import { AutomationActions } from './actions'
 import { BacklogGroupsPanel } from './BacklogGroupsPanel'
@@ -54,12 +56,20 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // so an old bookmark falls back to Overview — no redirect needed.
   const [tab, setTab] = useSearchParamState<AutomationTab>('tab', items, 'overview')
   const [customDispatch, setCustomDispatch] = useState(false)
+  // The Sessions tab's badge (standard §7): the same query `SessionsList`
+  // reads, so opening that tab is not a second fetch.
+  const sessions = useAutomationSessions(a.id)
+  const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
 
   return (
     <>
       <Tabs
         label="Automation"
-        items={items.map((id) => ({ id, label: AUTOMATION_TAB[id] }))}
+        items={items.map((id) => ({
+          id,
+          label: AUTOMATION_TAB[id],
+          count: id === 'sessions' ? sessions.data?.length : undefined,
+        }))}
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
         panelId={(id) => `automation-panel-${id}`}
@@ -94,6 +104,14 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                 )}
               </div>
             ) : <p className="text-sm text-ink-muted">Responsibility and scope unavailable.</p>}
+            {/* What the configured mode means, as a sentence (R9) — part of the
+                identity block, where a paragraph belongs; the header keeps the
+                mode's name, which fits on one line on a phone. */}
+            {!operatorTriggered && (
+              <p className="text-sm">
+                <strong>Mode: </strong>{a.mode ?? 'unknown'} — {modeMeaning ?? 'Mode effects unavailable'}
+              </p>
+            )}
             {a.id === 'backlog-runner' && (
               <div className="text-sm text-ink-muted">
                 {a.status.products == null && <p>Product workload unavailable.</p>}
@@ -119,12 +137,16 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
             )}
             {a.id === 'pr-doctor' && <ConsolidatePanel enabled onOpenSession={onOpenSession} />}
             {a.id === 'backlog-runner' && (
-              <>
-                <div className="flex justify-end">
-                  <Button size="sm" variant="secondary" onClick={() => setCustomDispatch(true)}>Custom dispatch…</Button>
-                </div>
+              <section className="space-y-2">
+                {/* The action sits on the heading of the list it adds to, not
+                    floating between two sections. */}
+                <SectionHeading
+                  actions={<Button size="sm" variant="secondary" onClick={() => setCustomDispatch(true)}>Custom dispatch…</Button>}
+                >
+                  Planned groups
+                </SectionHeading>
                 <BacklogGroupsPanel enabled onOpenSession={onOpenSession} />
-              </>
+              </section>
             )}
           </>
         )}

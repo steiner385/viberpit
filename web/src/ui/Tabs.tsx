@@ -17,9 +17,68 @@ export interface TabsProps {
   className?: string
 }
 
+/** Width of the edge fade that says "more tabs this way", and the room kept
+ *  between the selected tab and that edge so the fade never sits on it. */
+const EDGE = 24
+
+/** `mask-image` fades for a strip with tabs hidden past one or both edges. A
+ *  mask rather than an overlay, so the cue works on whatever the strip sits
+ *  on — the page canvas under a detail pane, `bg-canvas` in the session body. */
+const FADE = {
+  left: '[mask-image:linear-gradient(to_right,transparent,black_1.5rem)]',
+  right: '[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]',
+  both: '[mask-image:linear-gradient(to_right,transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)]',
+} as const
+
 export function Tabs({ items, value, onChange, label, panelId, orientation = 'horizontal', className }: TabsProps) {
   const refs = React.useRef<(HTMLButtonElement | null)[]>([])
+  const listRef = React.useRef<HTMLDivElement | null>(null)
   const horizontal = orientation === 'horizontal'
+  // Which edges currently hide tabs. A six-tab strip keeps three tabs visible
+  // at 390px (docs/PAGE-TABS.md §4) and the scrollbar is hidden, so without
+  // this the other three simply do not exist to the reader.
+  const [hidden, setHidden] = React.useState({ left: false, right: false })
+
+  const measure = React.useCallback(() => {
+    const el = listRef.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollWidth - el.clientWidth - el.scrollLeft > 1
+    setHidden((prev) => (prev.left === left && prev.right === right ? prev : { left, right }))
+  }, [])
+
+  // Re-measure when the box changes size (a rotated phone, a resized list
+  // column). jsdom has neither layout nor ResizeObserver, so both are guarded.
+  React.useEffect(() => {
+    if (!horizontal) return
+    measure()
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [horizontal, measure, items.length])
+
+  // Keep the selected tab on screen: a deep link (`?tab=sessions`) on a phone
+  // must not land with its own tab scrolled out of the strip. Keyed on the
+  // value and the selected tab's own badge (a count that arrives after mount
+  // widens the tab past the edge it was just scrolled to), not on the items
+  // array (rebuilt every render), so a poll-driven re-render never yanks a
+  // strip the reader has scrolled by hand.
+  const activeCount = items.find((t) => t.id === value)?.count
+  React.useEffect(() => {
+    if (!horizontal) return
+    const list = listRef.current
+    const tab = refs.current[items.findIndex((t) => t.id === value)]
+    if (!list || !tab) return
+    const start = tab.offsetLeft - EDGE
+    const end = tab.offsetLeft + tab.offsetWidth + EDGE
+    if (start < list.scrollLeft) list.scrollLeft = Math.max(0, start)
+    else if (end > list.scrollLeft + list.clientWidth) list.scrollLeft = end - list.clientWidth
+    measure()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see the comment above: `items` is intentionally not a dependency
+  }, [horizontal, value, items.length, activeCount, measure])
+
   const onKeyDown = (e: React.KeyboardEvent, i: number) => {
     const next = e.key === (horizontal ? 'ArrowRight' : 'ArrowDown') ? (i + 1) % items.length
       : e.key === (horizontal ? 'ArrowLeft' : 'ArrowUp') ? (i - 1 + items.length) % items.length
@@ -30,12 +89,24 @@ export function Tabs({ items, value, onChange, label, panelId, orientation = 'ho
   }
   return (
     <div
+      ref={listRef}
       role="tablist"
       aria-label={label}
       aria-orientation={orientation}
+      onScroll={horizontal ? measure : undefined}
+      data-hidden-left={hidden.left || undefined}
+      data-hidden-right={hidden.right || undefined}
       className={cn(
         'flex gap-1',
-        horizontal ? 'overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden' : 'flex-col',
+        // `relative` so a tab's offsetLeft is measured from the strip. The
+        // baseline rule belongs to the strip, not its callers: the tabs'
+        // `-mb-px` exists to sit their 2px indicator on it.
+        horizontal
+          ? 'relative overflow-x-auto border-b border-edge [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+          : 'flex-col',
+        horizontal && hidden.left && hidden.right && FADE.both,
+        horizontal && hidden.left && !hidden.right && FADE.left,
+        horizontal && !hidden.left && hidden.right && FADE.right,
         className,
       )}
     >

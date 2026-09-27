@@ -113,7 +113,7 @@ function Inner() {
           items={repos.map((r) => ({ id: r, label: r }))}
           value={focused ?? repos[0]!}
           onChange={focus}
-          className="shrink-0 border-b border-edge px-4 md:px-6"
+          className="shrink-0 px-4 md:px-6"
         />
       )}
       <PageContent scroll={false} busy={!state}>

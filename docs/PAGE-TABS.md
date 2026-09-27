@@ -115,6 +115,15 @@ opening.
   uses its own param name (`?view=`), same hook.
 - **The default tab is the first in the strip** (Overview when the object has an identity; Needs
   you on a portfolio-style page that has none).
+- **Overflow.** The strip scrolls horizontally with its scrollbar hidden, so the primitive owns the
+  two things that make that usable: it fades the edge that hides tabs (a mask, so it works on any
+  background) and scrolls the selected tab into view when the value changes — a deep link on a
+  phone must not land with its own tab off-screen. The strip also draws its own baseline rule; a
+  caller adds padding, never a border.
+- **Section headings inside a panel** are `ui/SectionHeading` (one treatment, an `h3` — the tab
+  stands in for the `h2`). A panel never restates its own tab's label as a heading; a heading is
+  for a sub-section, and a control that acts on that sub-section goes in the heading's `actions`
+  slot rather than floating between sections.
 - **Panels.** One `role="tabpanel"` wrapper, `id={panelId(tab)}` and
   `aria-labelledby={\`tab-${tab}\`}`, with the `Tabs` `panelId` prop wiring the tab's
   `aria-controls`. Render only the active panel; do not mount every panel and hide the rest.

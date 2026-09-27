@@ -64,6 +64,31 @@ describe('Tabs', () => {
     expect(screen.getByRole('tab')).toHaveAccessibleName('Alpha (3, needs attention)')
   })
 
+  it('a strip wider than its box scrolls the selected tab into view and fades the edge hiding tabs', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<Tabs items={items} value="a" onChange={onChange} label="Sections" />)
+    const list = screen.getByRole('tablist')
+    const tabs = screen.getAllByRole('tab')
+    // jsdom has no layout: give the strip a 100px box holding 300px of tabs.
+    Object.defineProperty(list, 'clientWidth', { value: 100, configurable: true })
+    Object.defineProperty(list, 'scrollWidth', { value: 300, configurable: true })
+    let scrollLeft = 0
+    Object.defineProperty(list, 'scrollLeft', { get: () => scrollLeft, set: (v: number) => { scrollLeft = v }, configurable: true })
+    tabs.forEach((t, i) => {
+      Object.defineProperty(t, 'offsetLeft', { value: i * 100, configurable: true })
+      Object.defineProperty(t, 'offsetWidth', { value: 100, configurable: true })
+    })
+    // Nothing scrolled yet, so only the right edge hides tabs.
+    fireEvent.scroll(list)
+    expect(list).not.toHaveAttribute('data-hidden-left')
+    expect(list).toHaveAttribute('data-hidden-right', 'true')
+    // Selecting Gamma (200–300px) scrolls it, plus its 24px gutter, into the box.
+    rerender(<Tabs items={items} value="c" onChange={onChange} label="Sections" />)
+    expect(scrollLeft).toBe(224)
+    expect(list).toHaveAttribute('data-hidden-left', 'true')
+    expect(list).not.toHaveAttribute('data-hidden-right')
+  })
+
   it('vertical orientation follows Up/Down arrows and stacks tabs', async () => {
     const onChange = vi.fn()
     const { container } = render(

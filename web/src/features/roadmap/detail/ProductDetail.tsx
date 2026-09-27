@@ -12,6 +12,7 @@ import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { Tabs } from '@/ui/Tabs'
 import { Skeleton } from '@/ui/Skeleton'
 import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
@@ -211,11 +212,11 @@ export function ProductDetail({ product }: { product: ProductNode }) {
         {tab === 'dependencies' && (
           <div className="flex flex-col gap-4">
             <section aria-labelledby="deps-products">
-              <h3 id="deps-products" className="mb-2 text-xs font-medium uppercase text-ink-muted">Between {PRODUCT.plural.toLowerCase()}</h3>
+              <SectionHeading id="deps-products" className="mb-2">Between {PRODUCT.plural.toLowerCase()}</SectionHeading>
               <ProductEdgesEditor product={product} />
             </section>
             <section aria-labelledby="deps-issues">
-              <h3 id="deps-issues" className="mb-2 text-xs font-medium uppercase text-ink-muted">Between {ISSUE.plural.toLowerCase()}</h3>
+              <SectionHeading id="deps-issues" className="mb-2">Between {ISSUE.plural.toLowerCase()}</SectionHeading>
               <DependencyPanel slug={product.slug} />
             </section>
           </div>

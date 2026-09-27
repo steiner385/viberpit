@@ -36,9 +36,10 @@ export function ConfigPanel({ automation: a }: { automation: Automation }) {
     ? (localConfig['enabled_repos'] as string[])
     : []
 
+  // The tab is the heading (docs/PAGE-TABS.md §7): no "Configuration" label
+  // restating it above the fields.
   return (
-    <section>
-      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Configuration</h4>
+    <section aria-label="Configuration">
       <div className="space-y-3">
         {/* A deprecated dial is hidden, not read-only (spec 2026-09-20 D6): there is nothing to set anywhere. */}
         {a.configSchema.filter((field) => !field.deprecated).map((field) => (
