@@ -28,9 +28,18 @@ from collections.abc import Callable, Sequence
 
 from viberpit import gitrepos
 
+from server.obs.logdedupe import LogThrottle, log_event_throttled
+
 log = logging.getLogger(__name__)
 
 GhRun = Callable[..., object]
+
+#: One shared window across every caller: a still-unreachable ``gh`` is one
+#: standing condition, not fresh news each time a caller (write path or a
+#: polling loop) retries into it — re-filing the same WARNING every retry is
+#: what turned a single rate-limit window into a stream of auto-error issues
+#: (#2513, repo norm: server/obs/logdedupe.py).
+_LOOKUP_FAILED_THROTTLE = LogThrottle()
 
 
 def _owner_name(slug: str) -> tuple[str, str] | None:
@@ -94,7 +103,15 @@ def canonical_slugs(
             )
         payload = json.loads(getattr(proc, "stdout", "") or "{}")
     except Exception as exc:
-        log.warning("repo_canon.lookup_failed — keeping slugs verbatim: %s", exc)
+        # Structured + throttled rather than a plain log.warning: the interpolated
+        # exception text used to mint a fresh signature per distinct gh error,
+        # forking one condition into several auto-error issues (the exact trap
+        # log_event_throttled's docstring names). The event name alone is the
+        # fingerprint; the variable text rides in `fields`.
+        log_event_throttled(
+            log, _LOOKUP_FAILED_THROTTLE, "lookup_failed", logging.WARNING,
+            "repo_canon.lookup_failed", error=str(exc),
+        )
         return {}
 
     data = payload.get("data") or {}

@@ -10,6 +10,7 @@ sessions on the same pull request.
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 import pytest
@@ -115,3 +116,21 @@ def test_a_blank_entry_is_dropped(blank):
     assert repo_canon.canonicalize_repo_list(
         [blank, "cairnea/KinDash"], gh_run=gh
     ) == ["cairnea/KinDash"]
+
+
+def test_repeated_lookup_failures_are_throttled_not_refiled(caplog):
+    """A still-unreachable ``gh`` is one standing condition. Re-logging a fresh
+    WARNING on every retry (a 120s polling loop hits this constantly) is what
+    turned one transient rate-limit window into a stream of auto-error issues
+    (#2513) — the second call within the throttle window must demote to DEBUG."""
+    def boom(args, **kw):
+        raise OSError("network down")
+
+    repo_canon._LOOKUP_FAILED_THROTTLE.clear()
+    with caplog.at_level(logging.DEBUG, logger="server.github.repo_canon"):
+        repo_canon.canonical_slugs(["acme/old-name"], gh_run=boom)
+        repo_canon.canonical_slugs(["acme/old-name"], gh_run=boom)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 1
+    assert len(debugs) == 1
