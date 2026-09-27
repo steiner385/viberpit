@@ -44,8 +44,19 @@ export function AutomationRow({ automation: a, selected, onOpen }: AutomationRow
           </span>
         }
         trailing={
+          // The name is the row's primary identifier, so the trailing badges
+          // are kept short: with "Configured mode: propose" spelled out here
+          // the name truncated to "S…" in the default-width column (2026-09-27
+          // audit). The mode value alone is the pill; the phrase is its title
+          // and its accessible text.
           <>
-            <Badge tone={a.enabled ? 'accent' : 'neutral'}>{(a.operatorTriggered ?? a.modes.length === 0) ? 'Invoked tool' : `Configured mode: ${a.mode ?? 'unknown'}`}</Badge>
+            {(a.operatorTriggered ?? a.modes.length === 0)
+              ? <Badge tone="neutral">Invoked tool</Badge>
+              : (
+                <Badge tone={a.enabled ? 'accent' : 'neutral'} title={`Configured mode: ${a.mode ?? 'unknown'}`}>
+                  <span className="sr-only">Configured mode: </span>{a.mode ?? 'unknown'}
+                </Badge>
+              )}
             {a.workClass && <Badge tone="neutral">{a.workClass}</Badge>}
           </>
         }

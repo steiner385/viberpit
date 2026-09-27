@@ -192,9 +192,12 @@ describe('DeliveryPage', () => {
     // the name rather than inside the tab panel.
     expect(screen.getByRole('combobox', { name: 'Configured mode' })).toHaveValue('auto')
     expect(screen.getByRole('switch', { name: 'PR doctor enabled' })).toBeInTheDocument()
-    // The status line and the mode description, as visible header text.
-    expect(screen.getByText('2 PRs failing')).toBeInTheDocument()
-    expect(screen.getByText(/Configured mode: auto — Repairs eligible PRs/)).toBeInTheDocument()
+    // The status line (clamped to two lines, the whole string in its title)
+    // and the mode's name in the header; what the mode means is a sentence on
+    // the Overview, where a paragraph belongs (2026-09-27 audit).
+    expect(screen.getByText('2 PRs failing')).toHaveAttribute('title', '2 PRs failing')
+    expect(screen.getByText('Configured mode: auto')).toHaveAttribute('title', 'Repairs eligible PRs within configured permissions.')
+    expect(screen.getByText(/auto — Repairs eligible PRs/)).toBeInTheDocument()
     expect(screen.getByText('Execute and finish work')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Backlog runner' })).toHaveAttribute('href', '/delivery/automations/backlog-runner')
     expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()

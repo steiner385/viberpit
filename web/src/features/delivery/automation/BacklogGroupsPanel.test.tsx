@@ -54,6 +54,18 @@ describe('BacklogGroupsPanel', () => {
     expect(screen.getByText(/Fix eight/)).toBeInTheDocument()
   })
 
+  it('an empty plan is a sentence, not nothing — the caller owns the heading above it', () => {
+    currentGroups = []
+    render(<BacklogGroupsPanel enabled />)
+    expect(screen.getByText('No planned groups yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('heading')).toBeNull()
+  })
+
+  it('says when the plan was made, in relative time on a real <time>', () => {
+    render(<BacklogGroupsPanel enabled />)
+    expect(screen.getByText(/^Planned \d+[smhd] ago$/)).toHaveAttribute('dateTime', '2026-07-20T10:00:00Z')
+  })
+
   it('flags a plan the grouping model could not be parsed for', () => {
     // #2217: an all-singletons fallback looked exactly like a real plan.
     currentDegraded = true

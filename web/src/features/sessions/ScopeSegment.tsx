@@ -1,32 +1,11 @@
-// web/src/features/sessions/ScopeSegment.tsx
+// Active | Background | Archived — the sessions list's scope switch, on the
+// `ui/ScopeSegment` primitive (shared with Roadmap and Delivery).
 //
-// Active | Background | Archived — the sessions list's scope switch.
-//
-// It holds NO state. Scope is the route (`listScopeForPath`), so this is three
-// links and a highlight: the Back button, a bookmark and a reload all land on
-// the scope the URL names, and there is no second opinion to drift.
-//
-// Deliberately links rather than `role="tab"`: these navigate, and tab
-// semantics would promise a tabpanel relationship that the router does not
-// provide. `aria-current="page"` is the honest marker for "you are here".
-//
-// The name/count split is `ui/badgedName` + `ui/Badge`, the same pair `NavItem`,
-// `Tabs` and `SettingsNav` use — NOT a label node beside a count node. The
-// accname algorithm trims each element's contribution and concatenates, so
-// `<a>Active<span>7</span></a>` is announced "Active7". One `sr-only` node
-// carries the whole name; the visible label and the pill are `aria-hidden`.
-//
-// Background carries no attention state of its own, by design: a maintenance
-// session that needs a human LIFTS into Active (`session/backgroundSessions.ts`),
-// so the Background count is only ever quiet rows and a second badge would be
-// a second opinion about the same fact.
-//
-// Tokens only — this file is under `src/features/`, where
-// `viberpit/no-raw-palette` is enforced.
-import { Link } from 'react-router-dom'
-import { cn } from '@/lib/utils'
-import { Badge } from '@/ui/Badge'
-import { badgedName } from '@/ui/badgedName'
+// The Active count includes the pre-spawn rows the list-controls gate counts;
+// Background is only ever quiet maintenance rows — a background session that
+// needs a human LIFTS into Active (`session/backgroundSessions.ts`), so a
+// second badge there would be a second opinion about the same fact.
+import { ScopeSegment as Segment } from '@/ui/ScopeSegment'
 import {
   ARCHIVED_PATH, BACKGROUND_PATH, SESSIONS_PATH, type ListScope,
 } from '@/session/sessionNavState'
@@ -40,57 +19,15 @@ export interface ScopeSegmentProps {
   archivedCount: number
 }
 
-const item = cn(
-  'flex-1 inline-flex min-h-target items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-)
-const here = 'bg-accent-wash text-accent'
-const elsewhere = 'text-ink-muted hover:bg-surface-raised hover:text-ink'
-
-interface ScopeLinkProps {
-  to: string
-  label: string
-  /** `badgedName` and `Badge` both read 0 as "no count" — "Archived 0" reads as
-   *  a counter that failed, so a zero scope is announced and drawn bare. */
-  count: number
-  current: boolean
-}
-
-function ScopeLink({ to, label, count, current }: ScopeLinkProps) {
-  return (
-    <Link
-      to={to}
-      aria-current={current ? 'page' : undefined}
-      className={cn(item, current ? here : elsewhere)}
-    >
-      <span aria-hidden="true">{label}</span>
-      <span className="sr-only">{badgedName({ label, count })}</span>
-      {count > 0 && (
-        <Badge tone={current ? 'accent' : 'neutral'} count={count} aria-hidden="true" />
-      )}
-    </Link>
-  )
-}
-
 export function ScopeSegment({ scope, activeCount, backgroundCount, archivedCount }: ScopeSegmentProps) {
   return (
-    <nav
-      aria-label="Session scope"
-      className="flex gap-1 rounded-md border border-edge bg-surface p-1"
-    >
-      <ScopeLink to={SESSIONS_PATH} label="Active" count={activeCount} current={scope === 'live'} />
-      <ScopeLink
-        to={BACKGROUND_PATH}
-        label="Background"
-        count={backgroundCount}
-        current={scope === 'background'}
-      />
-      <ScopeLink
-        to={ARCHIVED_PATH}
-        label="Archived"
-        count={archivedCount}
-        current={scope === 'archived'}
-      />
-    </nav>
+    <Segment
+      label="Session scope"
+      items={[
+        { to: SESSIONS_PATH, label: 'Active', count: activeCount, current: scope === 'live' },
+        { to: BACKGROUND_PATH, label: 'Background', count: backgroundCount, current: scope === 'background' },
+        { to: ARCHIVED_PATH, label: 'Archived', count: archivedCount, current: scope === 'archived' },
+      ]}
+    />
   )
 }

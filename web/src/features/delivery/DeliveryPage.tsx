@@ -81,28 +81,40 @@ export function DeliveryPage() {
             <Breadcrumb items={crumbs} />
             {/* R9: what this automation is doing, and what its mode means, as
                 text rather than as a dot the reader has to decode. */}
+            {/* The header never scrolls away, so it is budgeted: three short
+                lines. Before this it was a fourteen-line wall on a phone that
+                left the tab strip below the fold (2026-09-27 audit). */}
             {automation && (
-              <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-                <TierDot tier={automationTier(automation)} />
-                <span>{automationTierLine(automationTier(automation), automation)}</span>
-                <span>{automation.status.text}</span>
-                {/* Findability (spec D9): every capacity dial should point at
-                    the Capacity page, including the runner header when it is
-                    the reason nothing is happening. */}
-                {automation.id === 'backlog-runner' &&
-                  (automation.status.waitingReason === 'capacity' || automation.status.text.includes('capacity')) && (
-                  <Link to={deliveryPath('capacity')} className="underline">See capacity</Link>
-                )}
-                {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
-                {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
-                {(automation.operatorTriggered ?? automation.modes.length === 0)
-                  ? <span>Invoked tool</span>
-                  : <span>Configured mode: {automation.mode ?? 'unknown'} — {mode ?? 'Mode effects unavailable'}</span>}
-                {engine && (
-                  <Badge tone="info" title="Agent engine this automation's unattended sessions run on">
-                    {engine}
-                  </Badge>
-                )}
+              <div className="flex flex-col gap-0.5 text-xs text-ink-muted">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <TierDot tier={automationTier(automation)} />
+                  <span>{automationTierLine(automationTier(automation), automation)}</span>
+                  {/* Findability (spec D9): every capacity dial should point at
+                      the Capacity page, including the runner header when it is
+                      the reason nothing is happening. */}
+                  {automation.id === 'backlog-runner' &&
+                    (automation.status.waitingReason === 'capacity' || automation.status.text.includes('capacity')) && (
+                    <Link to={deliveryPath('capacity')} className="underline">See capacity</Link>
+                  )}
+                  {engine && (
+                    <Badge tone="info" title="Agent engine this automation's unattended sessions run on">
+                      {engine}
+                    </Badge>
+                  )}
+                </div>
+                {/* Two lines at most: the runner's status carries a per-product
+                    breakdown that the Queue tab tabulates in full, and the
+                    title holds the whole string. */}
+                <p className="line-clamp-2" title={automation.status.text}>{automation.status.text}</p>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
+                  {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
+                  {/* The mode's name here; what it means is a sentence on the
+                      Overview's identity block (and this span's title). */}
+                  {(automation.operatorTriggered ?? automation.modes.length === 0)
+                    ? <span>Invoked tool</span>
+                    : <span title={mode}>Configured mode: {automation.mode ?? 'unknown'}</span>}
+                </div>
               </div>
             )}
           </div>

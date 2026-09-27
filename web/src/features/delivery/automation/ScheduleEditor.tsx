@@ -197,9 +197,7 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
   const days = activeHours.days ?? []
 
   return (
-    <section className="space-y-3">
-      <h4 className="text-xs font-semibold uppercase text-ink-muted">Schedule</h4>
-
+    <section aria-label="Schedule" className="space-y-3">
       {/* Preset */}
       <div>
         <label className="block text-sm font-medium mb-1" htmlFor="schedule-preset">

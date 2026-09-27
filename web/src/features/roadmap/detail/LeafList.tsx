@@ -12,6 +12,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { ISSUE, bouncedLabel, reasonLabel, holdLabel } from '@/features/products/vocab'
 import { SESSIONS_PATH } from '@/session/sessionNavState'
 import { issueUrl } from '@/lib/githubUrl'
@@ -224,7 +225,7 @@ function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities
             style={{ transform: `translateY(${item.start - virtualizer.options.scrollMargin}px)` }}
           >
             {row.kind === 'header'
-              ? <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">{row.label}</h3>
+              ? <SectionHeading className="mb-1">{row.label}</SectionHeading>
               : <LeafRow leaf={row.leaf} capabilities={capabilities} onReview={(id) => reviewIssue?.(id)} />}
           </div>
         )

@@ -72,11 +72,11 @@ describe('DeliveryListColumn', () => {
     expect(screen.getByRole('link', { name: 'CI health (2)' })).toHaveAttribute('href', '/delivery?scope=ci')
     expect(screen.getByRole('link', { name: 'Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
   })
-  it('Capacity scope: the five stack rows, and a binding count of 1 on the scope link', () => {
+  it('Capacity scope: the five stack rows, and a binding constraint as attention on the scope link', () => {
     mount({ scope: 'capacity', capacity: CAPACITY })
     const list = screen.getByRole('list', { name: 'Capacity' })
     expect(within(list).getAllByRole('listitem')).toHaveLength(5)
-    expect(screen.getByRole('link', { name: 'Capacity (1)' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Capacity (needs attention)' })).toHaveAttribute('aria-current', 'page')
   })
   it('search narrows the Automations scope', () => {
     mount()

@@ -16,6 +16,7 @@ import { useEditMapChanges, useRoadmapMap, mapChangesErrorMessage } from '@/api/
 import { Select } from '@/ui/Select'
 import { Button } from '@/ui/Button'
 import { IconButton } from '@/ui/IconButton'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { CAPABILITY, PRODUCT } from '@/features/products/vocab'
 import { findCapability, findProduct, flattenCapabilities } from '../lookup'
 import { capabilityPath } from '../roadmapNavState'
@@ -123,7 +124,7 @@ export function CapabilityLinksEditor({ product, capability }: {
   return (
     <section aria-labelledby="capability-links-heading" className="flex flex-col gap-2">
       <div>
-        <h3 id="capability-links-heading" className="text-xs font-medium uppercase text-ink-muted">Links</h3>
+        <SectionHeading id="capability-links-heading">Links</SectionHeading>
         <p className="text-xs text-ink-muted">
           What this {lowerCapability} is powered by or integrates with — other {CAPABILITY.plural.toLowerCase()},
           here or in another {PRODUCT.singular.toLowerCase()} — as declared in its feature doc.

@@ -19,6 +19,7 @@ import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
 import { Banner } from '@/ui/Banner'
 import { Field } from '@/ui/Field'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { Skeleton } from '@/ui/Skeleton'
 
 /** `dispatch` first — the issue-dispatch setting is the first
@@ -107,7 +108,7 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   if (isError && !schema) {
     return (
       <section aria-labelledby="automation-heading" className="flex flex-col gap-2">
-        <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
+        <SectionHeading id="automation-heading">Automation</SectionHeading>
         <Banner tone="danger" title="Could not load the automation settings.">
           They refresh on their own, so they will fill in once the connection is back.
         </Banner>
@@ -117,7 +118,7 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   if (isLoading || !schema) {
     return (
       <section aria-labelledby="automation-heading">
-        <h3 id="automation-heading" className="mb-2 text-xs font-medium uppercase text-ink-muted">Automation</h3>
+        <SectionHeading id="automation-heading" className="mb-2">Automation</SectionHeading>
         <Skeleton lines={2} />
       </section>
     )
@@ -160,7 +161,7 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
 
   return (
     <section aria-labelledby="automation-heading" className="flex flex-col gap-2">
-      <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
+      <SectionHeading id="automation-heading">Automation</SectionHeading>
       {/* This has to outrank the quiet muted-text treatment below: a fine-print
           line at the top of a long card reads as boilerplate, so people scroll
           past it, hit a wall of disabled fields lower down, and report it as

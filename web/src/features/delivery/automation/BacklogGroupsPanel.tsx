@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { useBacklogGroups, useDispatchBacklogGroup } from '@/api/hooks'
 import type { BacklogGroup } from '@/api/automations'
 import { issueUrl } from '@/lib/githubUrl'
+import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 
 function GroupRow({
   group,
@@ -57,7 +58,9 @@ function GroupRow({
   )
 }
 
-/** Planned groups panel with per-group immediate dispatch. */
+/** The planned groups with per-group immediate dispatch. The heading row
+ *  ("Planned groups" + Custom dispatch) is the caller's, so an empty plan is
+ *  still a sentence under it rather than a heading over nothing. */
 export function BacklogGroupsPanel({
   enabled,
   onOpenSession,
@@ -70,7 +73,8 @@ export function BacklogGroupsPanel({
   const [dispatchingId, setDispatchingId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const groups = data?.groups ?? []
-  if (!groups.length) return null
+  if (!data) return null
+  if (!groups.length) return <p className="text-sm text-ink-muted">No planned groups yet.</p>
 
   async function handleDispatch(group: BacklogGroup) {
     setDispatchingId(group.id)
@@ -93,16 +97,13 @@ export function BacklogGroupsPanel({
   }
 
   return (
-    <section className="mt-3 border-t border-edge pt-3">
-      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">
-        Planned groups
-        {data?.createdAt && (
-          <span className="ml-2 font-normal normal-case">
-            planned {data.createdAt.slice(0, 16).replace('T', ' ')}
-          </span>
-        )}
-      </h4>
-      {data?.degraded && (
+    <div className="space-y-2">
+      {isValidTimestamp(data.createdAt) && (
+        <p className="text-xs text-ink-muted">
+          <time dateTime={data.createdAt} title={data.createdAt}>Planned {relTime(data.createdAt)}</time>
+        </p>
+      )}
+      {data.degraded && (
         <p role="status" className="text-xs text-warning mb-2 leading-snug">
           The grouping model&apos;s reply could not be parsed, so this plan is every
           issue on its own. It retries at the next refresh.
@@ -119,6 +120,6 @@ export function BacklogGroupsPanel({
           />
         ))}
       </ul>
-    </section>
+    </div>
   )
 }

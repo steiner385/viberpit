@@ -128,7 +128,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           value={view}
           onChange={(id) => setView(id as SessionView)}
           panelId={(id) => `tab-panel-${id}`}
-          className="shrink-0 border-b border-edge bg-canvas px-2"
+          className="shrink-0 bg-canvas px-2"
         />
       )}
 
