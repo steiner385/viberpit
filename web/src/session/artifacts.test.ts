@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
+import { LEGACY_MCP_TOOL_PREFIX } from '@/brand'
 import { artifactFromBlock, isArtifactBlock } from './artifacts'
 import type { Block } from './reducer'
 
@@ -19,7 +20,7 @@ function share(input: Record<string, unknown>, extra: Partial<ToolBlock> = {}): 
 describe('isArtifactBlock', () => {
   it('matches share_artifact under the current and legacy MCP prefixes only', () => {
     expect(isArtifactBlock(share({ kind: 'url' }))).toBe(true)
-    expect(isArtifactBlock(share({ kind: 'url' }, { name: 'mcp__ccswitch__share_artifact' }))).toBe(true)
+    expect(isArtifactBlock(share({ kind: 'url' }, { name: `${LEGACY_MCP_TOOL_PREFIX}share_artifact` }))).toBe(true)
     expect(isArtifactBlock(share({}, { name: 'mcp__viberpit__set_hold' }))).toBe(false)
     expect(isArtifactBlock({ kind: 'tool', id: 'r', toolId: 'r', name: 'Read', toolKind: 'read', input: {} })).toBe(false)
     expect(isArtifactBlock({ kind: 'text', id: 't', text: 'x' })).toBe(false)
