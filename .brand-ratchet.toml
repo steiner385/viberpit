@@ -73,17 +73,6 @@ ceiling = 124
 # ── Tracked: each category has the issue that removes it ───────────────────────
 
 [[allow]]
-id = "http-auth-compat"
-# Phase 2b landed: the cookie and both attribution headers now EMIT the new
-# spelling. What is left is the accept side — the two legacy header names in
-# `auth/middleware.py`, plus the test that pins the cookie's historical spelling
-# so the derived `brand.LEGACY_SLUG` constant cannot drift off it. Retires with
-# the rest of #1368's compat window.
-pattern = '\bccswitch_session\b|X-CCSwitch-|x-ccswitch-'
-issue = 1368
-ceiling = 3
-
-[[allow]]
 id = "browser-storage-keys"
 # Phase 2b landed: every key is written as `viberpit.<name>` and readers migrate
 # the old one forward (`lib/storageKey.ts:migrateStorageNamespace`). What is left

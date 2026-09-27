@@ -207,9 +207,8 @@ scaffolding removal #1592.
   `server/ipc/drain_on_signal.py` (literal `ccswitch-daemon.service`), the 18 unit files under
   `deploy/`, `web/src/lib/repoFromCwd.ts`, `.claude/agents/ccswitch-{implementer,reviewer}.md` and
   `.agents/roles/ccswitch-{implementer,reviewer}`.
-- **Phase 2b's compat readers (what a Phase 7 cleanup deletes):**
-  `server/auth/middleware.py` (`_LEGACY_COOKIE_NAME`, `LEGACY_VIA_HEADER`,
-  `LEGACY_ASSISTANT_SESSION_HEADER`, and `request_attribution`'s second spelling),
+- **Phase 2b's compat readers (what a Phase 7 cleanup deletes):** the session-cookie and
+  attribution-header readers in `server/auth/middleware.py` are already gone (#1378); left:
   `web/src/lib/storageKey.ts` (`LEGACY_STORAGE_NAMESPACE` and `migrateStorageNamespace`, plus its
   call at every read site). `server/sessions/export.py`'s
   `LEGACY_NORMALIZED_EXPORT_FORMAT` is NOT on that list — an exported `.jsonl` already on
