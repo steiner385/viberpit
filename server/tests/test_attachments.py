@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -185,3 +186,17 @@ def test_delete_for_session_dedup_aware_unlink(tmp_path):
     assert shared_exists
     # The solo sha file is gone — no other row references it.
     assert not solo_exists
+
+
+def test_write_content_is_idempotent_and_content_addressed(tmp_path):
+    """The ONE content-addressed write, shared by the upload route (both its dedup
+    and fresh branches) and the `share_artifact` image ingest — a second copy of
+    "write bytes under attachments_dir()/{sha}.{ext} if absent" is how one caller
+    ends up with a row whose file the other never wrote."""
+    with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+        sha, path = A.write_content(PNG, "image/png")
+        assert sha == hashlib.sha256(PNG).hexdigest()
+        assert path == A.storage_path(sha, "image/png") and path.read_bytes() == PNG
+        before = path.stat().st_mtime_ns
+        sha2, path2 = A.write_content(PNG, "image/png")
+        assert (sha2, path2) == (sha, path) and path.stat().st_mtime_ns == before

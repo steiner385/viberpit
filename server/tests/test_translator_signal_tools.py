@@ -229,7 +229,7 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
     assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
                                  if s.tool_class is ToolClass.SIGNAL}
     assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "set_hold",
-                                 "propose_decision", "request_model"}
+                                 "propose_decision", "share_artifact", "request_model"}
     assert TURN_SIGNAL_NAMES < SIGNAL_TOOL_NAMES
     assert TURN_SIGNAL_NAMES == {"mark_complete", "mark_no_pr", "hand_back",
                                  "request_model"}
@@ -238,6 +238,9 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
     # `propose_decision` is followed by `mark_no_pr("awaiting-decision")`, which does.
     assert "set_hold" not in TURN_SIGNAL_NAMES
     assert "propose_decision" not in TURN_SIGNAL_NAMES
+    # `share_artifact` stays out for the strongest reason of all: the card IS the
+    # feature — suppressing it would hide exactly what the tool exists to show.
+    assert "share_artifact" not in TURN_SIGNAL_NAMES
 
 
 def test_a_top_level_set_hold_renders_a_card_and_ends_no_turn():

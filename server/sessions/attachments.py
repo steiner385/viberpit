@@ -14,7 +14,9 @@ remaining ``Attachment`` row references its sha.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -66,6 +68,24 @@ def ext_for(media_type: str) -> str:
 def storage_path(sha256: str, media_type: str):
     """Content-addressed on-disk path for an attachment's bytes."""
     return paths.attachments_dir() / f"{sha256}.{ext_for(media_type)}"
+
+
+def write_content(data: bytes, media_type: str, *, sha256: str | None = None) -> tuple[str, Path]:
+    """THE content-addressed write: put ``data`` at ``storage_path(sha, media_type)``
+    unless it is already there. Returns ``(sha256, path)``.
+
+    Shared by the upload route (both its dedup and fresh branches) and the
+    `share_artifact` image ingest, which runs in the daemon that owns the session —
+    on a worker host the attachments dir is the sshfs-shared account root, so a file
+    written here is the file the edge serves. Idempotent: identical bytes never
+    rewrite the file, which is what keeps dedup reference-aware unlink honest.
+    """
+    sha = sha256 or hashlib.sha256(data).hexdigest()
+    path = storage_path(sha, media_type)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return sha, path
 
 
 def image_block(media_type: str, data_b64: str) -> dict:

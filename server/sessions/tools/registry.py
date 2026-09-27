@@ -37,6 +37,12 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # thing about retrying (review R1 nit).
     ToolSpec("propose_decision", ToolClass.SIGNAL, "Propose a decision on this issue",
              idempotent=False),
+    # SIGNAL: it moves something the user sees — an always-visible artifact card in
+    # the transcript — and an unattended session must be able to hand over a PR link
+    # or a screenshot without a permission card nobody is there to answer. It is
+    # deliberately ABSENT from TURN_SIGNAL_NAMES: the card is the whole feature, so
+    # both transcript builders must render the call, live and on replay.
+    ToolSpec("share_artifact", ToolClass.SIGNAL, "Share a link, path or image with the user"),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode
@@ -93,14 +99,16 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     ``set_hold`` for the same reason, and beside it on purpose: the two are the pair
     a session chooses between when it cannot proceed (evidence is missing vs. the
     question is a product choice), and mounting one without the other leaves only
-    ``hand_back`` for the half that is missing.
+    ``hand_back`` for the half that is missing. ``share_artifact`` rides
+    unconditionally too: every session that can finish has deliverables to show.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
     """
     if not signalling_tools:
         return ()
-    names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision"]
+    names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
+             "share_artifact"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

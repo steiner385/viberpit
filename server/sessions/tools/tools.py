@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import SdkMcpTool, tool
@@ -13,6 +14,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from viberpit import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
+from server.sessions.artifacts import ARTIFACT_KINDS, parse_share_artifact, read_image
 from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import (FINISHED_STATE_CLAUSE, NO_PR_RESOLUTIONS,
                                         STATUS_ONLY_CLAUSE, parse_hand_back,
@@ -383,8 +385,56 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                         exc_info=True)
             raise ToolArgError(f"could not start the child session: {e}") from e
 
+    @spec_tool("share_artifact",
+               "Put a link, URL, local path or image IN FRONT OF THE USER as an "
+               "always-visible card in the session transcript. Use it for every "
+               "deliverable you name — a PR or issue URL, a preview URL, a report or "
+               "screenshot you wrote — because a link in prose or inside a tool result "
+               "sits in collapsed details the user may never open. kind 'url': an absolute "
+               "http(s) URL. kind 'path': an absolute path on this host (shown as a "
+               "copyable chip; the browser cannot open it). kind 'image': an absolute path "
+               f"to a png/jpeg/gif/webp on this host — {brand.NAME} copies it into its "
+               "attachment store and renders it inline. label: a short human name for what "
+               "it is. note (optional): one sentence of context. One call per artifact, "
+               "in the same turn you produce it; do not repeat a call for the same value.",
+               {"type": "object",
+                "properties": {"kind": {"type": "string", "enum": list(ARTIFACT_KINDS)},
+                               "value": {"type": "string"},
+                               "label": {"type": "string"},
+                               "note": {"type": "string"}},
+                "required": ["kind", "value", "label"]})
+    @guarded
+    async def share_artifact(args: dict[str, Any]) -> Any:
+        from server.audit import record_audit
+        from server.db import db_session
+        from server.db.models import Attachment
+        from server.sessions.attachments import write_content
+        parsed = parse_share_artifact(args)
+        detail: dict[str, Any] = {**parsed, "session_id": ctx.session_id}
+        if parsed["kind"] == "image":
+            # The daemon owning the session has the file; the browser does not. Ingest
+            # it into the content-addressed store (host-shared) under a row bound to
+            # THIS session, so the card can render the edge URL and
+            # `delete_for_session` reclaims it with the session's other attachments.
+            data, media_type = read_image(parsed["value"])
+            sha, _ = write_content(data, media_type)
+            async with db_session() as db:
+                row = Attachment(session_id=ctx.session_id, media_type=media_type,
+                                 filename=Path(parsed["value"]).name[:255],
+                                 byte_size=len(data), sha256=sha, uploaded_by=ctx.identity)
+                db.add(row)
+                await db.flush()
+                parsed["url"] = f"/api/attachments/{row.id}"
+                detail.update(url=parsed["url"], attachmentId=row.id, bytes=len(data))
+                await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
+            return parsed
+        async with db_session() as db:
+            await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
+        return parsed
+
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
-               "propose_decision": propose_decision, "dispatch_session": dispatch_session}
+               "propose_decision": propose_decision, "dispatch_session": dispatch_session,
+               "share_artifact": share_artifact}
     return [by_name[name] for name in mounted_tool_names(ctx)]
