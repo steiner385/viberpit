@@ -157,6 +157,10 @@ async def test_classify_run_dispatches_open_items(db_env):
         n = await orch.pm_classify_run("viberpit")
     assert n == 3
     assert rec.calls[0]["origin_ref"].startswith("viberpit:classify")
+    # #2504: a one-shot, non-PR, chain-harvested seam must opt out of autopilot's
+    # generic goal-reinforcement nudge — a nudge-triggered second round shadows
+    # the real answer from the chain ingest's fixed last-2-turns tail window.
+    assert rec.calls[0]["autopilot_paused"] is True
     async with db_session() as db:
         from sqlalchemy import select
         p = (await db.execute(select(Project).where(
@@ -2431,6 +2435,9 @@ async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
     assert call["cwd"] == "/tmp/clone"
     assert "docs/sdlc/dark-mode/plan.md" in call["initial_prompt"]
     assert "pull request" in call["initial_prompt"]
+    # #2504: same one-shot, non-PR, chain-harvested shape as pm_classify_run —
+    # must opt out of autopilot's nudge for the same reason.
+    assert call["autopilot_paused"] is True
     assert len(orch.scheduled) == 1
     await orch.scheduled[0]
     assert orch.chained == [("sess-1", "dark-mode")]
