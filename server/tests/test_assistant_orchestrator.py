@@ -690,7 +690,7 @@ def _trust_entry(cfg_dir: Path, cwd: Path):
 
 def test_isolated_dir_keeps_the_pre_trust_entry(tmp_path):
     """`compose()` rewrites `.claude.json` and replaces `projects` WHOLESALE from the
-    shared store (ccswitch/configdir.py: compose_claude_json), so `trust_project` must
+    shared store (viberpit/configdir.py: compose_claude_json), so `trust_project` must
     run AFTER it. Ordering them the other way silently drops the pre-trust and the
     interactive CLI shows its trust dialog at startup — the exact thing that call exists
     to prevent.

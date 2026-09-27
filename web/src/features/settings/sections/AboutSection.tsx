@@ -33,7 +33,7 @@ export function AboutSection() {
           </SettingsGroup>
 
           <SettingsGroup legend="Managed by env"
-            description={<>Set in <code>/etc/ccswitch/ccswitch.env</code> and read at daemon start. Not editable here.</>}>
+            description={<>Set in <code>/etc/viberpit/viberpit.env</code> and read at daemon start. Not editable here.</>}>
             <ManagedEnvTable flags={settings.managed} />
           </SettingsGroup>
         </>

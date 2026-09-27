@@ -5,7 +5,7 @@ links:
     - docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md
     - docs/superpowers/plans/2026-09-06-viberpit-rebrand-phase-0-1.md
   code:
-    - src/ccswitch/brand.py
+    - src/viberpit/brand.py
     - web/src/brand.ts
     - web/src/components/BrandMark.tsx
     - web/public/brand/
@@ -13,7 +13,7 @@ links:
     - server/hostpaths.py
     - server/auth/middleware.py
     - server/sessions/export.py
-    - src/ccswitch/worktrees.py
+    - src/viberpit/worktrees.py
     - server/sessions/orchestrator.py
     - server/deploy/steps.py
     - server/ipc/drain_on_signal.py
@@ -61,7 +61,7 @@ is still read correctly. Concretely:
 | Web internals, eslint rule namespace, agent role names | `viberpit/no-raw-palette`, `viberpit-{implementer,reviewer}` | none needed — rename atomically per PR (#1375, #1376) |
 | Living docs | README, `core.md` → `AGENTS.md`, `CLAUDE.md`, feature docs | historical docs under `docs/superpowers/**` and `specs/**` are never back-edited (#1377) |
 
-Two constants own every name form — `src/ccswitch/brand.py` (`NAME`, `SLUG`, `LEGACY_SLUG`,
+Two constants own every name form — `src/viberpit/brand.py` (`NAME`, `SLUG`, `LEGACY_SLUG`,
 `ENV_PREFIX`, `MCP_TOOL_PREFIX`, …) and `web/src/brand.ts` — and `server/hostpaths.py` derives the
 `/etc`, `/run`, `/var/lib`, `/var/log` stems from them with a prefer-existing legacy fallback. No
 other module spells the brand; each later phase flips one line, not five.
@@ -177,9 +177,13 @@ spelling in places search-and-replace cannot touch, and the risk is that "later"
 The 2026-09-12 sweep (this PR) took every unclaimed mention to zero: product-name prose in code
 comments, docstrings and help text, living docs, `AGENTS.md` (via `core.md`), arbitrary test
 fixtures, the CI Postgres names, the ESLint rule namespace (`viberpit/no-raw-palette`, the
-web-internals half of #1375), and the `steiner385/ccswitch` slug (the repo is renamed). What
-remains is claimed by #1368, #1369, #1373, #1374, #1376, #1377, the env sweep #1591 and the host
-scaffolding removal #1592.
+web-internals half of #1375), and the `steiner385/ccswitch` slug (the repo is renamed). Every
+phase through 6 has since landed; what remains is either permanent (the dual-accept readers, the
+branch-prefix and repo-namespace matchers, the not-renamed table) or owned by Phase 7 — the shim,
+the localStorage read side and the env mirror under #1378, the host aliases and symlinks under
+#1592 — plus the two owner-only governance files (#1377). The last item the epic itself carried,
+the `<slug>-pr-cycle-time` control-band id persisted into triage rows, converged under
+`0074_brand_control_band_id` (run via `scripts/rename_automation_keys_brand.py`).
 
 **Evidence** —
 - **Epic and sub-issues:** #1365 (tracking; name-forms table, standing rules, out-of-scope
@@ -195,13 +199,13 @@ scaffolding removal #1592.
 - **Design record:** `docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md` (§1 name forms
   and the deliberately-not-renamed table, §2 inventory, §3 phases, §4 risks) and
   `docs/superpowers/plans/2026-09-06-viberpit-rebrand-phase-0-1.md`.
-- **Source of truth already in place:** `src/ccswitch/brand.py` (`NAME`, `SLUG`, `LEGACY_SLUG`,
+- **Source of truth already in place:** `src/viberpit/brand.py` (`NAME`, `SLUG`, `LEGACY_SLUG`,
   `ENV_PREFIX`/`LEGACY_ENV_PREFIX`, `MCP_SERVER_NAME`/`LEGACY_MCP_SERVER_NAME`, `CLI_NAME` pinned
   to the legacy slug until Phase 5), `web/src/brand.ts` (`MCP_TOOL_PREFIX`,
   `LEGACY_MCP_TOOL_PREFIX`), `server/hostpaths.py` (`RUN_DIR`/`STATE_DIR`/`LOG_DIR` via
   `prefer_existing`).
 - **Surfaces still on the legacy spelling (the remaining phases' targets):**
-  `src/ccswitch/worktrees.py` (`ccswitch/<branch>-<short>` child branches and the
+  `src/viberpit/worktrees.py` (`ccswitch/<branch>-<short>` child branches and the
   `<repo_root>/.ccswitch/worktrees/…` layout), `server/sessions/orchestrator.py` (the
   `".ccswitch" not in cwd_path.parts` delete guard), `server/aio.py` and
   `server/ipc/drain_on_signal.py` (literal `ccswitch-daemon.service`), the 18 unit files under

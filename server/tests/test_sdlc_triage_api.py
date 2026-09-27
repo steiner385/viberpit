@@ -41,7 +41,7 @@ def _client():
 
 
 _BREACH = dict(
-    key="pr_cycle_time_hours:we1:high", metric="ccswitch-pr-cycle-time",
+    key="pr_cycle_time_hours:we1:high", metric="viberpit-pr-cycle-time",
     source="pr_cycle_time_hours", repo="steiner385/viberpit", rule="we1", sigma=3,
     side="high", tier="propose", response="propose", value=50.0,
     baseline_mean=10.0, baseline_stddev=0.5, baseline_n=30,

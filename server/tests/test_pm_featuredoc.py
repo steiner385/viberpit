@@ -62,8 +62,8 @@ title: Session Manager
 state: live
 links:
   code:
-    - src/ccswitch/accounts.py
-    - src/ccswitch/sessions.py
+    - src/viberpit/accounts.py
+    - src/viberpit/sessions.py
   prs:
     - '#352'
     - '#873'
@@ -74,7 +74,7 @@ Users need to run multiple Claude accounts.
 
 ## Evidence
 
-See src/ccswitch/accounts.py, PRs #352, #873.
+See src/viberpit/accounts.py, PRs #352, #873.
 """
 
 

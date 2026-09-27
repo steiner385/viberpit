@@ -17,12 +17,18 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from server.audit import redact_text
+from viberpit import brand
 
 SAMPLE_MAX = 4000
 _NORM_MAX = 200
 _TITLE_SUMMARY_MAX = 100
 OWN_LOGGER = "server.obs.errsink"
-_APP_PATH_MARKERS = ("/server/", "/ccswitch/")
+# What makes a traceback frame "ours": the server package, or the core package under
+# `src/`. The core marker is anchored on `/src/` on purpose — a bare `/<slug>/` would
+# also match every dependency frame under a checkout DIRECTORY named after the
+# product (`…/viberpit/.venv/lib/…/sqlalchemy/…`), and the innermost of those would
+# be reported as the app frame instead of the project's own.
+_APP_PATH_MARKERS = ("/server/", f"/src/{brand.SLUG}/")
 
 # Order matters: uuid before hex (a uuid contains hex runs), quoted strings before
 # numbers, id-like path segments before bare hex/numbers so "/535694fe" → "/<id>",

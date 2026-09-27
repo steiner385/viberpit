@@ -22,7 +22,7 @@ export function usageKnown(usage: AccountUsage | null | undefined): boolean {
   return usageWindows(usage).length > 0
 }
 
-/** Wording for the server's `quota.REASON_*` codes (src/ccswitch/quota.py). */
+/** Wording for the server's `quota.REASON_*` codes (src/viberpit/quota.py). */
 const REASON_WORDING: Record<string, string> = {
   setup_token_scope:
     'Setup-token lacks the user:profile scope — re-authenticate to restore usage reporting',

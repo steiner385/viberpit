@@ -23,7 +23,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 const INCIDENT: sdlc.Incident = {
-  id: 'i1', key: 'pr_cycle_time_hours:we1:high', metric: 'ccswitch-pr-cycle-time',
+  id: 'i1', key: 'pr_cycle_time_hours:we1:high', metric: 'viberpit-pr-cycle-time',
   source: 'pr_cycle_time_hours', repo: 'steiner385/viberpit',
   rule: 'we1', sigma: 3, side: 'high', tier: 'propose', response: 'propose',
   value: 51.2345, baselineMean: 10.5, baselineStddev: 0.5, baselineN: 30,
@@ -54,7 +54,7 @@ describe('IncidentQueue', () => {
     render(<IncidentQueue />, { wrapper })
 
     await waitFor(() =>
-      expect(screen.getByText('ccswitch-pr-cycle-time')).toBeInTheDocument())
+      expect(screen.getByText('viberpit-pr-cycle-time')).toBeInTheDocument())
     expect(screen.getByText('3σ')).toBeInTheDocument()
     expect(screen.getByText('1 point beyond 3σ')).toBeInTheDocument()
     // Value rounded to 3 significant figures, baseline shown alongside it.

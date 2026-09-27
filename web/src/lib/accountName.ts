@@ -3,7 +3,7 @@
  * Add-account dialog can validate as you type instead of round-tripping to a
  * 400 that surfaces as a generic toast.
  *
- * SOURCE OF TRUTH is the Python regex in `src/ccswitch/account_names.py`
+ * SOURCE OF TRUTH is the Python regex in `src/viberpit/account_names.py`
  * (`_RE = ^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`). Keep this in lockstep with it.
  * The server still re-validates — this is UX guidance, not a security boundary.
  */

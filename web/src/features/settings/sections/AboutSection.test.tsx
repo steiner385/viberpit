@@ -26,7 +26,7 @@ describe('AboutSection', () => {
     const row = screen.getByRole('row', { name: /VIBERPIT_ENABLE_COPILOT/ })
     expect(row).toHaveTextContent('off')
     expect(row).toHaveTextContent('Enable GitHub Copilot accounts')
-    expect(screen.getByText('/etc/ccswitch/ccswitch.env')).toBeInTheDocument()
+    expect(screen.getByText('/etc/viberpit/viberpit.env')).toBeInTheDocument()
     expect(await axe(container)).toHaveNoViolations()
   })
 
