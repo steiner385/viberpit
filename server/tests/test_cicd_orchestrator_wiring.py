@@ -115,6 +115,67 @@ def test_list_repos_collapses_a_renamed_repo_alias(tmp_path):
     asyncio.run(run())
 
 
+def test_list_repos_caches_canonicalization_within_ttl(tmp_path):
+    """DeployMonitorLoop ticks every 120s and CicdDoctorLoop every 900s, both
+    through this one method — without a cache, an unchanging slug set still
+    re-issues a GraphQL lookup (and re-files repo_canon's WARNING) every 120s
+    (#2513). A repeat call for the same slug set within the TTL must not call
+    gh again; past the TTL it must."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.sessions.orchestrator import SessionOrchestrator
+        orch = _orch()
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="n", account_name="a", cwd="/tmp",
+                             repo="o/managed"))
+            await db.flush()
+        calls: list[str | None] = []
+        resolving = _gh_resolving({})
+
+        def gh(args, **kw):
+            calls.append(kw.get("input"))
+            return resolving(args, **kw)
+
+        now = [1000.0]
+        orch._clock = lambda: now[0]
+        with patch.object(repo_canon.gitrepos, "_run_gh", gh):
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed"]
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed"]
+        assert len(calls) == 1, "second call within the TTL must hit the cache"
+
+        now[0] += 301.0  # past the 300s TTL
+        with patch.object(repo_canon.gitrepos, "_run_gh", gh):
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed"]
+        assert len(calls) == 2, "a call past the TTL must refresh"
+    asyncio.run(run())
+
+
+def test_list_repos_cache_invalidates_on_a_changed_slug_set(tmp_path):
+    """A newly-added managed repo must not be hidden behind a stale cache entry
+    keyed on the old slug set."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.sessions.orchestrator import SessionOrchestrator
+        orch = _orch()
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="n", account_name="a", cwd="/tmp",
+                             repo="o/managed"))
+            await db.flush()
+        with patch.object(repo_canon.gitrepos, "_run_gh", _gh_resolving({})):
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed"]
+            async with db_session() as db:
+                db.add(DbSession(id="s2", name="n", account_name="a", cwd="/tmp",
+                                 repo="o/other"))
+                await db.flush()
+            assert await SessionOrchestrator._cicd_list_repos(
+                orch, {"enabled_repos": []}) == ["o/managed", "o/other"]
+    asyncio.run(run())
+
+
 def test_automation_statuses_includes_cicd_ctx():
     from server.sessions import orchestrator as orch_mod
     import inspect

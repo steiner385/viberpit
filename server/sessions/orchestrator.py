@@ -1501,6 +1501,9 @@ class SessionOrchestrator:
         # serves every governed session's get_context within the TTL, so an N-session
         # tick runs the archived-session query once, not N times.
         self._fleet_snapshot_cache: tuple[float, tuple[list, list]] | None = None
+        # _cicd_list_repos' canonicalization cache: (slug-set key, built_at, result).
+        # See its docstring for why this is keyed on the slug set rather than TTL alone.
+        self._repo_canon_cache: tuple[tuple[str, ...], float, list[str]] | None = None
         # CI/CD Doctor control loop: system-level CI health (flaky tests, check
         # graduation, waste). Real seams shell out to gh via asyncio.to_thread.
         from server.automations.cicd_doctor import CicdDoctorLoop
@@ -12160,7 +12163,17 @@ class SessionOrchestrator:
             log_key="cicd_doctor")
 
     async def _cicd_list_repos(self, config: dict) -> list[str]:
-        """enabled_repos config, or every distinct repo ViberPit manages."""
+        """enabled_repos config, or every distinct repo ViberPit manages.
+
+        Both ``CicdDoctorLoop`` (900s) and ``DeployMonitorLoop`` (120s) call this
+        one bound method for their ``list_repos`` seam, so the managed-repo slug
+        set is canonicalized (GraphQL round trip) on the 120s cadence unless
+        cached — for a slug set that only needs re-resolving after a GitHub
+        rename. Cached 5 minutes, keyed on the slug set itself: a changed set
+        (new repo, new session) invalidates on its own, and an unreachable
+        GitHub is cached too, so a standing outage retries every 5 minutes
+        instead of every tick (#2513).
+        """
         from sqlalchemy import select
         pinned = config.get("enabled_repos") or []
         if pinned:
@@ -12173,9 +12186,19 @@ class SessionOrchestrator:
         # carry the old slug — a redirect alias that would run a second doctor lane
         # over the same runs (#1710). Pinned enabled_repos are canonicalized on
         # write; this path needs it on read. Fails open (slugs kept verbatim).
+        key = tuple(sorted({r for r in rows if r}))
+        if not key:
+            return []
+        REPO_CANON_TTL_S = 300.0
+        clock = getattr(self, "_clock", None) or time.time
+        now = clock()
+        cached = getattr(self, "_repo_canon_cache", None)
+        if cached is not None and cached[0] == key and now - cached[1] < REPO_CANON_TTL_S:
+            return cached[2]
         from server.github.repo_canon import canonicalize_repo_list
-        repos = await asyncio.to_thread(canonicalize_repo_list, [r for r in rows if r])
-        return sorted(repos)
+        repos = sorted(await asyncio.to_thread(canonicalize_repo_list, list(key)))
+        self._repo_canon_cache = (key, now, repos)
+        return repos
 
     # ------------------------------------------------------------------
     # Error Triage control loop
