@@ -53,73 +53,51 @@ def _spawn_bg(coro) -> None:
 # Paths that bypass identity enforcement (unauthenticated probes).
 _EXEMPT_PATHS = frozenset({"/healthz"})
 
-# Cookie name. The rebrand (#1368) flips the EMITTED name while BOTH spellings stay
-# readable for one release: the deployment that flips this must not log out a user
-# whose tab is already open, and a browser mid-migration carries only the old one.
-# Ordered new-first, so a browser that happens to hold both prefers the new cookie —
-# they address the same `app_sessions` row, and the legacy one simply ages out of the
-# jar within `_SESSION_TTL` because nothing renews it any more.
+# Cookie name. The pre-rebrand spelling was read alongside it for the Phase 2b
+# compat window (#1368) and retired in Phase 7 (#1378) once no app session minted
+# before the flip was still live.
 _COOKIE_NAME = f"{brand.SLUG}_session"
-_LEGACY_COOKIE_NAME = f"{brand.LEGACY_SLUG}_session"
-_COOKIE_NAMES = (_COOKIE_NAME, _LEGACY_COOKIE_NAME)
 
 # Attribution headers the assistant's loopback client stamps on every call
 # (`server/assistant/client.py`). DIAGNOSTICS ONLY — they say how a call was made for
 # the benefit of access logs and proxies; authorization comes from the bearer token
-# alone, never from a header the caller controls. Emission is single-spelled (the new
-# brand); `request_attribution` below is the accept side and takes either.
+# alone, never from a header the caller controls. `request_attribution` below is the
+# accept side; the pre-rebrand header spellings were retired in #1378.
 VIA_HEADER = f"X-{brand.NAME}-Via"
 ASSISTANT_SESSION_HEADER = f"X-{brand.NAME}-Assistant-Session"
 # Wire prefix of the daemon-minted assistant bearer token (server/assistant/token.py
 # re-exports it as PREFIX; defined here because that module imports this one).
 ASSISTANT_TOKEN_PREFIX = "ccas1:"
-# The pre-rebrand spellings. Not derivable from `brand.LEGACY_SLUG`: the old headers
-# used a CamelCase the slug does not carry. Retired with the rest of #1368's compat.
-LEGACY_VIA_HEADER = "X-CCSwitch-Via"
-LEGACY_ASSISTANT_SESSION_HEADER = "X-CCSwitch-Assistant-Session"
 
 # Session lifetime
 _SESSION_TTL = timedelta(hours=24)
 
 
 def read_session_cookie(request: Request) -> str | None:
-    """The signed session cookie under EITHER brand spelling, new first.
+    """The signed session cookie, or None.
 
-    The one place the cookie dual-accept is spelled. Both the middleware and
-    `/api/auth/logout` go through it: a logout that only looked for the new name
-    would answer 204 while leaving the row live and the legacy cookie in the jar —
-    a "signed out" that did not sign anything out.
+    The one place the cookie is read by name: both the middleware and
+    `/api/auth/logout` go through it, so they cannot disagree on which cookie
+    names the session a logout must revoke.
     """
-    for name in _COOKIE_NAMES:
-        signed = request.cookies.get(name)
-        if signed:
-            return signed
-    return None
+    return request.cookies.get(_COOKIE_NAME) or None
 
 
 def clear_session_cookies(response) -> None:
-    """Drop BOTH spellings — a jar mid-migration may hold either or both."""
-    for name in _COOKIE_NAMES:
-        response.delete_cookie(name)
-
-
-def _header_either(headers, new: str, legacy: str) -> str | None:
-    """*headers* value under the new brand spelling, else the legacy one, else None."""
-    return headers.get(new) or headers.get(legacy) or None
+    """Drop the session cookie from the browser's jar."""
+    response.delete_cookie(_COOKIE_NAME)
 
 
 def request_attribution(headers) -> tuple[str | None, str | None]:
     """``(via, assistant_session_id)`` from the attribution headers of *headers*.
 
-    The ONE place the header dual-accept is spelled, for the same reason
-    ``brand.mcp_tool_stem`` is the one place the MCP-prefix dual-accept is: a reader
-    that grew its own ``headers.get("X-…")`` would miss one spelling for the whole
-    compat window and lose the attribution silently. Takes any mapping, so an
-    ``httpx.Headers`` (case-insensitive, as Starlette's is) works unchanged.
+    The ONE place the attribution headers are read, so a reader cannot grow its own
+    ``headers.get("X-…")`` that drifts from what `server/assistant/client.py` emits.
+    Takes any mapping, so an ``httpx.Headers`` (case-insensitive, as Starlette's
+    is) works unchanged.
     """
-    return (_header_either(headers, VIA_HEADER, LEGACY_VIA_HEADER),
-            _header_either(headers, ASSISTANT_SESSION_HEADER,
-                           LEGACY_ASSISTANT_SESSION_HEADER))
+    return (headers.get(VIA_HEADER) or None,
+            headers.get(ASSISTANT_SESSION_HEADER) or None)
 
 
 # Per-process random fallback so we NEVER sign with a hardcoded secret. Cookies
@@ -457,8 +435,7 @@ async def _resolve_or_create_app_session(
     """Look up an existing valid AppSession from the signed cookie, or create one."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for DB
 
-    # Try to resolve from cookie — under either brand spelling, so the deployment
-    # that flips the emitted name (#1368) keeps every open tab signed in.
+    # Try to resolve from cookie
     signed = read_session_cookie(request)
     if signed:
         session_id = _unsign_session_id(signed)

@@ -1,12 +1,11 @@
-"""Phase 2b of the rebrand (#1368): emit the new spelling, accept both.
+"""Browser-facing wire contracts of the rebrand (#1368, #1378).
 
-Three browser-facing wire contracts flip their emitted spelling here — the session
-cookie, the assistant attribution headers, and the normalized-export format id —
-and each must keep reading what it wrote yesterday. The failure these pin is
-asymmetric: getting the EMIT side wrong is loud (nothing works), getting the
-ACCEPT side wrong is silent (the one deployment that flips the name logs every
-open tab out, or an archive on someone's disk stops being recognisable as an
-export). So every case below is an accept-side case.
+Phase 2b flipped the emitted spelling of the session cookie, the assistant
+attribution headers, and the normalized-export format id. Phase 7 (#1378) then
+retired the cookie and header accept side once no pre-flip session was left alive:
+both now read the new spelling only. The export format id is different — an export
+already on someone's disk can never be rewritten — so it keeps accepting both
+forever, and its cases below stay accept-side cases.
 """
 from __future__ import annotations
 
@@ -16,13 +15,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
+from viberpit import brand
+
 from server.auth.middleware import (
     ASSISTANT_SESSION_HEADER,
-    LEGACY_ASSISTANT_SESSION_HEADER,
-    LEGACY_VIA_HEADER,
     VIA_HEADER,
     _COOKIE_NAME,
-    _LEGACY_COOKIE_NAME,
     _resolve_or_create_app_session,
     _sign_session_id,
     request_attribution,
@@ -53,9 +51,9 @@ class _Req:
         self.cookies = cookies or {}
 
 
-async def _seed_session() -> str:
-    """One live AppSession for IDENTITY; returns its id."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+async def _seed_session(created_ago: timedelta = timedelta(0)) -> str:
+    """One live AppSession for IDENTITY, created *created_ago* in the past; returns its id."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None) - created_ago
     session_id = str(uuid.uuid4())
     async with db_session() as db:
         db.add(AppSession(id=session_id, identity=IDENTITY, created_at=now,
@@ -64,22 +62,18 @@ async def _seed_session() -> str:
     return session_id
 
 
-def test_cookie_names_are_the_two_brand_spellings():
+def test_cookie_name_is_the_new_brand():
     assert _COOKIE_NAME == "viberpit_session"
-    assert _LEGACY_COOKIE_NAME == "ccswitch_session"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cookie_name", [_COOKIE_NAME, _LEGACY_COOKIE_NAME])
-async def test_a_request_carrying_only_one_spelling_resolves_its_session(cookie_name):
-    """The exit criterion, both ways round: a browser holding ONLY the legacy
-    cookie (it has not been back since the flip) and a browser holding only the
-    new one must both land on the session row they already own — not on a freshly
-    minted one, which is what "logged out" looks like from the user's side."""
+async def test_a_request_carrying_the_cookie_resolves_its_session():
+    """A browser holding the cookie lands on the session row it already owns — not
+    on a freshly minted one, which is what "logged out" looks like from its side."""
     await init_db(db_url="sqlite+aiosqlite:///:memory:")
     seeded = await _seed_session()
 
-    req = _Req({cookie_name: _sign_session_id(seeded)})
+    req = _Req({_COOKIE_NAME: _sign_session_id(seeded)})
     async with db_session() as db:
         resolved = await _resolve_or_create_app_session(req, db, IDENTITY)
         await db.commit()
@@ -91,45 +85,27 @@ async def test_a_request_carrying_only_one_spelling_resolves_its_session(cookie_
 
 
 @pytest.mark.asyncio
-async def test_the_new_cookie_wins_when_a_browser_carries_both():
-    """Mid-migration a jar holds both: the legacy one until it ages out, the new
-    one renewed on every response. They may point at different rows (the legacy
-    cookie predates a session rotation), and the one still being renewed is the
-    one that must win."""
+async def test_the_retired_legacy_cookie_no_longer_resolves_a_session():
+    """#1378 retired the pre-rebrand cookie name. Even a validly signed value under
+    it is no longer read: the request is treated as cookie-less, so it falls back to
+    the identity's NEWEST live row — not the older row the old cookie names, which
+    is where the Phase 2b dual-accept would have landed it."""
     await init_db(db_url="sqlite+aiosqlite:///:memory:")
-    stale = await _seed_session()
-    current = await _seed_session()
+    named_by_legacy_cookie = await _seed_session(created_ago=timedelta(hours=1))
+    newest = await _seed_session()
 
-    req = _Req({_LEGACY_COOKIE_NAME: _sign_session_id(stale),
-                _COOKIE_NAME: _sign_session_id(current)})
+    req = _Req({f"{brand.LEGACY_SLUG}_session": _sign_session_id(named_by_legacy_cookie)})
     async with db_session() as db:
         resolved = await _resolve_or_create_app_session(req, db, IDENTITY)
-
-    assert resolved.id == current
-
-
-@pytest.mark.asyncio
-async def test_a_legacy_cookie_for_another_identity_is_still_refused():
-    """Reading both spellings widens the NAME, never the trust: a cookie is only
-    honoured for the identity the header already verified."""
-    await init_db(db_url="sqlite+aiosqlite:///:memory:")
-    seeded = await _seed_session()
-
-    req = _Req({_LEGACY_COOKIE_NAME: _sign_session_id(seeded)})
-    async with db_session() as db:
-        resolved = await _resolve_or_create_app_session(req, db, "mallory@example.com")
         await db.commit()
 
-    assert resolved.id != seeded
-    assert resolved.identity == "mallory@example.com"
+    assert resolved.id == newest
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cookie_name", [_COOKIE_NAME, _LEGACY_COOKIE_NAME])
-async def test_logout_revokes_a_session_held_under_either_cookie(cookie_name, isolated_db):
-    """Logout is the accept side's sharpest edge: a route that looked only for the
-    new name would answer 204 to a legacy-cookie browser while leaving the row
-    live — signed out in the UI, still signed in on the server."""
+async def test_logout_revokes_the_session_held_under_the_cookie(isolated_db):
+    """A logout that answered 204 while leaving the row live would be signed out in
+    the UI and still signed in on the server."""
     from fastapi.testclient import TestClient
 
     from server.app import create_app
@@ -139,12 +115,11 @@ async def test_logout_revokes_a_session_held_under_either_cookie(cookie_name, is
     # The row is re-read INSIDE the client block: the app's lifespan disposes the
     # session factory on exit, so a read after `with` has no DB to talk to.
     with TestClient(create_app(), raise_server_exceptions=False) as client:
-        client.cookies.set(cookie_name, _sign_session_id(seeded))
+        client.cookies.set(_COOKIE_NAME, _sign_session_id(seeded))
         r = client.post("/api/auth/logout", headers={"Tailscale-User-Login": IDENTITY})
         assert r.status_code == 204
-        # Both spellings are cleared — a jar mid-migration may hold either or both.
         cleared = {c.split("=")[0].strip() for c in r.headers.get_list("set-cookie")}
-        assert {_COOKIE_NAME, _LEGACY_COOKIE_NAME} <= cleared
+        assert _COOKIE_NAME in cleared
 
         async with db_session() as db:
             row = (await db.execute(
@@ -162,14 +137,10 @@ def test_header_names_are_the_new_brand():
     assert ASSISTANT_SESSION_HEADER == "X-ViberPit-Assistant-Session"
 
 
-@pytest.mark.parametrize("via_header,session_header", [
-    (VIA_HEADER, ASSISTANT_SESSION_HEADER),
-    (LEGACY_VIA_HEADER, LEGACY_ASSISTANT_SESSION_HEADER),
-])
-def test_request_attribution_accepts_either_spelling(via_header, session_header):
+def test_request_attribution_reads_the_new_spelling():
     import httpx
 
-    headers = httpx.Headers({via_header: "assistant", session_header: "sess-1"})
+    headers = httpx.Headers({VIA_HEADER: "assistant", ASSISTANT_SESSION_HEADER: "sess-1"})
     assert request_attribution(headers) == ("assistant", "sess-1")
 
 
