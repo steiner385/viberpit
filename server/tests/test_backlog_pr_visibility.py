@@ -140,6 +140,54 @@ def test_no_gh_fallback_while_session_alive(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_handed_off_row_resolves_pr_through_implementation_session(tmp_path):
+    """``_backlog_handoff`` moves ``session_id`` to ``implementation_session_id``
+    (the slot is PR Doctor's now), so a handed-off row must still find its PR
+    through that session's branches — otherwise the sweep is blind to the merge
+    and the batch's close-out never runs (273 rows / 218 held PR-Doctor
+    ``runner-handoff`` operations in prod on 2026-09-27, oldest 2026-09-19)."""
+    async def run():
+        await _init(tmp_path, "f.db")
+        await _seed_session("s1", status="archived", authored=["feat/x"])
+        want = _info(99, "merged", "feat/x")
+        orch = _orch(StubPoller({("o/r", "feat/x"): want}))
+        await orch._backlog_ctx.set_target_state(
+            "o/r#5", {"session_id": None, "implementation_session_id": "s1",
+                      "handed_off": True, "claimed": True, "ownership_token": "t"})
+
+        assert await orch._backlog_pr_status_for("o/r#5") is want
+
+    asyncio.run(run())
+
+
+def test_handed_off_row_falls_back_to_gh_even_when_its_session_row_is_gone(tmp_path, monkeypatch):
+    """The hand-off only happens after the implementation was observed stopped,
+    so a handed-off row needs no session-ended evidence to ask GitHub — and its
+    session row may already be deleted (KinDash#16473's was) so there is no row
+    to read a terminal status from."""
+    async def run():
+        await _init(tmp_path, "g.db")
+        want = _info(16889, "merged")
+        calls: list = []
+
+        def fake_find(ref, *, gh_run):
+            calls.append(ref)
+            return want
+
+        import server.automations.backlog_github as bg
+        monkeypatch.setattr(bg, "find_referencing_pr", fake_find)
+
+        orch = _orch(StubPoller())
+        await orch._backlog_ctx.set_target_state(
+            "o/r#5", {"session_id": None, "implementation_session_id": "deleted",
+                      "handed_off": True, "claimed": True, "ownership_token": "t"})
+
+        assert await orch._backlog_pr_status_for("o/r#5") is want
+        assert calls == ["o/r#5"]
+
+    asyncio.run(run())
+
+
 def test_never_matches_unrelated_pr_by_issue_number(tmp_path):
     """Regression: the old fallback scanned the poller cache for a PR whose
     NUMBER equals the issue number — an unrelated PR that happens to share the

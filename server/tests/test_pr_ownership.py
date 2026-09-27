@@ -236,6 +236,55 @@ async def test_claim_adopts_finished_runner_closeout_holding_the_linked_issue(
     assert (await doctor._pr_doctor_ctx.get_target_state("o/r#2"))["ownership_token"] == successor
 
 
+async def _finished_self_handoff(ownership_db, targets, *, origin_ref, runner_target="o/r#1"):
+    """PR Doctor's OWN finished ``runner-handoff`` operation for *origin_ref* —
+    the shape every merged handed-off PR leaves behind until the runner's
+    close-out takes it back: ``completed``, no session, still holding the
+    batch's issue keys."""
+    from server.automations.ownership import acquire
+    async with acquire(targets, owner="pr-doctor", source="runner-handoff",
+                       reason="stopped implementation transferred to authorized PR recovery",
+                       provenance={"origin_ref": origin_ref, "runner_target": runner_target,
+                                   "dispatch_claimed": True}) as tx:
+        tx.start_action()
+        tx.complete_action()
+        return tx.token
+
+
+@pytest.mark.asyncio
+async def test_claim_names_a_stale_self_owned_handoff_holding_the_linked_issue(
+        doctor, ownership_db, monkeypatch):
+    """cairnea/KinDash#17006 (2026-09-27): its closing issue was still held by PR
+    Doctor's own finished ``runner-handoff`` op for #16889, merged three days
+    earlier. Owner ``pr-doctor`` is not "own lifecycle" when the op belongs to
+    ANOTHER PR — the refusal must name that holder, and the read-only
+    actionable-items check must agree so the button is not offered live."""
+    from server.automations.ownership import OwnershipConflict
+    issue, other_pr, pr = (CanonicalTarget("I_1", "o/r#1"), CanonicalTarget("PR_9", "o/r#9"),
+                           CanonicalTarget("PR_2", "o/r#2"))
+    token = await _finished_self_handoff(ownership_db, [issue, other_pr], origin_ref="o/r#9")
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets",
+                        AsyncMock(return_value=(pr, issue)))
+    with pytest.raises(OwnershipConflict) as excinfo:
+        await doctor._pr_doctor_claim("o/r", [2], "o/r#2")
+    assert str(excinfo.value) == "Held by PR Doctor runner-handoff of o/r#9 (needs human)"
+    blocker = await doctor._pr_doctor_foreign_operation((pr, issue), target="o/r#2")
+    assert blocker is not None and blocker.token == token
+    async with ownership_db() as db:
+        assert (await db.get(AutomationOperation, token)).phase == "completed"
+
+
+@pytest.mark.asyncio
+async def test_own_finished_handoff_is_not_reported_as_a_foreign_holder(
+        doctor, ownership_db):
+    """The PR's OWN predecessor (same ``origin_ref``) is the transfer path
+    ``_pr_doctor_claim`` already handles through the state token — reporting it
+    as a foreign holder would hide the button for a claim that would succeed."""
+    issue, pr = CanonicalTarget("I_1", "o/r#1"), CanonicalTarget("PR_2", "o/r#2")
+    await _finished_self_handoff(ownership_db, [issue, pr], origin_ref="o/r#2")
+    assert await doctor._pr_doctor_foreign_operation((pr, issue), target="o/r#2") is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case,expected", [
     # #2203: not adoptable → name the actual holder instead of the generic
