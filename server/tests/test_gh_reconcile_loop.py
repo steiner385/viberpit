@@ -61,7 +61,7 @@ def _facts(**over):
 
 def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True, enabled=True,
           failure_counts=None, parked=None, products=None, load_facts_fn=None,
-          own_values=None, dry_run_keys=None):
+          own_values=None, dry_run_keys=None, now_utc=None):
     # calls["order"] interleaves the journal and GraphQL seams so the write-ahead
     # ordering guarantee (record BEFORE mutate, every batch) is directly assertable.
     calls = {"record": [], "applied": [], "failed": [], "park": [], "sync": [], "mutate": [],
@@ -114,7 +114,7 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
         journal_park=j_park, journal_failure_count=j_fc, journal_parked=j_parked,
         journal_applied_keys=j_keys, journal_recover=j_recover, request_sync=request_sync,
         sha_fence=sha_fence, kill_switch=lambda: enabled, save_field_cache=save_cache,
-        now_utc=lambda: T, journal_own_values=j_own, journal_dry_run_keys=j_dry_keys,
+        now_utc=now_utc or (lambda: T), journal_own_values=j_own, journal_dry_run_keys=j_dry_keys,
         journal_prune_dry_run=j_prune, journal_prune_applied=j_prune_applied)
     return loop, calls
 
@@ -158,6 +158,59 @@ def test_kill_switch_and_fence_refuse_the_cycle():
         assert calls["record"] == [] and calls["mutate"] == []
         assert not hasattr(ctx, "observed_at")
         assert GhReconcile().status(ctx).level == "warn"
+
+
+def test_fence_refusal_surfaces_its_reason_in_status_and_events():
+    """A closed fence used to say only "daemon SHA != origin/master": the boards starved
+    for days behind tooling-only merges and nothing said which path closed the fence."""
+    from server.github.sha_fence import FenceVerdict
+    reason = "master is 2 commits ahead of the daemon via server/db/models.py"
+    ctx = Ctx(); loop, calls = _loop(ctx, fence=FenceVerdict(False, reason))
+    asyncio.run(loop.tick())
+    assert calls["record"] == [] and calls["mutate"] == []
+    assert reason in ctx.gh_reconcile_guard
+    assert reason in GhReconcile().status(ctx).text
+    assert ctx.events == [("warn", f"reconcile refused: {reason}", "gh_reconcile_fenced")]
+    # Latched: the same refusal does not re-emit every tick.
+    asyncio.run(loop.tick())
+    assert len(ctx.events) == 1
+    # A plain-bool fence (older seam) still refuses with the generic reason.
+    ctx = Ctx(); loop, _ = _loop(ctx, fence=False)
+    asyncio.run(loop.tick())
+    assert "origin/master" in ctx.gh_reconcile_guard
+
+
+def test_fence_refusal_that_outlives_a_deploy_cycle_escalates_to_a_warning(caplog):
+    """A fence closed by a daemon-changing merge reopens on the next deploy (~30 min), so
+    that is INFO — filing an auto-error per merge would describe the rail working. One
+    closed past a deploy cycle is starvation (a non-exempt path the deploy never restarts
+    for, or a stuck deploy) and is the condition a human must act on: WARNING, once."""
+    import logging
+    from server.automations import gh_reconcile as mod
+    from server.github.sha_fence import FenceVerdict
+    clock = {"now": T}
+    ctx = Ctx()
+    loop, _ = _loop(ctx, fence=FenceVerdict(False, "via .brand-ratchet.toml"),
+                    now_utc=lambda: clock["now"])
+    caplog.set_level(logging.INFO, logger=mod.log.name)
+    asyncio.run(loop.tick())
+    clock["now"] = T + mod._FENCE_STARVED_AFTER - timedelta(minutes=1)
+    asyncio.run(loop.tick())
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [] and any(r.levelno == logging.INFO and ".brand-ratchet.toml" in r.getMessage()
+                                for r in caplog.records)
+    assert [e[2] for e in ctx.events] == ["gh_reconcile_fenced"]
+    clock["now"] = T + mod._FENCE_STARVED_AFTER
+    asyncio.run(loop.tick())
+    asyncio.run(loop.tick())
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1 and ".brand-ratchet.toml" in warned[0].getMessage()
+    assert [e[2] for e in ctx.events] == ["gh_reconcile_fenced", "gh_reconcile_starved"]
+    assert ctx.events[-1][0] == "error" and "via .brand-ratchet.toml" in ctx.events[-1][1]
+    # Reopening resets both latches so the next episode speaks again.
+    open_loop, _ = _loop(ctx, now_utc=lambda: clock["now"])
+    asyncio.run(open_loop.tick())
+    assert ctx.gh_reconcile_guard is None
 
 
 def test_freshness_gate_requests_sync_and_skips():

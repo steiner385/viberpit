@@ -171,9 +171,24 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
 # Edge-only ALLOWLIST (fail-safe): only these paths are edge-only; anything NOT matching
 # (incl. shared modules the daemon imports: server/config, server/db, server/audit,
 # server/usage, the orchestrator, IPC, agent-SDK glue) forces a daemon restart.
+#
+# The admission rule is "the daemon process never loads it": edge-side code and assets,
+# the test suites, docs, deploy units, and — as one class rather than a growing list —
+# every hidden path at the repo root (``.agents/``, ``.claude/``, ``.codex/``,
+# ``.specify/``, ``.github/``, ``.superpowers/``, ``.brand-ratchet.toml``, ``.gitignore``,
+# ``.env.example`` …). Those are agent, CI and spec-kit tooling read by the agent CLIs
+# and by CI, never imported by server/ or src/; the daemon's few on-demand reads among
+# them (``.claude/REVIEW.md``, the constitution) go to disk per call and need no
+# restart. The one exception is ``.env``, which server/config.py loads at process start.
+#
+# This classifier also decides the reconciler's SHA fence (server/github/sha_fence.py),
+# so a path misclassified as daemon-changing does not merely restart a daemon for
+# nothing — it refuses every board write until the next daemon deploy. Three
+# tooling-only merges in a row once kept new issues off the boards for days.
 _EDGE_ONLY = re.compile(
     r"^(web/|server/api/|server/app\.py|server/bridge/|server/spa\.py|"
-    r"server/tests/|docs/|deploy/|\.github/|.*\.md$)"
+    r"server/tests/|tests/|docs/|deploy/|.*\.md$|"
+    r"\.(?!env(/|$))[^/]+(/|$))"
 )
 
 
@@ -191,9 +206,9 @@ _DEPLOY_CODE = re.compile(r"^server/deploy/")
 def deploy_code_changed(changed_files: list[str] | None) -> bool:
     """True when this deploy modifies the controller's own code.
 
-    Note the explicit empty/None handling: ``all([])`` is True, which is how
-    classify_change silently reads an empty diff as edge-only. An empty diff
-    changes nothing, so it cannot have changed deploy code.
+    Note the explicit empty/None handling: an empty diff has no daemon-changing
+    paths, which is how classify_change silently reads it as edge-only. An empty
+    diff changes nothing, so it cannot have changed deploy code.
     """
     if not changed_files:
         return False
@@ -312,10 +327,18 @@ def schedule_controller_restart(*, run: Run = subprocess.run, delay_s: int = 10)
         return False
 
 
+def daemon_changing_paths(changed_files: list[str]) -> list[str]:
+    """The subset of *changed_files* the daemon loads — the paths that make a diff
+    ``daemon_changed``. Empty for an edge-only diff; order preserved. The SHA fence
+    names these in its refusal reason, so this is the single place that answers
+    "which path needs a daemon restart"."""
+    return [f for f in changed_files if not _EDGE_ONLY.match(f)]
+
+
 def classify_change(changed_files: list[str] | None) -> str:
     if changed_files is None:
         return "daemon_changed"   # fail-safe: cannot classify → treat as daemon change
-    if all(_EDGE_ONLY.match(f) for f in changed_files):
+    if not daemon_changing_paths(changed_files):
         return "edge_only"
     return "daemon_changed"
 
