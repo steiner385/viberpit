@@ -35,6 +35,9 @@ _BLURBS: dict[str, str] = {
                  "model, before anyone builds it."),
     "propose_decision": ("the work has hit a product choice only the user can make: "
                          "draft the options instead of guessing or handing back."),
+    "share_artifact": ("you have a link, URL, local path or image the user must see — a "
+                       "PR, a report, a screenshot — so it is never lost in prose or a "
+                       "collapsed tool result."),
     "request_model": "you want to run the rest of the work on a different model tier.",
     "dispatch_session": "you need a linked child session the user can steer independently.",
 }

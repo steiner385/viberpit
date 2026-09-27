@@ -15,6 +15,7 @@ import { QuestionCard } from '@/features/sessions/panels/QuestionCard'
 import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
 import { NoticeCard } from './NoticeCard'
+import { ArtifactCard } from './ArtifactCard'
 import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
@@ -85,6 +86,12 @@ export const Turn = memo(function Turn({
               />
             </BlockRow>
           )
+        }
+
+        if (item.kind === 'artifact') {
+          // A share_artifact call: the deliverable itself, always open — the one
+          // tool row that must never sit behind a "tool details" toggle.
+          return <BlockRow key={item.block.id} ts={rowTs}><ArtifactCard block={item.block} /></BlockRow>
         }
 
         const block = item.block

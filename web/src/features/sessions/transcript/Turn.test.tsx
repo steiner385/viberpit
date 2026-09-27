@@ -266,3 +266,27 @@ describe('Turn feedback (assistant drawer only)', () => {
     expect(screen.queryByRole('button', { name: 'Helpful' })).toBeNull()
   })
 })
+
+describe('Turn share_artifact rendering', () => {
+  const artifact: Block = {
+    kind: 'tool', id: 's', toolId: 's', name: 'mcp__viberpit__share_artifact', toolKind: 'app_action',
+    input: { kind: 'url', value: 'https://g.h/o/n/pull/7', label: 'PR #7' },
+    result: { ok: true, payload: { content: [{ type: 'text', text: '{"data":{}}' }] } },
+  }
+
+  it('renders a shared artifact as an always-visible card, never a collapsed tool row', () => {
+    render(
+      <Turn
+        turn={makeTurn([tool('a'), artifact, tool('b')])}
+        isLastTurn={false}
+        toolDetailMode="auto"
+        thinkingCollapsed={true}
+        onAnswer={noop}
+      />,
+    )
+    expect(screen.getByRole('link', { name: 'https://g.h/o/n/pull/7' })).toHaveAttribute('href', 'https://g.h/o/n/pull/7')
+    expect(screen.getByText('PR #7')).toBeInTheDocument()
+    // Only the two Reads are collapsible tool rows; the artifact has no details toggle.
+    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(2)
+  })
+})

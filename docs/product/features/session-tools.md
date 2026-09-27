@@ -1,7 +1,7 @@
 ---
 slug: session-tools
 parent: session-workspaces
-title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, request_model)
+title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model)
 state: delivering
 links:
   specs:
@@ -16,15 +16,16 @@ links:
     - server/sessions/tools/instruction.py
     - server/sessions/tools/codex.py
     - server/sessions/feedback.py
+    - server/sessions/artifacts.py
     - server/sessions/completion.py
     - server/sessions/model_request.py
     - server/sessions/engine.py
     - server/pm/holds.py
 ---
 
-# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, request_model)
+# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model)
 
-Give coding agents reliable application context and a supported way to report feedback, coordinate child work, and signal progress.
+Give coding agents reliable application context and a supported way to report feedback, coordinate child work, signal progress, and put their deliverables in front of the user.
 
 **Problem** — A coding session run by ViberPit has no way to ask "what am I, and why was I
 dispatched" or to tell ViberPit itself (not the repo it's working in) that something about the
@@ -39,7 +40,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-nine tools:
+ten tools:
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
@@ -50,12 +51,13 @@ nine tools:
 | `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
 | `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
 | `propose_decision` | SIGNAL | options (2–6 × {key, label, detail?}), recommended_key, rationale | Parks this session's issue on a PRODUCT DECISION only a person can take: draft the options, name the one you recommend, say why. The person picks one in the Inbox (spec 2026-09-18 §6). |
+| `share_artifact` | SIGNAL | kind (`url`\|`path`\|`image`), value, label, note? | Puts a deliverable in front of the user as an always-visible transcript card: an http(s) URL, an absolute path on the session host (copyable chip), or an image on the session host, which the handler ingests into the attachment store and the card renders inline. See below. |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 | `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `VIBERPIT_CHILD_SESSIONS_ENABLED`, capped by `VIBERPIT_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
-`mark_no_pr`, `hand_back`, `set_hold`, `propose_decision` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
+`mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
 card, but not annotated read-only, because each one moves something the user does see (a status
 badge, a completion-bar verdict, a pending model approval). `PermissionRegistry` resolves both
 classes silently in every session mode, never raising a permission card (pinned by
@@ -177,6 +179,42 @@ the model exactly the wrong thing about retrying.
 applies. The Backlog Runner reads it as neither a bounce nor a hand-off — see
 `docs/product/features/autopilot-backlog-runner.md` § The awaiting-decision ending.
 
+### `share_artifact`: the deliverable the user must actually see
+
+The problem it exists for (2026-09-27): a session says "I've put the screenshot at
+`/tmp/settings.png` and opened the PR" and the user sees neither. The path was in a Bash tool's
+output, the PR URL in a `gh` result, and the transcript collapses every tool row the moment the
+next tool follows it (`ToolCallCard` line mode); prose links do render, but a bare path in prose
+is plain text and an image on the session host is a URL the browser cannot resolve at all.
+
+`share_artifact(kind, value, label, note?)` makes the deliverable a first-class card
+(`web/src/features/sessions/transcript/ArtifactCard.tsx`) that `groupBlocks` lifts OUT of the
+tool run — it is never a "tool details" toggle. Three kinds:
+
+| kind | value | The card shows |
+|---|---|---|
+| `url` | an absolute http(s) URL — nothing else, so a `javascript:` value can never become an anchor; the card re-checks the scheme before the server verdict lands | the label, an anchor opening in a new tab |
+| `path` | an absolute path on the session host | the label, a copyable chip (the browser cannot open a host path; the card says where it is) |
+| `image` | an absolute path to a png/jpeg/gif/webp on the session host | the image inline, "Open full size", and the source path |
+
+`image` is the one kind whose handler ACTS, like `set_hold`: the daemon that owns the session has
+the file and the browser does not, so `server/sessions/artifacts.py:read_image` reads it (regular
+file, under the attachment store's `MAX_BYTES`, sniffed by content — a text file named `.png` is
+refused), `attachments.write_content` stores it content-addressed under `attachments_dir()`, and an
+`Attachment` row bound to the session is created so the edge serves it at `/api/attachments/{id}`
+and `delete_for_session` reclaims it with the session's other attachments. On a worker host the
+attachments dir is the sshfs-shared account root (`docs/runbooks/rocky-session-host.md`), which is
+why an ingest on rocky is servable from dobby with no RPC. The served URL rides the handler's
+result envelope; the card reads it from the `ToolResult` (`web/src/session/artifacts.ts`) and
+shows "Uploading image…" until it lands, or the handler's refusal if it never does — a broken
+share is visible, not silent. Every call is audited as `session.artifact` with its fields.
+
+It is SIGNAL (no permission card: an unattended session must be able to hand over its PR link)
+and deliberately NOT in `TURN_SIGNAL_NAMES`: the card is the whole feature, so both transcript
+builders render the call, live and on replay, and nothing new is persisted for the transcript —
+the CLI's own JSONL carries the call and its result, which is what makes the card survive a reload
+for free. Codex has no signalling tools and therefore no `share_artifact` (the engine split below).
+
 ## Where the signal is read — the Translator, not the handler
 
 A tool **handler** for `mark_complete` / `mark_no_pr` / `hand_back` / `request_model` only validates its
@@ -194,12 +232,14 @@ signalling call still renders as an ordinary tool card and has no effect on the 
 Tool-call state is turn-scoped, not message-scoped, and precedence is tool-over-marker: if a turn
 carries both a signalling tool call and a stray marker in its prose, the tool call wins.
 
-`set_hold` is the one SIGNAL tool that does NOT follow this split: its handler acts immediately
-(calls `apply_session_hold`) rather than deferring to the Translator, because a hold is not a
-claim about the session's own top-level completion status — the sub-agent guard above exists to
-stop a `Task` sub-agent's own sub-objective from being mistaken for the session's, which does not
-apply to "this issue needs evidence." It gets the SIGNAL class for the same no-permission-card
-treatment as the other four, not for the Translator-reads-it behavior.
+`set_hold` (and `share_artifact`'s image ingest) do NOT follow this split: the handler acts
+immediately (calls `apply_session_hold` / stores the image) rather than deferring to the
+Translator, because a hold or a shared deliverable is not a claim about the session's own
+top-level completion status — the sub-agent guard above exists to stop a `Task` sub-agent's own
+sub-objective from being mistaken for the session's, which does not apply to "this issue needs
+evidence" or "here is the screenshot" (a sub-agent's shared artifact is just as worth seeing).
+They get the SIGNAL class for the same no-permission-card treatment as the turn signals, not for
+the Translator-reads-it behavior.
 
 That is why the two transcript builders (`server/sessions/translator.py` and the JSONL
 `server/sessions/replay.py`) key on `registry.TURN_SIGNAL_NAMES` — the four names the Translator
@@ -257,7 +297,7 @@ Which contract a session gets is decided by `AgentCapabilities.durable_tool_surf
 | | Claude | Codex |
 |---|---|---|
 | `durable_tool_surface` | `True` | `False` |
-| Signalling tools (`mark_complete`, `mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `request_model`) declared | yes | no |
+| Signalling tools (`mark_complete`, `mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact`, `request_model`) declared | yes | no |
 | Instruction taught | tool descriptions | HTML-comment markers |
 | `session_context` / `report_feedback` | yes | yes (fresh threads only) |
 

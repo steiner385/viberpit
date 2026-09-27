@@ -24,6 +24,7 @@ from server.sessions.attachments import (
     _DECLARED_ONLY,
     sniff_media_type,
     storage_path,
+    write_content,
 )
 
 log = logging.getLogger(__name__)
@@ -96,10 +97,7 @@ async def upload_attachment(
     )).scalars().first()
     if existing is not None:
         # Ensure the content-addressed file is present (it normally is).
-        path = storage_path(sha, existing.media_type)
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
+        write_content(data, existing.media_type, sha256=sha)
         await record_audit(db=db, type="attachment.upload", identity=identity,
                            detail={"id": existing.id, "bytes": len(data),
                                    "type": existing.media_type, "dedup": True})
@@ -118,10 +116,7 @@ async def upload_attachment(
     db.add(row)
     await db.flush()  # populate row.id
 
-    path = storage_path(sha, media_type)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_bytes(data)
+    write_content(data, media_type, sha256=sha)
 
     await record_audit(db=db, type="attachment.upload", identity=identity,
                        detail={"id": row.id, "bytes": len(data), "type": media_type})
