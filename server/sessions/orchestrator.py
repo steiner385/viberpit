@@ -6561,13 +6561,25 @@ class SessionOrchestrator:
         asking GitHub which PRs cross-reference the issue. Gating on session
         end keeps the gh call off the per-tick hot path for live targets, and
         never matching by bare PR number keeps an unrelated PR that happens to
-        share the issue's number from freeing the slot."""
+        share the issue's number from freeing the slot.
+
+        A ``handed_off`` row carries its session as ``implementation_session_id``
+        (``_backlog_handoff`` nulls ``session_id`` when the slot becomes PR
+        Doctor's) and is stopped by construction — the hand-off itself only
+        happens after ``_work_stopped``, and its session row may already be
+        deleted. Read that id and skip the session-ended gate for it: without
+        this the sweep was blind to every handed-off PR's merge, so the batch's
+        close-out never ran and PR Doctor's finished ``runner-handoff``
+        operation kept the batch's issue keys forever — refusing every later PR
+        that referenced one of them (2026-09-27: 273 rows, 218 held operations,
+        cairnea/KinDash#17006 bounced on #16889's three-days-merged hold)."""
         repo = target.split("#", 1)[0]
         st = await self._backlog_ctx.get_target_state(target)
         branches: list[str] = []
         if st.get("branch"):
             branches.append(st["branch"])
-        sid = st.get("session_id")
+        handed_off = bool(st.get("handed_off"))
+        sid = st.get("session_id") or (st.get("implementation_session_id") if handed_off else None)
         if sid:
             rec = self._records.get(sid)
             if rec is not None:
@@ -6588,7 +6600,7 @@ class SessionOrchestrator:
             info = self._pr_poller.cached(repo, branch)
             if info is not None:
                 return info
-        if sid is None or not await self._backlog_session_ended(sid):
+        if not handed_off and (sid is None or not await self._backlog_session_ended(sid)):
             return None
         from server.automations import backlog_github
         return await asyncio.to_thread(
@@ -13506,7 +13518,7 @@ class SessionOrchestrator:
             # aren't fully covered by this claim) — name the actual holder
             # instead of the generic message, so a manual "try again" and the
             # ``ownership_wait`` feed event both say WHO (#2203).
-            blocker = await self._pr_doctor_foreign_operation(targets)
+            blocker = await self._pr_doctor_foreign_operation(targets, target=target)
             if blocker is not None:
                 from server.automations.action_providers import foreign_holder_message
                 raise OwnershipConflict(foreign_holder_message(blocker)) from None
@@ -13601,13 +13613,22 @@ class SessionOrchestrator:
                 and not operation.session_id and not operation.reserved_session_id
                 and set(operation.targets) <= keys)
 
-    async def _pr_doctor_foreign_operation(self, targets):
-        """The operation (if any) holding one of *targets*'s canonical keys
-        under an owner other than ``pr-doctor`` that a claim covering *targets*
-        cannot adopt — i.e. attempting the claim is guaranteed to bounce with
-        ``OwnershipConflict``. Read-only: never acquires or transfers anything,
-        so it is safe to call from the actionable-items list as well as from
-        an already-refused claim (#2203)."""
+    async def _pr_doctor_foreign_operation(self, targets, *, target: str):
+        """The operation (if any) holding one of *targets*'s canonical keys that
+        a claim on PR *target* covering *targets* cannot adopt — i.e. attempting
+        the claim is guaranteed to bounce with ``OwnershipConflict``. Read-only:
+        never acquires or transfers anything, so it is safe to call from the
+        actionable-items list as well as from an already-refused claim (#2203).
+
+        "Foreign" is judged per PR, not per owner: PR Doctor's own operation
+        for a DIFFERENT PR (its ``origin_ref``) blocks this claim exactly like a
+        runner close-out does — a finished ``runner-handoff`` on a merged PR
+        still holds the batch's issue keys until the runner's close-out takes
+        them back, and a later PR closing one of those issues bounced with the
+        generic message behind a live button (cairnea/KinDash#17006 vs #16889,
+        2026-09-27). Only *this* PR's own predecessor is skipped: that is the
+        transfer path ``_pr_doctor_claim`` already handles via the state token.
+        """
         from sqlalchemy import select
         from server.db.models import AutomationOperation, AutomationOwnedTarget
         keys = {t.key for t in targets}
@@ -13622,7 +13643,9 @@ class SessionOrchestrator:
             operations = (await db.scalars(select(AutomationOperation).where(
                 AutomationOperation.token.in_(tokens)))).all()
         for op in operations:
-            if op.owner == "pr-doctor" or self._pr_doctor_closeout_is_adoptable(op, keys):
+            own = (op.owner == "pr-doctor"
+                   and str(op.provenance.get("origin_ref") or "").lower() == target.lower())
+            if own or self._pr_doctor_closeout_is_adoptable(op, keys):
                 continue
             return op
         return None
@@ -13644,7 +13667,7 @@ class SessionOrchestrator:
         except TargetIdentityError:
             cache[target] = (now + 5.0, None)  # transient GitHub failure — retry soon
             return None
-        op = await self._pr_doctor_foreign_operation(targets)
+        op = await self._pr_doctor_foreign_operation(targets, target=target)
         cache[target] = (now + _PR_DOCTOR_FOREIGN_HOLDER_CACHE_S, op)
         return op
 
