@@ -31,7 +31,7 @@ export interface UsageWindow {
 /** How much a snapshot's windows can be trusted. Anything other than 'available'
  *  means the read failed — the windows array is then EMPTY rather than holding a
  *  fabricated 0%. */
-// Mirrors `quota.AVAILABILITIES` in src/ccswitch/quota.py — keep the two in step.
+// Mirrors `quota.AVAILABILITIES` in src/viberpit/quota.py — keep the two in step.
 // 'unsupported' means the credential/provider boundary cannot report quota at
 // all (an OpenAI account; an Anthropic account whose only live credential is a
 // narrow-scope setup-token). It is a PERMANENT answer, unlike 'unknown', which

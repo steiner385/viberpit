@@ -149,6 +149,24 @@ def test_app_frame_prefers_innermost_project_frame():
     assert frame == "test_error_signature:inner"
 
 
+def test_app_frame_recognises_the_core_package_but_not_a_checkout_named_after_it(monkeypatch):
+    """Phase 5a moved the core package to ``src/viberpit/`` and the marker did not
+    follow, so every core-package frame stopped counting as ours. The marker is
+    anchored on ``/src/``: a checkout DIRECTORY named after the product must not
+    turn its ``.venv`` dependency frames into app frames."""
+    import traceback
+    from server.obs import error_signature
+    frames = [
+        traceback.FrameSummary("/home/u/GitHub/viberpit/server/api/sessions.py", 1, "route"),
+        traceback.FrameSummary("/home/u/GitHub/viberpit/src/viberpit/ledger.py", 2, "record"),
+        traceback.FrameSummary(
+            "/home/u/GitHub/viberpit/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py",
+            3, "execute"),
+    ]
+    monkeypatch.setattr(error_signature.traceback, "extract_tb", lambda tb: frames)
+    assert error_signature.app_frame((RuntimeError, RuntimeError("x"), object())) == "ledger:record"
+
+
 def test_client_frame_parses_browser_stack_and_strips_asset_hash():
     from server.obs.error_signature import client_frame
     stack = ("TypeError: Cannot read properties of undefined (reading 'id')\n"

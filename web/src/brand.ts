@@ -1,6 +1,6 @@
 /**
  * Brand identity — the ONE place the product name is spelled in the web app.
- * Mirrors `src/ccswitch/brand.py`; the two must agree (spec
+ * Mirrors `src/viberpit/brand.py`; the two must agree (spec
  * docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md §1).
  */
 

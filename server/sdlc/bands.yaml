@@ -70,7 +70,12 @@ metrics:
   # store, so the series is dense, has no merge-queue prerequisite, and a
   # regression in it is a real signal about the delivery loop rather than about
   # one flaky check.
-  - id: ccswitch-pr-cycle-time
+  #
+  # The id is persisted into every triage row it files (`triage_items.metric`, the
+  # row's unique `key`, its `summary`), so renaming it is a data migration, not an
+  # edit: `0074_brand_control_band_id` / `scripts/rename_automation_keys_brand.py`
+  # converge the rows already filed under the previous spelling.
+  - id: viberpit-pr-cycle-time
     source: pr_cycle_time_hours
     repo: steiner385/viberpit
     title: PR cycle time

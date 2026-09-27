@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""ONE-SHOT: converge automation dedupe keys off the pre-rebrand product slug.
+"""ONE-SHOT: converge brand-prefixed keys in database rows off the pre-rebrand slug.
 
-Spec: docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md §3, Phase 2c (#1369).
+Spec: docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md §3, Phase 2c (#1369)
+for the automation dedupe keys; epic #1365 for the SDLC control-band id.
 
     python scripts/rename_automation_keys_brand.py           # dry run: print the plan
     python scripts/rename_automation_keys_brand.py --apply   # perform it
@@ -14,10 +15,17 @@ second session for work already running, and the loop guard keyed on the old str
 does not stop it. There is no dual-accept for this (see ``server/db/brand_keys``);
 converging the rows in place is the fix.
 
-Every statement comes from ``server/db/brand_keys``, which the alembic revision
-``0061_brand_automation_keys`` also drives — the reviewable record and the thing that
-runs cannot describe different SQL. Nothing runs ``alembic upgrade`` at deploy time and
-reconcile applies no data changes, which is why this script exists at all.
+The control-band id (``<product-slug>-pr-cycle-time``, ``server/sdlc/bands.yaml``) is
+persisted the same way, into the triage incident it files: as ``triage_items.metric``,
+as the row's unique ``key`` and in its ``summary``. Renamed in the yaml alone, the
+monitor's next tick would file the breach a second time as a fresh open incident beside
+the one Intake already adopted. Same fix, same script.
+
+Every statement comes from ``server/db/brand_keys``, which the alembic revisions
+``0061_brand_automation_keys`` and ``0074_brand_control_band_id`` also drive — the
+reviewable record and the thing that runs cannot describe different SQL. Nothing runs
+``alembic upgrade`` at deploy time and reconcile applies no data changes, which is why
+this script exists at all.
 
 Idempotent: each statement selects on the legacy prefix and writes the new one, so a
 second run matches zero rows. Safe to re-run after a partial failure.
@@ -40,7 +48,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from server.db.brand_keys import (  # noqa: E402 -- repo root added above
-    KEY_COLUMNS,
+    ALL_KEY_COLUMNS,
     KeyColumn,
     delete_collisions_sql,
     select_legacy_sql,
@@ -87,14 +95,15 @@ async def count_legacy(db, col: KeyColumn) -> int:
 async def convert(db, col: KeyColumn) -> tuple[int, int]:
     """Converge *col*. Returns ``(updated, dropped)``.
 
-    The collision delete runs first and unconditionally: on a ``unique_with`` column the
-    UPDATE is what would raise on a duplicate key, and an exception there would abandon
-    the columns after it.
+    The collision delete runs first and unconditionally: on a column that can collide
+    the UPDATE is what would raise on a duplicate key, and an exception there would
+    abandon the columns after it.
 
     ``dropped`` is reported separately rather than folded into the total because the two
     are different events to an operator reading this once: an updated row kept its state
-    under a new key, a dropped one was a stale duplicate whose counters are gone. A
-    single number would leave the plan's count unaccounted for and look like a bug.
+    under a new key, a dropped one was the losing half of a duplicate pair (see
+    ``KeyColumn.keep``). A single number would leave the plan's count unaccounted for
+    and look like a bug.
     """
     from sqlalchemy import text
 
@@ -132,7 +141,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     await init_db(url)
 
     async with db_session() as db:
-        plan = [(col, await count_legacy(db, col)) for col in KEY_COLUMNS]
+        plan = [(col, await count_legacy(db, col)) for col in ALL_KEY_COLUMNS]
     print_table(plan, "legacy-prefixed rows")
     total = sum(n for _, n in plan)
 
@@ -141,20 +150,20 @@ async def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     async with db_session() as db:
-        results = [(col, *await convert(db, col)) for col in KEY_COLUMNS]
+        results = [(col, *await convert(db, col)) for col in ALL_KEY_COLUMNS]
     print()
     print_table([(col, updated) for col, updated, _ in results], "rows converged")
     dropped = sum(d for _, _, d in results)
     if dropped:
-        # Named, not buried: these rows' retry counters and gave-up flags are gone,
-        # and the plan's count would not otherwise add up.
-        print(f"\n{dropped} stale duplicate row(s) dropped — their converged key "
-              f"already existed (see server/db/brand_keys)")
+        # Named, not buried: a dropped row's retry counters (or, for a triage twin,
+        # its re-detection) are gone, and the plan's count would not otherwise add up.
+        print(f"\n{dropped} duplicate row(s) dropped — the other spelling of their "
+              f"key already existed (see server/db/brand_keys: KeyColumn.keep)")
 
     # Re-read rather than trusting the rowcounts: a driver that under-reports would
     # otherwise make a half-done run look complete, and the remedy (re-run) is cheap.
     async with db_session() as db:
-        left = sum([await count_legacy(db, col) for col in KEY_COLUMNS])
+        left = sum([await count_legacy(db, col) for col in ALL_KEY_COLUMNS])
     updated = sum(u for _, u, _ in results)
     print(f"\n{updated} row(s) converged, {dropped} dropped, {left} legacy row(s) left")
     return 1 if left else 0

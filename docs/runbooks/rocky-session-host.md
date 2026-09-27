@@ -283,7 +283,7 @@ content**, not by trusting that the PR merged:
 ```bash
 # example: confirm the fix you hotfixed with is really in master
 git show origin/master:server/sessions/orchestrator.py | grep -c 'def project_dir_name'
-git show origin/master:src/ccswitch/ledger.py            | grep -c 'os.replace'
+git show origin/master:src/viberpit/ledger.py            | grep -c 'os.replace'
 ```
 
 Then reset the host and restart it:

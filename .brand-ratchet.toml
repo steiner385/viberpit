@@ -38,7 +38,7 @@ id = "brand-module"
 paths = ["src/viberpit/brand.py", "web/src/brand.ts"]
 permanent = "The LEGACY_* constants are the one place the old spelling may be defined (design §1)."
 # 5th: web/src/brand.ts REPO_NAMESPACES, the web mirror of brand.REPO_NAMESPACES (#1373).
-ceiling = 5
+ceiling = 4
 
 [[allow]]
 id = "wire-dual-accept"
@@ -50,7 +50,7 @@ ceiling = 48
 id = "rebrand-narrative"
 paths = ["docs/product/guides/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
 permanent = "Text that names the old brand in order to explain the rename (the migration guide, README's 'formerly' line, the ratchet and its tests)."
-ceiling = 51
+ceiling = 46
 
 [[allow]]
 id = "ratchet-rule"
@@ -80,39 +80,22 @@ id = "browser-storage-keys"
 # tests that pin the migration — which retires when the read side does.
 paths = ["web/*", "web/**/*"]
 pattern = "['\"`]ccswitch\\.|ccswitch\\.\\$\\{|ccswitch:(draft|auto-reloaded)|STORAGE_NAMESPACE = 'ccswitch'|toBe\\('ccswitch'\\)"
-issue = 1368
+# #1368 (the emit side) is closed; the read side retires under Phase 7.
+issue = 1378
 ceiling = 25
 
 [[allow]]
-id = "persisted-keys"
-# Phase 2c landed (#1369): no emitter spells a dedupe key with the old slug any more
-# (they are composed from the product's CURRENT slug), and `0061_brand_automation_keys`
-# converges rows written before the product was renamed. What is left is ONE key that
-# Phase 2c did not cover: the `ccswitch-pr-cycle-time` control band in
-# `server/sdlc/bands.yaml`, whose id is referenced by stored ControlBandBreach rows and
-# so needs its own migration. Re-pointed at the epic, since #1369 is closed.
-pattern = '\bccswitch:[a-z][a-z-]*|feature-map-ccswitch|ccswitch-pr-cycle-time'
-issue = 1365
-ceiling = 4
-
-[[allow]]
-id = "branch-prefix"
-# Phase 2c landed (#1369): `viberpit/<base>-<id>` is what gets created, and
-# `brand.is_session_branch` matches BOTH spellings — permanently, because a pushed
-# branch is not ours to rewrite and `git branch -D` is the only thing that ever
-# deletes one. The residual count is NOT branch prefixes: this entry is tried before
-# `repo-namespace`, `host-legacy-names` and `python-package`, so it also claims every
-# `.ccswitch/`, `/etc/ccswitch/` and `src/ccswitch/` path they own. Those shrink under
-# #1373 / #1592 / #1374; re-pointed at the epic, since #1369 is closed.
-pattern = '\bccswitch/'
-issue = 1365
-ceiling = 119
-
-[[allow]]
 id = "repo-namespace"
+# Phase 4 (#1373) landed the resolver: `.viberpit/` is what gets created and
+# `brand.REPO_NAMESPACES` recognises both — permanently, because a repo root that
+# already carries `.ccswitch/` keeps it for as long as it exists on disk (Phase 7's
+# "keep forever" list, #1378). What remains is the legacy constant, the tests that
+# pin the dual recognition, and fixtures laid out the way real hosts still are.
 pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
-issue = 1373
-ceiling = 34
+permanent = "The per-repo namespace resolver accepts the pre-rebrand `.ccswitch/` dot-dir forever: old repos exist on disk indefinitely (design Phase 7 'keep forever', #1378)."
+# 34 -> 54 on 2026-09-27 is re-attribution, not growth: the retired `branch-prefix`
+# catch-all (`\bccswitch/`) used to claim these `.ccswitch/…` paths first.
+ceiling = 54
 
 [[allow]]
 # #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b
@@ -147,18 +130,25 @@ ceiling = 132
 id = "host-legacy-aliases"
 paths = ["deploy/ccswitch*", "deploy/bin-ccswitch-mounts.sh", "scripts/ccswitch-*", "scripts/viberpit-host-aliases.py", "scripts/viberpit-host-cutover.py", "tests/test_host_aliases.py", "tests/test_host_cutover.py", "docs/runbooks/viberpit-host-cutover.md"]
 issue = 1592
-ceiling = 172
+# 172 -> 192 on 2026-09-27 is re-attribution from the retired `branch-prefix`
+# catch-all (the `/etc/ccswitch/…` paths in these files), not growth.
+ceiling = 192
 
 [[allow]]
 id = "host-legacy-names"
-pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv)/ccswitch|\.(cache|local/lib)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
+pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv|var)/ccswitch|\.(cache|local/lib|config)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
 issue = 1592
-ceiling = 290
+# 290 -> 332 on 2026-09-27 is re-attribution from the retired `branch-prefix`
+# catch-all (`/etc|/run|/var/lib/ccswitch/…`, `~/.cache|~/.config/ccswitch/…`),
+# not growth; the same change added `.config/` and bare `/var/` to the pattern.
+ceiling = 332
 
 [[allow]]
 id = "python-package"
 pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|lint|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
-issue = 1374
+# #1374 (Phase 5a) is closed; what it left behind retires with the shim under
+# Phase 7 (#1378), which owns this entry now.
+issue = 1378
 # #2166 adds the `lint` subcommand (`ccswitch lint feature-docs`, invoked from
 # the reusable workflow) to the subcommand alternation, plus its
 # tests/test_cli.py::TestLintCommands test needs its own `from ccswitch import
@@ -176,7 +166,7 @@ ceiling = 342
 [[allow]]
 id = "python-package-shim"
 paths = ["src/ccswitch/__init__.py"]
-issue = 1374
+issue = 1378
 # Phase 5a (#1374) moved the real package to src/viberpit/ and left this thin
 # compat package in its place: a sys.meta_path finder aliasing `ccswitch.*` to
 # the identical `viberpit.*` module object for one release. Its own docstring
@@ -190,7 +180,10 @@ ceiling = 5
 id = "constitution"
 paths = [".specify/memory/constitution.md"]
 issue = 1377
-ceiling = 2
+# 2 -> 3 on 2026-09-27: the repository-layout bullet's `ccswitch/` was claimed by
+# the retired `branch-prefix` catch-all; the owner's prepared 1.2.1 diff (#1377)
+# renames all three.
+ceiling = 3
 
 [[allow]]
 # The three env vars the prod-deploy gate reads. The hook is a `GUARDRAIL_PATHS`
@@ -214,3 +207,22 @@ paths = [
 ]
 issue = 1377
 ceiling = 11
+
+# ── Permanent, but tried LAST: claims only what no entry above owns ───────────
+
+[[allow]]
+id = "branch-prefix-dual-match"
+# Phase 2c (#1369) landed: `viberpit/<base>-<id>` is what gets created, and
+# `brand.is_session_branch` matches BOTH spellings — permanently, because a pushed
+# branch is not ours to rewrite and `git branch -D` is the only thing that ever
+# deletes one (Phase 7's "keep forever" list, #1378). What remains is the legacy
+# constant's tests, fixtures naming pre-rebrand branches, and the prose that says so.
+#
+# Deliberately the last entry, and deliberately NOT `\bccswitch/`: the bare form
+# also matches `.ccswitch/…`, `/etc/ccswitch/…` and `src/ccswitch/…` (a branch
+# name is never preceded by a dot, a slash or a word character — `origin/` being
+# the one ref prefix that is), so it used to swallow ~100 hits belonging to the
+# path-owning entries above and hide them under the wrong issue.
+pattern = '(?:(?<![./\w])|(?<=origin/))ccswitch/'
+permanent = "Session-branch matching accepts the pre-rebrand `ccswitch/` prefix forever: old branches live on remotes indefinitely (design Phase 7 'keep forever', #1378)."
+ceiling = 23
