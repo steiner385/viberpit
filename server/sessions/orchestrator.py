@@ -10468,7 +10468,16 @@ class SessionOrchestrator:
             repo=repo or None, cwd=cwd, account=account, engine=engine,
             name=f"pm classify {slug}", initial_prompt=prompt,
             model=choice.model, reasoning_effort=choice.reasoning_effort,
-            detail=detail)
+            detail=detail,
+            # #2504: a one-shot, plain-text "answer with JSON" session that calls
+            # no session tool. Left ungated, autopilot's generic goal-reinforcement
+            # nudge (`_autopilot_list_governed`) fires on it once idle/done, and the
+            # resulting second round (ToolSearch + mark_complete + a JSON-less
+            # confirmation) shadows the real answer from the chain ingest's fixed
+            # last-2-turns tail window (`_chained_session_output_text`). Completion
+            # here is owned entirely by `_await_session_settled`, so autopilot must
+            # never act on it.
+            autopilot_paused=True)
         if rec is None:
             return 0
         async with db_session() as db:
@@ -11622,6 +11631,11 @@ class SessionOrchestrator:
             model=model,
             reasoning_effort=reasoning_effort,
             detail=detail,
+            # #2504: same one-shot, non-PR, chain-harvested shape as
+            # pm_classify_run (see its call site for the full mechanism) — must
+            # opt out of autopilot's nudge so a nudge-triggered second round
+            # doesn't shadow the fenced JSON from the chain ingest's tail window.
+            autopilot_paused=True,
         )
         if rec is None:
             return None
