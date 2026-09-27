@@ -58,5 +58,17 @@
     "confidence": 5,
     "rationale": "pr_population.merged_fetch_failed originates in server/github/pr_population.py, the poller that populates PR/merge-queue/CI status data consumed by the pipeline view. The failure is caught, logged, and best-effort recovers on the next poll cycle (returns None for that repo's merged-PR block). Only 3 occurrences against one repo (cairnea/KinDash) since 2026-09-25.",
     "confidence_level": "high"
+  },
+  {
+    "number": 2510,
+    "kind": "pr",
+    "feature_slug": "autopilot-backlog-runner",
+    "no_fit_suggestion": null,
+    "reach": 3,
+    "impact": 4,
+    "effort": 2,
+    "confidence": 5,
+    "rationale": "Fixes a bug in the backlog runner's PR-Doctor handoff lifecycle (_backlog_handoff/_backlog_pr_status_for/_sweep_one): handed-off runner rows never resolved their PR via implementation_session_id, so the finished handoff operation kept holding the batch's issue keys forever (273 rows/218 held ops in prod). This is core Autopilot & Backlog Runner machinery (governed backlog progression and yielding on completion), not PR Doctor's own conflict-resolution feature — no candidate feature exists for PR Doctor specifically, and this is squarely the runner's handoff/sweep bookkeeping.",
+    "confidence_level": "high"
   }
 ]
