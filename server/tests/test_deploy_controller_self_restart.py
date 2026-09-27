@@ -49,8 +49,8 @@ def test_deploy_code_detection(path, expected):
 def test_empty_change_list_is_not_deploy_code():
     """all([]) is True — an empty list must not be read as 'everything changed'.
 
-    classify_change has exactly this trap: `all(_EDGE_ONLY.match(f) ...)` returns
-    True for [], silently classifying an empty diff as edge-only.
+    classify_change has exactly this trap: `daemon_changing_paths([])` is empty, so
+    an empty diff is silently classified as edge-only.
     """
     assert steps.deploy_code_changed([]) is False
     assert steps.deploy_code_changed(None) is False

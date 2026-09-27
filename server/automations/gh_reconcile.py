@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from server.db.models import INITIATIVE_STAGES
+from server.github.sha_fence import FenceVerdict
 from server.pm.desired_state import (
     STATUS_OPTIONS,
     derive,
@@ -47,6 +48,13 @@ _DRY_RUN_TTL = timedelta(hours=24)
 _APPLIED_HISTORY_TTL = timedelta(days=30)
 _COUNT_KEYS = ("products", "planned", "applied", "failed", "parked", "skipped_stale",
                "halted_cap", "dry_run")
+#: A fence closed by a daemon-changing merge reopens when that deploy lands (CI plus the
+#: rollout, ~15–30 min), so a fresh closure is the rail working: INFO plus the status
+#: guard and one automation event. A fence still closed after this long is starvation —
+#: a path class the classifier does not exempt and the deploy never restarts for, or a
+#: stuck deploy — and is the rung a human must act on: WARNING (which auto-files), once
+#: per closed episode.
+_FENCE_STARVED_AFTER = timedelta(hours=1)
 
 ReadConfig = Callable[[], Awaitable[tuple[str, dict]]]
 ListProducts = Callable[[], Awaitable[list[ProductSyncView]]]
@@ -65,7 +73,9 @@ JournalPruneDryRun = Callable[[datetime], Awaitable[int]]
 JournalPruneApplied = Callable[[datetime], Awaitable[int]]
 JournalRecover = Callable[[datetime], Awaitable[int]]
 RequestSync = Callable[[str], Awaitable[None]]
-ShaFence = Callable[[], Awaitable[bool]]
+#: ``FenceVerdict`` carries the refusal reason; a plain bool (older seams, tests) still
+#: refuses, with the generic reason.
+ShaFence = Callable[[], Awaitable["bool | FenceVerdict"]]
 KillSwitch = Callable[[], bool]
 SaveFieldCache = Callable[[str, dict], Awaitable[None]]
 NowUtc = Callable[[], datetime]
@@ -184,7 +194,10 @@ class GhReconcileLoop:
         self._request_sync, self._sha_fence, self._kill_switch = request_sync, sha_fence, kill_switch
         # save_field_cache is the seam Task 9's field bootstrap (_ensure_fields) writes through.
         self._save_field_cache, self._now = save_field_cache, now_utc
-        self._fence_warned = False
+        # Fence episode: when the current closure began (None while open) and whether its
+        # starvation escalation has already spoken. Both latch once per episode.
+        self._fenced_since: datetime | None = None
+        self._starved_warned = False
         # Latch for the "board fields incomplete" park emit, keyed by project id. The loop ticks
         # every two minutes and this condition needs ONE human action to clear, so an unlatched
         # emit is an error push every cycle, forever. Value is the (migrate, gap) signature so a
@@ -235,21 +248,18 @@ class GhReconcileLoop:
             # keep reporting "12 applied, 3 parked" for a loop that is switched off —
             # which reads as live activity from an automation that is doing nothing.
             setattr(self._ctx, "gh_reconcile_counts", None)
-            self._fence_warned = False
+            self._fenced_since, self._starved_warned = None, False
             self._incomplete_warned.clear()
             self._dry_drift_warned.clear()
             return
         if not self._kill_switch():
             self._ctx.gh_reconcile_guard = "Reconcile paused: kill switch off"
             return
-        if not await self._sha_fence():
-            self._ctx.gh_reconcile_guard = "Reconcile refused: daemon SHA != origin/master"
-            if not self._fence_warned:
-                self._fence_warned = True
-                await self._ctx.emit("warn", "reconcile refused: daemon SHA is not origin/master",
-                                     kind="gh_reconcile_fenced")
+        verdict = await self._sha_fence()
+        if not verdict:
+            await self._refuse_fenced(verdict)
             return
-        self._fence_warned = False
+        self._fenced_since, self._starved_warned = None, False
         now = self._now()
         dry_run = mode == "dry_run"
         await self._j_recover(now - _INTERRUPTED_AFTER)
@@ -288,6 +298,30 @@ class GhReconcileLoop:
                 await self._ctx.emit("warn", f"reconcile failed for {product.slug}",
                                      kind="gh_reconcile_error", target=product.project_id)
         self._stash(**counts)
+
+    async def _refuse_fenced(self, verdict: bool | FenceVerdict) -> None:
+        """Make a refused cycle observable: the reason on the status guard every tick, one
+        event when the closure begins, and a WARNING plus an error event once it has
+        outlived a deploy cycle (``_FENCE_STARVED_AFTER``). Every board write — including
+        adding a new issue to a board — waits behind this, so a closure nobody can see is
+        a backlog nobody can explain."""
+        reason = getattr(verdict, "reason", "") or "daemon SHA != origin/master"
+        self._ctx.gh_reconcile_guard = f"Reconcile refused: {reason}"
+        now = self._now()
+        if self._fenced_since is None:
+            self._fenced_since = now
+            log.info("gh_reconcile.fenced reason=%s", reason)
+            await self._ctx.emit("warn", f"reconcile refused: {reason}",
+                                 kind="gh_reconcile_fenced")
+        elif not self._starved_warned and now - self._fenced_since >= _FENCE_STARVED_AFTER:
+            self._starved_warned = True
+            fenced_for = now - self._fenced_since
+            log.warning("gh_reconcile.starved fenced_for=%s reason=%s", fenced_for, reason)
+            await self._ctx.emit(
+                "error",
+                f"reconcile fenced for {fenced_for}: no board write (including new issues) "
+                f"has landed since {self._fenced_since:%Y-%m-%d %H:%M}Z — {reason}",
+                kind="gh_reconcile_starved")
 
     async def _converged_on_board(self, facts: ProductFacts, m: Mutation) -> dict | None:
         """The board's live entry for *m*'s field when the board ALREADY satisfies *m*, else None.
