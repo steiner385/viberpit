@@ -2,10 +2,12 @@
 // tested with their own components; this file is only about which one the page
 // picks — and that an address the map does not contain says so.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, fireEvent, within } from '@testing-library/react'
+import { act, cleanup, render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
 import type { TriageProposal } from '@/api/triage'
+import { ViewportProvider } from '@/shell/useViewport'
+import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { MAP } from './__fixtures__/map'
 import { clearInboxOrder, setInboxOrder } from './inbox/inboxOrderStore'
 import { RoadmapPage } from './RoadmapPage'
@@ -105,14 +107,16 @@ function Location() {
 function mount(path: string, over: Partial<typeof map> = {}) {
   Object.assign(map, { data: MAP, isLoading: false, isFetching: false, isError: false }, over)
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((p) => (
-          <Route key={p} path={p} element={<RoadmapPage />} />
-        ))}
-      </Routes>
-      <Location />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((p) => (
+            <Route key={p} path={p} element={<RoadmapPage />} />
+          ))}
+        </Routes>
+        <Location />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 
@@ -131,6 +135,7 @@ const QUEUE: TriageProposal[] = [
 ]
 
 beforeEach(() => {
+  stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
   // The rendered order the list column publishes is module state shared with
   // this page, so a test that publishes one must not leak into the ones that
   // assert the no-column fallback.
@@ -271,14 +276,16 @@ describe('RoadmapPage', () => {
     expect(screen.getByText('Not found')).toBeInTheDocument()
     Object.assign(map, { isFetching: true })
     rerender(
-      <MemoryRouter initialEntries={['/roadmap/nope']}>
-        <Routes>
-          {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((pth) => (
-            <Route key={pth} path={pth} element={<RoadmapPage />} />
-          ))}
-        </Routes>
-        <Location />
-      </MemoryRouter>,
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter initialEntries={['/roadmap/nope']}>
+          <Routes>
+            {[ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE].map((pth) => (
+              <Route key={pth} path={pth} element={<RoadmapPage />} />
+            ))}
+          </Routes>
+          <Location />
+        </MemoryRouter>
+      </ViewportProvider>,
     )
     expect(screen.getByText('Not found')).toBeInTheDocument()
   })
@@ -300,6 +307,16 @@ describe('RoadmapPage', () => {
     mount('/roadmap', { data: undefined, isLoading: false })
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByText(/No products yet/)).toBeInTheDocument()
+  })
+
+  it('below desktop an open product or capability gets a Back link to the map; desktop does not', () => {
+    stubMatchMedia(LAYOUT_MODE_QUERIES.tablet)
+    mount('/roadmap/kindash')
+    expect(screen.getByRole('link', { name: 'Back to Map' })).toHaveAttribute('href', '/roadmap')
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
+    mount('/roadmap/kindash')
+    expect(screen.queryByRole('link', { name: 'Back to Map' })).toBeNull()
   })
 })
 
@@ -328,6 +345,26 @@ describe('RoadmapPage — Inbox scope', () => {
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' })
     expect([...crumbs.querySelectorAll('li')].map((li) => li.textContent))
       .toEqual(['Roadmap', 'Inbox', 'kindash'])
+  })
+
+  it('below desktop an open proposal gets a Back link to the Inbox; desktop does not (F1)', () => {
+    // The shell's `roadmapOpenItem` resolver treats a proposal as an open
+    // item, so it hides `app.list` below desktop exactly as an open product
+    // does — the page must carry the same way back.
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(screen.getByRole('link', { name: 'Back to Inbox' })).toHaveAttribute('href', '/roadmap?scope=inbox')
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(screen.queryByRole('link', { name: 'Back to Inbox' })).toBeNull()
+  })
+
+  it('below desktop an open proposal narrowed to a product Backs to the narrowed Inbox (F1)', () => {
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap?scope=inbox&product=kindash&proposal=p1')
+    expect(screen.getByRole('link', { name: 'Back to Inbox' }))
+      .toHaveAttribute('href', '/roadmap?scope=inbox&product=kindash')
   })
 
   it('offers no product actions in this scope', () => {

@@ -405,15 +405,14 @@ class BacklogRunner:
             return AutomationStatus(text="idle — no product has dispatch on",
                                     level="idle", counts=counts, products=[])
         level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
-        # ``untriaged`` is the below-min-status skip: in the default Ready mode a
-        # board full of untriaged items reads as "0 eligible", which looks like an
-        # empty backlog rather than one waiting on triage.
-        text = (f"{n} work in flight, "
-                + (f"{counts['eligible']} eligible" if "eligible" in counts
-                   else "queue counts unavailable")
-                + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
-                + (f", {counts['untriaged']} untriaged" if counts.get("untriaged") else "")
-                + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""))
+        # The fleet counts (eligible, blocked, untriaged, needs-human) are NOT
+        # spelled out here any more: the web renders ``counts`` as stat tiles
+        # above the tab strip (spec 2026-09-28 §2), and a fixed header that
+        # repeats them was the audit's finding #2. Only the absence of the
+        # queue read is still a sentence, because a missing tile is invisible.
+        text = f"{n} work in flight"
+        if "eligible" not in counts:
+            text += " · queue counts unavailable"
         # One segment per ON product after the summary: which products this runner
         # is working, how, and how hard. Joined with " · " on ONE line because the
         # web renders ``AutomationStatus.text`` without honouring newlines.

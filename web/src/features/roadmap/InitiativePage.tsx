@@ -37,7 +37,7 @@ import { capabilityPath, initiativePath, productPath, roadmapPath } from './road
 import { findProduct, programTitleOf } from './lookup'
 import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
-import { StatTiles } from './detail/StatTiles'
+import { StatTiles } from '@/ui/StatTiles'
 import { LeafList } from './detail/LeafList'
 import { EditInitiativeDialog } from './detail/EditInitiativeDialog'
 import { AdoptArtifactDialog } from './detail/AdoptArtifactDialog'

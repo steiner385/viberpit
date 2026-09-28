@@ -6,11 +6,16 @@ import { AutomationDetail } from './AutomationDetail'
 import { AutomationControls } from './AutomationControls'
 
 const patch = vi.fn(); const trigger = vi.fn().mockResolvedValue({ status: 'done', level: 'ok', message: 'Fixed' })
+// A mutable variable (not a fixed object literal) so individual tests can
+// simulate the actionable list not having answered yet (F3: the Needs you
+// badge follows the FETCHED list, falling back to the payload's own
+// `actionableCount` only while that fetch is still in flight).
+let actionableData: unknown[] | undefined = [{ id: 'o/r#1', title: 'CI red on #1', actions: [{ kind: 'fix', label: 'Fix', style: 'safe' }] }]
 vi.mock('@/api/hooks', () => ({
   usePatchAutomation: () => ({ mutate: patch, isPending: false }),
   useAutomationEvents: () => ({ data: [{ ts: '2026-09-11T10:00:00Z', level: 'info', kind: null, summary: 'scanned 3 PRs', target: null, sessionId: 's1' }] }),
   useAutomationSessions: () => ({ data: [{ id: 's1', name: 'fix #1', status: 'in_progress', originRef: null }, { id: 's2', name: 'old', status: 'ended', originRef: null }] }),
-  useAutomationActionable: () => ({ data: [{ id: 'o/r#1', title: 'CI red on #1', actions: [{ kind: 'fix', label: 'Fix', style: 'safe' }] }] }),
+  useAutomationActionable: () => ({ data: actionableData }),
   useAutomationTrigger: () => ({ mutateAsync: trigger, isPending: false }),
   useGithubRepos: () => ({ data: [{ nameWithOwner: 'o/r' }], isLoading: false }),
   useConsolidation: () => ({ data: undefined }), useConsolidate: () => ({ mutate: vi.fn(), isPending: false }),
@@ -22,20 +27,66 @@ vi.mock('./ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
 const prDoctor = AUTOMATIONS[0]
 const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {
   const onOpenSession = vi.fn()
-  render(<MemoryRouter initialEntries={[path]}><AutomationDetail automation={a} onOpenSession={onOpenSession} /></MemoryRouter>)
-  return { onOpenSession }
+  const r = render(<MemoryRouter initialEntries={[path]}><AutomationDetail automation={a} onOpenSession={onOpenSession} /></MemoryRouter>)
+  return { ...r, onOpenSession }
 }
 
 describe('AutomationDetail', () => {
-  beforeEach(() => { patch.mockReset(); trigger.mockClear() })
-  it('Overview: description, oversight and actionable items — no queue surface', async () => {
+  beforeEach(() => {
+    patch.mockReset(); trigger.mockClear()
+    actionableData = [{ id: 'o/r#1', title: 'CI red on #1', actions: [{ kind: 'fix', label: 'Fix', style: 'safe' }] }]
+  })
+  it('Overview: description, oversight and a three-row actionable preview — no queue surface', async () => {
     mount()
     expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Actionable items' })).toBeInTheDocument()
     expect(screen.getByText('CI red on #1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Fix' }))
     await waitFor(() => expect(trigger).toHaveBeenCalledWith({ item_id: 'o/r#1', kind: 'fix' }))
     // The consolidation panel is the Queue tab's, not the Overview's.
     expect(screen.queryByTestId('consolidate')).not.toBeInTheDocument()
+  })
+  it('Needs you: every automation has the tab; the badge follows the FETCHED list, with attention above zero (F3)', () => {
+    // The mock answers the same one-item list regardless of automation id
+    // (it shares `useAutomationActionable`'s query key with the panel), so
+    // every automation here shows the fetched length once it has loaded —
+    // not the list payload's own (possibly stale) `actionableCount`.
+    let r = mount()
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    r.unmount()
+    r = mount(AUTOMATIONS[1], '/delivery/automations/backlog-runner')
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    r.unmount()
+    // Review focus 2: operator-triggered still has the question.
+    mount(AUTOMATIONS[2], '/delivery/automations/pm-classify')
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+  })
+  it('Needs you: the fetched list length wins even when actionableCount is null (F3)', () => {
+    // Review focus 1, updated: `actionableCount: null` used to force a bare
+    // tab; now the list has loaded (1 item) and that is what counts.
+    mount({ ...prDoctor, actionableCount: null }, '/delivery/automations/pr-doctor')
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /NaN/ })).toBeNull()
+  })
+  it('Needs you: falls back to the payload actionableCount while the fetched list has not answered (F3)', () => {
+    actionableData = undefined
+    mount(AUTOMATIONS[1], '/delivery/automations/backlog-runner') // actionableCount: 2
+    expect(screen.getByRole('tab', { name: 'Needs you (2, needs attention)' })).toBeInTheDocument()
+  })
+  it('Needs you: an unknown actionableCount is a bare tab while the list has not answered either, not NaN (F3)', () => {
+    actionableData = undefined
+    mount({ ...prDoctor, actionableCount: null }, '/delivery/automations/pr-doctor')
+    expect(screen.getByRole('tab', { name: 'Needs you' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /NaN/ })).toBeNull()
+  })
+  it('Needs you: ?tab=needs-you selects it and shows the full list; the order is Overview · Needs you · Queue …', () => {
+    mount(prDoctor, '/delivery/automations/pr-doctor?tab=needs-you')
+    // The badge follows the fetched list (F3), and the mock list has one item.
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)', selected: true })).toBeInTheDocument()
+    expect(screen.getByText('CI red on #1')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Actionable items' })).toBeNull()
+    const names = screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))
+    expect(names.slice(0, 3)).toEqual(['Overview', 'Needs you (1, needs attention)', 'Queue'])
   })
   it('Queue: the PR doctor consolidation panel', () => {
     mount(prDoctor, '/delivery/automations/pr-doctor?tab=queue')
@@ -86,6 +137,10 @@ describe('AutomationDetail', () => {
     expect(screen.getByText('1 active')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /fix #1/ })).toHaveAttribute('href', '/sessions/background/s1')
     expect(screen.getByRole('link', { name: /old/ })).toHaveAttribute('href', '/sessions/archived/s2')
+    // The status is the app's label for it, not the wire key (spec 2026-09-28 §4).
+    expect(screen.getByText('· Working…')).toBeInTheDocument()
+    expect(screen.getByText('· Ended')).toBeInTheDocument()
+    expect(screen.queryByText('· in_progress')).toBeNull()
   })
   it('Config tab renders the schema and patches on change', () => {
     mount(prDoctor, '/delivery/automations/pr-doctor?tab=config')
@@ -173,5 +228,15 @@ describe('AutomationDetail', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Products' })).not.toBeInTheDocument()
     expect(screen.queryByText('No products yet.')).not.toBeInTheDocument()
+  })
+  it('renders status.counts as stat tiles above the strip, and no band when counts is null', () => {
+    const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status, counts: { in_flight: 2, eligible: 14, blocked: 63 } } }
+    const { unmount } = mount(runner, '/delivery/automations/backlog-runner')
+    const band = screen.getByText('In flight').closest('dl')!
+    expect(band.compareDocumentPosition(screen.getByRole('tablist'))).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(screen.getByText('14')).toBeInTheDocument()
+    unmount()
+    mount(prDoctor) // counts: null
+    expect(document.querySelector('dl')).toBeNull()
   })
 })

@@ -1,16 +1,16 @@
 /**
- * The automation detail pane: Overview · Queue · Schedule · Config · Events ·
- * Sessions (`docs/PAGE-TABS.md`) over one automation, re-homing both the
- * deleted monitor page (`automations/AutomationsTab.tsx`) and the old Settings
- * card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
- * (finish-line spec §4.4). `AutomationControls` (header actions) is a sibling
- * component, not rendered here — the page assembling this pane puts it beside
- * the automation's name.
+ * The automation detail pane: Overview · Needs you · Queue · Schedule ·
+ * Config · Events · Sessions (`docs/PAGE-TABS.md`) over one automation,
+ * re-homing both the deleted monitor page (`automations/AutomationsTab.tsx`)
+ * and the old Settings card (`components/AutomationCard.tsx`) behind
+ * `ui/Tabs` + URL state (finish-line spec §4.4). `AutomationControls`
+ * (header actions) is a sibling component, not rendered here — the page
+ * assembling this pane puts it beside the automation's name.
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Automation, AutomationStatusProduct } from '@/api/automations'
-import { useAutomationSessions } from '@/api/hooks'
+import { useAutomationActionable, useAutomationSessions } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
 import { automationPath } from '../deliveryNavState'
@@ -18,11 +18,13 @@ import { productPath } from '@/features/roadmap/roadmapNavState'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
+import { StatTiles } from '@/ui/StatTiles'
 import { Tabs } from '@/ui/Tabs'
 import { AutomationActions } from './actions'
 import { BacklogGroupsPanel } from './BacklogGroupsPanel'
 import { ConfigPanel } from './ConfigPanel'
 import { ConsolidatePanel } from './ConsolidatePanel'
+import { countTiles } from './countTiles'
 import { EventsList } from './EventsList'
 import { ManualDispatchDialog } from './ManualDispatchDialog'
 import { SchedulePanel } from './SchedulePanel'
@@ -59,16 +61,31 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // The Sessions tab's badge (standard §7): the same query `SessionsList`
   // reads, so opening that tab is not a second fetch.
   const sessions = useAutomationSessions(a.id)
+  // The Needs you tab's badge (F3): the same query key `AutomationActions`
+  // reads (below, and on the Overview preview), so this is not a second
+  // request either. The fetched list's length is what the tab and the rows
+  // underneath it actually agree on; `a.actionableCount` — a field on the
+  // separate `/automations` list payload — is only the fallback while that
+  // fetch has not answered yet.
+  const actionable = useAutomationActionable(a.id)
+  const needsYou = actionable.data?.length ?? a.actionableCount ?? undefined
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
+  const tiles = countTiles(a.status.counts)
 
   return (
     <>
+      {/* Above the strip (standard §6): the automation's own counts, visible on
+          every tab. The runner's used to be spelled out in status.text. */}
+      {tiles.length > 0 && <div className="mb-4"><StatTiles tiles={tiles} /></div>}
       <Tabs
         label="Automation"
         items={items.map((id) => ({
           id,
           label: AUTOMATION_TAB[id],
-          count: id === 'sessions' ? sessions.data?.length : undefined,
+          count: id === 'sessions' ? sessions.data?.length
+            : id === 'needs-you' ? needsYou
+            : undefined,
+          attention: id === 'needs-you' && (needsYou ?? 0) > 0,
         }))}
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
@@ -120,11 +137,12 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                   : a.status.counts.unassigned_in_flight > 0 && <p>{a.status.counts.unassigned_in_flight} in-flight work items are not assigned to a product.</p>}
               </div>
             )}
-            {/* The Overview's "needs you" notice: renders nothing when there is
-                nothing actionable (standard §5). */}
-            <AutomationActions automationId={a.id} enabled />
+            {/* The Overview's "needs you" notice (standard §5): a three-row
+                preview that renders nothing at zero and hands off to the tab. */}
+            <AutomationActions automationId={a.id} enabled variant="preview" onSeeAll={() => setTab('needs-you')} />
           </>
         )}
+        {tab === 'needs-you' && <AutomationActions automationId={a.id} enabled variant="full" />}
         {tab === 'queue' && (
           <>
             {a.status.products && a.status.products.length > 0 && (

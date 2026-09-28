@@ -10,6 +10,7 @@ import type { Automation } from '@/api/automations'
 import { useAutomationSessions } from '@/api/hooks'
 import { INACTIVE_SESSION_STATUSES } from '@/api/types'
 import { archivedSessionPath, sessionPath } from '@/session/sessionNavState'
+import { statusPresentation } from '@/session/statusTier'
 
 export function SessionsList({ automation: a }: { automation: Automation }) {
   const sessions = useAutomationSessions(a.id)
@@ -31,7 +32,7 @@ export function SessionsList({ automation: a }: { automation: Automation }) {
             >
               {s.name}
             </Link>
-            <span className="text-ink-muted">· {s.status}</span>
+            <span className="text-ink-muted">· {statusPresentation(s.status).label}</span>
           </li>
         ))}
       </ul>

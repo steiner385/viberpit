@@ -1,7 +1,9 @@
-// The four-number band at the top of a roadmap detail: how much is in flight,
-// how much is stuck, how much wants a human. A description list rather than a
-// grid of divs, so a screen reader reads "In flight, 3" as one pair.
-import { TONE_TEXT, type Tone } from '@/ui/Badge'
+// The number band at the top of a detail pane: how much is in flight, how
+// much is stuck, how much wants a human. A description list rather than a
+// grid of divs, so a screen reader reads "In flight, 3" as one pair. Shared
+// by the roadmap details (initiative, portfolio, product, capability) and
+// the automation detail.
+import { TONE_TEXT, type Tone } from './Badge'
 import { cn } from '@/lib/utils'
 
 export interface StatTile {

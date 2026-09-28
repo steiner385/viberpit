@@ -182,7 +182,10 @@ test.describe('Delivery — phone', () => {
     await expect(list).toHaveCount(0)
     await expect(page.locator('[data-page-variant]')).toBeVisible()
 
-    await page.goBack()
+    // F5: exercise the real Back link (page-migration §2.2), not the browser's
+    // own history button — they are not the same affordance, and only one of
+    // them is what a reader without a hardware Back button actually has.
+    await page.getByRole('link', { name: 'Back to Automations' }).click()
     await expect.poll(() => pathOf(page)).toBe('/delivery')
     await expect(list).toBeVisible()
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0)
@@ -199,6 +202,14 @@ test('registry mode effects and relationships explain the workflow', async ({ pa
   await expect(main.getByText('Configured mode: auto', { exact: true })).toHaveAttribute('title', /Repairs eligible PRs/)
   await expect(main.getByText(/auto — Repairs eligible PRs/)).toBeVisible()
   await expect(page.getByText('Execute and finish work')).toBeVisible()
+  // Every automation has a Needs you tab. The intercept answers `[]` for the
+  // actionable list; F3 makes the badge follow that FETCHED list once it
+  // arrives (rather than the payload's own possibly-stale `actionableCount`,
+  // 2 on the fixture's PR doctor), so a loaded empty list reads as a bare tab.
+  await page.getByRole('tab', { name: 'Needs you', exact: true }).click()
+  await expect(page).toHaveURL(/tab=needs-you$/)
+  await expect(page.getByText('Nothing needs you.')).toBeVisible()
+  await page.getByRole('tab', { name: 'Overview' }).click()
   await page.getByRole('link', { name: 'Backlog runner', exact: true }).click()
   await expect(page).toHaveURL(/delivery\/automations\/backlog-runner$/)
   await expect(page.getByText('Actionable count unknown', { exact: true })).toBeVisible()

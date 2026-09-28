@@ -179,10 +179,12 @@ export const TAB_LABEL = {
 /** The automation detail's tabs, in order (`docs/PAGE-TABS.md` §3, §4: one
  *  tab, one question; configuration before history). `queue` is offered only
  *  to automations that have dispatchable work (`QUEUE_AUTOMATIONS` in
- *  `AutomationDetail.tsx`). */
+ *  `AutomationDetail.tsx`). `needs-you` is offered to every automation (the
+ *  question exists for all of them; §4). */
 export const AUTOMATION_TAB = {
-  overview: TAB_LABEL.overview, queue: TAB_LABEL.queue, schedule: TAB_LABEL.schedule,
-  config: TAB_LABEL.config, events: TAB_LABEL.events, sessions: TAB_LABEL.sessions,
+  overview: TAB_LABEL.overview, 'needs-you': TIER_LABEL['needs-you'], queue: TAB_LABEL.queue,
+  schedule: TAB_LABEL.schedule, config: TAB_LABEL.config, events: TAB_LABEL.events,
+  sessions: TAB_LABEL.sessions,
 } as const
 export type AutomationTab = keyof typeof AUTOMATION_TAB
 export const AUTOMATION_TABS = Object.keys(AUTOMATION_TAB) as readonly AutomationTab[]

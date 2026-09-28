@@ -11,6 +11,7 @@ import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
+import { useViewport } from '@/shell/useViewport'
 import {
   capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
   roadmapScopeForSearch,
@@ -227,10 +228,25 @@ function RoadmapPageContent() {
   // the user and an irreversible accept.
   const productActions = inbox ? undefined : mapActions
 
+  // Below desktop the list column hides behind an open item (`app.list` in the
+  // shell's matrix), so the page carries the way back to the map. On desktop
+  // the list is beside the page and a Back link would be a second copy of it.
+  // Never from kiosk: this section is `showInKiosk: false`.
+  const { mode: viewportMode } = useViewport()
+  // An open proposal hides `app.list` exactly as an open product/capability
+  // does (the shell's `roadmapOpenItem` resolver treats a proposal as an open
+  // item too), so it needs the same way back — to the Inbox rather than the map.
+  const back = (opened || proposalId) && viewportMode !== 'desktop'
+    ? inbox
+      ? { to: inboxPath({ product: inboxProduct }), label: `Back to ${ROADMAP.inbox}` }
+      : { to: roadmapPath('map'), label: `Back to ${ROADMAP.map}` }
+    : undefined
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
       <PageHeader
         title={title}
+        back={back}
         meta={crumbs.length > 1 ? <Breadcrumb items={crumbs} /> : undefined}
         actions={productActions}
       />
