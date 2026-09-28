@@ -1,5 +1,5 @@
 /**
- * The Overview tab's "Actionable items" list and its per-item action buttons.
+ * The actionable-items list: the Overview's preview and the Needs you tab's full list.
  * Moved verbatim (behaviour) from the deleted `automations/AutomationsTab.tsx`'s
  * `AutomationActions`/`ActionButton` — only the classes changed, to `ui/`
  * primitives on tokens.
@@ -127,34 +127,54 @@ export function ActionButton(
   )
 }
 
-export function AutomationActions({ automationId, enabled }: { automationId: string; enabled: boolean }) {
+/** Rows the Overview preview shows before handing off to the Needs you tab
+ *  (docs/PAGE-TABS.md §5: a preview is at most three rows + "See all N"). */
+export const PREVIEW_ROWS = 3
+
+export function AutomationActions({ automationId, enabled, variant, onSeeAll }: {
+  automationId: string
+  enabled: boolean
+  /** `preview`: the Overview's notice — heading, three rows, "See all N",
+   *  nothing at all when empty. `full`: the Needs you tab — every row on the
+   *  page scroll, a sentence when empty. */
+  variant: 'preview' | 'full'
+  /** Preview only: switch to the tab that owns the full list. */
+  onSeeAll?: () => void
+}) {
   const actionable = useAutomationActionable(automationId, enabled)
   const list = actionable.data ?? []
-  // The Overview's "needs you" notice (`docs/PAGE-TABS.md` §5): renders
-  // nothing when there is nothing actionable, rather than a heading over an
-  // empty state.
-  if (list.length === 0) return null
+  if (list.length === 0) {
+    return variant === 'full' ? <p className="text-sm text-ink-muted">Nothing needs you.</p> : null
+  }
+  const rows = variant === 'preview' ? list.slice(0, PREVIEW_ROWS) : list
+  const items = (
+    <ul className="space-y-1.5 text-sm">
+      {rows.map((item) => (
+        <li key={item.id} className="flex items-center gap-2">
+          <span className="flex-1 truncate">
+            <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
+            {item.title}
+          </span>
+          {item.actions.length === 0 && item.status && (
+            <span className="text-xs text-ink-muted">{item.status}</span>
+          )}
+          {item.actions.map((action) => (
+            <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
+          ))}
+        </li>
+      ))}
+    </ul>
+  )
+  if (variant === 'full') return items
   return (
     <section className="space-y-2">
       <SectionHeading>Actionable items</SectionHeading>
-      <div className="max-h-48 overflow-y-auto rounded-md border border-edge p-2">
-        <ul className="space-y-1.5 text-sm">
-          {list.map((item) => (
-            <li key={item.id} className="flex items-center gap-2">
-              <span className="flex-1 truncate">
-                <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
-                {item.title}
-              </span>
-              {item.actions.length === 0 && item.status && (
-                <span className="text-xs text-ink-muted">{item.status}</span>
-              )}
-              {item.actions.map((action) => (
-                <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
-              ))}
-            </li>
-          ))}
-        </ul>
-      </div>
+      <div className="rounded-md border border-edge p-2">{items}</div>
+      {list.length > PREVIEW_ROWS && (
+        <div>
+          <Button size="sm" variant="ghost" onClick={onSeeAll}>See all {list.length}</Button>
+        </div>
+      )}
     </section>
   )
 }
