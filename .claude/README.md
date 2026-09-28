@@ -18,6 +18,33 @@ the canonical cross-agent context and review-policy documents to avoid parallel 
 | `hooks/prod-deploy-gate.py` | The gate. Blocks a production deploy command unless `RELEASE_APPROVAL` is set (and the approver differs from the change author). Reuses `governance.evaluate_release`; fails **closed**. |
 | `REVIEW.md` | **PR review policy** (Phase 4, issue #806). Loaded by `server.sdlc.review_policy` and injected into `pr_doctor` review sessions. Defines: allowed finding categories (bug / security / compliance), severity tags and their merge-blocking status, nit cap, excluded file patterns, separation-of-duties rules, `@claude` comment-driven fix contract, and the CLAUDE.md correction-seeding format. |
 
+## Impeccable (vendored design skill)
+
+[Impeccable](https://impeccable.style) (`pbakaus/impeccable`, Apache-2.0) is installed as a
+project skill for both harnesses with its documented installer, no hooks:
+
+```bash
+npx --yes impeccable@4.1.0 install -y --project --no-hooks --providers=claude,codex
+```
+
+- Skill build **4.3.1**, engine **0.1.5** (`.agents/skills/impeccable/scripts/VERSION`). The
+  installer emits a *different* build per harness (`.claude/skills/impeccable` for Claude,
+  `.agents/skills/impeccable` + `agents/*.toml` for Codex), so unlike our own skills the Claude
+  copy is a real directory, not a symlink — `contract.json` lists it under
+  `skills.provider_built` and `agentctl check` only verifies both trees exist. Claude sub-agents
+  land in `agents/impeccable-*.md` beside the role projections.
+- The engine is a stripped native binary fetched from the GitHub release `engine-v<VERSION>`
+  and sha256-verified against its sidecar. It is **gitignored** (`scripts/bin/`); the launcher
+  (`scripts/impeccable`) falls back to `~/.impeccable/bin/<VERSION>/` and downloads on first use.
+  Sandboxes without egress need `IMPECCABLE_BIN` pointing at a preinstalled engine.
+- Hooks are deliberately **not** installed: they run the engine after every `Edit|Write` and on
+  `Stop` in every session, including the automated ones this repo dispatches. Opt in per
+  checkout with `/impeccable hooks on` (writes the untracked `.claude/settings.local.json`).
+- `/impeccable init` (writes `PRODUCT.md`) and `/impeccable document` (`DESIGN.md`) are
+  interactive and have not been run.
+- Update: re-run the install command with the new version, then `python3 .agents/agentctl.py
+  check .` and confirm `git status` shows no `scripts/bin/` files.
+
 ## Permission tiers by environment
 
 `governance.permission_tier(env)` maps an environment to an existing ViberPit

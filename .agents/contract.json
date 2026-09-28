@@ -10,7 +10,8 @@
   },
   "skills": {
     "canonical": ".agents/skills",
-    "claude_projection": ".claude/skills"
+    "claude_projection": ".claude/skills",
+    "provider_built": ["impeccable"]
   },
   "roles": {
     "canonical": ".agents/roles",
