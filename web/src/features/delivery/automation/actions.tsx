@@ -170,7 +170,7 @@ export function AutomationActions({ automationId, enabled, variant, onSeeAll }: 
     <section className="space-y-2">
       <SectionHeading>Actionable items</SectionHeading>
       <div className="rounded-md border border-edge p-2">{items}</div>
-      {list.length > PREVIEW_ROWS && (
+      {onSeeAll && list.length > PREVIEW_ROWS && (
         <div>
           <Button size="sm" variant="ghost" onClick={onSeeAll}>See all {list.length}</Button>
         </div>

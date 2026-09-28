@@ -44,6 +44,12 @@ describe('AutomationActions', () => {
     expect(onSeeAll).toHaveBeenCalledTimes(1)
   })
 
+  it('preview: no "See all" button at all when no onSeeAll is given, even past PREVIEW_ROWS (F6)', () => {
+    items = [1, 2, 3, 4, 5].map((n) => ({ id: `o/r#${n}`, title: `item ${n}`, actions: [], status: 'waiting' }))
+    render(<AutomationActions automationId="pr-doctor" enabled variant="preview" />)
+    expect(screen.queryByRole('button', { name: /See all/ })).toBeNull()
+  })
+
   it('preview: no "See all" when the list fits, and null when it is empty', () => {
     items = [{ id: 'o/r#1', title: 'only', actions: [], status: 'waiting' }]
     const { unmount } = render(<AutomationActions automationId="pr-doctor" enabled variant="preview" />)
