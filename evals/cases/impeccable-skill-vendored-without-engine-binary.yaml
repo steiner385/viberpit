@@ -1,0 +1,5 @@
+id: impeccable-skill-vendored-without-engine-binary
+description: The Impeccable design skill is vendored for both harnesses (Claude and Codex builds) with its engine version pinned, and the native engine binary is never tracked.
+kind: static
+tags: [agent-config, skills, impeccable]
+check: 'test -f .claude/skills/impeccable/SKILL.md && test -f .agents/skills/impeccable/SKILL.md && test -s .agents/skills/impeccable/scripts/VERSION && test -z "$(git ls-files .agents/skills/impeccable/scripts/bin .claude/skills/impeccable/scripts/bin)"'

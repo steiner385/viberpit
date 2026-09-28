@@ -210,10 +210,21 @@ def sync_skill_links(root: Path, contract: dict, *, fix: bool) -> list[str]:
         return errors
     if fix:
         projection.mkdir(parents=True, exist_ok=True)
+    # Third-party skills whose installer emits a separate build per harness
+    # (e.g. Claude's build says "AskUserQuestion", Codex's names its own tool):
+    # both trees are vendored as real directories and are allowed to diverge.
+    provider_built = set(contract["skills"].get("provider_built", []))
     for skill in sorted(
         p for p in canonical.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()
     ):
         link = projection / skill.name
+        if skill.name in provider_built:
+            if not (link.is_dir() and not link.is_symlink() and (link / "SKILL.md").is_file()):
+                errors.append(
+                    f"missing provider-built skill projection {link.relative_to(root)}"
+                    " (re-run the vendor installer for the Claude provider)"
+                )
+            continue
         relative = os.path.relpath(skill, projection)
         if link.is_symlink() and os.readlink(link) == relative:
             continue
