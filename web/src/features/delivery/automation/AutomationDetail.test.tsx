@@ -22,8 +22,8 @@ vi.mock('./ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
 const prDoctor = AUTOMATIONS[0]
 const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {
   const onOpenSession = vi.fn()
-  render(<MemoryRouter initialEntries={[path]}><AutomationDetail automation={a} onOpenSession={onOpenSession} /></MemoryRouter>)
-  return { onOpenSession }
+  const r = render(<MemoryRouter initialEntries={[path]}><AutomationDetail automation={a} onOpenSession={onOpenSession} /></MemoryRouter>)
+  return { ...r, onOpenSession }
 }
 
 describe('AutomationDetail', () => {
@@ -198,5 +198,15 @@ describe('AutomationDetail', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Products' })).not.toBeInTheDocument()
     expect(screen.queryByText('No products yet.')).not.toBeInTheDocument()
+  })
+  it('renders status.counts as stat tiles above the strip, and no band when counts is null', () => {
+    const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status, counts: { in_flight: 2, eligible: 14, blocked: 63 } } }
+    const { unmount } = mount(runner, '/delivery/automations/backlog-runner')
+    const band = screen.getByText('In flight').closest('dl')!
+    expect(band.compareDocumentPosition(screen.getByRole('tablist'))).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(screen.getByText('14')).toBeInTheDocument()
+    unmount()
+    mount(prDoctor) // counts: null
+    expect(document.querySelector('dl')).toBeNull()
   })
 })

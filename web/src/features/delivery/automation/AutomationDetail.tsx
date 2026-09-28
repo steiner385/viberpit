@@ -18,11 +18,13 @@ import { productPath } from '@/features/roadmap/roadmapNavState'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
+import { StatTiles } from '@/ui/StatTiles'
 import { Tabs } from '@/ui/Tabs'
 import { AutomationActions } from './actions'
 import { BacklogGroupsPanel } from './BacklogGroupsPanel'
 import { ConfigPanel } from './ConfigPanel'
 import { ConsolidatePanel } from './ConsolidatePanel'
+import { countTiles } from './countTiles'
 import { EventsList } from './EventsList'
 import { ManualDispatchDialog } from './ManualDispatchDialog'
 import { SchedulePanel } from './SchedulePanel'
@@ -60,9 +62,13 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // reads, so opening that tab is not a second fetch.
   const sessions = useAutomationSessions(a.id)
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
+  const tiles = countTiles(a.status.counts)
 
   return (
     <>
+      {/* Above the strip (standard §6): the automation's own counts, visible on
+          every tab. The runner's used to be spelled out in status.text. */}
+      {tiles.length > 0 && <div className="mb-4"><StatTiles tiles={tiles} /></div>}
       <Tabs
         label="Automation"
         items={items.map((id) => ({
