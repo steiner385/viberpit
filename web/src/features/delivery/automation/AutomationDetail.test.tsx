@@ -111,6 +111,10 @@ describe('AutomationDetail', () => {
     expect(screen.getByText('1 active')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /fix #1/ })).toHaveAttribute('href', '/sessions/background/s1')
     expect(screen.getByRole('link', { name: /old/ })).toHaveAttribute('href', '/sessions/archived/s2')
+    // The status is the app's label for it, not the wire key (spec 2026-09-28 §4).
+    expect(screen.getByText('· Working…')).toBeInTheDocument()
+    expect(screen.getByText('· Ended')).toBeInTheDocument()
+    expect(screen.queryByText('· in_progress')).toBeNull()
   })
   it('Config tab renders the schema and patches on change', () => {
     mount(prDoctor, '/delivery/automations/pr-doctor?tab=config')
