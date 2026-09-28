@@ -2,11 +2,13 @@
 // are tested with their own components (`automation/AutomationDetail.test.tsx`,
 // `ci/CiRepoDetail.test.tsx`); this file is only about which one the page picks,
 // what its header says, and that an address the list does not contain says so.
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { act, render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { act, cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { createMemoryRouter, Outlet, RouterProvider, useLocation, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { AutomationStatus } from '@/api/automations'
+import { ViewportProvider } from '@/shell/useViewport'
+import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryPage } from './DeliveryPage'
@@ -108,7 +110,9 @@ function mount(path: string) {
   ], { initialEntries: [path] })
   render(
     <QueryClientProvider client={qc()}>
-      <RouterProvider router={router} />
+      <ViewportProvider kiosk={null}>
+        <RouterProvider router={router} />
+      </ViewportProvider>
     </QueryClientProvider>,
   )
 }
@@ -135,10 +139,14 @@ function mountWithNav(path: string) {
   ], { initialEntries: [path] })
   render(
     <QueryClientProvider client={qc()}>
-      <RouterProvider router={router} />
+      <ViewportProvider kiosk={null}>
+        <RouterProvider router={router} />
+      </ViewportProvider>
     </QueryClientProvider>,
   )
 }
+
+beforeEach(() => stubMatchMedia(LAYOUT_MODE_QUERIES.desktop))
 
 afterEach(() => {
   hookState.automationsIsError = false
@@ -304,5 +312,22 @@ describe('DeliveryPage', () => {
     mount('/delivery')
     expect(screen.getByText(/No automations to show/)).toBeInTheDocument()
     expect(screen.queryByText('No automations registered')).not.toBeInTheDocument()
+  })
+
+  it('below desktop an open automation gets a Back link to its list scope; desktop and the bare list do not', () => {
+    // Review focus 5.
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/delivery/automations/pr-doctor')
+    expect(screen.getByRole('link', { name: 'Back to Automations' })).toHaveAttribute('href', '/delivery')
+    cleanup()
+    mount('/delivery/ci/o/r')
+    expect(screen.getByRole('link', { name: 'Back to CI health' })).toHaveAttribute('href', '/delivery?scope=ci')
+    cleanup()
+    mount('/delivery')
+    expect(screen.queryByRole('link', { name: /^Back to/ })).toBeNull()
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
+    mount('/delivery/automations/pr-doctor')
+    expect(screen.queryByRole('link', { name: /^Back to/ })).toBeNull()
   })
 })

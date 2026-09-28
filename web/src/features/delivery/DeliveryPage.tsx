@@ -12,6 +12,7 @@ import { useSearchParamState } from '@/lib/useSearchParamState'
 import { useNow } from '@/hooks/useNow'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { sessionPath } from '@/session/sessionNavState'
+import { useViewport } from '@/shell/useViewport'
 import { Badge } from '@/ui/Badge'
 import { Banner } from '@/ui/Banner'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
@@ -72,10 +73,23 @@ export function DeliveryPage() {
   const engine = automation ? engineBadge(automation) : null
   const mode = automation?.mode ? automation.oversight?.modeDescriptions[automation.mode] : undefined
 
+  // Below desktop the list column hides behind an open item (`app.list` in the
+  // shell's matrix), so the page carries the way back to the scope's list. On
+  // desktop the list is beside the page and a Back link would be a second
+  // copy of it. Never from kiosk: this section is `showInKiosk: false`.
+  const { mode: viewportMode } = useViewport()
+  const back = item && viewportMode !== 'desktop'
+    ? {
+      to: deliveryPath(item.kind === 'ciRepo' ? 'ci' : 'automations'),
+      label: `Back to ${item.kind === 'ciRepo' ? DELIVERY.ci : DELIVERY.automations}`,
+    }
+    : undefined
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
       <PageHeader
         title={title}
+        back={back}
         meta={crumbs.length > 1 ? (
           <div className="flex flex-col gap-1">
             <Breadcrumb items={crumbs} />
