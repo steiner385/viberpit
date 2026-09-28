@@ -192,7 +192,12 @@ test.describe('Delivery — phone', () => {
 test('registry mode effects and relationships explain the workflow', async ({ page }) => {
   await interceptApi(page)
   await page.goto('/delivery/automations/pr-doctor')
-  await expect(page.getByText(/Configured mode: auto — Repairs eligible PRs/)).toBeVisible()
+  // The header names the mode (its meaning is the span's title); the meaning
+  // itself is a sentence on the Overview's identity block (#2516). Scoped to
+  // main: the list row's mode badge reads the same phrase to a screen reader.
+  const main = page.getByRole('main')
+  await expect(main.getByText('Configured mode: auto', { exact: true })).toHaveAttribute('title', /Repairs eligible PRs/)
+  await expect(main.getByText(/auto — Repairs eligible PRs/)).toBeVisible()
   await expect(page.getByText('Execute and finish work')).toBeVisible()
   await page.getByRole('link', { name: 'Backlog runner', exact: true }).click()
   await expect(page).toHaveURL(/delivery\/automations\/backlog-runner$/)
