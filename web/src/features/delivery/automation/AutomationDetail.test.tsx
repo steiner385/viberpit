@@ -28,14 +28,39 @@ const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {
 
 describe('AutomationDetail', () => {
   beforeEach(() => { patch.mockReset(); trigger.mockClear() })
-  it('Overview: description, oversight and actionable items — no queue surface', async () => {
+  it('Overview: description, oversight and a three-row actionable preview — no queue surface', async () => {
     mount()
     expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Actionable items' })).toBeInTheDocument()
     expect(screen.getByText('CI red on #1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Fix' }))
     await waitFor(() => expect(trigger).toHaveBeenCalledWith({ item_id: 'o/r#1', kind: 'fix' }))
     // The consolidation panel is the Queue tab's, not the Overview's.
     expect(screen.queryByTestId('consolidate')).not.toBeInTheDocument()
+  })
+  it('Needs you: every automation has the tab; the badge is actionableCount with attention above zero', () => {
+    // pr-doctor fixture: actionableCount 0 → bare label; runner: 2 → count + attention; pm-classify: 0.
+    mount()
+    expect(screen.getByRole('tab', { name: 'Needs you' })).toBeInTheDocument()
+    mount(AUTOMATIONS[1], '/delivery/automations/backlog-runner')
+    expect(screen.getByRole('tab', { name: 'Needs you (2, needs attention)' })).toBeInTheDocument()
+    // Review focus 2: operator-triggered still has the question.
+    mount(AUTOMATIONS[2], '/delivery/automations/pm-classify')
+    expect(screen.getAllByRole('tab', { name: 'Needs you' }).length).toBeGreaterThan(0)
+  })
+  it('Needs you: an unknown actionableCount is a bare tab, not NaN', () => {
+    // Review focus 1.
+    mount({ ...prDoctor, actionableCount: null }, '/delivery/automations/pr-doctor')
+    expect(screen.getByRole('tab', { name: 'Needs you' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /NaN/ })).toBeNull()
+  })
+  it('Needs you: ?tab=needs-you selects it and shows the full list; the order is Overview · Needs you · Queue …', () => {
+    mount(prDoctor, '/delivery/automations/pr-doctor?tab=needs-you')
+    expect(screen.getByRole('tab', { name: 'Needs you', selected: true })).toBeInTheDocument()
+    expect(screen.getByText('CI red on #1')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Actionable items' })).toBeNull()
+    const names = screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))
+    expect(names.slice(0, 3)).toEqual(['Overview', 'Needs you', 'Queue'])
   })
   it('Queue: the PR doctor consolidation panel', () => {
     mount(prDoctor, '/delivery/automations/pr-doctor?tab=queue')

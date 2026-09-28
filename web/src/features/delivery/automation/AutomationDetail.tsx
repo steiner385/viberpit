@@ -1,11 +1,11 @@
 /**
- * The automation detail pane: Overview · Queue · Schedule · Config · Events ·
- * Sessions (`docs/PAGE-TABS.md`) over one automation, re-homing both the
- * deleted monitor page (`automations/AutomationsTab.tsx`) and the old Settings
- * card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
- * (finish-line spec §4.4). `AutomationControls` (header actions) is a sibling
- * component, not rendered here — the page assembling this pane puts it beside
- * the automation's name.
+ * The automation detail pane: Overview · Needs you · Queue · Schedule ·
+ * Config · Events · Sessions (`docs/PAGE-TABS.md`) over one automation,
+ * re-homing both the deleted monitor page (`automations/AutomationsTab.tsx`)
+ * and the old Settings card (`components/AutomationCard.tsx`) behind
+ * `ui/Tabs` + URL state (finish-line spec §4.4). `AutomationControls`
+ * (header actions) is a sibling component, not rendered here — the page
+ * assembling this pane puts it beside the automation's name.
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -68,7 +68,10 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
         items={items.map((id) => ({
           id,
           label: AUTOMATION_TAB[id],
-          count: id === 'sessions' ? sessions.data?.length : undefined,
+          count: id === 'sessions' ? sessions.data?.length
+            : id === 'needs-you' ? a.actionableCount ?? undefined
+            : undefined,
+          attention: id === 'needs-you' && (a.actionableCount ?? 0) > 0,
         }))}
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
@@ -120,11 +123,12 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                   : a.status.counts.unassigned_in_flight > 0 && <p>{a.status.counts.unassigned_in_flight} in-flight work items are not assigned to a product.</p>}
               </div>
             )}
-            {/* The Overview's "needs you" notice: renders nothing when there is
-                nothing actionable (standard §5). */}
-            <AutomationActions automationId={a.id} enabled />
+            {/* The Overview's "needs you" notice (standard §5): a three-row
+                preview that renders nothing at zero and hands off to the tab. */}
+            <AutomationActions automationId={a.id} enabled variant="preview" onSeeAll={() => setTab('needs-you')} />
           </>
         )}
+        {tab === 'needs-you' && <AutomationActions automationId={a.id} enabled variant="full" />}
         {tab === 'queue' && (
           <>
             {a.status.products && a.status.products.length > 0 && (

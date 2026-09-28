@@ -199,6 +199,13 @@ test('registry mode effects and relationships explain the workflow', async ({ pa
   await expect(main.getByText('Configured mode: auto', { exact: true })).toHaveAttribute('title', /Repairs eligible PRs/)
   await expect(main.getByText(/auto — Repairs eligible PRs/)).toBeVisible()
   await expect(page.getByText('Execute and finish work')).toBeVisible()
+  // Every automation has a Needs you tab; the intercept answers [] for the
+  // actionable list, so the tab is a sentence, and the badge is the payload's
+  // actionableCount (2 on the fixture's PR doctor).
+  await page.getByRole('tab', { name: 'Needs you (2, needs attention)' }).click()
+  await expect(page).toHaveURL(/tab=needs-you$/)
+  await expect(page.getByText('Nothing needs you.')).toBeVisible()
+  await page.getByRole('tab', { name: 'Overview' }).click()
   await page.getByRole('link', { name: 'Backlog runner', exact: true }).click()
   await expect(page).toHaveURL(/delivery\/automations\/backlog-runner$/)
   await expect(page.getByText('Actionable count unknown', { exact: true })).toBeVisible()
