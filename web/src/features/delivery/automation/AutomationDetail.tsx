@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Automation, AutomationStatusProduct } from '@/api/automations'
-import { useAutomationSessions } from '@/api/hooks'
+import { useAutomationActionable, useAutomationSessions } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
 import { automationPath } from '../deliveryNavState'
@@ -61,6 +61,14 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // The Sessions tab's badge (standard §7): the same query `SessionsList`
   // reads, so opening that tab is not a second fetch.
   const sessions = useAutomationSessions(a.id)
+  // The Needs you tab's badge (F3): the same query key `AutomationActions`
+  // reads (below, and on the Overview preview), so this is not a second
+  // request either. The fetched list's length is what the tab and the rows
+  // underneath it actually agree on; `a.actionableCount` — a field on the
+  // separate `/automations` list payload — is only the fallback while that
+  // fetch has not answered yet.
+  const actionable = useAutomationActionable(a.id)
+  const needsYou = actionable.data?.length ?? a.actionableCount ?? undefined
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
   const tiles = countTiles(a.status.counts)
 
@@ -75,9 +83,9 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
           id,
           label: AUTOMATION_TAB[id],
           count: id === 'sessions' ? sessions.data?.length
-            : id === 'needs-you' ? a.actionableCount ?? undefined
+            : id === 'needs-you' ? needsYou
             : undefined,
-          attention: id === 'needs-you' && (a.actionableCount ?? 0) > 0,
+          attention: id === 'needs-you' && (needsYou ?? 0) > 0,
         }))}
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
