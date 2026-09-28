@@ -69,12 +69,22 @@ export function PageHeader({ title, documentTitle, back, meta, actions, classNam
   }, [token])
 
   return (
-    <header ref={clearRef} className={cn('shrink-0 flex items-center gap-3 px-4 py-3 md:px-6 md:py-4 border-b border-edge', className)}>
+    <header
+      ref={clearRef}
+      className={cn(
+        // Below `sm`, a Back link, a mode select and a switch on one row can
+        // collapse the title column to a sliver (measured: 79px at 375px,
+        // enough to truncate "PR Doctor") — so the row wraps and the Back
+        // link takes its own line there; from `sm` up it is one row again.
+        'shrink-0 flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 px-4 py-3 md:px-6 md:py-4 border-b border-edge',
+        className,
+      )}
+    >
       {back && (
         <Link
           to={back.to}
           aria-label={back.label}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 text-sm font-medium text-accent min-h-target hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="inline-flex shrink-0 basis-full sm:basis-auto items-center gap-1 rounded-md px-2 text-sm font-medium text-accent min-h-target hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <ArrowLeft size={16} aria-hidden="true" /> Back
         </Link>

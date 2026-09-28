@@ -43,6 +43,23 @@ describe('page primitives', () => {
     expect(back.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('PageHeader wraps the Back link onto its own row below sm, sharing one row from sm up (F2)', () => {
+    // jsdom has no layout engine, so a measured width (PR Doctor's title
+    // column was 79px at 375px before this fix) cannot be asserted here — the
+    // honest test is that the wrapping classes are present.
+    render(
+      <MemoryRouter>
+        <PageHeader title="PR Doctor" back={{ to: '/delivery', label: 'Back to Automations' }} />
+      </MemoryRouter>,
+    )
+    const back = screen.getByRole('link', { name: 'Back to Automations' })
+    expect(back.className).toContain('basis-full')
+    expect(back.className).toContain('sm:basis-auto')
+    const header = screen.getByRole('heading', { level: 1 }).closest('header')
+    expect(header).toHaveClass('flex-wrap')
+    expect(header).toHaveClass('sm:flex-nowrap')
+  })
+
   it('PageHeader renders no link without back', () => {
     render(<PageHeader title="Plain" />)
     expect(screen.queryByRole('link')).toBeNull()
