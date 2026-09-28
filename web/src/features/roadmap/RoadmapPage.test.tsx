@@ -347,6 +347,26 @@ describe('RoadmapPage — Inbox scope', () => {
       .toEqual(['Roadmap', 'Inbox', 'kindash'])
   })
 
+  it('below desktop an open proposal gets a Back link to the Inbox; desktop does not (F1)', () => {
+    // The shell's `roadmapOpenItem` resolver treats a proposal as an open
+    // item, so it hides `app.list` below desktop exactly as an open product
+    // does — the page must carry the same way back.
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(screen.getByRole('link', { name: 'Back to Inbox' })).toHaveAttribute('href', '/roadmap?scope=inbox')
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(screen.queryByRole('link', { name: 'Back to Inbox' })).toBeNull()
+  })
+
+  it('below desktop an open proposal narrowed to a product Backs to the narrowed Inbox (F1)', () => {
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap?scope=inbox&product=kindash&proposal=p1')
+    expect(screen.getByRole('link', { name: 'Back to Inbox' }))
+      .toHaveAttribute('href', '/roadmap?scope=inbox&product=kindash')
+  })
+
   it('offers no product actions in this scope', () => {
     mount('/roadmap?scope=inbox')
     expect(screen.queryByRole('button', { name: '+ Product' })).toBeNull()

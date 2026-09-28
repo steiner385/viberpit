@@ -233,8 +233,13 @@ function RoadmapPageContent() {
   // the list is beside the page and a Back link would be a second copy of it.
   // Never from kiosk: this section is `showInKiosk: false`.
   const { mode: viewportMode } = useViewport()
-  const back = opened && viewportMode !== 'desktop'
-    ? { to: roadmapPath('map'), label: `Back to ${ROADMAP.map}` }
+  // An open proposal hides `app.list` exactly as an open product/capability
+  // does (the shell's `roadmapOpenItem` resolver treats a proposal as an open
+  // item too), so it needs the same way back — to the Inbox rather than the map.
+  const back = (opened || proposalId) && viewportMode !== 'desktop'
+    ? inbox
+      ? { to: inboxPath({ product: inboxProduct }), label: `Back to ${ROADMAP.inbox}` }
+      : { to: roadmapPath('map'), label: `Back to ${ROADMAP.map}` }
     : undefined
 
   return (
