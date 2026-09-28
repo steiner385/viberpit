@@ -73,40 +73,19 @@ def test_registered_in_registry():
     assert "backlog-runner" in [a.id for a in registry.all()]
 
 
-def test_status_shows_blocked_count():
-    from types import SimpleNamespace
-
-    from server.automations.backlog_runner import BacklogRunner
-    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 3})
-    assert "3 blocked" in BacklogRunner().status(ctx).text
-
-
-def test_status_omits_blocked_when_zero():
-    from types import SimpleNamespace
-
-    from server.automations.backlog_runner import BacklogRunner
-    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
-    assert "blocked" not in BacklogRunner().status(ctx).text
-
-
-def test_status_shows_untriaged_count():
-    """A Ready-mode runner over an untriaged board must not read as "0 eligible"
-    with no explanation — the below-min-status skip gets its own gauge (#990)."""
+def test_status_carries_blocked_and_untriaged_in_counts_not_text():
+    """``blocked``/``untriaged`` used to be spelled out in ``status().text``; the
+    web now renders ``counts`` as stat tiles (spec 2026-09-28 §2), so the text
+    stays terse and the values only need to survive into ``counts``."""
     from types import SimpleNamespace
 
     from server.automations.backlog_runner import BacklogRunner
     ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 0,
-                                          "blocked": 0, "untriaged": 2})
-    assert "2 untriaged" in BacklogRunner().status(ctx).text
-
-
-def test_status_omits_untriaged_when_zero():
-    from types import SimpleNamespace
-
-    from server.automations.backlog_runner import BacklogRunner
-    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2,
-                                          "blocked": 0, "untriaged": 0})
-    assert "untriaged" not in BacklogRunner().status(ctx).text
+                                          "blocked": 3, "untriaged": 2})
+    status = BacklogRunner().status(ctx)
+    assert "blocked" not in status.text and "untriaged" not in status.text
+    assert status.counts["blocked"] == 3
+    assert status.counts["untriaged"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -221,12 +200,24 @@ def test_status_says_unavailable_when_the_count_read_failed():
 
 def test_status_without_the_products_cache_is_unchanged():
     """A tick that never reached the count seam leaves no ``backlog_products``;
-    the card must keep rendering the summary rather than claiming nothing is on."""
+    the card must keep rendering the summary rather than claiming nothing is on.
+    The counts themselves are tiles on the web (spec 2026-09-28 §2), so the text
+    names only the in-flight number and keeps every count in ``counts``."""
     from types import SimpleNamespace
 
     from server.automations.backlog_runner import BacklogRunner
     ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
-    assert BacklogRunner().status(ctx).text == "1 work in flight, 2 eligible"
+    status = BacklogRunner().status(ctx)
+    assert status.text == "1 work in flight"
+    assert status.counts == {"in_flight": 1, "eligible": 2, "blocked": 0}
+
+
+def test_status_names_missing_queue_counts_rather_than_hiding_them():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "needs_human": 3})
+    assert BacklogRunner().status(ctx).text == "1 work in flight · queue counts unavailable"
 
 
 # --------------------------------------------------------------------------- #
@@ -309,5 +300,5 @@ def test_parked_work_remains_visible_when_no_product_has_dispatch_on():
         backlog_products={})
     status = BacklogRunner().status(ctx)
     assert status.level == "warn"
-    assert "2 needs-human" in status.text
+    assert status.counts["needs_human"] == 2
     assert "idle" not in status.text
