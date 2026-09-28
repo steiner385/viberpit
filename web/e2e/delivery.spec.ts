@@ -182,7 +182,10 @@ test.describe('Delivery — phone', () => {
     await expect(list).toHaveCount(0)
     await expect(page.locator('[data-page-variant]')).toBeVisible()
 
-    await page.goBack()
+    // F5: exercise the real Back link (page-migration §2.2), not the browser's
+    // own history button — they are not the same affordance, and only one of
+    // them is what a reader without a hardware Back button actually has.
+    await page.getByRole('link', { name: 'Back to Automations' }).click()
     await expect.poll(() => pathOf(page)).toBe('/delivery')
     await expect(list).toBeVisible()
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0)
