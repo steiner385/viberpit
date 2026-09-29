@@ -47,6 +47,9 @@ export const actionBtn = cn(
 // eslint-disable-next-line react-refresh/only-export-components
 export const menuItem = cn(
   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+  // 44px rows on a coarse pointer (they measured 36px — 2026-09-29 critique),
+  // the same touch/hover split as `actionBtn` and `listControlClass`.
+  'min-h-11 [@media(hover:hover)]:min-h-0',
   'hover:bg-surface-raised',
   'focus-visible:outline-none focus-visible:bg-surface-raised',
 )
@@ -61,9 +64,17 @@ export interface CardMenuProps {
   label: string
   /** Items, given the `close` every one of them must call before acting. */
   children: (close: () => void) => ReactNode
+  /** Trigger glyph; defaults to the ⋯. A card's second menu (the quick-reply
+   *  chevron beside ✦) passes its own so both menus share ONE implementation
+   *  of outside-click / Escape / overlay registration. */
+  icon?: ReactNode
+  /** Trigger tooltip; defaults to "More actions". */
+  title?: string
+  /** Extra trigger classes (tone, a narrower width for a split-button chevron). */
+  triggerClassName?: string
 }
 
-export function CardMenu({ label, children }: CardMenuProps) {
+export function CardMenu({ label, children, icon, title = 'More actions', triggerClassName }: CardMenuProps) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -107,14 +118,14 @@ export function CardMenu({ label, children }: CardMenuProps) {
         ref={triggerRef}
         className={cn(actionBtn, 'text-ink-muted',
           'hover:bg-surface-raised focus-visible:ring-accent',
-          'active:bg-surface-raised')}
+          'active:bg-surface-raised', triggerClassName)}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="More actions"
+        title={title}
         onClick={() => setOpen((o) => !o)}
       >
-        <MoreVertical size={16} aria-hidden="true" />
+        {icon ?? <MoreVertical size={16} aria-hidden="true" />}
       </button>
       {open && (
         <div

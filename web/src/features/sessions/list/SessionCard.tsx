@@ -372,63 +372,83 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             </span>
           )}
 
-          {/* Actions — two permanent slots, identical on every device: Resume (✦)
-              and the unified ⋯ menu. Nothing appears or disappears on hover, so
-              the card's right edge is static. */}
+          {/* Actions — permanent slots, identical on every device: Resume (✦) with
+              its quick-reply chevron, and the ⋯ management menu. Nothing appears
+              or disappears on hover, so the card's right edge is static.
+
+              Two menus on purpose (2026-09-29 critique, P1): the unified ⋯ held
+              one-tap SENDS (four cached suggestions, four canned replies) in the
+              same 13-row list as Rename, Archive and Delete, at 36px a row. A
+              reply is a send — the composer already keeps those behind ✦'s own
+              chevron, so the card does the same, and ⋯ is management only. */}
           {!isBusy && (
-            <button
-              type="button"
-              className={cn(actionBtn, 'text-success',
-                'hover:bg-success-wash focus-visible:ring-success',
-                'active:bg-success-wash',
-                'disabled:opacity-60')}
-              aria-label={`Resume session ${session.name}`}
-              aria-busy={generating}
-              disabled={generating}
-              title="Resume — generate the next step with AI"
-              onClick={() => void handleSparkle()}
-            >
-              {generating
-                ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
-                : <Sparkles size={16} aria-hidden="true" />}
-            </button>
+            // flex-shrink-0: line 1's only flexing child is the open control, so
+            // the title takes the row's remainder (SessionCard.layout.test).
+            <div className="flex flex-shrink-0 items-center">
+              <button
+                type="button"
+                className={cn(actionBtn, 'text-success',
+                  'hover:bg-success-wash focus-visible:ring-success',
+                  'active:bg-success-wash',
+                  'disabled:opacity-60')}
+                aria-label={`Resume session ${session.name}`}
+                aria-busy={generating}
+                disabled={generating}
+                title="Resume — generate the next step with AI"
+                onClick={() => void handleSparkle()}
+              >
+                {generating
+                  ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+                  : <Sparkles size={16} aria-hidden="true" />}
+              </button>
+              <CardMenu
+                label={`Quick replies for session ${session.name}`}
+                title="Quick replies — one tap sends"
+                icon={<ChevronDown size={14} aria-hidden="true" />}
+                triggerClassName={cn('w-7 [@media(hover:hover)]:w-5 text-success',
+                  'hover:bg-success-wash focus-visible:ring-success active:bg-success-wash')}
+              >
+                {(close) => (
+                  <>
+                    {/* Name the consequence: every row below is a send. */}
+                    <div role="presentation" className="px-3 pb-1 pt-1.5 text-2xs uppercase tracking-wide text-ink-muted">
+                      Send a reply
+                    </div>
+                    {/* Dynamic cached suggestions first, canned replies below. */}
+                    {suggestions.map((s, i) => (
+                      <button
+                        key={`suggestion-${i}`}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { close(); onQuickResume(session.id, s) }}
+                        className={cn(menuItem, 'text-ink')}
+                      >
+                        <span className="truncate">{s}</span>
+                      </button>
+                    ))}
+                    {suggestions.length > 0 && (
+                      <div role="separator" className="my-1 border-t border-edge" />
+                    )}
+                    {QUICK_REPLIES.map((reply) => (
+                      <button
+                        key={reply}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { close(); onQuickResume(session.id, reply) }}
+                        className={cn(menuItem, 'text-ink')}
+                      >
+                        {reply}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </CardMenu>
+            </div>
           )}
           <CardMenu label={`More actions for session ${session.name}`}>
             {(close) => (
               <>
-                {/* Reply sections — only for a resumable (non-busy) session.
-                    Dynamic cached suggestions first, canned replies below. */}
-                {!isBusy && suggestions.map((s, i) => (
-                  <button
-                    key={`suggestion-${i}`}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => { close(); onQuickResume(session.id, s) }}
-                    className={cn('block w-full truncate px-3 py-2 text-left text-sm',
-                      'hover:bg-surface-raised')}
-                  >
-                    {s}
-                  </button>
-                ))}
-                {!isBusy && suggestions.length > 0 && (
-                  <div role="separator" className="my-1 border-t border-edge" />
-                )}
-                {!isBusy && QUICK_REPLIES.map((reply) => (
-                  <button
-                    key={reply}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => { close(); onQuickResume(session.id, reply) }}
-                    className={cn('block w-full truncate px-3 py-2 text-left text-sm',
-                      'hover:bg-surface-raised')}
-                  >
-                    {reply}
-                  </button>
-                ))}
-                {!isBusy && (
-                  <div role="separator" className="my-1 border-t border-edge" />
-                )}
-                {/* Management section — always available, busy or not. */}
+                {/* Management only — always available, busy or not. */}
                 {onToggleAutopilot && (
                   <button
                     type="button"
