@@ -293,37 +293,41 @@ describe('SessionListControls — clear filters', () => {
 
 // ── phone disclosure (2026-09-29 Sessions critique, P1) ──────────────────────
 //
-// On a 390px phone the strip was search + five selects stacked three rows deep:
-// y 74–345 of an 844px screen before the first session card at y 392 — 40% of
-// the operator's most-used view spent on controls they touch once a week. On
-// the `narrow` variant the search stays, and everything else folds behind one
-// "Filters" toggle that carries the active-filter count. jsdom applies no CSS,
-// so the assertions here are the contract (aria wiring, the variant classes,
-// the count), not the layout — the touch-targets e2e drives the real thing.
+// In a column under 28rem the strip was search + five selects stacked three or
+// four rows deep: y 74–345 of an 844px phone before the first session card at
+// y 392, and ~200px of the desktop sidebar. In a narrow strip the search stays,
+// and everything else folds behind one "Filters" toggle that carries the
+// active-filter count. The fold keys on the strip's own width (a `@container`
+// root + `@max-md:`), so phone and sidebar share one mechanism. jsdom applies
+// no CSS, so the assertions here are the contract (aria wiring, the variant
+// classes, the count), not the layout — the touch-targets e2e drives the real
+// thing at both a phone width and the desktop sidebar.
 
-describe('SessionListControls — phone disclosure', () => {
+describe('SessionListControls — narrow-strip disclosure', () => {
   const toggle = () => screen.getByRole('button', { name: /^Filters/ })
 
-  it('folds the filters and ordering behind one toggle, collapsed by default on narrow', async () => {
-    render(<FilterHarness />)
+  it('folds the filters and ordering behind one toggle, collapsed by default in a narrow strip', async () => {
+    const { container } = render(<FilterHarness />)
+    // The root is the container the fold measures — not the viewport.
+    expect(container.firstElementChild).toHaveClass('@container')
     const btn = toggle()
     expect(btn).toHaveAttribute('aria-expanded', 'false')
     const group = document.getElementById(btn.getAttribute('aria-controls')!)!
     expect(group).not.toBeNull()
     expect(within(group).getByLabelText('Status')).toBeInTheDocument()
     expect(within(group).getByLabelText('Sort by')).toBeInTheDocument()
-    // The variant class is the whole mechanism: hidden only under `narrow`,
-    // `contents` everywhere else so desktop's single wrapping row is untouched.
-    expect(group).toHaveClass('narrow:hidden')
+    // The variant class is the whole mechanism: hidden only under `@max-md`,
+    // `contents` everywhere else so a wide strip's single wrapping row is untouched.
+    expect(group).toHaveClass('@max-md:hidden')
     expect(group).toHaveClass('contents')
     await userEvent.click(btn)
     expect(btn).toHaveAttribute('aria-expanded', 'true')
-    expect(group).not.toHaveClass('narrow:hidden')
+    expect(group).not.toHaveClass('@max-md:hidden')
   })
 
-  it('the toggle itself only exists on narrow; search stays outside the fold', () => {
+  it('the toggle itself only exists in a narrow strip; search stays outside the fold', () => {
     render(<FilterHarness />)
-    expect(toggle()).toHaveClass('narrow:inline-flex')
+    expect(toggle()).toHaveClass('@max-md:inline-flex')
     expect(toggle()).toHaveClass('hidden')
     const group = document.getElementById(toggle().getAttribute('aria-controls')!)!
     expect(within(group).queryByLabelText('Search sessions')).toBeNull()

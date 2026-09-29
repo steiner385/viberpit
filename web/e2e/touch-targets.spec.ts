@@ -104,6 +104,14 @@ test.describe('Sessions list-controls touch targets — desktop mouse', () => {
     await interceptApi(page)
     await page.goto('/sessions')
 
+    // The desktop list column is a ~20rem sidebar, so its strip folds exactly
+    // like a phone's (the fold measures the strip, not the viewport): one row,
+    // the ordering one click away.
+    const strip = page.getByTestId('session-list-controls')
+    const folded = await targetBox(strip)
+    expect(folded.height).toBeLessThan(60)
+    await page.getByRole('button', { name: /^Filters/ }).click()
+
     const sortBy = await targetBox(page.getByLabel('Sort by'))
     // Not a regression threshold on the exact px — just proving the
     // touch-target floor does not leak into the dense desktop chrome.
