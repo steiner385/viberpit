@@ -158,6 +158,10 @@ test.describe('Sessions list at a normal phone height', () => {
     await expect(page.getByRole('link', { name: /^Active/ })).toBeVisible()
 
     await expect(page.getByTestId('session-list-controls')).toBeVisible()
+    // On a phone the ordering folds behind the "Filters" toggle (touch-targets
+    // spec) — the strip is present and one tap away, not shed.
+    await expect(page.getByLabel('Search sessions')).toBeVisible()
+    await page.getByRole('button', { name: /^Filters/ }).click()
     await expect(page.getByLabel('Sort by')).toBeVisible()
     // With the strip on screen the chrome must still fit — this is the case
     // that would catch a threshold set so low the squeeze is never relieved.

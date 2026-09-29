@@ -52,7 +52,11 @@ const targetBox = async (locator: ReturnType<Page['locator']>) => {
 test.describe('Sessions list-controls touch targets — phone, coarse pointer', () => {
   test.use({ viewport: { width: 393, height: 852 }, hasTouch: true, isMobile: true })
 
-  test('search input and ordering selects meet the 44px target', async ({ page }) => {
+  // On the `narrow` variant the filters and ordering fold behind one "Filters"
+  // toggle (2026-09-29 critique, P1); only search and the toggle are visible
+  // until it is opened, and the first session card sits within the first
+  // screen instead of below ~390px of controls.
+  test('folds filters behind a 44px "Filters" toggle; controls meet the target once opened', async ({ page }) => {
     await interceptApi(page)
     await page.goto('/sessions')
     await expect(page.getByTestId('session-list-controls')).toBeVisible()
@@ -60,6 +64,19 @@ test.describe('Sessions list-controls touch targets — phone, coarse pointer', 
     const search = await targetBox(page.getByLabel('Search sessions'))
     expect(search.height).toBeGreaterThanOrEqual(44)
 
+    const toggle = page.getByRole('button', { name: /^Filters/ })
+    expect((await targetBox(toggle)).height).toBeGreaterThanOrEqual(44)
+    await expect(page.getByLabel('Sort by')).toBeHidden()
+    // Folded, the strip is ONE row (search + toggle). It used to be three
+    // wrapped rows of selects — the strip's own height, not an absolute y,
+    // because the reconnect banner the mocked socket triggers shifts the page.
+    const strip = page.getByTestId('session-list-controls')
+    const folded = await targetBox(strip)
+    expect(folded.height).toBeLessThan(80)
+
+    await toggle.click()
+    const opened = await targetBox(strip)
+    expect(opened.height).toBeGreaterThan(folded.height + 80)
     const sortBy = await targetBox(page.getByLabel('Sort by'))
     expect(sortBy.height).toBeGreaterThanOrEqual(44)
 
@@ -70,7 +87,10 @@ test.describe('Sessions list-controls touch targets — phone, coarse pointer', 
   test('"Clear filters" meets the 44px target once a filter is applied', async ({ page }) => {
     await interceptApi(page)
     await page.goto('/sessions')
+    await page.getByRole('button', { name: /^Filters/ }).click()
     await page.getByLabel('Status', { exact: true }).selectOption({ label: 'Working' })
+    // The folded state still announces the filter.
+    await expect(page.getByRole('button', { name: 'Filters, 1 active' })).toBeVisible()
 
     const clear = await targetBox(page.getByRole('button', { name: 'Clear filters' }))
     expect(clear.height).toBeGreaterThanOrEqual(44)

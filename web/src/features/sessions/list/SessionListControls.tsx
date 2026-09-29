@@ -1,9 +1,11 @@
+import { useId, useState } from 'react'
+import { SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { listControlClass } from '@/ui/list/listControlStyles'
 import type { GroupBy, SortBy } from '@/session/ordering'
 import {
-  NO_FILTERS, isFiltered,
+  NO_FILTERS, isFiltered, activeFilterCount,
   type FilterOption, type FilterOptions, type ListFilters,
 } from '@/session/listFilters'
 
@@ -130,6 +132,16 @@ export function SessionListControls<G extends string = GroupBy, S extends string
   searchAriaLabel = 'Search sessions',
   filters,
 }: SessionListControlsProps<G, S>) {
+  // Phone disclosure (2026-09-29 critique, P1). On the `narrow` variant the strip
+  // was three wrapped rows — 40% of the screen before the first card. Search
+  // stays out (it is the one control used every visit); the filters and the
+  // ordering fold behind one toggle. Purely a CSS-variant fold: the group is
+  // `display: contents` everywhere else, so desktop's single wrapping row is
+  // byte-for-byte what it was, and jsdom tests see every control regardless.
+  // Hidden, not unmounted, so the selects keep their state across a fold.
+  const [open, setOpen] = useState(false)
+  const foldId = useId()
+  const active = filters ? activeFilterCount(filters.value) : 0
   return (
     <div className="flex items-center gap-3 flex-wrap">
       <ListSearchInput
@@ -137,8 +149,38 @@ export function SessionListControls<G extends string = GroupBy, S extends string
         onChange={onSearchChange}
         placeholder={searchPlaceholder}
         ariaLabel={searchAriaLabel}
-        className="w-44"
+        className="w-44 narrow:w-auto narrow:min-w-0 narrow:flex-1"
       />
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={foldId}
+        // The visible label is contained in the name (WCAG 2.5.3); the count
+        // rides along so a filter folded out of sight is still announced.
+        aria-label={active > 0 ? `Filters, ${active} active` : 'Filters'}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(listControlClass, 'hidden narrow:inline-flex items-center gap-1.5 font-medium')}
+      >
+        <SlidersHorizontal size={14} aria-hidden="true" />
+        Filters
+        {active > 0 && (
+          <span
+            aria-hidden="true"
+            className="rounded-full bg-accent px-1.5 text-xs font-semibold leading-4 text-accent-ink"
+          >
+            {active}
+          </span>
+        )}
+      </button>
+      <div
+        id={foldId}
+        className={cn(
+          'contents',
+          // Opened on narrow, the fold is its own full-width block under the
+          // search row rather than flowing into it and squeezing the search box.
+          open ? 'narrow:flex narrow:w-full narrow:flex-wrap narrow:items-center narrow:gap-3' : 'narrow:hidden',
+        )}
+      >
       {filters && (
         <>
           <FilterSelect
@@ -211,6 +253,7 @@ export function SessionListControls<G extends string = GroupBy, S extends string
           ))}
         </select>
       </label>
+      </div>
     </div>
   )
 }

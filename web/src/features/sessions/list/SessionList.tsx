@@ -233,7 +233,9 @@ export function SessionList({
             type="button"
             onClick={handleArchiveComplete}
             disabled={bulkArchive.isPending}
-            className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink py-1"
+            // Same touch/hover split as `listControlClass`: 44px on a coarse
+            // pointer (these were 24px — 2026-09-29 critique), dense on a mouse.
+            className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink py-1 min-h-11 [@media(hover:hover)]:min-h-0"
           >
             <Archive size={12} aria-hidden="true" />
             Archive complete ({archivableCompleteCount})
@@ -242,7 +244,7 @@ export function SessionList({
         <button
           type="button"
           onClick={() => { setSelectMode((m) => !m); if (selectMode) clearSelection() }}
-          className="text-xs text-ink-muted hover:text-ink py-1"
+          className="text-xs text-ink-muted hover:text-ink py-1 px-2 min-h-11 [@media(hover:hover)]:min-h-0"
           aria-pressed={selectMode}
         >
           {selectMode ? 'Cancel' : 'Select'}
