@@ -282,7 +282,8 @@ export function useSessionRuntime(
   const onDecision = useCallback(
     (permId: string, decision: 'allow' | 'deny' | 'always') => {
       if (permissionResponse(sessionId, permId, decision)) {
-        dispatch({ type: '_resolvePermission', permId })
+        // Carry the decision so the reducer leaves a record where the card was.
+        dispatch({ type: '_resolvePermission', permId, decision })
       }
     },
     [sessionId, permissionResponse],

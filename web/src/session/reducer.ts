@@ -4,6 +4,7 @@ import type {
 } from './events'
 import type { ContextUsageExact } from '@/lib/contextWindow'
 import { type PromptStage, advancesStage, canStall } from './promptStage'
+import { toolLabel } from './toolSummary'
 import { clientLogger } from '@/obs/logger'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
@@ -242,7 +243,9 @@ function num(v: unknown): number {
 // ── Local (UI-only) synthetic actions ────────────────────────────────────────
 
 export type LocalAction =
-  | { type: '_resolvePermission'; permId: string }
+  // `decision` present = THIS user decided (confirmed send): clear the card and
+  // leave a notice saying what was granted. Absent = clear silently.
+  | { type: '_resolvePermission'; permId: string; decision?: 'allow' | 'deny' | 'always' }
   | { type: '_resolveQuestion';   questionId: string; selected?: string[] }
   | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
@@ -438,6 +441,40 @@ function mapSubThreadTurns(subAgents: Record<string, SubThread>, fn: (turns: Tur
  * `appendCardToThread`) and both copies share the permId. Returns the same
  * state reference when no matching block exists anywhere.
  */
+/** The main-turn copy of an open permission, or null. */
+function findPermissionBlock(state: TranscriptState, permId: string): Extract<Block, { kind: 'permission' }> | null {
+  for (const turn of state.turns) {
+    for (const b of turn.blocks) {
+      if (b.kind === 'permission' && b.permId === permId) return b
+    }
+  }
+  return null
+}
+
+/**
+ * The one line a decided permission leaves behind. The card vanished on Allow /
+ * Deny with no echo of what was granted (2026-09-29 critique, P0) — this is the
+ * record. Plan gates speak in plan terms; everything else names the request the
+ * way the card did, so the echo matches what was read.
+ */
+function permissionDecisionText(
+  block: Extract<Block, { kind: 'permission' }>, decision: 'allow' | 'deny' | 'always',
+): string {
+  if (block.plan) return decision === 'deny' ? 'Kept planning' : 'Approved plan — running'
+  const verb = decision === 'allow' ? 'Allowed' : decision === 'deny' ? 'Denied' : 'Always allowed'
+  return `${verb} ${toolLabel(block.tool, block.toolKind, block.input)}`
+}
+
+/** Append a client-local transient notice as its own assistant turn ("Model → sonnet"). */
+function appendNotice(state: TranscriptState, text: string): TranscriptState {
+  const id = `notice:${state.turns.length}`
+  return {
+    ...state,
+    turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text }] }],
+    openBlockId: null,
+  }
+}
+
 function removePermissionBlock(state: TranscriptState, permId: string): TranscriptState {
   const strip = (turns: Turn[]): Turn[] => {
     let changed = false
@@ -1381,7 +1418,11 @@ export function transcriptReducer(
 
     case '_resolvePermission': {
       // Optimistic local clear on a confirmed decision send — see removePermissionBlock.
-      return removePermissionBlock(state, ev.permId)
+      // Look the block up BEFORE clearing: the echo names the request the card showed.
+      const block = ev.decision ? findPermissionBlock(state, ev.permId) : null
+      const cleared = removePermissionBlock(state, ev.permId)
+      if (!block || !ev.decision) return cleared
+      return appendNotice(cleared, permissionDecisionText(block, ev.decision))
     }
 
     case '_rotation': {
@@ -1398,14 +1439,8 @@ export function transcriptReducer(
       return resolveQuestionInPlace(state, ev.questionId, ev.selected ?? [])
     }
 
-    case '_notice': {
-      const id = `notice:${state.turns.length}`
-      return {
-        ...state,
-        turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
-        openBlockId: null,
-      }
-    }
+    case '_notice':
+      return appendNotice(state, ev.text)
 
     case '_clearError': {
       // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
