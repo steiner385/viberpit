@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { bindingWindow } from '@/lib/usageWindows'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
-import { TIER_ACCENT } from '@/session/statusTier'
+import { TIER_ACCENT, type StatusTier } from '@/session/statusTier'
 import { sessionTriage } from '@/session/triageTier'
 import { useSessionPromptFlight } from '@/lib/promptFlight'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
@@ -28,6 +28,13 @@ import type { Session, Account } from '@/api/types'
 // Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
 // used — narrow cards keep the triage essentials and nothing else.
 const markerBase = 'hidden @md:inline-flex items-center flex-shrink-0'
+
+// Tiers at which the card offers no way to SEND (✦, quick replies, `c`): a live
+// turn, a session parked in the background (an armed Monitor/wakeup, or parked
+// on usage — `waiting_external`/`queued`/usage-stalled), and a host that cannot
+// honour a send. Everything else — calm, your-turn, needs-you, failed, complete
+// — may be resumed. See `canResume` below.
+const NO_RESUME_TIERS: ReadonlySet<StatusTier> = new Set<StatusTier>(['busy', 'waiting', 'unreachable'])
 
 // Provenance labels come from the server (`originLabel` / `assistedByLabel`,
 // the automation registry's display names) — the card keeps no id→name map of
@@ -117,6 +124,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const presentation = sessionTriage(session, promptStage)
   const accent = TIER_ACCENT[presentation.tier]
   const isBusy = presentation.tier === 'busy'
+  // Whether ✦, the quick replies and the `c` shortcut may SEND into this session.
+  // Gated on the tier, not on `busy` alone (2026-09-29 re-critique, P1): a
+  // session parked in the background (`waiting` — an armed Monitor/wakeup, or
+  // parked on usage) is deliberately not taking input, and an `unreachable`
+  // one sits on a host that cannot honour a send. Management (⋯) stays.
+  const canResume = !NO_RESUME_TIERS.has(presentation.tier)
   // The session's own one-line ask, shown only while it IS handed back (#2321).
   // Status-gated rather than field-gated for the same reason prResolution is: the
   // column survives a resume, so the field alone would strand a stale ask on a
@@ -141,7 +154,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // When the model returns nothing we surface a hint instead of silently sending
   // "continue"; the menu's canned replies are the manual escape hatch.
   async function handleSparkle() {
-    if (!onGenerateSuggestion || generating) return
+    // `canResume` here too: the list-mode `c` shortcut reaches this directly.
+    if (!onGenerateSuggestion || generating || !canResume) return
     setGenerating(true)
     try {
       const items = await onGenerateSuggestion(session.id)
@@ -178,7 +192,43 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // The dot pulse and the autopilot marker degrade to static glyphs under
   // reduced-motion. (CardFrame reads the same `reducedMotion` field for the
   // swipe transition — one subscription in useViewport, two readers.)
-  const reduceMotion = useViewport().reducedMotion
+  const { reducedMotion: reduceMotion, coarsePointer } = useViewport()
+
+  // The reply rows: cached suggestions first, canned replies below. One
+  // definition for both shapes of the reply menu (the desktop chevron, the
+  // touch ✦), so the two can never offer different sets.
+  const replyRows = (close: () => void) => (
+    <>
+      {suggestions.map((s, i) => (
+        <button
+          key={`suggestion-${i}`}
+          type="button"
+          role="menuitem"
+          onClick={() => { close(); onQuickResume(session.id, s) }}
+          className={cn(menuItem, 'text-ink')}
+        >
+          <span className="truncate">{s}</span>
+        </button>
+      ))}
+      {suggestions.length > 0 && (
+        <div role="separator" className="my-1 border-t border-edge" />
+      )}
+      {QUICK_REPLIES.map((reply) => (
+        <button
+          key={reply}
+          type="button"
+          role="menuitem"
+          onClick={() => { close(); onQuickResume(session.id, reply) }}
+          className={cn(menuItem, 'text-ink')}
+        >
+          {reply}
+        </button>
+      ))}
+    </>
+  )
+  const sparkleGlyph = generating
+    ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+    : <Sparkles size={16} aria-hidden="true" />
 
   function handleKeyDown(e: React.KeyboardEvent) {
     // The registry's key→action table for a focused ROW, through the one
@@ -381,7 +431,39 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               same 13-row list as Rename, Archive and Delete, at 36px a row. A
               reply is a send — the composer already keeps those behind ✦'s own
               chevron, so the card does the same, and ⋯ is management only. */}
-          {!isBusy && (
+          {canResume && coarsePointer && (
+            // Touch: a bare ✦ is 44px of one-tap send 8px from the title tap, so
+            // here ✦ IS the menu — "Generate next step" first, then the replies.
+            // A send is always a second, named tap.
+            <CardMenu
+              label={`Resume session ${session.name}`}
+              title="Resume — pick what to send"
+              icon={sparkleGlyph}
+              triggerClassName={cn('text-success',
+                'hover:bg-success-wash focus-visible:ring-success active:bg-success-wash')}
+            >
+              {(close) => (
+                <>
+                  <div role="presentation" className="px-3 pb-1 pt-1.5 text-2xs uppercase tracking-wide text-ink-muted">
+                    Send a reply
+                  </div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={generating}
+                    onClick={() => { close(); void handleSparkle() }}
+                    className={cn(menuItem, 'font-medium text-success')}
+                  >
+                    <Sparkles size={16} aria-hidden="true" />
+                    Generate next step
+                  </button>
+                  <div role="separator" className="my-1 border-t border-edge" />
+                  {replyRows(close)}
+                </>
+              )}
+            </CardMenu>
+          )}
+          {canResume && !coarsePointer && (
             // flex-shrink-0: line 1's only flexing child is the open control, so
             // the title takes the row's remainder (SessionCard.layout.test).
             <div className="flex flex-shrink-0 items-center">
@@ -397,9 +479,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 title="Resume — generate the next step with AI"
                 onClick={() => void handleSparkle()}
               >
-                {generating
-                  ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
-                  : <Sparkles size={16} aria-hidden="true" />}
+                {sparkleGlyph}
               </button>
               <CardMenu
                 label={`Quick replies for session ${session.name}`}
@@ -414,32 +494,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                     <div role="presentation" className="px-3 pb-1 pt-1.5 text-2xs uppercase tracking-wide text-ink-muted">
                       Send a reply
                     </div>
-                    {/* Dynamic cached suggestions first, canned replies below. */}
-                    {suggestions.map((s, i) => (
-                      <button
-                        key={`suggestion-${i}`}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => { close(); onQuickResume(session.id, s) }}
-                        className={cn(menuItem, 'text-ink')}
-                      >
-                        <span className="truncate">{s}</span>
-                      </button>
-                    ))}
-                    {suggestions.length > 0 && (
-                      <div role="separator" className="my-1 border-t border-edge" />
-                    )}
-                    {QUICK_REPLIES.map((reply) => (
-                      <button
-                        key={reply}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => { close(); onQuickResume(session.id, reply) }}
-                        className={cn(menuItem, 'text-ink')}
-                      >
-                        {reply}
-                      </button>
-                    ))}
+                    {replyRows(close)}
                   </>
                 )}
               </CardMenu>
