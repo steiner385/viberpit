@@ -27,7 +27,7 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
-import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities } from '@/api/hooks'
+import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { ExportMenu } from './ExportMenu'
 import { ModelSwitchDialog } from '@/features/sessions/panels/ModelSwitchDialog'
@@ -51,6 +51,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const caps = useEngineCapabilities(sessionRecord?.engine)
   const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
   const setAccountPin = useSetAccountPin()
+  // "Mark complete" / "Not done" on a handed-back session — the same mutation the
+  // list card offers, so the decision can be taken beside the transcript evidence.
+  const resolveSuspected = useResolveSuspectedComplete()
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -245,22 +248,24 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
               />
             )}
 
-            {/* Pinned "Your turn" call-to-action for a finished turn. The session
-                list flags these sessions loudly, but inside the session the only
-                cue was a calm gray pill and an ask buried in transcript prose —
-                so pin an explicit CTA with the cached suggestions as one-tap
-                replies (see YourTurnPanel). */}
+            {/* Pinned call-to-action for a finished turn ('done') or a hand-back
+                ('handed_back'). The session list flags these sessions loudly, but
+                inside the session the only cue was a calm gray pill (or an amber
+                one) and an ask buried in transcript prose — so pin an explicit CTA
+                with the cached suggestions as one-tap replies, and for a hand-back
+                lead with the session's own reason (see YourTurnPanel). */}
             <YourTurnPanel
               statusState={rt.state.status.state}
-              // A detached done session never received a live `suggestions` WS
-              // event, so runtime state is empty — fall back to the record cache
-              // (the same source the session card's chips render from).
-              suggestions={
-                rt.state.latestSuggestions.length > 0
-                  ? rt.state.latestSuggestions
-                  : sessionRecord?.latestSuggestions ?? []
-              }
+              suggestions={rt.suggestions}
               onPrompt={rt.onPrompt}
+              // Both read from the record (server source of truth for the hand-back
+              // row); the panel itself gates them on the live status.
+              handBackReason={sessionRecord?.handBackReason}
+              suspectedCompleteReason={sessionRecord?.suspectedCompleteReason}
+              onResolveSuspectedComplete={(decision) =>
+                resolveSuspected.mutate({ id: rt.sessionId, decision })
+              }
+              resolvePending={resolveSuspected.isPending}
             />
 
             {/* sr-only aria-live mirror (owns its own ref + effect) */}

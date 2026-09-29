@@ -58,7 +58,7 @@ export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideMo
       commands={rt.commands}
       onCommand={rt.onCommand}
       autoFocusKey={rt.sessionId}
-      suggestions={rt.state.latestSuggestions}
+      suggestions={rt.suggestions}
       onRequestSuggestions={() => genSuggestions.mutateAsync({ id: rt.sessionId })}
       history={history}
       sessionId={rt.sessionId}

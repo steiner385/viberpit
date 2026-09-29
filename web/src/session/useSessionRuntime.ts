@@ -60,6 +60,13 @@ export interface SessionRuntime {
    *  snapshot has no windows, so it reads as null here). */
   quota: UsageWindow[] | null
   contextPct: number | null
+  /** The next-prompt suggestions every reply affordance renders from — the ghost
+   *  placeholder, the quick-reply menu, the pinned Your-turn/Handed-back chips.
+   *  Live `suggestions` events win; a detached session never received one, so
+   *  it falls back to the record cache (`Session.latestSuggestions`, the same
+   *  source the list card's chips use). ONE derivation, here, so no consumer can
+   *  show a different set than its neighbour (2026-09-29 critique, H4). */
+  suggestions: string[]
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
   /** True when at least one open permission block is pending (permission blocks only). */
@@ -523,6 +530,11 @@ export function useSessionRuntime(
   // Sub-agent chips derive from the visible turns so they hold steady through a heal.
   const subAgents = selectSubAgents(viewState.turns, viewState.subAgents)
 
+  // See the interface doc: live event first, record cache second, one place.
+  const suggestions = state.latestSuggestions.length > 0
+    ? state.latestSuggestions
+    : sessionRecord?.latestSuggestions ?? []
+
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
   const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
 
@@ -561,6 +573,7 @@ export function useSessionRuntime(
     liveModel,
     quota,
     contextPct,
+    suggestions,
     subAgents,
     hasOpenAction,
     hasOpenPermission,

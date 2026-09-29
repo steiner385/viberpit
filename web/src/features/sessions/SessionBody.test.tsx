@@ -32,6 +32,8 @@ vi.mock('@/api/hooks', () => ({
     )?.capabilities,
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  // "Mark complete" / "Not done" on a handed-back session's pinned panel.
+  useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -60,6 +62,7 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
       title: null, model: null, usage: null,
       replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
     },
+    suggestions: [],
     mode: 'interactive',
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
@@ -87,6 +90,7 @@ function makeEmptyRuntime(): SessionRuntime {
       title: null, model: null, usage: null,
       replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
     },
+    suggestions: [],
     mode: 'interactive',
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
@@ -133,27 +137,41 @@ describe('SessionBody', () => {
   })
 
   it('pins the Your-turn panel with one-tap suggestion replies when the status is done', () => {
+    // `rt.suggestions` is the runtime's one derivation (live event, else the record
+    // cache — see useSessionRuntime.test "suggestions"); the panel reads only that.
     const rt = makeRuntime([])
     rt.state.status = { state: 'done', count: 0 }
-    rt.state.latestSuggestions = ['Run the tests']
+    rt.suggestions = ['Run the tests']
     renderBody(<SessionBody rt={rt} />)
     expect(screen.getByTestId('your-turn-panel')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run the tests' }))
     expect(rt.onPrompt).toHaveBeenCalledWith('Run the tests', [])
   })
 
-  it('falls back to the session record suggestions when the runtime has none (detached session)', () => {
-    // A detached done session never received a live `suggestions` WS event, so
-    // rt.state.latestSuggestions is empty — but the record cache (what the
-    // session card's chips use) still has them.
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [{ id: 's1', status: 'done', latestSuggestions: ['Proceed with Phase B'] }],
-    } as ReturnType<typeof hooks.useSessions>)
+  it('pins the hand-back reason, the suggestions and Mark complete for a handed-back session', () => {
+    // The critique's P0: a handed-back session (the only needs-you state with no
+    // card to answer) opened onto raw transcript with the ask at the bottom. The
+    // record carries the session's own sentence and the server's "likely
+    // complete" hint; the runtime carries the suggestions.
+    const mutate = vi.fn()
+    vi.mocked(hooks.useResolveSuspectedComplete).mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useResolveSuspectedComplete>,
+    )
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([makeSession({
+      id: 's1', status: 'handed_back',
+      handBackReason: 'Say go and I will start document',
+      suspectedCompleteReason: 'PR #2522 merged',
+    })]))
     const rt = makeRuntime([])
-    rt.state.status = { state: 'done', count: 0 }
-    rt.state.latestSuggestions = []
+    rt.state.status = { state: 'handed_back', count: 0 }
+    rt.suggestions = ['Go', 'Skip document for now']
     renderBody(<SessionBody rt={rt} />)
-    expect(screen.getByRole('button', { name: 'Proceed with Phase B' })).toBeInTheDocument()
+    const region = screen.getByRole('region', { name: /handed back/i })
+    expect(region).toHaveTextContent('Say go and I will start document')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip document for now' }))
+    expect(rt.onPrompt).toHaveBeenCalledWith('Skip document for now', [])
+    fireEvent.click(screen.getByRole('button', { name: /mark complete/i }))
+    expect(mutate).toHaveBeenCalledWith({ id: 's1', decision: 'confirm' })
   })
 
   it('does not pin the Your-turn panel while a turn is running', () => {

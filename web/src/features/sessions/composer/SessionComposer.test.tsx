@@ -29,21 +29,22 @@ function fakeRuntime(over: Partial<SessionRuntime> = {}): SessionRuntime {
     onCommand: vi.fn(),
     commands: [],
     chatArmed: false,
+    suggestions: [],
     state: {
       status: { state: 'idle', count: 0 },
       queued: [],
       turns: [],
-      latestSuggestions: [],
     },
     ...over,
   } as unknown as SessionRuntime
 }
 
 describe('SessionComposer (shared mobile/desktop wiring)', () => {
-  it('forwards latestSuggestions so the ghost renders', () => {
-    const rt = fakeRuntime({
-      state: { status: { state: 'idle', count: 0 }, queued: [], turns: [], latestSuggestions: ['Run the tests'] },
-    } as unknown as Partial<SessionRuntime>)
+  it('forwards the runtime suggestions so the ghost renders', () => {
+    // `rt.suggestions` is the runtime's ONE derivation (live event, else the record
+    // cache) — the composer must read that, never `state.latestSuggestions`, or a
+    // detached session's quick-reply menu shows a different set than its card.
+    const rt = fakeRuntime({ suggestions: ['Run the tests'] })
     renderComposer(rt)
     expect(screen.getByTestId('ghost-suggestion')).toHaveTextContent('Run the tests')
   })
@@ -75,7 +76,7 @@ describe('SessionComposer interrupt-and-send wiring', () => {
     const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
     const rt = fakeRuntime({
       onInterruptAndPrompt,
-      state: { status: { state: 'in_progress', count: 0 }, queued: [], turns: [], latestSuggestions: [] },
+      state: { status: { state: 'in_progress', count: 0 }, queued: [], turns: [] },
     } as unknown as Partial<SessionRuntime>)
     renderComposer(rt)
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
