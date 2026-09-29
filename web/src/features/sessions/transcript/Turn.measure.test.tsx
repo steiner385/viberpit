@@ -12,12 +12,14 @@ describe('Turn — reading measure', () => {
     blocks: [{ kind: 'text', id: 'b1', text: 'A paragraph of assistant prose.' }],
   }
 
-  it('caps the turn column at 88ch, left-aligned', () => {
+  it('caps the turn column at 70ch (≈ 80–85 real characters), left-aligned', () => {
+    // 88ch still measured ~104 characters: `ch` is the width of "0", running
+    // text is narrower. 70ch lands in the craft-floor band.
     const { container } = render(
       <Turn turn={turn} isLastTurn toolDetailMode="auto" thinkingCollapsed onAnswer={vi.fn()} />,
     )
     const wrapper = container.firstElementChild as HTMLElement
-    expect(wrapper.className).toMatch(/max-w-\[88ch\]/)
+    expect(wrapper.className).toMatch(/max-w-\[70ch\]/)
     expect(wrapper.className).not.toMatch(/mx-auto/)
   })
 })

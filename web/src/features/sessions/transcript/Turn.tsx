@@ -60,14 +60,16 @@ export const Turn = memo(function Turn({
   if (items.length === 0) return null
 
   return (
-    // `max-w-[88ch]`: a reading measure. In a wide pane assistant prose ran ~139
+    // `max-w-[70ch]`: a reading measure. In a wide pane assistant prose ran ~139
     // characters a line (976px at 14px — 2026-09-29 critique, detector
-    // `line-length`); 88ch keeps code blocks and tool cards roomy while the
-    // paragraphs stay scannable. Left-aligned, not centred: an Operate surface
-    // reads top-left, and the composer beneath spans the pane either way. A
-    // no-op wherever the pane is already narrower (phone, the assistant drawer,
-    // a turn nested inside a sub-agent card).
-    <div className="max-w-[88ch] px-4 py-2">
+    // `line-length`). The first cap, 88ch, still measured 725px ≈ 104 real
+    // characters: a `ch` is the width of "0" (~8.2px in this face) while running
+    // text averages ~6.9px, so 70ch ≈ 574px ≈ 80–85 characters — the top of the
+    // 65–75ch craft-floor band once code blocks and tool cards are allowed for.
+    // Left-aligned, not centred: an Operate surface reads top-left, and the
+    // composer beneath spans the pane either way. A no-op wherever the pane is
+    // already narrower (phone, the assistant drawer, a nested sub-agent turn).
+    <div className="max-w-[70ch] px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only
