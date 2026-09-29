@@ -9,8 +9,8 @@
  * pure presentation — including the capability flags, which the caller reads
  * from the server's per-engine capability report rather than inferring here.
  */
-import { Fragment, useState } from 'react'
-import { Pin } from 'lucide-react'
+import { Fragment, useId, useState } from 'react'
+import { Pin, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
@@ -95,16 +95,54 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
   const [open, setOpen] = useState(false)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
+  // Narrow-strip fold (2026-09-29 re-critique, P2). In a pane under 28rem this
+  // strip wrapped three rows deep — 114px of a phone's 844 before the transcript,
+  // on top of the TopBar and the header. The live status, export, the session
+  // actions and the sub-agent toggle stay on the one visible row; the identity
+  // and settings readouts (account, model, effort, host, display, ctx, quota,
+  // plan) fold behind a "Details" toggle. Same mechanism as the list controls'
+  // fold: this strip is a `@container`, `@max-md:` folds, `display: contents`
+  // everywhere else so a wide pane's single row is untouched. Hidden, not
+  // unmounted: the selects keep their state and jsdom tests see every control.
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailsId = useId()
 
   return (
     <div className="relative">
       <div
         className={cn(
-          'flex items-center gap-x-3 gap-y-1 flex-wrap px-3 py-1',
+          '@container flex items-center gap-x-3 gap-y-1 flex-wrap px-3 py-1',
           'bg-surface-raised border-b border-edge',
           'text-xs text-ink-muted',
         )}
       >
+        <button
+          type="button"
+          aria-expanded={detailsOpen}
+          aria-controls={detailsId}
+          // "Session details": the transcript's tool cards have their own
+          // "Details" toggles, so a bare name would be one of several.
+          aria-label="Session details"
+          onClick={() => setDetailsOpen((o) => !o)}
+          className={cn(
+            'hidden @max-md:inline-flex items-center gap-1 rounded px-2 py-0.5 min-h-7',
+            'border border-edge-strong font-medium text-ink-muted',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+          )}
+        >
+          <SlidersHorizontal size={12} aria-hidden="true" />
+          Details
+        </button>
+        <div
+          id={detailsId}
+          data-testid="session-meta-details"
+          className={cn(
+            'contents',
+            detailsOpen
+              ? '@max-md:flex @max-md:w-full @max-md:flex-wrap @max-md:items-center @max-md:gap-x-3 @max-md:gap-y-1'
+              : '@max-md:hidden',
+          )}
+        >
         {/* Agent (engine). Shown only when it is not the default Claude Code
             engine — `engineBadge` owns that rule for every identity surface. */}
         {agentBadge && (
@@ -277,9 +315,11 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
         {pendingMode && (
           <span role="status">{pendingMode === 'plan' ? 'Plan pending' : pendingMode === 'default' ? 'Exit plan pending' : 'Mode change pending'}</span>
         )}
+        </div>
 
         {/* Right cluster: live status (folded-in StatusBar) + export + session
-            actions (archive/⋮) + sub-agents toggle */}
+            actions (archive/⋮) + sub-agents toggle. Outside the fold: this is
+            what a narrow pane keeps on its one visible row. */}
         {(statusSlot || exportSlot || actionsSlot || agentCount > 0) && (
           <div className="ml-auto flex items-center gap-2">
             {statusSlot}
