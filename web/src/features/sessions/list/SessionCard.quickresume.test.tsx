@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SessionCard } from './SessionCard'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -140,6 +140,82 @@ describe('SessionCard — quick-resume sparkle button', () => {
     expect(screen.queryByRole('menuitem', { name: 'continue' })).not.toBeInTheDocument()
     // Management actions remain reachable mid-turn.
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+  })
+
+  // 2026-09-29 re-critique, P1: the send affordances were gated on the `busy`
+  // tier only, so a session parked in the background (`waiting_external` — "I'm
+  // waiting for the deploy…") still offered ✦, the quick replies and `c`: one tap
+  // sent a generated prompt into an agent that was deliberately waiting.
+  describe('no sends into a waiting session', () => {
+    it('a waiting_external session has no Resume button and no quick-replies menu; ⋯ stays', () => {
+      renderCard({ session: mkSession({ status: 'waiting_external', latestSuggestions: ['First step'] }), onQuickResume: noop })
+      expect(screen.queryByRole('button', { name: /resume/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /quick replies/i })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+      expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+    })
+
+    it('an unreachable session (dead host) offers no send either — the daemon cannot honour it', () => {
+      renderCard({ session: mkSession({ status: 'done', liveness: 'dead' }), onQuickResume: noop })
+      expect(screen.queryByRole('button', { name: /resume/i })).toBeNull()
+    })
+
+    it('a waiting session ignores the `c` list-mode shortcut', async () => {
+      const onQuickResume = vi.fn()
+      const onGenerateSuggestion = vi.fn().mockResolvedValue(['Generated'])
+      render(
+        <ViewportProvider kiosk={null}>
+          <SessionCard
+            session={mkSession({ status: 'waiting_external' })}
+            account={undefined} selected listMode
+            onOpen={noop} onRename={noop} onClose={noop} onDelete={noop}
+            onQuickResume={onQuickResume} onGenerateSuggestion={onGenerateSuggestion}
+          />
+        </ViewportProvider>,
+      )
+      fireEvent.keyDown(screen.getByRole('button', { name: /open session/i }), { key: 'c' })
+      await new Promise((r) => setTimeout(r, 0))
+      expect(onGenerateSuggestion).not.toHaveBeenCalled()
+      expect(onQuickResume).not.toHaveBeenCalled()
+    })
+  })
+
+  // On a coarse pointer a bare ✦ is 44px of one-tap send sitting 8px from the
+  // title tap. There, ✦ opens the reply menu instead, with "Generate next step"
+  // as its first row — a send is always a second, named tap.
+  describe('coarse pointer: ✦ is the menu, not the send', () => {
+    const realMatchMedia = window.matchMedia
+    beforeEach(() => {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true, configurable: true,
+        value: vi.fn().mockImplementation((query: string) => ({
+          matches: query === '(pointer: coarse)', media: query,
+          addEventListener: vi.fn(), removeEventListener: vi.fn(),
+          addListener: vi.fn(), removeListener: vi.fn(), onchange: null, dispatchEvent: vi.fn(),
+        })),
+      })
+    })
+    afterEach(() => {
+      Object.defineProperty(window, 'matchMedia', { writable: true, configurable: true, value: realMatchMedia })
+    })
+
+    it('tapping ✦ opens the reply menu instead of sending; its first row generates', async () => {
+      const onQuickResume = vi.fn()
+      const onGenerateSuggestion = vi.fn().mockResolvedValue(['Generated next step'])
+      renderCard({ session: mkSession({ status: 'done', latestSuggestions: ['Cached one'] }), onQuickResume, onGenerateSuggestion })
+      const resume = screen.getByRole('button', { name: /resume session/i })
+      expect(resume).toHaveAttribute('aria-haspopup', 'menu')
+      // No separate chevron: ✦ is the one trigger on touch.
+      expect(screen.queryByRole('button', { name: /quick replies for/i })).toBeNull()
+      fireEvent.click(resume)
+      expect(onGenerateSuggestion).not.toHaveBeenCalled()
+      const items = screen.getAllByRole('menuitem').map((el) => el.textContent?.trim())
+      expect(items[0]).toMatch(/generate next step/i)
+      expect(items).toContain('Cached one')
+      expect(items).toContain('continue')
+      fireEvent.click(screen.getByRole('menuitem', { name: /generate next step/i }))
+      await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step'))
+    })
   })
 
   it('menu rows carry the 44px coarse-pointer floor', () => {

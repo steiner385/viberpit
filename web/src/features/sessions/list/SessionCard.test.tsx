@@ -10,7 +10,10 @@ function render(ui: ReactElement) {
   return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
 }
 
-const SESSION = { id: 's1', name: 'Alpha', accountName: 'acct', status: 'ready', updatedAt: null, subAgents: [], latestSuggestions: [] } as unknown as Session
+// `idle`, a real member of the status vocabulary: the old `'ready'` fell to the
+// "Unknown" fallback pill, whose `waiting` tier now (correctly) offers no send —
+// so `c` would generate nothing for a status the client does not recognise.
+const SESSION = { id: 's1', name: 'Alpha', accountName: 'acct', status: 'idle', updatedAt: null, subAgents: [], latestSuggestions: [] } as unknown as Session
 
 function props(over = {}) {
   return {
