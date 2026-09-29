@@ -44,3 +44,98 @@ describe('YourTurnPanel', () => {
     expect(screen.queryByText(/review the last message above/i)).toBeNull()
   })
 })
+
+// A hand-back is the one needs-you state with no card to answer: the session said
+// what it wants in one sentence via hand_back(reason) and stopped. The list card
+// already shows that sentence (#2321); inside the session the ask was prose at the
+// bottom of the scroller with nothing pinned — the 2026-09-29 critique's P0.
+describe('YourTurnPanel — handed back', () => {
+  const REASON = 'Need a decision on whether to override the read-only constraint'
+
+  it('pins a needs-you region that leads with the session\'s own reason', () => {
+    render(
+      <YourTurnPanel statusState="handed_back" handBackReason={REASON} suggestions={[]} onPrompt={vi.fn()} />,
+    )
+    const region = screen.getByRole('region', { name: /handed back/i })
+    expect(region).toBeInTheDocument()
+    expect(region).toHaveTextContent(REASON)
+    // The calm "Your turn" wording must not leak into the needs-you state.
+    expect(screen.queryByText(/reply to keep this session moving/i)).toBeNull()
+  })
+
+  it('says plainly that the session stopped when it handed back without a reason', () => {
+    render(<YourTurnPanel statusState="handed_back" suggestions={[]} onPrompt={vi.fn()} />)
+    expect(screen.getByRole('region', { name: /handed back/i })).toHaveTextContent(
+      /stopped and is waiting on you/i,
+    )
+  })
+
+  it('offers the cached suggestions as one-tap replies, like a finished turn', () => {
+    const onPrompt = vi.fn()
+    render(
+      <YourTurnPanel
+        statusState="handed_back"
+        handBackReason={REASON}
+        suggestions={['Override it', 'Keep it read-only']}
+        onPrompt={onPrompt}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Keep it read-only' }))
+    expect(onPrompt).toHaveBeenCalledWith('Keep it read-only', [])
+  })
+
+  it('surfaces the suspected-complete hint with the same two answers the card offers', () => {
+    const onResolve = vi.fn()
+    render(
+      <YourTurnPanel
+        statusState="handed_back"
+        handBackReason="PR #2521 is open with auto-merge armed"
+        suspectedCompleteReason="PR #2521 open with auto-merge armed"
+        onResolveSuspectedComplete={onResolve}
+        suggestions={[]}
+        onPrompt={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/likely complete/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /mark complete/i }))
+    expect(onResolve).toHaveBeenCalledWith('confirm')
+    fireEvent.click(screen.getByRole('button', { name: /not done/i }))
+    expect(onResolve).toHaveBeenCalledWith('reject')
+  })
+
+  it('shows no completion buttons when nothing suspects the objective is met', () => {
+    render(
+      <YourTurnPanel
+        statusState="handed_back"
+        handBackReason={REASON}
+        onResolveSuspectedComplete={vi.fn()}
+        suggestions={[]}
+        onPrompt={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /mark complete/i })).toBeNull()
+    expect(screen.queryByText(/likely complete/i)).toBeNull()
+  })
+
+  it('disables both answers while the decision is in flight', () => {
+    render(
+      <YourTurnPanel
+        statusState="handed_back"
+        suspectedCompleteReason="PR #9 merged"
+        onResolveSuspectedComplete={vi.fn()}
+        resolvePending
+        suggestions={[]}
+        onPrompt={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /mark complete/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /not done/i })).toBeDisabled()
+  })
+
+  it('ignores a hand-back reason outside the handed_back status (a resumed session keeps the stale row value)', () => {
+    render(
+      <YourTurnPanel statusState="done" handBackReason={REASON} suggestions={[]} onPrompt={vi.fn()} />,
+    )
+    expect(screen.getByRole('region', { name: /your turn/i })).not.toHaveTextContent(REASON)
+  })
+})

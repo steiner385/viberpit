@@ -30,6 +30,7 @@ vi.mock('@/api/hooks', () => ({
     )?.capabilities,
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -53,6 +54,7 @@ function makeRuntime(statusState: string, overrides: Partial<SessionRuntime> = {
       replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
       condense: null,
     },
+    suggestions: [],
     mode: 'interactive',
     toolDetailMode: 'auto',
     thinkingCollapsed: true,

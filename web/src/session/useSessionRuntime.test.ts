@@ -56,6 +56,9 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 import { useSessionRuntime } from './useSessionRuntime'
+import { QK } from '@/api/hooks'
+import type { Session } from '@/api/types'
+import { session as makeSession } from '@/test/factories'
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -424,5 +427,41 @@ describe('useSessionRuntime.onInterruptAndPrompt', () => {
     let sent: boolean | undefined
     act(() => { sent = result.current.onInterruptAndPrompt('now', []) })
     expect(sent).toBe(false)
+  })
+})
+
+// `rt.suggestions` is the ONE derivation every reply affordance reads (ghost,
+// quick-reply menu, pinned Your-turn / Handed-back chips). The 2026-09-29 critique
+// found the card and the composer showing different sets for the same session:
+// the card read the record cache, the composer read only live events, and a
+// detached session never receives one.
+describe('useSessionRuntime.suggestions', () => {
+  function seededWrapper(sessions: Session[]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    queryClient.setQueryData(QK.sessions, sessions)
+    return ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: queryClient }, children)
+  }
+
+  it('falls back to the record cache when no live suggestions event has arrived (detached session)', () => {
+    const { result } = renderHook(() => useSessionRuntime('sug-1'), {
+      wrapper: seededWrapper([makeSession({ id: 'sug-1', status: 'done', latestSuggestions: ['Proceed with Phase B'] })]),
+    })
+    expect(result.current.suggestions).toEqual(['Proceed with Phase B'])
+  })
+
+  it('prefers the live event over the record cache once one arrives', () => {
+    const { result } = renderHook(() => useSessionRuntime('sug-2'), {
+      wrapper: seededWrapper([makeSession({ id: 'sug-2', status: 'done', latestSuggestions: ['stale'] })]),
+    })
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'suggestions', sessionId: 'sug-2', turnId: 't1', items: ['fresh'] })
+    })
+    expect(result.current.suggestions).toEqual(['fresh'])
+  })
+
+  it('is an empty list, never undefined, with no record and no event', () => {
+    const { result } = renderHook(() => useSessionRuntime('sug-3'), { wrapper })
+    expect(result.current.suggestions).toEqual([])
   })
 })
