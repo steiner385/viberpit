@@ -132,24 +132,27 @@ export function SessionListControls<G extends string = GroupBy, S extends string
   searchAriaLabel = 'Search sessions',
   filters,
 }: SessionListControlsProps<G, S>) {
-  // Phone disclosure (2026-09-29 critique, P1). On the `narrow` variant the strip
-  // was three wrapped rows — 40% of the screen before the first card. Search
-  // stays out (it is the one control used every visit); the filters and the
-  // ordering fold behind one toggle. Purely a CSS-variant fold: the group is
-  // `display: contents` everywhere else, so desktop's single wrapping row is
-  // byte-for-byte what it was, and jsdom tests see every control regardless.
+  // Narrow-strip disclosure (2026-09-29 critique, P1). In a column under 28rem
+  // the strip wrapped three or four rows deep — 40% of a phone screen before
+  // the first card, and ~200px of the desktop SIDEBAR too. Search stays out (it
+  // is the one control used every visit); the filters and the ordering fold
+  // behind one toggle. The fold keys on the STRIP'S OWN WIDTH, not the
+  // viewport: this root is a `@container`, and `@max-md:` (< 28rem / 448px)
+  // folds — so a 390px phone and a 320px desktop sidebar behave the same, and
+  // a wide list (the roadmap's, or a dragged-out sidebar) keeps the single
+  // wrapping row. jsdom applies no CSS, so tests see every control regardless.
   // Hidden, not unmounted, so the selects keep their state across a fold.
   const [open, setOpen] = useState(false)
   const foldId = useId()
   const active = filters ? activeFilterCount(filters.value) : 0
   return (
-    <div className="flex items-center gap-3 flex-wrap">
+    <div className="@container flex items-center gap-3 flex-wrap">
       <ListSearchInput
         value={searchQuery}
         onChange={onSearchChange}
         placeholder={searchPlaceholder}
         ariaLabel={searchAriaLabel}
-        className="w-44 narrow:w-auto narrow:min-w-0 narrow:flex-1"
+        className="w-44 @max-md:w-auto @max-md:min-w-0 @max-md:flex-1"
       />
       <button
         type="button"
@@ -159,7 +162,7 @@ export function SessionListControls<G extends string = GroupBy, S extends string
         // rides along so a filter folded out of sight is still announced.
         aria-label={active > 0 ? `Filters, ${active} active` : 'Filters'}
         onClick={() => setOpen((o) => !o)}
-        className={cn(listControlClass, 'hidden narrow:inline-flex items-center gap-1.5 font-medium')}
+        className={cn(listControlClass, 'hidden @max-md:inline-flex items-center gap-1.5 font-medium')}
       >
         <SlidersHorizontal size={14} aria-hidden="true" />
         Filters
@@ -176,9 +179,9 @@ export function SessionListControls<G extends string = GroupBy, S extends string
         id={foldId}
         className={cn(
           'contents',
-          // Opened on narrow, the fold is its own full-width block under the
-          // search row rather than flowing into it and squeezing the search box.
-          open ? 'narrow:flex narrow:w-full narrow:flex-wrap narrow:items-center narrow:gap-3' : 'narrow:hidden',
+          // Opened in a narrow strip, the fold is its own full-width block under
+          // the search row rather than flowing into it and squeezing the search box.
+          open ? '@max-md:flex @max-md:w-full @max-md:flex-wrap @max-md:items-center @max-md:gap-3' : '@max-md:hidden',
         )}
       >
       {filters && (
