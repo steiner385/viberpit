@@ -106,8 +106,8 @@ describe('MainPaneSession status strip', () => {
     renderPane()
     // The same generated title shown on the dashboard session card appears in
     // the terminal header — not the raw sessionId prefix.
-    expect(screen.getByText('Fix OAuth login bug')).toBeInTheDocument()
-    expect(screen.queryByText('s1')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Fix OAuth login bug' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 's1' })).not.toBeInTheDocument()
   })
 
   it('shows the account from useSessions and quota from useAccounts', () => {

@@ -71,6 +71,37 @@ const three = () => [session({ id: 'a', name: 'A' }), session({ id: 'sess-1' }),
 
 beforeEach(() => localStorage.clear())
 
+// ── the page contract (docs/ACCESSIBILITY.md §3) ─────────────────────────────
+//
+// The session page has no `PageHeader`; this bar IS its header, so it carries
+// the page's one `h1` and claims `document.title` through the same hook
+// PageHeader uses. The 2026-09-29 re-critique found every Sessions route
+// announcing only "ViberPit".
+
+describe('SessionHeader — page contract', () => {
+  it('renders the session title as the one h1 (visually hidden) and sets document.title', async () => {
+    renderHeader()
+    expect(screen.getByRole('heading', { level: 1, name: 'My Session' })).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    await vi.waitFor(() => expect(document.title).toMatch(/^My Session — ViberPit$/))
+  })
+
+  it('the heading is not the rename button — the button keeps its own action name', () => {
+    renderHeader()
+    const h1 = screen.getByRole('heading', { level: 1, name: 'My Session' })
+    expect(h1.tagName).toBe('H1')
+    expect(h1).toHaveClass('sr-only')
+    expect(screen.getByRole('button', { name: 'Rename session My Session' })).toBeInTheDocument()
+  })
+
+  it('releases the title on unmount so the next page is not stuck with it', async () => {
+    const { unmount } = renderHeader({ props: { title: 'Gone soon' } })
+    await vi.waitFor(() => expect(document.title).toMatch(/^Gone soon — ViberPit$/))
+    unmount()
+    await vi.waitFor(() => expect(document.title).not.toMatch(/Gone soon/))
+  })
+})
+
 // ── the region marker (DEC-1) ────────────────────────────────────────────────
 
 describe('SessionHeader — data-region', () => {

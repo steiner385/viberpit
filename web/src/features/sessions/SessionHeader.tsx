@@ -59,6 +59,7 @@ import { SessionActions } from '@/features/sessions/SessionActions'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
 import { engineBadge, tierLabel } from '@/session/modelName'
 import { useToastAnchor } from '@/shell/toastInsets'
+import { usePageTitle } from '@/shell/usePageTitle'
 import { RenameDialog } from './RenameDialog'
 
 export interface SessionHeaderProps {
@@ -137,6 +138,14 @@ export function SessionHeader({
   // a toast starts below this bar (`shell/toastInsets.ts`).
   const clearRef = useToastAnchor('clear')
 
+  // The page contract (docs/ACCESSIBILITY.md §3): this bar is the session
+  // page's header, so it claims `document.title` ("<session> — ViberPit") and
+  // carries the page's one `h1`. The heading is visually hidden — the visible
+  // title is the click-to-rename button below, whose accessible name has to be
+  // "Rename session …", which is the wrong name for a heading. The 2026-09-29
+  // re-critique found every Sessions route announcing only "ViberPit".
+  usePageTitle(title)
+
   return (
     <div
       ref={clearRef}
@@ -173,6 +182,7 @@ export function SessionHeader({
       )}
 
       <span className="flex-1 min-w-0 flex items-baseline gap-2">
+        <h1 className="sr-only">{title}</h1>
         {/* A real <button>, not a div with onClick: Enter/Space, focus order and
             the button role all come free, and the accessible name names the
             session so "Rename session" is never ambiguous in a screen-reader

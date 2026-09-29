@@ -98,7 +98,9 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   })
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    // `workspace`: a live surface with the composer docked beneath it, the same
+    // variant Pipeline declares (page contract, docs/ACCESSIBILITY.md §3).
+    <div className="flex flex-col h-full min-h-0" data-page-variant="workspace">
       <SessionHeader
         sessionId={sessionId}
         title={rt.title}

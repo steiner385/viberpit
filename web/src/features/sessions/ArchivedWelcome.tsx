@@ -11,5 +11,5 @@
 import { EmptyPane } from './EmptyPane'
 
 export function ArchivedWelcome() {
-  return <EmptyPane>Select an archived session from the left to reread its transcript.</EmptyPane>
+  return <EmptyPane title="Archived sessions">Select an archived session from the left to reread its transcript.</EmptyPane>
 }

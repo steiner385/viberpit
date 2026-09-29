@@ -193,8 +193,9 @@ describe('MainPaneSession', () => {
 
   it('shows the sessionId prefix as title when no title event received', () => {
     renderPane({ sessionId: 'abcd1234efgh' })
-    // Title should be the first 8 chars of the sessionId
-    expect(screen.getByText('abcd1234')).toBeInTheDocument()
+    // Title should be the first 8 chars of the sessionId. Queried as the page's
+    // h1: the header renders the title twice (the heading and the rename button).
+    expect(screen.getByRole('heading', { level: 1, name: 'abcd1234' })).toBeInTheDocument()
   })
 
   it('seeds the initialPrompt as a user message immediately on open', () => {
@@ -331,7 +332,7 @@ describe('MainPaneSession', () => {
     emitSessionEvent({ type: 'title', title: 'My Session Title', source: 'claude' })
 
     await waitFor(() => {
-      expect(screen.getByText('My Session Title')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 1, name: 'My Session Title' })).toBeInTheDocument()
     })
   })
 
