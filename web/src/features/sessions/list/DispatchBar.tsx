@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles } from 'lucide-react'
+import { Paperclip, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { useAssessDispatch } from '@/api/hooks'
@@ -869,7 +869,10 @@ export function DispatchBar({
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
           )}
         >
-          <span aria-hidden="true">📎</span>
+          {/* The same drawn icon the in-session Composer's attach button uses —
+              an emoji standing in for an icon renders in the platform's colour
+              emoji face, not the icon set's stroke (2026-09-29 critique). */}
+          <Paperclip size={16} aria-hidden="true" />
         </button>
         <button
           type="button"
