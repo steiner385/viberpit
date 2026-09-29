@@ -47,6 +47,7 @@ const cap = (over: CapOver) => ({
   counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
   links: [],
   initiatives: [],
+  personaSlugs: [],
   children: [],
   ...over,
 })
