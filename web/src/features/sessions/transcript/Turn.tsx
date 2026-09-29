@@ -60,7 +60,14 @@ export const Turn = memo(function Turn({
   if (items.length === 0) return null
 
   return (
-    <div className="px-4 py-2">
+    // `max-w-[88ch]`: a reading measure. In a wide pane assistant prose ran ~139
+    // characters a line (976px at 14px — 2026-09-29 critique, detector
+    // `line-length`); 88ch keeps code blocks and tool cards roomy while the
+    // paragraphs stay scannable. Left-aligned, not centred: an Operate surface
+    // reads top-left, and the composer beneath spans the pane either way. A
+    // no-op wherever the pane is already narrower (phone, the assistant drawer,
+    // a turn nested inside a sub-agent card).
+    <div className="max-w-[88ch] px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only

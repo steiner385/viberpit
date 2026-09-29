@@ -63,7 +63,12 @@ export function DeployPanel() {
 
   return (
     <Banner
-      tone="warning"
+      // Pending commits are information with a button, not a warning: on desktop
+      // this banner sits above the session pane, and in amber it was the loudest
+      // element on the page — louder than the needs-you states beneath it that
+      // actually want the operator (2026-09-29 critique, P2). Amber is kept for
+      // a failure, which is the case that genuinely needs a look.
+      tone={showFailure ? 'warning' : 'info'}
       // Not a live region: commits, phase state and error text all change while a deploy
       // runs, and role="status" would announce every one of those to a screen reader.
       role="none"
