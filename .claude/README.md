@@ -40,8 +40,10 @@ npx --yes impeccable@4.1.0 install -y --project --no-hooks --providers=claude,co
 - Hooks are deliberately **not** installed: they run the engine after every `Edit|Write` and on
   `Stop` in every session, including the automated ones this repo dispatches. Opt in per
   checkout with `/impeccable hooks on` (writes the untracked `.claude/settings.local.json`).
-- `/impeccable init` (writes `PRODUCT.md`) and `/impeccable document` (`DESIGN.md`) are
-  interactive and have not been run.
+- `/impeccable init` has been run: `PRODUCT.md` at the repo root is the product record every
+  Impeccable command reads first (interview answers dated inline). `/impeccable document`
+  (`DESIGN.md`) and live mode (`.impeccable/live/config.json`, CSP consent) have not. Shared config
+  lives in `.impeccable/config.json` (tracked); `config.local.json` and run scratch are ignored.
 - Update: re-run the install command with the new version, then `python3 .agents/agentctl.py
   check .` and confirm `git status` shows no `scripts/bin/` files.
 
