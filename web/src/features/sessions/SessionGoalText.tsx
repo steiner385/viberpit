@@ -27,13 +27,16 @@ export function SessionGoalText({ goal, source, title }: Props) {
   return (
     <span
       data-testid="session-goal"
-      // Capped (not just `flex-shrink`) on a narrow phone: a long goal beside a
-      // long title would otherwise shrink roughly proportionally to the
-      // title's own share, still starving it (issue #1400). The cap gives the
-      // title first claim on the row; the full goal stays one tap away via
-      // the native `title` tooltip below (desktop) — narrow's own regression
-      // test asserts this span never exceeds the cap.
-      className="min-w-0 flex-shrink truncate narrow:max-w-[5rem] text-xs text-ink-muted"
+      // The title has first claim on the row (issue #1400; 2026-09-29 critique
+      // P2 measured the title at 124px beside ~280px of goal on desktop and at
+      // 23px — "I…" — on a phone). Flex shrinks proportionally to content
+      // width, so a long goal keeps MORE of the row than a short title unless
+      // told otherwise: `shrink-[4]` makes this span give up width four times
+      // faster than the title, and the 40% cap bounds it whatever the lengths.
+      // Below `narrow:` it is hidden outright — Back, the chevrons, the pill and
+      // the ⋯ menu already leave the title a few characters; the goal is on the
+      // list card and one tap away, and its tooltip cannot be reached by touch.
+      className="min-w-0 shrink-[4] max-w-[40%] truncate narrow:hidden text-xs text-ink-muted"
       title={`Session goal (${label}): ${text}`}
     >
       {text}

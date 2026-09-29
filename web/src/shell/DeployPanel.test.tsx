@@ -50,6 +50,28 @@ describe('DeployPanel', () => {
     expect(mutate).toHaveBeenCalled()   // mutate is wired as controller.start in mockHooks
   })
 
+  // 2026-09-29 critique (P2): on desktop this banner sits above the session pane
+  // and in amber it out-shouted the needs-you states beneath it. Pending commits
+  // are information with a button; amber is for a failure.
+  it('a plain pending-deploy banner is info-toned, not a warning', () => {
+    mockHooks(
+      { behind: true, commits: [{ sha: 'abc1234', subject: 'feat x', author: 't', iso: 'i' }], ci: 'green' },
+      { running: false, phases: {} })
+    const { container } = render(<DeployPanel />)
+    expect(container.firstElementChild?.className).toMatch(/bg-info-wash/)
+    expect(container.firstElementChild?.className).not.toMatch(/bg-warning-wash/)
+  })
+
+  it('keeps the warning tone while a deploy failure is showing', () => {
+    // `ci: 'red'` — a preflight failure is considered stale (and hidden) once CI
+    // is green again, exactly as the "compact error" case above is set up.
+    mockHooks(
+      { behind: true, commits: [{ sha: 'abc1234', subject: 'feat x', author: 't', iso: 'i' }], ci: 'red' },
+      { running: false, phases: { preflight: 'failed' }, warnings: [], error: 'CI verdict=red' })
+    const { container } = render(<DeployPanel />)
+    expect(container.firstElementChild?.className).toMatch(/bg-warning-wash/)
+  })
+
   it('offers a partial deploy of the green frontier when the tip is red', () => {
     // 5 commits pending, tip CI red, but the 3 oldest are covered by a green commit:
     // show the honest count and deploy THAT sha, not the tip.
