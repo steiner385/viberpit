@@ -445,8 +445,10 @@ describe('SessionListColumn — scope switch', () => {
     })
     expect(screen.getByRole('button', { name: 'Open session pr-doctor fix o/r#1' })).toBeInTheDocument()
     expect(screen.getByTestId('card-maintenance-chip')).toHaveTextContent('PR Doctor')
-    // …and it is not double-counted into Background.
-    expect(screen.getByRole('link', { name: 'Active (2)' })).toBeInTheDocument()
+    // …and it is not double-counted into Background. The pill's count is the
+    // inventory (2); the lifted session is waiting on a human, so the pill also
+    // carries the queue's attention dot and says so in its name.
+    expect(screen.getByRole('link', { name: 'Active (2, needs attention)' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Background' })).toBeInTheDocument()
   })
 

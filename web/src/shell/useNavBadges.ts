@@ -4,22 +4,32 @@ import { useAccounts, useSessions, useAllPrs, useAutomations, useCapacityBinding
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
+import { needsYouCount } from '@/session/triageTier'
 import { pendingProposals } from '@/features/roadmap/inbox/triageSelectors'
 
-export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
+/** A count that is ALSO a call for attention: the queue of sessions waiting on
+ *  a human. Renders as an amber count, and announces "(n, needs attention)". */
+export interface AttentionCount { count: number; attention: true }
+
+export type NavBadges = Record<NavBadgeKey, number | boolean | AttentionCount | undefined>
 
 /**
  * The counts the deleted `buildTabs(counts)` computed, in one place.
  *
- * DEC-4: `sessions` counts EVERY session in the Active scope, including queued
- * and pending-approval rows, because those render inside the Sessions section
- * too. DesktopShell used `orderedSessions.length` (queued excluded) — that was
- * an artifact of it never rendering PendingApprovalSection. Quiet maintenance
- * sessions are NOT counted: they live in the Background scope precisely so
- * they do not draw the eye, and a nav badge is the eye-drawing surface. One
- * that needs a human lifts into Active and is counted then. The Delivery dot
- * also lights while the capacity readout names a binding constraint (spec
- * 2026-09-20 C8).
+ * `sessions` is THE QUEUE: how many Active-scope sessions are waiting on a
+ * human (`needsYouCount` — the `needs-you` tier of the same triage read the
+ * card pill and group header use), in the attention shape so it draws amber.
+ * It used to be the Active-scope inventory (DEC-4: every session in the
+ * section, queued and pending-approval rows included). The 2026-09-29 Sessions
+ * critique measured what that bought: the one number the operator sees before
+ * opening anything said "5 active" while the list said "(1) needs you" — two
+ * numbers for one question, and the wrong one on the glance surface.
+ * PRODUCT.md principle 1 ("the queue is the product") decides it: the badge
+ * counts what needs the operator, and the Active scope pill keeps the
+ * inventory. Quiet maintenance sessions are still excluded: they live in the
+ * Background scope precisely so they do not draw the eye, and one that needs a
+ * human lifts into Active and is counted then. The Delivery dot also lights
+ * while the capacity readout names a binding constraint (spec 2026-09-20 C8).
  *
  * A zero count comes back as `undefined`, not `0`, so no badge renders.
  * `settings` is boolean-or-undefined — an amber attention dot, never a count.
@@ -61,8 +71,9 @@ export function useNavBadges(): NavBadges {
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin' || a.status === 'org-denied',
   )
 
+  const queue = needsYouCount(sessions.filter((s) => !isBackgroundSession(s)))
   return {
-    sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
+    sessions: queue > 0 ? { count: queue, attention: true } : undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     // Shared list snapshot; an unknown observation gets a dot, never a fabricated count.
     delivery: automationActions || automationAttention || Boolean(capacity?.binding) || undefined,
@@ -88,12 +99,15 @@ export function useNavBadges(): NavBadges {
 /**
  * How a section's badge value becomes `NavItem` props.
  *
- * A number is a count; `true` is an attention flag; `undefined` is nothing. That
- * mapping is the badge convention itself, so it lives beside the badges rather
- * than being restated by each region — `NavRail` and `NavBar` both call this,
- * and the `More` control sums the sections it hides through it too.
+ * A number is a count; `true` is an attention flag; an {@link AttentionCount}
+ * is both (an amber count); `undefined` is nothing. That mapping is the badge
+ * convention itself, so it lives beside the badges rather than being restated
+ * by each region — `NavRail` and `NavBar` both call this, and the `More`
+ * control sums the sections it hides through it too.
  */
 export function navBadgeProps(def: NavDef, badges: NavBadges): { count?: number; attention?: boolean } {
   const v = def.badge ? badges[def.badge] : undefined
-  return typeof v === 'number' ? { count: v } : { attention: v === true }
+  if (typeof v === 'number') return { count: v }
+  if (typeof v === 'object') return { count: v.count, attention: true }
+  return { attention: v === true }
 }

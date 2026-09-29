@@ -28,6 +28,25 @@ function renderSegment(scope: 'live' | 'background' | 'archived', at = '/session
   )
 }
 
+describe('ScopeSegment — the queue on the Active pill', () => {
+  // The count stays the inventory; the queue lights the amber dot and joins the
+  // name, so the pill and the nav badge (which shows the queue number) agree.
+  it('marks Active as needing attention when some of its sessions wait on a human', () => {
+    render(
+      <MemoryRouter initialEntries={['/sessions']}>
+        <ScopeSegment scope="live" activeCount={7} needsYouCount={2} backgroundCount={3} archivedCount={132} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByRole('link', { name: 'Active (7, needs attention)' })).toBeInTheDocument()
+  })
+
+  it('stays a plain inventory when nothing needs you', () => {
+    renderSegment('live')
+    expect(screen.getByRole('link', { name: 'Active (7)' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /needs attention/ })).toBeNull()
+  })
+})
+
 describe('ScopeSegment', () => {
   it('is a named navigation whose links announce their counts', () => {
     renderSegment('live')

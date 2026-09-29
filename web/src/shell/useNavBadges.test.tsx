@@ -29,7 +29,7 @@ vi.mock('@/api/hooks', () => ({
 // would make this file a second place that knows how a failure is derived.
 vi.mock('@/lib/deployState', () => ({ useDeployState: () => useDeployState() }))
 
-import { useNavBadges } from './useNavBadges'
+import { useNavBadges, navBadgeProps, type NavBadges } from './useNavBadges'
 import { NAV_DEFS, type NavBadgeKey } from './navDefs'
 
 // Typed factories with defaults — real values, not casts. Each fills every
@@ -216,24 +216,41 @@ describe('useNavBadges', () => {
     expect(typeof result.current.settings).toBe('boolean')
   })
 
-  it('DEC-4: sessions counts every session in the section, including queued ones', () => {
-    // DesktopShell used to count orderedSessions.length (queued excluded) — that
-    // was an artifact of it never rendering PendingApprovalSection. The decision
-    // is sessions.length: a section badge counts what the section contains, and
-    // queued/pending-approval rows render inside the Sessions section.
+  // The Sessions badge is THE QUEUE (PRODUCT.md principle 1; 2026-09-29 critique
+  // H1): how many sessions are waiting on a human, in the attention shape so it
+  // draws amber. It used to be the Active-scope inventory (DEC-4) — "5 active"
+  // on the rail beside "(1) needs you" in the list, two numbers for one question.
+  it('sessions counts the needs-you queue, as an attention count', () => {
     useSessions.mockReturnValue({
       data: [
         session({ id: 'a', name: 'a', status: 'idle' }),
         session({ id: 'b', name: 'b', status: 'queued' }),
+        session({ id: 'c', name: 'c', status: 'in_progress' }),
+        session({ id: 'd', name: 'd', status: 'waiting_input' }),
+        session({ id: 'e', name: 'e', status: 'handed_back' }),
+        session({ id: 'f', name: 'f', status: 'pending_approval' }),
       ],
     })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.sessions).toBe(2)
+    expect(result.current.sessions).toEqual({ count: 3, attention: true })
   })
 
-  it('leaves quiet maintenance sessions out of the count, but counts one that needs you', () => {
-    // The badge is the eye-drawing surface; Background exists so these rows do
-    // not draw the eye. A maintenance session that lifts into Active is counted.
+  it('sessions shows no badge at all when nothing needs you, however many are active', () => {
+    useSessions.mockReturnValue({
+      data: [
+        session({ id: 'a', name: 'a', status: 'idle' }),
+        session({ id: 'b', name: 'b', status: 'in_progress' }),
+        session({ id: 'c', name: 'c', status: 'waiting_external' }),
+        session({ id: 'd', name: 'd', status: 'done' }),
+      ],
+    })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.sessions).toBeUndefined()
+  })
+
+  it('leaves quiet maintenance sessions out, but counts one that lifted into Active because it needs you', () => {
+    // Background exists so these rows do not draw the eye; a maintenance session
+    // that needs a human lifts into Active (`backgroundSessions.ts`) and counts.
     useSessions.mockReturnValue({
       data: [
         session({ id: 'a', name: 'a', status: 'idle' }),
@@ -242,7 +259,15 @@ describe('useNavBadges', () => {
       ],
     })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.sessions).toBe(2)
+    expect(result.current.sessions).toEqual({ count: 1, attention: true })
+  })
+
+  it('navBadgeProps renders an attention count as an amber count (count AND attention)', () => {
+    const def = NAV_DEFS.find((d) => d.badge === 'sessions')!
+    expect(navBadgeProps(def, { sessions: { count: 2, attention: true } } as NavBadges)).toEqual({ count: 2, attention: true })
+    expect(navBadgeProps(def, { sessions: 4 } as NavBadges)).toEqual({ count: 4 })
+    expect(navBadgeProps(def, { sessions: true } as NavBadges)).toEqual({ attention: true })
+    expect(navBadgeProps(def, { sessions: undefined } as NavBadges)).toEqual({ attention: false })
   })
 
   it('pipeline counts in-flight PRs; delivery counts actionable work independently of live sessions', () => {
