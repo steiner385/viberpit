@@ -22,7 +22,11 @@ export function ListSearchInput({
   value, onChange, placeholder = 'Search…', ariaLabel = 'Search', className,
 }: ListSearchInputProps) {
   return (
-    <div className={cn('relative', className)}>
+    // A `search` landmark so a screen-reader user can jump to it. Deliberately
+    // UNNAMED: the input inside already carries "Search sessions", and a second
+    // element with the same label makes every `getByLabelText` ambiguous — one
+    // list column is on a page at a time, so the bare landmark is unambiguous.
+    <div role="search" className={cn('relative', className)}>
       <input
         type="search"
         aria-label={ariaLabel}

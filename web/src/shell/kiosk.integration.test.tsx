@@ -135,10 +135,11 @@ import { Dialog } from '@/ui/Dialog'
 import { StatusStrip } from '@/pipeline/StatusStrip'
 import type { BannerStackItem } from '@/ui/BannerStack'
 import { AppShell, bannersForMode, KIOSK_SCALE } from './AppShell'
+import { UNREACHABLE_COPY } from './DaemonRestartBanner'
 
 /** The visible text each banner renders — queried rather than a test id so the
  *  assertion fails if the banner stops rendering its copy. */
-const DANGER_BANNER = 'Back in a moment…'   // DaemonRestartBanner, tone: danger
+const DANGER_BANNER = UNREACHABLE_COPY      // DaemonRestartBanner (health path), tone: danger
 const INFO_BANNER = 'Reconnecting…'         // UpdatePendingBanner,  tone: info
 
 // ── the probe page ───────────────────────────────────────────────────────────

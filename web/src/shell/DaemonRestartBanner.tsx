@@ -6,9 +6,14 @@ import { useEpochRestart } from '@/hooks/useEpochRestart'
 /**
  * Non-modal banner shown while the session daemon is restarting or unreachable.
  *
- * Two triggers:
- *  - WS close code 1012 (epoch change / planned restart) → immediate via useEpochRestart.
- *  - /healthz polling → catches unplanned outages via useDaemonReachable.
+ * Two triggers, and the copy names which (2026-09-29 re-critique: one word,
+ * "Back in a moment…", for both a planned restart and an outage the app could
+ * not explain — including a misconfigured proxy answering `/healthz` with HTML):
+ *  - WS close code 1012 (epoch change / planned restart) → immediate via
+ *    useEpochRestart. The daemon IS coming back; say so.
+ *  - /healthz polling → catches unplanned outages via useDaemonReachable. The
+ *    app knows only that the check failed and that it retries every 10 s; it
+ *    does not know why, or whether sessions are affected, so it claims neither.
  *
  * Auto-clears once /healthz reports daemon healthy — no manual dismiss needed.
  *
@@ -19,6 +24,9 @@ import { useEpochRestart } from '@/hooks/useEpochRestart'
  * In flow it pushes content down instead of covering it, and there is nothing
  * beneath it to intercept.
  */
+export const RESTARTING_COPY = 'Restarting the session daemon — back in a moment…'
+export const UNREACHABLE_COPY = 'Can’t reach the session daemon — retrying every 10 s…'
+
 export function DaemonRestartBanner() {
   const epochRestart = useEpochRestart()
   const daemonOk = useDaemonReachable()
@@ -26,8 +34,10 @@ export function DaemonRestartBanner() {
   return (
     <Banner
       tone="warning"
-      title="Back in a moment…"
-      icon={<Loader2 size={16} className="animate-spin" aria-hidden="true" />}
+      title={epochRestart ? RESTARTING_COPY : UNREACHABLE_COPY}
+      // motion-reduce: the one animation that survived reduced-motion emulation
+      // in the re-critique's sweep was this spinner.
+      icon={<Loader2 size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
       className="items-center"
     />
   )

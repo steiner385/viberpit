@@ -64,6 +64,12 @@ describe('SessionListControls injected options', () => {
 })
 
 describe('SessionListControls search', () => {
+  it('wraps the box in a search landmark (unnamed — the searchbox carries the name)', () => {
+    render(<Harness />)
+    const landmark = screen.getByRole('search')
+    expect(within(landmark).getByRole('searchbox', { name: 'Search sessions' })).toBeInTheDocument()
+  })
+
   it('types into the search box and clears it', async () => {
     render(<Harness />)
     const box = screen.getByLabelText('Search sessions')

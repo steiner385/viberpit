@@ -18,16 +18,28 @@ describe('DaemonRestartBanner', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows the restart notice when the daemon is unreachable (health polling)', () => {
+  // The copy names the cause (2026-09-29 re-critique): a planned restart is
+  // coming back and says so; an unreachable daemon is a failed check the app
+  // cannot explain, so it says only what it knows — that it keeps retrying.
+  it('names an unreachable daemon as unreachable, and that it retries (health polling)', () => {
     mockDaemon(false, false)
     render(<DaemonRestartBanner />)
+    expect(screen.getByRole('status')).toHaveTextContent(/can.t reach the session daemon/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/retrying/i)
+    expect(screen.getByRole('status')).not.toHaveTextContent(/back in a moment/i)
+  })
+
+  it('names a planned restart immediately on epoch-change (close-1012) even before poll fires', () => {
+    mockDaemon(true, true)
+    render(<DaemonRestartBanner />)
+    expect(screen.getByRole('status')).toHaveTextContent(/restarting the session daemon/i)
     expect(screen.getByRole('status')).toHaveTextContent(/back in a moment/i)
   })
 
-  it('shows the restart notice immediately on epoch-change (close-1012) even before poll fires', () => {
-    mockDaemon(true, true)
-    render(<DaemonRestartBanner />)
-    expect(screen.getByRole('status')).toHaveTextContent(/back in a moment/i)
+  it('the spinner yields to prefers-reduced-motion', () => {
+    mockDaemon(false, false)
+    const { container } = render(<DaemonRestartBanner />)
+    expect(container.querySelector('.animate-spin')).toHaveClass('motion-reduce:animate-none')
   })
 
   it('renders in normal flow, never as a fixed overlay', () => {
