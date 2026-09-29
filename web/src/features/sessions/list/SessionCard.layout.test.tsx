@@ -245,18 +245,21 @@ describe('SessionCard narrow-card declutter contract', () => {
   })
 })
 
-// Unified actions contract: Resume (✦) and the ⋯ menu are the ONLY action
-// controls, permanently visible on every device — no hover-revealed icon row,
-// no desktop/mobile split, no separate quick-replies dropdown.
+// Unified actions contract: Resume (✦) with its quick-reply chevron, and the ⋯
+// menu, are the ONLY action controls, permanently visible on every device — no
+// hover-revealed icon row, no desktop/mobile split. The chevron is a menu
+// trigger beside ✦ (the composer's split button), not a fourth icon: replies
+// are SENDS and left the ⋯ menu so none sits a row above Delete (2026-09-29
+// critique, P1).
 describe('SessionCard unified actions', () => {
-  it('shows Resume and More-actions as the only inline action buttons', () => {
+  it('shows Resume, its Quick-replies chevron and More-actions as the only inline action buttons', () => {
     renderCard(rich)
     expect(screen.getByRole('button', { name: /resume session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /quick replies for/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /more actions for session/i })).toBeInTheDocument()
-    // The old split is gone: no desktop-only group, no standalone quick-replies
-    // trigger, no always-visible rename/archive/delete icons.
+    // The old split is gone: no desktop-only group, no always-visible
+    // rename/archive/delete icons.
     expect(screen.queryByTestId('card-secondary-actions')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /quick replies for/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^rename session/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^archive session/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^delete session/i })).not.toBeInTheDocument()

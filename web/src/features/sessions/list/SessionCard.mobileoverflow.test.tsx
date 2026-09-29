@@ -248,16 +248,22 @@ describe('SessionCard mobile overflow menu', () => {
     })
   })
 
-  describe('Quick Replies inside the menu', () => {
-    it('surfaces the canned quick replies at the top of the menu for a resumable session', () => {
+  // Quick replies are SENDS. They used to head this menu, four rows above
+  // Delete at 36px a row (2026-09-29 critique, P1); they now live behind ✦'s own
+  // chevron, and this menu is management only on every device.
+  describe('Quick replies are not inside the management menu', () => {
+    it('the ⋯ menu carries no reply rows for a resumable session', () => {
       renderCard({ status: 'done' })
       fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
-      expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: 'continue' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
     })
 
-    it('there is no separate quick-replies trigger button', () => {
+    it('the quick-replies trigger sits beside Resume and opens its own menu', () => {
       renderCard({ status: 'done' })
-      expect(screen.queryByRole('button', { name: /quick replies/i })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+      expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: /delete/i })).not.toBeInTheDocument()
     })
   })
 

@@ -83,50 +83,69 @@ describe('SessionCard — quick-resume sparkle button', () => {
     expect(resume.querySelector('.lucide-play')).not.toBeInTheDocument()
   })
 
-  // Quick replies live at the top of the unified ⋯ menu (there is no separate
-  // dropdown trigger anymore), always available — even with zero backend
-  // suggestions — whenever the session is resumable.
-  it('canned quick replies are available in the ⋯ menu with no backend suggestions', () => {
+  // Quick replies live behind ✦'s own chevron (2026-09-29 critique, P1): a reply
+  // is a SEND, and the unified ⋯ menu had four of them one row above Delete.
+  // Always available — even with zero backend suggestions — whenever the
+  // session is resumable.
+  it('canned quick replies are available in the Quick-replies menu with no backend suggestions', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
-    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     for (const reply of QUICK_REPLIES) {
       expect(screen.getByRole('menuitem', { name: reply })).toBeInTheDocument()
     }
+    // The menu says what a row does before the row is tapped.
+    expect(screen.getByRole('menu')).toHaveTextContent(/send a reply/i)
   })
 
   it('clicking a canned quick reply sends its literal text', () => {
     const onQuickResume = vi.fn()
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume })
-    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'try again' }))
     expect(onQuickResume).toHaveBeenCalledWith('s1', 'try again')
   })
 
   it('lists all cached dynamic suggestions above the canned list, sections divided', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step', 'Second step'] }), onQuickResume: noop })
-    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     // The sparkle generates fresh, so the menu surfaces ALL cached suggestions.
     expect(screen.getByRole('menuitem', { name: 'First step' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Second step' })).toBeInTheDocument()
     // Canned list still present below.
     expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
-    // Dividers: suggestions | canned replies | management actions.
-    expect(screen.getAllByRole('separator')).toHaveLength(2)
-  })
-
-  it('one divider (replies | management) when there are no cached suggestions', () => {
-    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
-    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+    // One divider: suggestions | canned replies.
     expect(screen.getAllByRole('separator')).toHaveLength(1)
   })
 
-  it('offers no reply items while the session is busy (nothing to resume)', () => {
+  it('no divider when there are no cached suggestions', () => {
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    expect(screen.queryAllByRole('separator')).toHaveLength(0)
+  })
+
+  it('the ⋯ menu is management only — no one-tap send shares a list with Delete', () => {
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step'] }), onQuickResume: noop })
+    fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
+    const items = screen.getAllByRole('menuitem').map((el) => el.textContent?.trim())
+    expect(items).toEqual(['Rename', 'Archive', 'Delete'])
+    expect(screen.queryByRole('menuitem', { name: 'First step' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'continue' })).toBeNull()
+  })
+
+  it('offers no reply menu while the session is busy (nothing to resume)', () => {
     renderCard({ session: mkSession({ status: 'in_progress', detached: false, latestSuggestions: ['First step'] }), onQuickResume: noop })
+    expect(screen.queryByRole('button', { name: /quick replies/i })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
     expect(screen.queryByRole('menuitem', { name: 'First step' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'continue' })).not.toBeInTheDocument()
     // Management actions remain reachable mid-turn.
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+  })
+
+  it('menu rows carry the 44px coarse-pointer floor', () => {
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    for (const item of screen.getAllByRole('menuitem')) expect(item).toHaveClass('min-h-11')
   })
 
   // Regression: the menu shares the sessions-list stacking context with the
