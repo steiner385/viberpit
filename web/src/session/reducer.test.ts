@@ -133,6 +133,56 @@ describe('transcriptReducer', () => {
     expect(remaining).toHaveLength(0)
   })
 
+  // ── the user's own decision leaves a record ────────────────────────────────
+  // The card simply vanished on Allow/Deny (2026-09-29 critique, P0): the highest-
+  // stakes tap on the surface gave no echo of what was granted. A confirmed local
+  // decision now appends the same client-local notice block "Model → x" uses.
+  // The server's authoritative `permissionResolved` (a decision made elsewhere,
+  // or a replay) still clears silently — the echo is for what THIS user did.
+
+  const noticeTexts = (s: TranscriptState) =>
+    s.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'notice').map((b) => b.kind === 'notice' ? b.text : '')
+
+  it.each([
+    ['allow', 'Allowed Bash: npm test'],
+    ['deny', 'Denied Bash: npm test'],
+    ['always', 'Always allowed Bash: npm test'],
+  ] as const)('_resolvePermission with decision %s echoes "%s" as a notice', (decision, text) => {
+    const s = reduce([
+      { type: 'turnStart',         turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false },
+    ])
+    const next = transcriptReducer(s, { type: '_resolvePermission', permId: 'perm-1', decision })
+    expect(next.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'permission')).toHaveLength(0)
+    expect(noticeTexts(next)).toEqual([text])
+  })
+
+  it('_resolvePermission names a plan decision in plan terms', () => {
+    const s = reduce([
+      { type: 'turnStart',         turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'ExitPlanMode', toolKind: 'unknown', input: {}, plan: true },
+    ])
+    expect(noticeTexts(transcriptReducer(s, { type: '_resolvePermission', permId: 'perm-1', decision: 'allow' }))).toEqual(['Approved plan — running'])
+    expect(noticeTexts(transcriptReducer(s, { type: '_resolvePermission', permId: 'perm-1', decision: 'deny' }))).toEqual(['Kept planning'])
+  })
+
+  it('_resolvePermission without a decision, and permissionResolved, clear silently', () => {
+    const s = reduce([
+      { type: 'turnStart',         turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false },
+    ])
+    expect(noticeTexts(transcriptReducer(s, { type: '_resolvePermission', permId: 'perm-1' }))).toEqual([])
+    expect(noticeTexts(transcriptReducer(s, { type: 'permissionResolved', permId: 'perm-1', turnId: 't1', allowed: true }))).toEqual([])
+  })
+
+  it('_resolvePermission with a decision for an unknown permId echoes nothing and keeps the state reference', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'ls' }, plan: false },
+    ])
+    expect(transcriptReducer(s, { type: '_resolvePermission', permId: 'nope', decision: 'allow' })).toBe(s)
+  })
+
   it('permissionResolved (server event) removes the permission block', () => {
     // The mid-turn reattach resupply replays the open turn's ring events, which
     // recreate the permissionRequest block; the server's permissionResolved frame

@@ -170,3 +170,83 @@ describe('PermissionCard', () => {
     expect(screen.queryByRole('list')).toBeNull()
   })
 })
+
+// 2026-09-29 Sessions critique, P0: the command the operator is approving was a
+// one-line `text-xs truncate` of a 60-char summary, and "Yes, always" — the
+// broadest grant — wore the heaviest button. The card is the highest-stakes tap
+// on the surface; it must show the whole request and weight the safe answer.
+describe('PermissionCard — readable request, honest weighting', () => {
+  const LONG_CMD = 'cd /srv/repo && git fetch origin && git rebase origin/master && npm ci && npm run build && npm run test -- --reporter=dot && git push --force-with-lease origin feat/x'
+
+  it('shows the FULL command, not the 60-character summary', () => {
+    render(<PermissionCard block={{ ...bashPerm, input: { command: LONG_CMD } }} onDecision={vi.fn()} />)
+    expect(screen.getByTestId('permission-detail')).toHaveTextContent(LONG_CMD)
+  })
+
+  it('keeps the request block scrollable rather than clipped to one line', () => {
+    render(<PermissionCard block={{ ...bashPerm, input: { command: LONG_CMD } }} onDecision={vi.fn()} />)
+    const detail = screen.getByTestId('permission-detail')
+    expect(detail).not.toHaveClass('truncate')
+    expect(detail).toHaveClass('overflow-y-auto')
+    // Keyboard users can scroll it.
+    expect(detail).toHaveAttribute('tabindex', '0')
+  })
+
+  it('names the actions on the buttons (Allow / Deny / Always allow), never Yes / No', () => {
+    render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Allow Bash/ })).toHaveTextContent(/^Allow$/)
+    expect(screen.getByRole('button', { name: /^Deny Bash/ })).toHaveTextContent(/^Deny$/)
+    expect(screen.getByRole('button', { name: /^Always allow Bash/ })).toHaveTextContent(/^Always allow$/)
+    expect(screen.queryByText(/^Yes/)).toBeNull()
+  })
+
+  it('weights Allow as the primary action and Always allow as a quiet tertiary one', () => {
+    render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
+    const allow = screen.getByRole('button', { name: /^Allow Bash/ })
+    const always = screen.getByRole('button', { name: /^Always allow Bash/ })
+    expect(document.activeElement).toBe(allow)
+    // The filled tokens belong to Allow (success) and to the plan card's accent
+    // primary — never to the standing grant.
+    expect(always).not.toHaveClass('bg-accent')
+    expect(always).not.toHaveClass('bg-success-strong')
+    expect(always.className).toMatch(/text-ink-muted/)
+  })
+
+  it('shows every changed path for a multi-file edit', () => {
+    render(
+      <PermissionCard
+        block={{ ...bashPerm, tool: 'Edit', toolKind: 'edit', input: { changes: [{ path: 'web/src/a.tsx' }, { path: 'web/src/b.tsx' }, { path: 'server/c.py' }] } }}
+        onDecision={vi.fn()}
+      />,
+    )
+    const detail = screen.getByTestId('permission-detail')
+    expect(detail).toHaveTextContent('web/src/a.tsx')
+    expect(detail).toHaveTextContent('web/src/b.tsx')
+    expect(detail).toHaveTextContent('server/c.py')
+  })
+
+  it('shows the raw input for a tool shape it does not summarise, so nothing is approved blind', () => {
+    render(
+      <PermissionCard
+        block={{ ...bashPerm, tool: 'mcp__viberpit__archive_sessions', toolKind: 'app_action', input: { sessionIds: ['abc-123'], reason: 'stale' } }}
+        onDecision={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('permission-detail')).toHaveTextContent('abc-123')
+  })
+
+  it('renders no detail block when there is nothing beyond the tool name', () => {
+    render(<PermissionCard block={{ ...bashPerm, tool: 'WebSearch', toolKind: 'web', input: {} }} onDecision={vi.fn()} />)
+    expect(screen.queryByTestId('permission-detail')).toBeNull()
+  })
+
+  it('lets long batch items wrap instead of clipping them', () => {
+    render(
+      <PermissionCard
+        block={{ ...bashPerm, tool: 'mcp__viberpit__archive_sessions', toolKind: 'app_action', input: {}, items: ['A very long session title that would otherwise be clipped to one line with an ellipsis on a phone'] }}
+        onDecision={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('listitem')).not.toHaveClass('truncate')
+  })
+})

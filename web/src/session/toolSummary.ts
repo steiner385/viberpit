@@ -40,6 +40,43 @@ export function toolSummary(kind: ToolKind, input: Record<string, unknown>): str
   return ''
 }
 
+/** "Tool: summary" — the one-line name a card, an aria-label or a decision echo
+ *  uses for a tool call; the bare tool name when there is nothing to summarise. */
+export function toolLabel(tool: string, kind: ToolKind, input: Record<string, unknown>): string {
+  const summary = toolSummary(kind, input)
+  return summary ? `${tool}: ${summary}` : tool
+}
+
+/** Cap on the raw-input fallback below: enough to read a request, never a dump. */
+const MAX_DETAIL_CHARS = 2000
+
+/**
+ * The FULL request behind a permission card, for the operator to read before
+ * deciding — where `toolSummary` is the one-line gist for a transcript row.
+ * Bash: the whole command (the summary cuts it at 60 chars, which is how an
+ * operator came to approve commands they could not see — 2026-09-29 critique,
+ * P0). File tools: every path, one per line. Anything else with a non-empty
+ * input: the input itself as JSON, so nothing is approved blind. `''` when the
+ * tool name already says everything (empty input).
+ */
+export function toolDetail(kind: ToolKind, input: Record<string, unknown>): string {
+  if (kind === 'bash' && typeof input.command === 'string') return input.command
+  if (FILE_KINDS.has(kind)) {
+    if (typeof input.file_path === 'string' && input.file_path) return input.file_path
+    const paths = changedPaths(input.changes)
+    if (paths.length > 0) return paths.join('\n')
+    if (typeof input.grant_root === 'string' && input.grant_root) return input.grant_root
+  }
+  if (Object.keys(input).length === 0) return ''
+  let json: string
+  try {
+    json = JSON.stringify(input, null, 1)
+  } catch {
+    return ''
+  }
+  return json.length > MAX_DETAIL_CHARS ? `${json.slice(0, MAX_DETAIL_CHARS)}\n…` : json
+}
+
 /** Paths out of a Codex `changes` array; empty for any other shape. */
 export function changedPaths(changes: unknown): string[] {
   if (!Array.isArray(changes)) return []

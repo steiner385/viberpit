@@ -251,6 +251,24 @@ describe('useSessionRuntime.onDecision (permission) — reject on closed socket 
     expect(mockPermissionResponse).toHaveBeenCalledWith('psess2', 'perm-1', 'allow')
     expect(permExists(result)).toBe(true) // card kept interactive — NOT falsely resolved
   })
+
+  it('leaves a record of the decision where the card was (echo after the card leaves)', () => {
+    mockPermissionResponse.mockReturnValue(true)
+    const { result } = renderHook(() => useSessionRuntime('psess3'), { wrapper })
+    seedPermission(result)
+    act(() => { result.current.onDecision('perm-1', 'always') })
+    const notices = result.current.state.turns.flatMap((t) => t.blocks)
+      .filter((b): b is Extract<typeof b, { kind: 'notice' }> => b.kind === 'notice')
+    expect(notices.map((n) => n.text)).toEqual(['Always allowed Bash: ls'])
+  })
+
+  it('leaves no record when the send was rejected (nothing was decided)', () => {
+    mockPermissionResponse.mockReturnValue(false)
+    const { result } = renderHook(() => useSessionRuntime('psess4'), { wrapper })
+    seedPermission(result)
+    act(() => { result.current.onDecision('perm-1', 'deny') })
+    expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'notice')).toBe(false)
+  })
 })
 
 describe('useSessionRuntime.onSetMode — reject on closed socket (#505)', () => {
