@@ -42,6 +42,7 @@ import { SessionList } from '@/features/sessions/list/SessionList'
 import { AdoptPanel } from '@/features/sessions/list/AdoptPanel'
 import { DaemonHealthIndicator } from '@/shell/DaemonHealthIndicator'
 import { NO_FILTERS, isFiltered as hasActiveFilters } from '@/session/listFilters'
+import { needsYouCount } from '@/session/triageTier'
 import type { ListScope } from '@/session/sessionNavState'
 import type { Account, Session } from '@/api/types'
 import { useToastAnchor } from '@/shell/toastInsets'
@@ -131,6 +132,7 @@ export function SessionListColumn({
         <ScopeSegment
           scope={scope}
           activeCount={state.sessions.length}
+          needsYouCount={needsYouCount(state.sessions)}
           backgroundCount={state.background.length}
           archivedCount={archived.length}
         />

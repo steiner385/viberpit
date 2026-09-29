@@ -51,6 +51,17 @@ const MOCK_SESSIONS = [
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
   },
+  // A session waiting on a human: the Sessions nav badge is the needs-you
+  // QUEUE (not the active count), so this is what puts a number on it.
+  {
+    id: 'sess-2',
+    name: 'Handed back session',
+    accountName: 'alice',
+    status: 'handed_back',
+    handBackReason: 'Need a decision on the retry budget',
+    createdAt: '2026-06-19T09:00:00Z',
+    updatedAt: '2026-06-19T09:30:00Z',
+  },
 ]
 
 const MOCK_ACCOUNTS = [
@@ -230,9 +241,10 @@ test.describe('T044 — Dashboard', () => {
     }
     await expect(bar.getByRole('button', { name: /^More/ })).toBeVisible()
 
-    // The badge convention is unchanged ("Sessions (1)"), and it is in the
-    // accessible name whether or not the control shows a label.
-    await expect(bar.getByRole('link', { name: /^Sessions \(1\)/ })).toBeVisible()
+    // The badge is the needs-you queue — one of the two fixture sessions is
+    // handed back — in the `badgedName` convention, in the accessible name
+    // whether or not the control shows a label.
+    await expect(bar.getByRole('link', { name: 'Sessions (1, needs attention)' })).toBeVisible()
 
     // The bar never widens the page.
     const bodyWidth = await page.evaluate(() => document.body.scrollWidth)

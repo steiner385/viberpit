@@ -62,3 +62,13 @@ export function triageTier(session: Session): StatusTier {
 export function triageRank(session: Session): number {
   return TIER_RANK[triageTier(session)]
 }
+
+/**
+ * How many of these sessions are waiting on a human — the `needs-you` tier of
+ * the same triage read the card pill, group header and sort use. THE queue
+ * number (PRODUCT.md principle 1): the nav badge and the Active scope's
+ * attention dot both read it, so they can never disagree with the list.
+ */
+export function needsYouCount(sessions: readonly Session[]): number {
+  return sessions.reduce((n, s) => n + (triageTier(s) === 'needs-you' ? 1 : 0), 0)
+}
