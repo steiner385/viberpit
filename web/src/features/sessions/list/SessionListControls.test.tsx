@@ -291,6 +291,61 @@ describe('SessionListControls — clear filters', () => {
   })
 })
 
+// ── phone disclosure (2026-09-29 Sessions critique, P1) ──────────────────────
+//
+// On a 390px phone the strip was search + five selects stacked three rows deep:
+// y 74–345 of an 844px screen before the first session card at y 392 — 40% of
+// the operator's most-used view spent on controls they touch once a week. On
+// the `narrow` variant the search stays, and everything else folds behind one
+// "Filters" toggle that carries the active-filter count. jsdom applies no CSS,
+// so the assertions here are the contract (aria wiring, the variant classes,
+// the count), not the layout — the touch-targets e2e drives the real thing.
+
+describe('SessionListControls — phone disclosure', () => {
+  const toggle = () => screen.getByRole('button', { name: /^Filters/ })
+
+  it('folds the filters and ordering behind one toggle, collapsed by default on narrow', async () => {
+    render(<FilterHarness />)
+    const btn = toggle()
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    const group = document.getElementById(btn.getAttribute('aria-controls')!)!
+    expect(group).not.toBeNull()
+    expect(within(group).getByLabelText('Status')).toBeInTheDocument()
+    expect(within(group).getByLabelText('Sort by')).toBeInTheDocument()
+    // The variant class is the whole mechanism: hidden only under `narrow`,
+    // `contents` everywhere else so desktop's single wrapping row is untouched.
+    expect(group).toHaveClass('narrow:hidden')
+    expect(group).toHaveClass('contents')
+    await userEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    expect(group).not.toHaveClass('narrow:hidden')
+  })
+
+  it('the toggle itself only exists on narrow; search stays outside the fold', () => {
+    render(<FilterHarness />)
+    expect(toggle()).toHaveClass('narrow:inline-flex')
+    expect(toggle()).toHaveClass('hidden')
+    const group = document.getElementById(toggle().getAttribute('aria-controls')!)!
+    expect(within(group).queryByLabelText('Search sessions')).toBeNull()
+    expect(screen.getByLabelText('Search sessions')).toBeInTheDocument()
+  })
+
+  it('names the active-filter count in the toggle, so a collapsed filter is never invisible', () => {
+    const { rerender } = render(<FilterHarness />)
+    expect(toggle()).toHaveAccessibleName('Filters')
+    rerender(<FilterHarness key="two" initial={{ status: 'busy', project: null, environment: 'dobby' }} />)
+    expect(toggle()).toHaveAccessibleName('Filters, 2 active')
+    expect(toggle()).toHaveTextContent('2')
+  })
+
+  it('still offers the toggle for a list without filters (ordering folds too)', () => {
+    render(<Harness />)
+    const group = document.getElementById(toggle().getAttribute('aria-controls')!)!
+    expect(within(group).getByLabelText('Group by')).toBeInTheDocument()
+    expect(toggle()).toHaveAccessibleName('Filters')
+  })
+})
+
 describe('SessionListControls — accessibility', () => {
   it('has no axe violations with the filters mounted (roles and names only)', async () => {
     const { container } = render(

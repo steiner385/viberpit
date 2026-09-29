@@ -139,9 +139,15 @@ export function sanitizeFilters(f: ListFilters, options: FilterOptions): ListFil
   }
 }
 
+/** How many of the three filters are narrowing the list (the phone strip's
+ *  "Filters · n" badge — the count is the only trace of a filter folded away). */
+export function activeFilterCount(f: ListFilters): number {
+  return [f.status, f.project, f.environment].filter((v) => v !== null).length
+}
+
 /** True when at least one filter is narrowing the list. */
 export function isFiltered(f: ListFilters): boolean {
-  return f.status !== null || f.project !== null || f.environment !== null
+  return activeFilterCount(f) > 0
 }
 
 /**
