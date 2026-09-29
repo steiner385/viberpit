@@ -120,6 +120,29 @@ describe('SessionActions — Rename delegates, it does not implement', () => {
   // of here and into `SessionHeader`, which drives it from two triggers. These
   // two cases are what stops it growing back: a local dialog would show up as a
   // `role="dialog"` in the second one.
+  // 2026-09-29 re-critique: on a 393px phone Back, ‹, ›, Archive and ⋯ each held
+  // 44px and left the session title six characters. Archive is reversible and
+  // folds into ⋯ below `narrow:`; the chevrons stay (the phone's only way
+  // between sessions). Hidden, not unmounted — jsdom sees both homes.
+  it('narrow: the Archive button folds into the ⋯ menu as an item that archives the same way', async () => {
+    const user = userEvent.setup()
+    const close = successMutation()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(close as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onDone = vi.fn()
+    render(<SessionActions sessionId="s1" sessionName="My Session" onDone={onDone} />)
+
+    expect(screen.getByRole('button', { name: /archive session my session/i })).toHaveClass('narrow:hidden')
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    const item = screen.getByTestId('session-actions-archive-item')
+    expect(item).toHaveAttribute('role', 'menuitem')
+    expect(item).toHaveClass('hidden', 'narrow:flex')
+    await user.click(item)
+    expect(close.mutate).toHaveBeenCalledWith('s1')
+    expect(onDone).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
   it('shows no Rename item when no onRename is given', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)

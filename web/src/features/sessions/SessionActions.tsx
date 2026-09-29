@@ -130,12 +130,18 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
         }
       }}
     >
+      {/* Below `narrow:` Archive folds into the ⋯ menu (item below): on a 393px
+          phone Back, ‹, ›, this button and ⋯ each held 44px and left the title
+          six characters (2026-09-29 re-critique). Archive is reversible and one
+          tap further away; the chevrons stay — they are the phone's only way
+          between sessions. Hidden, not unmounted, so jsdom and the desktop keep
+          the same control. */}
       <button
         type="button"
         onClick={handleArchive}
         disabled={closeSession.isPending}
         aria-label={`Archive session ${sessionName}`}
-        className={iconBtn}
+        className={cn(iconBtn, 'narrow:hidden')}
       >
         <Archive size={18} aria-hidden="true" />
       </button>
@@ -179,6 +185,23 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
                 Rename
               </button>
             )}
+            {/* The narrow-only home of Archive (see the header button above). */}
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="session-actions-archive-item"
+              disabled={closeSession.isPending}
+              onClick={() => { setMenuOpen(false); handleArchive() }}
+              className={cn(
+                'hidden narrow:flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                'text-ink',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:bg-surface-raised',
+              )}
+            >
+              <Archive size={16} aria-hidden="true" />
+              Archive
+            </button>
             {onReload && (
               <button
                 type="button"

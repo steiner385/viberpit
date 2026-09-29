@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { setBaseTitle, releaseBaseTitle } from '@/shell/documentTitle'
+import { usePageTitle } from '@/shell/usePageTitle'
 import { useInteractive } from '@/shell/InteractionContext'
 import { useToastAnchor } from '@/shell/toastInsets'
 
@@ -37,11 +37,6 @@ export interface PageHeaderProps {
 
 /** Zone 1 of every page: the only h1 on the page, synced to document.title (WCAG 2.4.2). */
 export function PageHeader({ title, documentTitle, back, meta, actions, className }: PageHeaderProps) {
-  // A stable per-instance identity for `shell/documentTitle.ts`'s base-title
-  // stack. useState's initializer (not a ref) because this codebase's
-  // react-hooks/refs rule rejects reading a ref during render.
-  const [token] = React.useState(() => Symbol('page-header'))
-
   // `actions` is the page's action cluster (New, Refresh, a menu). Kiosk is
   // read-only, so it is not rendered at all rather than rendered disabled: a row
   // of greyed-out buttons on a wall display is chrome that costs header width
@@ -53,20 +48,10 @@ export function PageHeader({ title, documentTitle, back, meta, actions, classNam
   // publishes its bottom edge and the toaster starts below it (toastInsets).
   const clearRef = useToastAnchor('clear')
 
-  // Claim/update this instance's slot on every title change...
-  const base = documentTitle ?? title
-  React.useEffect(() => {
-    setBaseTitle(token, base)
-  }, [token, base])
-
-  // ...and release it exactly once, on unmount. Split from the effect above
-  // so a title change (which re-runs the effect) doesn't release-then-reclaim
-  // this instance's slot — that would pop it off the stack and push it back
-  // on top, reordering it ahead of a PageHeader mounted after it while both
-  // are still visible during a route transition.
-  React.useEffect(() => {
-    return () => releaseBaseTitle(token)
-  }, [token])
+  // Claim this page's `document.title` base for as long as the header is
+  // mounted — `shell/usePageTitle` owns the slot/token/release mechanics, shared
+  // with the pages that have no PageHeader (the Sessions pane, the empty panes).
+  usePageTitle(documentTitle ?? title)
 
   return (
     <header

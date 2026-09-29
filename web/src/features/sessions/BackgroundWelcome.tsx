@@ -12,7 +12,7 @@ import { EmptyPane } from './EmptyPane'
 
 export function BackgroundWelcome() {
   return (
-    <EmptyPane>
+    <EmptyPane title="Background sessions">
       Routine maintenance sessions ViberPit runs on its own. One that needs you
       moves to Active until it is resolved; select a session from the left to
       watch it work.

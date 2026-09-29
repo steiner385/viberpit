@@ -167,6 +167,13 @@ const PAGES: readonly PageContractRow[] = [
   // the archived list; the sub-agent title is `type › description` from the
   // parent's live task state, which this harness never has — so it reads the
   // fallback (`sub-agent`), and that is what the row asserts.
+  // The Sessions pane itself (2026-09-29 re-critique: every Sessions route
+  // announced only "ViberPit"). With no session open the empty pane is the
+  // page; with one open, `SessionHeader` is its header. `s-1` has no record in
+  // this harness, so its title is the runtime's id fallback.
+  { nav: 'sessions', path: '/sessions',                       variant: 'workspace', title: 'Sessions' },
+  { nav: 'sessions', path: '/sessions/background',            variant: 'workspace', title: 'Background sessions' },
+  { nav: 'sessions', path: '/sessions/s-1',                   variant: 'workspace', title: 's-1' },
   { nav: 'sessions', path: '/sessions/archived/arc-1',        variant: 'reader',    title: 'Old work' },
   { nav: 'sessions', path: '/sessions/s-1/agents/toolu_1',    variant: 'reader',    title: 'sub-agent' },
 ]
