@@ -161,7 +161,7 @@ async def notify_event(
     from sqlalchemy import select
 
     from server.db.models import AppSettings, NotificationChannel, NotificationRule
-    from server.sessions.notify_rules import Event, RuleView, plan
+    from server.sessions.notify_rules import Event, RuleView, localize_now, plan
 
     try:
         async with db_session() as db:
@@ -189,12 +189,14 @@ async def notify_event(
                 AppSettings.id == "singleton"))).scalar_one_or_none()
             q_start = settings.quiet_hours_start if settings else None
             q_end = settings.quiet_hours_end if settings else None
+            q_tz = settings.quiet_hours_timezone if settings else None
             channels = {c.id: c for c in (await db.execute(
                 select(NotificationChannel))).scalars().all()}
         ev = Event(event_class=event_class, title=title, body=body,
                    repo=repo, account=account, automation=automation, url=url,
                    session_id=session_id)
-        decision = plan(ev, rules, q_start, q_end, datetime.now(timezone.utc))
+        now_local = localize_now(datetime.now(timezone.utc), q_tz)
+        decision = plan(ev, rules, q_start, q_end, now_local)
     except Exception:
         log.warning("notify_event.routing_failed", exc_info=True)
         await notify(title, body, url=url)  # fail open to legacy fanout

@@ -24,7 +24,7 @@ from server.automations.base import (
 from server.automations.context import observation_failed, publish_observation
 from server.automations.engine_policy import EnginePolicy
 from server.pm.escalation import HeldItem, ProductEscalation, rank_held
-from server.sessions.notify_rules import in_quiet_hours
+from server.sessions.notify_rules import in_quiet_hours, localize_now
 
 log = logging.getLogger(__name__)
 
@@ -223,8 +223,8 @@ class DecisionEscalationLoop:
         if mode == "off":
             return
         now = self._now()
-        start, end = await self._quiet_window()
-        if in_quiet_hours(start, end, now):
+        start, end, tz = await self._quiet_window()
+        if in_quiet_hours(start, end, localize_now(now, tz)):
             # Decision 4: defer, don't store — the next tick outside the window
             # re-evaluates from live state, so nothing is lost and nothing leaks.
             return

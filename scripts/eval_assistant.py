@@ -709,7 +709,7 @@ class EvalFixture:
             critical=False, priority=100, created_at=now,
         ) for rid, event in (("rule-1", "needs_input"), ("rule-42", "session_ended"))}
         self.notification_sequence = 42
-        self.quiet_hours: dict[str, str | None] = {"start": None, "end": None}
+        self.quiet_hours: dict[str, str | None] = {"start": None, "end": None, "timezone": None}
         # ready_merge's inline production serializer has four explicit outcomes.
         # Keep offline outcomes configurable for contract tests, without invoking gh.
         self.ready_merge_outcomes = {
@@ -823,10 +823,10 @@ class EvalFixture:
 
         from server.api.notifications import (
             EVENT_CLASSES, QuietHoursBody, RuleBody, TestBody, _VALID_ACTIONS,
-            _rule_dict, _rule_view, _valid_hhmm,
+            _rule_dict, _rule_view, _valid_hhmm, _valid_timezone,
         )
         from server.db.models import NotificationRule
-        from server.sessions.notify_rules import Event, plan, select_rule
+        from server.sessions.notify_rules import Event, localize_now, plan, select_rule
 
         try:
             if path == "/api/notifications/rules":
@@ -869,6 +869,9 @@ class EvalFixture:
                     quiet = QuietHoursBody.model_validate(body)
                     if not _valid_hhmm(quiet.start) or not _valid_hhmm(quiet.end):
                         return httpx.Response(422, json={"detail": "start/end must be 'HH:MM' or null"})
+                    if not _valid_timezone(quiet.timezone):
+                        return httpx.Response(
+                            422, json={"detail": "timezone must be a valid IANA zone name or null"})
                     self.quiet_hours = quiet.model_dump()
                 if method in {"GET", "PUT"}:
                     return httpx.Response(200, json=self.quiet_hours)
@@ -878,7 +881,8 @@ class EvalFixture:
                               body="Routing preview", repo=preview.repo, account=preview.account,
                               automation=preview.automation)
                 rules = [_rule_view(r) for r in self.notification_rules.values()]
-                decision = plan(event, rules, self.quiet_hours["start"], self.quiet_hours["end"], self.now)
+                now_local = localize_now(self.now, self.quiet_hours.get("timezone"))
+                decision = plan(event, rules, self.quiet_hours["start"], self.quiet_hours["end"], now_local)
                 matched = select_rule(rules, event)
                 return httpx.Response(200, json={
                     "action": decision.action, "channelId": decision.channel_id,

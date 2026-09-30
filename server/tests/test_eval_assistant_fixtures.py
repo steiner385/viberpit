@@ -482,13 +482,13 @@ def test_notification_state_serialization_and_preview():
         assert c.post('/api/notifications/test', json={'repo': 'acme/other'}).json()['matchedRuleId'] == 'rule-1'
         assert c.post('/api/notifications/rules', json=body).json()['id'] != created['id']
         assert c.post('/api/notifications/rules', json={'priority': 'bad'}).status_code == 422
-        assert c.put('/api/notifications/quiet-hours', json={'start': '11:00', 'end': '13:00'}).json() == {'start': '11:00', 'end': '13:00'}
+        assert c.put('/api/notifications/quiet-hours', json={'start': '11:00', 'end': '13:00'}).json() == {'start': '11:00', 'end': '13:00', 'timezone': None}
         assert c.get('/api/notifications/quiet-hours').json()['start'] == '11:00'
         assert c.post('/api/notifications/test', json={}).json()['suppressedByQuiet'] is True
         assert c.put('/api/notifications/quiet-hours', json={'start': 'bad'}).status_code == 422
     with client() as fresh:
         assert fresh.get('/api/notifications/rules').json() == initial
-        assert fresh.get('/api/notifications/quiet-hours').json() == {'start': None, 'end': None}
+        assert fresh.get('/api/notifications/quiet-hours').json() == {'start': None, 'end': None, 'timezone': None}
         channels = fresh.get('/api/notifications/channels').json()
         assert 'delete rule rule-1' in channels[0]['name']
 

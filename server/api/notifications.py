@@ -101,6 +101,18 @@ def _valid_hhmm(value: str | None) -> bool:
     return 0 <= h <= 23 and 0 <= m <= 59
 
 
+def _valid_timezone(value: str | None) -> bool:
+    if value is None:
+        return True
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
 def _validate_webhook_url(url: str) -> None:
     """Validate a user-supplied webhook target (SSRF defense-in-depth).
 
@@ -375,6 +387,15 @@ async def delete_rule(
 class QuietHoursBody(BaseModel):
     start: str | None = None
     end: str | None = None
+    timezone: str | None = None
+
+
+def _quiet_hours_dict(row: AppSettings) -> dict:
+    return {
+        "start": row.quiet_hours_start,
+        "end": row.quiet_hours_end,
+        "timezone": row.quiet_hours_timezone,
+    }
 
 
 @router.get("/quiet-hours")
@@ -383,7 +404,7 @@ async def get_quiet_hours(
 ) -> dict:
     row = await _get_or_create_settings(db)
     await db.commit()
-    return {"start": row.quiet_hours_start, "end": row.quiet_hours_end}
+    return _quiet_hours_dict(row)
 
 
 @router.put("/quiet-hours")
@@ -392,12 +413,15 @@ async def put_quiet_hours(
 ) -> dict:
     if not _valid_hhmm(body.start) or not _valid_hhmm(body.end):
         raise HTTPException(422, "start/end must be 'HH:MM' or null")
+    if not _valid_timezone(body.timezone):
+        raise HTTPException(422, "timezone must be a valid IANA zone name or null")
     row = await _get_or_create_settings(db)
     row.quiet_hours_start = body.start
     row.quiet_hours_end = body.end
+    row.quiet_hours_timezone = body.timezone
     await db.flush()
     await db.commit()
-    return {"start": row.quiet_hours_start, "end": row.quiet_hours_end}
+    return _quiet_hours_dict(row)
 
 
 # --------------------------------------------------------------------------- #
@@ -417,6 +441,8 @@ async def test_routing(
     """Dry-run the routing engine for an event. Does NOT deliver anything."""
     from datetime import datetime, timezone
 
+    from server.sessions.notify_rules import localize_now
+
     ev = Event(
         event_class=body.eventClass,
         title="Test notification",
@@ -431,8 +457,9 @@ async def test_routing(
     rules = [_rule_view(r) for r in rule_rows]
     settings = await _get_or_create_settings(db)
     await db.commit()
+    now_local = localize_now(datetime.now(timezone.utc), settings.quiet_hours_timezone)
     decision = plan(
-        ev, rules, settings.quiet_hours_start, settings.quiet_hours_end, datetime.now(timezone.utc)
+        ev, rules, settings.quiet_hours_start, settings.quiet_hours_end, now_local
     )
     matched = select_rule(rules, ev)
     return {

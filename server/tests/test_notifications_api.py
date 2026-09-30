@@ -166,17 +166,19 @@ def test_quiet_hours_round_trip():
         assert c.get("/api/notifications/quiet-hours", headers=IDENTITY).json() == {
             "start": None,
             "end": None,
+            "timezone": None,
         }
         put = c.put(
             "/api/notifications/quiet-hours",
-            json={"start": "23:00", "end": "07:00"},
+            json={"start": "23:00", "end": "07:00", "timezone": "America/New_York"},
             headers=IDENTITY,
         )
         assert put.status_code == 200
-        assert put.json() == {"start": "23:00", "end": "07:00"}
+        assert put.json() == {"start": "23:00", "end": "07:00", "timezone": "America/New_York"}
         assert c.get("/api/notifications/quiet-hours", headers=IDENTITY).json() == {
             "start": "23:00",
             "end": "07:00",
+            "timezone": "America/New_York",
         }
 
 
@@ -185,6 +187,16 @@ def test_quiet_hours_rejects_bad_time():
         r = c.put(
             "/api/notifications/quiet-hours",
             json={"start": "25:99", "end": "07:00"},
+            headers=IDENTITY,
+        )
+        assert r.status_code == 422
+
+
+def test_quiet_hours_rejects_bad_timezone():
+    with _client() as c:
+        r = c.put(
+            "/api/notifications/quiet-hours",
+            json={"start": "23:00", "end": "07:00", "timezone": "Not/AZone"},
             headers=IDENTITY,
         )
         assert r.status_code == 422
@@ -231,6 +243,32 @@ def test_test_endpoint_returns_routing_decision():
             "/api/notifications/test", json={"eventClass": "session_ended"}, headers=IDENTITY
         ).json()
         assert ended["action"] == "ignore" and ended["deliver"] is False
+
+
+def test_test_endpoint_localizes_quiet_hours_with_stored_timezone(monkeypatch):
+    """Wiring check (#2562): the /test dry-run must localize `now` through the
+    stored quiet_hours_timezone, not evaluate the local HH:MM window against bare
+    UTC. Spies on notify_rules.localize_now (patched via a function-local import,
+    so the spy is live for every call) rather than asserting a real-clock-dependent
+    suppressed value, which would be flaky/a time bomb near window edges."""
+    from server.sessions import notify_rules
+
+    calls: list[str | None] = []
+    orig = notify_rules.localize_now
+
+    def spy(now, tz_name):
+        calls.append(tz_name)
+        return orig(now, tz_name)
+
+    monkeypatch.setattr(notify_rules, "localize_now", spy)
+    with _client() as c:
+        c.put(
+            "/api/notifications/quiet-hours",
+            json={"start": "22:00", "end": "07:00", "timezone": "America/New_York"},
+            headers=IDENTITY,
+        )
+        c.post("/api/notifications/test", json={"eventClass": "needs_input"}, headers=IDENTITY)
+    assert calls == ["America/New_York"]
 
 
 def test_unauthenticated_rejected():

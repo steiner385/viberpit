@@ -815,7 +815,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     @spec_tool("get_quiet_hours",
                "The configured quiet-hours window ('HH:MM' start/end, or null if unset) during "
-               "which non-critical notifications are suppressed.", {})
+               "which non-critical notifications are suppressed, and the IANA timezone it is "
+               "local to (null = UTC).", {})
     @guarded
     async def get_quiet_hours(args: dict[str, Any]) -> Any:
         return await api.get("/api/notifications/quiet-hours")
@@ -1462,12 +1463,14 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     @spec_tool("set_quiet_hours",
                "Set (or clear, by omitting a field) the quiet-hours window during which "
-               "non-critical notifications are suppressed. Times are 'HH:MM', 24h, local.",
-               _schema(start=str, end=str))
+               "non-critical notifications are suppressed. Times are 'HH:MM', 24h, local to "
+               "`timezone` (an IANA zone name, e.g. 'America/New_York'; omitted/null = UTC).",
+               _schema(start=str, end=str, timezone=str))
     @guarded
     async def set_quiet_hours(args: dict[str, Any]) -> Any:
         return await api.put("/api/notifications/quiet-hours",
-                             {"start": args.get("start"), "end": args.get("end")})
+                             {"start": args.get("start"), "end": args.get("end"),
+                              "timezone": args.get("timezone")})
 
     @spec_tool("advance_initiative",
                "Move an initiative to its next stage (e.g. spec → plan). The stage's gate must "
