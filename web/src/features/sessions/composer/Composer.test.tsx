@@ -42,6 +42,23 @@ describe('Composer', () => {
     expect(screen.getByRole('textbox', { name: /message/i })).toHaveClass('block')
   })
 
+  it('gives the textarea the whole first row in a narrow pane, buttons wrapping beneath', () => {
+    // 2026-09-29 re-critique: on a phone the input was ~129px wide because mic,
+    // attach, ✦ and Send shared its row. Under 28rem of ROW width (`@container`,
+    // so the assistant drawer's composer folds too) the textarea's wrapper spans
+    // the row and the buttons wrap to a second, right-aligned row. jsdom has no
+    // layout, so the contract is the classes.
+    render(<Composer {...defaults} />)
+    const wrapper = screen.getByRole('textbox', { name: /message/i }).parentElement!
+    expect(wrapper).toHaveClass('@max-md:basis-full')
+    const row = wrapper.parentElement!
+    expect(row).toHaveClass('flex-wrap', '@max-md:justify-end')
+    // The container is the dock root, an ANCESTOR of the row: a container
+    // query on the row itself would look past the row (it did, once).
+    expect(row.closest('.\\@container')).not.toBeNull()
+    expect(row.closest('.\\@container')).not.toBe(row)
+  })
+
   it('pads its bottom by the safe-area inset so the input clears the mobile gesture bar', () => {
     // Regression guard (#327 header rework + h-dvh): on edge-to-edge mobile browsers
     // `100dvh` extends behind the home/gesture bar, so without a safe-area inset the

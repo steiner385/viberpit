@@ -319,7 +319,10 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   return (
     <div
       className={cn(
-        'flex flex-col gap-2 px-3 py-2',
+        // `@container`: the prompt row below folds to two rows on a narrow
+        // dock. The container has to be an ANCESTOR of everything that queries
+        // it — the row's own `@max-md:justify-end` would look past the row.
+        '@container flex flex-col gap-2 px-3 py-2',
         'border-t border-edge',
         'bg-surface',
       )}
@@ -373,7 +376,13 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
-      <div className="relative flex items-end gap-2">
+      {/* The prompt row. In a pane under 28rem it becomes TWO rows (2026-09-29
+          re-critique, phone composer 129px wide): the textarea takes the full
+          first row (`@max-md:basis-full` below) and mic, attach, ✦ and Send wrap
+          to a second row, right-aligned into the thumb zone. Keyed on the dock's
+          own width (the root is the `@container`), so the assistant drawer's
+          composer gets the same treatment and a wide dock keeps its single row. */}
+      <div className="relative flex flex-wrap items-end gap-2 @max-md:justify-end">
         {pickingCommand && (
           <CommandPalette
             ref={paletteRef}
@@ -393,7 +402,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             onDismiss={() => setDismissedMentionAt(mentionStart)}
           />
         )}
-        <div className="relative flex-1">
+        <div className="relative flex-1 @max-md:basis-full">
           <textarea
             ref={textareaRef}
             aria-label="Message"

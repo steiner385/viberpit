@@ -514,3 +514,28 @@ describe('DispatchBar — account select uses nickname', () => {
     expect(work?.value).toBe('work')
   })
 })
+
+// 2026-09-29 re-critique: on a phone the prompt was ~129px wide because the
+// buttons shared its row, and its placeholder wrapped to two lines while
+// promising ↑↓ and ? keys a phone lacks. Under 28rem of ROW width the textarea
+// takes the whole first row and the buttons wrap beneath it, right-aligned —
+// the same fold the in-session Composer uses. jsdom has no layout; the contract
+// is the classes.
+describe('DispatchBar prompt row on a narrow strip', () => {
+  it('gives the textarea the whole first row, buttons wrapping beneath', () => {
+    render(<DispatchBar {...makeProps()} />)
+    const ta = screen.getByLabelText('New session prompt')
+    expect(ta).toHaveClass('@max-md:basis-full')
+    expect(ta.parentElement).toHaveClass('flex-wrap', '@max-md:justify-end')
+    // The container is the bar root, an ancestor of the row — never the row.
+    const container = ta.closest('.\\@container')
+    expect(container).not.toBeNull()
+    expect(container).not.toBe(ta.parentElement)
+  })
+
+  it('keeps the placeholder to one short line and points at the ? sheet for the key hints', () => {
+    render(<DispatchBar {...makeProps()} />)
+    const ta = screen.getByLabelText('New session prompt')
+    expect(ta).toHaveAttribute('placeholder', 'New session… (? for shortcuts)')
+  })
+})

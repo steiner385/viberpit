@@ -547,7 +547,9 @@ export function DispatchBar({
   return (
     <div
       className={cn(
-        'flex flex-col gap-2 px-3 pt-2',
+        // `@container`: the prompt row folds to two rows on a narrow bar (see
+        // the row below); the container must be an ancestor of the row itself.
+        '@container flex flex-col gap-2 px-3 pt-2',
         'border-t border-edge',
         'bg-surface',
       )}
@@ -789,8 +791,11 @@ export function DispatchBar({
         <p role="alert" className="text-sm text-danger">{dispatchError}</p>
       )}
 
-      {/* Prompt textarea + attach button row */}
-      <div className="flex items-end gap-2">
+      {/* Prompt textarea + attach button row. Under 28rem it becomes two rows —
+          the textarea alone on the first (`@max-md:basis-full`), the buttons
+          right-aligned on the second — exactly as the in-session Composer does
+          (2026-09-29 re-critique: the phone input was 129px wide). */}
+      <div className="flex flex-wrap items-end gap-2 @max-md:justify-end">
         <textarea
           ref={textareaRef}
           id="dispatch-bar-prompt"
@@ -802,10 +807,13 @@ export function DispatchBar({
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           rows={1}
-          placeholder="New session… (Enter to create, ↑↓ to navigate, ? for shortcuts)"
+          // Short enough for one line at phone width; the two key hints it
+          // dropped (Enter to create, ↑↓ to navigate) are keyboard-only and
+          // live in the `?` sheet, which is the one hint kept.
+          placeholder="New session… (? for shortcuts)"
           disabled={isPending}
           className={cn(
-            'flex-1 resize-none rounded-md border border-edge-strong',
+            'flex-1 @max-md:basis-full resize-none rounded-md border border-edge-strong',
             'bg-surface text-ink',
             'px-3 py-2 text-sm',
             'placeholder:text-ink-faint',
