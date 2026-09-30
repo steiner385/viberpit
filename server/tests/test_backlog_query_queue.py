@@ -789,3 +789,28 @@ def test_count_candidates_default_row_has_held_and_skipped_for_an_off_product(tm
         assert per_product["kindash"]["skipped"] == {}
 
     asyncio.run(run())
+
+
+def test_load_queue_rows_carries_the_hold_provenance(tmp_path):
+    """Spec 2026-09-30 §3: the read model needs who parked the item, why and when,
+    so the loader threads the three hold columns beside ``hold_kind``."""
+    async def run():
+        await _init(tmp_path, "holdprov.db")
+        await _seed_product("viberpit", "o/r")
+        await _seed_item("o/r", 1, score=1.0, hold_kind="owner_action")
+        from datetime import datetime, timezone
+
+        from server.db import db_session
+        from server.pm.queue_store import load_queue_rows
+
+        async with db_session() as db:
+            rows = await db.run_sync(lambda s: load_queue_rows(
+                s, now=datetime.now(timezone.utc), claimed_refs=set()))
+        (row,) = rows
+        assert row.hold_kind == "owner_action"
+        assert row.hold_by == "tony@example.com"
+        assert row.hold_reason == "max attempts"
+        # ``_seed_item`` does not stamp hold_set_at; the field must still exist.
+        assert row.hold_set_at is None
+
+    asyncio.run(run())
