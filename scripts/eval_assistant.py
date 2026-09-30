@@ -1190,7 +1190,7 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             slugs = {h["product"] for h in keep} | (
                 {params["product"]} if params.get("product") else set())
             holds_body["products"] = [p for p in holds_body["products"]
-                                if not params.get("product") or p["slug"] in slugs]
+                                      if not params.get("product") or p["slug"] in slugs]
             return httpx.Response(200, json={**holds_body, "held": keep})
         if path.startswith("/api/pm/projects/"):
             slug, _, tail = path[len("/api/pm/projects/"):].partition("/")
