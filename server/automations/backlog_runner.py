@@ -1502,9 +1502,18 @@ class BacklogRunnerLoop:
                 batch.primary, state, expected=previous, source=source,
                 work_stopped=await self._work_stopped(previous))
         except (OwnershipConflict, StaleOwnership) as exc:
-            await self._ctx.emit("info", f"{batch.primary}: waiting for existing work",
-                                 kind="ownership_wait", target=batch.primary,
-                                 detail={"reason": str(exc)})
+            # Name WHO holds the batch (2026-09-30 audit, D2): the bare
+            # "target already has an operation" sent an operator to the DB to
+            # learn that cairnea/KinDash#16774 was locked by a sibling's parked
+            # give-up, the same #2203 gap PR Doctor's refusal already closed.
+            holder = await self._holder_summary(batch)
+            summary = f"{batch.primary}: waiting for existing work"
+            detail: dict = {"reason": str(exc)}
+            if holder is not None:
+                summary += f" — {holder['text']}"
+                detail["holder"] = {k: v for k, v in holder.items() if k != "text"}
+            await self._ctx.emit("info", summary, kind="ownership_wait",
+                                 target=batch.primary, detail=detail)
             return result("busy")
         await self._announce_claim(batch)
         await self._ctx.emit("info", f"claimed {batch.primary}", kind="claimed",
@@ -1583,6 +1592,48 @@ class BacklogRunnerLoop:
         if self._queue_tail is not None:
             await self._emit_pick(batch)
         return result("spawned", rec)
+
+    async def _holder_summary(self, batch: "Batch") -> "dict | None":
+        """The operation holding one of *batch*'s targets, as the
+        ``ownership_wait`` event names it: ``text`` for the summary plus the
+        durable facts (token, owner, origin ref, phase, session, whether the
+        owning row is parked on a human) for the detail. Best-effort and
+        read-only — ``None`` when nothing is found or the read fails, in which
+        case the event carries the store's reason alone, as before.
+
+        A holder whose own row is ``gave_up`` is described as PARKED rather than
+        through ``foreign_holder_message``'s "in progress, try again shortly": its
+        session is over (often deleted), and "try again shortly" is exactly the
+        wrong instruction — the lock moves only when a human releases the hold on
+        the parked siblings (audit D1)."""
+        from server.db import db_session
+        from server.db.models import AutomationTargetState
+        from .action_providers import foreign_holder_message
+        from .ownership import holders_for_refs
+        from .registry import origin_label
+        try:
+            operations = await holders_for_refs(batch.issues or [batch.primary])
+            if not operations:
+                return None
+            op = operations[0]
+            origin = op.provenance.get("origin_ref") or ", ".join(sorted(op.display_refs.values()))
+            async with db_session() as db:
+                row = await db.get(AutomationTargetState, (op.owner, origin))
+            row_state = dict(row.state) if row is not None else {}
+        except Exception:  # pragma: no cover — a diagnostic read must not change the refusal
+            log.warning("backlog_runner.holder_summary_failed target=%s", batch.primary,
+                        exc_info=True)
+            return None
+        parked = bool(row_state.get("gave_up"))
+        if parked:
+            reason = row_state.get("reason")
+            text = (f"held by {origin_label(op.owner)} {op.source} of {origin} — parked, "
+                    f"needs human" + (f": {reason}" if reason else ""))
+        else:
+            text = foreign_holder_message(op)
+        return {"text": text, "token": op.token, "owner": op.owner, "source": op.source,
+                "origin_ref": origin, "phase": op.phase,
+                "session_id": op.session_id or op.reserved_session_id, "parked": parked}
 
     async def _settle_dispatch(self, tx, target: str, sid: str | None,
                                branch: str | None, *, model: str | None = None,

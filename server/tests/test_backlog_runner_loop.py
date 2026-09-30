@@ -1183,6 +1183,40 @@ def test_held_gave_up_row_is_left_alone(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="2026-09-30 ownership audit D1: a parked (gave_up) bundle keeps the lock on a "
+           "member whose hold was released, so the pool offers a ref the store refuses "
+           "forever (cairnea/KinDash#16774). Fix 1: split the bundle in _release_give_ups.")
+def test_a_parked_bundle_member_whose_hold_was_released_is_dispatchable(tmp_path):
+    """The bundle {#1, #2} gave up and parked BOTH issues on an ``owner_action``
+    hold; a bot then rewrote #2's body and the reconciler released #2's hold
+    alone (``holds.release_by_signals`` signal ``body_edit``). #2 is back in the
+    candidate pool, but the give-up's operation still owns #2's target: every
+    claim bounces with "target already has an operation" and nothing ever
+    escalates. The released member must become dispatchable (its target released
+    from the parked operation) instead of looping."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'split.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#2")], held={"o/r#1"},
+                                    config=make_config())
+        await _set_owned_state(ctx, "o/r#1", {
+            "repo": "o/r", "issues": ["o/r#1", "o/r#2"], "gave_up": True, "claimed": False,
+            "held": True, "reason": "bounced at opus; fable needs approval"})
+
+        await loop.tick()
+
+        assert [b.primary for b, _ in rec.spawns] == ["o/r#2"]
+        assert await ctx.list_events(kind="ownership_wait") == []
+        # The parked sibling keeps its row and its own lock until a human acts.
+        assert (await ctx.get_target_state("o/r#1")).get("gave_up") is True
+
+    asyncio.run(run())
+
+
 def test_release_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_path):
     """Release must happen BEFORE refill, not in the sweep that follows it.
 

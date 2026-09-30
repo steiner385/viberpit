@@ -282,5 +282,24 @@ def record_attempt(state: dict, action, head_sha: str) -> dict:
     return out
 
 
+def acted_at_head(rearmed: dict, action: RecoveryAction, head_sha: str | None) -> bool:
+    """THE per-head one-shot guard: PR Doctor already injected a fix of this
+    action's kind at *head_sha* (``record_attempt`` wrote ``last_action_sha`` and
+    consumed an attempt), so it will not act again until a push re-arms the
+    target. Pure. *rearmed* is ``apply_rearm``'s output, never the raw row — the
+    re-arm is what turns an external push into a fresh budget.
+
+    Shared by the sweep (``_pr_doctor_step``, which skips the target) and the
+    Backlog Runner admission gate (``_pr_doctor_pending_products``): a product was
+    held "reserved" for a PR PR Doctor had ALREADY updated at that head
+    (2026-09-30 audit, D6) because the gate re-derived "will fix" from
+    ``plan_recovery`` alone and never asked this question."""
+    if not head_sha or rearmed.get("last_action_sha") != head_sha:
+        return False
+    attempts = (rearmed.get("mechanical_attempts", 0) if isinstance(action, Mechanical)
+                else rearmed.get("attempts", 0))
+    return attempts > 0
+
+
 def target_terminal(info: PullRequestInfo) -> bool:
     return info.state in ("merged", "closed")

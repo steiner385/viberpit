@@ -254,6 +254,29 @@ async def owned(token: str) -> AsyncIterator[OwnershipTransaction]:
             tx._open = False
 
 
+async def holders_for_refs(refs: Sequence[str]) -> list[AutomationOperation]:
+    """Read-only: every operation currently holding a target whose display ref
+    is one of *refs* (case-insensitive), newest first.
+
+    Diagnostic only — it never acquires, transfers or releases, and it matches
+    on the display spelling a refusal was raised for rather than re-resolving
+    node IDs, so a refused claim can name its holder without a second GitHub
+    round trip. Identity for exclusion stays the canonical key (``acquire``).
+    """
+    wanted = {ref.lower() for ref in refs}
+    if not wanted:
+        return []
+    async with db_session() as db:
+        operations = (await db.scalars(
+            select(AutomationOperation)
+            .join(AutomationOwnedTarget,
+                  AutomationOwnedTarget.operation_token == AutomationOperation.token)
+            .order_by(AutomationOperation.created_at.desc())
+            .distinct())).all()
+    return [op for op in operations
+            if wanted & {ref.lower() for ref in (op.display_refs or {}).values()}]
+
+
 @dataclass(frozen=True)
 class ExecutionSnapshot:
     token: str
