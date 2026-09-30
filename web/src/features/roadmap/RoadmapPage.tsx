@@ -13,7 +13,7 @@ import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { useViewport } from '@/shell/useViewport'
 import {
-  capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
+  ROADMAP_PATH, capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
   roadmapScopeForSearch,
 } from './roadmapNavState'
 import { capabilityTrail, findCapability, findProduct, flattenCapabilities } from './lookup'
@@ -44,7 +44,10 @@ function RoadmapPageContent() {
   // reasons about the product/capability item alone. In the Inbox scope
   // NOTHING product-level is open, even on `/roadmap/kindash?scope=inbox`: one
   // page shows one body, and the scope is what says which.
-  const opened = !inbox && item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
+  const opened = !inbox && item && item.kind !== 'initiative' && item.kind !== 'proposal' && item.kind !== 'portfolio' ? item : null
+  // Bare `/roadmap`: the portfolio page holds the phone's band (the tree is at
+  // `?scope=map`), so it needs the same way to the list an open product has.
+  const portfolio = item?.kind === 'portfolio'
   // `poll: false`: the shell's list column observes the same cache entry and
   // owns the 15 s interval. Two polling observers of one key are two requests.
   // `isFetching` as well as `isLoading`: `isLoading` is FIRST-load only, and the
@@ -175,7 +178,7 @@ function RoadmapPageContent() {
   const missing = mapAnswered && map !== undefined && opened !== null
     && (product === null || (opened.kind === 'capability' && capability === null))
 
-  const crumbs: BreadcrumbItem[] = [{ label: ROADMAP.label, to: roadmapPath() }]
+  const crumbs: BreadcrumbItem[] = [{ label: ROADMAP.label, to: ROADMAP_PATH }]
   // Annotated: `ROADMAP.label` is a const literal, so an inferred `title` could
   // never be reassigned to a product or capability name.
   let title: string = ROADMAP.label
@@ -236,7 +239,7 @@ function RoadmapPageContent() {
   // An open proposal hides `app.list` exactly as an open product/capability
   // does (the shell's `roadmapOpenItem` resolver treats a proposal as an open
   // item too), so it needs the same way back — to the Inbox rather than the map.
-  const back = (opened || proposalId) && viewportMode !== 'desktop'
+  const back = (opened || proposalId || portfolio) && viewportMode !== 'desktop'
     ? inbox
       ? { to: inboxPath({ product: inboxProduct }), label: `Back to ${ROADMAP.inbox}` }
       : { to: roadmapPath('map'), label: `Back to ${ROADMAP.map}` }
@@ -342,7 +345,7 @@ function RoadmapPageContent() {
             title="Not found"
             description={`Nothing on the ${ROADMAP.label.toLowerCase()} matches this address. It may have been renamed.`}
             action={(
-              <Link className="text-accent hover:underline" to={roadmapPath()}>
+              <Link className="text-accent hover:underline" to={ROADMAP_PATH}>
                 Back to the {ROADMAP.label.toLowerCase()}
               </Link>
             )}

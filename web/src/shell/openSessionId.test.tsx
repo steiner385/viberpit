@@ -22,6 +22,7 @@ function describeItem(item: OpenItem | null): string {
     case 'capability': return `capability:${item.productSlug}/${item.capSlug}`
     case 'initiative': return `initiative:${item.initiativeSlug}`
     case 'proposal': return `proposal:${item.proposalId}`
+    case 'portfolio': return 'portfolio'
     case 'automation': return `automation:${item.automationId}`
     case 'ciRepo': return `ciRepo:${item.repo}`
   }
@@ -60,7 +61,10 @@ describe('useOpenItem', () => {
     // Roadmap detail routes report an open item and NEVER an open session: the
     // resolver discriminates on `productSlug`/`capSlug`/`initiativeSlug`, so no
     // roadmap URL can attach a live session runtime.
-    ['/roadmap', 'none|-'],
+    // Bare `/roadmap` is the portfolio PAGE, open in its own right (it holds a
+    // phone's band); a list scope is nothing open. Neither is a session.
+    ['/roadmap', 'portfolio|-'],
+    ['/roadmap?scope=map', 'none|-'],
     ['/roadmap/kindash', 'product:kindash|-'],
     ['/roadmap/kindash/capabilities/tasks', 'capability:kindash/tasks|-'],
     ['/initiatives/views', 'initiative:views|-'],
