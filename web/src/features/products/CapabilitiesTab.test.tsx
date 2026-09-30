@@ -78,10 +78,25 @@ describe('CapabilitiesTab', () => {
       new ApiRequestError(422, { detail: { error: 'has_dependents', message: 'nope' } }),
     )
     render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
-    fireEvent.click(screen.getAllByRole('button', { name: /retire/i })[1]) // dictation
-    fireEvent.click(screen.getByRole('button', { name: /confirm/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /^retire$/i })[1]) // dictation
+    fireEvent.click(screen.getByRole('button', { name: 'Retire Dictation' }))
     await waitFor(() => expect(retireAsync).toHaveBeenCalledWith({ slug: 'dictation' }))
+    // The refusal answers the tap that is still on screen: inside the dialog,
+    // which stays open; Cancel takes the question and the refusal away together.
+    const dialog = await screen.findByRole('dialog', { name: 'Retire Dictation?' })
     expect(await screen.findByRole('alert')).toHaveTextContent(/nope/i)
+    expect(dialog).toContainElement(screen.getByRole('alert'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('retiring closes the dialog once the server accepts', async () => {
+    retireAsync.mockResolvedValue({ pointer: {} })
+    render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
+    fireEvent.click(screen.getAllByRole('button', { name: /^retire$/i })[1]) // dictation
+    fireEvent.click(screen.getByRole('button', { name: 'Retire Dictation' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('merging a capability shows the repointed counts from the response', async () => {
@@ -106,12 +121,30 @@ describe('CapabilitiesTab', () => {
     expect(await screen.findByText(/2 cross-product link/i)).toBeInTheDocument()
   })
 
-  it('warns that retiring reparents live children before confirming', () => {
+  // 2026-09-30 Roadmap critique, P2: the old inline confirm was a 12px sentence
+  // that named neither the open issues two cells to its left nor which children
+  // move where. The gate is a Dialog and names every consequence.
+  it('retiring opens a dialog that names the children, where they go, and the open issues', () => {
     render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
     fireEvent.click(screen.getAllByRole('button', { name: /^retire$/i })[0]) // sessions
-    expect(screen.getByText(/Retire Sessions\?/)).toHaveTextContent(
-      /sub-capabilities will move up to its parent/i,
-    )
+    const dialog = screen.getByRole('dialog', { name: 'Retire Sessions?' })
+    expect(dialog).toHaveTextContent('Sessions is marked Sunset in its feature doc and leaves the tree')
+    expect(dialog).toHaveTextContent('1 sub-capability (Dictation) moves up to the top level')
+    expect(dialog).toHaveTextContent('3 open issues counted under it stay where they are')
+    expect(dialog).toHaveTextContent(/if any is mapped directly to it, the retire is refused/)
+    expect(dialog).toHaveTextContent(/Reverse: Not from here/)
+    // The doc commit is a GitHub write, badged like every other gate's.
+    expect(screen.getAllByText('writes to GitHub')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Retire Sessions' })).toBeInTheDocument()
+    expect(retireAsync).not.toHaveBeenCalled()
+  })
+
+  it('a leaf under a parent says it has no children to move, and names its parent otherwise', () => {
+    render(<CapabilitiesTab product={PRODUCT} capabilities={CAPS} />)
+    fireEvent.click(screen.getAllByRole('button', { name: /^retire$/i })[1]) // dictation
+    const dialog = screen.getByRole('dialog', { name: 'Retire Dictation?' })
+    expect(dialog).not.toHaveTextContent(/sub-capabilit/)
+    expect(dialog).toHaveTextContent('5 open issues counted under it')
   })
 
   it('offers neither Retire nor a merge target for an already-sunset capability', () => {
