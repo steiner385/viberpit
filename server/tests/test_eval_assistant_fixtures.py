@@ -26,6 +26,8 @@ def client(fixture=None):
 # f67480b39960fd5678a3d7a9b8ca4a4fe7986554a8e9a76b5486dd4b1532645f
 # Before list_decisions/list_holds (spec 2026-09-30 §6, 126 cases):
 # 98f9d941e0e26f1de2e4be3aac5f20958b500624805866f7954c71dfec8544c9
+# Before watch(kind=product, condition=needs_decision) (spec 2026-09-30 §5, 128 cases):
+# f5d3ec9e7eb0c6f35113420dd5a55974e656250fa2e456ef622900b324131ac1
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -33,8 +35,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "f5d3ec9e7eb0c6f35113420dd5a55974e656250fa2e456ef622900b324131ac1"
-    assert len(rows) == 128
+    assert digest == "c78f1a7d53459a2aa4682d008d3dc5affa339eb9c736ac8b3ce0d554f1f63852"
+    assert len(rows) == 129
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
