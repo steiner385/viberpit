@@ -241,14 +241,29 @@
 .queue-train.legend-train { margin-bottom: 4px; flex-wrap: wrap; overflow-x: visible; }
 .legend-train .car { min-width: 88px; }
 
-/* Phones (≤560px): nodes are flex-shrink:0 × 84px, so a long pipeline overflows.
-   Narrow them and let the track scroll as a backstop. (Was 52px for the old
-   70px/11px-glyph node; widened alongside the issue 1407 bump so the larger label
-   text still fits.) */
+/* Phones (≤560px) — and a desktop at 200% zoom, which is the same width in CSS px.
+   Track: fixed 64px nodes still overflowed (five nodes measured 360px in a 325px
+   row, so "Prod" clipped to "Pr" on every phone row — 2026-09-30 Pipeline
+   critique, P1). The nodes now flex to share the row and the label ellipsizes;
+   the scroll stays only as a backstop for a track wider than five.
+   Gantt: the 200px name column left a 9px bar column in the same 325px row,
+   46 rows of it. Below 560px the check's name takes its own line and the bar
+   runs the full width with its time beside it. */
 @media (max-width: 560px) {
   &.track { overflow-x: auto; padding-bottom: 2px; }
-  .node { width: 64px; }
-  .seg { min-width: 10px; }
+  .node { width: auto; min-width: 44px; flex: 1 1 0; }
+  .node-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Fixed, not flexible: every spare pixel goes to the nodes, so a 325px row
+     gives each ~60px and "Merged" (59px at this size) keeps its whole word. */
+  .seg { flex: 0 0 6px; min-width: 6px; }
+  .g-row, &.legend-gantt .g-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "name name" "bar time";
+    row-gap: 2px;
+  }
+  .g-name { grid-area: name; }
+  .g-bar { grid-area: bar; }
+  .g-t { grid-area: time; }
 }
 }
 
