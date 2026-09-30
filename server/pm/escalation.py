@@ -17,7 +17,8 @@ from datetime import datetime
 from typing import Any
 
 from server.automations.product_policy import is_on
-from server.pm.desired_state import HELD_KINDS
+from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
+                                     STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
 from server.pm.queue import QueueRow, rank, skip_reason
 
@@ -98,6 +99,17 @@ def _hours(since: datetime | None, now: datetime) -> float | None:
     return round((now - since).total_seconds() / 3600, 1)
 
 
+def _simulated_status(row: QueueRow) -> str | None:
+    """The board Status the reconciler WOULD stamp once the hold/blockers we are
+    simulating away are gone (``desired_state.derive_status``): Ready when the
+    item is classified — ``score`` is set exactly then — else Backlog. Any other
+    status (Done, In progress, …) is left alone: we only undo the two stamps that
+    come from the facts we strike."""
+    if row.status in (STATUS_HELD, STATUS_BLOCKED):
+        return STATUS_READY if row.score is not None else STATUS_BACKLOG
+    return row.status
+
+
 def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
                now: datetime, min_status: str, respect_dependencies: bool,
                give_up_after_bounces: int = 0,
@@ -109,7 +121,9 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
     answers "if this chain shipped, what would the runner pick up?" — honest about
     the fact that releasing a hold frees the HELD item now and its dependents only
     once it ships. A dependent that is also assigned, claimed or held in its own
-    right stays skipped and is not counted.
+    right stays skipped and is not counted. With ``respect_dependencies=False``
+    dependents were never gated by blockers, so ``downstream_dispatchable`` counts
+    what is dispatchable now.
     """
     rows = list(rows)
     by_ref = {r.ref: r for r in rows}
@@ -131,20 +145,23 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
             dep_row = by_ref.get(dep)
             if dep_row is None:
                 continue
-            unblocked = replace(dep_row, open_blockers=tuple(
-                b for b in dep_row.open_blockers if b not in chain))
+            remaining = tuple(b for b in dep_row.open_blockers if b not in chain)
+            # A blocker outside the chain keeps the stamp (and skip_reason says blocked).
+            unblocked = replace(dep_row, open_blockers=remaining,
+                                status=dep_row.status if remaining
+                                else _simulated_status(dep_row))
             if skipped(unblocked) is None:
                 freed += 1
-        on_release = skipped(replace(row, hold_kind=None)) is None
+        on_release = skipped(replace(row, hold_kind=None, status=_simulated_status(row))) is None
         proposal = proposals_by_ref.get(row.ref)
         out.append(HeldItem(
             ref=row.ref, repo=row.repo, number=row.number, product=row.product,
             title=row.title, url=row.url, hold_kind=str(row.hold_kind),
             hold_reason=row.hold_reason or "", hold_by=row.hold_by or "",
             hold_set_at=row.hold_set_at, age_hours=_hours(row.hold_set_at, now),
-            proposal_id=getattr(proposal, "id", None) if proposal is not None else None,
-            options=tuple(getattr(proposal, "options", None) or ()) if proposal is not None else (),
-            recommended_key=getattr(proposal, "recommended_key", None) if proposal is not None else None,
+            proposal_id=getattr(proposal, "id", None),
+            options=tuple(getattr(proposal, "options", None) or ()),
+            recommended_key=getattr(proposal, "recommended_key", None),
             downstream=len(chain_refs), downstream_dispatchable=freed,
             downstream_refs=chain_refs[:DOWNSTREAM_REFS_CAP],
             dispatchable_on_release=on_release,

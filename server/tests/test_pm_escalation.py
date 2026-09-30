@@ -123,3 +123,24 @@ def test_product_escalation_reads_reach_from_the_policy_unless_overridden():
     e = product_escalation("p", [backlog, _row(ref="o/r#2", number=2, status="Backlog")], {},
                            pol, now=NOW, min_status="Ready")
     assert e.dispatchable == 0 and e.skipped == {"held": 1, "status": 1}
+
+
+def test_release_simulation_undoes_the_reconcilers_held_stamp():
+    classified = _held("o/r#1", status="Held", score=1.0)
+    assert held_items([classified], {}, **KW)[0].dispatchable_on_release is True
+    unscored = _held("o/r#1", status="Held", score=None)
+    assert held_items([unscored], {}, **KW)[0].dispatchable_on_release is False
+    kw = dict(KW, min_status="Backlog")
+    assert held_items([unscored], {}, **kw)[0].dispatchable_on_release is True
+
+
+def test_chain_simulation_on_a_reconciled_board_with_blocked_stamps():
+    rows = [_held("o/r#1", status="Held"),
+            _row(ref="o/r#2", number=2, status="Blocked", open_blockers=("o/r#1",)),
+            _row(ref="o/r#5", number=5, status="Blocked",
+                 open_blockers=("o/r#1", "o/r#8")),
+            _row(ref="o/r#8", number=8, status="Blocked", open_blockers=("o/r#9",)),
+            _row(ref="o/r#9", number=9, status="In progress"),
+            _row(ref="o/r#6", number=6, status="Done", open_blockers=("o/r#1",))]
+    (item,) = held_items(rows, {}, **KW)
+    assert item.downstream_dispatchable == 1  # only #2; #5 keeps #8, #6 is Done
