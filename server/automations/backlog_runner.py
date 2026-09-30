@@ -1502,9 +1502,18 @@ class BacklogRunnerLoop:
                 batch.primary, state, expected=previous, source=source,
                 work_stopped=await self._work_stopped(previous))
         except (OwnershipConflict, StaleOwnership) as exc:
-            await self._ctx.emit("info", f"{batch.primary}: waiting for existing work",
-                                 kind="ownership_wait", target=batch.primary,
-                                 detail={"reason": str(exc)})
+            # Name WHO holds the batch (2026-09-30 audit, D2): the bare
+            # "target already has an operation" sent an operator to the DB to
+            # learn that cairnea/KinDash#16774 was locked by a sibling's parked
+            # give-up, the same #2203 gap PR Doctor's refusal already closed.
+            holder = await self._holder_summary(batch)
+            summary = f"{batch.primary}: waiting for existing work"
+            detail: dict = {"reason": str(exc)}
+            if holder is not None:
+                summary += f" — {holder['text']}"
+                detail["holder"] = {k: v for k, v in holder.items() if k != "text"}
+            await self._ctx.emit("info", summary, kind="ownership_wait",
+                                 target=batch.primary, detail=detail)
             return result("busy")
         await self._announce_claim(batch)
         await self._ctx.emit("info", f"claimed {batch.primary}", kind="claimed",
@@ -1583,6 +1592,48 @@ class BacklogRunnerLoop:
         if self._queue_tail is not None:
             await self._emit_pick(batch)
         return result("spawned", rec)
+
+    async def _holder_summary(self, batch: "Batch") -> "dict | None":
+        """The operation holding one of *batch*'s targets, as the
+        ``ownership_wait`` event names it: ``text`` for the summary plus the
+        durable facts (token, owner, origin ref, phase, session, whether the
+        owning row is parked on a human) for the detail. Best-effort and
+        read-only — ``None`` when nothing is found or the read fails, in which
+        case the event carries the store's reason alone, as before.
+
+        A holder whose own row is ``gave_up`` is described as PARKED rather than
+        through ``foreign_holder_message``'s "in progress, try again shortly": its
+        session is over (often deleted), and "try again shortly" is exactly the
+        wrong instruction — the lock moves only when a human releases the hold on
+        the parked siblings (audit D1)."""
+        from server.db import db_session
+        from server.db.models import AutomationTargetState
+        from .action_providers import foreign_holder_message
+        from .ownership import holders_for_refs
+        from .registry import origin_label
+        try:
+            operations = await holders_for_refs(batch.issues or [batch.primary])
+            if not operations:
+                return None
+            op = operations[0]
+            origin = op.provenance.get("origin_ref") or ", ".join(sorted(op.display_refs.values()))
+            async with db_session() as db:
+                row = await db.get(AutomationTargetState, (op.owner, origin))
+            row_state = dict(row.state) if row is not None else {}
+        except Exception:  # pragma: no cover — a diagnostic read must not change the refusal
+            log.warning("backlog_runner.holder_summary_failed target=%s", batch.primary,
+                        exc_info=True)
+            return None
+        parked = bool(row_state.get("gave_up"))
+        if parked:
+            reason = row_state.get("reason")
+            text = (f"held by {origin_label(op.owner)} {op.source} of {origin} — parked, "
+                    f"needs human" + (f": {reason}" if reason else ""))
+        else:
+            text = foreign_holder_message(op)
+        return {"text": text, "token": op.token, "owner": op.owner, "source": op.source,
+                "origin_ref": origin, "phase": op.phase,
+                "session_id": op.session_id or op.reserved_session_id, "parked": parked}
 
     async def _settle_dispatch(self, tx, target: str, sid: str | None,
                                branch: str | None, *, model: str | None = None,
@@ -1710,16 +1761,85 @@ class BacklogRunnerLoop:
                         continue
                 await self._write_state(target, st, {**st, "held": True})
                 continue
-            # A bundle is released as a UNIT: while ANY ref of the row is still held
-            # the whole row stays, because the batch was claimed and dispatched as
-            # one. A Retry on one sibling therefore takes effect only once the last
-            # held sibling is released too.
+            # The ROW is released as a unit — it is one give-up, keyed by one
+            # primary — but its members are not: a hold is per issue and any
+            # release signal (a person's Retry, a bot rewriting its own issue
+            # body) frees one member alone. Such a member is queue-eligible again
+            # while the bundle's operation still owns its target, so every claim
+            # bounced forever (2026-09-30 audit, D1: cairnea/KinDash#16774). Split
+            # it off: release just its target and shrink the row, so the pool and
+            # the store agree again; the still-held siblings stay parked.
             if backed:
+                await self._split_parked_bundle(target, st, refs, held)
                 continue
             if not await self._write_state(target, st, None):
                 continue
             await self._ctx.emit("info", f"{target}: hold released — back in the pool",
                                  kind="hold_released", target=target)
+
+    async def _split_parked_bundle(self, target: str, st: dict, refs: list,
+                                   held: "Mapping[str, str]") -> None:
+        """Release the members of a parked (``gave_up``) bundle whose hold is gone
+        while a sibling's still stands (audit D1). Fenced through ``owned`` +
+        the row CAS like ``_reconcile_dangling``; the store's own
+        ``release_targets`` proof bar applies (the same stopped-work attestation
+        a full release needs — ``_work_stopped`` repairs it first for a session
+        that is gone). Anything not provable this tick is left for the next one.
+
+        When the PRIMARY is the freed member the row is re-keyed to the first
+        still-held sibling (and the operation's ``origin_ref`` with it): the row
+        exists only to park what is still held, and a row keyed by an issue it no
+        longer owns would refuse that issue's next claim as "existing work"."""
+        from server.db.models import AutomationTargetState
+        from . import target_identity
+        from .ownership import ReleaseProof, StaleOwnership, owned
+
+        token = st.get("ownership_token")
+        free = [ref for ref in refs if ref not in held]
+        kept = [ref for ref in refs if ref in held]
+        if not token or not free or not kept:
+            return
+        if not await self._work_stopped(st):
+            return
+        try:
+            resolved = await target_identity.resolve_targets(free, kind="issue")
+        except Exception:
+            log.warning("backlog_runner.bundle_split_resolve_failed target=%s refs=%s",
+                        target, free, exc_info=True)
+            return
+        new_target = target if target in kept else kept[0]
+        new_state = {**st, "issues": kept,
+                     "titles": {r: t for r, t in (st.get("titles") or {}).items() if r in kept}}
+        reason = "parked bundle split: hold released on " + ", ".join(free)
+        try:
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, (self._ctx.automation_id, target))
+                if row is None or row.state != st:
+                    return
+                tx.release_targets([t.key for t in resolved], ReleaseProof.WORK_STOPPED, reason)
+                if new_target == target:
+                    row.state = new_state
+                else:
+                    await tx.db.delete(row)
+                    tx.db.add(AutomationTargetState(
+                        automation_id=self._ctx.automation_id, target=new_target, state=new_state))
+                    tx.operation.provenance = {**tx.operation.provenance, "origin_ref": new_target}
+        except StaleOwnership:
+            return
+        except ValueError:
+            # The proof bar is not met yet (an unattested execution); the next
+            # tick's ``_work_stopped`` repair gets another go. INFO, not WARNING:
+            # expected while a stop is still being proven, and a per-tick WARNING
+            # would file itself as an incident.
+            log.info("backlog_runner.bundle_split_not_provable target=%s refs=%s", target, free,
+                     exc_info=True)
+            return
+        await self._ctx.emit(
+            "info",
+            f"{target}: {', '.join(free)} released from the parked bundle — back in the pool"
+            f" (still parked: {', '.join(kept)})",
+            kind="bundle_split", target=new_target,
+            detail={"released": free, "kept": kept, "row": new_target})
 
     async def _sweep(self) -> None:
         states = await self._ctx.list_target_states()

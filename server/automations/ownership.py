@@ -180,6 +180,33 @@ class OwnershipTransaction:
         for target in self._targets:
             target.operation_token = None
 
+    def release_targets(self, keys: Sequence[str], proof: ReleaseProof, reason: str) -> None:
+        """Release a strict SUBSET of this operation's targets; the rest stay fenced.
+
+        The one partial release in the store, for a parked bundle whose members
+        stopped sharing a fate (2026-09-30 audit, D1): a give-up keeps the whole
+        batch's operation while a human decides, but holds are per-issue and one
+        can be released alone, leaving that issue queue-eligible yet permanently
+        unclaimable. The proof bar is ``release()``'s — the same stopped-work
+        attestation, because the effect being vouched for is the same session.
+        Releasing every target is ``release()``'s job and is refused here so the
+        operation's phase can never be left ``active`` with nothing owned."""
+        self._validate_release(proof, reason)
+        wanted = set(keys)
+        owned_keys = {t.key for t in self._targets}
+        if not wanted or not wanted <= owned_keys:
+            raise ValueError("only this operation's own targets can be released")
+        if wanted == owned_keys:
+            raise ValueError("releasing every target is a full release; use release()")
+        for target in self._targets:
+            if target.key in wanted:
+                target.operation_token = None
+        self._targets = [t for t in self._targets if t.key not in wanted]
+        self.operation.targets = [k for k in self.operation.targets if k not in wanted]
+        self.operation.display_refs = {k: v for k, v in self.operation.display_refs.items()
+                                       if k not in wanted}
+        self.operation.reason = reason
+
     async def transfer(self, *, owner: str, source: str, proof: ReleaseProof,
                        reason: str, provenance: dict | None = None,
                        successor_targets: Sequence[CanonicalTarget] | None = None,
@@ -252,6 +279,33 @@ async def owned(token: str) -> AsyncIterator[OwnershipTransaction]:
             yield tx
         finally:
             tx._open = False
+
+
+async def holders_for_refs(refs: Sequence[str]) -> list[AutomationOperation]:
+    """Read-only: every operation currently holding a target whose display ref
+    is one of *refs* (case-insensitive), newest first.
+
+    Diagnostic only — it never acquires, transfers or releases, and it matches
+    on the display spelling a refusal was raised for rather than re-resolving
+    node IDs, so a refused claim can name its holder without a second GitHub
+    round trip. Identity for exclusion stays the canonical key (``acquire``).
+    """
+    wanted = {ref.lower() for ref in refs}
+    if not wanted:
+        return []
+    # An IN-subquery, not a JOIN + DISTINCT: the operation row carries ``json``
+    # columns, and Postgres has no equality operator for ``json`` to DISTINCT
+    # on ("could not identify an equality operator for type json") — SQLite
+    # happily compares the text, so only the Postgres leg would have caught it.
+    holding = select(AutomationOwnedTarget.operation_token).where(
+        AutomationOwnedTarget.operation_token.is_not(None))
+    async with db_session() as db:
+        operations = (await db.scalars(
+            select(AutomationOperation)
+            .where(AutomationOperation.token.in_(holding))
+            .order_by(AutomationOperation.created_at.desc()))).all()
+    return [op for op in operations
+            if wanted & {ref.lower() for ref in (op.display_refs or {}).values()}]
 
 
 @dataclass(frozen=True)

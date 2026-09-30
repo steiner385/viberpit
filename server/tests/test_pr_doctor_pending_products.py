@@ -225,6 +225,73 @@ def test_a_newer_live_session_wait_supersedes_the_refusal(monkeypatch, tmp_path)
     asyncio.run(run())
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-30 audit, D6: a fix already injected at this head is not "pending"
+# ---------------------------------------------------------------------------
+
+def test_a_session_fix_already_injected_at_this_head_does_not_gate(monkeypatch, tmp_path):
+    """The sweep's per-head one-shot guard (``engine.acted_at_head``) means PR
+    Doctor will not touch this PR again until a push — so reserving the product
+    for it holds capacity for a repair that is not coming (KinDash#17383)."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path, state=_fixed_at(_HEAD))
+
+        assert await orch._pr_doctor_pending_products() == {}
+
+    asyncio.run(run())
+
+
+def _fixed_at(head, *, kind="failing_ci"):
+    """The row ``_pr_doctor_session_fix`` leaves after injecting a fix at *head*:
+    ``apply_rearm`` stamps ``last_head_sha``/``last_failure`` and ``record_attempt``
+    consumes the attempt and stamps ``last_action_sha``."""
+    return {"last_head_sha": head, "last_failure": kind, "last_action_sha": head,
+            "attempts": 1, "total_attempts": 1, "attempted": True}
+
+
+def test_a_branch_update_already_done_at_this_head_does_not_gate(monkeypatch, tmp_path):
+    """Same guard, mechanical kind: the update-branch PR Doctor ran on
+    KinDash#17382 at 11:34:02 UTC kept the product gated at 11:34:57."""
+    async def run():
+        await _init_db(tmp_path)
+        await _set_mode(monkeypatch, "auto")
+        await _set_config({"auto_update_out_of_date": True})
+        await _register_repo("o/r", "product-a")
+        behind = _pr(checks="passing", merge_state_status="BEHIND")
+        orch = _build_orch(cache={("o/r", "feat/x"): behind}, pairs=[("o/r", "feat/x")])
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#7", {"last_head_sha": _HEAD, "last_failure": "out_of_date",
+                      "last_action_sha": _HEAD, "mechanical_attempts": 1, "total_mechanical": 1})
+
+        assert await orch._pr_doctor_pending_products() == {}
+
+    asyncio.run(run())
+
+
+def test_a_repair_still_running_at_this_head_keeps_gating(monkeypatch, tmp_path):
+    """An operation held under PR Doctor's own token IS the running repair —
+    the per-head guard must not un-gate it (the ``_pr_doctor_claim_unclaimable``
+    rule 2 reservation stays real while the session works)."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path, state={
+            **_fixed_at(_HEAD), "ownership_token": "tok-1", "session_id": "sess-1"})
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_a_push_since_the_last_fix_re_arms_the_gate(monkeypatch, tmp_path):
+    """``last_action_sha`` at an OLDER head proves nothing about this one: the
+    sweep would act again, so the reservation is real."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path, state=_fixed_at("b" * 40))
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
 def test_only_the_unclaimable_product_is_dropped(monkeypatch, tmp_path):
     """Per-product, exactly like the gate itself: one product's unclaimable PR
     never un-gates another product's claimable one."""

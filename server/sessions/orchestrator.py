@@ -13808,9 +13808,7 @@ class SessionOrchestrator:
         st = await self._pr_doctor_ctx.get_target_state(target)
         rearmed = engine.apply_rearm(st, info)
         action = engine.plan_recovery(engine.classify(info), mode, config, rearmed)
-        attempts = (rearmed.get("mechanical_attempts", 0)
-                    if isinstance(action, engine.Mechanical) else rearmed.get("attempts", 0))
-        if rearmed.get("last_action_sha") == info.head_sha and attempts > 0:
+        if engine.acted_at_head(rearmed, action, info.head_sha):
             return False
         if isinstance(action, (engine.Mechanical, engine.SessionFix)):
             if not await self._backlog_pr_doctor_active(repo):
@@ -15532,6 +15530,17 @@ class SessionOrchestrator:
                 state = states.get(target, {})
                 action = engine.plan_recovery(failure_mode, mode, config, state)
                 if not isinstance(action, (engine.Mechanical, engine.SessionFix)):
+                    continue
+                # The sweep's own per-head guard: a fix already injected at this
+                # head is not "pending" — nothing more happens until a push
+                # re-arms the target, so reserving the product for it starves the
+                # product for no repair (2026-09-30 audit, D6: KinDash sat gated
+                # on two PRs PR Doctor had already acted on a minute earlier).
+                # An operation still held under PR Doctor's token is the running
+                # repair itself and keeps reserving, exactly as before.
+                if (not state.get("ownership_token")
+                        and engine.acted_at_head(engine.apply_rearm(state, info), action,
+                                                 info.head_sha)):
                     continue
                 bucket = (unclaimable if self._pr_doctor_claim_unclaimable(
                     state, refusals.get(target), info) else gating)

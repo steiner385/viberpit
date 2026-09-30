@@ -77,6 +77,48 @@ async def test_overlapping_batches_have_one_owner_and_no_partial_claim(runner, o
 
 
 @pytest.mark.asyncio
+async def test_a_wait_on_a_parked_bundle_names_the_holder(runner):
+    """2026-09-30 audit, D1/D2: cairnea/KinDash#16774 was locked by the parked
+    (``gave_up``) give-up of a sibling bundle, and the refusal said only "target
+    already has an operation". The ``ownership_wait`` event must name the holder,
+    say it is PARKED on a human (not "in progress, try again shortly" — its
+    session is long gone), and carry the facts an operator needs to act on."""
+    loop, ctx = runner
+    assert (await dispatch(loop, "o/r#1", "o/r#2"))["status"] == "spawned"
+    st = await ctx.get_target_state("o/r#1")
+    await ctx.set_target_state("o/r#1", {
+        **st, "claimed": False, "gave_up": True, "held": True,
+        "reason": "bounced at opus; fable needs approval"})
+
+    assert (await dispatch(loop, "o/r#2"))["status"] == "busy"
+
+    waits = [c for c in ctx.emit.await_args_list if c.kwargs.get("kind") == "ownership_wait"]
+    summary, detail = waits[-1].args[1], waits[-1].kwargs["detail"]
+    assert "held by Backlog Runner manual of o/r#1" in summary
+    assert "parked, needs human: bounced at opus; fable needs approval" in summary
+    assert detail["reason"] == "target already has an operation"
+    assert detail["holder"]["origin_ref"] == "o/r#1"
+    assert detail["holder"]["owner"] == "backlog-runner"
+    assert detail["holder"]["parked"] is True
+    assert detail["holder"]["token"] == st["ownership_token"]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_on_live_work_keeps_the_in_progress_wording(runner):
+    """A holder whose row is NOT parked is live work: the existing
+    ``foreign_holder_message`` wording applies and ``parked`` reads False."""
+    loop, ctx = runner
+    assert (await dispatch(loop, "o/r#1", "o/r#2"))["status"] == "spawned"
+
+    assert (await dispatch(loop, "o/r#2"))["status"] == "busy"
+
+    waits = [c for c in ctx.emit.await_args_list if c.kwargs.get("kind") == "ownership_wait"]
+    summary, detail = waits[-1].args[1], waits[-1].kwargs["detail"]
+    assert "Held by Backlog Runner manual of o/r#1 — in progress" in summary
+    assert detail["holder"]["parked"] is False
+
+
+@pytest.mark.asyncio
 async def test_alias_and_automatic_dispatch_wait_for_manual(runner):
     loop, _ = runner
     assert (await dispatch(loop, "old/repo#1"))["status"] == "spawned"
