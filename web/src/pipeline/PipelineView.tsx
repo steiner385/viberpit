@@ -24,7 +24,8 @@ import type { DashboardState } from './types';
 import { PrRow } from './PrRow';
 import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
 import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './StatusStrip';
-import { splitCohort, deployBreakdown } from './ordering';
+import { splitCohort, deployBreakdown, newestMergedAt } from './ordering';
+import { formatSince } from './format';
 import { nextToMerge } from './queueFront';
 import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey';
 
@@ -90,6 +91,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   const setFilter = onFilter ?? setOwnFilter;
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedSet);
   const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
+  const [openLedgers, setOpenLedgers] = useState<Set<string>>(new Set());
 
   // focused repo first (stable otherwise) — the workspace's "current pipeline" lead.
   // Memoized on [state, focusedRepo] so SSE frames that don't change these skip the sort.
@@ -106,6 +108,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
 
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
+  const toggleLedger = (repo: string) => setOpenLedgers((p) => { const n = new Set(p); if (n.has(repo)) n.delete(repo); else n.add(repo); return n; });
   const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (
     <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} onFixPr={onFixPr} />
   );
@@ -148,8 +151,17 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
               </Button>
             </h3>
             {!isCollapsed && (() => {
-              const { lead, cohort } = splitCohort(visiblePrs);
+              const split = splitCohort(visiblePrs);
+              // The merged ledger folds to one line unless the operator asked
+              // for exactly those rows (the Merged / other tile), in which case
+              // they ARE the lead. Overdue merged rows never fold (`inLedger`).
+              const ledgerFolded = activeFilter !== 'merged';
+              const lead = ledgerFolded ? split.lead : [...split.lead, ...split.merged];
+              const ledger = ledgerFolded ? split.merged : [];
+              const { cohort } = split;
               const cohortOpen = openCohorts.has(r.repo);
+              const ledgerOpen = openLedgers.has(r.repo);
+              const newest = newestMergedAt(ledger);
               // Deploy backlog (flat 3-way): prefer the GitHub-Deployments-derived
               // deployBacklog (adds admin, no config needed); fall back to the
               // config/timeline deploy block (qa/prod only) for configured repos.
@@ -207,6 +219,27 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                       </div>
                     );
                   })()}
+                  {/* The merged ledger (2026-09-30 Pipeline critique, P1): one
+                      line per repo for the week's landed PRs, the rows one tap
+                      away — same idiom as the deploy cohort above. Closed by
+                      default, so the kiosk's band and a phone's first fold hold
+                      live work, not history. */}
+                  {ledger.length > 0 && (
+                    <div className="mb-1.5">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5 px-1 text-xs text-ink-muted hover:text-ink"
+                        aria-expanded={ledgerOpen}
+                        onClick={() => toggleLedger(r.repo)}
+                      >
+                        <span aria-hidden="true">{ledgerOpen ? '▾' : '▸'}</span>
+                        {' '}{ledger.length} merged in the last 7 days{newest ? ` · last ${formatSince(newest)}` : ''}
+                      </Button>
+                      {ledgerOpen && ledger.map((pr) => row(pr, r))}
+                    </div>
+                  )}
                   {r.deploy?.chain && (r.deploy.chain.inFlight || r.deploy.chain.supersededCount > 0) && (
                     <p className={NOTE} role="region" aria-label="Deploy chain">
                       {r.deploy.chain.inFlight && (

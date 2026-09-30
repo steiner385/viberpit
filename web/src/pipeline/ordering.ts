@@ -25,11 +25,34 @@ function inCohort(pr: PrView): boolean {
   return bucketPr(pr) === 'deploy' && !pr.stage.overdue;
 }
 
-export function splitCohort(prs: PrView[]): { lead: PrView[]; cohort: PrView[] } {
+/** The merged LEDGER: bare `merged` rows — landed, nothing left to do, kept on
+ *  the board for the 7-day retention window (`server/pipeline/stage.py`). Live
+ *  they were 147 of 170 rows, 132px each, in the lead ahead of nothing but
+ *  the deploy cohort (2026-09-30 Pipeline critique, P1). Draft / conflicting
+ *  rows share the strip's "Merged / other" bucket but are NOT ledger: a
+ *  conflicting PR needs a rebase, so it stays in the lead. An overdue merged
+ *  row stays too, for the same reason the overdue cohort row does. */
+function inLedger(pr: PrView): boolean {
+  return pr.stage.stage === 'merged' && !pr.stage.overdue;
+}
+
+export function splitCohort(prs: PrView[]): { lead: PrView[]; cohort: PrView[]; merged: PrView[] } {
   return {
-    lead: attentionSort(prs.filter((p) => !inCohort(p))),
+    lead: attentionSort(prs.filter((p) => !inCohort(p) && !inLedger(p))),
     cohort: prs.filter(inCohort),
+    merged: prs.filter(inLedger),
   };
+}
+
+/** The newest `mergedAt` among *prs*, for the ledger line's "last …"; null when
+ *  no row carries a timeline (a pre-upgrade payload). */
+export function newestMergedAt(prs: readonly PrView[]): string | null {
+  let newest: string | null = null;
+  for (const p of prs) {
+    const at = p.timeline?.mergedAt;
+    if (at && (newest === null || at > newest)) newest = at;
+  }
+  return newest;
 }
 
 /** Split a deploy cohort into its disjoint stages so the two aren't lumped under

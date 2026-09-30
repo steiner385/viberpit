@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/__tests__/pipelineOrdering.test.ts; edits: import repointing (../ordering, ../types)
 import { describe, it, expect } from 'vitest';
-import { attentionSort, splitCohort, deployBreakdown } from '../ordering';
+import { attentionSort, splitCohort, deployBreakdown, newestMergedAt } from '../ordering';
 import type { PrView } from '../types';
 
 const pr = (number: number, stage: string, substate: string | null = null, overdue = false): PrView =>
@@ -45,6 +45,41 @@ describe('splitCohort (collapse the awaiting-prod herd, keep the ones that need 
     const { lead, cohort } = splitCohort([pr(1, 'qa-deploy', null, true), pr(2, 'qa-deploy')]);
     expect(lead.map((p) => p.number)).toEqual([1]);
     expect(cohort.map((p) => p.number)).toEqual([2]);
+  });
+});
+
+// 2026-09-30 Pipeline critique, P1: 147 of 170 live rows were bare `merged`
+// retention cards sitting in the lead. They are a ledger, not work.
+describe('splitCohort — the merged ledger', () => {
+  it('moves bare merged rows out of the lead into `merged`, keeping live rows and the deploy cohort as before', () => {
+    const { lead, cohort, merged } = splitCohort([
+      pr(1, 'merged'), pr(2, 'merged'),
+      pr(3, 'ci'), pr(4, 'ready'),
+      pr(5, 'qa-deploy'),
+    ]);
+    expect(lead.map((p) => p.number)).toEqual([3, 4]);
+    expect(cohort.map((p) => p.number)).toEqual([5]);
+    expect(merged.map((p) => p.number)).toEqual([1, 2]);
+  });
+
+  it('keeps draft / conflicting (parked) rows in the lead — they share the strip bucket but need a human', () => {
+    const { lead, merged } = splitCohort([pr(1, 'parked', 'draft'), pr(2, 'parked', 'conflicting'), pr(3, 'merged')]);
+    expect(lead.map((p) => p.number)).toEqual([1, 2]);
+    expect(merged.map((p) => p.number)).toEqual([3]);
+  });
+
+  it('keeps an OVERDUE merged row in the lead', () => {
+    const { lead, merged } = splitCohort([pr(1, 'merged', null, true), pr(2, 'merged')]);
+    expect(lead.map((p) => p.number)).toEqual([1]);
+    expect(merged.map((p) => p.number)).toEqual([2]);
+  });
+
+  it('newestMergedAt reads the newest timeline.mergedAt, or null without timelines', () => {
+    const withAt = (n: number, mergedAt: string) => ({ ...pr(n, 'merged'), timeline: { mergedAt } }) as unknown as PrView;
+    expect(newestMergedAt([withAt(1, '2026-09-28T10:00:00Z'), withAt(2, '2026-09-30T09:00:00Z'), pr(3, 'merged')]))
+      .toBe('2026-09-30T09:00:00Z');
+    expect(newestMergedAt([pr(1, 'merged')])).toBeNull();
+    expect(newestMergedAt([])).toBeNull();
   });
 });
 
