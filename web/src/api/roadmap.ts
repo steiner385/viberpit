@@ -187,7 +187,12 @@ export interface QueueEntry {
 
 export interface QueueView {
   entries: QueueEntry[]
-  skipped: unknown
+  /** Fleet-wide skip counts by reason (`server/pm/queue.py:SKIP_REASONS`). */
+  skipped: Record<string, number>
+  /** The same counts per product slug — they sum to `skipped` reason by reason. */
+  skippedByProduct: Record<string, Record<string, number>>
+  /** Dispatchable entries per product slug; a product with none reads 0, not absent. */
+  dispatchableByProduct: Record<string, number>
   generatedAt: string
 }
 
