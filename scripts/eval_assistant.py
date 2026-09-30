@@ -586,7 +586,7 @@ def _holds(now: datetime) -> dict[str, Any]:
     item in it is parked on the owner. The ``decision`` row mirrors ``dp-1``."""
     def age(hours: int) -> str:
         return (now - timedelta(hours=hours)).isoformat()
-    base = {"options": [], "recommendedKey": None, "proposalId": None}
+    base: dict[str, Any] = {"options": [], "recommendedKey": None, "proposalId": None}
     held = [
         {**base, "ref": "steiner385/kindash#212", "repo": "steiner385/kindash", "number": 212,
          "product": "kindash", "title": "Rotate the Stripe webhook secret",
@@ -1183,15 +1183,15 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
                 rows = [{**r, "downstream": 2, "downstreamDispatchable": 1} for r in rows]
             return httpx.Response(200, json=rows)
         if path == "/api/pm/holds":
-            body = _holds(fixture.now)
-            keep = [h for h in body["held"]
+            holds_body = _holds(fixture.now)
+            keep = [h for h in holds_body["held"]
                     if (not params.get("product") or h["product"] == params["product"])
                     and (not params.get("kind") or h["holdKind"] == params["kind"])]
             slugs = {h["product"] for h in keep} | (
                 {params["product"]} if params.get("product") else set())
-            body["products"] = [p for p in body["products"]
+            holds_body["products"] = [p for p in holds_body["products"]
                                 if not params.get("product") or p["slug"] in slugs]
-            return httpx.Response(200, json={**body, "held": keep})
+            return httpx.Response(200, json={**holds_body, "held": keep})
         if path.startswith("/api/pm/projects/"):
             slug, _, tail = path[len("/api/pm/projects/"):].partition("/")
             if _product(slug) is None:
