@@ -2,7 +2,7 @@
 conventions ViberPit consumes disagree (spec 003 Phase A deliverable)."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from collections.abc import Iterable, Mapping, Set
 from dataclasses import dataclass, field
 
 from server.automations.backlog_deps import parse_checklist_refs
@@ -49,3 +49,27 @@ def compute_drift(edges: list[DepEdgeView], open_refs: set[str],
         if parse_checklist_refs(bodies.get(ref), repo):
             report.checklist_epics.append(ref)
     return report
+
+
+def reverse_blockers(edges: Iterable[DepEdgeView]) -> dict[str, set[str]]:
+    """THE reverse dependency index: blocker ref -> the refs it blocks (spec
+    2026-09-30 section 3). Active edges only (an inactive row is a dep that was removed
+    or never resolved) and a self-edge is a parser artefact, not a block. Shared by the
+    deps summary here and the escalation read model (`server/pm/escalation.py`)."""
+    out: dict[str, set[str]] = {}
+    for e in edges:
+        if not e.active or not e.src_ref or not e.dst_ref or e.src_ref == e.dst_ref:
+            continue
+        out.setdefault(e.dst_ref, set()).add(e.src_ref)
+    return out
+
+
+def top_blockers(edges: Iterable[DepEdgeView], open_refs: Set[str], *, n: int = 10,
+                 states: Mapping[str, str | None] | None = None) -> list[dict]:
+    """The `n` refs that block the most OPEN issues, for the deps summary."""
+    rev = reverse_blockers(edges)
+    rows: list[dict] = [{"ref": ref, "blocks": len(srcs & open_refs),
+             "state": (states or {}).get(ref)} for ref, srcs in rev.items()]
+    rows = [r for r in rows if r["blocks"]]
+    rows.sort(key=lambda r: (-r["blocks"], r["ref"]))
+    return rows[:n]

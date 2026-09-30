@@ -1,4 +1,4 @@
-from server.pm.drift import DepEdgeView, compute_drift
+from server.pm.drift import DepEdgeView, compute_drift, reverse_blockers, top_blockers
 
 R = "steiner385/viberpit"
 
@@ -51,3 +51,20 @@ def test_checklist_epics_skips_refs_with_sub_issues():
     report2 = compute_drift(
         edges, open_refs={f"{R}#960"}, project_refs={f"{R}#960"}, bodies=bodies)
     assert report2.checklist_epics == [f"{R}#960"]
+
+
+def test_reverse_blockers_indexes_active_edges_only_and_skips_self_edges():
+    edges = [_edge("o/r#2", "o/r#1", "native"), _edge("o/r#3", "o/r#1", "native"),
+             _edge("o/r#4", "o/r#1", "native", active=False),
+             _edge("o/r#5", "o/r#5", "native"), _edge("o/r#3", "o/r#1", "prose")]
+    assert reverse_blockers(edges) == {"o/r#1": {"o/r#2", "o/r#3"}}
+
+
+def test_top_blockers_counts_open_dependents_and_orders_by_count_then_ref():
+    edges = [_edge("o/r#2", "o/r#1", "native"), _edge("o/r#3", "o/r#1", "native"),
+             _edge("o/r#9", "o/r#1", "native"), _edge("o/r#4", "o/r#7", "native"),
+             _edge("o/r#6", "o/r#8", "native")]
+    open_refs = {"o/r#2", "o/r#3", "o/r#4", "o/r#6"}   # #9 is closed
+    out = top_blockers(edges, open_refs, n=2, states={"o/r#1": "open", "o/r#7": "closed"})
+    assert out == [{"ref": "o/r#1", "blocks": 2, "state": "open"},
+                   {"ref": "o/r#7", "blocks": 1, "state": "closed"}]
