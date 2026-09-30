@@ -1624,7 +1624,7 @@ async def test_guarded_envelope_reports_the_cap_under_its_own_key():
 _PR_ROW = {"repo": "o/r", "number": 1, "title": "t", "state": "open", "merged": False,
            "is_draft": False, "stage": "ci", "checks": "pending", "mergeable": True,
            "merge_state_status": "CLEAN", "auto_merge_enabled": True, "url": "u",
-           "head_ref": "b", "updated_at": "2026-01-01T00:00:00Z",
+           "head_ref": "b", "updated_at": "2026-01-01T00:00:00Z", "in_merge_queue": False,
            "session": {"id": "s1", "name": "n"},
            "checks_detail": [{"name": "x"}] * 40, "check_groups": [{"checks": [{}] * 20}] * 5,
            "node_states": [{}] * 10, "deployed_envs": [], "eta_seconds": 1}
@@ -1647,7 +1647,7 @@ async def test_list_prs_projects_rows_filters_state_and_limits():
     row = out["data"][0]
     assert set(row) == {"repo", "number", "title", "state", "is_draft", "stage", "checks",
                         "mergeable", "merge_state_status", "auto_merge_enabled", "url",
-                        "head_ref", "updated_at", "session"}
+                        "head_ref", "updated_at", "in_merge_queue", "session"}
     out = json.loads((await _tool(tools, "list_prs").handler(
         {"state": "all", "limit": 3}))["content"][0]["text"])
     assert [p["number"] for p in out["data"]] == [1, 2, 3] and out["truncated"] == 1

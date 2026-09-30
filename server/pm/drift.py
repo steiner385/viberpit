@@ -69,7 +69,7 @@ def top_blockers(edges: Iterable[DepEdgeView], open_refs: Set[str], *, n: int = 
     """The `n` refs that block the most OPEN issues, for the deps summary."""
     rev = reverse_blockers(edges)
     rows: list[dict] = [{"ref": ref, "blocks": len(srcs & open_refs),
-             "state": (states or {}).get(ref)} for ref, srcs in rev.items()]
+                         "state": (states or {}).get(ref)} for ref, srcs in rev.items()]
     rows = [r for r in rows if r["blocks"]]
     rows.sort(key=lambda r: (-r["blocks"], r["ref"]))
     return rows[:n]

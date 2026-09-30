@@ -186,7 +186,7 @@ Four changes in `server/assistant/tools.py`, each one tool → one endpoint:
 | `list_decisions` (READ, new) | `GET /api/pm/decisions?projectSlug=` | `product?`, `limit?` (1-50) | Already allowlisted. Rows projected to `id, ref, product, title, options, recommendedKey, rationale, downstream, createdAt`. `resolve_decision`'s error text now points here. |
 | `list_holds` (READ, new) | `GET /api/pm/holds` | `product?`, `kind?`, `limit?` (1-50) | Projected to the §4.2 shape minus `downstreamRefs` beyond three. |
 | `get_priority_queue` | unchanged | `product?` | Passes `skippedByProduct`/`dispatchableByProduct` through; `product` narrows entries and the map; `'deps'` wording fixed to `blocked`. |
-| `get_product_deps` | `GET …/deps?active=true&openOnly=true&summary=true` | `summary?` (default true) | See §7. |
+| `get_product_deps` | `GET …/deps?active=true&open_only=true&summary=true` | `summary?` (default true) | See §7. |
 | `list_prs` | unchanged route | `repo?`, `state?` (default `open`), `limit?` (default 30) | `_trim_pr` projection: `repo, number, title, stage, state, ci, mergeable, reviewDecision, url, session, updatedAt`. `verbose=true` returns the full row for at most 5 PRs. |
 | `list_automations` | unchanged route | `verbose?` | Default projection: `id, name, enabled, mode, status.{level,text,counts}, actionableCount, lastActiveAt`. `verbose=true` adds `config`/`configSchema`. Description corrected (no `lastError` key exists). |
 
@@ -207,7 +207,7 @@ rather than receiving a 300 KB block the CLI may reject. Unit-tested on a synthe
 Additive query parameters, defaults preserving today's response for the web:
 
 - `active=true` — only `WorkItemDep.active` rows.
-- `openOnly=true` — only edges whose `src` is an open mirrored issue.
+- `open_only=true` — only edges whose `src` is an open mirrored issue.
 - `summary=true` — replaces `edges` and the drift lists with counts and the ten highest-degree
   blockers: `{"edges": {"total", "active", "bySource": {...}}, "drift": {"proseOnly": n,
   "unresolvedTargets": n, "missingFromProject": n, "checklistEpics": n}, "topBlockers":

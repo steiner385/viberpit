@@ -411,7 +411,7 @@ _SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",
 # repo's list 100 KB+. This is the glance shape; `get_pr` is the drill-in.
 _PR_KEYS = ("repo", "number", "title", "state", "is_draft", "stage", "checks", "mergeable",
             "merge_state_status", "auto_merge_enabled", "url", "head_ref", "updated_at",
-            "session")
+            "in_merge_queue", "session")
 _PR_VERBOSE_CAP = 5
 _PR_LIST_CAP = 30
 # `state` literals from `PullRequestInfo.state`: 'open' | 'draft' | 'merged' | 'closed'.
