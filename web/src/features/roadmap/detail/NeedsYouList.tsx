@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom'
 import type { CapabilityNode, ProductNode } from '@/api/roadmap'
 import { IncidentQueue } from '@/initiatives/IncidentQueue'
 import { EmptyState } from '@/ui/EmptyState'
-import { initiativeStatusLabel, reasonLabel } from '@/features/products/vocab'
+import { initiativeAsk } from '@/features/products/vocab'
 import { capabilityPath, inboxPath, initiativePath } from '../roadmapNavState'
 import { TIER_TEXT } from '../roadmapTier'
 import { needsYouRows } from './needsYou'
@@ -28,23 +28,28 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
       )}
       {initiatives.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Initiatives that need you">
-          {initiatives.map(({ product, initiative }) => (
-            <li key={initiative.slug} className="rounded-md border border-edge bg-surface p-3">
-              <Link to={initiativePath(initiative.slug)} className="font-medium text-ink hover:underline">
-                {initiative.title ?? initiative.slug}
-              </Link>
-              <div className="text-xs text-ink-muted">
-                {product.name ?? product.slug}
-                {' · '}
-                <span className={TIER_TEXT[initiative.tier]}>
-                  {reasonLabel(initiative.reason) || initiativeStatusLabel(initiative.status)}
-                </span>
-              </div>
-              <Link to={initiativePath(initiative.slug)} className="text-sm text-accent hover:underline">
-                {initiative.tier === 'blocked' ? 'Review blocker' : initiative.reason === 'advance' ? 'Review and advance' : 'Review requested input'}
-              </Link>
-            </li>
-          ))}
+          {initiatives.map(({ product, initiative }) => {
+            // Subtitle and CTA from one table (`vocab.initiativeAsk`): the
+            // "why" is the state, the "move" is the page control that answers
+            // it. Not a third "Review …" for every state — that was P2 of the
+            // 2026-09-30 critique.
+            const { why, move } = initiativeAsk(initiative)
+            return (
+              <li key={initiative.slug} className="rounded-md border border-edge bg-surface p-3">
+                <Link to={initiativePath(initiative.slug)} className="font-medium text-ink hover:underline">
+                  {initiative.title ?? initiative.slug}
+                </Link>
+                <div className="text-xs text-ink-muted">
+                  {product.name ?? product.slug}
+                  {' · '}
+                  <span className={TIER_TEXT[initiative.tier]}>{why}</span>
+                </div>
+                <Link to={initiativePath(initiative.slug)} className="text-sm text-accent hover:underline">
+                  {move}
+                </Link>
+              </li>
+            )
+          })}
         </ul>
       )}
       {issues.length > 0 && (

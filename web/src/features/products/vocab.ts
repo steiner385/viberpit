@@ -7,7 +7,7 @@
  */
 import { INITIATIVE_STAGES, type InitiativeStage, type InitiativeStatus } from '@/api/sdlc'
 import type { OnboardingState } from '@/api/pm'
-import type { RoadmapTier } from '@/api/roadmap'
+import type { InitiativeNode, RoadmapTier } from '@/api/roadmap'
 
 export const PRODUCT = {
   singular: 'Product',
@@ -148,6 +148,46 @@ export function nextStage(stage: string | null | undefined): InitiativeStage | n
 export function prevStage(stage: string | null | undefined): InitiativeStage | null {
   const i = INITIATIVE_STAGES.indexOf(stage as InitiativeStage)
   return i <= 0 ? null : INITIATIVE_STAGES[i - 1]!
+}
+
+/** The stages whose human gate is "read what the synthesizer wrote": their
+ *  `STAGE_LABEL` names the artifact (Intent / Spec / Plan), so an
+ *  `awaiting_human` row there asks for a review of exactly that. */
+const ARTIFACT_STAGES: ReadonlySet<string> = new Set<InitiativeStage>(['intake', 'design', 'plan'])
+
+/**
+ * Why an initiative sits in the Needs-you queue and what the human DOES about
+ * it — the row's subtitle and its CTA, as one pair so they cannot disagree.
+ *
+ * One verb per state rather than one "Review requested input" for all of them
+ * (2026-09-30 Roadmap critique, P2: 165 rows ended in the same three words,
+ * subtitled "Active"). Each `move` names the control the initiative page
+ * answers with — `Advance → <stage>` is that page's button, "Clear the block"
+ * is its Unblock / Decompose-again pair, "Review the spec" is the artifact the
+ * synthesizer parked on — so the promise the queue makes is the button the tap
+ * lands on. The map node carries no guidance object, so this is derived from
+ * the same four facts the server used to place the row (`server/pm/tree.py:
+ * initiative_tier`): reason, tier, status + stage, and the epic's held count.
+ */
+export function initiativeAsk(
+  i: Pick<InitiativeNode, 'tier' | 'reason' | 'status' | 'stage' | 'epic'>,
+): { why: string; move: string } {
+  const why = reasonLabel(i.reason)
+  if (i.reason === 'advance') {
+    const next = nextStage(i.stage)
+    return { why, move: next ? `Advance → ${stageLabel(next)}` : 'Complete' }
+  }
+  if (i.reason === 'epic_blocked') return { why, move: 'Clear the blocking dependencies' }
+  if (i.tier === 'blocked') return { why: why || initiativeStatusLabel('blocked'), move: 'Clear the block' }
+  if (i.status === 'awaiting_human' && i.stage && ARTIFACT_STAGES.has(i.stage)) {
+    return { why: initiativeStatusLabel(i.status), move: `Review the ${stageLabel(i.stage).toLowerCase()}` }
+  }
+  const held = i.epic?.held ?? 0
+  if (held > 0) {
+    const noun = held === 1 ? ISSUE.singular.toLowerCase() : ISSUE.plural.toLowerCase()
+    return { why: `${held} ${noun} held for you`, move: `Review ${held} held ${noun}` }
+  }
+  return { why: why || initiativeStatusLabel(i.status), move: 'Review and decide' }
 }
 
 /** The Delivery section and its list scopes (finish-line spec §4.1, §4.4). */
