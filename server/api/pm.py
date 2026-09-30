@@ -719,11 +719,18 @@ async def create_edge(
 @router.get("/projects/{slug}/deps")
 async def project_deps(
     slug: str,
+    active: bool = False,
+    open_only: bool = False,
+    summary: bool = False,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Return dep edges + drift audit for a project (spec 003 Phase A)."""
-    from server.pm.drift import DepEdgeView, compute_drift
+    """Dep edges + drift audit for a project (spec 003 Phase A). ``active`` keeps
+    active edges only, ``open_only`` keeps edges whose src is an open mirrored issue,
+    ``summary`` replaces the lists with counts and the top blockers (spec 2026-09-30
+    section 7). Drift is always an audit of every edge; the filters shape only what is
+    returned. Defaults are today's full response."""
+    from server.pm.drift import DepEdgeView, compute_drift, top_blockers
 
     p = await _load_project(db, slug)
     repos = {r.repo for r in (await db.execute(
@@ -789,20 +796,39 @@ async def project_deps(
         dst_state=_dst_state(d.dst_ref or ""),
     ) for d in dep_rows]
 
+    shown = [e for e in edges
+             if (not active or e.active) and (not open_only or e.src_ref in open_refs)]
     drift = compute_drift(edges, open_refs, project_refs,
                           {ref: items[ref].body for ref in open_refs},
                           epic_refs={ref for ref, w in items.items() if w.is_epic})
     if gh is None:
         drift.missing_from_project = []
+    project = None if gh is None else {
+        "number": gh.gh_project_number,
+        "title": gh.title,
+        "lastSyncedAt": gh.last_synced_at.isoformat() if gh.last_synced_at else None,
+    }
 
+    if summary:
+        by_source: dict[str, int] = {}
+        for e in shown:
+            by_source[e.source] = by_source.get(e.source, 0) + 1
+        return {
+            "project": project,
+            "edges": {"total": len(shown), "active": sum(e.active for e in shown),
+                      "bySource": by_source},
+            "drift": {"proseOnly": len(drift.prose_only),
+                      "unresolvedTargets": len(drift.unresolved_targets),
+                      "missingFromProject": len(drift.missing_from_project),
+                      "checklistEpics": len(drift.checklist_epics)},
+            "topBlockers": top_blockers(
+                shown, open_refs, n=10,
+                states={ref: _dst_state(ref) for ref in {e.dst_ref for e in shown}}),
+        }
     return {
-        "project": None if gh is None else {
-            "number": gh.gh_project_number,
-            "title": gh.title,
-            "lastSyncedAt": gh.last_synced_at.isoformat() if gh.last_synced_at else None,
-        },
+        "project": project,
         "edges": [{"src": e.src_ref, "dst": e.dst_ref, "source": e.source,
-                   "active": e.active, "dstState": e.dst_state} for e in edges],
+                   "active": e.active, "dstState": e.dst_state} for e in shown],
         "drift": {
             "proseOnly": drift.prose_only,
             "unresolvedTargets": drift.unresolved_targets,

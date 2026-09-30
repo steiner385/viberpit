@@ -140,7 +140,9 @@ assistant mutation does not make subsequent harness cleanup safe.
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
-  existing tools are used — so neither gets its own pack row.
+  existing tools are used — so neither gets its own pack row. Every tool result is capped at 48 KB in `wrap_untrusted`; the cut is
+  reported under `capped: {path, kept, dropped}`, while `truncated` stays the per-tool `Trimmed` drop
+  count.
 
   | Pack | Tools | Surface |
   |---|---|---|

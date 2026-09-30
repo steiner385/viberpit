@@ -19,6 +19,9 @@ def client(fixture=None):
 # After setup-only repair: b224764dd87ceb21761e4f026cd9c858209a7a9f87847363f61d527cfb0d75ae
 # Before the assistant's resolve_decision case (hold ladder §6, 125 cases):
 # db4445721e49cce3cdc8670da408943fb460b6daf3d05b45af3634d14155120b
+# Before the glance-shape fixtures (chip-automations-failing rubric now keys on status.level, not
+# "last error", because the real automation row has no lastError):
+# 50afb2b815ce079a83a49dc929651d81baf3eb420acb2ee24d508861ceb09d0a
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -26,7 +29,7 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "50afb2b815ce079a83a49dc929651d81baf3eb420acb2ee24d508861ceb09d0a"
+    assert digest == "f67480b39960fd5678a3d7a9b8ca4a4fe7986554a8e9a76b5486dd4b1532645f"
     assert len(rows) == 126
     assert sum(bool(r.get("operator")) for r in rows) == 5
 

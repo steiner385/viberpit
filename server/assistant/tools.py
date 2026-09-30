@@ -298,7 +298,83 @@ class Trimmed:
     dropped: int
 
 
+# The CLI hands a tool result to the model as one text block; past a few tens of
+# kilobytes it crowds out the conversation and, for the largest endpoints
+# (`/api/prs`, `/deps`), can exceed what the transport accepts outright. Every
+# handler's return passes through `wrap_untrusted`, so this is the one place a
+# result is bounded. The cut is reported under its OWN key (`capped`) - `truncated`
+# is `Trimmed`'s per-tool drop count and keeps its meaning.
+_MAX_RESULT_BYTES = 48_000
+
+
+def _byte_len(data: Any) -> int:
+    return len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode())
+
+
+def _longest_list(data: Any) -> tuple[str, list] | None:
+    """(dotted path, the list) for the longest list at depth 0, 1 or 2 - where every
+    oversized payload in this file keeps its rows."""
+    best: tuple[str, list] | None = None
+
+    def consider(path: str, lst: list) -> None:
+        nonlocal best
+        if best is None or len(lst) > len(best[1]):
+            best = (path, lst)
+
+    if isinstance(data, list):
+        consider("", data)
+        return best
+    if not isinstance(data, dict):
+        return None
+    for k, v in data.items():
+        if isinstance(v, list):
+            consider(str(k), v)
+        elif isinstance(v, dict):
+            for k2, v2 in v.items():
+                if isinstance(v2, list):
+                    consider(f"{k}.{k2}", v2)
+    return best
+
+
+def _with_list_cut(data: Any, path: str, keep: int) -> Any:
+    """A shallow-copied `data` with the list at dotted `path` cut to `keep` rows."""
+    if path == "":
+        return list(data[:keep])
+    keys = path.split(".")
+    out = dict(data)
+    node = out
+    for k in keys[:-1]:
+        node[k] = dict(node[k])
+        node = node[k]
+    node[keys[-1]] = list(node[keys[-1]][:keep])
+    return out
+
+
+def cap_result(data: Any, *, max_bytes: int = _MAX_RESULT_BYTES) -> tuple[Any, dict | None]:
+    """Shrink `data` under `max_bytes` by halving its longest list until it fits.
+    Returns `(data, None)` when it already fits or nothing can be cut; otherwise a
+    copy and `{"path", "kept", "dropped"}` naming the list that was cut."""
+    if _byte_len(data) <= max_bytes:
+        return data, None
+    found = _longest_list(data)
+    if found is None or len(found[1]) <= 1:
+        return data, None
+    path, lst = found
+    original = len(lst)
+    keep = original
+    out = data
+    while keep > 1:
+        keep //= 2
+        out = _with_list_cut(data, path, keep)
+        if _byte_len(out) <= max_bytes:
+            break
+    return out, {"path": path, "kept": keep, "dropped": original - keep}
+
+
 def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
+    # Pass the cap explicitly: a default arg is bound at def time, so a patched
+    # `_MAX_RESULT_BYTES` would otherwise never reach here.
+    scrubbed, capped = cap_result(_scrub(data), max_bytes=_MAX_RESULT_BYTES)
     env: dict[str, Any] = {
         "source": f"{brand.SLUG}-api", "trust": "untrusted-data",
         # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
@@ -306,10 +382,12 @@ def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
         # every result costs no cache hit and is what makes "in the last hour" or
         # "today" answerable at all.
         "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "data": _scrub(data),
+        "data": scrubbed,
     }
     if truncated:
         env["truncated"] = truncated
+    if capped:
+        env["capped"] = capped
     return json.dumps(env, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -327,6 +405,26 @@ def _err(msg: str) -> dict[str, Any]:
 # (`waiting_input` / `waiting_question`), not separate counters.
 _SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",
                  "summary", "prs", "queuePosition", "pendingModel", "origin")
+
+# The PR population row (`PipelinePr.to_dict`, server/github/pr_status.py) carries
+# 30+ keys; `checks_detail`, `check_groups` and `node_states` are what make one
+# repo's list 100 KB+. This is the glance shape; `get_pr` is the drill-in.
+_PR_KEYS = ("repo", "number", "title", "state", "is_draft", "stage", "checks", "mergeable",
+            "merge_state_status", "auto_merge_enabled", "url", "head_ref", "updated_at",
+            "in_merge_queue", "session")
+_PR_VERBOSE_CAP = 5
+_PR_LIST_CAP = 30
+# `state` literals from `PullRequestInfo.state`: 'open' | 'draft' | 'merged' | 'closed'.
+# "open" as a filter means "not finished" — a draft is an open PR to its author.
+_PR_STATE_FILTERS = {"open": ("open", "draft"), "merged": ("merged",),
+                     "closed": ("closed",), "all": ("open", "draft", "merged", "closed")}
+
+# The automation row (server/api/automations.py:list_automations) ships each
+# automation's whole `configSchema`; the glance shape keeps what answers "is it on,
+# what is it doing, does it need me". `status.products` stays — it is the runner's
+# per-product breakdown.
+_AUTOMATION_KEYS = ("id", "name", "enabled", "mode", "status", "actionableCount",
+                    "lastActiveAt", "activeSessions", "workClass")
 
 # Matches the ARCHIVED-session wire shape from `SessionOrchestrator.list_archived`
 # (server/sessions/orchestrator.py) — a DIFFERENT, narrower shape than a live
@@ -375,6 +473,14 @@ def _result_text(payload: Any) -> str:
 
 def _trim_session(s: dict[str, Any]) -> dict[str, Any]:
     return {k: s[k] for k in _SESSION_KEYS if k in s}
+
+
+def _trim_pr(p: dict[str, Any]) -> dict[str, Any]:
+    return {k: p[k] for k in _PR_KEYS if k in p}
+
+
+def _trim_automation(a: dict[str, Any]) -> dict[str, Any]:
+    return {k: a[k] for k in _AUTOMATION_KEYS if k in a}
 
 
 def _trim_archived(s: dict[str, Any]) -> dict[str, Any]:
@@ -557,12 +663,27 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def list_hosts(args: dict[str, Any]) -> Any:
         return await api.get("/api/fleet/hosts")
 
-    @spec_tool("list_prs", "Open pull requests across repos with check status, merge-queue state "
-               "and the owning session. Optional repo filter 'owner/name'.", _schema(repo=str))
+    @spec_tool("list_prs",
+               "Pull requests across watched repos with stage, check status, mergeability "
+               "and the owning session — a glance shape; use get_pr for check runs and "
+               "reviews. state: 'open' (default; includes drafts), 'merged', 'closed' or "
+               "'all'. Optional repo filter 'owner/name'. limit defaults to 30. verbose=true "
+               "returns the full row for at most 5 PRs.",
+               _schema(repo=str, state=str, limit=int, verbose=bool))
     @guarded
     async def list_prs(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/prs")
-        return [p for p in rows if not args.get("repo") or p.get("repo") == args["repo"]]
+        state = (args.get("state") or "open").strip().lower()
+        if state not in _PR_STATE_FILTERS:
+            raise ToolArgError(f"state must be one of {sorted(_PR_STATE_FILTERS)}, got {state!r}")
+        keep = _PR_STATE_FILTERS[state]
+        rows = [p for p in rows
+                if (not args.get("repo") or p.get("repo") == args["repo"])
+                and str(p.get("state") or "").lower() in keep]
+        if args.get("verbose"):
+            return Trimmed(rows[:_PR_VERBOSE_CAP], max(0, len(rows) - _PR_VERBOSE_CAP))
+        n = max(1, min(int(args.get("limit") or _PR_LIST_CAP), 200))
+        return Trimmed([_trim_pr(p) for p in rows[:n]], max(0, len(rows) - n))
 
     @spec_tool("get_pr",
                "One pull request's detail: check runs with conclusions and urls, review "
@@ -608,11 +729,18 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def list_stage_models(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/repos")
 
-    @spec_tool("list_automations", "Automations (autopilot, backlog runner, PR doctor, CI/CD "
-               "doctor…) with enabled flag, last run and last error.", {})
+    @spec_tool("list_automations",
+               "Automations (autopilot, backlog runner, PR doctor, CI/CD doctor…) with "
+               "enabled flag, mode, live status text/level/counts, the runner's per-product "
+               "rows, how many items need a person (actionableCount) and last activity. "
+               "verbose=true adds config and configSchema.",
+               _schema(verbose=bool))
     @guarded
     async def list_automations(args: dict[str, Any]) -> Any:
-        return await api.get("/api/automations")
+        rows = await api.get("/api/automations")
+        if args.get("verbose"):
+            return rows
+        return [_trim_automation(a) for a in rows]
 
     @spec_tool("get_automation_events", "Recent events one automation produced (what it did and "
                "why).", _schema(("id",), id=str, limit=int))
@@ -751,13 +879,18 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get(f"/api/pm/projects/{_slug(args['slug'])}")
 
     @spec_tool("get_product_deps",
-               "Issue-level dependency edges for a product (what blocks what), each with "
-               "the target's state, plus a drift audit: prose-only deps, dependency "
-               "targets that resolve to nothing, issues missing from the GitHub board and "
-               "checklist-style epics.", {"slug": str})
+               "Issue-level dependencies for a product. Default (summary=true): edge "
+               "counts by source, drift counts (prose-only deps, unresolved targets, "
+               "issues missing from the board, checklist epics) and the ten issues that "
+               "block the most open work. summary=false returns the active, open-source "
+               "edges themselves (large; capped).",
+               _schema(("slug",), slug=str, summary=bool))
     @guarded
     async def get_product_deps(args: dict[str, Any]) -> Any:
-        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/deps")
+        params: dict[str, str] = {"active": "true", "open_only": "true"}
+        if args.get("summary", True):
+            params = {"summary": "true", **params}
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/deps", params=params)
 
     @spec_tool("get_priority_queue",
                "The global priority queue — what agents will pick up next, ranked across "

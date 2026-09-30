@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import httpx
 
@@ -858,6 +859,21 @@ async def test_export_session_returns_tail_text():
 
 
 @pytest.mark.asyncio
+async def test_get_product_deps_asks_for_the_summary_by_default():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={"edges": {"total": 1}})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "get_product_deps").handler({"slug": "kindash"})
+    assert seen["params"] == {"summary": "true", "active": "true", "open_only": "true"}
+    await _tool(tools, "get_product_deps").handler({"slug": "kindash", "summary": False})
+    assert seen["params"] == {"active": "true", "open_only": "true"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name,args,method,path", [
     ("list_products", {}, "GET", "/api/pm/projects"),
     ("get_product", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash"),
@@ -1556,3 +1572,117 @@ def test_pipeline_and_session_descriptions_match_available_data():
     question = _tool(tools, "answer_question").description
     assert "get_session does not return them" in question
     assert "ask the user" in question
+
+
+def test_cap_result_halves_the_longest_list_until_it_fits():
+    from server.assistant.tools import cap_result
+    data = {"project": {"title": "x"}, "edges": [{"src": f"o/r#{i}", "dst": "o/r#0",
+                                                  "source": "native"} for i in range(4000)],
+            "drift": {"proseOnly": [{"src": "a", "dst": "b"}] * 5}}
+    out, capped = cap_result(data, max_bytes=20_000)
+    assert capped["path"] == "edges"
+    assert capped["kept"] == len(out["edges"]) and capped["dropped"] == 4000 - capped["kept"]
+    assert len(json.dumps(out, separators=(",", ":"))) <= 20_000
+    assert out["drift"] == data["drift"], "only the longest list is cut"
+
+
+def test_cap_result_cuts_a_top_level_list_and_a_list_one_level_down():
+    from server.assistant.tools import cap_result
+    rows = [{"n": i, "pad": "x" * 100} for i in range(2000)]
+    out, capped = cap_result(rows, max_bytes=10_000)
+    assert capped["path"] == "" and len(out) < 2000
+    out, capped = cap_result({"data": {"items": rows}}, max_bytes=10_000)
+    assert capped["path"] == "data.items" and len(out["data"]["items"]) < 2000
+
+
+def test_cap_result_leaves_a_small_or_uncuttable_payload_alone():
+    from server.assistant.tools import cap_result
+    small = {"a": [1, 2, 3]}
+    assert cap_result(small, max_bytes=1_000) == (small, None)
+    # Over the cap but nothing to shrink: returned as-is, never an infinite loop.
+    fat = {f"k{i}": "y" * 1_900 for i in range(30)}
+    out, capped = cap_result(fat, max_bytes=1_000)
+    assert out == fat and capped is None
+
+
+@pytest.mark.asyncio
+async def test_guarded_envelope_reports_the_cap_under_its_own_key():
+    from server.assistant import tools as tools_mod
+    big = [{"repo": "o/r", "number": i, "title": "t" * 200, "state": "open",
+            "stage": "ci", "checks": "pending"} for i in range(3000)]
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=big)
+
+    with patch.object(tools_mod, "_MAX_RESULT_BYTES", 30_000):
+        out = await _tool(build_tools(_api(handler)), "list_prs").handler({"limit": 3000})
+    body = json.loads(out["content"][0]["text"])
+    assert body["capped"]["path"] == "" and body["capped"]["dropped"] > 0
+    assert len(out["content"][0]["text"]) <= 30_000 + 512  # envelope overhead only
+
+
+_PR_ROW = {"repo": "o/r", "number": 1, "title": "t", "state": "open", "merged": False,
+           "is_draft": False, "stage": "ci", "checks": "pending", "mergeable": True,
+           "merge_state_status": "CLEAN", "auto_merge_enabled": True, "url": "u",
+           "head_ref": "b", "updated_at": "2026-01-01T00:00:00Z", "in_merge_queue": False,
+           "session": {"id": "s1", "name": "n"},
+           "checks_detail": [{"name": "x"}] * 40, "check_groups": [{"checks": [{}] * 20}] * 5,
+           "node_states": [{}] * 10, "deployed_envs": [], "eta_seconds": 1}
+
+
+@pytest.mark.asyncio
+async def test_list_prs_projects_rows_filters_state_and_limits():
+    rows = [dict(_PR_ROW, number=1),
+            dict(_PR_ROW, number=2, state="draft", is_draft=True),
+            dict(_PR_ROW, number=3, state="merged", merged=True, stage="merged"),
+            dict(_PR_ROW, number=4, state="closed")]
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=rows)
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_prs").handler({}))["content"][0]["text"])
+    numbers = [p["number"] for p in out["data"]]
+    assert numbers == [1, 2], "default state=open keeps drafts, drops merged/closed"
+    row = out["data"][0]
+    assert set(row) == {"repo", "number", "title", "state", "is_draft", "stage", "checks",
+                        "mergeable", "merge_state_status", "auto_merge_enabled", "url",
+                        "head_ref", "updated_at", "in_merge_queue", "session"}
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"state": "all", "limit": 3}))["content"][0]["text"])
+    assert [p["number"] for p in out["data"]] == [1, 2, 3] and out["truncated"] == 1
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"state": "merged"}))["content"][0]["text"])
+    assert [p["number"] for p in out["data"]] == [3]
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"verbose": True}))["content"][0]["text"])
+    assert "checks_detail" in out["data"][0] and len(out["data"]) <= 5
+
+
+@pytest.mark.asyncio
+async def test_list_automations_projects_by_default_and_keeps_products():
+    row = {"id": "backlog-runner", "name": "Backlog Runner", "description": "d" * 500,
+           "enabled": True, "mode": "auto", "modes": ["off", "auto"],
+           "status": {"text": "1 work in flight", "level": "active",
+                      "counts": {"eligible": 3, "held": 4},
+                      "products": [{"slug": "kindash", "eligible": 0, "held": 4}],
+                      "waitingReason": "human"},
+           "actionableCount": 2, "oversight": {"x": 1},
+           "configSchema": [{"key": "k"}] * 20, "enginePolicy": "claude_only",
+           "operatorTriggered": False, "workClass": "development",
+           "config": {"max_concurrent": 2}, "schedule": None,
+           "lastActiveAt": "2026-01-01T00:00:00Z", "activeSessions": 1}
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=[row])
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_automations").handler({}))["content"][0]["text"])
+    a = out["data"][0]
+    assert set(a) == {"id", "name", "enabled", "mode", "status", "actionableCount",
+                      "lastActiveAt", "activeSessions", "workClass"}
+    assert a["status"]["products"] == row["status"]["products"]
+    assert a["status"]["counts"] == {"eligible": 3, "held": 4}
+    out = json.loads((await _tool(tools, "list_automations").handler(
+        {"verbose": True}))["content"][0]["text"])
+    assert "configSchema" in out["data"][0] and "config" in out["data"][0]

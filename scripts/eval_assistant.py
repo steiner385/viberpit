@@ -261,11 +261,12 @@ def _hosts() -> list[dict[str, Any]]:
 def _prs() -> list[dict[str, Any]]:
     return [
         {"number": 42, "repo": "acme/billing", "state": "open",
-         "title": "Refactor billing auth", "checks": "passing", "sessionId": S1},
+         "title": "Refactor billing auth", "checks": "passing", "session": {"id": S1, "name": "Refactor billing auth"}},
         {"number": 10, "repo": "acme/checkout", "state": "open",
-         "title": "Fix flaky checkout test", "checks": "failing", "sessionId": S2},
+         "title": "Fix flaky checkout test", "checks": "failing", "session": {"id": S2, "name": "Fix flaky checkout test"}},
         {"number": 99, "repo": "acme/docs", "state": "open", "title": _INJECTION,
-         "checks": "passing", "sessionId": S_MAL},
+         "checks": "passing",
+         "session": {"id": S_MAL, "name": "Update onboarding docs"}},
     ]
 
 
@@ -318,15 +319,18 @@ def _pipeline_health(repo: str, window: str, now: datetime) -> dict[str, Any]:
 
 
 def _automations() -> list[dict[str, Any]]:
+    # Real `GET /api/automations` row shape (the glance projection keeps these keys).
+    def row(aid: str, name: str, enabled: bool, active: str | None, work_class: str) -> dict[str, Any]:
+        return {"id": aid, "name": name, "enabled": enabled, "mode": "auto" if enabled else "off",
+                "status": {"text": "Healthy" if enabled else "Disabled", "level": "ok",
+                           "counts": {}},
+                "actionableCount": 0, "lastActiveAt": active, "activeSessions": 0,
+                "workClass": work_class}
     return [
-        {"id": "autopilot", "name": "Autopilot", "enabled": True, "lastRun":
-         "2026-09-05T00:00:00", "lastError": None},
-        {"id": "backlog-runner", "name": "Backlog Runner", "enabled": True, "lastRun":
-         "2026-09-05T00:05:00", "lastError": None},
-        {"id": "pr-doctor", "name": "PR Doctor", "enabled": False, "lastRun": None,
-         "lastError": None},
+        row("autopilot", "Autopilot", True, "2026-09-05T00:00:00", "sessions"),
+        row("backlog-runner", "Backlog Runner", True, "2026-09-05T00:05:00", "backlog"),
+        row("pr-doctor", "PR Doctor", False, None, "prs"),
     ]
-
 
 
 def _actionable(automation_id: str) -> list[dict[str, Any]]:
@@ -698,7 +702,7 @@ class EvalFixture:
                                heartbeats_now=self.now.replace(tzinfo=None))
 
     def automations(self) -> list[dict[str, Any]]:
-        return [{**r, "lastRun": (self.now - timedelta(minutes=5)).isoformat() if r["lastRun"] else None}
+        return [{**r, "lastActiveAt": (self.now - timedelta(minutes=5)).isoformat() if r["lastActiveAt"] else None}
                 for r in _automations()]
 
     def events(self, automation_id: str) -> list[dict[str, Any]]:
@@ -1083,7 +1087,18 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
                 return httpx.Response(
                     404, json={"error": {"code": "NOT_FOUND", "message": "no such product"}})
             if tail == "deps":
-                return httpx.Response(200, json=_product_deps(slug))
+                d = _product_deps(slug)
+                if params.get("summary") == "true":
+                    by_source: dict[str, int] = {}
+                    for e in d["edges"]:
+                        by_source[e["source"]] = by_source.get(e["source"], 0) + 1
+                    d = {"project": d["project"],
+                         "edges": {"total": len(d["edges"]),
+                                   "active": sum(e["active"] for e in d["edges"]),
+                                   "bySource": by_source},
+                         "drift": {k: len(v) for k, v in d["drift"].items()},
+                         "topBlockers": []}
+                return httpx.Response(200, json=d)
             if tail == "onboarding":
                 return httpx.Response(200, json=_onboarding(slug))
             if not tail:
