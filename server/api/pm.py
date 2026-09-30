@@ -1015,21 +1015,33 @@ async def holds(
     product: str | None = None,
     kind: str | None = None,
     limit: int = 50,
-    min_status: str = STATUS_READY,
-    respect_dependencies: bool = True,
+    min_status: str | None = None,
+    respect_dependencies: bool | None = None,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
     """Parked items ranked by what they block, with a per-product summary (spec
-    2026-09-30 §4.2). Same pool and reach rules as ``GET /api/pm/queue``: one
-    ``_queue_inputs`` read, one ``product_escalation`` per product. ``kind`` is one
-    of ``HELD_KINDS`` — the two kinds that park an item; ``evidence`` and
-    ``stronger_model`` exit on their own and are not "held" here."""
+    2026-09-30 §4.2). One ``_queue_inputs`` read, one ``product_escalation`` per
+    product. ``kind`` is one of ``HELD_KINDS`` — the two kinds that park an item;
+    ``evidence`` and ``stronger_model`` exit on their own and are not "held" here.
+
+    Reach follows each product's own policy (``queue_min_status``,
+    ``respect_dependencies``), as the runner reads it and as
+    ``GET /api/pm/decisions?impact=true`` does; ``min_status`` and
+    ``respect_dependencies`` are explicit overrides for a what-if view.
+
+    ``products[].heldCount`` counts every ``HELD_KINDS`` hold regardless of ``kind``
+    and ``limit``, so it may exceed ``len(held)``; ``oldestHoldHours`` is the max
+    over holds that carry ``hold_set_at`` (undated holds do not lower it).
+
+    SCOPE: dependency edges are scoped to each product's own source repos, so
+    ``downstream`` counts only same-board dependents; a dependent on another
+    product's board is that product's row and is not counted here."""
     from server.pm import decisions
     from server.pm.desired_state import HELD_KINDS
     from server.pm.escalation import product_escalation, rank_held
 
-    if min_status not in MIN_STATUS_OPTIONS:
+    if min_status is not None and min_status not in MIN_STATUS_OPTIONS:
         raise HTTPException(status_code=422, detail={
             "error": "invalid_min_status",
             "message": f"min_status must be one of {MIN_STATUS_OPTIONS}, got {min_status!r}"})
@@ -1037,7 +1049,7 @@ async def holds(
         raise HTTPException(status_code=422, detail={
             "error": "invalid_kind",
             "message": f"kind must be one of {sorted(HELD_KINDS)}, got {kind!r}"})
-    limit = max(1, min(int(limit), _HOLDS_LIMIT_MAX))
+    limit = max(1, min(limit, _HOLDS_LIMIT_MAX))
     now = datetime.now(timezone.utc)
     rows, policies = await _queue_inputs(db, now)
     proposals_by_ref = {
@@ -2438,7 +2450,7 @@ async def list_decisions(
     nav badge polls this list every 15 s.
     """
     from server.pm import decisions
-    from server.pm.escalation import held_items
+    from server.pm.escalation import product_escalation
     from server.pm.explain import decision_guidance
     rows = await decisions.pending_list(db)
     if not rows:
@@ -2456,15 +2468,11 @@ async def list_decisions(
                             if w is not None and w.repo and w.number}
         by_product: dict[str, list] = {}
         for r in qrows:
-            by_product.setdefault(r.product, []).append(r)
+            if projectSlug is None or r.product == projectSlug:
+                by_product.setdefault(r.product, []).append(r)
         for pslug, prows in by_product.items():
             qpolicy = qpolicies.get(pslug) or effective_policy(None)
-            for item in held_items(prows, proposals_by_ref, now=now,
-                                   min_status=str(qpolicy["queue_min_status"]),
-                                   respect_dependencies=bool(qpolicy["respect_dependencies"]),
-                                   give_up_after_bounces=int(qpolicy["give_up_after_bounces"]),
-                                   extra_skip_labels=frozenset(
-                                       str(lbl).strip().lower() for lbl in qpolicy["skip_labels"])):
+            for item in product_escalation(pslug, prows, proposals_by_ref, qpolicy, now=now).held:
                 impact_by_ref[item.ref] = (item.downstream, item.downstream_dispatchable)
     out = []
     for prop, wi in rows:

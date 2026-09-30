@@ -79,10 +79,11 @@ def test_holds_lists_parked_items_ranked_by_impact_with_product_summaries():
         assert body["held"][2]["releasedBy"].startswith("Retry")
 
         by_slug = {p["slug"]: p for p in body["products"]}
+        oldest = by_slug["viberpit"].pop("oldestHoldHours")
+        assert isinstance(oldest, (int, float)) and oldest >= 0
         assert by_slug["viberpit"] == {"slug": "viberpit", "dispatchable": 1,
                                        "skipped": {"held": 2, "blocked": 2},
-                                       "heldCount": 2, "starving": True,
-                                       "oldestHoldHours": by_slug["viberpit"]["oldestHoldHours"]}
+                                       "heldCount": 2, "starving": True}
         assert by_slug["kindash"]["starving"] is True and by_slug["kindash"]["dispatchable"] == 0
         assert body["truncated"] == 0 and body["generatedAt"]
 
@@ -130,3 +131,72 @@ def test_decisions_impact_reads_the_same_model_as_holds():
         (row,) = c.get("/api/pm/decisions?impact=true", headers=IDENTITY_HEADERS).json()
         assert row["ref"] == "o/r#1" and row["downstream"] == 2
         assert row["downstreamDispatchable"] == 2
+
+
+def _seed_backlog_reach(c) -> None:
+    """A product whose policy reaches down to Backlog: #10 owner_action-held (Ready),
+    #11 behind it with board Status Backlog."""
+    from server.db import db_session
+    from server.db.models import (GhProject, GhProjectItem, Project, ProjectRepo, WorkItem,
+                                  WorkItemDep)
+
+    async def _run() -> None:
+        async with db_session() as db:
+            now = datetime.now(timezone.utc)
+            p = Project(slug="deep", name="deep",
+                        automation_policy={"dispatch": "auto", "queue_min_status": "Backlog"})
+            db.add(p)
+            await db.flush()
+            db.add(ProjectRepo(project_id=p.id, repo="o/d", is_primary=True))
+            gh = GhProject(project_id=p.id, gh_project_number=9, title="deep")
+            db.add(gh)
+            await db.flush()
+            for n, status, hold in ((10, "Ready", {"hold_kind": "owner_action",
+                                                   "hold_by": "tony@example.com",
+                                                   "hold_reason": "call", "hold_set_at": now}),
+                                    (11, "Backlog", {})):
+                wi = WorkItem(repo="o/d", number=n, kind="issue", title=f"issue {n}",
+                              state="open", body="b", url=f"https://x/{n}", **hold)
+                db.add(wi)
+                await db.flush()
+                db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id,
+                                     status=status, score=float(n)))
+            db.add(WorkItemDep(src_ref="o/d#11", dst_ref="o/d#10", source="native", active=True))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_run)
+
+
+def test_holds_and_decisions_impact_share_the_products_reach():
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from server.pm import decisions
+    from sqlalchemy import select
+
+    with _client() as c:
+        _seed_backlog_reach(c)
+
+        async def _propose():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(WorkItem.number == 10))).scalar_one()
+                # A decision hold replaces the owner_action one so the list carries it.
+                w.hold_kind = None
+                await db.flush()
+                await decisions.propose(db, w, options=OPTIONS, recommended_key="b",
+                                        rationale="r", actor="session:s1",
+                                        now=datetime.now(timezone.utc))
+                await db.commit()
+        c.portal.call(_propose)
+
+        held = c.get("/api/pm/holds?product=deep", headers=IDENTITY_HEADERS).json()["held"]
+        (h,) = [i for i in held if i["ref"] == "o/d#10"]
+        (d,) = [r for r in c.get("/api/pm/decisions?impact=true&projectSlug=deep",
+                                 headers=IDENTITY_HEADERS).json() if r["ref"] == "o/d#10"]
+        assert (h["downstream"], h["downstreamDispatchable"]) == (1, 1)
+        assert (d["downstream"], d["downstreamDispatchable"]) == (1, 1)
+
+        what_if = c.get("/api/pm/holds?product=deep&min_status=Ready",
+                        headers=IDENTITY_HEADERS).json()["held"]
+        (w,) = [i for i in what_if if i["ref"] == "o/d#10"]
+        assert w["downstream"] == 1 and w["downstreamDispatchable"] == 0

@@ -7,6 +7,10 @@ eligibility rule is ``queue.skip_reason`` (never re-derived here), "parked" is
 ``drift.reverse_blockers`` — one definition each (constitution VI). Two routes read
 this module (``GET /api/pm/holds``, ``GET /api/pm/decisions?impact=true``) and the
 decision-escalation automation ticks on it.
+
+Scope: ``load_queue_rows`` scopes dependency edges to each product's own source
+repos, so ``downstream`` counts only same-board dependents; a dependent on another
+product's board is that product's row and is not counted.
 """
 from __future__ import annotations
 
@@ -81,7 +85,10 @@ def reverse_index(rows: Iterable[QueueRow]) -> dict[str, set[str]]:
 
 
 def downstream(ref: str, reverse: Mapping[str, set[str]]) -> tuple[str, ...]:
-    """Every ref transitively behind ``ref``, sorted; cycle-safe, ``ref`` excluded."""
+    """Every ref transitively behind ``ref``, sorted; cycle-safe, ``ref`` excluded.
+    Only same-board dependents are reachable: the loader scopes edges to the
+    product's own source repos, so a dependent on another product's board is that
+    product's row and is not counted."""
     seen: set[str] = set()
     todo = deque(reverse.get(ref, ()))
     while todo:
@@ -121,9 +128,9 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
     answers "if this chain shipped, what would the runner pick up?" — honest about
     the fact that releasing a hold frees the HELD item now and its dependents only
     once it ships. A dependent that is also assigned, claimed or held in its own
-    right stays skipped and is not counted. With ``respect_dependencies=False``
-    dependents were never gated by blockers, so ``downstream_dispatchable`` counts
-    what is dispatchable now.
+    right stays skipped and is not counted. With respect_dependencies=False the blockers were never gating, so a
+    dependent's Blocked STAMP still skips it via ``skip_reason`` — the count then
+    reflects the stamp, not the chain.
     """
     rows = list(rows)
     by_ref = {r.ref: r for r in rows}
