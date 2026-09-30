@@ -29,6 +29,20 @@ describe('charts/plotroom.css — the one allowlisted stylesheet', () => {
     expect(cssFilesUnder(join(here, '..'))).toEqual([join(here, 'plotroom.css')])
   })
 
+  /* 2026-09-30 Pipeline critique, P1: at 390px the Gantt bar column was 9px
+     (200px name column in a 325px row) and the five-node track overflowed
+     360/325. Below 560px the Gantt stacks name over a full-width bar and the
+     nodes flex to share the row. */
+  it('re-grids the Gantt row and lets the track nodes flex below 560px', () => {
+    const narrow = css.match(/@media \(max-width: 560px\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+    expect(narrow).toMatch(/\.g-row[^{]*\{[^}]*grid-template-columns: 1fr auto[^}]*grid-template-areas: "name name" "bar time"/)
+    expect(narrow).toMatch(/\.g-name \{ grid-area: name; \}/)
+    expect(narrow).toMatch(/\.g-bar \{ grid-area: bar; \}/)
+    expect(narrow).toMatch(/\.g-t \{ grid-area: time; \}/)
+    expect(narrow).toMatch(/\.node \{ width: auto;[^}]*flex: 1 1 0; \}/)
+    expect(narrow).toMatch(/\.node-label \{[^}]*text-overflow: ellipsis/)
+  })
+
   /* The `-strong` fills are theme-INVARIANT by contract (index.css), so their
      glyph ink must be too: `--t-canvas` follows the theme and would sink
      white-on-success-strong to 3.58:1 and white-on-warning-strong to 3.37:1 in
