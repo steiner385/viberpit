@@ -47,10 +47,6 @@ export interface TriageProposal {
   /** What Accept / Reject do under the owning product's dispatch policy
    *  (spec 2026-09-17 §4.3); absent from a server that predates it. */
   guidance?: { accept: Consequence; reject: Consequence } | null
-  /** Items this decision blocks, and how many of them dispatch the moment it is
-   *  answered. Present only when the list was fetched with `impact`. */
-  downstream?: number
-  downstreamDispatchable?: number
 }
 
 /** One option a decision proposal offers. `detail` is the sentence under the
@@ -100,6 +96,10 @@ export interface DecisionProposal {
    *  same `Consequence` pair the classification card renders, through the same
    *  `ConsequenceList`. */
   guidance?: { accept: Consequence; reject: Consequence } | null
+  /** Items this decision blocks, and how many of them dispatch the moment it is
+   *  answered. Present only when the list was fetched with `impact`. */
+  downstream?: number
+  downstreamDispatchable?: number
 }
 
 /** A row of the Inbox queue, of either kind. `proposalKind` discriminates. */

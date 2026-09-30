@@ -227,9 +227,10 @@ function DecisionRow({ proposal: p, selected, onOpen }: {
         </span>
       }
       trailing={
-        <Badge tone={TIER_TONE[DECISION_TIER]}>
-          {p.options.length} options
-        </Badge>
+        <span className="flex items-center gap-2">
+          {(p.downstream ?? 0) > 0 && <Badge tone="warning">Blocks {p.downstream}</Badge>}
+          <Badge tone={TIER_TONE[DECISION_TIER]}>{p.options.length} options</Badge>
+        </span>
       }
     >
       <span className="block truncate text-xs text-ink-muted">

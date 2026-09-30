@@ -41,6 +41,13 @@ const DECISION_RANK = 3
 const confRank = (p: InboxProposal) =>
   (isDecisionProposal(p) ? DECISION_RANK : CONF_RANK[p.confidenceLevel ?? 'low'] ?? 2)
 
+/** What a row blocks (spec 2026-09-30 §8): a decision's `downstream` from the
+ *  escalation read model; a triage row blocks nothing. Leads every sort so the
+ *  loudest decision is first in its bucket whatever the operator sorts by. */
+const downstreamOf = (p: InboxProposal) => (isDecisionProposal(p) ? p.downstream ?? 0 : 0)
+const impactFirst = (cmp: (a: InboxProposal, b: InboxProposal) => number) =>
+  (a: InboxProposal, b: InboxProposal) => downstreamOf(b) - downstreamOf(a) || cmp(a, b)
+
 export const INBOX_ORDERING_SPEC: OrderingSpec<InboxGroupBy, InboxSortBy, InboxProposal> = {
   namespace: 'roadmap-inbox',
   groupByValues: ['product', 'capability', 'confidence', 'none'],
@@ -75,9 +82,9 @@ export const INBOX_ORDERING_SPEC: OrderingSpec<InboxGroupBy, InboxSortBy, InboxP
     // Every comparator ends on the id, so a refetch cannot reshuffle equal rows
     // under the cursor.
     sorts: {
-      newest: (a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '') || a.id.localeCompare(b.id),
-      confidence: (a, b) => confRank(a) - confRank(b) || a.id.localeCompare(b.id),
-      title: (a, b) => (a.title ?? a.id).localeCompare(b.title ?? b.id) || a.id.localeCompare(b.id),
+      newest: impactFirst((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '') || a.id.localeCompare(b.id)),
+      confidence: impactFirst((a, b) => confRank(a) - confRank(b) || a.id.localeCompare(b.id)),
+      title: impactFirst((a, b) => (a.title ?? a.id).localeCompare(b.title ?? b.id) || a.id.localeCompare(b.id)),
     },
   },
 }

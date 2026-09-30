@@ -335,6 +335,19 @@ describe('ProposalDetail — a decision proposal', () => {
     rejectDecision.mockReset()
   })
 
+  it('Accept recommendation accepts the recommended option in one tap', () => {
+    const { onDone } = mountDecision({ recommendedKey: 'queue' })
+    fireEvent.click(screen.getByRole('button', { name: 'Accept recommendation' }))
+    expect(acceptDecision).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('Accept recommendation is absent without a recommendation', () => {
+    mountDecision({ recommendedKey: null })
+    expect(screen.queryByRole('button', { name: 'Accept recommendation' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+  })
+
   it('offers the options as ONE single-choice group, with the recommendation preselected', () => {
     mountDecision()
     const group = screen.getByRole('radiogroup', { name: 'Options' })

@@ -6,7 +6,7 @@
  * file is the row on its own.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { DecisionProposal, TriageProposal } from '@/api/triage'
 import { ProposalCard } from './ProposalCard'
@@ -126,6 +126,17 @@ describe('ProposalCard — a decision proposal', () => {
     expect(screen.getByText('2 options')).toBeInTheDocument()
     expect(screen.getByText(/steiner385\/viberpit#12/)).toBeInTheDocument()
     expect(screen.getByText(/recommended: Durable queue/)).toBeInTheDocument()
+  })
+
+  it('a decision row shows how much it blocks, and nothing when it blocks nothing', () => {
+    mountDecision({ downstream: 7 })
+    expect(screen.getByText('Blocks 7')).toBeInTheDocument()
+    cleanup()
+    mountDecision({ downstream: 0 })
+    expect(screen.queryByText(/Blocks/)).toBeNull()
+    cleanup()
+    mountDecision()
+    expect(screen.queryByText(/Blocks/)).toBeNull()
   })
 
   it('says what it is in words, not only in the rail colour', () => {
