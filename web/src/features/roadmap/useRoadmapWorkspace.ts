@@ -42,8 +42,9 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
   // The inbox's second card kind (spec 2026-09-18 §6), scoped server-side like
   // triage and asked for its downstream impact. The impact key is its own entry
-  // (the badge's bare list has none), so it polls whenever a product chip keys it.
-  const decisions = useDecisions(product ?? undefined, { enabled: active, poll: product !== null, impact: true })
+  // (the badge's bare list has none), so no other observer holds it and the
+  // column polls it itself, scoped or not — one impact fetch per 15 s while open.
+  const decisions = useDecisions(product ?? undefined, { enabled: active, poll: true, impact: true })
   // The rows are concatenated into ONE queue — the ordering spec, the key
   // map and the pending count all act on the whole inbox, not on two halves.
   const proposals = useMemo<InboxProposal[]>(() => [

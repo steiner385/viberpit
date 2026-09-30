@@ -2700,9 +2700,9 @@ function useDecisionMutation<V extends { id: string }>(
   return useMutation<DecisionResult, ApiRequestError, V>({
     mutationFn: run,
     onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: QK.decisions })
       // Prefix match: the list is cached per product and impact flag, and the row
       // must leave every one of them.
-      await qc.cancelQueries({ queryKey: QK.decisions })
       qc.setQueriesData<DecisionProposal[]>({ queryKey: QK.decisions }, (rows) => rows?.filter((r) => r.id !== id))
     },
     onError: (e) => {

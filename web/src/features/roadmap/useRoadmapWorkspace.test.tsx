@@ -129,12 +129,14 @@ describe('useRoadmapWorkspace — decision proposals', () => {
     expect(decisionCalls()).toEqual([])
   })
 
-  it('fetches the unscoped list once, with impact, and does not poll it', async () => {
+  it('polls the unscoped list with impact — the badge observes a different key', async () => {
     vi.useFakeTimers()
     renderHook(() => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox') })
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
-    expect(decisionCalls()).toEqual(['/pm/decisions?impact=true'])
+    const calls = decisionCalls()
+    expect(calls.length).toBeGreaterThan(1)
+    expect(new Set(calls)).toEqual(new Set(['/pm/decisions?impact=true']))
   })
 
   it('concatenates both kinds into ONE queue', async () => {
