@@ -1604,3 +1604,70 @@ async def test_guarded_envelope_reports_the_cap_under_its_own_key():
     body = json.loads(out["content"][0]["text"])
     assert body["capped"]["path"] == "" and body["capped"]["dropped"] > 0
     assert len(out["content"][0]["text"]) <= 30_000 + 512  # envelope overhead only
+
+
+_PR_ROW = {"repo": "o/r", "number": 1, "title": "t", "state": "open", "merged": False,
+           "is_draft": False, "stage": "ci", "checks": "pending", "mergeable": True,
+           "merge_state_status": "CLEAN", "auto_merge_enabled": True, "url": "u",
+           "head_ref": "b", "updated_at": "2026-01-01T00:00:00Z",
+           "session": {"id": "s1", "name": "n"},
+           "checks_detail": [{"name": "x"}] * 40, "check_groups": [{"checks": [{}] * 20}] * 5,
+           "node_states": [{}] * 10, "deployed_envs": [], "eta_seconds": 1}
+
+
+@pytest.mark.asyncio
+async def test_list_prs_projects_rows_filters_state_and_limits():
+    rows = [dict(_PR_ROW, number=1),
+            dict(_PR_ROW, number=2, state="draft", is_draft=True),
+            dict(_PR_ROW, number=3, state="merged", merged=True, stage="merged"),
+            dict(_PR_ROW, number=4, state="closed")]
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=rows)
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_prs").handler({}))["content"][0]["text"])
+    numbers = [p["number"] for p in out["data"]]
+    assert numbers == [1, 2], "default state=open keeps drafts, drops merged/closed"
+    row = out["data"][0]
+    assert set(row) == {"repo", "number", "title", "state", "is_draft", "stage", "checks",
+                        "mergeable", "merge_state_status", "auto_merge_enabled", "url",
+                        "head_ref", "updated_at", "session"}
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"state": "all", "limit": 3}))["content"][0]["text"])
+    assert [p["number"] for p in out["data"]] == [1, 2, 3] and out["truncated"] == 1
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"state": "merged"}))["content"][0]["text"])
+    assert [p["number"] for p in out["data"]] == [3]
+    out = json.loads((await _tool(tools, "list_prs").handler(
+        {"verbose": True}))["content"][0]["text"])
+    assert "checks_detail" in out["data"][0] and len(out["data"]) <= 5
+
+
+@pytest.mark.asyncio
+async def test_list_automations_projects_by_default_and_keeps_products():
+    row = {"id": "backlog-runner", "name": "Backlog Runner", "description": "d" * 500,
+           "enabled": True, "mode": "auto", "modes": ["off", "auto"],
+           "status": {"text": "1 work in flight", "level": "active",
+                      "counts": {"eligible": 3, "held": 4},
+                      "products": [{"slug": "kindash", "eligible": 0, "held": 4}],
+                      "waitingReason": "human"},
+           "actionableCount": 2, "oversight": {"x": 1},
+           "configSchema": [{"key": "k"}] * 20, "enginePolicy": "claude_only",
+           "operatorTriggered": False, "workClass": "development",
+           "config": {"max_concurrent": 2}, "schedule": None,
+           "lastActiveAt": "2026-01-01T00:00:00Z", "activeSessions": 1}
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=[row])
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_automations").handler({}))["content"][0]["text"])
+    a = out["data"][0]
+    assert set(a) == {"id", "name", "enabled", "mode", "status", "actionableCount",
+                      "lastActiveAt", "activeSessions", "workClass"}
+    assert a["status"]["products"] == row["status"]["products"]
+    assert a["status"]["counts"] == {"eligible": 3, "held": 4}
+    out = json.loads((await _tool(tools, "list_automations").handler(
+        {"verbose": True}))["content"][0]["text"])
+    assert "configSchema" in out["data"][0] and "config" in out["data"][0]
