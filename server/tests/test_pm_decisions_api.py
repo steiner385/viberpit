@@ -403,3 +403,31 @@ def test_the_overlay_may_not_set_or_clear_a_decision_hold(monkeypatch):
         assert clearing.json()["detail"]["error"] == "bad_hold"
         assert "resolved through its proposal" in clearing.json()["detail"]["message"]
         assert _hold_of(c, wid)[0] == "decision"
+
+
+def test_list_decisions_filters_by_project_slug_server_side(monkeypatch):
+    _stub_announce(monkeypatch)
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _register(c, "Kindash", repo="o/k")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        _pid2, wid2 = _seed_one_pending(c, repo="o/k", number=9, project_slug="kindash")
+        assert _propose(c, wid).status_code == 201
+        assert _propose(c, wid2).status_code == 201
+
+        rows = c.get("/api/pm/decisions", headers=IDENTITY_HEADERS).json()
+        assert {r["projectSlug"] for r in rows} == {"viberpit", "kindash"}
+        rows = c.get("/api/pm/decisions?projectSlug=kindash", headers=IDENTITY_HEADERS).json()
+        assert [r["projectSlug"] for r in rows] == ["kindash"]
+        assert "downstream" not in rows[0], "impact is opt-in: the nav badge polls this every 15s"
+        assert c.get("/api/pm/decisions?projectSlug=nope", headers=IDENTITY_HEADERS).json() == []
+
+
+def test_list_decisions_impact_is_zero_for_an_item_on_no_board(monkeypatch):
+    _stub_announce(monkeypatch)
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")  # no GhProjectItem
+        assert _propose(c, wid).status_code == 201
+        (row,) = c.get("/api/pm/decisions?impact=true", headers=IDENTITY_HEADERS).json()
+        assert row["downstream"] == 0 and row["downstreamDispatchable"] == 0

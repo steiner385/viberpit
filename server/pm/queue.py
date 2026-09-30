@@ -90,6 +90,12 @@ class QueueRow:
     # bounced) so a caller with no outcome history keeps constructing rows
     # positionally.
     bounces: int = 0
+    # Spec 2026-09-30 §3: the hold's provenance, threaded for the escalation read
+    # model (``server/pm/escalation.py``) so it can say who parked the item, why
+    # and for how long. Defaulted so every positional construction keeps working.
+    hold_reason: str | None = None
+    hold_by: str | None = None
+    hold_set_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -890,6 +890,18 @@ async def reconcile_journal(
     }
 
 
+async def _queue_inputs(db, now: datetime) -> tuple[list, dict[str, dict]]:
+    """Rows + policies for the queue-shaped views, read in ONE sync session: which
+    threshold a product's issues are judged against decides what a view shows, so
+    a policy edit must not be able to land between the two reads. Shared by
+    ``queue()`` and ``holds()`` so the operator's two views of the pool cannot
+    disagree with each other or with the runner."""
+    def _rows(s):
+        claimed = runner_claims(s)
+        return load_queue_rows(s, now=now, claimed_refs=claimed), policies_by_slug(s)
+    return await db.run_sync(_rows)
+
+
 @router.get("/queue")
 async def queue(
     min_status: str = STATUS_READY,
@@ -930,15 +942,7 @@ async def queue(
 
     now = datetime.now(timezone.utc)
 
-    def _rows(s):
-        # The policies are read in the SAME session as the rows: which threshold a
-        # product's issues are judged against decides what this view shows, so a
-        # policy edit must not be able to land between the two reads.
-        claimed = runner_claims(s)
-        return (load_queue_rows(s, now=now, claimed_refs=claimed),
-                policies_by_slug(s))
-
-    rows, policies = await db.run_sync(_rows)
+    rows, policies = await _queue_inputs(db, now)
     by_product: dict[str, list] = {}
     for r in rows:
         by_product.setdefault(r.product, []).append(r)
@@ -985,6 +989,93 @@ async def queue(
         "dispatchableByProduct": dispatchable_by_product,
         "generatedAt": now.isoformat(),
     }
+
+
+def _held_to_dict(item) -> dict:
+    return {
+        "ref": item.ref, "repo": item.repo, "number": item.number, "product": item.product,
+        "title": item.title, "url": item.url,
+        "holdKind": item.hold_kind, "holdReason": item.hold_reason, "holdBy": item.hold_by,
+        "holdSetAt": item.hold_set_at.isoformat() if item.hold_set_at else None,
+        "ageHours": item.age_hours,
+        "proposalId": item.proposal_id, "options": list(item.options),
+        "recommendedKey": item.recommended_key,
+        "downstream": item.downstream, "downstreamDispatchable": item.downstream_dispatchable,
+        "downstreamRefs": list(item.downstream_refs),
+        "dispatchableOnRelease": item.dispatchable_on_release,
+        "releasedBy": item.released_by,
+    }
+
+
+_HOLDS_LIMIT_MAX = 200
+
+
+@router.get("/holds")
+async def holds(
+    product: str | None = None,
+    kind: str | None = None,
+    limit: int = 50,
+    min_status: str | None = None,
+    respect_dependencies: bool | None = None,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Parked items ranked by what they block, with a per-product summary (spec
+    2026-09-30 §4.2). One ``_queue_inputs`` read, one ``product_escalation`` per
+    product. ``kind`` is one of ``HELD_KINDS`` — the two kinds that park an item;
+    ``evidence`` and ``stronger_model`` exit on their own and are not "held" here.
+
+    Reach follows each product's own policy (``queue_min_status``,
+    ``respect_dependencies``), as the runner reads it and as
+    ``GET /api/pm/decisions?impact=true`` does; ``min_status`` and
+    ``respect_dependencies`` are explicit overrides for a what-if view.
+
+    ``products[].heldCount`` counts every ``HELD_KINDS`` hold regardless of ``kind``
+    and ``limit``, so it may exceed ``len(held)``; ``oldestHoldHours`` is the max
+    over holds that carry ``hold_set_at`` (undated holds do not lower it).
+
+    SCOPE: dependency edges are scoped to each product's own source repos, so
+    ``downstream`` counts only same-board dependents; a dependent on another
+    product's board is that product's row and is not counted here."""
+    from server.pm import decisions
+    from server.pm.desired_state import HELD_KINDS
+    from server.pm.escalation import product_escalation, rank_held
+
+    if min_status is not None and min_status not in MIN_STATUS_OPTIONS:
+        raise HTTPException(status_code=422, detail={
+            "error": "invalid_min_status",
+            "message": f"min_status must be one of {MIN_STATUS_OPTIONS}, got {min_status!r}"})
+    if kind is not None and kind not in HELD_KINDS:
+        raise HTTPException(status_code=422, detail={
+            "error": "invalid_kind",
+            "message": f"kind must be one of {sorted(HELD_KINDS)}, got {kind!r}"})
+    limit = max(1, min(limit, _HOLDS_LIMIT_MAX))
+    now = datetime.now(timezone.utc)
+    rows, policies = await _queue_inputs(db, now)
+    proposals_by_ref = {
+        f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
+        if w is not None and w.repo and w.number}
+    by_product: dict[str, list] = {}
+    for r in rows:
+        if product is None or r.product == product:
+            by_product.setdefault(r.product, []).append(r)
+    products_out = []
+    held_all: list = []
+    for slug in sorted(by_product):
+        policy = policies.get(slug) or effective_policy(None)
+        esc = product_escalation(slug, by_product[slug], proposals_by_ref, policy, now=now,
+                                 min_status=min_status,
+                                 respect_dependencies=respect_dependencies)
+        products_out.append({"slug": slug, "dispatchable": esc.dispatchable,
+                             "skipped": esc.skipped, "heldCount": len(esc.held),
+                             "starving": esc.starving,
+                             "oldestHoldHours": esc.oldest_hold_hours})
+        held_all.extend(i for i in esc.held if kind is None or i.hold_kind == kind)
+    ranked = rank_held(held_all)
+    return {"products": products_out,
+            "held": [_held_to_dict(i) for i in ranked[:limit]],
+            "truncated": max(0, len(ranked) - limit),
+            "generatedAt": now.isoformat()}
 
 
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2341,6 +2432,8 @@ async def propose_work_item_decision(
 
 @router.get("/decisions")
 async def list_decisions(
+    projectSlug: str | None = None,
+    impact: bool = False,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> list[dict]:
@@ -2350,8 +2443,14 @@ async def list_decisions(
     ``/triage`` exists to keep a fresh auto-accept visible for its undo window,
     and a decision has no such window (spec decision 3 — the machine drafts, the
     person decides, and once taken it is taken).
+
+    ``projectSlug`` narrows server-side (spec 2026-09-30 §4.3, the same parameter
+    ``/triage`` takes). ``impact`` adds ``downstream`` / ``downstreamDispatchable``
+    from the escalation read model; opt-in because it costs the queue read and the
+    nav badge polls this list every 15 s.
     """
     from server.pm import decisions
+    from server.pm.escalation import product_escalation
     from server.pm.explain import decision_guidance
     rows = await decisions.pending_list(db)
     if not rows:
@@ -2361,12 +2460,31 @@ async def list_decisions(
         repo: owner.slug for repo, owner
         in (await owning_projects_by_repo(db, repos)).items()} if repos else {}
     policies = await load_policies(db)
+    impact_by_ref: dict[str, tuple[int, int]] = {}
+    if impact:
+        now = datetime.now(timezone.utc)
+        qrows, qpolicies = await _queue_inputs(db, now)
+        proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in rows
+                            if w is not None and w.repo and w.number}
+        by_product: dict[str, list] = {}
+        for r in qrows:
+            if projectSlug is None or r.product == projectSlug:
+                by_product.setdefault(r.product, []).append(r)
+        for pslug, prows in by_product.items():
+            qpolicy = qpolicies.get(pslug) or effective_policy(None)
+            for item in product_escalation(pslug, prows, proposals_by_ref, qpolicy, now=now).held:
+                impact_by_ref[item.ref] = (item.downstream, item.downstream_dispatchable)
     out = []
     for prop, wi in rows:
         slug = slug_by_repo.get(wi.repo) if wi is not None and wi.repo else None
+        if projectSlug is not None and slug != projectSlug:
+            continue
         policy = (policies.get(slug) if slug else None) or effective_policy(None)
-        out.append(_decision_to_dict(
-            prop, wi, slug, guidance=decision_guidance(policy=policy)))
+        d = _decision_to_dict(prop, wi, slug, guidance=decision_guidance(policy=policy))
+        if impact:
+            down, free = impact_by_ref.get(d.get("ref") or "", (0, 0))
+            d["downstream"], d["downstreamDispatchable"] = down, free
+        out.append(d)
     return out
 
 

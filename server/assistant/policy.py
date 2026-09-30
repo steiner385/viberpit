@@ -147,6 +147,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/projects/[a-z0-9-]+/deps"),
         ("GET", r"/api/pm/projects/[a-z0-9-]+/onboarding"),
         ("GET", r"/api/pm/queue"),
+        # Spec 2026-09-30 §4.2: the escalation read model, read-only.
+        ("GET", r"/api/pm/holds"),
         ("GET", r"/api/pm/triage"),
         ("GET", r"/api/pm/map"),
         ("GET", r"/api/pm/leaves"),
