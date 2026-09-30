@@ -39,7 +39,7 @@ export function NotificationsSection() {
           {isLoading ? (
             <p className="text-sm text-ink-muted">Loading…</p>
           ) : (
-            <QuietHoursForm key={`${data?.start}-${data?.end}`} initial={data} qc={qc} />
+            <QuietHoursForm key={`${data?.start}-${data?.end}-${data?.timezone}`} initial={data} qc={qc} />
           )}
         </div>
       </SettingsGroup>
@@ -47,9 +47,14 @@ export function NotificationsSection() {
   )
 }
 
+// The browser's own zone, offered as the Timezone field's starting value so a
+// freshly-configured window defaults to "local to me" rather than silently UTC (#2562).
+const BROWSER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
+
 function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: ReturnType<typeof useQueryClient> }) {
   const [start, setStart] = useState(initial?.start ?? '')
   const [end, setEnd] = useState(initial?.end ?? '')
+  const [tz, setTz] = useState(initial?.timezone ?? BROWSER_TIMEZONE)
 
   const save = useMutation({
     mutationFn: (body: QuietHours) => api.put<QuietHours>('/notifications/quiet-hours', body),
@@ -57,12 +62,13 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
   })
 
   function handleSave() {
-    save.mutate({ start: start || null, end: end || null })
+    save.mutate({ start: start || null, end: end || null, timezone: tz || null })
   }
   function handleClear() {
     setStart('')
     setEnd('')
-    save.mutate({ start: null, end: null })
+    setTz('')
+    save.mutate({ start: null, end: null, timezone: null })
   }
 
   return (
@@ -88,6 +94,17 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
             className={cn(inputClass, 'w-auto')}
           />
         </div>
+        <div className="space-y-1">
+          <label htmlFor="quiet-timezone" className="block text-sm font-medium text-ink">Timezone</label>
+          <input
+            id="quiet-timezone"
+            type="text"
+            value={tz}
+            onChange={(e) => setTz(e.target.value)}
+            placeholder="UTC"
+            className={cn(inputClass, 'w-48')}
+          />
+        </div>
         <Button type="button" onClick={handleSave} disabled={save.isPending} className="min-h-target">
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
@@ -95,7 +112,10 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
           Clear
         </Button>
       </div>
-      <p className="text-xs text-ink-muted">Rules marked &lsquo;critical&rsquo; bypass quiet hours.</p>
+      <p className="text-xs text-ink-muted">
+        Start/End are local to the timezone above (an IANA name, e.g. &lsquo;America/New_York&rsquo;;
+        blank means UTC). Rules marked &lsquo;critical&rsquo; bypass quiet hours.
+      </p>
       {save.isError && (
         <p role="alert" className="text-sm text-danger">{errMessage(save.error)}</p>
       )}

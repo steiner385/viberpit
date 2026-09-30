@@ -37,6 +37,8 @@ export interface Rule {
 export interface QuietHours {
   start: string | null
   end: string | null
+  // IANA zone (e.g. "America/New_York") start/end are local to. null = UTC (#2562).
+  timezone: string | null
 }
 
 export interface TestDecision {

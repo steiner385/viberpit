@@ -39,7 +39,7 @@ const rules = [
     scopeAutomation: null, action: 'channel', channelId: 'ch1', critical: true, priority: 10, createdAt: '2026-01-01',
   },
 ]
-const quiet = { start: '22:00', end: '07:00' }
+const quiet = { start: '22:00', end: '07:00', timezone: 'America/New_York' }
 
 function renderSection(Section: React.ComponentType = NotificationsSection) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -161,18 +161,19 @@ describe('Notifications, Channels and Routing rules sections', () => {
     expect(decision.textContent).toContain('r1')
   })
 
-  it('saving quiet hours calls api.put("/notifications/quiet-hours", {start,end})', async () => {
+  it('saving quiet hours calls api.put("/notifications/quiet-hours", {start,end,timezone})', async () => {
     renderSection()
     await waitFor(() => {
       expect((screen.getByLabelText('Start') as HTMLInputElement).value).toBe('22:00')
     })
+    expect((screen.getByLabelText('Timezone') as HTMLInputElement).value).toBe('America/New_York')
 
     await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
     await waitFor(() => {
       expect(api.put).toHaveBeenCalledWith(
         '/notifications/quiet-hours',
-        { start: '22:00', end: '07:00' },
+        { start: '22:00', end: '07:00', timezone: 'America/New_York' },
       )
     })
   })
@@ -188,7 +189,7 @@ describe('Notifications, Channels and Routing rules sections', () => {
     await waitFor(() => {
       expect(api.put).toHaveBeenCalledWith(
         '/notifications/quiet-hours',
-        { start: null, end: null },
+        { start: null, end: null, timezone: null },
       )
     })
   })

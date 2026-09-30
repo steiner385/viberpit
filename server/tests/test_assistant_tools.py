@@ -381,7 +381,11 @@ _MUTATION_CALLS = [
     ("delete_notification_rule", {"id": "rule-1"},
      "DELETE", "/api/notifications/rules/rule-1", None),
     ("set_quiet_hours", {"start": "22:00", "end": "07:00"},
-     "PUT", "/api/notifications/quiet-hours", {"start": "22:00", "end": "07:00"}),
+     "PUT", "/api/notifications/quiet-hours",
+     {"start": "22:00", "end": "07:00", "timezone": None}),
+    ("set_quiet_hours", {"start": "22:00", "end": "07:00", "timezone": "America/New_York"},
+     "PUT", "/api/notifications/quiet-hours",
+     {"start": "22:00", "end": "07:00", "timezone": "America/New_York"}),
 ]
 
 

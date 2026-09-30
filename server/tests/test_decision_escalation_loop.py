@@ -18,7 +18,7 @@ def _esc(slug, *, dispatchable=0, held=(), starving=True, oldest=None):
 
 
 class Fakes:
-    def __init__(self, escs, *, mode="notify", quiet=(None, None), last=None):
+    def __init__(self, escs, *, mode="notify", quiet=(None, None, None), last=None):
         self.escs, self.mode, self.quiet = escs, mode, quiet
         self.last = dict(last or {})
         self.sent: list[tuple[str, str, dict]] = []
@@ -80,12 +80,26 @@ def test_unchanged_situation_is_silent_until_repeat_hours():
 
 
 def test_quiet_hours_defer_without_recording():
-    f = Fakes([_esc("kindash", held=[_item("o/k#1")])], quiet=("00:00", "23:59"))
+    f = Fakes([_esc("kindash", held=[_item("o/k#1")])], quiet=("00:00", "23:59", None))
     asyncio.run(f.loop().tick())
     assert f.sent == [] and f.recorded == []
-    f.quiet = (None, None)
+    f.quiet = (None, None, None)
     asyncio.run(f.loop().tick())
     assert len(f.sent) == 1
+
+
+def test_quiet_hours_localizes_against_stored_timezone():
+    """#2562: a window that is quiet in UTC at NOW must NOT defer once a timezone
+    many hours off UTC is stored, if NOW converted to that zone falls outside it."""
+    # NOW is 2026-01-04T00:00:00Z. A window quiet only 00:00-00:01 UTC covers it in
+    # UTC (no timezone stored) but +12h shifts local time to noon, well outside it.
+    f = Fakes([_esc("kindash", held=[_item("o/k#1")])], quiet=("00:00", "00:01", None))
+    asyncio.run(f.loop().tick())
+    assert f.sent == [] and f.recorded == [], "no stored timezone: window applies to bare UTC now"
+
+    f.quiet = ("00:00", "00:01", "Etc/GMT-12")  # Etc/GMT-12 is UTC+12
+    asyncio.run(f.loop().tick())
+    assert len(f.sent) == 1, "stored timezone: local now (noon) falls outside the quiet window"
 
 
 def test_off_mode_does_nothing_and_status_reports_counts():

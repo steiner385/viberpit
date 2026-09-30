@@ -42,7 +42,7 @@ sent. The assistant can subscribe with `watch(kind="product", condition="needs_d
 to this automation and the product's primary repo.
 
 **Quiet hours defer.** During quiet hours the tick is skipped; nothing is queued. The window is
-currently evaluated in UTC (#2562).
+local HH:MM evaluated against the stored `quiet_hours_timezone` (null = UTC, #2562).
 
 **It never resolves a decision.** The Needs-you card offers *Accept recommendation* (decision
 holds) and *Retry* (owner-action holds). Both run as the tapping person through the existing

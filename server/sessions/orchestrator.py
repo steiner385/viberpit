@@ -12380,14 +12380,14 @@ class SessionOrchestrator:
                             exc_info=True)
         return out
 
-    async def _decision_escalation_quiet_window(self) -> tuple[str | None, str | None]:
+    async def _decision_escalation_quiet_window(self) -> tuple[str | None, str | None, str | None]:
         from sqlalchemy import select
         from server.db.models import AppSettings
         async with db_session() as db:
             settings = (await db.execute(select(AppSettings).where(
                 AppSettings.id == "singleton"))).scalar_one_or_none()
-        return ((settings.quiet_hours_start, settings.quiet_hours_end) if settings
-                else (None, None))
+        return ((settings.quiet_hours_start, settings.quiet_hours_end,
+                 settings.quiet_hours_timezone) if settings else (None, None, None))
 
     async def _decision_escalation_last_digests(self) -> dict:
         """slug -> (detail dict, at) of each product's newest digest: the latest 200

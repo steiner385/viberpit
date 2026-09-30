@@ -1,7 +1,7 @@
 """Unit tests for the pure notification routing engine (#602)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from server.sessions.notify_rules import (
     EVENT_CLASSES,
@@ -9,6 +9,7 @@ from server.sessions.notify_rules import (
     RuleView,
     event_class_matches,
     in_quiet_hours,
+    localize_now,
     plan,
     scope_matches,
     select_rule,
@@ -222,6 +223,37 @@ def test_plan_overnight_noon_not_suppressed():
     noon = datetime(2024, 1, 1, 12, 0)
     d = plan(_ev(), [_rule(action="push")], "23:00", "07:00", noon)
     assert d.deliver is True and d.suppressed_by_quiet is False
+
+
+# --------------------------------------------------------------------------- #
+# localize_now (#2562)                                                        #
+# --------------------------------------------------------------------------- #
+def test_localize_now_none_tz_returns_now_unchanged():
+    now = datetime(2024, 1, 1, 5, 0, tzinfo=timezone.utc)
+    assert localize_now(now, None) is now
+
+
+def test_localize_now_converts_utc_to_named_zone():
+    # 05:00 UTC in winter is 00:00 America/New_York (UTC-5).
+    now = datetime(2024, 1, 1, 5, 0, tzinfo=timezone.utc)
+    local = localize_now(now, "America/New_York")
+    assert (local.hour, local.minute) == (0, 0)
+
+
+def test_localize_now_unknown_tz_falls_back_to_now_unchanged():
+    now = datetime(2024, 1, 1, 5, 0, tzinfo=timezone.utc)
+    assert localize_now(now, "Not/AZone") is now
+
+
+def test_quiet_hours_bug_scenario_from_2562():
+    """22:00-07:00 entered by an America/New_York operator was evaluated in bare
+    UTC and fired a non-critical push at 05:00 local, still inside the intended
+    window (#2562)."""
+    # 05:00 America/New_York (EDT, UTC-4 in July) == 09:00 UTC.
+    now_utc = datetime(2024, 7, 1, 9, 0, tzinfo=timezone.utc)
+    assert not in_quiet_hours("22:00", "07:00", now_utc)  # the bug: bare UTC reads as not-quiet → pings
+    local = localize_now(now_utc, "America/New_York")
+    assert in_quiet_hours("22:00", "07:00", local)  # fixed: local reads as quiet → suppressed
 
 
 # --------------------------------------------------------------------------- #

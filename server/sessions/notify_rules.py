@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # The concrete, emittable event classes. The wildcard "*" is ALSO a valid
 # rule.event_class (matches anything) but is intentionally NOT a member here —
@@ -134,6 +135,20 @@ def _sort_key(created_at: object):
     if created_at is None:
         return ""
     return created_at
+
+
+def localize_now(now: datetime, tz_name: str | None) -> datetime:
+    """Convert a tz-aware ``now`` to ``tz_name`` so :func:`in_quiet_hours` reads the
+    operator's local wall-clock hour instead of UTC (#2562: quiet hours are entered
+    as local HH:MM, so evaluating them against a bare UTC ``now`` fires at the wrong
+    hour for every non-UTC operator). ``tz_name`` None or unrecognized ⇒ ``now``
+    unchanged (UTC, the documented fallback)."""
+    if not tz_name:
+        return now
+    try:
+        return now.astimezone(ZoneInfo(tz_name))
+    except ZoneInfoNotFoundError:
+        return now
 
 
 def _parse_hhmm(value: str) -> int:
