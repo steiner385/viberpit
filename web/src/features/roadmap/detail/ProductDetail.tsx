@@ -81,16 +81,20 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           Its repositories and description are missing; everything else is from the roadmap map.
         </Banner>
       )}
+      {/* The queue leads (PRODUCT.md principle 1; docs/PAGE-TABS.md §4 Order):
+          Needs you, Blocked, In flight, then the inventory — the same sequence
+          on every level, and the tabs below follow it after Overview. The
+          2026-09-30 Roadmap critique found Needs you as tab 1 / 3 / 6 by level. */}
       <StatTiles
         tiles={[
-          { label: CAPABILITY.plural, value: c.capabilities },
+          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
           // The initiatives the In-flight tab LISTS, not `counts.inFlight`: the
           // server's rollup also counts issue tiers, so the tile would read a
           // different number from the tab badge beside it. (The issue-level
           // count belongs to the capability tiles.)
           { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success', onClick: () => setTab('in-flight') },
-          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
-          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
+          { label: CAPABILITY.plural, value: c.capabilities },
         ]}
       />
       <Tabs
@@ -100,8 +104,8 @@ export function ProductDetail({ product }: { product: ProductNode }) {
         panelId={panelId}
         items={[
           { id: 'overview', label: TAB_LABEL.overview },
-          { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
+          { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'ranked', label: TAB_LABEL.ranked },
           { id: 'dependencies', label: TAB_LABEL.dependencies },
           { id: 'automation', label: TAB_LABEL.automation },

@@ -26,6 +26,7 @@ import { pendingProposals } from './inbox/triageSelectors'
 import { programTitleOf } from './lookup'
 import { TIER_RANK } from './roadmapTier'
 import { RoadmapScopeSegment } from './RoadmapScopeSegment'
+import { needsYouCount } from './detail/needsYou'
 import { InitiativeCard } from './rows/InitiativeCard'
 import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
@@ -99,6 +100,7 @@ export function RoadmapListColumn({
           productCount={products.length}
           initiativeCount={entries.length}
           inboxCount={pendingProposals(inbox.proposals).length}
+          needsYouCount={needsYouCount(products)}
         />
       </div>
       {/* The map's error, not the inbox's — the Inbox scope's body owns its own

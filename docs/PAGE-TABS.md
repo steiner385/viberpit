@@ -64,8 +64,11 @@ the same PR.
   *right now* — render the tab with a count of zero and an `EmptyState`, so the user learns the
   question exists.
 - **Order.** Overview first. Where the page has stat tiles, the tabs follow the tile order so a
-  tile and its tab sit in the same sequence. Configuration tabs come before history tabs (Events,
-  Sessions).
+  tile and its tab sit in the same sequence — and the tiles lead with the queue: **Needs you,
+  Blocked, In flight, then the inventory** (PRODUCT.md principle 1: the queue is the product), the
+  same sequence on every level of an object hierarchy, so "what needs me?" is always the tab after
+  Overview and is never scrolled off a 390 px strip. Configuration tabs come before history tabs
+  (Events, Sessions).
 
 ## 5. The Overview budget
 

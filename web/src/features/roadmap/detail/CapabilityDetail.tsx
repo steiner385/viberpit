@@ -103,14 +103,18 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
 
   return (
     <div className="flex flex-col gap-4">
+      {/* The queue leads (PRODUCT.md principle 1; docs/PAGE-TABS.md §4 Order):
+          Needs you, Blocked, In flight, then the inventory — the same sequence
+          on every level, and the tabs below follow it after Overview. Needs you
+          used to be the SIXTH tab here, off-screen at 390px. */}
       <StatTiles
         tiles={[
-          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: openIssues, onClick: () => setTab('issues') },
+          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
           // The initiatives the In-flight tab LISTS, the same reading as the
           // product level (`counts.inFlight` also rolls up issue tiers).
           { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success', onClick: () => setTab('in-flight') },
-          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
-          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
+          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: openIssues, onClick: () => setTab('issues') },
         ]}
       />
       <Tabs
@@ -120,11 +124,11 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
         panelId={panelId}
         items={[
           { id: 'overview', label: TAB_LABEL.overview },
-          { id: 'children', label: `Sub-${CAPABILITY.plural.toLowerCase()}`, count: capability.children.length },
-          { id: 'dependencies', label: TAB_LABEL.dependencies, count: capability.links.length },
+          { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
           { id: 'issues', label: ISSUE.plural, count: openIssues },
-          { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
+          { id: 'children', label: `Sub-${CAPABILITY.plural.toLowerCase()}`, count: capability.children.length },
+          { id: 'dependencies', label: TAB_LABEL.dependencies, count: capability.links.length },
         ]}
       />
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
