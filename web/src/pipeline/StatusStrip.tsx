@@ -121,10 +121,15 @@ export function StatusStrip({ prs, activeFilter, onFilter }: StatusStripProps) {
       </span>
     ) : null;
 
+  // The wall display (non-interactive) is read from three metres: its numerals
+  // take the ten-foot step (`--fs-4xl`, 45px at the kiosk's 1.25 scale — the
+  // 25px they had were the largest thing on a 1080p wall) and the label a size
+  // a passer-by can read (2026-09-30 Pipeline critique, P2). At a desk the
+  // tiles keep their density.
   const body = (count: number, label: string, tone: Tone, bucket: Bucket) => (
     <>
-      <b className={cn('text-xl font-semibold leading-tight tabular-nums', TONE_TEXT[tone])}>{count}</b>
-      <span className="text-2xs uppercase tracking-wide text-ink-muted">{label}</span>
+      <b className={cn(interactive ? 'text-xl' : 'text-4xl', 'font-semibold leading-tight tabular-nums', TONE_TEXT[tone])}>{count}</b>
+      <span className={cn(interactive ? 'text-2xs' : 'text-sm', 'uppercase tracking-wide text-ink-muted')}>{label}</span>
       {deltaBadge(bucket)}
     </>
   );

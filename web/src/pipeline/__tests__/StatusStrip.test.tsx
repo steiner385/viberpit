@@ -229,6 +229,24 @@ describe('StatusStrip interactive=false (kiosk)', () => {
     expect(within(strip).getAllByText('1')).toHaveLength(2);
   });
 
+  // 2026-09-30 Pipeline critique, P2: the kiosk's 25px numerals were the
+  // largest thing on a 1080p wall. Read-only tiles take the ten-foot step.
+  it('read-only tiles take the ten-foot numeral and label sizes; interactive tiles keep their density', () => {
+    const { unmount } = render(
+      <InteractionProvider interactive={false}>
+        <StatusStrip prs={[pr('ci')]} activeFilter={null} onFilter={vi.fn()} />
+      </InteractionProvider>,
+    );
+    const label = screen.getByText('CI running');
+    expect(label).toHaveClass('text-sm');
+    expect(label.previousElementSibling).toHaveClass('text-4xl');
+    unmount();
+    render(<StatusStrip prs={[pr('ci')]} activeFilter={null} onFilter={vi.fn()} />);
+    const deskLabel = screen.getByText('CI running');
+    expect(deskLabel).toHaveClass('text-2xs');
+    expect(deskLabel.previousElementSibling).toHaveClass('text-xl');
+  });
+
   it('clicking a non-interactive tile never calls onFilter', () => {
     const onFilter = vi.fn();
     render(

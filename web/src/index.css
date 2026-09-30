@@ -104,6 +104,10 @@
   --fs-sm: calc(0.875rem * var(--scale));   --fs-base: calc(1rem * var(--scale));
   --fs-lg: calc(1.125rem * var(--scale));   --fs-xl: calc(1.25rem * var(--scale));
   --fs-2xl: calc(1.5rem * var(--scale));
+  /* Ten-foot steps: the numerals a wall display is read by. Only the kiosk's
+     read-only status tiles use them today (2026-09-30 Pipeline critique, P2:
+     the strip's 25px numerals were the largest thing on a 1080p wall). */
+  --fs-3xl: calc(1.875rem * var(--scale));  --fs-4xl: calc(2.25rem * var(--scale));
 
 
   font: 16px/1.5 var(--font-sans);
@@ -187,6 +191,7 @@
 
   --text-2xs: var(--fs-2xs); --text-xs: var(--fs-xs); --text-sm: var(--fs-sm); --text-base: var(--fs-base);
   --text-lg: var(--fs-lg);   --text-xl: var(--fs-xl); --text-2xl: var(--fs-2xl);
+  --text-3xl: var(--fs-3xl); --text-4xl: var(--fs-4xl);
 
   --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --font-mono: ui-monospace, Consolas, monospace;
