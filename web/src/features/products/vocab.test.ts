@@ -7,7 +7,7 @@ import {
   INITIATIVE_STATUS_LABEL, initiativeStatusLabel,
   ONBOARDING_STATE_LABEL, onboardingStateLabel,
   CAPABILITY_STATE_LABEL, REASON_LABEL, ROADMAP, TIER_LABEL,
-  nextStage, reasonLabel,
+  initiativeAsk, nextStage, reasonLabel,
 } from './vocab'
 
 describe('vocab', () => {
@@ -72,6 +72,43 @@ describe('holdLabel', () => {
     expect(holdLabel('evidence')).toBe('Held for evidence')
     expect(holdLabel(null)).toBe('')
     for (const v of Object.values(HOLD_LABEL)) expect(v).not.toMatch(/investigat|next run|tier/i)
+  })
+})
+
+describe('initiativeAsk — one verb per queue state (2026-09-30 critique P2)', () => {
+  const row = (over: Partial<Parameters<typeof initiativeAsk>[0]>) => initiativeAsk({
+    tier: 'needs-you', reason: null, status: 'active', stage: 'build', epic: null, ...over,
+  })
+
+  it('names the gate an advance-ready row moves to — the initiative page\'s own button', () => {
+    expect(row({ reason: 'advance', stage: 'build' })).toEqual({ why: 'Ready to advance', move: 'Advance → Deploy' })
+    expect(row({ reason: 'advance', stage: 'maintain' }).move).toBe('Advance → Done')
+    expect(row({ reason: 'advance', stage: 'done' }).move).toBe('Complete')
+  })
+
+  it('distinguishes the row\'s own block from a dependency block', () => {
+    expect(row({ tier: 'blocked', reason: 'blocked', status: 'blocked' })).toEqual({ why: 'Blocked, needs clearing', move: 'Clear the block' })
+    expect(row({ tier: 'blocked', reason: 'epic_blocked' })).toEqual({ why: 'Blocked by open dependencies', move: 'Clear the blocking dependencies' })
+    // A blocked tier with no reason still says so rather than "Active".
+    expect(row({ tier: 'blocked', reason: null })).toEqual({ why: 'Blocked', move: 'Clear the block' })
+  })
+
+  it('asks for the artifact the synthesizer parked on', () => {
+    expect(row({ status: 'awaiting_human', stage: 'intake' }).move).toBe('Review the intent')
+    expect(row({ status: 'awaiting_human', stage: 'design' }).move).toBe('Review the spec')
+    expect(row({ status: 'awaiting_human', stage: 'plan' })).toEqual({ why: 'Awaiting human', move: 'Review the plan' })
+  })
+
+  it('counts held sub-issues instead of calling the row "Active"', () => {
+    expect(row({ epic: { ref: null, url: null, total: 4, done: 1, blocked: 0, held: 2 } }))
+      .toEqual({ why: '2 issues held for you', move: 'Review 2 held issues' })
+    expect(row({ epic: { ref: null, url: null, total: 4, done: 1, blocked: 0, held: 1 } }).move).toBe('Review 1 held issue')
+  })
+
+  it('falls back to the status and a neutral verb when nothing more specific is known', () => {
+    expect(row({ status: 'awaiting_human', stage: 'build' })).toEqual({ why: 'Awaiting human', move: 'Review and decide' })
+    // Never the old catch-all.
+    expect(row({}).move).not.toMatch(/requested input/)
   })
 })
 

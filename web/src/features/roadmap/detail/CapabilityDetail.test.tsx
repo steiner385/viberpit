@@ -396,7 +396,7 @@ it('routes descendant-only issue attention to the child and retains a blocked in
   ] })
   mount({ product: p, capability }, '/roadmap/p/capabilities/parent?tab=needs-you')
   expect(screen.getByRole('link', { name: 'Review issues in Child' })).toHaveAttribute('href', '/roadmap/p/capabilities/child?tab=needs-you')
-  expect(screen.getByRole('link', { name: 'Review blocker' })).toHaveAttribute('href', '/initiatives/stalled')
+  expect(screen.getByRole('link', { name: 'Clear the block' })).toHaveAttribute('href', '/initiatives/stalled')
   expect(screen.queryByText('Other work')).toBeNull()
   expect(tile('Needs you')).toHaveTextContent('2')
 })
