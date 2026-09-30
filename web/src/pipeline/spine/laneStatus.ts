@@ -16,6 +16,15 @@ export const LANE_TONE: Record<LaneStatus, Tone> = {
   green: 'success', amber: 'warning', red: 'danger', blind: 'neutral', idle: 'neutral',
 };
 
+/** "3 green · 2 idle · 1 blind" — the lanes a phone folds away, counted by
+ *  their own word (`LANE_WORD`, above) in the order the rail lists them. Lives
+ *  beside the words so the fold line and the chips cannot disagree. */
+export function quietLaneSummary(lanes: readonly { status: LaneStatus }[]): string {
+  const counts = new Map<string, number>();
+  for (const l of lanes) counts.set(LANE_WORD[l.status], (counts.get(LANE_WORD[l.status]) ?? 0) + 1);
+  return [...counts].map(([word, n]) => `${n} ${word}`).join(' · ');
+}
+
 export type RollupState = 'red' | 'blind' | 'amber' | 'green';
 
 /** Worst-wins health rollup (spec §4.2). not-wired lanes are excluded; a red
