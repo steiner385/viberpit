@@ -694,7 +694,7 @@ class DeployMonitorActionProvider:
     async def actionable(self) -> list[ActionableItem]:
         return await self._loop.actionable_items()
 
-    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+    async def trigger(self, item_id: str, kind: str, **_: Any) -> TriggerResult:
         status, number = await self._loop.action_result(item_id, kind)
         level, message = _ACTION_STATUS.get(status, ("error", "Action failed — see the feed"))
         if status == "filed" and number is not None:

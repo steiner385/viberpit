@@ -14,7 +14,7 @@ class _FakeOrch:
     async def automation_actionable(self, automation_id):
         return self._actionable
 
-    async def automation_trigger(self, automation_id, item_id, kind):
+    async def automation_trigger(self, automation_id, item_id, kind, identity=None):
         self.trigger_calls.append((automation_id, item_id, kind))
         return self._result
 

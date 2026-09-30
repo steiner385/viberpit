@@ -737,7 +737,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
-    "_deploy_monitor_task", "_capacity_governor_task",
+    "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
 })
 
 
@@ -1115,6 +1115,7 @@ class SessionOrchestrator:
         from server.automations.error_triage import ErrorTriageActionProvider
         from server.automations.session_feedback import SessionFeedbackActionProvider
         from server.automations.deploy_monitor import DeployMonitorActionProvider
+        from server.automations.decision_escalation import DecisionEscalationActionProvider
         from server.automations.base import ActionProvider
         self._action_providers: dict[str, ActionProvider] = {
             "pr-doctor": PrDoctorActionProvider(self),
@@ -1124,6 +1125,7 @@ class SessionOrchestrator:
             "error-triage": ErrorTriageActionProvider(self),
             "session-feedback": SessionFeedbackActionProvider(self),
             "deploy-monitor": DeployMonitorActionProvider(self),
+            "decision-escalation": DecisionEscalationActionProvider(self),
         }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -1557,6 +1559,19 @@ class SessionOrchestrator:
             fetch_deployments=lambda repos: asyncio.to_thread(
                 gh_deployments.fetch_deployments, repos))
         self._deploy_monitor_task: asyncio.Task | None = None
+        # Decision Escalation: one digest per product when its held items starve
+        # dispatch, age, or block work (spec 2026-09-30 §5). Read-only; notifies only.
+        from server.automations.decision_escalation import DecisionEscalationLoop
+        self._decision_escalation_ctx = AutomationContext("decision-escalation")
+        self._decision_escalation_loop = DecisionEscalationLoop(
+            self._decision_escalation_ctx,
+            read_config=self._decision_escalation_read_config,
+            load_escalations=self._decision_escalation_load,
+            quiet_window=self._decision_escalation_quiet_window,
+            last_digests=self._decision_escalation_last_digests,
+            record_digest=self._decision_escalation_record_digest,
+            notify=self._decision_escalation_notify)
+        self._decision_escalation_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import (
@@ -2500,6 +2515,10 @@ class SessionOrchestrator:
             self._deploy_monitor_task = asyncio.create_task(
                 self._deploy_monitor_tick_loop(interval=120.0), name="deploy-monitor-loop"
             )
+            # Decision Escalation: cadence is the row's ``tick_min`` (read each cycle).
+            self._decision_escalation_task = asyncio.create_task(
+                self._decision_escalation_tick_loop(), name="decision-escalation-loop"
+            )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
                 self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
@@ -3139,7 +3158,8 @@ class SessionOrchestrator:
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_error_triage_task", "_session_feedback_task",
-                     "_deploy_monitor_task", "_archaudit_task", "_sweep_task",
+                     "_deploy_monitor_task", "_decision_escalation_task",
+                     "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
@@ -12293,6 +12313,115 @@ class SessionOrchestrator:
             log_key="deploy_monitor")
 
     # ------------------------------------------------------------------
+    # Decision Escalation control loop
+    # ------------------------------------------------------------------
+    async def _decision_escalation_tick_loop(self) -> None:
+        while True:
+            await self._decision_escalation_tick_once()
+            await asyncio.sleep(await self._decision_escalation_interval())
+
+    async def _decision_escalation_interval(self) -> float:
+        """``tick_min`` from the row (spec §5), floored at the schema's ``min``."""
+        try:
+            _mode, config = await self._decision_escalation_read_config()
+            return max(5, int(config.get("tick_min", 30))) * 60.0
+        except Exception:
+            return 30 * 60.0
+
+    async def _decision_escalation_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("decision-escalation"):
+            return
+        await self._decision_escalation_loop.tick()
+        try:
+            mode, _ = await self._decision_escalation_read_config()
+            if mode != "off":
+                await self._bump_automation_active("decision-escalation")
+        except Exception:
+            log.debug("decision_escalation.heartbeat_failed", exc_info=True)
+
+    async def _decision_escalation_read_config(self) -> tuple[str, dict]:
+        from server.automations import config_store
+        from server.automations.decision_escalation import DecisionEscalation
+        active = tuple(m for m in DecisionEscalation.modes if m != "off")
+        return await config_store.read_automation_config(
+            DecisionEscalation, modes=active, default_mode=active[0],
+            log_key="decision_escalation")
+
+    async def _decision_escalation_load(self, config: dict) -> list:
+        from datetime import datetime, timezone
+
+        from server.automations.product_policy import effective_policy, is_on
+        from server.pm import decisions
+        from server.pm.escalation import product_escalation
+        from server.pm.queue_store import queue_inputs
+        now = datetime.now(timezone.utc)
+        only = {str(s) for s in (config.get("products") or [])}
+        async with db_session() as db:
+            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
+                                if w is not None and w.repo and w.number}
+        by_product: dict[str, list] = {}
+        for r in rows:
+            by_product.setdefault(r.product, []).append(r)
+        out = []
+        for slug in sorted(by_product):
+            if only and slug not in only:
+                continue
+            policy = policies.get(slug) or effective_policy(None)
+            if not is_on(policy):
+                continue
+            try:
+                out.append(product_escalation(
+                    slug, by_product[slug], proposals_by_ref, policy, now=now,
+                    starving_max=int(config.get("starving_max_dispatchable", 1))))
+            except Exception:
+                # One product's bad rows/policy must not silence every other product.
+                log.warning("decision_escalation.product_load_failed slug=%s", slug,
+                            exc_info=True)
+        return out
+
+    async def _decision_escalation_quiet_window(self) -> tuple[str | None, str | None]:
+        from sqlalchemy import select
+        from server.db.models import AppSettings
+        async with db_session() as db:
+            settings = (await db.execute(select(AppSettings).where(
+                AppSettings.id == "singleton"))).scalar_one_or_none()
+        return ((settings.quiet_hours_start, settings.quiet_hours_end) if settings
+                else (None, None))
+
+    async def _decision_escalation_last_digests(self) -> dict:
+        """slug -> (detail dict, at) of each product's newest digest: the latest 200
+        digest rows read ONCE per tick and indexed, not one query per product."""
+        from sqlalchemy import select
+        from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
+        from server.db.models import AuditEvent
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(AuditEvent.detail, AuditEvent.at)
+                .where(AuditEvent.type == DIGEST_AUDIT_TYPE)
+                .order_by(AuditEvent.at.desc()).limit(200))).all()
+        out: dict = {}
+        for detail, at in rows:  # newest first: the first row per slug wins
+            if isinstance(detail, dict) and detail.get("fingerprint"):
+                out.setdefault(detail.get("slug"), (detail, at))
+        return out
+
+    async def _decision_escalation_record_digest(self, slug: str, detail: dict) -> None:
+        from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
+        async with db_session() as db:
+            await record_audit(db, DIGEST_AUDIT_TYPE, SYSTEM_IDENTITY, detail, via="automation")
+            await db.commit()
+
+    async def _decision_escalation_notify(self, title: str, body: str, *, slug: str,
+                                          url: str | None) -> None:
+        from server.pm.repo_project import primary_repo_for_slug
+        async with db_session() as db:
+            repo = await primary_repo_for_slug(db, slug)
+        await push_mod.notify_event("decision_needed", title, body, repo=repo,
+                                    automation="decision-escalation", url=url,
+                                    fanout_when_unconfigured=True, orch=self)
+
+    # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
     # ------------------------------------------------------------------
 
@@ -16084,6 +16213,7 @@ class SessionOrchestrator:
             "error-triage": getattr(self, "_error_triage_ctx", None),
             "session-feedback": getattr(self, "_session_feedback_ctx", None),
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
+            "decision-escalation": getattr(self, "_decision_escalation_ctx", None),
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
             "control-band-monitor": getattr(self, "_control_band_ctx", None),
@@ -16155,7 +16285,8 @@ class SessionOrchestrator:
             return []
         return [it.to_dict() for it in await provider.actionable()]
 
-    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str,
+                                 identity: str | None = None) -> dict:
         """Dispatch a manual action; returns a TriggerResult dict, or a structured
         error status the API maps to HTTP codes (no exceptions across the RPC seam)."""
         provider = self._action_providers.get(automation_id)
@@ -16166,7 +16297,7 @@ class SessionOrchestrator:
             return {"status": "invalid_kind", "level": "error",
                     "message": f"invalid kind {kind!r}"}
         try:
-            return (await provider.trigger(item_id, kind)).to_dict()
+            return (await provider.trigger(item_id, kind, identity=identity)).to_dict()
         finally:
             # A manual decision invalidates the overview's count snapshot, even
             # if an external write succeeded before its response failed.

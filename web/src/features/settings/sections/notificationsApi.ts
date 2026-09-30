@@ -69,6 +69,8 @@ export const EVENT_CLASSES: { value: string; label: string }[] = [
   { value: 'pr_broke', label: 'PR broke' },
   { value: 'pr_merged', label: 'PR merged' },
   { value: 'deploy_failed', label: 'Deploy failed' },
+  { value: 'account_limited', label: 'Account limited' },
+  { value: 'decision_needed', label: 'Decision needed' },
 ]
 
 export const ACTIONS: { value: string; label: string }[] = [

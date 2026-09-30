@@ -7,6 +7,8 @@ user-facing level/message pairs.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from server.automations import pr_doctor_engine as engine
 from server.automations.base import ActionableItem, ActionSpec, TriggerResult
 
@@ -99,7 +101,7 @@ class PrDoctorActionProvider:
                     style="risky" if kind in _PR_RISKY else "default")])
         return [by_number[k] for k in sorted(by_number)]
 
-    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+    async def trigger(self, item_id: str, kind: str, **_kw: Any) -> TriggerResult:
         repo, _, num = item_id.rpartition("#")
         try:
             number = int(num)
@@ -202,7 +204,7 @@ class BacklogRunnerActionProvider:
                                     style="default")]))
         return items
 
-    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+    async def trigger(self, item_id: str, kind: str, **_kw: Any) -> TriggerResult:
         status = await self._orch.backlog_runner_implement_core(item_id)
         level, message = _BACKLOG_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
         return TriggerResult(status=status, level=level, message=message)
@@ -239,7 +241,7 @@ class ArchiveAuditActionProvider:
                      ActionSpec(kind="reopen", label="Reopen", style="risky")])
             for f in await self._orch.archive_audit_open_findings()]
 
-    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+    async def trigger(self, item_id: str, kind: str, **_kw: Any) -> TriggerResult:
         status = await self._orch.archive_audit_decide_finding(item_id, kind)
         level, message = _ARCHIVE_AUDIT_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
         return TriggerResult(status=status, level=level, message=message)
@@ -278,7 +280,7 @@ class CicdDoctorActionProvider:
                 actions=[ActionSpec(kind="file_issue", label="File issue", style="default")]))
         return items
 
-    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+    async def trigger(self, item_id: str, kind: str, **_kw: Any) -> TriggerResult:
         status = await self._orch.cicd_file_issue_now(item_id)
         level, message = _CICD_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
         return TriggerResult(status=status, level=level, message=message)

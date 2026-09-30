@@ -497,7 +497,8 @@ class _FakeOrch:
         self._status = status
         self.calls: list[tuple[str, str, str]] = []
 
-    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str,
+                                 identity: str | None = None) -> dict:
         self.calls.append((automation_id, item_id, kind))
         level = "ok" if self._status == "spawned" else "warn"
         message = "Spawned implementation session" if self._status == "spawned" else "No longer a current candidate"

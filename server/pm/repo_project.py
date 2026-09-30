@@ -126,6 +126,15 @@ async def resolve_repo_ownership(
     return out
 
 
+async def primary_repo_for_slug(db: AsyncSession, slug: str) -> str | None:
+    """A product's primary repo (``None`` for an unknown slug or one with no primary):
+    what a product-scoped notification carries as its ``repo``, and what a
+    product-scoped watch matches on."""
+    return (await db.execute(
+        select(ProjectRepo.repo).join(Project, Project.id == ProjectRepo.project_id)
+        .where(Project.slug == slug, ProjectRepo.is_primary.is_(True)))).scalars().first()
+
+
 async def owning_projects_by_repo(
     db: AsyncSession, repos: Collection[str],
 ) -> dict[str, RepoOwner]:

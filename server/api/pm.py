@@ -18,8 +18,7 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
-    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, load_policies, policies_by_slug,
-    patch_project_policy)
+    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, load_policies, patch_project_policy)
 from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -57,7 +56,7 @@ from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
-from server.pm.queue_store import load_queue_rows, runner_claims
+from server.pm.queue_store import queue_inputs
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_mutation_owner, require_unregistered_repos,
@@ -896,10 +895,7 @@ async def _queue_inputs(db, now: datetime) -> tuple[list, dict[str, dict]]:
     a policy edit must not be able to land between the two reads. Shared by
     ``queue()`` and ``holds()`` so the operator's two views of the pool cannot
     disagree with each other or with the runner."""
-    def _rows(s):
-        claimed = runner_claims(s)
-        return load_queue_rows(s, now=now, claimed_refs=claimed), policies_by_slug(s)
-    return await db.run_sync(_rows)
+    return await db.run_sync(lambda s: queue_inputs(s, now=now))
 
 
 @router.get("/queue")
@@ -2253,13 +2249,6 @@ async def release_work_item_hold(
 # --------------------------------------------------------------------------- #
 # Decision proposals (spec 2026-09-18 §6)                                      #
 # --------------------------------------------------------------------------- #
-#: How long the accept route waits for the issue comment before giving up on it.
-#: ``gh issue comment`` is the FIRST call of that seam inside a request handler
-#: (``announce_claim`` / ``announce_needs_human`` run in the background runner) and
-#: ``gitrepos._run_gh`` bounds nothing, so a stalled token mint would otherwise hold
-#: the request and a threadpool worker open indefinitely — for work that is purely
-#: decorative and happens after the decision is already committed.
-DECISION_COMMENT_TIMEOUT_S = 15.0
 # Thin wrappers over server/pm/decisions.py, which is THE writer, accepter and
 # rejecter (constitution VI): the `propose_decision` session tool and the
 # assistant's `resolve_decision` reach the same functions, so no validation, hold
@@ -2509,9 +2498,6 @@ async def accept_decision(
     decision a rollback then erased. It runs on a worker thread because it shells
     out to ``gh``.
     """
-    import asyncio
-
-    from server.automations import backlog_github
     from server.pm import decisions
     from server.pm.holds import actor_for_request
     actor = actor_for_request(request)
@@ -2532,19 +2518,9 @@ async def accept_decision(
     ref = out["ref"]
     await db.commit()
     if ref:
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    backlog_github.announce_decision, ref,
-                    label=str(chosen.get("label") or out["chosenKey"] or ""),
-                    detail=chosen.get("detail"), chosen_by=actor),
-                timeout=DECISION_COMMENT_TIMEOUT_S)
-        except Exception:
-            # Including the timeout (``asyncio.TimeoutError`` IS the builtin
-            # ``TimeoutError``). ``CancelledError`` is a ``BaseException`` and is
-            # deliberately NOT caught: a shutdown must still unwind through here.
-            log.warning("pm.decision.accept_comment_failed proposal=%s ref=%s",
-                        proposal_id, ref, exc_info=True)
+        await decisions.announce_accept_best_effort(
+            ref, label=str(chosen.get("label") or out["chosenKey"] or ""),
+            detail=chosen.get("detail"), actor=actor)
     return out
 
 

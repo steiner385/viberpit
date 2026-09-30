@@ -1432,7 +1432,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "condition='finishes' watches target=<session id> for that session handing "
                "a turn back; kind='account' with condition='limited' watches "
                "target=<account name> (or 'any' for every account) hitting its usage "
-               "ceiling. once=true (default) disables the watch after it fires once; "
+               "ceiling; kind='deploy' with condition='fails' watches target='owner/repo' for "
+               "one of its deploy environments failing; kind='product' with "
+               "condition='needs_decision' watches target=<product slug> for its "
+               "held-decision escalation digest (unknown slugs are rejected). once=true (default) disables the watch after it fires once; "
                "ttl_hours caps how long it stays armed (default 72).",
                _schema(("kind", "target", "condition"), kind=str, target=str, condition=str,
                        once=bool, ttl_hours=int))

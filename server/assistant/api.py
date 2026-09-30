@@ -456,11 +456,22 @@ async def create_watch(body: WatchBody, request: Request,
     scope_value: str | None = body.target
     if body.kind == "account" and body.target.strip().lower() in _ACCOUNT_WILDCARD_TARGETS:
         scope_value = None
+    extra_scope: dict[str, str] = {}
+    if body.kind == "product":
+        # Two scopes: the emitting automation (a slug there would never match) AND the
+        # product's primary repo, which is what every decision_needed digest carries —
+        # so a watch on product A does not fire (and, once, disarm) on B's digest.
+        from server.pm.repo_project import primary_repo_for_slug
+        repo = await primary_repo_for_slug(db, body.target)
+        if repo is None:
+            return _err("UNKNOWN_PRODUCT", f"no product {body.target!r} with a primary repo", 422)
+        scope_value = "decision-escalation"
+        extra_scope["scope_repo"] = repo
     rule = NotificationRule(
         event_class=event_class, action="channel", channel_id=channel.id,
         once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),
         expires_at=datetime.now(timezone.utc) + timedelta(hours=body.ttl_hours),
-        **{scope_field: scope_value},
+        **{scope_field: scope_value}, **extra_scope,
     )
     db.add(rule)
     await db.flush()

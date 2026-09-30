@@ -10,6 +10,7 @@ cannot leave this module testing a different app (constitution VI).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import patch
 
@@ -141,7 +142,7 @@ def test_a_stalled_issue_comment_does_not_hold_the_accept_open(monkeypatch):
         released.wait(30)   # freed by the test once the response is in hand
 
     monkeypatch.setattr("server.automations.backlog_github.announce_decision", _hang)
-    monkeypatch.setattr("server.api.pm.DECISION_COMMENT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("server.pm.decisions.DECISION_COMMENT_TIMEOUT_S", 0.05)
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
@@ -431,3 +432,41 @@ def test_list_decisions_impact_is_zero_for_an_item_on_no_board(monkeypatch):
         assert _propose(c, wid).status_code == 201
         (row,) = c.get("/api/pm/decisions?impact=true", headers=IDENTITY_HEADERS).json()
         assert row["downstream"] == 0 and row["downstreamDispatchable"] == 0
+
+
+def test_automation_trigger_accepts_the_recommendation_as_the_person(monkeypatch):
+    """Spec decision 7: the escalation card's one tap is the SAME accept, by a person
+    (actor threaded route -> orchestrator -> provider), and unattributed loopback is
+    refused with the provider's own status, not an HTTP error."""
+    from server.tests.test_pm_holds_api import _seed
+    calls = _stub_announce(monkeypatch)
+    with _client() as c:
+        _seed(c)
+        loop = c.app.state.sessions._orch._decision_escalation_loop
+
+        async def _notify_mode():  # no Automation row in the fixture: the row is what turns it on
+            return "notify", {}
+        monkeypatch.setattr(loop, "_read_config", _notify_mode)
+        monkeypatch.setattr(loop, "_notify", lambda *a, **k: asyncio.sleep(0))
+        c.portal.call(loop.tick)
+        with patch.dict(os.environ, LAN_OPEN):
+            r = c.post("/api/automations/decision-escalation/trigger",
+                       json={"item_id": "o/r#1", "kind": "accept_recommended"})
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "forbidden"
+        r = c.post("/api/automations/decision-escalation/trigger",
+                   json={"item_id": "o/r#1", "kind": "accept_recommended"},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "accepted"
+        from server.db import db_session
+        from server.db.models import WorkItem
+        from sqlalchemy import select
+
+        async def _hold():
+            async with db_session() as db:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+                return (wi.hold_kind, wi.hold_reason, wi.hold_by)
+        assert c.portal.call(_hold) == (None, None, None)
+        assert [x[0] for x in calls] == ["o/r#1"], "the issue comment the inbox route posts"

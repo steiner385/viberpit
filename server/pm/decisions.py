@@ -312,6 +312,36 @@ def _require_pending(proposal: DecisionProposal) -> None:
         raise DecisionConflict(f"this decision is already {proposal.status}")
 
 
+#: How long an accept waits for the issue comment before giving up on it.
+#: ``gh issue comment`` is the FIRST call of that seam inside a request handler
+#: (``announce_claim`` / ``announce_needs_human`` run in the background runner) and
+#: ``gitrepos._run_gh`` bounds nothing, so a stalled token mint would otherwise hold
+#: the request and a threadpool worker open indefinitely — for work that is purely
+#: decorative and happens after the decision is already committed.
+DECISION_COMMENT_TIMEOUT_S = 15.0
+
+
+async def announce_accept_best_effort(ref: str, *, label: str, detail: str | None,
+                                      actor: str) -> None:
+    """Say on the issue which option a person picked — THE post-commit comment both the
+    inbox accept route and the escalation automation's accept tap make. Runs on a
+    worker thread (it shells out to ``gh``), bounded by ``DECISION_COMMENT_TIMEOUT_S``,
+    and never fails the accept that already committed."""
+    import asyncio
+
+    from server.automations import backlog_github
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(backlog_github.announce_decision, ref, label=label,
+                              detail=detail, chosen_by=actor),
+            timeout=DECISION_COMMENT_TIMEOUT_S)
+    except Exception:
+        # Including the timeout (``asyncio.TimeoutError`` IS the builtin
+        # ``TimeoutError``). ``CancelledError`` is a ``BaseException`` and is
+        # deliberately NOT caught: a shutdown must still unwind through here.
+        log.warning("pm.decision.accept_comment_failed ref=%s", ref, exc_info=True)
+
+
 async def pending_list(db) -> list[tuple[DecisionProposal, WorkItem | None]]:
     """Every pending proposal, newest first, paired with its work item — what the
     inbox lists beside the classification proposals.

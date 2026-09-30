@@ -45,6 +45,7 @@ def test_every_registered_automation_declares_its_work_class():
         "gh-reconcile": "maintenance",
         "error-triage": "maintenance",
         "deploy-monitor": "maintenance",
+        "decision-escalation": "maintenance",
         "session-feedback": "maintenance",
         "capacity-governor": "maintenance",
     }

@@ -521,10 +521,11 @@ class RemoteOrchestrator:
         r = await self._client.call("automation_actionable", automation_id=automation_id)
         return r.get("items") or []
 
-    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str,
+                                 identity: str | None = None) -> dict:
         """Trigger a manual action for an item on *automation_id*, via the daemon."""
         return await self._client.call("automation_trigger", automation_id=automation_id,
-                                       item_id=item_id, kind=kind,
+                                       item_id=item_id, kind=kind, identity=identity,
                                        timeout=SPAWN_RPC_TIMEOUT)
 
     async def pr_doctor_job(self, job_id: str) -> dict | None:

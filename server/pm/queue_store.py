@@ -50,6 +50,16 @@ def runner_claims(db: Session) -> frozenset[str]:
     return frozenset(claimed)
 
 
+def queue_inputs(s: Session, *, now: datetime) -> tuple[list[QueueRow], dict[str, dict]]:
+    """Rows + per-product policies for the queue-shaped views, composed in ONE sync
+    session (run it via ``db.run_sync``): which threshold a product's issues are
+    judged against decides what a view shows, so a policy edit must not land between
+    the two reads. THE composition ``GET /api/pm/queue|holds`` and the
+    decision-escalation loop share, so no two views of the pool can disagree."""
+    from server.automations.product_policy import policies_by_slug
+    return load_queue_rows(s, now=now, claimed_refs=runner_claims(s)), policies_by_slug(s)
+
+
 def load_queue_rows(db: Session, *, now: datetime,
                     claimed_refs: AbstractSet[str] = frozenset()) -> list[QueueRow]:
     """One ``QueueRow`` per open, board-linked issue across every onboarded product.
