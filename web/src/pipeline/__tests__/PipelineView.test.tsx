@@ -94,6 +94,45 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(screen.getByText('merged a')).toBeInTheDocument();
   });
 
+  // 2026-09-30 Pipeline critique, P1: 147 of 170 live rows were merged
+  // retention cards in the lead, 132px each; the board was 24,468px tall.
+  describe('the merged ledger', () => {
+    const withLedger = () => state({ repos: [{
+      repo: 'acme/alpha', hasDeploy: false, queue: null,
+      prs: [
+        pr('acme/alpha', 1, 'still running', 'ci'),
+        { ...pr('acme/alpha', 2, 'landed a', 'merged'), timeline: { mergedAt: '2026-09-29T10:00:00Z' } },
+        { ...pr('acme/alpha', 3, 'landed b', 'merged'), timeline: { mergedAt: '2026-09-30T08:30:00Z' } },
+        pr('acme/alpha', 4, 'landed c', 'merged'),
+      ],
+    }] } as never);
+
+    it('folds bare merged rows into one line per repo, the rows one tap away; live rows stay in the lead', () => {
+      render(<PipelineView state={withLedger()} focusedRepo={null} />);
+      expect(screen.getByText('still running')).toBeInTheDocument();
+      expect(screen.queryByText('landed a')).not.toBeInTheDocument();
+      const toggle = screen.getByRole('button', { name: /3 merged in the last 7 days · last /i });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByText('landed a')).toBeInTheDocument();
+      expect(screen.getByText('landed c')).toBeInTheDocument();
+    });
+
+    it('lists the merged rows in the lead when the Merged / other tile is the active filter', () => {
+      render(<PipelineView state={withLedger()} focusedRepo={null} activeFilter="merged" onFilter={() => {}} />);
+      expect(screen.getByText('landed a')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /merged in the last 7 days/i })).toBeNull();
+      // …and the running row is hidden by that filter, as before.
+      expect(screen.queryByText('still running')).not.toBeInTheDocument();
+    });
+
+    it('says nothing when a repo has no merged rows', () => {
+      render(<PipelineView state={state()} focusedRepo={null} />);
+      expect(screen.queryByRole('button', { name: /merged in the last 7 days/i })).toBeNull();
+    });
+  });
+
   it('splits the cohort label into awaiting-QA and awaiting-prod (no lumping)', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null, prs: [
       pr('acme/alpha', 1, 'to qa', 'qa-deploy'),
