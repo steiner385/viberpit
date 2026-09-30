@@ -280,7 +280,8 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "get_quiet_hours", "test_notification", "set_quiet_hours",
                        "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
                        "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches",
-                       "list_adoptable_sessions", "get_priority_queue")
+                       "list_adoptable_sessions", "get_priority_queue", "list_decisions",
+                       "list_holds")
 
 
 @pytest.mark.asyncio
@@ -1725,3 +1726,107 @@ async def test_list_automations_projects_by_default_and_keeps_products():
     out = json.loads((await _tool(tools, "list_automations").handler(
         {"verbose": True}))["content"][0]["text"])
     assert "configSchema" in out["data"][0] and "config" in out["data"][0]
+
+
+_DECISION_ROW = {"id": "dp-1", "workItemId": "wi-1", "repo": "o/k", "number": 4,
+                 "ref": "o/k#4", "projectSlug": "kindash", "title": "Retry policy",
+                 "url": "https://x/4", "options": [{"key": "a", "label": "A", "detail": None},
+                                                   {"key": "b", "label": "B", "detail": "d"}],
+                 "recommendedKey": "b", "rationale": "why", "chosenKey": None,
+                 "status": "pending", "proposedBy": "session:s1", "resolvedBy": None,
+                 "createdAt": "2026-01-01T00:00:00+00:00", "resolvedAt": None,
+                 "guidance": {"accept": {"big": "x" * 500}, "reject": {}}}
+
+
+@pytest.mark.asyncio
+async def test_list_decisions_filters_by_product_projects_rows_and_limits():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["path"], seen["params"] = req.url.path, dict(req.url.params)
+        return httpx.Response(200, json=[dict(_DECISION_ROW, id=f"dp-{i}") for i in range(30)])
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_decisions").handler({}))["content"][0]["text"])
+    assert seen == {"path": "/api/pm/decisions", "params": {}}, "impact is off unless asked"
+    assert len(out["data"]) == 20 and out["truncated"] == 10
+    assert set(out["data"][0]) == {"id", "ref", "product", "title", "url", "options",
+                                   "recommendedKey", "rationale", "proposedBy", "createdAt"}
+    assert out["data"][0]["product"] == "kindash"
+
+    await _tool(tools, "list_decisions").handler({"product": "kindash", "impact": True,
+                                                  "limit": 500})
+    assert seen["params"] == {"projectSlug": "kindash", "impact": "true"}
+
+    def with_impact(req: httpx.Request):
+        return httpx.Response(200, json=[dict(_DECISION_ROW, downstream=7,
+                                              downstreamDispatchable=4)])
+    out = json.loads((await _tool(build_tools(_api(with_impact)), "list_decisions").handler(
+        {"impact": True}))["content"][0]["text"])
+    assert out["data"][0]["downstream"] == 7 and out["data"][0]["downstreamDispatchable"] == 4
+
+
+_HELD_ROW = {"ref": "o/k#4", "repo": "o/k", "number": 4, "product": "kindash",
+             "title": "Retry policy", "url": "https://x/4", "holdKind": "decision",
+             "holdReason": "decision pending: why", "holdBy": "session:s1",
+             "holdSetAt": "2026-01-01T00:00:00+00:00", "ageHours": 31.2,
+             "proposalId": "dp-1", "options": [{"key": "a", "label": "A", "detail": None},
+                                               {"key": "b", "label": "B", "detail": "d"}],
+             "recommendedKey": "b", "downstream": 7, "downstreamDispatchable": 4,
+             "downstreamRefs": ["o/k#5", "o/k#6"], "dispatchableOnRelease": True,
+             "releasedBy": "Accept an option in the Inbox"}
+
+
+@pytest.mark.asyncio
+async def test_list_holds_forwards_filters_and_projects_rows():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["path"], seen["params"] = req.url.path, dict(req.url.params)
+        return httpx.Response(200, json={
+            "products": [{"slug": "kindash", "dispatchable": 0, "skipped": {"held": 3},
+                          "heldCount": 3, "starving": True, "oldestHoldHours": 212.4}],
+            "held": [_HELD_ROW], "truncated": 2, "generatedAt": "2026-01-01T00:00:00+00:00"})
+
+    tools = build_tools(_api(handler))
+    out = json.loads((await _tool(tools, "list_holds").handler(
+        {"product": "kindash", "kind": "decision", "limit": 99}))["content"][0]["text"])
+    assert seen == {"path": "/api/pm/holds",
+                    "params": {"product": "kindash", "kind": "decision", "limit": "50"}}
+    assert out["data"]["products"][0]["starving"] is True
+    row = out["data"]["held"][0]
+    assert set(row) == {"ref", "product", "title", "url", "holdKind", "holdReason", "holdBy",
+                        "ageHours", "proposalId", "recommendedKey", "optionKeys", "downstream",
+                        "downstreamDispatchable", "releasedBy"}
+    assert row["optionKeys"] == ["a", "b"] and row["proposalId"] == "dp-1"
+    assert out["truncated"] == 2, "the server's own drop count rides the envelope"
+
+    # Nothing held: the product summary still answers "is it starving?".
+    def empty(req: httpx.Request):
+        return httpx.Response(200, json={"products": [{"slug": "kindash", "dispatchable": 5,
+                                                       "skipped": {}, "heldCount": 0,
+                                                       "starving": False,
+                                                       "oldestHoldHours": None}],
+                                         "held": [], "truncated": 0, "generatedAt": "x"})
+    out = json.loads((await _tool(build_tools(_api(empty)), "list_holds").handler({}))
+                     ["content"][0]["text"])
+    assert out["data"]["held"] == [] and out["data"]["products"][0]["heldCount"] == 0
+    assert "truncated" not in out
+
+
+@pytest.mark.asyncio
+async def test_list_holds_rejects_an_unknown_kind_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(build_tools(_api(handler)), "list_holds").handler({"kind": "evidence"})
+    assert out["is_error"] is True and calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_decision_error_points_at_list_decisions():
+    out = await _tool(build_tools(_api(lambda r: httpx.Response(200, json={}))),
+                      "resolve_decision").handler({"proposal_id": "not valid!", "decision": "reject"})
+    assert out["is_error"] is True and "list_decisions" in out["content"][0]["text"]

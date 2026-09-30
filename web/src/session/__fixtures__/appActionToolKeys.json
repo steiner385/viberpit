@@ -43,6 +43,8 @@
   "list_automations",
   "list_backlog_candidates",
   "list_branches",
+  "list_decisions",
+  "list_holds",
   "list_hosts",
   "list_initiatives",
   "list_notification_channels",
