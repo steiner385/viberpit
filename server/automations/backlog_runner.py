@@ -433,7 +433,9 @@ class BacklogRunner:
                 text += f" · {bounced} bounced"
             products_out.append({"slug": slug, "dispatch": p.get("dispatch"),
                                  "inFlight": p.get("in_flight", 0), "cap": p.get("cap", 0),
-                                 "eligible": p.get("eligible", 0), "bounced": bounced})
+                                 "eligible": p.get("eligible", 0), "bounced": bounced,
+                                 "held": p.get("held", 0), "blocked": p.get("blocked", 0),
+                                 "skipped": dict(p.get("skipped") or {})})
         # Queue provenance (#990): which ranked candidate this came from, and
         # what it was picked over — same formatter the ``picked`` event uses,
         # so the card and the activity feed can never say different things.
@@ -1044,7 +1046,14 @@ class BacklogRunnerLoop:
             try:
                 eligible, blocked, untriaged, per_product = await self._count_candidates()
                 if per_product is not None:
-                    counts.update(eligible=eligible, blocked=blocked, untriaged=untriaged)
+                    # ``held`` sits right after ``eligible`` so it survives the
+                    # web's six-tile cap (spec 2026-09-30 §4.1); it counts every
+                    # HELD_KINDS hold on the boards, a superset of the runner's
+                    # own ``needs_human`` give-ups.
+                    counts.update(
+                        eligible=eligible,
+                        held=sum(int(r.get("held", 0)) for r in per_product.values()),
+                        blocked=blocked, untriaged=untriaged)
             except Exception:
                 pass
             if per_product is None:

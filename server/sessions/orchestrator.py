@@ -6882,6 +6882,11 @@ class SessionOrchestrator:
                     "blocked": skipped_p.get("blocked", 0),
                     "untriaged": skipped_p.get("status", 0),
                     "bounced": skipped_p.get("needs_spec", 0),
+                    # Spec 2026-09-30 §4.1: ``held`` is its own key (the tile and
+                    # the escalation read model both read it) and the whole map
+                    # rides along so no reason is dropped on the way to the card.
+                    "held": skipped_p.get("held", 0),
+                    "skipped": dict(skipped_p),
                 }
         # Merge the per-product rankings into one pool with ``rank``'s OWN key, not
         # a copy of its first two legs: ranking per product and re-sorting on score
@@ -7642,6 +7647,7 @@ class SessionOrchestrator:
             row = per_product.setdefault(slug, {
                 "dispatch": policy["dispatch"], "eligible": 0,
                 "blocked": 0, "untriaged": 0, "bounced": 0,
+                "held": 0, "skipped": {},
             })
             row["cap"] = policy.get("max_in_flight", 0)
         return (len(entries), skipped.get("blocked", 0), skipped.get("status", 0),

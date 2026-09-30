@@ -98,7 +98,8 @@ def test_list_carries_products_for_the_runner_and_null_for_pr_doctor():
         br = next(a for a in automations if a["id"] == "backlog-runner")
         assert br["status"]["products"] == [
             {"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
-             "cap": 1, "eligible": 3, "bounced": 2}]
+             "cap": 1, "eligible": 3, "bounced": 2, "held": 0,
+             "blocked": 0, "skipped": {}}]
         pd = next(a for a in automations if a["id"] == "pr-doctor")
         assert pd["status"]["products"] is None
         # Published once — no sibling copy beside ``status``.

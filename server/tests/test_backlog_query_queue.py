@@ -747,3 +747,45 @@ def test_refresh_groups_carries_a_degraded_reply_to_the_store_and_the_summary(
         assert seen["degraded"] is True
 
     asyncio.run(run())
+
+
+def test_query_queue_reports_held_and_the_full_skip_map_per_product(tmp_path):
+    """Spec 2026-09-30 §4.1: the per-product row carries every skip reason, not
+    three of nine, and ``held`` is its own key because it is what the escalation
+    read model and the card's tile both read."""
+    async def run():
+        await _init(tmp_path, "heldmap.db")
+        await _seed_product("viberpit", "o/r")
+        await _seed_item("o/r", 1, score=1.0)                              # eligible
+        await _seed_item("o/r", 2, score=2.0, hold_kind="owner_action")    # held
+        await _seed_item("o/r", 3, score=3.0, hold_kind="decision")        # held
+        await _seed_item("o/r", 4, status="Backlog", score=4.0)            # untriaged
+        orch = _orch_with_ctx()
+        per_product: dict = {}
+        await orch._backlog_query_queue(_config(), products_out=per_product)
+        row = per_product["viberpit"]
+        assert row["eligible"] == 1
+        assert row["held"] == 2
+        assert row["skipped"] == {"held": 2, "status": 1}
+        assert row["untriaged"] == 1  # the existing flat keys are unchanged
+
+    asyncio.run(run())
+
+
+def test_count_candidates_default_row_has_held_and_skipped_for_an_off_product(tmp_path):
+    async def run():
+        await _init(tmp_path, "heldoff.db")
+        await _seed_product("viberpit", "o/r")
+        await _seed_product("kindash", "o/k", policy={"dispatch": "off"})
+        await _seed_item("o/r", 1, score=1.0)
+        orch = _orch_with_ctx()
+
+        async def _read_config():
+            return "on", _config()
+        orch._backlog_read_config = _read_config
+
+        _e, _b, _u, per_product = await orch._backlog_count_candidates()
+        assert per_product["kindash"]["held"] == 0
+        assert per_product["kindash"]["skipped"] == {}
+
+    asyncio.run(run())
