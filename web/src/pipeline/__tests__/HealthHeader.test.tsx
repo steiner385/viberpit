@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { HealthHeader } from '../HealthHeader';
+import { quietLaneSummary } from '../spine/laneStatus';
 import { InteractionProvider } from '@/shell/InteractionContext';
 import type { DashboardState } from '../types';
 
@@ -87,12 +88,51 @@ describe('HealthHeader', () => {
     expect(screen.getByTestId('health-lane-main').querySelector('.text-ink-muted')).toBeNull();
   });
 
-  it('below md the chip collapses to dot + glyph; the title stays in aria-label (#1555)', () => {
-    render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
-    const chip = screen.getByTestId('health-lane-pr-ci');
-    const title = Array.from(chip.querySelectorAll('span')).find((s) => s.textContent === 'PR CI');
-    expect(title).toHaveClass('hidden', 'md:inline');
-    expect(chip).toHaveAttribute('aria-label', expect.stringContaining('PR CI'));
+  // 2026-09-30 Pipeline critique, P2: below md the band was seven glyph-only
+  // dots. Now only the lanes needing attention keep a chip, with their word;
+  // the quiet lanes fold into one count line. (Replaces the #1555 dot-only
+  // collapse; the ≤2-row budget holds with fewer chips.)
+  describe('below md', () => {
+    it('an attention lane keeps its chip and shows its word; a quiet lane is folded away', () => {
+      render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
+      const red = screen.getByTestId('health-lane-pr-ci');
+      expect(red.closest('li')).not.toHaveClass('hidden');
+      const title = Array.from(red.querySelectorAll('span')).find((s) => s.textContent === 'PR CI');
+      expect(title).toHaveClass('inline');
+      expect(title).not.toHaveClass('hidden');
+      expect(red).toHaveAttribute('aria-label', expect.stringContaining('PR CI'));
+      const quietChip = screen.getByTestId('health-lane-merge-queue');
+      expect(quietChip.closest('li')).toHaveClass('hidden', 'md:block');
+      const quietTitle = Array.from(quietChip.querySelectorAll('span')).find((s) => s.textContent === 'Merge queue');
+      expect(quietTitle).toHaveClass('hidden', 'md:inline');
+    });
+
+    it('counts the folded lanes by their own word, phone-only', () => {
+      render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
+      const line = screen.getByTestId('health-quiet-lanes');
+      expect(line).toHaveClass('md:hidden');
+      expect(line.textContent).toMatch(/^\d+ (green|idle|blind|watch)( · \d+ (green|idle|blind|watch))*$/);
+      // Every lane is either a phone chip or a count in this line — never both, never neither.
+      const folded = [...line.textContent!.matchAll(/(\d+) /g)].reduce((n, m) => n + Number(m[1]), 0);
+      const chips = screen.getAllByTestId(/^health-lane-/).filter((b) => !b.closest('li')!.classList.contains('hidden')).length;
+      expect(chips).toBeGreaterThan(0);
+      expect(folded + chips).toBe(7);
+    });
+
+    it('all green: every lane folds, the rollup carries the message', () => {
+      render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
+      expect(screen.getByTestId('health-rollup')).toHaveTextContent('All systems green');
+      for (const id of ['pr-ci', 'merge-queue', 'main', 'deploy', 'scheduled', 'failures', 'cost']) {
+        expect(screen.getByTestId(`health-lane-${id}`).closest('li')).toHaveClass('hidden', 'md:block');
+      }
+      expect(screen.getByTestId('health-quiet-lanes')).toBeInTheDocument();
+    });
+  });
+
+  it('quietLaneSummary counts by word in rail order', () => {
+    expect(quietLaneSummary([{ status: 'green' }, { status: 'idle' }, { status: 'green' }, { status: 'blind' }]))
+      .toBe('2 green · 1 idle · 1 blind');
+    expect(quietLaneSummary([])).toBe('');
   });
 
   // Shell spec §5 / #1555: kiosk buttons render aria-disabled and do not act.

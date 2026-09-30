@@ -9,7 +9,7 @@ import { Button } from '@/ui/Button';
 import { useInteractive } from '@/shell/InteractionContext';
 import type { DashboardState, LaneStatus } from './types';
 import { buildLaneHealth } from './spine/laneHealth';
-import { rollup, attentionPhrase, LANE_GLYPH, LANE_TONE, LANE_WORD } from './spine/laneStatus';
+import { rollup, attentionLanes, attentionPhrase, quietLaneSummary, LANE_GLYPH, LANE_TONE, LANE_WORD } from './spine/laneStatus';
 
 /** Global at-a-glance CI health band shown above the tabs. Reads the SAME lane
  *  derivations the Delivery spine renders in detail (via buildLaneHealth), so
@@ -23,6 +23,13 @@ export function HealthHeader({ state, onJumpToLane }: {
   const lanes = useMemo(() => buildLaneHealth(state), [state]);
   const roll = useMemo(() => rollup(lanes), [lanes]);
   const allGreen = roll.state === 'green';
+  // Below md only the lanes that need attention get a chip — with their word,
+  // not a bare glyph — and the rest fold into one muted count. Seven glyph-only
+  // dots (✗ ● ◐ · ◌) at 34–42×36 read as nothing on a phone (2026-09-30
+  // Pipeline critique, P2 / heuristic 6). `attentionLanes` is the rollup's own
+  // definition, so the chips shown are exactly the ones the rollup counted.
+  const attention = useMemo(() => new Set(attentionLanes(lanes).map((l) => l.id)), [lanes]);
+  const quiet = lanes.filter((l) => !attention.has(l.id));
   const firstAttentionStatus =
     lanes.find((l) => l.id === roll.firstAttentionId)?.status ?? null;
   // Kiosk (shell spec §5): a wall display has no one to click these — unlike
@@ -56,7 +63,7 @@ export function HealthHeader({ state, onJumpToLane }: {
       </Button>
       <ul className="flex flex-wrap gap-1" role="list">
         {lanes.map((l) => (
-          <li key={l.id}>
+          <li key={l.id} className={attention.has(l.id) ? undefined : 'hidden md:block'}>
             <Button
               type="button"
               variant="ghost"
@@ -73,10 +80,11 @@ export function HealthHeader({ state, onJumpToLane }: {
               {/* The glyph is what tells blind (◌) from idle (·) — they share
                   the neutral tone, so shape carries the difference. */}
               <span aria-hidden="true">{LANE_GLYPH[l.status]}</span>
-              {/* Below md the chip is dot + glyph only (the title lives in
-                  aria-label / title): seven titled chips wrapped the phone
-                  header to ~4 rows at 390 px, the plan asked for <= 2 (#1555). */}
-              <span className="hidden md:inline">{l.title}</span>
+              {/* Below md a QUIET lane is folded away entirely (above), so the
+                  only chips left are the attention ones and they can afford
+                  their word: the ≤2-row budget (#1555) holds with the count
+                  line in place of seven titled chips. */}
+              <span className={attention.has(l.id) ? 'inline' : 'hidden md:inline'}>{l.title}</span>
               {/* #189: surface the already-computed lane summary inline on
                   non-green chips (was hover-only); the full text stays in aria-label. */}
               {l.status !== 'green' && l.summary && (
@@ -85,6 +93,11 @@ export function HealthHeader({ state, onJumpToLane }: {
             </Button>
           </li>
         ))}
+        {quiet.length > 0 && (
+          <li className="self-center text-xs text-ink-muted md:hidden" data-testid="health-quiet-lanes">
+            {quietLaneSummary(quiet)}
+          </li>
+        )}
       </ul>
     </div>
   );
