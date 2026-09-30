@@ -400,3 +400,19 @@ it('routes descendant-only issue attention to the child and retains a blocked in
   expect(screen.queryByText('Other work')).toBeNull()
   expect(tile('Needs you')).toHaveTextContent('2')
 })
+
+// ── the queue leads (2026-09-30 Roadmap critique, P1; docs/PAGE-TABS.md §4) ──
+// Needs you was the SIXTH tab here — off-screen at 390px. Tiles lead with the
+// queue on every level and the tabs follow the tile order after Overview.
+describe('CapabilityDetail — the queue leads', () => {
+  it('tiles run Needs you · Blocked · In flight · Open issues, and tabs follow after Overview', () => {
+    const { container } = mount()
+    const tiles = [...container.querySelectorAll('dl dt')].map((dt) => dt.textContent?.trim())
+    expect(tiles).toEqual(['Needs you', 'Blocked', 'In flight', 'Open issues'])
+    const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label') ?? t.textContent ?? '')
+    expect(tabs[0]).toMatch(/^Overview/)
+    expect(tabs[1]).toMatch(/^Needs you/)
+    expect(tabs[2]).toMatch(/^In flight/)
+    expect(tabs[3]).toMatch(/^Issues/)
+  })
+})

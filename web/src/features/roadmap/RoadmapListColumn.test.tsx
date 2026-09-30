@@ -379,3 +379,15 @@ describe('RoadmapListColumn — tree keyboard', () => {
     expect(document.activeElement).toBe(control('Open capability Billing'))
   })
 })
+
+// ── the Map pill carries the queue's attention (2026-09-30 Roadmap critique, P1) ──
+// On a phone `/roadmap` renders only this column; the portfolio's Needs-you list
+// lives in the detail pane, which a phone shows only with an item open. The
+// pill's count stays the product inventory; the dot says the map holds a queue.
+describe('RoadmapListColumn — the Map pill and the queue', () => {
+  it('marks Map as needing attention while any product has needs-you work', () => {
+    mount({ scope: 'map' })
+    // The fixture's kindash product carries a needs-you initiative.
+    expect(screen.getByRole('link', { name: /^Map \(\d+, needs attention\)$/ })).toBeInTheDocument()
+  })
+})

@@ -35,12 +35,15 @@ export function PortfolioDetail({ map }: { map: RoadmapMap }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* The queue leads (PRODUCT.md principle 1; docs/PAGE-TABS.md §4 Order):
+          Needs you, Blocked, In flight, then the inventory — the same sequence
+          on every level, and the tabs below follow it. */}
       <StatTiles
         tiles={[
-          { label: PRODUCT.plural, value: products.length },
-          { label: TIER_LABEL['in-flight'], value: inFlight, tone: 'success', onClick: () => setTab('initiatives') },
-          { label: TIER_LABEL.blocked, value: blocked, tone: 'danger', onClick: () => setTab('needs-you') },
           { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL.blocked, value: blocked, tone: 'danger', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL['in-flight'], value: inFlight, tone: 'success', onClick: () => setTab('initiatives') },
+          { label: PRODUCT.plural, value: products.length },
         ]}
       />
       <Tabs

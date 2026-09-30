@@ -107,3 +107,14 @@ describe('PortfolioDetail', () => {
     expect(here()).toBe('/initiatives/views')
   })
 })
+
+// ── the queue leads (2026-09-30 Roadmap critique, P1; docs/PAGE-TABS.md §4) ──
+describe('PortfolioDetail — the queue leads', () => {
+  it('tiles run Needs you · Blocked · In flight · Products; Needs you is the first tab', () => {
+    mount()
+    const tiles = [...document.querySelectorAll('dl dt')].map((dt) => dt.textContent?.trim())
+    expect(tiles).toEqual(['Needs you', 'Blocked', 'In flight', 'Products'])
+    const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label') ?? t.textContent ?? '')
+    expect(tabs[0]).toMatch(/^Needs you/)
+  })
+})
