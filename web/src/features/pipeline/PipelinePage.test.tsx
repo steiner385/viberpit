@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, within } from '@testing-library/react'
+import { render, screen, fireEvent, act, within, cleanup } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { ViewportProvider, type ViewportKiosk } from '@/shell/useViewport'
@@ -191,6 +191,21 @@ describe('PipelinePage (Workspace variant)', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  // 2026-09-30 Pipeline critique (heuristic 1 / kiosk P2): every number on the
+  // board is only as fresh as the frame, and nothing said when that was.
+  it('the header says when the frame was computed, in local time, on every layout', () => {
+    const expected = `as of ${new Date('2026-09-11T10:00:00Z').toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}`
+    mount()
+    expect(screen.queryByTestId('pipeline-as-of')).toBeNull() // no frame yet, nothing to date
+    deliver()
+    expect(screen.getByTestId('pipeline-as-of')).toHaveTextContent(expected)
+    expect(screen.getByTestId('pipeline-as-of')).toHaveAttribute('dateTime', '2026-09-11T10:00:00Z')
+    cleanup()
+    mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] } })
+    deliver()
+    expect(screen.getByTestId('pipeline-as-of')).toHaveTextContent(expected)
   })
 
   it('kiosk: no repo strip, no header actions, and the focused repo cycles', () => {

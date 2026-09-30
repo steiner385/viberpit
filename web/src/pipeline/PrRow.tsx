@@ -227,8 +227,12 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
         } : {})}>
         <div className="mb-2 flex items-baseline gap-2.5">
           <span className="whitespace-nowrap text-sm font-semibold">#{pr.number}</span>
-          <a className="flex-1 truncate text-ink hover:underline" href={pr.url} target="_blank" rel="noreferrer"
-            onClick={(e) => e.stopPropagation()}>{pr.title}</a>
+          {/* A wall display has no one to follow a link: the title is text there
+              (2026-09-30 Pipeline critique, P2 — 172 links on a no-touch board). */}
+          {expandable
+            ? <a className="flex-1 truncate text-ink hover:underline" href={pr.url} target="_blank" rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}>{pr.title}</a>
+            : <span className="flex-1 truncate text-ink">{pr.title}</span>}
           {pr.touchesWorkflows && (
             /* workflow-change badge (issue #49): the PR edits .github/workflows/** —
                summary lines (when a derived-graph diff exists) ride the tooltip */

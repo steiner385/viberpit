@@ -150,6 +150,19 @@ describe('PrRow', () => {
     expect(screen.queryByText('fast-checks / ESLint')).not.toBeInTheDocument();
   });
 
+  // 2026-09-30 Pipeline critique, P2: 172 links on a board nobody touches.
+  it('kiosk: the title is text, not a link; at a desk it links to the PR', () => {
+    const { unmount } = render(
+      <InteractionProvider interactive={false}>
+        <PrRow pr={pr({})} hasDeploy />
+      </InteractionProvider>,
+    );
+    expect(screen.getByText(/calendar overlap/).closest('a')).toBeNull();
+    unmount();
+    render(<PrRow pr={pr({})} hasDeploy />);
+    expect(screen.getByText(/calendar overlap/).closest('a')).toHaveAttribute('href', 'https://x/8962');
+  });
+
   it('shows "behind 9" in the sub line when stage=queue and queueAheadCount=9', () => {
     render(<PrRow pr={pr({
       stage: { stage: 'queue', substate: null, percent: null, etaSeconds: 600, etaRangeSeconds: null, overdue: false },

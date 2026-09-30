@@ -29,6 +29,17 @@ import { useRepoCycle } from './useRepoCycle'
  *  impossible-in-practice case of kiosk mode with no kiosk config object. */
 const FALLBACK_CYCLE_SECONDS = 30
 
+/** "as of 14:02" — the frame's `generatedAt` in the viewer's local time. */
+function AsOf({ iso }: { iso: string }) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return (
+    <time dateTime={iso} className="whitespace-nowrap text-xs text-ink-muted" data-testid="pipeline-as-of">
+      as of {d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}
+    </time>
+  )
+}
+
 /**
  * `/pipeline` — the first Workspace-variant page (page-migration §2.2): the
  * health band is the header's `meta`, the bell and legend are its `actions`,
@@ -84,7 +95,16 @@ function Inner() {
     <div className="flex h-full min-h-0 flex-col" data-page-variant="workspace">
       <PageHeader
         title="Pipeline"
-        meta={state ? <HealthHeader state={state} onJumpToLane={onJumpToLane} /> : undefined}
+        meta={state ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <HealthHeader state={state} onJumpToLane={onJumpToLane} />
+            {/* When this frame was computed. Every number on the board — a
+                queue's "~16m left" most of all — is only as fresh as this, and a
+                wall display with a stalled feed had no way to say so beyond a
+                banner (2026-09-30 Pipeline critique, heuristic 1 / P2). */}
+            <AsOf iso={state.generatedAt} />
+          </div>
+        ) : undefined}
         actions={(
           <>
             {notifySupported && (
