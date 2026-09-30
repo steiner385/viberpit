@@ -145,6 +145,7 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/pm/map", True),
     ("GET", "/api/pm/leaves?capability=x", True),
     ("GET", "/api/pm/holds?product=kindash&kind=decision", True),
+    ("GET", "/api/pm/decisions?projectSlug=kindash&impact=true", True),
     # Regression: the product routes the assistant has NO tool for stay closed. The
     # bare-slug GET row must not swallow its sibling sub-routes, and the graph-editing
     # and onboarding-driving POSTs are a human's to make, not the assistant's.

@@ -122,3 +122,11 @@ def test_holds_lists_a_decision_hold_whose_proposal_row_is_gone():
                      headers=IDENTITY_HEADERS).json()
         (row,) = body["held"]
         assert row["proposalId"] is None and row["options"] == []
+
+
+def test_decisions_impact_reads_the_same_model_as_holds():
+    with _client() as c:
+        _seed(c)
+        (row,) = c.get("/api/pm/decisions?impact=true", headers=IDENTITY_HEADERS).json()
+        assert row["ref"] == "o/r#1" and row["downstream"] == 2
+        assert row["downstreamDispatchable"] == 2

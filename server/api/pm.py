@@ -2420,6 +2420,8 @@ async def propose_work_item_decision(
 
 @router.get("/decisions")
 async def list_decisions(
+    projectSlug: str | None = None,
+    impact: bool = False,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> list[dict]:
@@ -2429,8 +2431,14 @@ async def list_decisions(
     ``/triage`` exists to keep a fresh auto-accept visible for its undo window,
     and a decision has no such window (spec decision 3 — the machine drafts, the
     person decides, and once taken it is taken).
+
+    ``projectSlug`` narrows server-side (spec 2026-09-30 §4.3, the same parameter
+    ``/triage`` takes). ``impact`` adds ``downstream`` / ``downstreamDispatchable``
+    from the escalation read model; opt-in because it costs the queue read and the
+    nav badge polls this list every 15 s.
     """
     from server.pm import decisions
+    from server.pm.escalation import held_items
     from server.pm.explain import decision_guidance
     rows = await decisions.pending_list(db)
     if not rows:
@@ -2440,12 +2448,35 @@ async def list_decisions(
         repo: owner.slug for repo, owner
         in (await owning_projects_by_repo(db, repos)).items()} if repos else {}
     policies = await load_policies(db)
+    impact_by_ref: dict[str, tuple[int, int]] = {}
+    if impact:
+        now = datetime.now(timezone.utc)
+        qrows, qpolicies = await _queue_inputs(db, now)
+        proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in rows
+                            if w is not None and w.repo and w.number}
+        by_product: dict[str, list] = {}
+        for r in qrows:
+            by_product.setdefault(r.product, []).append(r)
+        for pslug, prows in by_product.items():
+            qpolicy = qpolicies.get(pslug) or effective_policy(None)
+            for item in held_items(prows, proposals_by_ref, now=now,
+                                   min_status=str(qpolicy["queue_min_status"]),
+                                   respect_dependencies=bool(qpolicy["respect_dependencies"]),
+                                   give_up_after_bounces=int(qpolicy["give_up_after_bounces"]),
+                                   extra_skip_labels=frozenset(
+                                       str(lbl).strip().lower() for lbl in qpolicy["skip_labels"])):
+                impact_by_ref[item.ref] = (item.downstream, item.downstream_dispatchable)
     out = []
     for prop, wi in rows:
         slug = slug_by_repo.get(wi.repo) if wi is not None and wi.repo else None
+        if projectSlug is not None and slug != projectSlug:
+            continue
         policy = (policies.get(slug) if slug else None) or effective_policy(None)
-        out.append(_decision_to_dict(
-            prop, wi, slug, guidance=decision_guidance(policy=policy)))
+        d = _decision_to_dict(prop, wi, slug, guidance=decision_guidance(policy=policy))
+        if impact:
+            down, free = impact_by_ref.get(d.get("ref") or "", (0, 0))
+            d["downstream"], d["downstreamDispatchable"] = down, free
+        out.append(d)
     return out
 
 
