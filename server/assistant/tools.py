@@ -879,13 +879,18 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get(f"/api/pm/projects/{_slug(args['slug'])}")
 
     @spec_tool("get_product_deps",
-               "Issue-level dependency edges for a product (what blocks what), each with "
-               "the target's state, plus a drift audit: prose-only deps, dependency "
-               "targets that resolve to nothing, issues missing from the GitHub board and "
-               "checklist-style epics.", {"slug": str})
+               "Issue-level dependencies for a product. Default (summary=true): edge "
+               "counts by source, drift counts (prose-only deps, unresolved targets, "
+               "issues missing from the board, checklist epics) and the ten issues that "
+               "block the most open work. summary=false returns the active, open-source "
+               "edges themselves (large; capped).",
+               _schema(("slug",), slug=str, summary=bool))
     @guarded
     async def get_product_deps(args: dict[str, Any]) -> Any:
-        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/deps")
+        params: dict[str, str] = {"active": "true", "open_only": "true"}
+        if args.get("summary", True):
+            params = {"summary": "true", **params}
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/deps", params=params)
 
     @spec_tool("get_priority_queue",
                "The global priority queue — what agents will pick up next, ranked across "

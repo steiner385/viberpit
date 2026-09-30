@@ -1083,7 +1083,18 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
                 return httpx.Response(
                     404, json={"error": {"code": "NOT_FOUND", "message": "no such product"}})
             if tail == "deps":
-                return httpx.Response(200, json=_product_deps(slug))
+                d = _product_deps(slug)
+                if params.get("summary") == "true":
+                    by_source: dict[str, int] = {}
+                    for e in d["edges"]:
+                        by_source[e["source"]] = by_source.get(e["source"], 0) + 1
+                    d = {"project": d["project"],
+                         "edges": {"total": len(d["edges"]),
+                                   "active": sum(e["active"] for e in d["edges"]),
+                                   "bySource": by_source},
+                         "drift": {k: len(v) for k, v in d["drift"].items()},
+                         "topBlockers": []}
+                return httpx.Response(200, json=d)
             if tail == "onboarding":
                 return httpx.Response(200, json=_onboarding(slug))
             if not tail:

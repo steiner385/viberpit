@@ -255,3 +255,57 @@ def test_deps_endpoint_null_project_when_no_gh_project():
         body = resp.json()
         assert body["project"] is None
         assert body["drift"]["missingFromProject"] == []
+
+
+def _seed_filter_fixture(c, *, board: bool) -> None:
+    """#101 -> #102 active native (both open); #103 -> #102 INACTIVE; closed #104 -> #102."""
+    from server.db import db_session
+    from server.db.models import (
+        GhProject, Project, ProjectRepo, WorkItem, WorkItemDep)
+
+    repo = "steiner385/viberpit"
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = Project(slug="viberpit", name="viberpit")
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo=repo, is_primary=True))
+            for n, state in ((101, "open"), (102, "open"), (103, "open"), (104, "closed")):
+                db.add(WorkItem(repo=repo, number=n, kind="issue", title=f"i{n}", state=state))
+            if board:
+                db.add(GhProject(project_id=proj.id, gh_project_number=7, title="viberpit"))
+            for src, active in ((101, True), (103, False), (104, True)):
+                db.add(WorkItemDep(src_ref=f"{repo}#{src}", dst_ref=f"{repo}#102",
+                                   source="native", active=active))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_deps_endpoint_filters_and_summarises():
+    with _client() as c:
+        _seed_filter_fixture(c, board=True)
+        full = c.get("/api/pm/projects/viberpit/deps", headers=IDENTITY_HEADERS).json()
+        assert len(full["edges"]) == 3, "defaults preserve today's response"
+
+        active = c.get("/api/pm/projects/viberpit/deps?active=true&open_only=true",
+                       headers=IDENTITY_HEADERS).json()
+        assert [e["src"] for e in active["edges"]] == ["steiner385/viberpit#101"]
+
+        s = c.get("/api/pm/projects/viberpit/deps?summary=true", headers=IDENTITY_HEADERS).json()
+        assert s["edges"] == {"total": 3, "active": 2, "bySource": {"native": 3}}
+        assert set(s["drift"]) == {"proseOnly", "unresolvedTargets", "missingFromProject",
+                                   "checklistEpics"}
+        assert all(isinstance(v, int) for v in s["drift"].values())
+        assert s["topBlockers"] == [{"ref": "steiner385/viberpit#102", "blocks": 1,
+                                     "state": "open"}]
+        assert "project" in s
+
+
+def test_deps_summary_for_a_product_without_a_board_answers_null_project():
+    with _client() as c:
+        _seed_filter_fixture(c, board=False)
+        s = c.get("/api/pm/projects/viberpit/deps?summary=true", headers=IDENTITY_HEADERS).json()
+        assert s["project"] is None and s["drift"]["missingFromProject"] == 0

@@ -859,6 +859,21 @@ async def test_export_session_returns_tail_text():
 
 
 @pytest.mark.asyncio
+async def test_get_product_deps_asks_for_the_summary_by_default():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={"edges": {"total": 1}})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "get_product_deps").handler({"slug": "kindash"})
+    assert seen["params"] == {"summary": "true", "active": "true", "open_only": "true"}
+    await _tool(tools, "get_product_deps").handler({"slug": "kindash", "summary": False})
+    assert seen["params"] == {"active": "true", "open_only": "true"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name,args,method,path", [
     ("list_products", {}, "GET", "/api/pm/projects"),
     ("get_product", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash"),
