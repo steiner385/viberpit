@@ -361,11 +361,11 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   through the drawer: no test drives `resolve_decision` with a real `ccas1:` token over loopback and
   asserts the accept lands. The parts either side are covered (the tool is one HTTP call; the route
   is covered directly with an `assistant:` identity), so the gap is the seam between them.
-- §6's decision proposals are unscoped on the wire: `GET /api/pm/decisions` takes no `projectSlug`,
+- **Closed by #2559.** §6's decision proposals are unscoped on the wire: `GET /api/pm/decisions` takes no `projectSlug`,
   and the Inbox's `?product=` chip narrows the one list client-side. That is right at today's
   volume (one pending proposal per item, only while unanswered) and wrong if the queue ever grows
   enough for the chip to matter; add the query parameter then, beside `/pm/triage`'s.
-- §7 asks the review-and-decide dialog to link a `decision` hold to "the proposal card"; it links
+- **Closed by the inbox decision-impact PR (PR 5 of 6): the dialog now deep-links `?scope=inbox&proposal=<id>`.** §7 asks the review-and-decide dialog to link a `decision` hold to "the proposal card"; it links
   to the Inbox instead. `GET /api/pm/work-items/{id}/issue` — everything the dialog has — carries
   the hold kind but no proposal id, so the deep link `?proposal=<id>` needs a wire change (surface
   the pending proposal's id on that payload, or look it up by work item). The Inbox link is correct
