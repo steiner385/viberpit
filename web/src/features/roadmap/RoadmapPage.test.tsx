@@ -33,6 +33,7 @@ const acceptScope = vi.hoisted(() => vi.fn())
 // Beyond the page's own `useRoadmapMap`: the detail levels it renders reach for
 // the project, the queue, the incidents and the onboarding view.
 vi.mock('@/api/hooks', () => ({
+  useHolds: () => ({ data: undefined }),
   useRoadmapMap: () => map,
   useSyncProject: () => sync,
   useCreateInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),

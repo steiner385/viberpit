@@ -73,6 +73,7 @@ import { INBOX_LOAD_ERROR } from './inboxErrors'
 import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } from './inboxKeys'
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
+import { InboxStarvationNotice } from './InboxStarvationNotice'
 import { ProposalCard } from './ProposalCard'
 import { isPending, pendingProposals } from './triageSelectors'
 
@@ -377,6 +378,7 @@ export function InboxScopeBody({
           and an undifferentiated banner is right for a surface that shows both
           kinds interleaved. The PANE, which renders one row, names the half that
           broke (`inboxErrorTitle`). */}
+      <InboxStarvationNotice product={product ?? null} />
       {isError && <Banner tone="danger" title={INBOX_LOAD_ERROR} />}
       {isLoading && proposals.length === 0 && (
         <div role="status" aria-label="Loading inbox"><Skeleton lines={5} /></div>
