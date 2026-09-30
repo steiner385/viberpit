@@ -586,7 +586,7 @@ class NotificationRule(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged
-    # | account_limited | deploy_failed | *
+    # | account_limited | deploy_failed | decision_needed | *
     event_class: Mapped[str] = mapped_column(String, nullable=False, default="*")
     scope_repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_account: Mapped[str | None] = mapped_column(String, nullable=True, default=None)

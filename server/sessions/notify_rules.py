@@ -33,6 +33,7 @@ EVENT_CLASSES: frozenset[str] = frozenset(
         "pr_merged",
         "account_limited",
         "deploy_failed",
+        "decision_needed",
     }
 )
 

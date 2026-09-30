@@ -115,3 +115,22 @@ def test_actionable_items_are_the_ranked_held_list_with_one_step_actions():
     assert [a.kind for a in items[1].actions] == ["retry"]
     assert items[0].url == "/roadmap?scope=inbox&proposal=dp-1"
     assert "blocks 4" in (items[0].subtitle or "")
+
+
+def test_one_products_failed_notify_does_not_abort_the_tick():
+    """Per-product isolation: a notify that raises for the first product still
+    lets the second product's digest send and still publishes the counts."""
+    f = Fakes([_esc("kindash", held=[_item("o/k#1")]),
+               _esc("viberpit", held=[_item("o/r#1")])])
+    real_notify = f.notify
+
+    async def flaky(title, body, *, repo, url):
+        if "product=kindash" in (url or ""):
+            raise RuntimeError("push backend down")
+        await real_notify(title, body, repo=repo, url=url)
+    f.notify = flaky
+    loop = f.loop()
+    asyncio.run(loop.tick())
+    assert [r[0] for r in f.recorded] == ["viberpit"], "a failed notify records no digest"
+    assert len(f.sent) == 1 and "viberpit" in f.sent[0][0]
+    assert getattr(loop._ctx, "decision_escalation_counts")["held"] == 2

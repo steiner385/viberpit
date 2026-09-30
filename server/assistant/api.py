@@ -456,6 +456,9 @@ async def create_watch(body: WatchBody, request: Request,
     scope_value: str | None = body.target
     if body.kind == "account" and body.target.strip().lower() in _ACCOUNT_WILDCARD_TARGETS:
         scope_value = None
+    elif body.kind == "product":
+        # The slug is informational; the rule is scoped to the emitting automation.
+        scope_value = "decision-escalation"
     rule = NotificationRule(
         event_class=event_class, action="channel", channel_id=channel.id,
         once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),

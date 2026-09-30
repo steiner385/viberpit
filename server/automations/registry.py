@@ -134,6 +134,7 @@ from .error_triage import ErrorTriage  # noqa: E402
 from .session_feedback import SessionFeedbackFiler  # noqa: E402
 from .deploy_monitor import DeployMonitor  # noqa: E402
 from .capacity_governor import CapacityGovernor  # noqa: E402
+from .decision_escalation import DecisionEscalation  # noqa: E402
 
 # Current effects, not future policy. Keep metadata beside each registration.
 registry.register(PrDoctor(), oversight=AutomationOversight(
@@ -310,5 +311,17 @@ registry.register(CapacityGovernor(), oversight=AutomationOversight(
     },
     (Relationship('uses', 'pm-sync', 'Reads mirrored eligible counts per product.'),
      Relationship('shares_work_with', 'backlog-runner', 'Sets what the runner may claim per product.')),
+))
+registry.register(DecisionEscalation(), oversight=AutomationOversight(
+    Responsibility.EXECUTION,
+    'Held items across every onboarded product: which decisions are starving dispatch, ageing, or blocking work.',
+    {
+        'off': 'Disable escalation; the Inbox badge is the only signal.',
+        'notify': 'Send one decision_needed digest per product when it is starving, a hold is aged, '
+                  'or a hold blocks enough work; repeat no more than every repeat_hours; never in quiet hours. '
+                  'Never resolves a decision.',
+    },
+    (Relationship('uses', 'backlog-runner', 'Reads the same queue the runner dispatches from.'),
+     Relationship('uses', 'pm-sync', 'Reads mirrored holds and decision proposals.')),
 ))
 registry.validate_oversight(require_all=True)

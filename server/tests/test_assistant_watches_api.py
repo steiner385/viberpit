@@ -100,6 +100,19 @@ def test_create_account_watch_wildcard_target_means_every_account():
             assert r.json()["scopeAccount"] is None
 
 
+def test_create_product_watch_scopes_the_rule_to_the_escalation_automation():
+    """The target is a product slug but the digest is emitted with
+    ``automation="decision-escalation"``: a slug in scope_automation would never match."""
+    with _client() as c:
+        r = c.post("/api/assistant/watches",
+                   json={"kind": "product", "target": "kindash", "condition": "needs_decision"},
+                   headers=IDENTITY)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["eventClass"] == "decision_needed"
+        assert body["scopeAutomation"] == "decision-escalation"
+
+
 def test_create_watch_rejects_unknown_condition_for_session_and_account_kinds():
     with _client() as c:
         for kind, condition in (("session", "ends"), ("account", "exhausted")):

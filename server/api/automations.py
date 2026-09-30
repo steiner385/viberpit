@@ -340,7 +340,11 @@ async def trigger_automation_action(automation_id: str, body: TriggerBody, reque
     """Fire one manual action on an actionable item; returns the TriggerResult."""
     _automation_or_404(automation_id)
     orch = request.app.state.sessions
-    result = await orch.automation_trigger(automation_id, body.item_id, body.kind)
+    from server.pm.holds import actor_for_request
+    # The verified actor (a person's login, or ``assistant:<login>`` for the drawer) is
+    # what a provider that acts AS the caller (decision-escalation) gates on; the rest ignore it.
+    result = await orch.automation_trigger(automation_id, body.item_id, body.kind,
+                                           identity=actor_for_request(request))
     if result.get("status") == "no_provider":
         raise HTTPException(status_code=404, detail=result.get("message", "no action provider"))
     if result.get("status") == "invalid_kind":

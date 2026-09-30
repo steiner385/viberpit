@@ -54,6 +54,13 @@ CONDITION_MAP: dict[str, dict[str, tuple[str, str]]] = {
         # newest GitHub deployment fails or stalls (server/automations/deploy_monitor.py).
         "fails": ("deploy_failed", "scope_repo"),
     },
+    "product": {
+        # target is a product slug, informational only: the rule's scope is the
+        # automation that emits the digest ("decision-escalation"), which
+        # create_watch substitutes (server/assistant/api.py) — a slug in
+        # scope_automation would never match a notify_event's automation.
+        "needs_decision": ("decision_needed", "scope_automation"),
+    },
 }
 
 VALID_KINDS: frozenset[str] = frozenset(CONDITION_MAP)
