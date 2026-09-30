@@ -375,15 +375,25 @@ test.describe('Roadmap — phone', () => {
     await interceptApi(page)
   })
 
-  test('the list owns the band until a product is open, then the detail does', async ({ page }) => {
+  test('the section opens on the portfolio queue; the Map list is one tap away and owns the band until a product is open', async ({ page }) => {
+    // Bare `/roadmap` is the PORTFOLIO page, and at this width it holds the
+    // band: the whole-roadmap Needs-you queue is the section's front door
+    // (PRODUCT.md principle 1). The tree is behind the Back link, at `?scope=map`.
     await page.goto('/roadmap')
-    // Nothing open at this width: the list has the single content band and the
-    // page is `hidden` (attribute, so it leaves the a11y tree too) — hence no
-    // `h1` here, unlike desktop.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Roadmap')
+    await expect(page.getByRole('tab', { name: /^Needs you/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tree', { name: 'Map' })).toHaveCount(0)
+    await shot(page, 'phone-portfolio')
+
+    await page.getByRole('link', { name: 'Back to Map' }).click()
+    expect(pathOf(page)).toBe('/roadmap')
+    // A list scope: the list has the single content band and the page is
+    // `hidden` (attribute, so it leaves the a11y tree too) — hence no `h1`
+    // here, unlike desktop.
     const tree = page.getByRole('tree', { name: 'Map' })
     await expect(tree).toBeVisible()
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0)
-    await shot(page, 'phone-portfolio')
+    await shot(page, 'phone-map')
 
     await page.getByRole('button', { name: /^Open product / }).first().click()
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('KinDash')

@@ -21,8 +21,19 @@ export function roadmapScopeForSearch(search: string): RoadmapScope {
   return (ROADMAP_SCOPES as readonly string[]).includes(v ?? '') ? (v as RoadmapScope) : 'map'
 }
 
+/**
+ * A LIST scope's address — always with `?scope=`, the Map included. Bare
+ * `/roadmap` is the PORTFOLIO page (the whole-roadmap Needs-you queue, the
+ * Ranked queue, every initiative); a `scope` is one of the list columns. On
+ * desktop the two render side by side and the distinction is invisible. On a
+ * phone the band holds one of them, and before this the portfolio had no
+ * address at all: `/roadmap` gave the tree and the 165-item queue was
+ * unreachable (2026-09-30 Roadmap critique, P1 — "the queue has no phone
+ * address"). Now the section's own path opens on the queue, per PRODUCT.md
+ * principle 1, and the tree is one tap away at `?scope=map`.
+ */
 export function roadmapPath(scope: RoadmapScope = 'map'): string {
-  return scope === 'map' ? ROADMAP_PATH : `${ROADMAP_PATH}?scope=${scope}`
+  return `${ROADMAP_PATH}?scope=${scope}`
 }
 export const productPath = (productSlug: string) =>
   `${ROADMAP_PATH}/${encodeURIComponent(productSlug)}`
@@ -48,6 +59,8 @@ export type RoadmapOpenItem =
   | { kind: 'capability'; productSlug: string; capSlug: string }
   | { kind: 'initiative'; initiativeSlug: string }
   | { kind: 'proposal'; proposalId: string }
+  /** Bare `/roadmap`: the portfolio page itself is what is open — see `roadmapPath`. */
+  | { kind: 'portfolio' }
 
 export function roadmapOpenItem(
   params: Readonly<Record<string, string | undefined>>,
@@ -59,6 +72,9 @@ export function roadmapOpenItem(
   if (productSlug) return { kind: 'product', productSlug }
   const proposal = search.get('proposal')
   if (search.get('scope') === 'inbox' && proposal) return { kind: 'proposal', proposalId: proposal }
+  // No scope at all (a `?tab=` alone still counts): the portfolio. Any `scope`,
+  // recognised or not, asks for a list and leaves nothing open.
+  if (search.get('scope') === null) return { kind: 'portfolio' }
   return null
 }
 
@@ -70,5 +86,6 @@ export function keyForOpenItem(item: RoadmapOpenItem | null): string | null {
   if (item.kind === 'product') return productKey(item.productSlug)
   if (item.kind === 'capability') return capabilityKey(item.productSlug, item.capSlug)
   if (item.kind === 'proposal') return proposalKey(item.proposalId)
+  if (item.kind === 'portfolio') return null
   return initiativeKey(item.initiativeSlug)
 }

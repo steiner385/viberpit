@@ -201,9 +201,14 @@ own phase 3 — numbering independent of this doc's PM-layer phases; finish-line
 `2026-09-08-finish-line-persona-modes-design.md` §4), everything this capability renders lives
 under the nav section `roadmap`, on the same master/detail chassis as Sessions:
 
-- `/roadmap` — the portfolio. The list column carries two scopes, **Map** (the product →
-  capability tree, from `GET /api/pm/map`) and **Initiatives** (every initiative, grouped by
-  stage); the detail pane is the portfolio's Needs you / Ranked / All initiatives tabs.
+- `/roadmap` — the portfolio page: its Needs you / Ranked / All initiatives tabs. The list
+  column beside it carries the scopes **Map** (`?scope=map`: the product → capability tree, from
+  `GET /api/pm/map`), **Initiatives** (`?scope=initiatives`: every initiative, grouped by stage)
+  and **Inbox** (below). Every list scope carries its `?scope=`, the Map included: bare `/roadmap`
+  is the portfolio *open in its own right*, so below desktop — where the band holds either the
+  list or the page — the section opens on the whole-roadmap queue and the tree is one tap away
+  behind "Back to Map" (PRODUCT.md principle 1; 2026-09-30 Roadmap critique). On desktop the two
+  render side by side and the distinction is invisible.
 - `/roadmap/:productSlug` — one product: overview, in flight, needs you, ranked, dependencies,
   automation. This is where the onboarding wizard and the dependency panel are mounted.
 - `/roadmap/:productSlug/capabilities/:capSlug` — one capability, with its sub-capabilities,
