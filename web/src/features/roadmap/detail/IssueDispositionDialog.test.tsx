@@ -214,14 +214,30 @@ describe('IssueDispositionDialog', () => {
       ...detail, holdKind: 'decision',
       holdReason: 'durable queue or in-process stream?',
       holdBy: 'session:s1', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: null }))
+    fetchMock.mockResolvedValueOnce(reply([]))
     mount()
     const region = await screen.findByRole('region', { name: 'Hold' })
     expect(region).toHaveTextContent('Awaiting your decision')
     expect(region).toHaveTextContent('durable queue or in-process stream?')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(screen.getByRole('link', { name: /Open the inbox/ }))
       .toHaveAttribute('href', '/roadmap?scope=inbox')
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
+  it('deep-links a decision hold to its pending proposal', async () => {
+    fetchMock.mockResolvedValueOnce(reply({
+      ...detail, holdKind: 'decision', holdReason: 'which queue?',
+      holdBy: 'session:s1', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: null }))
+    fetchMock.mockResolvedValueOnce(reply([
+      { id: 'dp-old', workItemId: 'w1', status: 'accepted', proposalKind: 'decision' },
+      { id: 'dp-other', workItemId: 'w2', status: 'pending', proposalKind: 'decision' },
+      { id: 'dp-9', workItemId: 'w1', status: 'pending', proposalKind: 'decision' },
+    ]))
+    mount()
+    const link = await screen.findByRole('link', { name: /Open the inbox/ })
+    await waitFor(() => expect(link).toHaveAttribute('href', '/roadmap?scope=inbox&proposal=dp-9'))
   })
 
   it('clears the last dispatch outcome when an edit starts', async () => {

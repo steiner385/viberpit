@@ -2,7 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
-import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup } from '@/api/hooks'
+import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup, useDecisions } from '@/api/hooks'
 import type { IssueDispositionInput, WorkItemIssue } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
@@ -33,6 +33,10 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
   const inFlight = useRef(false)
   const id = useId()
   const data = draft ?? issue.data
+  // The nav badge's unscoped entry: only read (never polled here) and only for a
+  // decision hold, so every other hold kind costs no request.
+  const { data: decisions } = useDecisions(undefined, { enabled: data?.holdKind === 'decision', poll: false })
+  const proposalId = decisions?.find((d) => d.workItemId === data?.id && d.status === 'pending')?.id ?? null
   const pending = busy || mutation.isPending || release.isPending || dispatch.isPending
   const conflict = failure instanceof ApiRequestError && failure.status === 409
   const start = (next: typeof mode) => {
@@ -197,7 +201,7 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
             <p className="text-sm text-ink-muted">
               A session proposed options instead of guessing. Pick one in the {ROADMAP.inbox.toLowerCase()} and the next run implements it.
             </p>
-            <Link to={inboxPath({})} className="inline-block text-sm text-accent hover:underline">
+            <Link to={inboxPath({ proposal: proposalId })} className="inline-block text-sm text-accent hover:underline">
               Open the {ROADMAP.inbox.toLowerCase()}
             </Link>
           </>}
