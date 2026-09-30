@@ -88,6 +88,39 @@ describe('PrRow', () => {
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
   });
 
+  // 2026-09-30 Pipeline critique, P1: the estimator reports "0 s left" for any
+  // row with nothing running, and `formatEta(0)` is "done" — so failed, ready,
+  // draft and conflicting rows all wore a "done" chip. An ETA is only a promise
+  // about a timed stage; a failed row has none.
+  describe('the ETA chip is only a promise about a timed stage', () => {
+    const at = (stage: PrView['stage']['stage'], substate: string | null, etaSeconds: number | null = 0, overdue = false) =>
+      pr({ stage: { stage, substate, percent: null, etaSeconds, etaRangeSeconds: null, overdue } });
+
+    it.each([
+      ['parked ci-failed', at('parked', 'ci-failed')],
+      ['parked draft', at('parked', 'draft')],
+      ['parked conflicting', at('parked', 'conflicting')],
+      ['ready idle', at('ready', 'idle')],
+      ['ready armed', at('ready', 'armed')],
+      ['merged (retention)', at('merged', null)],
+      ['queue group-failed', at('queue', 'group-failed')],
+    ])('never says "done" on a %s row', (_name, view) => {
+      const { container } = render(<PrRow pr={view} hasDeploy />);
+      expect(screen.queryByText('done')).toBeNull();
+      expect(container.querySelector('.eta')).toBeNull();
+    });
+
+    it('still times a running CI, queue or deploy stage', () => {
+      render(<PrRow pr={at('ci', null, 300)} hasDeploy />);
+      expect(screen.getByText('~5m left')).toBeInTheDocument();
+    });
+
+    it('still says overdue at any non-failed stage', () => {
+      render(<PrRow pr={at('awaiting-prod', null, null, true)} hasDeploy />);
+      expect(screen.getByText('overdue')).toBeInTheDocument();
+    });
+  });
+
   it('renders parked draft as an amber parked node labeled with the substate', () => {
     const { container } = render(<PrRow pr={pr({
       stage: { stage: 'parked', substate: 'draft', percent: null, etaSeconds: null, etaRangeSeconds: null, overdue: false },

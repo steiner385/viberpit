@@ -10,6 +10,7 @@ import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
 import { formatDur, formatEta, formatSince, stageLabel } from './format';
+import { isFailedPr } from './StatusStrip';
 import { MetroTrack } from '@/features/pipeline/charts/MetroTrack';
 import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
 import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfall';
@@ -17,6 +18,9 @@ import { DEFS, defTitle, subLineTitle } from './definitions';
 
 /** The expanded panel's section caption ("merge group build", …). */
 const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
+
+/** The stages an ETA can be about: something is running and will end. */
+const TIMED_STAGES: ReadonlySet<string> = new Set(['ci', 'queue', 'qa-deploy', 'awaiting-prod']);
 
 /** Muted one-line status under the track: percent + active-check for ci,
  *  substate reason for parked, group/position info for queue.
@@ -186,7 +190,15 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
 
   const s = pr.stage;
   const parked = s.stage === 'parked';
-  const eta = formatEta(s.etaSeconds, s.etaRangeSeconds, s.overdue);
+  // An ETA is a promise about a TIMED stage — CI, the queue, a deploy. The
+  // estimator's "0 s left" on any other row means "nothing is running", and it
+  // rendered as the chip "done" on failed, ready, draft and conflicting rows
+  // alike (2026-09-30 Pipeline critique, P1; PRODUCT.md: a status surface never
+  // says Done). A failed row has no ETA either — its group or CI is over.
+  // `overdue` stays a signal at any stage.
+  const eta = !isFailedPr(pr) && (TIMED_STAGES.has(s.stage) || s.overdue)
+    ? formatEta(s.etaSeconds, s.etaRangeSeconds, s.overdue)
+    : '';
   // ViberPit extension (spec §6): local const avoids repeated pr.session! non-null
   // assertions in the JSX below — narrowing on `session` is enough.
   const session = pr.session;
