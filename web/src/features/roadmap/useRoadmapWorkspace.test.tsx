@@ -99,10 +99,8 @@ describe('useRoadmapWorkspace polling', () => {
 })
 
 /**
- * The inbox's second list (spec 2026-09-18 §6). `GET /pm/decisions` takes no
- * `projectSlug`, so there is exactly ONE key — the nav badge always owns its
- * interval, and the `?product=` chip narrows the rows here rather than keying a
- * second query.
+ * The inbox's second list (spec 2026-09-18 §6), scoped server-side: the
+ * `?product=` chip becomes `projectSlug=` and the column always asks for impact.
  */
 describe('useRoadmapWorkspace — decision proposals', () => {
   const D = (over: Record<string, unknown>) => ({
@@ -131,17 +129,17 @@ describe('useRoadmapWorkspace — decision proposals', () => {
     expect(decisionCalls()).toEqual([])
   })
 
-  it('fetches the list once and never polls it — the nav badge owns the interval', async () => {
+  it('fetches the unscoped list once, with impact, and does not poll it', async () => {
     vi.useFakeTimers()
     renderHook(() => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox') })
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
-    expect(decisionCalls()).toEqual(['/pm/decisions'])
+    expect(decisionCalls()).toEqual(['/pm/decisions?impact=true'])
   })
 
   it('concatenates both kinds into ONE queue', async () => {
     get.mockImplementation(async (path?: string): Promise<unknown> => {
-      if (path === '/pm/decisions') return [D({ id: 'd1' })]
+      if (path === '/pm/decisions?impact=true') return [D({ id: 'd1' })]
       const { MAP } = await import('@/features/roadmap/__fixtures__/map')
       return path === '/pm/map' ? MAP : []
     })
@@ -150,19 +148,19 @@ describe('useRoadmapWorkspace — decision proposals', () => {
     expect(result.current.list.inbox.proposals[0]).toMatchObject({ id: 'd1', proposalKind: 'decision' })
   })
 
-  it('narrows the one unscoped list client-side to the ?product= chip', async () => {
+  it('scopes to the ?product= chip on the server and does no client-side filtering', async () => {
     get.mockImplementation(async (path?: string): Promise<unknown> => {
-      if (path === '/pm/decisions') {
-        return [D({ id: 'mine' }), D({ id: 'theirs', projectSlug: 'viberpit' })]
+      if (path === '/pm/decisions?projectSlug=kindash&impact=true') {
+        // The server owns the narrowing: a row for another product that slips
+        // through is rendered, not re-filtered.
+        return [D({ id: 'mine' }), D({ id: 'other', projectSlug: 'viberpit' })]
       }
       const { MAP } = await import('@/features/roadmap/__fixtures__/map')
       return path === '/pm/map' ? MAP : []
     })
     const { result } = renderHook(
       () => useRoadmapWorkspace(true), { wrapper: wrap('/roadmap?scope=inbox&product=kindash') })
-    await waitFor(() => expect(result.current.list.inbox.proposals).toHaveLength(1))
-    expect(result.current.list.inbox.proposals[0]!.id).toBe('mine')
-    // Still ONE request for the whole list — the narrowing is not a second key.
-    expect(decisionCalls()).toEqual(['/pm/decisions'])
+    await waitFor(() => expect(result.current.list.inbox.proposals).toHaveLength(2))
+    expect(decisionCalls()).toEqual(['/pm/decisions?projectSlug=kindash&impact=true'])
   })
 })

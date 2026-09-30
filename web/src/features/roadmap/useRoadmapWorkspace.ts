@@ -40,18 +40,16 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   // badge's 15 s interval, so the column adds no timer to it; a `?product=`
   // chip is its own key with no other observer, so that one polls itself.
   const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
-  // The inbox's second card kind (spec 2026-09-18 §6). One unscoped key, whose
-  // interval the nav badge always owns — hence `poll: false` here, the same
-  // "no second timer over one key" rule the unscoped triage leg follows.
-  const decisions = useDecisions({ enabled: active, poll: false })
-  // Narrowed CLIENT-side: `GET /pm/decisions` takes no `projectSlug`, so the
-  // `?product=` chip filters the one list rather than keying a second query.
-  // The rows are then concatenated into ONE queue — the ordering spec, the key
+  // The inbox's second card kind (spec 2026-09-18 §6), scoped server-side like
+  // triage and asked for its downstream impact. The impact key is its own entry
+  // (the badge's bare list has none), so it polls whenever a product chip keys it.
+  const decisions = useDecisions(product ?? undefined, { enabled: active, poll: product !== null, impact: true })
+  // The rows are concatenated into ONE queue — the ordering spec, the key
   // map and the pending count all act on the whole inbox, not on two halves.
   const proposals = useMemo<InboxProposal[]>(() => [
     ...(triage.data ?? []),
-    ...(decisions.data ?? []).filter((d) => !product || d.projectSlug === product),
-  ], [triage.data, decisions.data, product])
+    ...(decisions.data ?? []),
+  ], [triage.data, decisions.data])
 
   const onOpen = useCallback((row: TreeRow) => {
     if (row.kind === 'product') navigate(productPath(row.product.slug))

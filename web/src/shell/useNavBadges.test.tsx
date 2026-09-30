@@ -20,7 +20,7 @@ vi.mock('@/api/hooks', () => ({
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
   useTriage: () => useTriage(),
-  useDecisions: () => useDecisions(),
+  useDecisions: (...a: unknown[]) => useDecisions(...a),
   useCapacityBinding: () => useCapacityBinding(),
 }))
 
@@ -153,6 +153,11 @@ describe('useNavBadges', () => {
     })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.roadmap).toBe(3)
+  })
+
+  it('the badge asks for the bare, impact-free decisions list', () => {
+    renderHook(() => useNavBadges())
+    expect(useDecisions).toHaveBeenCalledWith()
   })
 
   it('a decisions-only queue still badges Roadmap', () => {

@@ -51,8 +51,8 @@ import {
   type DispatchOutcome,
 } from './pm'
 import {
-  fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
-  type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
+  fetchRoadmapMap, fetchLeaves, fetchQueue, fetchHolds, fetchProject,
+  type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type HoldsView, type MapChangesPointer,
 } from './roadmap'
 import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './capacity'
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
@@ -130,6 +130,7 @@ export const QK = {
   roadmapMap: ['pm', 'map'] as const,
   leaves: (scope: string) => ['pm', 'leaves', scope] as const,
   queue: ['pm', 'queue'] as const,
+  holds: ['pm', 'holds'] as const,
   workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
@@ -1992,6 +1993,20 @@ export function useQueue() {
   })
 }
 
+/** Held items and per-product dispatch health (escalation read model, spec 2026-09-30 §4). */
+export function useHolds(
+  product?: string,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
+  return useQuery<HoldsView>({
+    queryKey: [...QK.holds, product ?? null],
+    queryFn: () => fetchHolds(product),
+    enabled,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  })
+}
+
 /** One initiative with children, sessions and next action. */
 export function useInitiative(slug: string | null) {
   return useQuery<Initiative>({
@@ -2397,19 +2412,20 @@ export function useTriage(
  * Pending DECISION proposals (spec 2026-09-18 §6), on the same 15 s cadence as
  * `useTriage` and nudged by the same `/ws` hook.
  *
- * Unscoped: `GET /pm/decisions` takes no `projectSlug`, so there is exactly ONE
- * cache entry and the `?product=` chip narrows it client-side. That makes the
- * observer arithmetic simpler than triage's, not harder — the nav badge
- * (`useNavBadges`) always owns this key's interval, so the Roadmap column passes
- * `poll: false` and adds no second timer. `enabled` is what keeps the column off
- * kiosk, which renders no nav badges at all.
+ * Scoped server-side like `useTriage` (spec 2026-09-30 §4.3): the key carries the
+ * product and the `impact` flag, so the nav badge's bare `useDecisions()` (no
+ * impact — it polls every 15 s and impact costs a queue read) and the Roadmap
+ * column's impact-enriched list are different entries. `poll` and `enabled` follow
+ * `useTriage`: whoever already owns a key's interval keeps it; `enabled` keeps the
+ * column off kiosk, which renders no nav badges.
  */
 export function useDecisions(
-  { enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {},
+  projectSlug?: string,
+  { enabled = true, poll = true, impact = false }: { enabled?: boolean; poll?: boolean; impact?: boolean } = {},
 ) {
   return useQuery<DecisionProposal[]>({
-    queryKey: QK.decisions,
-    queryFn: fetchDecisions,
+    queryKey: [...QK.decisions, projectSlug ?? null, impact],
+    queryFn: () => fetchDecisions(projectSlug, { impact }),
     enabled,
     staleTime: 5_000,
     refetchInterval: poll ? 15_000 : false,
@@ -2672,6 +2688,7 @@ function invalidateAfterDecision(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
   void qc.invalidateQueries({ queryKey: QK.roadmapMap })
   void qc.invalidateQueries({ queryKey: QK.queue })
+  void qc.invalidateQueries({ queryKey: QK.holds })
   void qc.invalidateQueries({ queryKey: ['pm', 'issue'] })
 }
 
@@ -2680,16 +2697,17 @@ function useDecisionMutation<V extends { id: string }>(
   { failure, success }: { failure: string; success: string },
 ) {
   const qc = useQueryClient()
-  return useMutation<DecisionResult, ApiRequestError, V, { prev?: DecisionProposal[] }>({
+  return useMutation<DecisionResult, ApiRequestError, V>({
     mutationFn: run,
     onMutate: async ({ id }) => {
+      // Prefix match: the list is cached per product and impact flag, and the row
+      // must leave every one of them.
       await qc.cancelQueries({ queryKey: QK.decisions })
-      const prev = qc.getQueryData<DecisionProposal[]>(QK.decisions)
-      qc.setQueryData<DecisionProposal[]>(QK.decisions, (cur) => (cur ?? []).filter((p) => p.id !== id))
-      return { prev }
+      qc.setQueriesData<DecisionProposal[]>({ queryKey: QK.decisions }, (rows) => rows?.filter((r) => r.id !== id))
     },
-    onError: (e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(QK.decisions, ctx.prev)
+    onError: (e) => {
+      // No snapshot to restore: the list is cached under N keys, so rollback is
+      // the refetch `onSettled` already issues.
       toast.error(extractMutationErrorMessage(e, failure))
     },
     onSuccess: () => {
