@@ -528,7 +528,7 @@ export function CapacityDetail() {
             </ul>
           )}
           {isValidTimestamp(plan.computedAt) && (
-            <p className="mt-2 text-xs text-ink-faint" title={plan.computedAt}>
+            <p className="mt-2 text-xs text-ink-muted" title={plan.computedAt}>
               {relTime(plan.computedAt, now || undefined)}
             </p>
           )}

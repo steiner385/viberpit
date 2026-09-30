@@ -22,7 +22,9 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
   return (
     <section aria-label="Next actions" className="flex flex-col gap-3">
       {!empty && <h3 className="text-sm font-semibold text-ink">Next actions</h3>}
-      {!empty && <p className="text-sm text-ink-muted">Review the items below to decide what happens next. Issue counts include each issue waiting for attention.</p>}
+      {/* `max-w-prose` (the `EmptyState` measure): in a wide detail pane this
+          sentence ran ~144 characters a line (2026-09-30 Roadmap critique, P3). */}
+      {!empty && <p className="max-w-prose text-sm text-ink-muted">Review the items below to decide what happens next. Issue counts include each issue waiting for attention.</p>}
       {empty && (
         <EmptyState title="Nothing needs you" description="No issues, initiatives or proposals need a decision in this scope. Incidents are checked separately below." />
       )}

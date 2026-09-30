@@ -205,7 +205,7 @@ function PromptContextChip({ context }: { context: PromptContext }) {
 function YouCaption() {
   return (
     <div className="flex justify-end pb-1">
-      <span className="inline-flex items-center gap-1 text-2xs text-ink-faint">
+      <span className="inline-flex items-center gap-1 text-2xs text-ink-muted">
         <User size={10} aria-hidden="true" />
         You
       </span>
