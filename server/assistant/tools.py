@@ -895,19 +895,36 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("get_priority_queue",
                "The global priority queue — what agents will pick up next, ranked across "
                "every onboarded product. `skipped` counts why items did NOT make the "
-               "queue, keyed by reason ('deps' = blocked by an open dependency). "
-               "min_status limits to items at or above a status ('backlog' or 'ready'; "
-               "default 'ready').",
-               _schema(min_status=str))
+               "queue, keyed by reason: 'held' (an owner_action or decision hold), "
+               "'blocked' (an open dependency), 'status' "
+               "(below the product's minimum board status), 'epic_open', 'assigned', "
+               "'claimed', 'live_session', 'bot', 'needs_spec'. `skippedByProduct` and "
+               "`dispatchableByProduct` give the same per product slug. `product` narrows "
+               "everything to one slug. min_status limits to items at or above a status "
+               "('backlog' or 'ready'; default 'ready').",
+               _schema(min_status=str, product=str))
     @guarded
     async def get_priority_queue(args: dict[str, Any]) -> Any:
         params = {"min_status": args["min_status"]} if args.get("min_status") else None
         data = await api.get("/api/pm/queue", params=params)
+        entries = data.get("entries") or []
+        by_product = dict(data.get("skippedByProduct") or {})
+        dispatchable = dict(data.get("dispatchableByProduct") or {})
+        skipped = dict(data.get("skipped") or {})
+        product = (args.get("product") or "").strip()
+        if product:
+            # Presentation-only narrowing (one endpoint, like list_prs' repo filter):
+            # the fleet map is re-summed from the kept slug so the two never disagree.
+            entries = [e for e in entries if e.get("product") == product]
+            by_product = {k: v for k, v in by_product.items() if k == product}
+            dispatchable = {k: v for k, v in dispatchable.items() if k == product}
+            skipped = dict(by_product.get(product) or {})
         # `skipped` (reason -> count) is small and is the whole answer to "what is
         # blocked?", so only `entries` is cut. The drop count rides the envelope, so a
         # model seeing 50 rows never reports "50 items queued".
-        entries = data.get("entries") or []
-        return Trimmed({**data, "entries": entries[:_QUEUE_ENTRY_CAP]},
+        return Trimmed({**data, "entries": entries[:_QUEUE_ENTRY_CAP], "skipped": skipped,
+                        "skippedByProduct": by_product,
+                        "dispatchableByProduct": dispatchable},
                        max(0, len(entries) - _QUEUE_ENTRY_CAP))
 
     @spec_tool("list_triage",

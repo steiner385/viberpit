@@ -518,6 +518,8 @@ def _queue() -> dict[str, Any]:
              "url": "https://github.com/acme/billing/issues/20", "score": 2.9},
         ],
         "skipped": {"deps": 3, "status": 11, "needs_human": 1},
+        "skippedByProduct": {"Billing": {"deps": 3, "status": 11, "needs_human": 1}},
+        "dispatchableByProduct": {"Billing": 2, "Checkout": 1},
         "generatedAt": "2026-09-05T00:00:00+00:00",
     }
 

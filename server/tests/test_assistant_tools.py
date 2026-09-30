@@ -272,7 +272,7 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "get_quiet_hours", "test_notification", "set_quiet_hours",
                        "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
                        "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches",
-                       "list_adoptable_sessions")
+                       "list_adoptable_sessions", "get_priority_queue")
 
 
 @pytest.mark.asyncio
@@ -936,7 +936,7 @@ async def test_get_priority_queue_forwards_min_status_and_caps_entries():
         seen["params"] = dict(req.url.params)
         return httpx.Response(200, json={
             "entries": [{"ref": f"o/r#{i}", "score": 100 - i} for i in range(60)],
-            "skipped": {"deps": 4, "status": 9},
+            "skipped": {"blocked": 4, "status": 9},
             "generatedAt": "2026-09-05T00:00:00+00:00",
         })
 
@@ -951,7 +951,7 @@ async def test_get_priority_queue_forwards_min_status_and_caps_entries():
     assert body["truncated"] == 10
     # `skipped` (reason -> count) is what answers "what is blocked by a dependency?",
     # so it must survive the trim untouched.
-    assert body["data"]["skipped"] == {"deps": 4, "status": 9}
+    assert body["data"]["skipped"] == {"blocked": 4, "status": 9}
 
 
 @pytest.mark.asyncio
@@ -964,6 +964,37 @@ async def test_get_priority_queue_omits_min_status_when_unset():
 
     await _tool(build_tools(_api(handler)), "get_priority_queue").handler({})
     assert seen["params"] == {}, "an unset min_status must let the server default apply"
+
+
+@pytest.mark.asyncio
+async def test_get_priority_queue_narrows_to_one_product_and_keeps_the_breakdown():
+    """Spec 2026-09-30 §6: ``product`` narrows entries AND the per-product maps in
+    the handler (one endpoint, presentation-only filtering, like list_prs' repo)."""
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json={
+            "entries": [{"ref": "o/k#1", "product": "kindash", "score": 3},
+                        {"ref": "o/r#2", "product": "viberpit", "score": 2}],
+            "skipped": {"held": 5, "blocked": 1},
+            "skippedByProduct": {"kindash": {"held": 4}, "viberpit": {"held": 1, "blocked": 1}},
+            "dispatchableByProduct": {"kindash": 1, "viberpit": 1},
+            "generatedAt": "2026-09-05T00:00:00+00:00",
+        })
+
+    tools = build_tools(_api(handler))
+    out = await _tool(tools, "get_priority_queue").handler({"product": "kindash"})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert [e["ref"] for e in data["entries"]] == ["o/k#1"]
+    assert data["skippedByProduct"] == {"kindash": {"held": 4}}
+    assert data["dispatchableByProduct"] == {"kindash": 1}
+    assert data["skipped"] == {"held": 4}, "the fleet map is re-summed for the narrowed scope"
+
+    # An unknown slug is an empty answer, not an error: the model should say
+    # "nothing dispatchable", not retry.
+    out = await _tool(tools, "get_priority_queue").handler({"product": "nope"})
+    assert out.get("is_error") is not True
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["entries"] == [] and data["skippedByProduct"] == {}
+    assert data["dispatchableByProduct"] == {} and data["skipped"] == {}
 
 
 @pytest.mark.asyncio
