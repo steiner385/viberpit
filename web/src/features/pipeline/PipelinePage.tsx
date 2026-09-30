@@ -20,7 +20,7 @@ import { deliveryPath } from '@/features/delivery/deliveryNavState'
 // The charts are the one allowlisted stylesheet (geometry, not palette); every
 // other pipeline rule is a token utility on its component.
 import '@/features/pipeline/charts/plotroom.css'
-import { laneJumpTarget } from './laneJump'
+import { laneJumpRepo, laneJumpTarget } from './laneJump'
 import { useFocusedPipeline } from './useFocusedPipeline'
 import { useRepoCycle } from './useRepoCycle'
 
@@ -69,9 +69,16 @@ function Inner() {
   const legendBtnRef = useRef<HTMLButtonElement>(null)
   const onJumpToLane = useCallback((laneId: string | null, status: LaneStatus | null) => {
     const t = laneJumpTarget(laneId, status)
-    if (t.kind === 'filter') setFilter(t.bucket)
-    else navigate(deliveryPath('ci'))
-  }, [navigate])
+    if (t.kind !== 'filter') { navigate(deliveryPath('ci')); return }
+    setFilter(t.bucket)
+    // The lanes are cross-repo, the strip and rows are the focused repo's — so
+    // the jump also focuses the repo that owns what the lane is talking about
+    // (`laneJumpRepo`: stays put when the focused repo already does).
+    if (t.bucket && state) {
+      const owner = laneJumpRepo(laneId, status, t.bucket, state.repos, focused)
+      if (owner) focus(owner)
+    }
+  }, [navigate, state, focused, focus])
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="workspace">

@@ -1,6 +1,41 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { laneJumpTarget } from './laneJump'
+import type { PrView } from '@/pipeline/types'
+import { laneJumpRepo, laneJumpTarget } from './laneJump'
+
+const at = (stage: string, substate: string | null = null): PrView =>
+  ({ stage: { stage, substate, percent: null, etaSeconds: null, etaRangeSeconds: null, overdue: false } } as unknown as PrView)
+
+// 2026-09-30 Pipeline critique, P1: the lanes are cross-repo, the strip and
+// rows are the focused repo's; a jump has to land on the repo that owns the row
+// the lane is talking about.
+describe('laneJumpRepo', () => {
+  const repos = [
+    { repo: 'o/a', prs: [at('ci'), at('ready', 'stuck-enqueue')] },   // a stuck PR: Failed BUCKET, not red
+    { repo: 'o/b', prs: [at('parked', 'ci-failed')] },                // the one red row
+    { repo: 'o/c', prs: [at('queue')] },
+  ]
+
+  it('for a red PR-CI chip, follows the ci-failed row — not just any Failed-bucket row', () => {
+    expect(laneJumpRepo('pr-ci', 'red', 'failed', repos, 'o/a')).toBe('o/b')
+    expect(laneJumpRepo('pr-ci', 'red', 'failed', repos, null)).toBe('o/b')
+  })
+
+  it('stays put (null) when the focused repo already owns such a row', () => {
+    expect(laneJumpRepo('pr-ci', 'red', 'failed', repos, 'o/b')).toBeNull()
+    expect(laneJumpRepo('failures', 'red', 'failed', repos, 'o/a')).toBeNull() // stuck-enqueue IS in the Failed bucket
+    expect(laneJumpRepo('merge-queue', 'amber', 'queued', repos, 'o/c')).toBeNull()
+  })
+
+  it('for other lanes, follows the bucket', () => {
+    expect(laneJumpRepo('merge-queue', 'amber', 'queued', repos, 'o/a')).toBe('o/c')
+    expect(laneJumpRepo('pr-ci', 'green', 'running', repos, 'o/b')).toBe('o/a')
+  })
+
+  it('returns null when no repo owns such a row', () => {
+    expect(laneJumpRepo('deploy', 'green', 'deploy', repos, 'o/a')).toBeNull()
+  })
+})
 
 describe('laneJumpTarget', () => {
   it('maps pr-ci red → failed filter', () => {

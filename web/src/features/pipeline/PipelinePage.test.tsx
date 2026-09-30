@@ -65,7 +65,24 @@ function mount({ kiosk = null, entry = '/pipeline', portrait = false }: { kiosk?
 
 const focusedPipelineParam = () => new URLSearchParams(screen.getByTestId('loc-search').textContent ?? '').get('pipeline')
 
-const deliver = () => act(() => { FakeEventSource.instances.at(-1)!.emit(frame()) })
+const deliver = (f: DashboardState = frame()) => act(() => { FakeEventSource.instances.at(-1)!.emit(f) })
+
+/** A minimal PR view at one stage — enough for `bucketPr` and the row. */
+const prAt = (repo: string, number: number, stage: string, substate: string | null = null) => ({
+  repo, number, title: `pr ${number}`, url: `https://x/${number}`,
+  stage: { stage, substate, percent: null, etaSeconds: null, etaRangeSeconds: null, overdue: false },
+  queueAheadCount: null, checks: [], groupChecks: null, mergeEtaSim: null,
+})
+
+/** `o/a` (focused first) has only a running PR; the one red PR lives in `o/b`. */
+const redInSecondRepo = (): DashboardState => ({
+  generatedAt: '2026-09-11T10:00:00Z',
+  staleSince: null,
+  repos: [
+    { repo: 'o/a', hasDeploy: false, prs: [prAt('o/a', 1, 'ci')], queue: null },
+    { repo: 'o/b', hasDeploy: false, prs: [prAt('o/b', 2, 'parked', 'ci-failed')], queue: null },
+  ],
+} as unknown as DashboardState)
 
 describe('PipelinePage (Workspace variant)', () => {
   beforeEach(() => {
@@ -113,6 +130,49 @@ describe('PipelinePage (Workspace variant)', () => {
     expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
     // The health band sits in the header, not the board.
     expect(screen.getByRole('group', { name: 'Overall CI health' })).toBeInTheDocument()
+  })
+
+  // 2026-09-30 Pipeline critique, P1: the header's lanes are cross-repo, the
+  // strip and rows are the focused repo's. A jump used to filter the focused
+  // repo down to "0 FAILED" while the chip said "1 red" and the red row sat in
+  // another repo.
+  describe('a lane jump lands on the repo that owns the attention', () => {
+    it('moves the focus to the repo with the red row when the focused repo has none', () => {
+      mount()
+      deliver(redInSecondRepo())
+      expect(focusedPipelineParam()).toBeNull() // first repo, implicit
+      fireEvent.click(screen.getByTestId('health-lane-pr-ci'))
+      expect(focusedPipelineParam()).toBe('o/b')
+      expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('o/b')
+      // …and the Failed tile is the active filter, counting that repo's red row.
+      const failed = screen.getByRole('button', { name: /Failed/ })
+      expect(failed).toHaveAttribute('aria-pressed', 'true')
+      expect(failed).toHaveTextContent('1')
+      expect(screen.getByText('pr 2')).toBeInTheDocument()
+    })
+
+    it('follows the RED row past a focused repo whose Failed tile counts only stuck PRs', () => {
+      const f = redInSecondRepo()
+      f.repos[0]!.prs.push(prAt('o/a', 3, 'ready', 'stuck-enqueue') as never) // Failed bucket, not red
+      mount()
+      deliver(f)
+      fireEvent.click(screen.getByTestId('health-lane-pr-ci'))
+      expect(focusedPipelineParam()).toBe('o/b')
+    })
+
+    it('stays on the focused repo when it already owns a row in that bucket', () => {
+      mount({ entry: '/pipeline?pipeline=o%2Fb' })
+      deliver(redInSecondRepo())
+      fireEvent.click(screen.getByTestId('health-lane-pr-ci'))
+      expect(focusedPipelineParam()).toBe('o/b')
+    })
+
+    it('the rollup jumps the same way', () => {
+      mount()
+      deliver(redInSecondRepo())
+      fireEvent.click(screen.getByTestId('health-rollup'))
+      expect(focusedPipelineParam()).toBe('o/b')
+    })
   })
 
   it('the bell is a header action that asks for permission when first enabled', () => {
