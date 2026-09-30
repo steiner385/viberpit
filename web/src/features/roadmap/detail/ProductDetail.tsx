@@ -10,7 +10,6 @@ import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
 import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
-import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
 import { Tabs } from '@/ui/Tabs'
@@ -172,16 +171,15 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                   const programTitle = programTitleFor(i)
                   return (
                     <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Link to={initiativePath(i.slug)} className="font-medium text-ink hover:underline">
-                          {i.title ?? i.slug}
-                        </Link>
-                        {programTitle && (
-                          <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
-                            {programTitle}
-                          </Badge>
-                        )}
-                      </div>
+                      <Link to={initiativePath(i.slug)} className="font-medium text-ink hover:underline">
+                        {i.title ?? i.slug}
+                      </Link>
+                      {/* Same wording as InitiativeCard's subtitle: the program
+                          is prose under the name, never a badge beside it (the
+                          badge crowded the name — 2026-09-30 Roadmap critique). */}
+                      {programTitle && (
+                        <p className="text-xs text-ink-muted">Part of {programTitle}</p>
+                      )}
                       <InitiativeTrack stage={i.stage} status={i.status} epic={i.epic} />
                     </div>
                   )

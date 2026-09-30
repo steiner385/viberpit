@@ -94,20 +94,7 @@ export function InitiativeCard({
             <span className="truncate text-sm font-medium text-ink">{title}</span>
           </span>
         }
-        trailing={
-          <>
-            {programTitle && (
-              // `title` + `aria-label` so assistive tech and a hover both read
-              // this as "part of the program", not just its bare name — which
-              // would otherwise be indistinguishable from the stage badge
-              // beside it.
-              <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
-                {programTitle}
-              </Badge>
-            )}
-            <Badge tone={TIER_TONE[initiative.tier]}>{stageLabel(initiative.stage)}</Badge>
-          </>
-        }
+        trailing={<Badge tone={TIER_TONE[initiative.tier]}>{stageLabel(initiative.stage)}</Badge>}
       >
         <span className="block truncate text-xs text-ink-muted">
           {reason
@@ -115,6 +102,16 @@ export function InitiativeCard({
             : tierLabel(initiative.tier)}
           {epic ? ` · ${epic.done}/${epic.total} done` : ''}
           {initiative.priority != null ? ` · priority ${initiative.priority}` : ''}
+          {/* The program a phase belongs to closes the subtitle, as prose. It used
+              to be a `Badge` in `trailing`, unconstrained beside the stage chip:
+              a long program name (192px, wrapping to two lines) took the row's
+              width and the identity `truncate` span above collapsed to 0px on
+              EVERY Initiatives-scope row — the "in what order?" surface showed no
+              names (2026-09-30 Roadmap critique, P0). LAST on the line, because
+              line 2 truncates as a whole: the reason and progress are what a
+              human acts on and keep their place; a long program name is what
+              gives way. */}
+          {programTitle ? ` · Part of ${programTitle}` : ''}
         </span>
       </CardFrame>
     </div>

@@ -156,7 +156,11 @@ describe('RoadmapListColumn', () => {
     // is not a row here at all.
     expect(screen.queryByTestId(`row-${initiativeKey('audit')}`)).toBeNull()
     const phase = screen.getByTestId(`row-${initiativeKey('audit-01')}`)
-    expect(within(phase).getByText('UI audit')).toBeInTheDocument()
+    // The program opens the phase's subtitle line as prose ("Part of UI audit ·
+    // …") — no longer a trailing badge, which crowded the title to 0px on every
+    // row (2026-09-30 Roadmap critique, P0). The title itself stays the identity.
+    expect(within(phase).getByText(/· Part of UI audit$/)).toBeInTheDocument()
+    expect(within(phase).getByRole('button', { name: /^Open initiative/ })).toBeInTheDocument()
   })
 
   it('a titleless program still yields a chip on the Initiatives scope, falling back to its slug', () => {
@@ -173,8 +177,8 @@ describe('RoadmapListColumn', () => {
     mount({ scope: 'initiatives', map })
     const phase = screen.getByTestId(`row-${initiativeKey('audit-01')}`)
     // The parent lookup resolves the program but finds no title on it — the
-    // chip falls back to the program's own slug rather than disappearing.
-    expect(within(phase).getByText('audit')).toBeInTheDocument()
+    // subtitle falls back to the program's own slug rather than disappearing.
+    expect(within(phase).getByText(/· Part of audit$/)).toBeInTheDocument()
   })
 
   it('orders initiatives of one tier by priority, highest first, unscored last, then title', () => {
