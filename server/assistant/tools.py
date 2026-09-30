@@ -298,7 +298,83 @@ class Trimmed:
     dropped: int
 
 
+# The CLI hands a tool result to the model as one text block; past a few tens of
+# kilobytes it crowds out the conversation and, for the largest endpoints
+# (`/api/prs`, `/deps`), can exceed what the transport accepts outright. Every
+# handler's return passes through `wrap_untrusted`, so this is the one place a
+# result is bounded. The cut is reported under its OWN key (`capped`) - `truncated`
+# is `Trimmed`'s per-tool drop count and keeps its meaning.
+_MAX_RESULT_BYTES = 48_000
+
+
+def _byte_len(data: Any) -> int:
+    return len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode())
+
+
+def _longest_list(data: Any) -> tuple[str, list] | None:
+    """(dotted path, the list) for the longest list at depth 0, 1 or 2 - where every
+    oversized payload in this file keeps its rows."""
+    best: tuple[str, list] | None = None
+
+    def consider(path: str, lst: list) -> None:
+        nonlocal best
+        if best is None or len(lst) > len(best[1]):
+            best = (path, lst)
+
+    if isinstance(data, list):
+        consider("", data)
+        return best
+    if not isinstance(data, dict):
+        return None
+    for k, v in data.items():
+        if isinstance(v, list):
+            consider(str(k), v)
+        elif isinstance(v, dict):
+            for k2, v2 in v.items():
+                if isinstance(v2, list):
+                    consider(f"{k}.{k2}", v2)
+    return best
+
+
+def _with_list_cut(data: Any, path: str, keep: int) -> Any:
+    """A shallow-copied `data` with the list at dotted `path` cut to `keep` rows."""
+    if path == "":
+        return list(data[:keep])
+    keys = path.split(".")
+    out = dict(data)
+    node = out
+    for k in keys[:-1]:
+        node[k] = dict(node[k])
+        node = node[k]
+    node[keys[-1]] = list(node[keys[-1]][:keep])
+    return out
+
+
+def cap_result(data: Any, *, max_bytes: int = _MAX_RESULT_BYTES) -> tuple[Any, dict | None]:
+    """Shrink `data` under `max_bytes` by halving its longest list until it fits.
+    Returns `(data, None)` when it already fits or nothing can be cut; otherwise a
+    copy and `{"path", "kept", "dropped"}` naming the list that was cut."""
+    if _byte_len(data) <= max_bytes:
+        return data, None
+    found = _longest_list(data)
+    if found is None or len(found[1]) <= 1:
+        return data, None
+    path, lst = found
+    original = len(lst)
+    keep = original
+    out = data
+    while keep > 1:
+        keep //= 2
+        out = _with_list_cut(data, path, keep)
+        if _byte_len(out) <= max_bytes:
+            break
+    return out, {"path": path, "kept": keep, "dropped": original - keep}
+
+
 def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
+    # Pass the cap explicitly: a default arg is bound at def time, so a patched
+    # `_MAX_RESULT_BYTES` would otherwise never reach here.
+    scrubbed, capped = cap_result(_scrub(data), max_bytes=_MAX_RESULT_BYTES)
     env: dict[str, Any] = {
         "source": f"{brand.SLUG}-api", "trust": "untrusted-data",
         # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
@@ -306,10 +382,12 @@ def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
         # every result costs no cache hit and is what makes "in the last hour" or
         # "today" answerable at all.
         "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "data": _scrub(data),
+        "data": scrubbed,
     }
     if truncated:
         env["truncated"] = truncated
+    if capped:
+        env["capped"] = capped
     return json.dumps(env, separators=(",", ":"), ensure_ascii=False)
 
 

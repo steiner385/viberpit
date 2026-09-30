@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import httpx
 
@@ -1556,3 +1557,50 @@ def test_pipeline_and_session_descriptions_match_available_data():
     question = _tool(tools, "answer_question").description
     assert "get_session does not return them" in question
     assert "ask the user" in question
+
+
+def test_cap_result_halves_the_longest_list_until_it_fits():
+    from server.assistant.tools import cap_result
+    data = {"project": {"title": "x"}, "edges": [{"src": f"o/r#{i}", "dst": "o/r#0",
+                                                  "source": "native"} for i in range(4000)],
+            "drift": {"proseOnly": [{"src": "a", "dst": "b"}] * 5}}
+    out, capped = cap_result(data, max_bytes=20_000)
+    assert capped["path"] == "edges"
+    assert capped["kept"] == len(out["edges"]) and capped["dropped"] == 4000 - capped["kept"]
+    assert len(json.dumps(out, separators=(",", ":"))) <= 20_000
+    assert out["drift"] == data["drift"], "only the longest list is cut"
+
+
+def test_cap_result_cuts_a_top_level_list_and_a_list_one_level_down():
+    from server.assistant.tools import cap_result
+    rows = [{"n": i, "pad": "x" * 100} for i in range(2000)]
+    out, capped = cap_result(rows, max_bytes=10_000)
+    assert capped["path"] == "" and len(out) < 2000
+    out, capped = cap_result({"data": {"items": rows}}, max_bytes=10_000)
+    assert capped["path"] == "data.items" and len(out["data"]["items"]) < 2000
+
+
+def test_cap_result_leaves_a_small_or_uncuttable_payload_alone():
+    from server.assistant.tools import cap_result
+    small = {"a": [1, 2, 3]}
+    assert cap_result(small, max_bytes=1_000) == (small, None)
+    # Over the cap but nothing to shrink: returned as-is, never an infinite loop.
+    fat = {f"k{i}": "y" * 1_900 for i in range(30)}
+    out, capped = cap_result(fat, max_bytes=1_000)
+    assert out == fat and capped is None
+
+
+@pytest.mark.asyncio
+async def test_guarded_envelope_reports_the_cap_under_its_own_key():
+    from server.assistant import tools as tools_mod
+    big = [{"repo": "o/r", "number": i, "title": "t" * 200, "state": "open",
+            "stage": "ci", "checks": "pending"} for i in range(3000)]
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json=big)
+
+    with patch.object(tools_mod, "_MAX_RESULT_BYTES", 30_000):
+        out = await _tool(build_tools(_api(handler)), "list_prs").handler({"limit": 3000})
+    body = json.loads(out["content"][0]["text"])
+    assert body["capped"]["path"] == "" and body["capped"]["dropped"] > 0
+    assert len(out["content"][0]["text"]) <= 30_000 + 512  # envelope overhead only
