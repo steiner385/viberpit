@@ -29,6 +29,7 @@ vi.mock('@/api/hooks', () => ({
   useRejectBulk: () => ({ mutate: bulkReject, isPending: false }),
   useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
   useTriageLive: () => undefined,
+  useHolds: () => ({ data: undefined }),
   // ProposalCard's own undo control (auto-accept chip) — mocked here too since
   // this file mounts the real ProposalCard rows.
   useUndoProposal: () => ({ mutate: undo, isPending: false }),

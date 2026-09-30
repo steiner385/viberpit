@@ -13,7 +13,7 @@ import { useDecisions, useRoadmapMap, useTriage } from '@/api/hooks'
 import type { InboxProposal } from '@/api/triage'
 import type { RoadmapListColumnProps } from './RoadmapListColumn'
 import {
-  capabilityPath, inboxPath, inboxProductForSearch, initiativePath, keyForOpenItem, productPath,
+  capabilityPath, decisionsQueryArgs, inboxPath, inboxProductForSearch, initiativePath, keyForOpenItem, productPath,
   roadmapOpenItem, roadmapScopeForSearch,
 } from './roadmapNavState'
 import type { TreeRow } from './treeRows'
@@ -40,18 +40,17 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   // badge's 15 s interval, so the column adds no timer to it; a `?product=`
   // chip is its own key with no other observer, so that one polls itself.
   const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
-  // The inbox's second card kind (spec 2026-09-18 §6). One unscoped key, whose
-  // interval the nav badge always owns — hence `poll: false` here, the same
-  // "no second timer over one key" rule the unscoped triage leg follows.
-  const decisions = useDecisions({ enabled: active, poll: false })
-  // Narrowed CLIENT-side: `GET /pm/decisions` takes no `projectSlug`, so the
-  // `?product=` chip filters the one list rather than keying a second query.
-  // The rows are then concatenated into ONE queue — the ordering spec, the key
+  // The inbox's second card kind (spec 2026-09-18 §6). Impact-enriched and
+  // self-polled only in the Inbox scope (`decisionsQueryArgs`); Map, Initiatives
+  // and product detail reuse the nav badge's cached entry.
+  const [decisionsSlug, decisionsOpts] = decisionsQueryArgs(search, active)
+  const decisions = useDecisions(decisionsSlug, decisionsOpts)
+  // The rows are concatenated into ONE queue — the ordering spec, the key
   // map and the pending count all act on the whole inbox, not on two halves.
   const proposals = useMemo<InboxProposal[]>(() => [
     ...(triage.data ?? []),
-    ...(decisions.data ?? []).filter((d) => !product || d.projectSlug === product),
-  ], [triage.data, decisions.data, product])
+    ...(decisions.data ?? []),
+  ], [triage.data, decisions.data])
 
   const onOpen = useCallback((row: TreeRow) => {
     if (row.kind === 'product') navigate(productPath(row.product.slug))

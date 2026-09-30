@@ -237,6 +237,8 @@ async function interceptApi(page: Page) {
       route.fulfill({ json: { items: [] } })
     } else if (path.startsWith('/api/sdlc/initiatives/')) {
       route.fulfill({ json: INITIATIVE })
+    } else if (path === '/api/pm/holds') {
+      route.fulfill({ json: { products: [], held: [], truncated: 0, generatedAt: '' } })
     } else if (path === '/api/pm/triage') {
       // A bare ARRAY, not `{ items }` — `fetchTriage` returns `TriageProposal[]`
       // and the Inbox calls `.length`/`.find` on it directly.

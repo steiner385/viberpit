@@ -307,13 +307,24 @@ describe('undo', () => {
  */
 describe('decision proposals', () => {
   function seedDecisions(qc: QueryClient) {
-    qc.setQueryData(QK.decisions, [
+    qc.setQueryData([...QK.decisions, null, false], [
       { id: 'd1', title: 'Sync or async?' },
       { id: 'd2', title: 'Which store?' },
     ] as unknown as triage.DecisionProposal[])
   }
   const decisionIds = (qc: QueryClient) =>
-    qc.getQueryData<triage.DecisionProposal[]>(QK.decisions)?.map((r) => r.id)
+    qc.getQueryData<triage.DecisionProposal[]>([...QK.decisions, null, false])?.map((r) => r.id)
+
+  it('accepting a decision removes it from every cached decisions list (scoped and unscoped)', async () => {
+    const qc = makeClient()
+    seedDecisions(qc)
+    qc.setQueryData([...QK.decisions, 'kindash', true], [{ id: 'd1' }] as unknown as triage.DecisionProposal[])
+    mocked.acceptDecision.mockResolvedValueOnce({ id: 'd1', status: 'accepted', chosenKey: 'a' })
+    const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'd1', chosenKey: 'a' }) })
+    expect(decisionIds(qc)).toEqual(['d2'])
+    expect(qc.getQueryData([...QK.decisions, 'kindash', true])).toHaveLength(0)
+  })
 
   it('accept sends the chosen key, drops the row, and does not offer an undo', async () => {
     const qc = makeClient()
@@ -330,17 +341,19 @@ describe('decision proposals', () => {
     expect(toast.success).toHaveBeenCalledWith('Decision recorded')
   })
 
-  it('restores the row and toasts once when the accept fails', async () => {
+  it('refetches the list (rollback) and toasts once when the accept fails', async () => {
     const qc = makeClient()
     seedDecisions(qc)
     mocked.acceptDecision.mockRejectedValueOnce(new Error('409'))
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
 
     const { result } = renderHook(() => useAcceptDecision(), { wrapper: makeWrapper(qc) })
     await act(async () => {
       await result.current.mutateAsync({ id: 'd1', chosenKey: 'b' }).catch(() => undefined)
     })
 
-    expect(decisionIds(qc)).toEqual(['d1', 'd2'])
+    // Rollback is a refetch, not a snapshot restore (the list lives under N keys).
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.decisions })
     expect(toast.error).toHaveBeenCalledTimes(1)
     // …and the global MutationCache toast stays silenced, so it is said ONCE.
     expect(qc.getMutationCache().getAll().at(-1)?.options.meta)

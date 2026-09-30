@@ -33,6 +33,7 @@ const acceptScope = vi.hoisted(() => vi.fn())
 // Beyond the page's own `useRoadmapMap`: the detail levels it renders reach for
 // the project, the queue, the incidents and the onboarding view.
 vi.mock('@/api/hooks', () => ({
+  useHolds: () => ({ data: undefined }),
   useRoadmapMap: () => map,
   useSyncProject: () => sync,
   useCreateInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
@@ -576,7 +577,7 @@ describe('RoadmapPage — Inbox scope', () => {
     it('moves on to the next row after the decision is taken', () => {
       Object.assign(decisions, { data: [DECISION] })
       mount('/roadmap?scope=inbox&proposal=d1')
-      fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Accept recommendation' }))
       expect(acceptDecision.mutate).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
       // Somewhere in the queue, never still on the row just decided.
       expect(screen.getByTestId('location')).not.toHaveTextContent('proposal=d1')

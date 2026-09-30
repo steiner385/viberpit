@@ -96,6 +96,10 @@ export interface DecisionProposal {
    *  same `Consequence` pair the classification card renders, through the same
    *  `ConsequenceList`. */
   guidance?: { accept: Consequence; reject: Consequence } | null
+  /** Items this decision blocks, and how many of them dispatch the moment it is
+   *  answered. Present only when the list was fetched with `impact`. */
+  downstream?: number
+  downstreamDispatchable?: number
 }
 
 /** A row of the Inbox queue, of either kind. `proposalKind` discriminates. */
@@ -169,13 +173,21 @@ export function fetchTriage(projectSlug?: string): Promise<TriageProposal[]> {
 /**
  * Pending decision proposals — the inbox's second card kind.
  *
- * Unscoped by design: the endpoint takes no `projectSlug`, so a `?product=`
- * chip narrows this list client-side (`useRoadmapWorkspace`) rather than through
- * a second server query. The volume is a handful of rows — one pending proposal
- * per item at most, and only while a person has not answered it.
+ * Scoped server-side (spec 2026-09-30 §4.3): `projectSlug` narrows like
+ * `/pm/triage`; `impact` adds `downstream` / `downstreamDispatchable` from the
+ * escalation read model — opt-in because the nav badge polls this list every
+ * 15 s and the impact costs the queue read.
  */
-export function fetchDecisions(): Promise<DecisionProposal[]> {
-  return api.get<Omit<DecisionProposal, 'proposalKind'>[]>('/pm/decisions')
+export function fetchDecisions(
+  projectSlug?: string,
+  { impact = false }: { impact?: boolean } = {},
+): Promise<DecisionProposal[]> {
+  const qs = new URLSearchParams()
+  if (projectSlug) qs.set('projectSlug', projectSlug)
+  if (impact) qs.set('impact', 'true')
+  const q = qs.toString()
+  const suffix = q ? `?${q}` : ''
+  return api.get<Omit<DecisionProposal, 'proposalKind'>[]>(`/pm/decisions${suffix}`)
     .then((rows) => rows.map((r) => ({ ...r, proposalKind: 'decision' as const })))
 }
 

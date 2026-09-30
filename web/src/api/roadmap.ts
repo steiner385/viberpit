@@ -208,6 +208,51 @@ export async function fetchLeaves(scope: LeavesScope): Promise<Leaf[]> {
   return res.items
 }
 
+export interface HoldsProduct {
+  slug: string
+  dispatchable: number
+  skipped: Record<string, number>
+  heldCount: number
+  starving: boolean
+  oldestHoldHours: number | null
+}
+
+export interface HeldItem {
+  ref: string
+  repo: string
+  number: number
+  product: string
+  title: string | null
+  url: string | null
+  holdKind: 'owner_action' | 'decision'
+  holdReason: string
+  holdBy: string
+  holdSetAt: string | null
+  ageHours: number | null
+  proposalId: string | null
+  options: { key: string; label: string; detail?: string | null }[]
+  recommendedKey: string | null
+  downstream: number
+  downstreamDispatchable: number
+  downstreamRefs: string[]
+  dispatchableOnRelease: boolean
+  releasedBy: string
+}
+
+export interface HoldsView {
+  products: HoldsProduct[]
+  held: HeldItem[]
+  truncated: number
+  generatedAt: string
+}
+
+export function fetchHolds(product?: string): Promise<HoldsView> {
+  const q = product ? `?product=${encodeURIComponent(product)}` : ''
+  return api.get<HoldsView | unknown[]>(`/pm/holds${q}`).then((v) =>
+    // The e2e catch-all answers `[]` for any unstubbed collection; read it as empty.
+    Array.isArray(v) ? { products: [], held: [], truncated: 0, generatedAt: '' } : v)
+}
+
 export function fetchQueue(): Promise<QueueView> {
   return api.get<QueueView>('/pm/queue')
 }

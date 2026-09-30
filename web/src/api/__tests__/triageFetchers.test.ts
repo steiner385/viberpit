@@ -15,6 +15,7 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { api } from '@/api/client'
+import { fetchHolds } from '@/api/roadmap'
 import {
   acceptDecision, fetchDecisions, fetchTriage, isDecisionProposal, isTriageProposal,
   rejectDecision,
@@ -37,13 +38,33 @@ describe('inbox fetchers', () => {
     expect(get).toHaveBeenLastCalledWith('/pm/triage?projectSlug=kin%20dash')
   })
 
-  it('tags every decision row, from the one unscoped list', async () => {
+  it('tags every decision row', async () => {
     get.mockResolvedValue([{ id: 'd1', options: [] }])
     const rows = await fetchDecisions()
-    // No `projectSlug` query: the endpoint takes none, and the `?product=` chip
-    // narrows this list client-side.
     expect(get).toHaveBeenCalledWith('/pm/decisions')
     expect(rows.every(isDecisionProposal)).toBe(true)
+  })
+
+  it('fetchDecisions scopes by projectSlug and asks for impact only when told', async () => {
+    get.mockResolvedValue([])
+    await fetchDecisions('kindash')
+    expect(get).toHaveBeenLastCalledWith('/pm/decisions?projectSlug=kindash')
+    await fetchDecisions(undefined, { impact: true })
+    expect(get).toHaveBeenLastCalledWith('/pm/decisions?impact=true')
+    await fetchDecisions('kindash', { impact: true })
+    expect(get).toHaveBeenLastCalledWith('/pm/decisions?projectSlug=kindash&impact=true')
+    await fetchDecisions()
+    expect(get).toHaveBeenLastCalledWith('/pm/decisions')
+  })
+
+  it('fetchHolds scopes by product and tolerates a bare array', async () => {
+    get.mockResolvedValueOnce({ products: [], held: [], truncated: 0, generatedAt: 't' })
+    await fetchHolds('kindash')
+    expect(get).toHaveBeenLastCalledWith('/pm/holds?product=kindash')
+    get.mockResolvedValueOnce([]) // the e2e catch-all shape
+    const v = await fetchHolds()
+    expect(v.products).toEqual([])
+    expect(v.held).toEqual([])
   })
 
   it('answers empty lists without inventing rows', async () => {

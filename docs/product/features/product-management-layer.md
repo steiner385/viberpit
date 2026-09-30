@@ -132,7 +132,7 @@ the wire itself carries no discriminator — so `triageSelectors.pendingProposal
 beside classification proposals with the same keys, as a single-choice group with the
 recommendation preselected; `a` OPENS a decision row rather than accepting it (there is no undo
 window to take a chosen option back with); `r` does the same — neither key decides a decision from
-the list, only the pane's own Accept/Reject buttons do — and `x`/`e`/`A` are inert.
+the list, only the pane's own Accept/Reject buttons do — and `x`/`e`/`A` are inert. Decisions lead every Inbox bucket by what they block (a "Blocks N" chip, `downstream` from the escalation read model). While the recommended option is selected the primary button reads "Accept recommendation" and accepts it in one tap. A one-line starvation notice heads the list when a product's runner is starving (`/pm/holds`).
 
 **Accept** (`POST /api/pm/decisions/{pid}/accept` with `chosen_key`) records the key, clears the
 hold — the only path that may — and comments on the issue after the commit (best-effort, bounded by

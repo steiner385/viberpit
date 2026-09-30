@@ -81,4 +81,18 @@ describe('INBOX_ORDERING_SPEC over both card kinds', () => {
       decision({ id: 'newer', createdAt: '2026-09-18T00:00:00Z' }),
     ])).toEqual(['newer', 'older'])
   })
+
+  it('a decision that blocks more work leads its bucket under every sort; triage rows keep their order', () => {
+    const rows = [
+      triage({ id: 't1', createdAt: '2026-01-03' }),
+      decision({ id: 'd-low', downstream: 1, createdAt: '2026-01-02' }),
+      decision({ id: 'd-high', downstream: 7, createdAt: '2026-01-01' }),
+      decision({ id: 'd-none', createdAt: '2026-01-04' }),
+    ]
+    for (const key of ['newest', 'confidence', 'title'] as const) {
+      expect(sortBy(key, rows).slice(0, 2)).toEqual(['d-high', 'd-low'])
+    }
+    // An undefined downstream counts as 0; ties fall through to newest.
+    expect(sortBy('newest', rows)).toEqual(['d-high', 'd-low', 'd-none', 't1'])
+  })
 })

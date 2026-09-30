@@ -405,6 +405,7 @@ function DecisionDetail({ proposal: p, onDone }: {
   }
   const groupId = `decision-${p.id}`
   const guidance = p.guidance ?? null
+  const rec = p.recommendedKey
 
   return (
     <PaneShell>
@@ -458,15 +459,9 @@ function DecisionDetail({ proposal: p, onDone }: {
           </div>
         )}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="lg"
-            disabled={reject.isPending}
-            onClick={() => { reject.mutate({ id: p.id }); onDone() }}
-          >
-            Reject
-          </Button>
+          {/* ONE primary button. One tap by a person (spec decision 7) while the
+              recommendation is what the group holds; choosing another option
+              renames it `Accept` and it submits that key. */}
           {/* Disabled while `chosen` is empty: the server answers 422 on an empty
               `chosen_key`, and a button that can only fail is not an offer.
               DEFENCE ONLY — the state is unreachable today: `decisions.propose`
@@ -475,7 +470,16 @@ function DecisionDetail({ proposal: p, onDone }: {
               cleared once one is set. It guards the seeding rule rather than any
               flow a person can drive. */}
           <Button type="submit" size="lg" disabled={!chosen || accept.isPending}>
-            Accept
+            {rec && chosen === rec ? 'Accept recommendation' : 'Accept'}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="lg"
+            disabled={reject.isPending}
+            onClick={() => { reject.mutate({ id: p.id }); onDone() }}
+          >
+            Reject
           </Button>
         </div>
       </form>
