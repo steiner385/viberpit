@@ -2605,7 +2605,7 @@ def test_cold_start_publishes_counts_before_the_grouping_refresh(tmp_path):
         assert getattr(ctx, "backlog_counts", None) is None
         await loop.tick()
         assert seen == [{"in_flight": 0, "needs_human": 0, "eligible": 7,
-                         "blocked": 0, "untriaged": 0, "unassigned_in_flight": 0}]
+                         "held": 0, "blocked": 0, "untriaged": 0, "unassigned_in_flight": 0}]
 
     asyncio.run(run())
 
@@ -4942,6 +4942,30 @@ def test_display_counts_share_claim_snapshot_and_keep_off_product_work():
         assert "2 unattributed" in status.text
         ctx.list_target_states.assert_awaited_once()
         loop._count_in_flight.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_stash_counts_publishes_held_right_after_eligible():
+    """``held`` must survive the web's six-tile cap on ``status.counts``
+    (countTiles.ts:MAX_COUNT_TILES), so it is placed before blocked/untriaged."""
+    from unittest.mock import AsyncMock
+
+    async def run():
+        rows = {
+            "viberpit": {"dispatch": "auto", "eligible": 1, "blocked": 0,
+                         "untriaged": 0, "bounced": 0, "held": 3,
+                         "skipped": {"held": 3}, "cap": 2},
+            "kindash": {"dispatch": "auto", "eligible": 0, "blocked": 0,
+                        "untriaged": 0, "bounced": 0, "held": 2,
+                        "skipped": {"held": 2}, "cap": 2}}
+        loop, _, ctx = build_loop(candidates=[], candidate_count=1, per_product=rows)
+        ctx.list_target_states = AsyncMock(return_value={})
+        await loop._stash_counts({})
+        counts = ctx.backlog_counts
+        assert counts["held"] == 5
+        keys = list(counts)
+        assert keys.index("held") == keys.index("eligible") + 1
 
     asyncio.run(run())
 

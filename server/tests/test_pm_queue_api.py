@@ -303,3 +303,69 @@ def test_queue_keeps_a_bounced_issue_for_a_product_that_never_gives_up():
 
         assert [e["ref"] for e in body["entries"]] == ["o/bouncy#1"]
         assert body["skipped"] == {}
+
+
+def _seed_second_product_with_a_held_item(c) -> None:
+    """A second onboarded product whose only open issue is parked by an
+    owner_action hold, so the breakdown has two slugs with different reasons."""
+    from server.db import db_session
+    from server.db.models import GhProject, GhProjectItem, Project, ProjectRepo, WorkItem
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = Project(slug="kindash", name="kindash")
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo="steiner385/KinDash", is_primary=True))
+            wi = WorkItem(repo="steiner385/KinDash", number=7, kind="issue",
+                          title="held item", state="open", body="b",
+                          url="https://example.com/k7",
+                          hold_kind="owner_action", hold_by="tony@example.com",
+                          hold_reason="waiting on the owner")
+            db.add(wi)
+            await db.flush()
+            ghp = GhProject(project_id=proj.id, gh_project_number=8, title="kindash")
+            db.add(ghp)
+            await db.flush()
+            db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=wi.id,
+                                 status="Ready", score=1.0))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_queue_endpoint_breaks_skips_down_per_product():
+    """Spec 2026-09-30 §4.1: the per-product maps the route already computes stay
+    on the wire, and they sum to the fleet map reason by reason."""
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _seed_second_product_with_a_held_item(c)
+
+        body = c.get("/api/pm/queue", headers=IDENTITY_HEADERS).json()
+
+        assert body["skippedByProduct"] == {"viberpit": {"blocked": 1},
+                                            "kindash": {"held": 1}}
+        assert body["dispatchableByProduct"] == {"viberpit": 1, "kindash": 0}
+        assert body["skipped"] == {"blocked": 1, "held": 1}
+        summed: dict[str, int] = {}
+        for per_reason in body["skippedByProduct"].values():
+            for reason, n in per_reason.items():
+                summed[reason] = summed.get(reason, 0) + n
+        assert summed == body["skipped"]
+
+
+def test_queue_endpoint_lists_a_product_with_nothing_dispatchable_as_zero():
+    """A product whose every row is skipped reads as 0, never as absent — absent
+    would be indistinguishable from "not onboarded"."""
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        # respect_dependencies=false un-blocks #101, so both rows need a hold.
+        _set_hold(c, "steiner385/viberpit", 100)
+        _set_hold(c, "steiner385/viberpit", 101)
+
+        body = c.get("/api/pm/queue?respect_dependencies=false",
+                     headers=IDENTITY_HEADERS).json()
+
+        assert body["dispatchableByProduct"] == {"viberpit": 0}
+        assert body["skippedByProduct"]["viberpit"]["held"] == 2

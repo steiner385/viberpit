@@ -10,6 +10,11 @@ export interface AutomationStatusProduct {
   cap: number
   eligible: number
   bounced: number
+  /** Items parked by an owner_action / decision hold (spec 2026-09-30 §4.1). */
+  held?: number
+  blocked?: number
+  /** Every skip reason for this product, keyed as `server/pm/queue.py:SKIP_REASONS`. */
+  skipped?: Record<string, number>
 }
 
 export interface AutomationStatus {

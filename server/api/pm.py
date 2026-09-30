@@ -901,6 +901,8 @@ async def queue(
     product with a linked board, via the same ``rank(load_queue_rows(...))`` composition
     the backlog runner uses — "what you see is what agents will do next". ``body`` is
     deliberately omitted from the payload (large, UI/runner don't need it here).
+    ``skippedByProduct`` / ``dispatchableByProduct`` carry the per-slug maps the fleet
+    ``skipped`` is summed from (spec 2026-09-30 §4.1).
 
     The runner's claims ride the SAME derivation the runner's own pool read uses
     (``runner_claims``), so a claimed issue reads as ``claimed`` here exactly as
@@ -942,6 +944,10 @@ async def queue(
         by_product.setdefault(r.product, []).append(r)
     entries: list = []
     skipped: dict[str, int] = {}
+    # Spec 2026-09-30 §4.1: the per-product map is kept beside the fleet sum. It
+    # is the SAME ``skipped_p`` the sum is built from, so the two cannot disagree.
+    skipped_by_product: dict[str, dict[str, int]] = {}
+    dispatchable_by_product: dict[str, int] = {}
     for slug in sorted(by_product):
         # A product with no row of its own (an unmirrored slug) reads as the policy
         # SCHEMA's defaults, never as a hand-written 0.
@@ -955,6 +961,8 @@ async def queue(
             extra_skip_labels=frozenset(
                 lbl.strip().lower() for lbl in policy["skip_labels"]))
         entries.extend(entries_p)
+        skipped_by_product[slug] = dict(skipped_p)
+        dispatchable_by_product[slug] = len(entries_p)
         for reason, n in skipped_p.items():
             skipped[reason] = skipped.get(reason, 0) + n
     # Merge with ``rank``'s OWN key rather than a hand-copied tuple: ranking per
@@ -973,6 +981,8 @@ async def queue(
             "score": e.score,
         } for e in entries],
         "skipped": skipped,
+        "skippedByProduct": skipped_by_product,
+        "dispatchableByProduct": dispatchable_by_product,
         "generatedAt": now.isoformat(),
     }
 

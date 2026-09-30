@@ -129,7 +129,8 @@ def test_status_appends_bounced_count_and_publishes_products():
     status = BacklogRunner().status(ctx)
     assert "kwgt-cairn: auto · 1/1 in flight · 12 eligible · 2 bounced" in status.text
     assert status.products == [{"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
-                                "cap": 1, "eligible": 12, "bounced": 2}]
+                                "cap": 1, "eligible": 12, "bounced": 2, "held": 0,
+                                "blocked": 0, "skipped": {}}]
 
 
 def test_status_omits_bounced_segment_when_zero():
@@ -302,3 +303,23 @@ def test_parked_work_remains_visible_when_no_product_has_dispatch_on():
     assert status.level == "warn"
     assert status.counts["needs_human"] == 2
     assert "idle" not in status.text
+
+
+def test_status_products_rows_carry_held_blocked_and_the_skip_map():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 1, "eligible": 12, "held": 4, "blocked": 2},
+        backlog_products={
+            "kwgt-cairn": {"dispatch": "auto", "eligible": 12, "blocked": 2,
+                           "untriaged": 0, "bounced": 0, "held": 4,
+                           "skipped": {"held": 4, "blocked": 2},
+                           "in_flight": 1, "cap": 1}})
+    status = BacklogRunner().status(ctx)
+    assert status.products == [{"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
+                                "cap": 1, "eligible": 12, "bounced": 0, "held": 4,
+                                "blocked": 2, "skipped": {"held": 4, "blocked": 2}}]
+    # The counts are tiles, not text (spec 2026-09-28 §2): neither held nor
+    # needs-human is spelled in the sentence.
+    assert "held" not in status.text and "needs" not in status.text
