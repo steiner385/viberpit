@@ -251,9 +251,12 @@ describe('ProductDetail', () => {
     // level — the badge is how it still says which program it is part of.
     mount()
     expect(screen.getByText('01 Restore')).toBeInTheDocument()
-    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
+    // The program now opens the subtitle line as prose ("Part of UI audit · …"),
+    // not a trailing badge — a badge beside the stage chip crowded the title to
+    // 0px (2026-09-30 Roadmap critique, P0).
+    expect(screen.getByText(/Part of UI audit/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: /In flight/ }))
-    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
+    expect(screen.getByText(/Part of UI audit/)).toBeInTheDocument()
   })
 
   it('Overview: previews at most three in-flight initiatives and links to the rest', () => {
