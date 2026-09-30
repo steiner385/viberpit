@@ -312,10 +312,28 @@ describe('RoadmapPage', () => {
   it('below desktop an open product or capability gets a Back link to the map; desktop does not', () => {
     stubMatchMedia(LAYOUT_MODE_QUERIES.tablet)
     mount('/roadmap/kindash')
-    expect(screen.getByRole('link', { name: 'Back to Map' })).toHaveAttribute('href', '/roadmap')
+    expect(screen.getByRole('link', { name: 'Back to Map' })).toHaveAttribute('href', '/roadmap?scope=map')
     cleanup()
     stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
     mount('/roadmap/kindash')
+    expect(screen.queryByRole('link', { name: 'Back to Map' })).toBeNull()
+  })
+
+  // Bare `/roadmap` is the portfolio page; on a phone it holds the band (the
+  // whole-roadmap queue is the section's front door), so it needs the way to
+  // the tree an open product has. On desktop the tree is beside it.
+  it('below desktop the portfolio page itself gets the Back link to the map; a list scope and desktop do not', () => {
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap')
+    expect(screen.getByRole('heading', { level: 1, name: 'Roadmap' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Map' })).toHaveAttribute('href', '/roadmap?scope=map')
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/roadmap?scope=map')
+    expect(screen.queryByRole('link', { name: 'Back to Map' })).toBeNull()
+    cleanup()
+    stubMatchMedia(LAYOUT_MODE_QUERIES.desktop)
+    mount('/roadmap')
     expect(screen.queryByRole('link', { name: 'Back to Map' })).toBeNull()
   })
 })

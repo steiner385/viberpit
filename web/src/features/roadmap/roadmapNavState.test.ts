@@ -13,7 +13,10 @@ describe('roadmapNavState', () => {
     expect(roadmapScopeForSearch('?scope=bogus&x=1')).toBe('map')
   })
   it('builds every path from the section path', () => {
-    expect(roadmapPath()).toBe('/roadmap')
+    // The Map LIST carries its scope like every other list: bare `/roadmap` is
+    // the portfolio page, which on a phone is what holds the band.
+    expect(roadmapPath()).toBe('/roadmap?scope=map')
+    expect(roadmapScopeForSearch('?scope=map')).toBe('map')
     expect(roadmapPath('initiatives')).toBe('/roadmap?scope=initiatives')
     expect(productPath('kindash')).toBe('/roadmap/kindash')
     expect(capabilityPath('kindash', 'task views')).toBe('/roadmap/kindash/capabilities/task%20views')
@@ -22,8 +25,20 @@ describe('roadmapNavState', () => {
     expect(CAPABILITY_ROUTE).toBe('/roadmap/:productSlug/capabilities/:capSlug')
     expect(INITIATIVE_ROUTE).toBe('/initiatives/:initiativeSlug')
   })
+  it('treats bare /roadmap as the portfolio being open, and any list scope as nothing open', () => {
+    const sp = (s: string) => new URLSearchParams(s)
+    expect(roadmapOpenItem({}, sp(''))).toEqual({ kind: 'portfolio' })
+    // A portfolio tab is still the portfolio; a scope — even an unknown one — is a list.
+    expect(roadmapOpenItem({}, sp('?tab=ranked'))).toEqual({ kind: 'portfolio' })
+    expect(roadmapOpenItem({}, sp('?scope=map'))).toBeNull()
+    expect(roadmapOpenItem({}, sp('?scope=initiatives'))).toBeNull()
+    expect(roadmapOpenItem({}, sp('?scope=inbox'))).toBeNull()
+    expect(roadmapOpenItem({}, sp('?scope=bogus'))).toBeNull()
+    // The portfolio highlights no list row.
+    expect(keyForOpenItem({ kind: 'portfolio' })).toBeNull()
+  })
   it('resolves the open item from params by NAME, most specific first', () => {
-    const sp = new URLSearchParams('')
+    const sp = new URLSearchParams('?scope=map')
     expect(roadmapOpenItem({}, sp)).toBeNull()
     expect(roadmapOpenItem({ productSlug: 'k' }, sp)).toEqual({ kind: 'product', productSlug: 'k' })
     expect(roadmapOpenItem({ productSlug: 'k', capSlug: 'c' }, sp)).toEqual({ kind: 'capability', productSlug: 'k', capSlug: 'c' })
