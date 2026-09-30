@@ -23,7 +23,7 @@ export function RankedList({ productSlug }: { productSlug?: string }) {
     <ol className="flex flex-col gap-1" aria-label="Ranked queue">
       {entries.map((e, i) => (
         <li key={e.ref} className="flex items-baseline gap-3 rounded-md border border-edge bg-surface p-3 text-sm">
-          <span className="w-6 shrink-0 text-right tabular-nums text-ink-faint">{i + 1}</span>
+          <span className="w-6 shrink-0 text-right tabular-nums text-ink-muted">{i + 1}</span>
           <span className="w-10 shrink-0 tabular-nums text-ink-muted">{e.score?.toFixed(1) ?? '—'}</span>
           <span className="min-w-0 flex-1 truncate">
             {/* An entry with no URL is still real work; it just has nowhere to

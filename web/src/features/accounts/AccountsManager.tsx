@@ -46,10 +46,9 @@ function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
   else text = `${idle} idle`
   return (
     <span
-      className={cn(
-        'text-xs whitespace-nowrap',
-        active === 0 && idle === 0 ? 'text-ink-faint' : 'text-ink-muted',
-      )}
+      // One weight for zero and non-zero: `ink-faint` reads at 3.1:1 on the
+      // surface, under the 4.5:1 text floor, and "0 active" is still read.
+      className="text-xs whitespace-nowrap text-ink-muted"
       aria-label="Live sessions using this account"
     >
       {text}

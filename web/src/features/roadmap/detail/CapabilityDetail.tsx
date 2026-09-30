@@ -176,8 +176,8 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
               )}
             </div>
             {capability.summary
-              ? <p className="text-ink">{capability.summary}</p>
-              : <p className="text-ink-muted">No summary in the feature doc yet.</p>}
+              ? <p className="max-w-prose text-ink">{capability.summary}</p>
+              : <p className="max-w-prose text-ink-muted">No summary in the feature doc yet.</p>}
             {parent && (
               <p className="text-xs text-ink-muted">
                 Part of{' '}

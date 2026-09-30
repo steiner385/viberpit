@@ -125,7 +125,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                   <section className="flex flex-col gap-2 text-sm">
                     <div className="flex items-start justify-between gap-2">
                       {project.description
-                        ? <p className="text-ink">{project.description}</p>
+                        ? <p className="max-w-prose text-ink">{project.description}</p>
                         : <span />}
                       <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
                         Edit

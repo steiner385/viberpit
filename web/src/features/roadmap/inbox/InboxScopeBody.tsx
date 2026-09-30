@@ -317,7 +317,10 @@ export function InboxScopeBody({
               differently, so a fixed strip promising "a accept · r reject" is
               false half the time. `A` and `R` stay on both — they act on the
               selection, which a decision can never join. */}
-          <p className="flex flex-wrap items-center gap-1 text-xs text-ink-faint">
+          {/* `ink-muted`, not `ink-faint`: this is read, and `ink-faint` on the
+              surface is 3.1:1 — the non-text floor, under the 4.5:1 text floor
+              (2026-09-30 Roadmap critique, P3). */}
+          <p className="flex flex-wrap items-center gap-1 text-xs text-ink-muted">
             <Kbd keys="j" />/<Kbd keys="k" /> move ·
             {current !== undefined && isDecisionProposal(current)
               ? <>{' '}<Kbd keys="a" /> / <Kbd keys="r" /> open ·</>

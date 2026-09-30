@@ -226,9 +226,11 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
                 )}
                 <span className="block">
                   <span className="block">{label}</span>
+                  {/* Same weight picked or not: an unpicked option's description
+                      is exactly the text being read to decide, and `ink-faint`
+                      sits under the 4.5:1 text floor. */}
                   {optionDescription(opt) && (
-                    <span className={cn('block text-xs mt-0.5',
-                      isPicked ? 'text-ink-muted' : 'text-ink-faint')}>
+                    <span className="block text-xs mt-0.5 text-ink-muted">
                       {optionDescription(opt)}
                     </span>
                   )}
