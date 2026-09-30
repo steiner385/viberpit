@@ -46,6 +46,8 @@ import asyncio
 import json
 import logging
 import time
+
+from sqlalchemy import select
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -63,6 +65,7 @@ from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
 from server.db import db_session
+from server.db.models import Session as DbSession
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
@@ -99,6 +102,34 @@ _MAX_FRAME = 262144
 # report the same underlying condition under one fingerprint, so a session already
 # reported by one should not re-report through the other inside the window.
 _WS_ATTACH_DAEMON_UNAVAILABLE_LOG = LogThrottle()
+
+
+async def _log_attach_daemon_unavailable(session_id: str) -> None:
+    """Report ``ws.attach: session daemon unavailable`` at the level its cause deserves.
+
+    A worker daemon restarted on purpose by a rollout is unreachable for 30–90 s; a tab
+    attaching in that window is expected, not an incident — the same call
+    ``FleetOrchestrator._log_unreachable`` makes (#1614), so it reuses
+    ``host_upgrade.restart_expected`` rather than a second copy of that policy. An
+    unplanned outage (or a session whose host cannot be resolved) still WARNs,
+    throttled per session (#2025).
+    """
+    from server.sessions import host_upgrade  # deferred: sessions imports this package
+
+    host = None
+    try:
+        async with db_session() as db:
+            host = (await db.execute(
+                select(DbSession.host).where(DbSession.id == session_id))).scalar_one_or_none()
+        expected = host is not None and await host_upgrade.restart_expected(host)
+    except Exception:  # noqa: BLE001 — a logging decision must never raise
+        expected = False
+    if expected:
+        log.info("ws.attach: session daemon unavailable for %s (restart in progress)",
+                 session_id)
+        return
+    log_throttled(log, _WS_ATTACH_DAEMON_UNAVAILABLE_LOG, session_id, logging.WARNING,
+                  "ws.attach: session daemon unavailable for %s", session_id)
 # Hard ceiling (seconds) on resuming a detached session's SDK subprocess. A
 # resume boots the whole MCP-server fleet, which can legitimately take tens of
 # seconds cold — but it must never block forever. On a saturated box a wedged
@@ -758,9 +789,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     "busy. Try again in a moment.", auto)
                 return None
             except DaemonUnavailable:
-                log_throttled(log, _WS_ATTACH_DAEMON_UNAVAILABLE_LOG, session_id,
-                              logging.WARNING,
-                              "ws.attach: session daemon unavailable for %s", session_id)
+                await _log_attach_daemon_unavailable(session_id)
                 if not auto:
                     await websocket.close(code=1013)
                 return None
@@ -1289,9 +1318,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # unless this is an auto re-attach, which must never cost the user a
                 # socket it shares with every other session it is viewing (see
                 # _resume_driver_or_error's `auto`).
-                log_throttled(log, _WS_ATTACH_DAEMON_UNAVAILABLE_LOG, session_id,
-                              logging.WARNING,
-                              "ws.attach: session daemon unavailable for %s", session_id)
+                await _log_attach_daemon_unavailable(session_id)
                 if not auto:
                     await websocket.close(code=1013)
                 return
