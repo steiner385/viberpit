@@ -2,7 +2,9 @@
 decisions are starving dispatch, ageing, or blocking a lot of work.
 
 Pure half first — ``decide``/``fingerprint``/``should_send``/``digest_text`` take
-the read model (``server/pm/escalation.py``) and answer without I/O — then the
+the read model (``server/pm/escalation.py``) and answer without I/O. A digest
+re-sends only when things got worse (or ``repeat_hours`` passed): the operator's
+own progress must not re-page them — then the
 automation class, the loop and the action provider, in the ``DeployMonitor``
 mould (``server/automations/deploy_monitor.py``).
 """
@@ -47,6 +49,9 @@ class Verdict:
     escalate: bool
     reasons: tuple[str, ...]
     fingerprint: str
+    held_refs: tuple[str, ...] = ()
+    starving: bool = False
+    max_downstream: int = 0
 
 
 def fingerprint(esc: ProductEscalation) -> str:
@@ -69,23 +74,31 @@ def decide(esc: ProductEscalation, t: Thresholds) -> Verdict:
         if any(i.downstream >= t.downstream_threshold for i in esc.held):
             reasons.append("downstream")
     return Verdict(slug=esc.slug, escalate=bool(reasons), reasons=tuple(reasons),
-                   fingerprint=fingerprint(esc))
+                   fingerprint=fingerprint(esc),
+                   held_refs=tuple(sorted(i.ref for i in esc.held)), starving=esc.starving,
+                   max_downstream=max((i.downstream for i in esc.held), default=0))
 
 
-def should_send(verdict: Verdict, last: tuple[str, datetime] | None, *, now: datetime,
+def should_send(verdict: Verdict, last: tuple[dict, datetime] | None, *, now: datetime,
                 t: Thresholds) -> bool:
-    """Send when there is a verdict AND (nothing sent before, the situation changed,
-    or the last digest is older than ``repeat_hours``).
+    """Send when there is a verdict AND (nothing sent before, the last digest is older
+    than ``repeat_hours``, or things got WORSE: a new held ref, starvation newly on, or
+    a higher downstream reach). A pure shrink never sends: the operator's own progress
+    must not re-page them.
 
     ``now`` and ``last[1]`` are both naive UTC (the audit row's ``at`` is naive)."""
     if not verdict.escalate:
         return False
     if last is None:
         return True
-    last_fp, last_at = last
-    if last_fp != verdict.fingerprint:
+    prior, last_at = last
+    if now - last_at >= timedelta(hours=t.repeat_hours):
         return True
-    return now - last_at >= timedelta(hours=t.repeat_hours)
+    if set(verdict.held_refs) - set(prior.get("heldRefs") or ()):
+        return True
+    if verdict.starving and not prior.get("starving"):
+        return True
+    return verdict.max_downstream > int(prior.get("maxDownstream") or 0)
 
 
 def _age_label(hours: float | None) -> str:
@@ -237,6 +250,8 @@ class DecisionEscalationLoop:
                                    url=f"/roadmap?scope=inbox&product={esc.slug}")
                 await self._record_digest(esc.slug, {
                     "slug": esc.slug, "fingerprint": verdict.fingerprint,
+                    "heldRefs": list(verdict.held_refs),
+                    "maxDownstream": verdict.max_downstream,
                     "heldCount": len(esc.held), "dispatchable": esc.dispatchable,
                     "starving": esc.starving, "reasons": list(verdict.reasons),
                     "topRefs": [i.ref for i in esc.held[:3]]})
@@ -312,7 +327,7 @@ class DecisionEscalationActionProvider:
                             message="The proposal changed — reopen it in the Inbox")
                     key = proposal.recommended_key
                     await decisions.accept(db, proposal, chosen_key=key, actor=identity,
-                                           now=now, via="automation")
+                                           now=now)
                     chosen = decisions.chosen_option(proposal) or {}
                     announce = {"label": str(chosen.get("label") or key),
                                 "detail": chosen.get("detail")}

@@ -52,17 +52,41 @@ def test_fingerprint_changes_with_held_set_starvation_or_impact_only():
         fingerprint(_esc(held=[_item("o/k#1"), _item("o/k#2")]))
 
 
-def test_should_send_dedupes_on_fingerprint_and_repeats_after_repeat_hours():
-    v = decide(_esc(dispatchable=0, held=[_item("o/k#1")], starving=True), T)
+def _last(esc, *, hours_ago=2.0):
+    """The (detail, at) a digest row for ``esc`` would leave behind."""
+    v = decide(esc, T)
+    return ({"fingerprint": v.fingerprint, "heldRefs": list(v.held_refs),
+             "starving": v.starving, "maxDownstream": v.max_downstream},
+            NOW - timedelta(hours=hours_ago))
+
+
+def test_should_send_only_when_things_got_worse_or_repeat_hours_passed():
+    five = [_item(f"o/k#{i}", downstream=2) for i in range(1, 6)]
+    esc5 = _esc(dispatchable=0, held=five, starving=True)
+    v = decide(esc5, T)
     assert should_send(v, None, now=NOW, t=T) is True
-    same = (v.fingerprint, NOW - timedelta(hours=2))
-    assert should_send(v, same, now=NOW, t=T) is False
-    old = (v.fingerprint, NOW - timedelta(hours=25))
-    assert should_send(v, old, now=NOW, t=T) is True
-    other = ("different", NOW - timedelta(minutes=1))
-    assert should_send(v, other, now=NOW, t=T) is True
-    calm = decide(_esc(held=[_item("o/k#1")]), T)
-    assert should_send(calm, None, now=NOW, t=T) is False, "no verdict, no send"
+    assert should_send(v, _last(esc5), now=NOW, t=T) is False
+    # the operator accepts one of five: a pure shrink stays silent
+    esc4 = _esc(dispatchable=0, held=five[1:], starving=True)
+    assert should_send(decide(esc4, T), _last(esc5), now=NOW, t=T) is False
+    # a sixth appears: worse
+    esc6 = _esc(dispatchable=0, held=[*five, _item("o/k#6", downstream=2)], starving=True)
+    assert should_send(decide(esc6, T), _last(esc5), now=NOW, t=T) is True
+    # starving flips on (aged keeps the verdict live): worse
+    calm = _esc(held=five, oldest=60.0)
+    starved = _esc(dispatchable=0, held=five, starving=True, oldest=60.0)
+    assert should_send(decide(starved, T), _last(calm), now=NOW, t=T) is True
+    # starving flips off: silent
+    assert should_send(decide(calm, T), _last(starved), now=NOW, t=T) is False
+    # downstream rises: sends; falls: silent
+    loud = _esc(dispatchable=0, held=[_item("o/k#1", downstream=9)], starving=True)
+    quiet = _esc(dispatchable=0, held=[_item("o/k#1", downstream=4)], starving=True)
+    assert should_send(decide(loud, T), _last(quiet), now=NOW, t=T) is True
+    assert should_send(decide(quiet, T), _last(loud), now=NOW, t=T) is False
+    # repeat after 24h sends even when nothing changed
+    assert should_send(v, _last(esc5, hours_ago=25), now=NOW, t=T) is True
+    assert should_send(decide(_esc(held=[_item("o/k#1")]), T), None, now=NOW, t=T) is False, \
+        "no verdict, no send"
 
 
 def test_digest_text_names_counts_and_the_top_three_loudest():

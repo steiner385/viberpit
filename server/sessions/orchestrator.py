@@ -12370,9 +12370,14 @@ class SessionOrchestrator:
             policy = policies.get(slug) or effective_policy(None)
             if not is_on(policy):
                 continue
-            out.append(product_escalation(
-                slug, by_product[slug], proposals_by_ref, policy, now=now,
-                starving_max=int(config.get("starving_max_dispatchable", 1))))
+            try:
+                out.append(product_escalation(
+                    slug, by_product[slug], proposals_by_ref, policy, now=now,
+                    starving_max=int(config.get("starving_max_dispatchable", 1))))
+            except Exception:
+                # One product's bad rows/policy must not silence every other product.
+                log.warning("decision_escalation.product_load_failed slug=%s", slug,
+                            exc_info=True)
         return out
 
     async def _decision_escalation_quiet_window(self) -> tuple[str | None, str | None]:
@@ -12385,7 +12390,7 @@ class SessionOrchestrator:
                 else (None, None))
 
     async def _decision_escalation_last_digests(self) -> dict:
-        """slug -> (fingerprint, at) of each product's newest digest: the latest 200
+        """slug -> (detail dict, at) of each product's newest digest: the latest 200
         digest rows read ONCE per tick and indexed, not one query per product."""
         from sqlalchemy import select
         from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
@@ -12398,7 +12403,7 @@ class SessionOrchestrator:
         out: dict = {}
         for detail, at in rows:  # newest first: the first row per slug wins
             if isinstance(detail, dict) and detail.get("fingerprint"):
-                out.setdefault(detail.get("slug"), (str(detail["fingerprint"]), at))
+                out.setdefault(detail.get("slug"), (detail, at))
         return out
 
     async def _decision_escalation_record_digest(self, slug: str, detail: dict) -> None:

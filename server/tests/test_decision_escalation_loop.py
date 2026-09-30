@@ -40,7 +40,7 @@ class Fakes:
 
     async def record_digest(self, slug, detail):
         self.recorded.append((slug, detail))
-        self.last[slug] = (detail["fingerprint"], self.now.replace(tzinfo=None))
+        self.last[slug] = (detail, self.now.replace(tzinfo=None))
 
     async def notify(self, title, body, *, slug, url):
         self.sent.append((title, body, {"slug": slug, "url": url}))
@@ -65,7 +65,8 @@ def test_one_digest_per_escalating_product_with_audit_row():
     assert slug == "kindash" and detail["heldCount"] == 1 and detail["starving"] is True
     assert detail["reasons"] == ["starving"] and detail["topRefs"] == ["o/k#1"]
     assert set(detail) >= {"slug", "fingerprint", "heldCount", "dispatchable", "starving",
-                           "reasons", "topRefs"}
+                           "reasons", "topRefs", "heldRefs", "maxDownstream"}
+    assert detail["heldRefs"] == ["o/k#1"] and detail["maxDownstream"] == 0
 
 
 def test_unchanged_situation_is_silent_until_repeat_hours():
@@ -134,3 +135,16 @@ def test_one_products_failed_notify_does_not_abort_the_tick():
     assert [r[0] for r in f.recorded] == ["viberpit"], "a failed notify records no digest"
     assert len(f.sent) == 1 and "viberpit" in f.sent[0][0]
     assert getattr(loop._ctx, "decision_escalation_counts")["held"] == 2
+
+
+def test_accepting_one_of_five_is_silent_but_a_sixth_re_pages():
+    five = [_item(f"o/k#{i}") for i in range(1, 6)]
+    f = Fakes([_esc("kindash", held=five)])
+    asyncio.run(f.loop().tick())
+    assert len(f.sent) == 1
+    f.escs = [_esc("kindash", held=five[1:])]  # the operator accepted #1
+    asyncio.run(f.loop().tick())
+    assert len(f.sent) == 1, "a shrink is the operator's own progress: no re-page"
+    f.escs = [_esc("kindash", held=[*five[1:], _item("o/k#6")])]
+    asyncio.run(f.loop().tick())
+    assert len(f.sent) == 2
