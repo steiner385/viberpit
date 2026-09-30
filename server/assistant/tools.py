@@ -24,6 +24,7 @@ from server.mcp_spec import (MCP_PREFIX, ToolArgError, ToolClass, ToolSpec,  # n
                              annotation_for, annotations_for, register_surface, tool_err)
 from server.github import ci_issues
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
+from server.pm.desired_state import HELD_KINDS
 
 from .client import AssistantApi, AssistantApiError
 
@@ -63,6 +64,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("get_product_deps", ToolClass.READ, "Get product dependencies"),
     ToolSpec("get_priority_queue", ToolClass.READ, "Get priority queue"),
     ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
+    ToolSpec("list_decisions", ToolClass.READ, "List pending decision proposals"),
+    ToolSpec("list_holds", ToolClass.READ, "List held items ranked by what they block"),
     ToolSpec("get_onboarding_status", ToolClass.READ, "Get product onboarding status"),
     ToolSpec("get_automation_actionable", ToolClass.READ, "Get automation actionable items"),
     ToolSpec("list_automation_sessions", ToolClass.READ, "List automation sessions"),
@@ -405,6 +408,32 @@ def _err(msg: str) -> dict[str, Any]:
 # (`waiting_input` / `waiting_question`), not separate counters.
 _SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",
                  "summary", "prs", "queuePosition", "pendingModel", "origin")
+
+# Decision proposals (server/api/pm.py:_decision_to_dict) carry the inbox's
+# consequence `guidance` blob and audit columns the model never acts on; this is
+# what it needs to pick an option and call resolve_decision.
+_DECISION_KEYS = ("id", "ref", "title", "url", "options", "recommendedKey", "rationale",
+                  "proposedBy", "createdAt", "downstream", "downstreamDispatchable")
+_DECISION_LIST_CAP = 20
+_HOLDS_LIST_CAP = 50
+# Held rows (server/api/pm.py:_held_to_dict): the full options list rides on the
+# proposal (list_decisions); here only the keys, so the row stays one line.
+_HELD_KEYS = ("ref", "product", "title", "url", "holdKind", "holdReason", "holdBy", "ageHours",
+              "proposalId", "recommendedKey", "downstream", "downstreamDispatchable",
+              "releasedBy")
+
+
+def _trim_decision(d: dict[str, Any]) -> dict[str, Any]:
+    out = {k: d[k] for k in _DECISION_KEYS if k in d}
+    out["product"] = d.get("projectSlug")
+    return out
+
+
+def _trim_held(h: dict[str, Any]) -> dict[str, Any]:
+    out = {k: h[k] for k in _HELD_KEYS if k in h}
+    out["optionKeys"] = [str(o.get("key")) for o in (h.get("options") or [])
+                         if isinstance(o, dict) and o.get("key")]
+    return out
 
 # The PR population row (`PipelinePr.to_dict`, server/github/pr_status.py) carries
 # 30+ keys; `checks_detail`, `check_groups` and `node_states` are what make one
@@ -940,6 +969,52 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         # this tool's whole claim is "awaiting a human decision".
         return await api.get("/api/pm/triage", params={"pendingOnly": "true"})
 
+    @spec_tool("list_decisions",
+               "Pending decision proposals — the product decisions coding sessions could not "
+               "take and parked on a decision hold: the options drafted, the recommended one "
+               "and why. Newest first. product narrows to one product slug; impact=true adds "
+               "downstream (open issues behind it) and downstreamDispatchable. Use "
+               "resolve_decision with the id and an option key to answer one. limit 1-50, "
+               "default 20.",
+               _schema(product=str, impact=bool, limit=int))
+    @guarded
+    async def list_decisions(args: dict[str, Any]) -> Any:
+        params: dict[str, str] = {}
+        if args.get("product"):
+            params["projectSlug"] = _slug(args["product"], field="product")
+        if args.get("impact"):
+            params["impact"] = "true"
+        rows = await api.get("/api/pm/decisions", params=params or None)
+        n = max(1, min(int(args.get("limit") or _DECISION_LIST_CAP), 50))
+        return Trimmed([_trim_decision(d) for d in rows[:n]], max(0, len(rows) - n))
+
+    @spec_tool("list_holds",
+               "Parked issues per product, loudest first: what is held (an owner_action hold "
+               "needs the owner; a decision hold needs an option picked — see list_decisions), "
+               "who parked it and why, how long ago, and what it blocks (downstream / "
+               "downstreamDispatchable). `products` says per product how many are "
+               "dispatchable and whether the runner is starving; `products[].heldCount` "
+               "counts every held item regardless of kind/limit (it can exceed the rows "
+               "shown); if the result is capped, narrow with product rather than raising "
+               "limit. product and kind ('owner_action' | 'decision') narrow; limit 1-50, "
+               "default 50.",
+               _schema(product=str, kind=str, limit=int))
+    @guarded
+    async def list_holds(args: dict[str, Any]) -> Any:
+        params: dict[str, str] = {}
+        if args.get("product"):
+            params["product"] = _slug(args["product"], field="product")
+        kind = args.get("kind")
+        if kind is not None:
+            if kind not in HELD_KINDS:
+                raise ToolArgError("kind must be 'owner_action' or 'decision'")
+            params["kind"] = kind
+        params["limit"] = str(max(1, min(int(args.get("limit") or _HOLDS_LIST_CAP), 50)))
+        data = await api.get("/api/pm/holds", params=params)
+        held = [_trim_held(h) for h in (data.get("held") or [])]
+        return Trimmed({"products": data.get("products") or [], "held": held},
+                       int(data.get("truncated") or 0))
+
     @spec_tool("get_onboarding_status",
                "Where a product is in the onboarding wizard: its state, the next action "
                "to take (register, await_backfill, propose_map, classify, live…) and the "
@@ -1420,7 +1495,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "chosen_key — one of the proposal's option keys — and clears the item's "
                "decision hold so the next implement run carries it; rejecting parks the "
                "item as an owner-action hold and chosen_key is ignored. decision is "
-               "'accept' or 'reject'.",
+               "'accept' or 'reject'. proposal ids come from list_decisions.",
                _schema(("proposal_id", "decision"),
                        proposal_id=str, decision=str, chosen_key=str))
     @guarded
@@ -1430,7 +1505,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             raise ToolArgError("decision must be 'accept' or 'reject'")
         pid = str(args["proposal_id"])
         if not _OPAQUE_ID.match(pid):
-            raise ToolArgError("proposal_id must be a proposal id from the decisions inbox")
+            raise ToolArgError("proposal_id must be a proposal id from list_decisions")
         if decision == "reject":
             return await api.post(f"/api/pm/decisions/{pid}/reject")
         chosen_key = args.get("chosen_key")
@@ -1592,6 +1667,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
+            list_decisions, list_holds,
             get_onboarding_status,
             get_automation_actionable, list_automation_sessions, list_backlog_candidates,
             get_backlog_groups, get_cicd_findings, get_pr_doctor_consolidation,

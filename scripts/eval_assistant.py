@@ -48,6 +48,8 @@ import httpx
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from server.pm.escalation import RELEASED_BY  # noqa: E402 - needs the sys.path entry above
+
 DEFAULT_CASES_PATH = _REPO_ROOT / "docs/superpowers/evals/assistant/cases.jsonl"
 DEFAULT_RESULTS_DIR = _REPO_ROOT / "docs/superpowers/evals/assistant"
 
@@ -472,6 +474,12 @@ def _products() -> list[dict[str, Any]]:
          "repos": [{"id": "r2", "repo": "acme/checkout", "isPrimary": True,
                     "backfillDone": True, "lastSyncedAt": "2026-09-05T00:00:00"}],
          "edges": [], "featureCount": 3, "workItemCount": 12},
+        {"id": "p3", "slug": "kindash", "name": "KinDash", "description": "Family dashboard",
+         "status": "active", "portfolioTags": [], "onboardingState": "live",
+         "createdAt": "2026-08-15T00:00:00", "updatedAt": "2026-09-04T00:00:00",
+         "repos": [{"id": "r3", "repo": "steiner385/kindash", "isPrimary": True,
+                    "backfillDone": True, "lastSyncedAt": "2026-09-05T00:00:00"}],
+         "edges": [], "featureCount": 5, "workItemCount": 22},
     ]
 
 
@@ -547,6 +555,85 @@ def _triage() -> list[dict[str, Any]]:
          "confidence": 0.3, "rationale": "No good fit.", "confidenceLevel": "low",
          "status": "pending", "createdAt": "2026-09-05T00:02:00"},
     ]
+
+
+def _decisions() -> list[dict[str, Any]]:
+    """Pending decision proposals in the ``_decision_to_dict`` wire shape."""
+    opts = [{"key": "a", "label": "Ship now", "detail": "Dispatches the item."},
+            {"key": "b", "label": "Defer", "detail": "Parks it another sprint."}]
+    return [
+        {"id": "dp-1", "workItemId": "wi-3", "repo": "acme/checkout", "number": 14,
+         "ref": "acme/checkout#14", "projectSlug": "acme-checkout",
+         "title": "Guest checkout or account required?",
+         "url": "https://github.com/acme/checkout/issues/14", "options": opts,
+         "recommendedKey": "b", "rationale": "Guest checkout lifts conversion.",
+         "chosenKey": None, "status": "pending", "proposedBy": "session:s-7",
+         "resolvedBy": None, "createdAt": "2026-09-05T00:03:00", "resolvedAt": None,
+         "guidance": None},
+        {"id": "dp-2", "workItemId": "wi-4", "repo": "acme/billing", "number": 52,
+         "ref": "acme/billing#52", "projectSlug": "acme-billing",
+         "title": "Migrate invoices to the new tax engine?",
+         "url": "https://github.com/acme/billing/issues/52", "options": opts,
+         "recommendedKey": "b", "rationale": "Tax engine is still in beta.",
+         "chosenKey": None, "status": "pending", "proposedBy": "session:s-8",
+         "resolvedBy": None, "createdAt": "2026-09-05T00:04:00", "resolvedAt": None,
+         "guidance": None},
+    ]
+
+
+def _holds(now: datetime) -> dict[str, Any]:
+    """Held items in the ``GET /api/pm/holds`` shape. ``kindash`` is starving: every
+    item in it is parked on the owner. The ``decision`` row mirrors ``dp-1``."""
+    def age(hours: int) -> str:
+        return (now - timedelta(hours=hours)).isoformat()
+    base: dict[str, Any] = {"options": [], "recommendedKey": None, "proposalId": None}
+    held = [
+        {**base, "ref": "steiner385/kindash#212", "repo": "steiner385/kindash", "number": 212,
+         "product": "kindash", "title": "Rotate the Stripe webhook secret",
+         "url": "https://github.com/steiner385/kindash/issues/212",
+         "holdKind": "owner_action", "holdReason": "Needs the Stripe dashboard",
+         "holdBy": "session:s-3", "holdSetAt": age(72), "ageHours": 72.0,
+         "downstream": 4, "downstreamDispatchable": 0,
+         "downstreamRefs": ["steiner385/kindash#213", "steiner385/kindash#214"],
+         "dispatchableOnRelease": True, "releasedBy": RELEASED_BY["owner_action"]},
+        {**base, "ref": "steiner385/kindash#230", "repo": "steiner385/kindash", "number": 230,
+         "product": "kindash", "title": "Confirm the App Store listing copy",
+         "url": "https://github.com/steiner385/kindash/issues/230",
+         "holdKind": "owner_action", "holdReason": "Copy needs owner sign-off",
+         "holdBy": "session:s-5", "holdSetAt": age(20), "ageHours": 20.0,
+         "downstream": 1, "downstreamDispatchable": 0,
+         "downstreamRefs": ["steiner385/kindash#231"],
+         "dispatchableOnRelease": True, "releasedBy": RELEASED_BY["owner_action"]},
+        {"ref": "acme/checkout#14", "repo": "acme/checkout", "number": 14,
+         "product": "acme-checkout", "title": "Guest checkout or account required?",
+         "url": "https://github.com/acme/checkout/issues/14",
+         "holdKind": "decision", "holdReason": "Awaiting a product decision",
+         "holdBy": "session:s-7", "holdSetAt": age(5), "ageHours": 5.0,
+         "proposalId": "dp-1", "options": _decisions()[0]["options"],
+         "recommendedKey": "b", "downstream": 0, "downstreamDispatchable": 0,
+         "downstreamRefs": [], "dispatchableOnRelease": True,
+         "releasedBy": RELEASED_BY["decision"]},
+        {"ref": "acme/billing#52", "repo": "acme/billing", "number": 52,
+         "product": "acme-billing", "title": "Migrate invoices to the new tax engine?",
+         "url": "https://github.com/acme/billing/issues/52",
+         "holdKind": "decision", "holdReason": "Awaiting a product decision",
+         "holdBy": "session:s-8", "holdSetAt": age(3), "ageHours": 3.0,
+         "proposalId": "dp-2", "options": _decisions()[1]["options"],
+         "recommendedKey": "b", "downstream": 0, "downstreamDispatchable": 0,
+         "downstreamRefs": [], "dispatchableOnRelease": True,
+         "releasedBy": RELEASED_BY["decision"]},
+    ]
+    products = [
+        {"slug": "acme-billing", "dispatchable": 3, "skipped": {"held": 1}, "heldCount": 1,
+         "starving": False, "oldestHoldHours": 3.0},
+        {"slug": "acme-checkout", "dispatchable": 2, "skipped": {"held": 1, "blocked": 2},
+         "heldCount": 1, "starving": False, "oldestHoldHours": 5.0},
+        {"slug": "kindash", "dispatchable": 0, "skipped": {"held": 2, "blocked": 4},
+         "heldCount": 2,
+         "starving": True, "oldestHoldHours": 72.0},
+    ]
+    return {"products": products, "held": held, "truncated": 0,
+            "generatedAt": now.isoformat()}
 
 
 def _transcript(session_id: str) -> dict[str, Any]:
@@ -1089,6 +1176,22 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             return httpx.Response(200, json=_queue())
         if path == "/api/pm/triage":
             return httpx.Response(200, json=_triage())
+        if path == "/api/pm/decisions":
+            rows = [r for r in _decisions()
+                    if not params.get("projectSlug") or r["projectSlug"] == params["projectSlug"]]
+            if params.get("impact") == "true":
+                rows = [{**r, "downstream": 2, "downstreamDispatchable": 1} for r in rows]
+            return httpx.Response(200, json=rows)
+        if path == "/api/pm/holds":
+            holds_body = _holds(fixture.now)
+            keep = [h for h in holds_body["held"]
+                    if (not params.get("product") or h["product"] == params["product"])
+                    and (not params.get("kind") or h["holdKind"] == params["kind"])]
+            slugs = {h["product"] for h in keep} | (
+                {params["product"]} if params.get("product") else set())
+            holds_body["products"] = [p for p in holds_body["products"]
+                                      if not params.get("product") or p["slug"] in slugs]
+            return httpx.Response(200, json={**holds_body, "held": keep})
         if path.startswith("/api/pm/projects/"):
             slug, _, tail = path[len("/api/pm/projects/"):].partition("/")
             if _product(slug) is None:

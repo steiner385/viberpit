@@ -57,6 +57,7 @@ ARGS: dict[str, dict] = {
     "advance_initiative": {"slug": "a"},
     "list_products": {}, "get_product": {"slug": "a"}, "get_product_deps": {"slug": "a"},
     "get_priority_queue": {"min_status": "ready"}, "list_triage": {},
+    "list_decisions": {}, "list_holds": {},
     "get_onboarding_status": {"slug": "a"},
     "get_automation_actionable": {"id": "pr-doctor"},
     "list_automation_sessions": {"id": "autopilot"},

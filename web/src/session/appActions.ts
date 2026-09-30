@@ -41,6 +41,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   get_product_deps: 'Checked product dependencies',
   get_priority_queue: 'Checked priority queue',
   list_triage: 'Listed triage proposals',
+  list_decisions: 'Listed pending decisions',
+  list_holds: 'Listed held issues',
   get_onboarding_status: 'Checked onboarding status',
   get_automation_actionable: 'Checked automation actions',
   list_automation_sessions: 'Listed automation sessions',

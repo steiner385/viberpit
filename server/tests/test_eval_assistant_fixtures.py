@@ -24,6 +24,8 @@ def client(fixture=None):
 # 50afb2b815ce079a83a49dc929651d81baf3eb420acb2ee24d508861ceb09d0a
 # Before the queue fixture/rubric named the real skip reasons ('deps' -> 'blocked'):
 # f67480b39960fd5678a3d7a9b8ca4a4fe7986554a8e9a76b5486dd4b1532645f
+# Before list_decisions/list_holds (spec 2026-09-30 §6, 126 cases):
+# 98f9d941e0e26f1de2e4be3aac5f20958b500624805866f7954c71dfec8544c9
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -31,8 +33,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "98f9d941e0e26f1de2e4be3aac5f20958b500624805866f7954c71dfec8544c9"
-    assert len(rows) == 126
+    assert digest == "f5d3ec9e7eb0c6f35113420dd5a55974e656250fa2e456ef622900b324131ac1"
+    assert len(rows) == 128
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
@@ -619,3 +621,46 @@ async def test_adoption_fixture_matches_real_route_with_offline_orchestrator(mon
         await sessions.adopt_session_route(
             sessions.AdoptRequest(claudeSessionId='missing'), SimpleNamespace(), 'eval')
     assert error.value.status_code == 409
+
+
+def test_holds_and_decisions_fixtures_match_the_real_wire():
+    """The eval fixtures must carry the keys/values the real routes emit — pinned against
+    ``server.api.pm._held_to_dict`` / ``_decision_to_dict`` and ``RELEASED_BY``."""
+    from server.api.pm import _decision_to_dict, _held_to_dict
+    from server.db.models import DecisionProposal
+    from server.pm.escalation import RELEASED_BY, HeldItem
+
+    real_held = _held_to_dict(HeldItem(
+        ref="o/r#1", repo="o/r", number=1, product="p", title="t", url="u", hold_kind="decision",
+        hold_reason="r", hold_by="b", hold_set_at=None, age_hours=None, proposal_id=None,
+        options=(), recommended_key=None, downstream=0, downstream_dispatchable=0,
+        downstream_refs=(), dispatchable_on_release=True, released_by=""))
+    now = datetime(2026, 9, 30, tzinfo=timezone.utc)
+    body = ev._holds(now)
+    assert body["held"]
+    for row in body["held"]:
+        assert set(row) == set(real_held)
+        assert row["releasedBy"] == RELEASED_BY[row["holdKind"]]
+    assert set(body) == {"products", "held", "truncated", "generatedAt"}
+    # products[] keys per server.api.pm.holds; skipped is ProductEscalation.skipped (dict[str,int])
+    for prod in body["products"]:
+        assert set(prod) == {"slug", "dispatchable", "skipped", "heldCount", "starving",
+                             "oldestHoldHours"}
+        assert isinstance(prod["skipped"], dict)
+        assert all(isinstance(v, int) for v in prod["skipped"].values())
+    slugs = {p["slug"] for p in body["products"]}
+    assert {r["product"] for r in body["held"]} <= slugs
+    assert slugs <= {p["slug"] for p in ev._products()}
+
+    decisions = ev._decisions()
+    real_dec = _decision_to_dict(
+        DecisionProposal(id="x", work_item_id="w", options=[], status="pending"), None, None,
+        guidance=None)
+    by_id = {r["proposalId"]: r for r in body["held"] if r["holdKind"] == "decision"}
+    assert {d["id"] for d in decisions} == set(by_id)
+    for d in decisions:
+        assert set(d) == set(real_dec)
+        assert all(set(o) == {"key", "label", "detail"} for o in d["options"])
+        row = by_id[d["id"]]
+        assert row["options"] == d["options"] and row["recommendedKey"] == d["recommendedKey"]
+        assert d["recommendedKey"] in {o["key"] for o in d["options"]}
