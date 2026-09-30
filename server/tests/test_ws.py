@@ -1568,3 +1568,44 @@ def test_prompt_context_honored_for_assistant_ignored_for_coding(ws_env):
 
     client.portal.call(orch.close_session, assistant.id)
     client.portal.call(orch.close_session, coder.id)
+
+
+def _seed_session_on_host(host, session_id="daemon-down-s1"):
+    import asyncio as _asyncio
+    from server.db import db_session as _db_session
+    from server.db.models import Session as _DbSession
+
+    async def _seed():
+        async with _db_session() as db:
+            db.add(_DbSession(id=session_id, name="s", account_name="alpha",
+                              status="idle", cwd="/tmp", host=host))
+    _asyncio.run(_seed())
+    return session_id
+
+
+@pytest.mark.parametrize("restarting,level", [(True, logging.INFO), (False, logging.WARNING)])
+def test_attach_daemon_unavailable_level_follows_restart_expected(
+        isolated_db, monkeypatch, caplog, restarting, level):
+    """#2565: a tab attaching to a session on a worker that a rollout is restarting on
+    purpose is expected -- INFO, reusing host_upgrade.restart_expected. An unplanned
+    outage still WARNs so Error Triage keeps the real signal."""
+    import asyncio as _asyncio
+    import server.bridge.ws as wsmod
+    from server.sessions import host_upgrade
+
+    wsmod._WS_ATTACH_DAEMON_UNAVAILABLE_LOG.clear()
+    sid = _seed_session_on_host("rocky")
+    seen = []
+
+    async def _expected(name, **_k):
+        seen.append(name)
+        return restarting
+    monkeypatch.setattr(host_upgrade, "restart_expected", _expected)
+
+    with caplog.at_level(logging.DEBUG, logger="server.bridge.ws"):
+        _asyncio.run(wsmod._log_attach_daemon_unavailable(sid))
+
+    assert seen == ["rocky"]
+    records = [r for r in caplog.records if f"daemon unavailable for {sid}" in r.getMessage()]
+    assert [r.levelno for r in records] == [level]
+    assert ("(restart in progress)" in records[0].getMessage()) is restarting

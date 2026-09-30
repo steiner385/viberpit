@@ -71,6 +71,28 @@ describe('SessionSocket close logging', () => {
     sock.destroy()
   })
 
+  it('logs a daemon-unavailable close (1013) at info, not warn, and does not signal a restart (#2565)', async () => {
+    const warnSpy = vi.spyOn(clientLogger, 'warn')
+    const infoSpy = vi.spyOn(clientLogger, 'info')
+    const { SessionSocket } = await import('@/ws/client')
+    const sock = new SessionSocket('ws://localhost/ws')
+    const restart = vi.fn()
+    sock.on('epochRestart', restart)
+    sock.connect()
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
+    ws.onclose?.({ code: 1013, reason: '' } as CloseEvent)
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('1013'),
+      expect.any(Object),
+    )
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('code='),
+      expect.any(Object),
+    )
+    expect(restart).not.toHaveBeenCalled()
+    sock.destroy()
+  })
+
   it('warns on a server-signalled unexpected close code (1011)', async () => {
     const spy = vi.spyOn(clientLogger, 'warn')
     const { SessionSocket } = await import('@/ws/client')

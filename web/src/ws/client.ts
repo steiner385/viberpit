@@ -229,9 +229,12 @@ export class SessionSocket {
       // the onerror demotion in #1570. 1012 = SERVICE_RESTART, which uvicorn sends to
       // every open socket on each planned edge/daemon restart; the IPC layer already
       // treats it as an expected reconnect (server/ipc/client.py _EXPECTED_RECONNECT_CODES)
-      // and it WARNed once per open tab per deploy (#2470). Anything else unexpected
-      // still warns.
-      if (!expected && (e.code === 1006 || e.code === 1012)) {
+      // and it WARNed once per open tab per deploy (#2470). 1013 = TRY_AGAIN_LATER, which
+      // the edge sends when a session's daemon is unreachable (a worker mid-restart);
+      // the server already files the canonical `ws.attach: session daemon unavailable`
+      // record at that moment, so this one only duplicates it (#2565). Anything else
+      // unexpected still warns.
+      if (!expected && (e.code === 1006 || e.code === 1012 || e.code === 1013)) {
         clientLogger.info(`ws closed code=${e.code}`, {
           sessionId: this._activeSessionId ?? undefined,
           stack: e.reason || undefined,
