@@ -1,6 +1,6 @@
 # Decision escalation: making product decisions loud in proportion to what they block — Design
 
-**Status:** proposed, 2026-09-30. **Builds on:** the hold ladder (`2026-09-18-hold-ladder-design.md`,
+**Status:** PRs 1–5 shipped (PR 4, the automation, in this PR); proposed 2026-09-30. **Builds on:** the hold ladder (`2026-09-18-hold-ladder-design.md`,
 §3 holds, §6 decision proposals) and the Needs-you tiles (`2026-09-28-automations-needs-you-tiles-back-design.md`).
 
 **Principle:** the operator should never have to discover that decisions are starving dispatch. A
@@ -150,7 +150,7 @@ Registered in `server/automations/registry.py` like `DeployMonitor`, `work_class
      held item with `downstream >= downstream_threshold`.
   4. Fingerprint = sha of `(slug, starving, sorted(held refs), max(downstream))`. Read the latest
      `pm.escalation.digest` audit row for the slug. Send when the fingerprint differs OR the row is
-     older than `repeat_hours`. Otherwise silent.
+     older than `repeat_hours`. Otherwise silent. In the shipped rule the fingerprint differing only counts when things got *worse* (a new held ref, starving flipping on, or the max downstream rising); the operator's own progress never re-pages them.
   5. Send one `notify_event("decision_needed", ...)` per escalating product, `fanout_when_unconfigured=True`
      (this is the class an operator with no rules must still hear), `automation="decision-escalation"`,
      `repo=` the product's primary repo, `url="/roadmap?scope=inbox&product=<slug>"`.
@@ -167,7 +167,7 @@ Registered in `server/automations/registry.py` like `DeployMonitor`, `work_class
   `/api/pm/decisions/{id}/accept` with the recommended key — the existing route, the existing
   `may_resolve` gate (a person or the assistant). An `owner_action` row carries `"Retry"` via
   `/hold/release`. Either action is one tap by a human; decision 7.
-- **Watches:** `CONDITION_MAP["product"]["needs_decision"] → ("decision_needed", "automation")`
+- **Watches:** `CONDITION_MAP["product"]["needs_decision"] → ("decision_needed", "scope_automation")`
   so `watch(kind="product", condition="needs_decision")` works.
 - **Web:** `decision_needed` labelled "Decision needed" in `notificationsApi.ts` (adding the
   missing `account_limited` in the same edit).

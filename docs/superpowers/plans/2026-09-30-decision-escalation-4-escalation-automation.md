@@ -144,7 +144,7 @@ def test_digest_text_names_counts_and_the_top_three_loudest():
     assert lines[0] == "#1 Issue o/k#1 — blocks 9 (recommended: b)"
     assert lines[1].startswith("#2 Issue o/k#2 — blocks 8")
     assert lines[2].startswith("#3 Issue o/k#3 — blocks 7")
-    assert lines[3] == "2 more · oldest 8d · why: downstream"
+    assert lines[3] == "2 more · oldest 8d · why: aged, downstream"
 ```
 
 - [ ] **Step 2: Run** — Expected: FAIL `ModuleNotFoundError`.

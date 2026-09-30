@@ -75,6 +75,8 @@ needs-you tier; `evidence` and `stronger_model` are agent-settable AND queue-eli
 under either one still reads `Ready`/`Backlog` and rides the Backlog Runner's ordinary queue until
 it is actually dispatched — a card is never shown "Held" for work nothing is parked on.
 
+**Decision escalation.** The `decision-escalation` automation (default off) watches held items per product and sends one `decision_needed` digest when decisions are starving dispatch, ageing, or blocking a lot of work; it never resolves a decision itself. See `docs/product/features/decision-escalation.md`.
+
 An `owner_action` hold ends only on a human signal (spec §7): a board edit to Ready or Backlog, an
 issue body edit (the fingerprint no longer matches), or `POST
 /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
