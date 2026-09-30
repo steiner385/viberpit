@@ -41,7 +41,7 @@ the web event-class list lacks `account_limited` (`notificationsApi.ts:63-72`).
 | 5 | Dedup state | The latest `pm.escalation.digest` audit row per product carries the fingerprint and time. Survives restarts; no new table, no Postgres-suite list entries. |
 | 6 | In-app surface | The Roadmap Inbox (where decisions already live) and the new automation's Needs-you tab. The Roadmap nav badge already counts pending decisions; the Sessions page is not touched. |
 | 7 | One-step answering | "Accept recommendation" on the automation's actionable row and the inbox card, calling the existing accept route with `recommended_key`. A person taps; nothing auto-resolves. |
-| 8 | Large results | Tool-side projection and endpoint-side filters, plus a byte cap on every assistant result with an explicit `truncated` marker. |
+| 8 | Large results | Tool-side projection and endpoint-side filters, plus a byte cap on every assistant result with an explicit `capped` marker. |
 
 ## 3. The read model — `server/pm/escalation.py`
 
@@ -199,7 +199,7 @@ handler for `/api/pm/decisions` and `/api/pm/holds` so evals see real shapes.
 **Result byte cap.** `wrap_untrusted` (the one envelope every handler's return passes through,
 `tools.py:301-313`) gains a `_MAX_RESULT_BYTES = 48_000` guard: a result over the cap has its longest
 top-level list (or the longest list one level down) halved until it fits, and the envelope gains
-`"truncated": {"path": "edges", "kept": 40, "dropped": 212}`. The assistant then knows to narrow,
+`"capped": {"path": "edges", "kept": 40, "dropped": 212}`. `truncated` stays `Trimmed`'s integer drop count. The assistant then knows to narrow,
 rather than receiving a 300 KB block the CLI may reject. Unit-tested on a synthetic payload.
 
 ## 7. `GET /api/pm/projects/{slug}/deps` — filters and summary
