@@ -549,6 +549,72 @@ def _triage() -> list[dict[str, Any]]:
     ]
 
 
+def _decisions() -> list[dict[str, Any]]:
+    """Pending decision proposals in the ``_decision_to_dict`` wire shape."""
+    opts = [{"key": "ship", "label": "Ship now", "consequence": "Dispatches the item."},
+            {"key": "defer", "label": "Defer", "consequence": "Parks it another sprint."}]
+    return [
+        {"id": "dp-1", "workItemId": "wi-3", "repo": "acme/checkout", "number": 14,
+         "ref": "acme/checkout#14", "projectSlug": "acme-checkout",
+         "title": "Guest checkout or account required?",
+         "url": "https://github.com/acme/checkout/issues/14", "options": opts,
+         "recommendedKey": "ship", "rationale": "Guest checkout lifts conversion.",
+         "chosenKey": None, "status": "pending", "proposedBy": "session:s-7",
+         "resolvedBy": None, "createdAt": "2026-09-05T00:03:00", "resolvedAt": None,
+         "guidance": None},
+        {"id": "dp-2", "workItemId": "wi-4", "repo": "acme/billing", "number": 52,
+         "ref": "acme/billing#52", "projectSlug": "acme-billing",
+         "title": "Migrate invoices to the new tax engine?",
+         "url": "https://github.com/acme/billing/issues/52", "options": opts,
+         "recommendedKey": "defer", "rationale": "Tax engine is still in beta.",
+         "chosenKey": None, "status": "pending", "proposedBy": "session:s-8",
+         "resolvedBy": None, "createdAt": "2026-09-05T00:04:00", "resolvedAt": None,
+         "guidance": None},
+    ]
+
+
+def _holds(now: datetime) -> dict[str, Any]:
+    """Held items in the ``GET /api/pm/holds`` shape. ``kindash`` is starving: every
+    item in it is parked on the owner. The ``decision`` row mirrors ``dp-1``."""
+    def age(hours: int) -> str:
+        return (now - timedelta(hours=hours)).isoformat()
+    base = {"options": [], "recommendedKey": None, "proposalId": None}
+    held = [
+        {**base, "ref": "steiner385/kindash#212", "repo": "steiner385/kindash", "number": 212,
+         "product": "kindash", "title": "Rotate the Stripe webhook secret",
+         "url": "https://github.com/steiner385/kindash/issues/212",
+         "holdKind": "owner_action", "holdReason": "Needs the Stripe dashboard",
+         "holdBy": "session:s-3", "holdSetAt": age(72), "ageHours": 72.0,
+         "downstream": 4, "downstreamDispatchable": 0,
+         "downstreamRefs": ["steiner385/kindash#213", "steiner385/kindash#214"],
+         "dispatchableOnRelease": True, "releasedBy": "owner"},
+        {**base, "ref": "steiner385/kindash#230", "repo": "steiner385/kindash", "number": 230,
+         "product": "kindash", "title": "Confirm the App Store listing copy",
+         "url": "https://github.com/steiner385/kindash/issues/230",
+         "holdKind": "owner_action", "holdReason": "Copy needs owner sign-off",
+         "holdBy": "session:s-5", "holdSetAt": age(20), "ageHours": 20.0,
+         "downstream": 1, "downstreamDispatchable": 0,
+         "downstreamRefs": ["steiner385/kindash#231"],
+         "dispatchableOnRelease": True, "releasedBy": "owner"},
+        {"ref": "acme/checkout#14", "repo": "acme/checkout", "number": 14,
+         "product": "acme-checkout", "title": "Guest checkout or account required?",
+         "url": "https://github.com/acme/checkout/issues/14",
+         "holdKind": "decision", "holdReason": "Awaiting a product decision",
+         "holdBy": "session:s-7", "holdSetAt": age(5), "ageHours": 5.0,
+         "proposalId": "dp-1", "options": _decisions()[0]["options"],
+         "recommendedKey": "ship", "downstream": 0, "downstreamDispatchable": 0,
+         "downstreamRefs": [], "dispatchableOnRelease": True, "releasedBy": "owner"},
+    ]
+    products = [
+        {"slug": "acme-checkout", "dispatchable": 2, "skipped": 3, "heldCount": 1,
+         "starving": False, "oldestHoldHours": 5.0},
+        {"slug": "kindash", "dispatchable": 0, "skipped": 6, "heldCount": 2,
+         "starving": True, "oldestHoldHours": 72.0},
+    ]
+    return {"products": products, "held": held, "truncated": 0,
+            "generatedAt": now.isoformat()}
+
+
 def _transcript(session_id: str) -> dict[str, Any]:
     events: list[dict[str, Any]]
     if session_id == S_TRANSCRIPT_MAL:
@@ -1089,6 +1155,22 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             return httpx.Response(200, json=_queue())
         if path == "/api/pm/triage":
             return httpx.Response(200, json=_triage())
+        if path == "/api/pm/decisions":
+            rows = [r for r in _decisions()
+                    if not params.get("projectSlug") or r["projectSlug"] == params["projectSlug"]]
+            if params.get("impact") == "true":
+                rows = [{**r, "downstream": 2, "downstreamDispatchable": 1} for r in rows]
+            return httpx.Response(200, json=rows)
+        if path == "/api/pm/holds":
+            body = _holds(fixture.now)
+            keep = [h for h in body["held"]
+                    if (not params.get("product") or h["product"] == params["product"])
+                    and (not params.get("kind") or h["holdKind"] == params["kind"])]
+            slugs = {h["product"] for h in keep} | (
+                {params["product"]} if params.get("product") else set())
+            body["products"] = [p for p in body["products"]
+                                if not params.get("product") or p["slug"] in slugs]
+            return httpx.Response(200, json={**body, "held": keep})
         if path.startswith("/api/pm/projects/"):
             slug, _, tail = path[len("/api/pm/projects/"):].partition("/")
             if _product(slug) is None:
