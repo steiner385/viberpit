@@ -22,6 +22,8 @@ def client(fixture=None):
 # Before the glance-shape fixtures (chip-automations-failing rubric now keys on status.level, not
 # "last error", because the real automation row has no lastError):
 # 50afb2b815ce079a83a49dc929651d81baf3eb420acb2ee24d508861ceb09d0a
+# Before the queue fixture/rubric named the real skip reasons ('deps' -> 'blocked'):
+# f67480b39960fd5678a3d7a9b8ca4a4fe7986554a8e9a76b5486dd4b1532645f
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -29,7 +31,7 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "f67480b39960fd5678a3d7a9b8ca4a4fe7986554a8e9a76b5486dd4b1532645f"
+    assert digest == "98f9d941e0e26f1de2e4be3aac5f20958b500624805866f7954c71dfec8544c9"
     assert len(rows) == 126
     assert sum(bool(r.get("operator")) for r in rows) == 5
 

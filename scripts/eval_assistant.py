@@ -505,21 +505,26 @@ def _onboarding(slug: str) -> dict[str, Any]:
 
 
 def _queue() -> dict[str, Any]:
+    entries = [
+        {"ref": "acme/billing#18", "repo": "acme/billing", "number": 18,
+         "product": "billing", "title": "Proration is wrong on downgrade",
+         "url": "https://github.com/acme/billing/issues/18", "score": 8.4},
+        {"ref": "acme/checkout#3", "repo": "acme/checkout", "number": 3,
+         "product": "checkout", "title": "Cart empties on refresh",
+         "url": "https://github.com/acme/checkout/issues/3", "score": 6.1},
+        {"ref": "acme/billing#20", "repo": "acme/billing", "number": 20,
+         "product": "billing", "title": "Add CSV export",
+         "url": "https://github.com/acme/billing/issues/20", "score": 2.9},
+    ]
+    skipped = {"blocked": 3, "status": 11, "held": 1}
+    dispatchable: dict[str, int] = {}
+    for e in entries:
+        dispatchable[e["product"]] = dispatchable.get(e["product"], 0) + 1
     return {
-        "entries": [
-            {"ref": "acme/billing#18", "repo": "acme/billing", "number": 18,
-             "product": "Billing", "title": "Proration is wrong on downgrade",
-             "url": "https://github.com/acme/billing/issues/18", "score": 8.4},
-            {"ref": "acme/checkout#3", "repo": "acme/checkout", "number": 3,
-             "product": "Checkout", "title": "Cart empties on refresh",
-             "url": "https://github.com/acme/checkout/issues/3", "score": 6.1},
-            {"ref": "acme/billing#20", "repo": "acme/billing", "number": 20,
-             "product": "Billing", "title": "Add CSV export",
-             "url": "https://github.com/acme/billing/issues/20", "score": 2.9},
-        ],
-        "skipped": {"deps": 3, "status": 11, "needs_human": 1},
-        "skippedByProduct": {"Billing": {"deps": 3, "status": 11, "needs_human": 1}},
-        "dispatchableByProduct": {"Billing": 2, "Checkout": 1},
+        "entries": entries,
+        "skipped": skipped,
+        "skippedByProduct": {"billing": dict(skipped)},
+        "dispatchableByProduct": dispatchable,
         "generatedAt": "2026-09-05T00:00:00+00:00",
     }
 

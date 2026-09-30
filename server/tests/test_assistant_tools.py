@@ -243,6 +243,14 @@ def test_specs_and_annotations():
         assert t.annotations.readOnlyHint is (TOOL_SPECS[t.name].tool_class is ToolClass.READ)
 
 
+def test_priority_queue_description_names_every_skip_reason():
+    from server.pm.queue import SKIP_REASONS
+
+    tool = _tool(build_tools(_api(lambda r: httpx.Response(200, json={}))), "get_priority_queue")
+    missing = [r for r in SKIP_REASONS if f"'{r}'" not in tool.description]
+    assert not missing, f"get_priority_queue description omits skip reasons: {missing}"
+
+
 def test_wrap_untrusted_escapes_only_tags():
     s = wrap_untrusted({"t": "a < b and <tag>"})
     assert "a < b" in s and "&lt;tag&gt;" in s
