@@ -175,6 +175,43 @@ async def test_release_after_possible_effect_requires_observed_stop(ownership_db
 
 
 @pytest.mark.asyncio
+async def test_release_targets_frees_only_the_subset_and_keeps_the_rest_fenced(ownership_db):
+    """2026-09-30 audit D1: the partial release a parked-bundle split needs."""
+    token = await claim([target("I_a", "o/r#1"), target("I_b", "o/r#2")])
+    async with owned(token) as tx:
+        with pytest.raises(ValueError):
+            tx.release_targets(["github:I_zzz"], ReleaseProof.NOT_STARTED, "foreign key")
+        with pytest.raises(ValueError):
+            tx.release_targets(["github:I_a", "github:I_b"], ReleaseProof.NOT_STARTED, "all")
+        tx.release_targets(["github:I_b"], ReleaseProof.NOT_STARTED, "split")
+
+    # The freed target is claimable again; the kept one is still this operation's.
+    assert await claim([target("I_b", "o/r#2")]) != token
+    with pytest.raises(OwnershipConflict):
+        await claim([target("I_a", "o/r#1")])
+    async with owned(token) as tx:      # the token still fences what it kept
+        assert tx.operation.targets == ["github:I_a"]
+        assert tx.operation.display_refs == {"github:I_a": "o/r#1"}
+        assert tx.operation.phase == "claimed"
+        tx.release(ReleaseProof.NOT_STARTED, "done")
+
+
+@pytest.mark.asyncio
+async def test_release_targets_needs_the_same_stopped_proof_as_a_full_release(ownership_db):
+    token = await claim([target("I_a", "o/r#1"), target("I_b", "o/r#2")])
+    async with owned(token) as tx:
+        sid = tx.reserve_session()
+    await begin_session_execution(sid)
+    async with owned(token) as tx:
+        with pytest.raises(ValueError):
+            tx.release_targets(["github:I_b"], ReleaseProof.WORK_STOPPED, "unattested")
+    assert await attest_session_stopped(token, 1)
+    async with owned(token) as tx:
+        tx.release_targets(["github:I_b"], ReleaseProof.WORK_STOPPED, "attested")
+    assert await claim([target("I_b", "o/r#2")]) != token
+
+
+@pytest.mark.asyncio
 async def test_transition_and_caller_state_are_one_transaction(ownership_db):
     token = await claim([target()])
     async with ownership_db() as db:

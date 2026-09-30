@@ -185,12 +185,17 @@ keeps the previous plan generation — which is the same unclaimable group. Cont
 
 ## 4. Proposed fixes, ranked
 
-1. **Split a parked bundle when a member's hold is released (D1).** In `_release_give_ups`, when a
-   `gave_up` row has some refs held and some not, release *only the unheld refs* from the operation (new
-   `OwnershipTransaction.release_targets(subset, proof=WORK_STOPPED)`; the tree proof already exists for these
-   rows), drop them from `state["issues"]`, emit `bundle_split`. Belt and braces: `runner_claims` treats refs
-   of a still-locked `gave_up` bundle as claimed with a distinct queue skip reason ("parked with #16980"), so
-   the pool never offers what the store will refuse. Regression: `test_a_parked_bundle_member_whose_hold_was_released_is_dispatchable` (xfail today).
+1. **Split a parked bundle when a member's hold is released (D1) — shipped in PR #2547.**
+   `_release_give_ups` → `_split_parked_bundle`: when a `gave_up` row has some refs held and some not,
+   release *only the unheld refs* from the operation (`OwnershipTransaction.release_targets(subset,
+   WORK_STOPPED, …)`, same proof bar as a full release; `_work_stopped` repairs it first for a gone session),
+   shrink `state["issues"]`/`titles`, emit `bundle_split`. A freed PRIMARY re-keys the row (and the
+   operation's `origin_ref`) to the first still-held sibling. The split runs before `_refill` in the same
+   tick, so the freed member is claimed without a single bounce. Not done: a queue skip reason for the
+   one-tick window between the reconciler's hold release and the runner's next tick (no bounce is possible
+   there — the split precedes the claim). Regression: `test_a_parked_bundle_member_whose_hold_was_released_is_dispatchable`,
+   `test_a_parked_bundle_whose_primary_was_released_is_rekeyed_to_a_held_sibling`, and the `release_targets`
+   unit tests on both dialects.
 2. **Name the holder and bound the wait (D2).** Runner `ownership_wait` names the holding operation and the
    parked row's reason (this audit's PR); count consecutive waits per target and after N emit one WARN
    `ownership_wait_escalated` + cool the target down so the rest of the plan is served; stop `refill_stalled`

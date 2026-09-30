@@ -1183,11 +1183,6 @@ def test_held_gave_up_row_is_left_alone(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="2026-09-30 ownership audit D1: a parked (gave_up) bundle keeps the lock on a "
-           "member whose hold was released, so the pool offers a ref the store refuses "
-           "forever (cairnea/KinDash#16774). Fix 1: split the bundle in _release_give_ups.")
 def test_a_parked_bundle_member_whose_hold_was_released_is_dispatchable(tmp_path):
     """The bundle {#1, #2} gave up and parked BOTH issues on an ``owner_action``
     hold; a bot then rewrote #2's body and the reconciler released #2's hold
@@ -1212,7 +1207,53 @@ def test_a_parked_bundle_member_whose_hold_was_released_is_dispatchable(tmp_path
         assert [b.primary for b, _ in rec.spawns] == ["o/r#2"]
         assert await ctx.list_events(kind="ownership_wait") == []
         # The parked sibling keeps its row and its own lock until a human acts.
-        assert (await ctx.get_target_state("o/r#1")).get("gave_up") is True
+        parked = await ctx.get_target_state("o/r#1")
+        assert parked.get("gave_up") is True and parked["issues"] == ["o/r#1"]
+        (split,) = await ctx.list_events(kind="bundle_split")
+        assert split["detail"] == {"released": ["o/r#2"], "kept": ["o/r#1"], "row": "o/r#1"}
+        # The give-up's operation now owns exactly the parked sibling's target.
+        from server.automations.ownership import owned
+        async with owned(parked["ownership_token"]) as tx:
+            assert tx.operation.display_refs == {k: "o/r#1" for k in tx.operation.targets}
+            assert len(tx.operation.targets) == 1
+
+    asyncio.run(run())
+
+
+def test_a_parked_bundle_whose_primary_was_released_is_rekeyed_to_a_held_sibling(tmp_path):
+    """The freed member is the row's own key: the row moves to the still-held
+    sibling (and the operation's ``origin_ref`` with it) so the freed primary's
+    next claim is a fresh acquisition, not "existing work owns this batch"."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'rekey.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        held = {"o/r#2"}
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#1")], held=held,
+                                    config=make_config())
+        await _set_owned_state(ctx, "o/r#1", {
+            "repo": "o/r", "issues": ["o/r#1", "o/r#2"], "gave_up": True, "claimed": False,
+            "held": True, "reason": "bounced at opus; fable needs approval",
+            "titles": {"o/r#1": "one", "o/r#2": "two"}})
+
+        await loop.tick()
+
+        assert [b.primary for b, _ in rec.spawns] == ["o/r#1"]
+        assert not (await ctx.get_target_state("o/r#1")).get("gave_up")   # a fresh claim now
+        moved = await ctx.get_target_state("o/r#2")
+        assert moved["gave_up"] is True and moved["held"] is True
+        assert moved["issues"] == ["o/r#2"] and moved["titles"] == {"o/r#2": "two"}
+        (split,) = await ctx.list_events(kind="bundle_split")
+        assert split["detail"] == {"released": ["o/r#1"], "kept": ["o/r#2"], "row": "o/r#2"}
+        from server.automations.ownership import owned
+        async with owned(moved["ownership_token"]) as tx:
+            assert tx.operation.provenance["origin_ref"] == "o/r#2"
+
+        # The re-keyed row still follows the hold: once #2 is released it drops.
+        held.clear()
+        await loop.tick()
+        assert not await ctx.get_target_state("o/r#2")
 
     asyncio.run(run())
 
