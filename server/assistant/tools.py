@@ -24,6 +24,7 @@ from server.mcp_spec import (MCP_PREFIX, ToolArgError, ToolClass, ToolSpec,  # n
                              annotation_for, annotations_for, register_surface, tool_err)
 from server.github import ci_issues
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
+from server.pm.desired_state import HELD_KINDS
 
 from .client import AssistantApi, AssistantApiError
 
@@ -992,8 +993,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "needs the owner; a decision hold needs an option picked — see list_decisions), "
                "who parked it and why, how long ago, and what it blocks (downstream / "
                "downstreamDispatchable). `products` says per product how many are "
-               "dispatchable and whether the runner is starving. product and kind "
-               "('owner_action' | 'decision') narrow; limit 1-50, default 50.",
+               "dispatchable and whether the runner is starving; `products[].heldCount` "
+               "counts every held item regardless of kind/limit (it can exceed the rows "
+               "shown); if the result is capped, narrow with product rather than raising "
+               "limit. product and kind ('owner_action' | 'decision') narrow; limit 1-50, "
+               "default 50.",
                _schema(product=str, kind=str, limit=int))
     @guarded
     async def list_holds(args: dict[str, Any]) -> Any:
@@ -1002,7 +1006,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             params["product"] = _slug(args["product"], field="product")
         kind = args.get("kind")
         if kind is not None:
-            if kind not in ("owner_action", "decision"):
+            if kind not in HELD_KINDS:
                 raise ToolArgError("kind must be 'owner_action' or 'decision'")
             params["kind"] = kind
         params["limit"] = str(max(1, min(int(args.get("limit") or _HOLDS_LIST_CAP), 50)))
@@ -1491,7 +1495,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "chosen_key — one of the proposal's option keys — and clears the item's "
                "decision hold so the next implement run carries it; rejecting parks the "
                "item as an owner-action hold and chosen_key is ignored. decision is "
-               "'accept' or 'reject'.",
+               "'accept' or 'reject'. proposal ids come from list_decisions.",
                _schema(("proposal_id", "decision"),
                        proposal_id=str, decision=str, chosen_key=str))
     @guarded
