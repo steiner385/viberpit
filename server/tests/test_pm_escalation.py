@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Any
 
 from server.pm.escalation import (HeldItem, downstream, held_items, product_escalation,
                                   rank_held, reverse_index)
@@ -12,7 +13,7 @@ NOW = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=1)  # relative 
 
 
 def _row(**over) -> QueueRow:
-    base = dict(ref="o/r#1", repo="o/r", number=1, product="viberpit", title="t", body="",
+    base: dict[str, Any] = dict(ref="o/r#1", repo="o/r", number=1, product="viberpit", title="t", body="",
                 url="u", status="Ready", score=1.0, gh_created_at=NOW - timedelta(days=2),
                 gh_updated_at=NOW, assignees=(), author="tony", labels=(), open_children=0,
                 open_blockers=(), live_session=False, claimed=False, hold_kind=None)
