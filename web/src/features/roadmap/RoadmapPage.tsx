@@ -13,7 +13,7 @@ import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { useViewport } from '@/shell/useViewport'
 import {
-  ROADMAP_PATH, capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
+  ROADMAP_PATH, capabilityPath, decisionsQueryArgs, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
   roadmapScopeForSearch,
 } from './roadmapNavState'
 import { capabilityTrail, findCapability, findProduct, flattenCapabilities } from './lookup'
@@ -71,11 +71,12 @@ function RoadmapPageContent() {
   // the 15 s interval. Two polling observers of one key are two requests.
   const inboxProduct = inboxProductForSearch(search)
   const triage = useTriage(inboxProduct ?? undefined, { poll: false })
-  // The inbox's second card kind (spec 2026-09-18 §6): scoped server-side to the
-  // `?product=` chip with impact, the exact key the list column observes (and
-  // polls) — the pane and the column must resolve the same `?proposal=` id to
+  // The inbox's second card kind (spec 2026-09-18 §6): in the Inbox scope, scoped
+  // server-side to the `?product=` chip with impact; elsewhere the badge's entry —
+  // via `decisionsQueryArgs`, the exact key the list column observes (and polls) — the pane and the column must resolve the same `?proposal=` id to
   // the same row.
-  const decisions = useDecisions(inboxProduct ?? undefined, { poll: false, impact: true })
+  const [decisionsSlug, decisionsOpts] = decisionsQueryArgs(search, true)
+  const decisions = useDecisions(decisionsSlug, { ...decisionsOpts, poll: false })
   // The two lists are INDEPENDENT: whatever answered is rendered, so a broken
   // `/pm/decisions` cannot take the classification queue down with it — the list
   // column beside this pane goes on showing (and accepting) those same rows, and

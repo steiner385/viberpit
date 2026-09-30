@@ -577,7 +577,7 @@ describe('RoadmapPage — Inbox scope', () => {
     it('moves on to the next row after the decision is taken', () => {
       Object.assign(decisions, { data: [DECISION] })
       mount('/roadmap?scope=inbox&proposal=d1')
-      fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Accept recommendation' }))
       expect(acceptDecision.mutate).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
       // Somewhere in the queue, never still on the row just decided.
       expect(screen.getByTestId('location')).not.toHaveTextContent('proposal=d1')

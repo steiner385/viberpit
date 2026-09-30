@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   roadmapScopeForSearch, roadmapPath, productPath, capabilityPath, initiativePath,
   roadmapOpenItem, keyForOpenItem, PRODUCT_ROUTE, CAPABILITY_ROUTE, INITIATIVE_ROUTE,
-  inboxPath, inboxProductForSearch,
+  inboxPath, inboxProductForSearch, decisionsQueryArgs,
 } from './roadmapNavState'
 
 describe('roadmapNavState', () => {
@@ -65,5 +65,13 @@ describe('roadmapNavState', () => {
     expect(roadmapOpenItem({}, sp('?scope=map&proposal=p1'))).toBeNull()
     expect(roadmapOpenItem({ productSlug: 'k' }, sp('?scope=inbox&proposal=p1'))).toEqual({ kind: 'product', productSlug: 'k' })
     expect(keyForOpenItem({ kind: 'proposal', proposalId: 'p1' })).toBe('proposal:p1')
+  })
+  it('asks for impact-enriched, polled decisions only in the inbox scope', () => {
+    expect(decisionsQueryArgs('?scope=inbox', true)).toEqual([undefined, { enabled: true, poll: true, impact: true }])
+    expect(decisionsQueryArgs('?scope=inbox&product=kindash', false))
+      .toEqual(['kindash', { enabled: false, poll: true, impact: true }])
+    for (const search of ['', '?scope=map', '?scope=initiatives', '?scope=map&product=kindash']) {
+      expect(decisionsQueryArgs(search, true)).toEqual([undefined, { enabled: true, poll: false, impact: false }])
+    }
   })
 })

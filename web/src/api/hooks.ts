@@ -2449,7 +2449,9 @@ export function useTriageLive() {
   useEffect(() => {
     const nudge = () => {
       void qc.invalidateQueries({ queryKey: QK.triage })
-      void qc.invalidateQueries({ queryKey: QK.decisions })
+      // `cancelRefetch: false`: the impact-enriched fetch is a queue read, and every
+      // status frame would otherwise cancel and restart the one already in flight.
+      void qc.invalidateQueries({ queryKey: QK.decisions }, { cancelRefetch: false })
     }
     on('status', nudge)
     return () => off('status', nudge)

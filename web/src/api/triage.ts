@@ -185,7 +185,8 @@ export function fetchDecisions(
   const qs = new URLSearchParams()
   if (projectSlug) qs.set('projectSlug', projectSlug)
   if (impact) qs.set('impact', 'true')
-  const suffix = qs.size ? `?${qs}` : ''
+  const q = qs.toString()
+  const suffix = q ? `?${q}` : ''
   return api.get<Omit<DecisionProposal, 'proposalKind'>[]>(`/pm/decisions${suffix}`)
     .then((rows) => rows.map((r) => ({ ...r, proposalKind: 'decision' as const })))
 }

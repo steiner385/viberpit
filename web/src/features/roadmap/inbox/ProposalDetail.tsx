@@ -405,6 +405,7 @@ function DecisionDetail({ proposal: p, onDone }: {
   }
   const groupId = `decision-${p.id}`
   const guidance = p.guidance ?? null
+  const rec = p.recommendedKey
 
   return (
     <PaneShell>
@@ -458,6 +459,9 @@ function DecisionDetail({ proposal: p, onDone }: {
           </div>
         )}
         <div className="flex flex-wrap justify-end gap-2">
+          {/* ONE primary button. One tap by a person (spec decision 7) while the
+              recommendation is what the group holds; choosing another option
+              renames it `Accept` and it submits that key. */}
           {/* Disabled while `chosen` is empty: the server answers 422 on an empty
               `chosen_key`, and a button that can only fail is not an offer.
               DEFENCE ONLY — the state is unreachable today: `decisions.propose`
@@ -465,20 +469,8 @@ function DecisionDetail({ proposal: p, onDone }: {
               seed is always a real key, and a native radio group cannot be
               cleared once one is set. It guards the seeding rule rather than any
               flow a person can drive. */}
-          {/* One tap by a person (spec decision 7); the radio group stays for a
-              different choice. */}
-          {p.recommendedKey && (
-            <Button
-              type="button"
-              size="lg"
-              disabled={accept.isPending}
-              onClick={() => { accept.mutate({ id: p.id, chosenKey: p.recommendedKey! }); onDone() }}
-            >
-              Accept recommendation
-            </Button>
-          )}
-          <Button type="submit" size="lg" variant={p.recommendedKey ? 'secondary' : undefined} disabled={!chosen || accept.isPending}>
-            Accept
+          <Button type="submit" size="lg" disabled={!chosen || accept.isPending}>
+            {rec && chosen === rec ? 'Accept recommendation' : 'Accept'}
           </Button>
           <Button
             type="button"

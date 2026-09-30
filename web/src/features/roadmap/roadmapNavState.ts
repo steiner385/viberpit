@@ -54,6 +54,21 @@ export function inboxProductForSearch(search: string): string | null {
   return q.get('scope') === 'inbox' ? (q.get('product') || null) : null
 }
 
+/**
+ * The `useDecisions` arguments for the Roadmap section, ONE place so the list
+ * column and the detail pane cannot drift onto different keys. Impact-enriched
+ * decisions (a queue read per fetch) are fetched and polled only in the Inbox
+ * scope; every other scope takes the nav badge's shape (`undefined`, no impact,
+ * no own interval) and so reuses the badge's cached entry.
+ */
+export function decisionsQueryArgs(
+  search: string,
+  enabled: boolean,
+): [string | undefined, { enabled: boolean; poll: boolean; impact: boolean }] {
+  if (roadmapScopeForSearch(search) !== 'inbox') return [undefined, { enabled, poll: false, impact: false }]
+  return [inboxProductForSearch(search) ?? undefined, { enabled, poll: true, impact: true }]
+}
+
 export type RoadmapOpenItem =
   | { kind: 'product'; productSlug: string }
   | { kind: 'capability'; productSlug: string; capSlug: string }

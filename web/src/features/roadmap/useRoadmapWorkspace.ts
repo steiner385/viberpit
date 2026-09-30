@@ -13,7 +13,7 @@ import { useDecisions, useRoadmapMap, useTriage } from '@/api/hooks'
 import type { InboxProposal } from '@/api/triage'
 import type { RoadmapListColumnProps } from './RoadmapListColumn'
 import {
-  capabilityPath, inboxPath, inboxProductForSearch, initiativePath, keyForOpenItem, productPath,
+  capabilityPath, decisionsQueryArgs, inboxPath, inboxProductForSearch, initiativePath, keyForOpenItem, productPath,
   roadmapOpenItem, roadmapScopeForSearch,
 } from './roadmapNavState'
 import type { TreeRow } from './treeRows'
@@ -40,11 +40,11 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   // badge's 15 s interval, so the column adds no timer to it; a `?product=`
   // chip is its own key with no other observer, so that one polls itself.
   const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
-  // The inbox's second card kind (spec 2026-09-18 §6), scoped server-side like
-  // triage and asked for its downstream impact. The impact key is its own entry
-  // (the badge's bare list has none), so no other observer holds it and the
-  // column polls it itself, scoped or not — one impact fetch per 15 s while open.
-  const decisions = useDecisions(product ?? undefined, { enabled: active, poll: true, impact: true })
+  // The inbox's second card kind (spec 2026-09-18 §6). Impact-enriched and
+  // self-polled only in the Inbox scope (`decisionsQueryArgs`); Map, Initiatives
+  // and product detail reuse the nav badge's cached entry.
+  const [decisionsSlug, decisionsOpts] = decisionsQueryArgs(search, active)
+  const decisions = useDecisions(decisionsSlug, decisionsOpts)
   // The rows are concatenated into ONE queue — the ordering spec, the key
   // map and the pending count all act on the whole inbox, not on two halves.
   const proposals = useMemo<InboxProposal[]>(() => [

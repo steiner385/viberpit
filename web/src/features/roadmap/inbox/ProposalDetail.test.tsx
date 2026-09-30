@@ -18,10 +18,11 @@ const acceptScope = vi.fn()
 const rejectScope = vi.fn()
 const acceptDecision = vi.fn()
 const rejectDecision = vi.fn()
+let acceptDecisionPending = false
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return { mutate: accept, isPending: false } },
   useRejectProposal: (slug?: string) => { rejectScope(slug); return { mutate: reject, isPending: false } },
-  useAcceptDecision: () => ({ mutate: acceptDecision, isPending: false }),
+  useAcceptDecision: () => ({ mutate: acceptDecision, isPending: acceptDecisionPending }),
   useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
 }))
 
@@ -333,6 +334,7 @@ describe('ProposalDetail — a decision proposal', () => {
   beforeEach(() => {
     acceptDecision.mockReset()
     rejectDecision.mockReset()
+    acceptDecisionPending = false
   })
 
   it('Accept recommendation accepts the recommended option in one tap', () => {
@@ -342,10 +344,25 @@ describe('ProposalDetail — a decision proposal', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
-  it('Accept recommendation is absent without a recommendation', () => {
+  it('has ONE primary button, renamed Accept once another option is chosen', () => {
+    mountDecision({ recommendedKey: 'queue' })
+    expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: /In-process stream/ }))
+    expect(screen.queryByRole('button', { name: 'Accept recommendation' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(acceptDecision).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'stream' })
+  })
+
+  it('is named Accept and disabled until a choice without a recommendation', () => {
     mountDecision({ recommendedKey: null })
     expect(screen.queryByRole('button', { name: 'Accept recommendation' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+  })
+
+  it('disables the primary button while the accept is pending', () => {
+    acceptDecisionPending = true
+    mountDecision()
+    expect(screen.getByRole('button', { name: 'Accept recommendation' })).toBeDisabled()
   })
 
   it('offers the options as ONE single-choice group, with the recommendation preselected', () => {
@@ -375,7 +392,7 @@ describe('ProposalDetail — a decision proposal', () => {
 
   it('accepts the recommendation when nothing is changed', () => {
     mountDecision()
-    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Accept recommendation' }))
     expect(acceptDecision).toHaveBeenCalledWith({ id: 'd1', chosenKey: 'queue' })
   })
 
@@ -412,7 +429,7 @@ describe('ProposalDetail — a decision proposal', () => {
     window.addEventListener('keydown', seen)
     try {
       mountDecision()
-      const button = screen.getByRole('button', { name: 'Accept' })
+      const button = screen.getByRole('button', { name: 'Accept recommendation' })
       button.focus()
       fireEvent.keyDown(button, { key: 'a' })
       fireEvent.keyDown(button, { key: 'r' })
