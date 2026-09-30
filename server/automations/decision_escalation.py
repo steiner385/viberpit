@@ -184,13 +184,13 @@ def actionable_from(held: list[HeldItem], *, limit: int = 50) -> list[Actionable
 
 
 class DecisionEscalationLoop:
-    def __init__(self, ctx: Any, *, read_config, load_escalations, quiet_window, last_digest,
+    def __init__(self, ctx: Any, *, read_config, load_escalations, quiet_window, last_digests,
                  record_digest, notify, now=None) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._load_escalations = load_escalations
         self._quiet_window = quiet_window
-        self._last_digest = last_digest
+        self._last_digests = last_digests
         self._record_digest = record_digest
         self._notify = notify
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -217,6 +217,7 @@ class DecisionEscalationLoop:
             return
         t = thresholds_from(config)
         escs = await self._load_escalations(config)
+        last_by_slug = await self._last_digests()
         held_all: list[HeldItem] = []
         products: list[dict] = []
         for esc in escs:
@@ -225,14 +226,14 @@ class DecisionEscalationLoop:
                              "held": len(esc.held), "starving": esc.starving,
                              "oldestHoldHours": esc.oldest_hold_hours})
             verdict = decide(esc, t)
-            last = await self._last_digest(esc.slug)
+            last = last_by_slug.get(esc.slug)
             if not should_send(verdict, last, now=now.replace(tzinfo=None), t=t):
                 continue
             # One product's failed notify must not abort the tick or skip the counts
             # publish below; no digest row is recorded, so the next tick retries it.
             try:
                 title, body = digest_text(esc, verdict)
-                await self._notify(title, body, repo=None,
+                await self._notify(title, body, slug=esc.slug,
                                    url=f"/roadmap?scope=inbox&product={esc.slug}")
                 await self._record_digest(esc.slug, {
                     "slug": esc.slug, "fingerprint": verdict.fingerprint,
@@ -261,21 +262,6 @@ async def _pending_proposal(db, work_item_id: str):
     return (await db.execute(select(DecisionProposal).where(
         DecisionProposal.work_item_id == work_item_id,
         DecisionProposal.status == "pending"))).scalar_one_or_none()
-
-
-async def _announce_accept(ref: str, *, label: str, detail: str | None, actor: str) -> None:
-    """The issue comment ``POST /api/pm/decisions/{id}/accept`` posts after its commit —
-    the same helper, same bound, never raises — so the automation's accept is not
-    silently weaker than the inbox's."""
-    from server.api.pm import DECISION_COMMENT_TIMEOUT_S
-    from server.automations import backlog_github
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(backlog_github.announce_decision, ref, label=label,
-                              detail=detail, chosen_by=actor),
-            timeout=DECISION_COMMENT_TIMEOUT_S)
-    except Exception:
-        log.warning("decision_escalation.accept_comment_failed ref=%s", ref, exc_info=True)
 
 
 class DecisionEscalationActionProvider:
@@ -317,6 +303,13 @@ class DecisionEscalationActionProvider:
                     if proposal is None or not proposal.recommended_key:
                         return TriggerResult(status="not_found", level="warn",
                                              message="No pending proposal with a recommendation")
+                    if (proposal.id != item.proposal_id
+                            or proposal.recommended_key != item.recommended_key):
+                        # The card came from the last tick's snapshot: never accept a
+                        # proposal (or recommendation) the person was not shown.
+                        return TriggerResult(
+                            status="refused", level="warn",
+                            message="The proposal changed — reopen it in the Inbox")
                     key = proposal.recommended_key
                     await decisions.accept(db, proposal, chosen_key=key, actor=identity,
                                            now=now, via="automation")
@@ -340,5 +333,6 @@ class DecisionEscalationActionProvider:
             # ref (work_item_for_ref) are all ValueErrors: the service's own words.
             return TriggerResult(status="refused", level="warn", message=str(e))
         if announce is not None:
-            await _announce_accept(item.ref, actor=identity, **announce)
+            self._loop._held = [i for i in self._loop._held if i.ref != item.ref]
+            await decisions.announce_accept_best_effort(item.ref, actor=identity, **announce)
         return result

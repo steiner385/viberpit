@@ -142,7 +142,7 @@ def test_a_stalled_issue_comment_does_not_hold_the_accept_open(monkeypatch):
         released.wait(30)   # freed by the test once the response is in hand
 
     monkeypatch.setattr("server.automations.backlog_github.announce_decision", _hang)
-    monkeypatch.setattr("server.api.pm.DECISION_COMMENT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("server.pm.decisions.DECISION_COMMENT_TIMEOUT_S", 0.05)
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")

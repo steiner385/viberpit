@@ -35,22 +35,22 @@ class Fakes:
     async def quiet_window(self):
         return self.quiet
 
-    async def last_digest(self, slug):
-        return self.last.get(slug)
+    async def last_digests(self):
+        return dict(self.last)
 
     async def record_digest(self, slug, detail):
         self.recorded.append((slug, detail))
         self.last[slug] = (detail["fingerprint"], self.now.replace(tzinfo=None))
 
-    async def notify(self, title, body, *, repo, url):
-        self.sent.append((title, body, {"repo": repo, "url": url}))
+    async def notify(self, title, body, *, slug, url):
+        self.sent.append((title, body, {"slug": slug, "url": url}))
 
     def loop(self):
         return DecisionEscalationLoop(AutomationContext("decision-escalation"),
                                       read_config=self.read_config,
                                       load_escalations=self.load_escalations,
                                       quiet_window=self.quiet_window,
-                                      last_digest=self.last_digest,
+                                      last_digests=self.last_digests,
                                       record_digest=self.record_digest,
                                       notify=self.notify, now=lambda: self.now)
 
@@ -124,10 +124,10 @@ def test_one_products_failed_notify_does_not_abort_the_tick():
                _esc("viberpit", held=[_item("o/r#1")])])
     real_notify = f.notify
 
-    async def flaky(title, body, *, repo, url):
-        if "product=kindash" in (url or ""):
+    async def flaky(title, body, *, slug, url):
+        if slug == "kindash":
             raise RuntimeError("push backend down")
-        await real_notify(title, body, repo=repo, url=url)
+        await real_notify(title, body, slug=slug, url=url)
     f.notify = flaky
     loop = f.loop()
     asyncio.run(loop.tick())

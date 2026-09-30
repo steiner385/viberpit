@@ -31,7 +31,7 @@ class _FakeOrch:
     async def automation_actionable(self, automation_id):
         return self._actionable
 
-    async def automation_trigger(self, automation_id, item_id, kind):
+    async def automation_trigger(self, automation_id, item_id, kind, identity=None):
         if kind not in self._kinds:
             return {"status": "invalid_kind", "level": "error", "message": f"invalid kind {kind!r}"}
         self.trigger_calls.append((item_id, kind))

@@ -1568,7 +1568,7 @@ class SessionOrchestrator:
             read_config=self._decision_escalation_read_config,
             load_escalations=self._decision_escalation_load,
             quiet_window=self._decision_escalation_quiet_window,
-            last_digest=self._decision_escalation_last_digest,
+            last_digests=self._decision_escalation_last_digests,
             record_digest=self._decision_escalation_record_digest,
             notify=self._decision_escalation_notify)
         self._decision_escalation_task: asyncio.Task | None = None
@@ -12350,17 +12350,14 @@ class SessionOrchestrator:
     async def _decision_escalation_load(self, config: dict) -> list:
         from datetime import datetime, timezone
 
-        from server.automations.product_policy import effective_policy, is_on, policies_by_slug
+        from server.automations.product_policy import effective_policy, is_on
         from server.pm import decisions
         from server.pm.escalation import product_escalation
-        from server.pm.queue_store import load_queue_rows, runner_claims
+        from server.pm.queue_store import queue_inputs
         now = datetime.now(timezone.utc)
         only = {str(s) for s in (config.get("products") or [])}
-
-        def _rows(s):
-            return load_queue_rows(s, now=now, claimed_refs=runner_claims(s)), policies_by_slug(s)
         async with db_session() as db:
-            rows, policies = await db.run_sync(_rows)
+            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
             proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
                                 if w is not None and w.repo and w.number}
         by_product: dict[str, list] = {}
@@ -12387,19 +12384,22 @@ class SessionOrchestrator:
         return ((settings.quiet_hours_start, settings.quiet_hours_end) if settings
                 else (None, None))
 
-    async def _decision_escalation_last_digest(self, slug: str):
-        from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
+    async def _decision_escalation_last_digests(self) -> dict:
+        """slug -> (fingerprint, at) of each product's newest digest: the latest 200
+        digest rows read ONCE per tick and indexed, not one query per product."""
         from sqlalchemy import select
+        from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
         from server.db.models import AuditEvent
         async with db_session() as db:
             rows = (await db.execute(
                 select(AuditEvent.detail, AuditEvent.at)
                 .where(AuditEvent.type == DIGEST_AUDIT_TYPE)
                 .order_by(AuditEvent.at.desc()).limit(200))).all()
-        for detail, at in rows:
-            if isinstance(detail, dict) and detail.get("slug") == slug and detail.get("fingerprint"):
-                return str(detail["fingerprint"]), at
-        return None
+        out: dict = {}
+        for detail, at in rows:  # newest first: the first row per slug wins
+            if isinstance(detail, dict) and detail.get("fingerprint"):
+                out.setdefault(detail.get("slug"), (str(detail["fingerprint"]), at))
+        return out
 
     async def _decision_escalation_record_digest(self, slug: str, detail: dict) -> None:
         from server.automations.decision_escalation import DIGEST_AUDIT_TYPE
@@ -12407,18 +12407,11 @@ class SessionOrchestrator:
             await record_audit(db, DIGEST_AUDIT_TYPE, SYSTEM_IDENTITY, detail, via="automation")
             await db.commit()
 
-    async def _primary_repo_for_slug(self, slug: str) -> str | None:
-        from sqlalchemy import select
-        from server.db.models import Project, ProjectRepo
-        async with db_session() as db:
-            return (await db.execute(
-                select(ProjectRepo.repo).join(Project, Project.id == ProjectRepo.project_id)
-                .where(Project.slug == slug, ProjectRepo.is_primary.is_(True)))).scalars().first()
-
-    async def _decision_escalation_notify(self, title: str, body: str, *, repo: str | None,
+    async def _decision_escalation_notify(self, title: str, body: str, *, slug: str,
                                           url: str | None) -> None:
-        slug = url.rsplit("product=", 1)[-1] if url and "product=" in url else None
-        repo = repo or (await self._primary_repo_for_slug(slug) if slug else None)
+        from server.pm.repo_project import primary_repo_for_slug
+        async with db_session() as db:
+            repo = await primary_repo_for_slug(db, slug)
         await push_mod.notify_event("decision_needed", title, body, repo=repo,
                                     automation="decision-escalation", url=url,
                                     fanout_when_unconfigured=True, orch=self)

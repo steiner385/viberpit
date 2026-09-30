@@ -100,17 +100,48 @@ def test_create_account_watch_wildcard_target_means_every_account():
             assert r.json()["scopeAccount"] is None
 
 
-def test_create_product_watch_scopes_the_rule_to_the_escalation_automation():
-    """The target is a product slug but the digest is emitted with
-    ``automation="decision-escalation"``: a slug in scope_automation would never match."""
+def _seed_products(c, **slug_repo):
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo
+
+    async def _run():
+        async with db_session() as db:
+            for slug, repo in slug_repo.items():
+                p = Project(slug=slug, name=slug)
+                db.add(p)
+                await db.flush()
+                db.add(ProjectRepo(project_id=p.id, repo=repo, is_primary=True))
+            await db.commit()
+    c.portal.call(_run)
+
+
+def test_create_product_watch_is_scoped_to_that_products_digest():
+    """The digest is emitted with ``automation="decision-escalation"`` and the product's
+    primary repo: the watch must match product A's digest and NOT product B's (a
+    once-watch would otherwise disarm on the wrong product)."""
+    from types import SimpleNamespace
+    from server.sessions.notify_rules import scope_matches
     with _client() as c:
+        _seed_products(c, alpha="o/a", beta="o/b")
         r = c.post("/api/assistant/watches",
-                   json={"kind": "product", "target": "kindash", "condition": "needs_decision"},
+                   json={"kind": "product", "target": "alpha", "condition": "needs_decision"},
                    headers=IDENTITY)
         assert r.status_code == 201, r.text
         body = r.json()
         assert body["eventClass"] == "decision_needed"
         assert body["scopeAutomation"] == "decision-escalation"
+        assert body["scopeRepo"] == "o/a"
+        rule = SimpleNamespace(scope_repo=body["scopeRepo"], scope_account=None,
+                               scope_automation=body["scopeAutomation"], scope_session_id=None)
+
+        def ev(repo):
+            return SimpleNamespace(repo=repo, account=None, automation="decision-escalation",
+                                   session_id=None)
+        assert scope_matches(rule, ev("o/a")) and not scope_matches(rule, ev("o/b"))
+        bad = c.post("/api/assistant/watches",
+                     json={"kind": "product", "target": "nope", "condition": "needs_decision"},
+                     headers=IDENTITY)
+        assert bad.status_code == 422
 
 
 def test_create_watch_rejects_unknown_condition_for_session_and_account_kinds():
