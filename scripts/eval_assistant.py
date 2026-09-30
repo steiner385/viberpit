@@ -519,7 +519,8 @@ def _queue() -> dict[str, Any]:
     skipped = {"blocked": 3, "status": 11, "held": 1}
     dispatchable: dict[str, int] = {}
     for e in entries:
-        dispatchable[e["product"]] = dispatchable.get(e["product"], 0) + 1
+        product = str(e["product"])
+        dispatchable[product] = dispatchable.get(product, 0) + 1
     return {
         "entries": entries,
         "skipped": skipped,
