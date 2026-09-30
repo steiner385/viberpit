@@ -5,7 +5,13 @@
 // evidence gaps (#2162: dangling cited paths, untested live capabilities, code
 // with no spec, a state older than its spec). Renders nothing
 // when there is nothing to say — this is a notice, not a permanent fixture.
-import { Fragment } from 'react'
+//
+// Collapsed by default to ONE line of counts (2026-09-30 Roadmap critique, P1):
+// expanded, it is up to 83 file-path links that sat above the product's Needs-you
+// list — ~1,500px on a phone before the first actionable row — for what is one
+// decision ("look at hygiene"), not 83. The title is the toggle, the same idiom
+// `shell/DeployPanel` uses; the full list is one tap away and unchanged.
+import { Fragment, useId, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useProjectHealth } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
@@ -32,8 +38,14 @@ const GOVERNANCE_MESSAGE: Record<string, string> = {
   no_version_footer: "the constitution's Version / Ratified / Last Amended footer doesn't parse, so it can't be confirmed ratified",
 }
 
+/** How many summary segments the one-line title names before "+n more". */
+const SUMMARY_SEGMENTS = 3
+
 export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
   const { data: health } = useProjectHealth(productSlug)
+  // Hooks before the early returns below (rules-of-hooks).
+  const [open, setOpen] = useState(false)
+  const listId = useId()
   if (!health) return null
 
   const {
@@ -54,12 +66,50 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
 
+  // The one-line summary: each non-empty finding as "<count> <noun>", in the
+  // list's own order, the first few named and the rest counted. The counts are
+  // the same numbers the bullets below spell out — one source, two densities.
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  const segments = [
+    governance ? 'governance' : null,
+    unparentedCapabilities.length > 0 ? plural(unparentedCapabilities.length, 'capability outside the tree', 'capabilities outside the tree') : null,
+    unlinkedInitiatives.length > 0 ? plural(unlinkedInitiatives.length, 'initiative with no capability', 'initiatives with no capability') : null,
+    staleProposed.length > 0 ? plural(staleProposed.length, 'stale proposed capability', 'stale proposed capabilities') : null,
+    staleInbox > 0 ? plural(staleInbox, 'stale inbox item', 'stale inbox items') : null,
+    unindexedDocs.length > 0 ? plural(unindexedDocs.length, 'unparsed doc', 'unparsed docs') : null,
+    danglingEvidence.length > 0 ? plural(danglingEvidence.length, 'stale evidence path', 'stale evidence paths') : null,
+    untestedCapabilities.length > 0 ? `${untestedCapabilities.length} without tests` : null,
+    codeWithoutSpecs.length > 0 ? `${codeWithoutSpecs.length} without spec` : null,
+    stateBehindSpec.length > 0 ? plural(stateBehindSpec.length, 'state behind spec', 'states behind spec') : null,
+    artifactsEpicClosedNotDone.length > 0 ? plural(artifactsEpicClosedNotDone.length, 'closed epic not done', 'closed epics not done') : null,
+    artifactsUnknownCapability.length > 0 ? plural(artifactsUnknownCapability.length, 'unknown capability in frontmatter', 'unknown capabilities in frontmatter') : null,
+    artifactsMissingFrontmatter.length > 0 ? plural(artifactsMissingFrontmatter.length, 'artifact without frontmatter', 'artifacts without frontmatter') : null,
+    unlinkedPersonas.length > 0 ? plural(unlinkedPersonas.length, 'unresolved persona', 'unresolved personas') : null,
+  ].filter((s): s is string => s !== null)
+  const summary = segments.slice(0, SUMMARY_SEGMENTS).join(' · ')
+    + (segments.length > SUMMARY_SEGMENTS ? ` · +${segments.length - SUMMARY_SEGMENTS} more` : '')
+
   // No explicit `role`: `Banner`'s `warning` tone already defaults to `status`
   // (its own docs say pass `'none'` only for a changing list, which this is
   // not) — leave the default rather than repeating it.
   return (
-    <Banner tone="warning" title="Roadmap hygiene">
-      <ul className="flex flex-col gap-0.5">
+    <Banner
+      tone="warning"
+      title={
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={listId}
+          onClick={() => setOpen((o) => !o)}
+          className="text-left"
+        >
+          Roadmap hygiene — {summary}{' '}
+          <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        </button>
+      }
+    >
+      {open && (
+      <ul id={listId} className="flex flex-col gap-0.5">
         {governance && (
           <li>{GOVERNANCE_MESSAGE[governance] ?? `governance issue: ${governance}`}</li>
         )}
@@ -159,6 +209,7 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
           </li>
         )}
       </ul>
+      )}
     </Banner>
   )
 }

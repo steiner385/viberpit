@@ -213,9 +213,10 @@ describe('ProductDetail', () => {
       isError: false,
     })
     mount()
-    expect(screen.queryByText('Roadmap hygiene')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Roadmap hygiene/ })).not.toBeInTheDocument()
     mount('/roadmap/kindash?tab=needs-you')
-    expect(screen.getByText('Roadmap hygiene')).toBeInTheDocument()
+    // Collapsed to its one-line summary above the queue; the toggle is the title.
+    expect(screen.getByRole('button', { name: /^Roadmap hygiene — 1 capability outside the tree/ })).toBeInTheDocument()
   })
 
   it('shows no incidents at all until the repo list has arrived', () => {
