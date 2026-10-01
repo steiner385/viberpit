@@ -239,4 +239,30 @@ describe('AutomationDetail', () => {
     mount(prDoctor) // counts: null
     expect(document.querySelector('dl')).toBeNull()
   })
+  // ── the phone fold (2026-10-01 Delivery critique, P1) ──
+  it('the band leads with a clickable Needs you tile that wears the tab badge number and opens the tab; four tiles at most', () => {
+    const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status,
+      counts: { in_flight: 2, needs_human: 4, eligible: 14, held: 1, blocked: 63, untriaged: 7 } } }
+    mount(runner, '/delivery/automations/backlog-runner')
+    const labels = [...document.querySelectorAll('dl dt')].map((dt) => dt.textContent)
+    expect(labels).toEqual(['Needs you', 'In flight', 'Needs human', 'Eligible'])
+    // Same number as the tab (the fetched list has one item), and it opens it.
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Needs you: 1' }))
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'true')
+  })
+  it('omits the Needs you tile while the count is unknown, without a fourth server tile sliding into its place', () => {
+    actionableData = undefined
+    const runner = { ...AUTOMATIONS[1], actionableCount: null,
+      status: { ...AUTOMATIONS[1].status, counts: { in_flight: 2, eligible: 14, blocked: 63, held: 1 } } }
+    mount(runner, '/delivery/automations/backlog-runner')
+    expect([...document.querySelectorAll('dl dt')].map((dt) => dt.textContent)).toEqual(['In flight', 'Eligible', 'Blocked'])
+  })
+  it('the tab strip sticks to the top of the page scroller, on the canvas', () => {
+    mount()
+    const strip = screen.getByRole('tablist')
+    expect(strip.className).toMatch(/\bsticky\b/)
+    expect(strip.className).toMatch(/\btop-0\b/)
+    expect(strip.className).toMatch(/\bbg-canvas\b/)
+  })
 })

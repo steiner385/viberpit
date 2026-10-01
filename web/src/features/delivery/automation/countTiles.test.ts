@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { countTiles, humanizeKey, MAX_COUNT_TILES } from './countTiles'
 
 describe('countTiles', () => {
@@ -7,13 +7,25 @@ describe('countTiles', () => {
     expect(humanizeKey('gh_projects')).toBe('Gh projects')
     expect(humanizeKey('failing')).toBe('Failing')
   })
-  it('keeps the server order and caps at six tiles', () => {
+  // 2026-10-01 Delivery critique, P1: six tiles were three phone rows that
+  // pushed the strip below the fold. Four is two rows; the queue leads.
+  it('leads with a clickable, toned Needs you tile and keeps three server tiles behind it, in server order', () => {
     // Review focus 3: gh-reconcile publishes eight keys.
     const counts = { products: 6, planned: 1, applied: 1, failed: 0, parked: 0, skipped_stale: 2, halted_cap: 0, dry_run: 0 }
-    const tiles = countTiles(counts)
+    const onClick = vi.fn()
+    const tiles = countTiles(counts, { value: 2, onClick })
     expect(tiles).toHaveLength(MAX_COUNT_TILES)
-    expect(tiles.map((t) => t.label)).toEqual(['Products', 'Planned', 'Applied', 'Failed', 'Parked', 'Skipped stale'])
-    expect(tiles[0]).toEqual({ label: 'Products', value: 6 })
+    expect(tiles.map((t) => t.label)).toEqual(['Needs you', 'Products', 'Planned', 'Applied'])
+    expect(tiles[0]).toMatchObject({ label: 'Needs you', value: 2, tone: 'warning' })
+    tiles[0]!.onClick!()
+    expect(onClick).toHaveBeenCalledTimes(1)
+    // The server tiles stay untoned and unclickable: they map to no tab.
+    expect(tiles[1]).toEqual({ label: 'Products', value: 6 })
+  })
+  it('omits the lead while the actionable count is unknown, without letting a fourth server tile take its place', () => {
+    const counts = { a: 1, b: 2, c: 3, d: 4 }
+    expect(countTiles(counts).map((t) => t.label)).toEqual(['A', 'B', 'C'])
+    expect(countTiles(counts, { value: 0, onClick: () => {} }).map((t) => t.label)).toEqual(['Needs you', 'A', 'B', 'C'])
   })
   it('skips non-finite values and answers nothing for null or empty counts', () => {
     // Review focus 4.
@@ -21,5 +33,8 @@ describe('countTiles', () => {
     expect(countTiles(null)).toEqual([])
     expect(countTiles(undefined)).toEqual([])
     expect(countTiles({})).toEqual([])
+    // No server counts means no band at all, even with a known Needs you count:
+    // the tab badge carries it there.
+    expect(countTiles(null, { value: 3, onClick: () => {} })).toEqual([])
   })
 })

@@ -211,6 +211,17 @@ describe('DeliveryPage', () => {
     expect(screen.getByRole('tab', { name: 'Overview', selected: true })).toBeInTheDocument()
   })
 
+  it('on a narrow phone the header status is one line and the observed/mode row is shed (2026-10-01 Delivery critique, P1)', () => {
+    // The header never scrolls away; at 390px it was 189px over ten lines
+    // before the tiles began. Below `narrow:` the status clamps to one line and
+    // the third row goes — the mode's name is the header select's value too.
+    mount('/delivery/automations/pr-doctor')
+    const status = screen.getByText('2 PRs failing')
+    expect(status.className).toMatch(/\bline-clamp-2\b/)
+    expect(status.className).toMatch(/\bnarrow:line-clamp-1\b/)
+    expect(screen.getByText('Configured mode: auto').parentElement!.className).toMatch(/\bnarrow:hidden\b/)
+  })
+
   it('distinguishes failed refresh from its last successful observation', () => {
     hookState.status = { text: 'Status unavailable', level: 'unknown', counts: null,
       observedAt: '2026-09-12T10:00:00Z', lastRefreshFailedAt: '2026-09-12T10:05:00Z' }

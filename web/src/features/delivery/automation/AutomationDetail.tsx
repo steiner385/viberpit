@@ -71,13 +71,21 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   const actionable = useAutomationActionable(a.id)
   const needsYou = actionable.data ? splitActionable(actionable.data).decisions.length : a.actionableCount ?? undefined
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
-  const tiles = countTiles(a.status.counts)
+  // The band leads with the same number the Needs you tab wears, and opens it
+  // (2026-10-01 Delivery critique, P1: "tiles don't map to tabs").
+  const tiles = countTiles(a.status.counts,
+    needsYou === undefined ? undefined : { value: needsYou, onClick: () => setTab('needs-you') })
 
   return (
     <>
       {/* Above the strip (standard §6): the automation's own counts, visible on
           every tab. The runner's used to be spelled out in status.text. */}
       {tiles.length > 0 && <div className="mb-4"><StatTiles tiles={tiles} /></div>}
+      {/* The strip sticks to the top of the page's scroller (`PageContent`), so
+          once the tiles scroll away the tabs are still in reach — on a phone
+          the band and header together used to leave 250px of panel at 100%
+          zoom and none at 200% (2026-10-01 Delivery critique, P1). It paints on
+          the canvas so the tiles pass under it, not through it. */}
       <Tabs
         label="Automation"
         items={items.map((id) => ({
@@ -91,7 +99,7 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
         panelId={(id) => `automation-panel-${id}`}
-        className="mb-4"
+        className="sticky top-0 z-raised mb-4 bg-canvas"
       />
       <div role="tabpanel" id={`automation-panel-${tab}`} aria-labelledby={`tab-${tab}`} className="space-y-4">
         {tab === 'overview' && (
