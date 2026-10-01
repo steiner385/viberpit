@@ -44,6 +44,14 @@ describe('ManualDispatchDialog', () => {
     expect(screen.getByText(/Fix seven/)).toBeInTheDocument()
   })
 
+  it('the issue rows use the system selection checkbox (one checkbox kind on the page)', () => {
+    // 2026-10-01 Delivery critique, P1: this dialog and ConsolidatePanel each
+    // had their own bare 13×13 native checkbox; both are `SelectableRow` now.
+    render(<ManualDispatchDialog open onClose={onClose} />)
+    expect(screen.getByLabelText('Select o/r#7')).toHaveAttribute('type', 'checkbox')
+    expect(screen.getByLabelText('Select a/b#1')).toHaveAttribute('type', 'checkbox')
+  })
+
   it('dispatch button is disabled when nothing selected', () => {
     render(<ManualDispatchDialog open onClose={onClose} />)
     expect(screen.getByRole('button', { name: /dispatch 0/i })).toBeDisabled()
@@ -51,8 +59,8 @@ describe('ManualDispatchDialog', () => {
 
   it('selecting issues enables dispatch and calls mutation with correct refs', async () => {
     render(<ManualDispatchDialog open onClose={onClose} />)
-    fireEvent.click(screen.getByLabelText('select o/r#7'))
-    fireEvent.click(screen.getByLabelText('select o/r#8'))
+    fireEvent.click(screen.getByLabelText('Select o/r#7'))
+    fireEvent.click(screen.getByLabelText('Select o/r#8'))
     const btn = screen.getByRole('button', { name: /dispatch 2/i })
     expect(btn).toBeEnabled()
     fireEvent.click(btn)
@@ -70,7 +78,7 @@ describe('ManualDispatchDialog', () => {
 
   it('calls onClose after successful dispatch', async () => {
     render(<ManualDispatchDialog open onClose={onClose} />)
-    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByLabelText('Select o/r#7'))
     fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
@@ -85,7 +93,7 @@ describe('ManualDispatchDialog', () => {
     const { toast } = await import('sonner')
     mutate.mockRejectedValue(new Error('network error'))
     render(<ManualDispatchDialog open onClose={onClose} />)
-    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByLabelText('Select o/r#7'))
     fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Failed to dispatch'))
     expect(onClose).not.toHaveBeenCalled()
@@ -96,7 +104,7 @@ describe('ManualDispatchDialog', () => {
     const { toast } = await import('sonner')
     mutate.mockResolvedValue({ status: 'no_capacity' })
     render(<ManualDispatchDialog open onClose={onClose} />)
-    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByLabelText('Select o/r#7'))
     fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent('Dispatch failed: no_capacity'),
@@ -108,7 +116,7 @@ describe('ManualDispatchDialog', () => {
   it('clears the inline error when the dialog is closed', async () => {
     mutate.mockRejectedValue(new Error('network error'))
     const { rerender } = render(<ManualDispatchDialog open onClose={onClose} />)
-    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByLabelText('Select o/r#7'))
     fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /^close$/i }))

@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
+import { Check } from 'lucide-react'
 import { useBacklogGroups, useDispatchBacklogGroup } from '@/api/hooks'
 import type { BacklogGroup } from '@/api/automations'
+import { Button } from '@/ui/Button'
+import { StatusPill } from '@/ui/StatusPill'
 import { issueUrl } from '@/lib/githubUrl'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 
@@ -37,18 +40,24 @@ function GroupRow({
           )
         })}
         {group.consumedAt ? (
-          <span className="ml-auto rounded bg-accent-wash px-1 text-xs text-accent shrink-0">
-            picked up
-          </span>
+          // Tone plus word (DESIGN.md): the system's status pill, not a
+          // hand-rolled wash span.
+          <StatusPill label="Picked up" Icon={Check} tone="success" className="ml-auto shrink-0" />
         ) : (
-          <button
+          // Dispatch spawns a session — the heaviest action on the tab — so it
+          // is the `lg` primary button (44px, the size every primary confirm
+          // takes), not a 65×20 hand-rolled wash beside a 40px link
+          // (2026-10-01 Delivery critique, P1).
+          <Button
             type="button"
+            size="lg"
+            variant="primary"
+            className="ml-auto shrink-0"
+            loading={isDispatching}
             onClick={onDispatch}
-            disabled={isDispatching}
-            className="ml-auto rounded bg-accent px-2 py-0.5 text-xs text-accent-ink hover:bg-accent/90 disabled:opacity-40 shrink-0"
           >
             {isDispatching ? 'Dispatching…' : 'Dispatch'}
-          </button>
+          </Button>
         )}
       </div>
       {group.rationale && (

@@ -26,8 +26,8 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 function selectBothAndRun() {
-  fireEvent.click(screen.getByLabelText('select PR 1'))
-  fireEvent.click(screen.getByLabelText('select PR 2'))
+  fireEvent.click(screen.getByLabelText('Select PR 1'))
+  fireEvent.click(screen.getByLabelText('Select PR 2'))
   fireEvent.click(screen.getByRole('button', { name: /consolidate/i }))
 }
 
@@ -48,8 +48,8 @@ describe('ConsolidatePanel', () => {
     render(<ConsolidatePanel enabled />)
     const btn = screen.getByRole('button', { name: /consolidate/i })
     expect(btn).toBeDisabled()                              // nothing selected
-    fireEvent.click(screen.getByLabelText('select PR 1'))
-    fireEvent.click(screen.getByLabelText('select PR 2'))
+    fireEvent.click(screen.getByLabelText('Select PR 1'))
+    fireEvent.click(screen.getByLabelText('Select PR 2'))
     expect(btn).toBeEnabled()
     fireEvent.click(btn)
     await waitFor(() => expect(mutate).toHaveBeenCalledWith({ repo: 'o/r', numbers: [1, 2] }))
@@ -58,8 +58,37 @@ describe('ConsolidatePanel', () => {
   it('a cluster chip selects its numbers', () => {
     render(<ConsolidatePanel enabled />)
     fireEvent.click(screen.getByText(/2 PRs share scope/))
-    expect(screen.getByLabelText('select PR 1')).toBeChecked()
-    expect(screen.getByLabelText('select PR 2')).toBeChecked()
+    expect(screen.getByLabelText('Select PR 1')).toBeChecked()
+    expect(screen.getByLabelText('Select PR 2')).toBeChecked()
+  })
+
+  // ── one button system, one checkbox kind, tone plus word (2026-10-01 Delivery critique, P1) ──
+  it('checks are a toned pill WITH a word, never a colour-only dot', () => {
+    group.candidates[1] = { ...group.candidates[1], checks: 'failing', mergeable: 'CONFLICTING' }
+    group.candidates.push({ number: 3, title: 'c', url: 'u3', checks: 'pending', mergeable: 'MERGEABLE', updated_at: '', scope: 'deploy' })
+    render(<ConsolidatePanel enabled />)
+    expect(screen.getByLabelText('Status: passing')).toBeInTheDocument()
+    expect(screen.getByLabelText('Status: failing')).toBeInTheDocument()
+    expect(screen.getByLabelText('Status: pending')).toBeInTheDocument()
+    expect(screen.getByText('conflict')).toBeInTheDocument()
+  })
+
+  it('the rows use the system selection checkbox and Consolidate is the lg primary Button', () => {
+    render(<ConsolidatePanel enabled />)
+    // `ui/list/SelectableRow`'s label form — the same checkbox the sessions list uses.
+    expect(screen.getByLabelText('Select PR 1')).toHaveAttribute('type', 'checkbox')
+    const btn = screen.getByRole('button', { name: /consolidate/i })
+    expect(btn.className).toMatch(/\bmin-h-target\b/)
+    expect(btn.className).toMatch(/\bbg-accent\b/)
+  })
+
+  it('a risky cluster says so with a glyph and a word, and is a Button of the system', () => {
+    group.clusters = [{ numbers: [1, 2], rationale: 'touch the same migration', risk: 'risky' }]
+    render(<ConsolidatePanel enabled />)
+    const chip = screen.getByText(/touch the same migration/).closest('button')!
+    expect(chip).toHaveTextContent(/^Risky: 2 PRs · touch the same migration$/)
+    expect(chip.className).toMatch(/\bborder-edge\b/)
+    expect(chip.querySelector('svg')).not.toBeNull()
   })
 
   it('shows no underway indicator when no consolidation session is live', () => {
@@ -84,8 +113,8 @@ describe('ConsolidatePanel', () => {
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('Consolidation started'),
     )
-    expect(screen.getByLabelText('select PR 1')).not.toBeChecked()
-    expect(screen.getByLabelText('select PR 2')).not.toBeChecked()
+    expect(screen.getByLabelText('Select PR 1')).not.toBeChecked()
+    expect(screen.getByLabelText('Select PR 2')).not.toBeChecked()
   })
 
   it('renders a warn outcome inline as a status and keeps the selection', async () => {
@@ -93,7 +122,7 @@ describe('ConsolidatePanel', () => {
     render(<ConsolidatePanel enabled />)
     selectBothAndRun()
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Already underway'))
-    expect(screen.getByLabelText('select PR 1')).toBeChecked()
+    expect(screen.getByLabelText('Select PR 1')).toBeChecked()
   })
 
   it('renders an error outcome inline as an alert', async () => {

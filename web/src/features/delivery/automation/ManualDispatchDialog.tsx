@@ -5,6 +5,7 @@ import type { BacklogCandidate } from '@/api/automations'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
+import { SelectableRow } from '@/ui/list/SelectableRow'
 
 export function ManualDispatchDialog({
   open,
@@ -93,17 +94,17 @@ export function ManualDispatchDialog({
             <p className="text-xs font-medium text-ink-muted mb-1">{repo}</p>
             <ul className="space-y-1">
               {items.map((c) => (
-                <li key={c.ref} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    aria-label={`select ${c.ref}`}
-                    checked={selected.has(c.ref)}
-                    onChange={() => toggle(c.ref)}
-                  />
-                  <span className="truncate">
-                    <span className="text-ink-muted">#{c.number}</span>{' '}
-                    {c.title}
-                  </span>
+                // The system's selection row (`ui/list/SelectableRow`), the
+                // same one `ConsolidatePanel` and the sessions list use — not
+                // a second, bare native checkbox (2026-10-01 Delivery
+                // critique, P1: "two checkbox kinds").
+                <li key={c.ref} className="min-h-target flex items-center text-sm">
+                  <SelectableRow id={c.ref} name={c.ref} checked={selected.has(c.ref)} onToggle={toggle}>
+                    <span className="block truncate">
+                      <span className="text-ink-muted">#{c.number}</span>{' '}
+                      {c.title}
+                    </span>
+                  </SelectableRow>
                 </li>
               ))}
             </ul>
