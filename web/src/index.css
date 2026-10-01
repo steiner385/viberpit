@@ -233,6 +233,16 @@ body {
 
 /* Inline code (excludes <code> inside <pre>, which keeps highlight.js styling). */
 @layer base {
+  /* Placeholder text is read, so it meets the text floor. The preflight's
+     default is the input's own colour at 50% opacity — 3.1–3.2:1 on every
+     input that set nothing, and the `ink-faint` utility some inputs set was
+     3.13:1 (2026-09-30 Settings critique, P3; same token as #2543). One rule
+     here, the muted ink at 5.4:1, and no input carries a `placeholder:`
+     utility of its own. */
+  ::placeholder {
+    color: var(--t-ink-muted);
+    opacity: 1;
+  }
   :not(pre) > code {
     font-family: var(--font-mono);
     font-size: 0.875em;

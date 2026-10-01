@@ -49,6 +49,21 @@ describe('token bridge', () => {
     }
   })
 
+  // 2026-09-30 Settings critique, P3: placeholders are read, so the base layer
+  // sets them to the muted ink once; no input carries its own `placeholder:`
+  // colour, so none can drift back to `ink-faint` (3.13:1) or the preflight's
+  // 50%-opacity default.
+  it('colours placeholders once, in the base layer, and nowhere per input', () => {
+    expect(css).toMatch(/::placeholder\s*\{[^}]*color:\s*var\(--t-ink-muted\)[^}]*opacity:\s*1/)
+    const src = join(__dirname, '..')
+    const offenders: string[] = []
+    for (const file of walk(src)) {
+      if (file.endsWith('tokenBridge.test.ts')) continue
+      if (/placeholder:text-/.test(readFileSync(file, 'utf8'))) offenders.push(file.slice(src.length + 1))
+    }
+    expect(offenders).toEqual([])
+  })
+
   it('has no dead class names left in source', () => {
     const src = join(__dirname, '..')
     const offenders: string[] = []

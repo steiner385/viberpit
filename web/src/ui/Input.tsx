@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils'
 
 /** Shared look for native controls; exported for one-off <input>s that can't use the component. */
 export const controlClass =
-  'w-full rounded-md border border-edge bg-surface text-ink placeholder:text-ink-faint ' +
+  'w-full rounded-md border border-edge bg-surface text-ink ' +
   'focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent ' +
   'disabled:opacity-50 disabled:cursor-not-allowed aria-invalid:border-danger aria-invalid:focus:ring-danger'
 

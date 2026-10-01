@@ -420,7 +420,6 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
               'block w-full resize-none rounded-md border border-edge-strong',
               'bg-surface text-ink',
               'px-3 py-2 text-sm',
-              'placeholder:text-ink-muted',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               'min-h-target overflow-y-auto',
             )}
