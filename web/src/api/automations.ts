@@ -20,7 +20,9 @@ export interface AutomationStatusProduct {
 export interface AutomationStatus {
   text: string
   level: 'idle' | 'active' | 'warn' | 'error' | 'unknown'
-  waitingReason?: 'schedule' | 'human' | 'capacity' | 'budget'
+  /** `policy` is the backlog runner's admission wait (`backlog_runner.py`,
+   *  `waiting_reason="policy"`); it was on the wire and missing here. */
+  waitingReason?: 'schedule' | 'human' | 'capacity' | 'budget' | 'policy'
   observedAt?: string
   lastRefreshFailedAt?: string
   counts: Record<string, number> | null

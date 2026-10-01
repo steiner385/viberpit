@@ -39,10 +39,11 @@ describe('DeliveryListColumn', () => {
     mount()
     const list = screen.getByRole('list', { name: 'Automations' })
     const names = within(list).getAllByRole('button', { name: /^Open automation/ }).map((b) => b.getAttribute('aria-label'))
-    // backlog-runner has 2 actionable → needs-you first; pr-doctor live session → in-flight; pm-classify idle
+    // backlog-runner has 2 actionable → needs-you first; pr-doctor warn with no
+    // typed wait → blocked (2026-10-01 Delivery critique, P2); pm-classify idle
     expect(names).toEqual(['Open automation Backlog runner', 'Open automation PR doctor', 'Open automation PM classify'])
     expect(screen.getByText(/2 actionable/)).toBeInTheDocument()
-    expect(screen.getByText(/Notice · 1 live session · 2 PRs failing/)).toBeInTheDocument()
+    expect(screen.getByText(/Blocked · 0 actionable · 1 live session · 2 PRs failing/)).toBeInTheDocument()
   })
   it('invoked tools are not shown as disabled loops', () => {
     mount()
