@@ -28,9 +28,13 @@ export function CheckTable<T>({ title, description, columns, rows, empty, placeh
       ) : rows.length === 0 ? (
         <p className="px-3 py-3 text-xs text-ink-muted">{empty}</p>
       ) : (
-        // Body text at the reading size (Read Ink: 12px is for labels, not
-        // for the numbers a reader is here to judge — 2026-10-01 Delivery
-        // critique, P2); the header row keeps the label size.
+        // The table scrolls inside its own section, never the page: six
+        // columns at 14px are 440px, and on a 390px phone the regressions
+        // table pushed the page scroller 69px sideways (Panes-Scroll; 2026-10-01
+        // Delivery re-critique, P1). Body text at the reading size (Read Ink:
+        // 12px is for labels, not for the numbers a reader is here to judge);
+        // the header row keeps the label size.
+        <div className="overflow-x-auto">
         <table aria-label={title} className="w-full text-sm tabular-nums">
           <thead>
             <tr className="text-left text-xs text-ink-muted">
@@ -53,6 +57,7 @@ export function CheckTable<T>({ title, description, columns, rows, empty, placeh
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   )
