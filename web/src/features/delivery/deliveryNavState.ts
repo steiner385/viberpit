@@ -58,6 +58,13 @@ export function deliveryOpenItem(
 export const automationKey = (id: string) => `automation:${id}`
 export const ciRepoKey = (repo: string) => `ci:${repo}`
 
+/** `CardFrame` id namespaces for the list column's two row lists, the ones
+ *  `ui/list/useRovingRows` looks rows up under. Named here, beside the keys,
+ *  because two parties must agree on each: the scope body that owns the list
+ *  and the row that mints the id (the roadmap's `TREE_ID_SCOPE` precedent). */
+export const AUTOMATIONS_ID_SCOPE = 'delivery-automations'
+export const CI_ID_SCOPE = 'delivery-ci'
+
 /** The list-row key an open item highlights. */
 export function keyForDeliveryItem(item: DeliveryOpenItem | null): string | null {
   if (!item) return null

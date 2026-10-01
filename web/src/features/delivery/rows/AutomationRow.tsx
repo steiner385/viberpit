@@ -14,15 +14,22 @@ import { automationKey } from '../deliveryNavState'
 export interface AutomationRowProps {
   automation: Automation
   selected: boolean
+  /** The list's roving tab stop (`ui/list/useRovingRows`): exactly one row is
+   *  `true`. Omitted, `CardFrame` falls back to "focusable when selected",
+   *  which leaves an unselected list with no tab stop at all. */
+  focusable?: boolean
+  /** `CardFrame` id namespace, the one `useRovingRows` looks rows up under. */
+  idScope?: string
   onOpen: (id: string) => void
 }
 
-export function AutomationRow({ automation: a, selected, onOpen }: AutomationRowProps) {
+export function AutomationRow({ automation: a, selected, focusable, idScope, onOpen }: AutomationRowProps) {
   const tier = automationTier(a)
   const key = automationKey(a.id)
   return (
     <div
       data-testid={`row-${key}`}
+      data-row-key={a.id}
       role="listitem"
       // `aria-selected` belongs to an option/treeitem; on a listitem it is not
       // a valid attribute at all (axe rejects it) — `aria-current` instead.
@@ -30,9 +37,11 @@ export function AutomationRow({ automation: a, selected, onOpen }: AutomationRow
     >
       <CardFrame
         id={a.id}
+        idScope={idScope}
         openLabel={`Open automation ${a.name}`}
         railClass={TIER_ACCENT[tier].rail}
         selected={selected}
+        focusable={focusable}
         listMode={false}
         swipeEnabled={false}
         onOpen={onOpen}
