@@ -75,7 +75,7 @@ usage-aware multi-account rotation; steer-from-anywhere over the tailnet.
   composer, permission cards, background scope), **Pipeline** (PR health per repo, lane by lane; the
   only section allowed on the kiosk), **Roadmap** (products → capabilities → initiatives → issues,
   plus the Inbox of decisions waiting on the operator), **Delivery** (automations and CI health),
-  **Settings** (accounts, rotation, hosts, preferences — 17 sections in 5 groups).
+  **Settings** (accounts, rotation, hosts, preferences — 20 sections in 5 groups).
 - **Layout modes:** phone, tablet, desktop, kiosk — one `AppShell` and one route table drive all
   four; there is no mobile/desktop fork.
 

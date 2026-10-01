@@ -1,0 +1,884 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-01T12:45:40.168Z",
+  "title": "Design System: ViberPit",
+  "source": {
+    "tokens": "web/src/index.css",
+    "primitives": "web/src/ui/",
+    "signatures": [
+      "web/src/features/settings/chassis/",
+      "web/src/features/roadmap/rows/",
+      "web/src/pipeline/StatusStrip.tsx",
+      "web/src/features/pipeline/charts/plotroom.css"
+    ],
+    "mode": "scan"
+  },
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Cool Paper",
+        "canonical": "#f6f7f9",
+        "oklch": "oklch(97.6% 0.003 250.0)",
+        "dark": "#14171c",
+        "themeInvariant": false,
+        "cssVar": "--t-canvas",
+        "tonalRamp": [
+          "oklch(18% 0.009 250.0)",
+          "oklch(28% 0.010 250.0)",
+          "oklch(38% 0.012 250.0)",
+          "oklch(48% 0.012 250.0)",
+          "oklch(58% 0.012 250.0)",
+          "oklch(70% 0.011 250.0)",
+          "oklch(82% 0.009 250.0)",
+          "oklch(94% 0.005 250.0)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Sheet White",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 250.0)",
+        "dark": "#1d2128",
+        "themeInvariant": false,
+        "cssVar": "--t-surface",
+        "tonalRamp": [
+          "oklch(18% 0.009 250.0)",
+          "oklch(28% 0.010 250.0)",
+          "oklch(38% 0.012 250.0)",
+          "oklch(48% 0.012 250.0)",
+          "oklch(58% 0.012 250.0)",
+          "oklch(70% 0.011 250.0)",
+          "oklch(82% 0.009 250.0)",
+          "oklch(94% 0.005 250.0)"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Pressed Paper",
+        "canonical": "#eef1f5",
+        "oklch": "oklch(95.7% 0.006 255.5)",
+        "dark": "#262b34",
+        "themeInvariant": false,
+        "cssVar": "--t-surface-raised",
+        "tonalRamp": [
+          "oklch(18% 0.009 255.5)",
+          "oklch(28% 0.010 255.5)",
+          "oklch(38% 0.012 255.5)",
+          "oklch(48% 0.012 255.5)",
+          "oklch(58% 0.012 255.5)",
+          "oklch(70% 0.011 255.5)",
+          "oklch(82% 0.009 255.5)",
+          "oklch(94% 0.005 255.5)"
+        ]
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Hairline Grey",
+        "canonical": "#d9dde3",
+        "oklch": "oklch(89.6% 0.009 258.3)",
+        "dark": "#323843",
+        "themeInvariant": false,
+        "cssVar": "--t-edge",
+        "tonalRamp": [
+          "oklch(18% 0.009 258.3)",
+          "oklch(28% 0.010 258.3)",
+          "oklch(38% 0.012 258.3)",
+          "oklch(48% 0.012 258.3)",
+          "oklch(58% 0.012 258.3)",
+          "oklch(70% 0.011 258.3)",
+          "oklch(82% 0.009 258.3)",
+          "oklch(94% 0.005 258.3)"
+        ]
+      },
+      "edge-strong": {
+        "role": "neutral",
+        "displayName": "Rule Grey",
+        "canonical": "#b9c1cc",
+        "oklch": "oklch(80.8% 0.018 256.3)",
+        "dark": "#46505e",
+        "themeInvariant": false,
+        "cssVar": "--t-edge-strong",
+        "tonalRamp": [
+          "oklch(18% 0.013 256.3)",
+          "oklch(28% 0.015 256.3)",
+          "oklch(38% 0.017 256.3)",
+          "oklch(48% 0.018 256.3)",
+          "oklch(58% 0.018 256.3)",
+          "oklch(70% 0.016 256.3)",
+          "oklch(82% 0.013 256.3)",
+          "oklch(94% 0.008 256.3)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Slate Ink",
+        "canonical": "#1a1f29",
+        "oklch": "oklch(23.9% 0.021 264.1)",
+        "dark": "#e8eaee",
+        "themeInvariant": false,
+        "cssVar": "--t-ink",
+        "tonalRamp": [
+          "oklch(18% 0.015 264.1)",
+          "oklch(28% 0.018 264.1)",
+          "oklch(38% 0.020 264.1)",
+          "oklch(48% 0.021 264.1)",
+          "oklch(58% 0.020 264.1)",
+          "oklch(70% 0.018 264.1)",
+          "oklch(82% 0.015 264.1)",
+          "oklch(94% 0.009 264.1)"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#646a77",
+        "oklch": "oklch(52.4% 0.022 265.8)",
+        "dark": "#98a0ac",
+        "themeInvariant": false,
+        "cssVar": "--t-ink-muted",
+        "tonalRamp": [
+          "oklch(18% 0.016 265.8)",
+          "oklch(28% 0.019 265.8)",
+          "oklch(38% 0.021 265.8)",
+          "oklch(48% 0.022 265.8)",
+          "oklch(58% 0.021 265.8)",
+          "oklch(70% 0.019 265.8)",
+          "oklch(82% 0.016 265.8)",
+          "oklch(94% 0.010 265.8)"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Pencil Grey",
+        "canonical": "#8b929e",
+        "oklch": "oklch(65.8% 0.020 261.3)",
+        "dark": "#6f7886",
+        "themeInvariant": false,
+        "cssVar": "--t-ink-faint",
+        "tonalRamp": [
+          "oklch(18% 0.014 261.3)",
+          "oklch(28% 0.017 261.3)",
+          "oklch(38% 0.019 261.3)",
+          "oklch(48% 0.020 261.3)",
+          "oklch(58% 0.019 261.3)",
+          "oklch(70% 0.017 261.3)",
+          "oklch(82% 0.014 261.3)",
+          "oklch(94% 0.009 261.3)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "#2461e7",
+        "oklch": "oklch(53.9% 0.213 262.9)",
+        "dark": "#5c9bff",
+        "themeInvariant": false,
+        "cssVar": "--t-accent",
+        "tonalRamp": [
+          "oklch(18% 0.152 262.9)",
+          "oklch(28% 0.184 262.9)",
+          "oklch(38% 0.204 262.9)",
+          "oklch(48% 0.212 262.9)",
+          "oklch(58% 0.209 262.9)",
+          "oklch(70% 0.189 262.9)",
+          "oklch(82% 0.152 262.9)",
+          "oklch(94% 0.097 262.9)"
+        ]
+      },
+      "accent-ink": {
+        "role": "primary",
+        "displayName": "Ink on Blue",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 250.0)",
+        "dark": "#0b1416",
+        "themeInvariant": false,
+        "cssVar": "--t-accent-ink",
+        "tonalRamp": [
+          "oklch(18% 0.009 250.0)",
+          "oklch(28% 0.010 250.0)",
+          "oklch(38% 0.012 250.0)",
+          "oklch(48% 0.012 250.0)",
+          "oklch(58% 0.012 250.0)",
+          "oklch(70% 0.011 250.0)",
+          "oklch(82% 0.009 250.0)",
+          "oklch(94% 0.005 250.0)"
+        ]
+      },
+      "accent-wash": {
+        "role": "primary",
+        "displayName": "Blue Tint",
+        "canonical": "#e8effc",
+        "oklch": "oklch(95.1% 0.019 263.0)",
+        "dark": "#1c2a44",
+        "themeInvariant": false,
+        "cssVar": "--t-accent-wash",
+        "tonalRamp": [
+          "oklch(18% 0.014 263.0)",
+          "oklch(28% 0.016 263.0)",
+          "oklch(38% 0.018 263.0)",
+          "oklch(48% 0.019 263.0)",
+          "oklch(58% 0.019 263.0)",
+          "oklch(70% 0.017 263.0)",
+          "oklch(82% 0.014 263.0)",
+          "oklch(94% 0.009 263.0)"
+        ]
+      },
+      "on-strong": {
+        "role": "neutral",
+        "displayName": "Fill Ink",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 250.0)",
+        "dark": "#ffffff",
+        "themeInvariant": true,
+        "cssVar": "--t-on-strong",
+        "tonalRamp": [
+          "oklch(18% 0.009 250.0)",
+          "oklch(28% 0.010 250.0)",
+          "oklch(38% 0.012 250.0)",
+          "oklch(48% 0.012 250.0)",
+          "oklch(58% 0.012 250.0)",
+          "oklch(70% 0.011 250.0)",
+          "oklch(82% 0.009 250.0)",
+          "oklch(94% 0.005 250.0)"
+        ]
+      },
+      "success": {
+        "role": "status",
+        "displayName": "Go Green",
+        "canonical": "#147c3b",
+        "oklch": "oklch(51.5% 0.134 150.1)",
+        "dark": "#3dbb66",
+        "themeInvariant": false,
+        "cssVar": "--t-success",
+        "tonalRamp": [
+          "oklch(18% 0.096 150.1)",
+          "oklch(28% 0.116 150.1)",
+          "oklch(38% 0.129 150.1)",
+          "oklch(48% 0.134 150.1)",
+          "oklch(58% 0.132 150.1)",
+          "oklch(70% 0.119 150.1)",
+          "oklch(82% 0.096 150.1)",
+          "oklch(94% 0.061 150.1)"
+        ]
+      },
+      "success-wash": {
+        "role": "status",
+        "displayName": "Go Green Tint",
+        "canonical": "#e6f4ea",
+        "oklch": "oklch(95.4% 0.020 154.9)",
+        "dark": "#17301f",
+        "themeInvariant": false,
+        "cssVar": "--t-success-wash",
+        "tonalRamp": [
+          "oklch(18% 0.014 154.9)",
+          "oklch(28% 0.017 154.9)",
+          "oklch(38% 0.019 154.9)",
+          "oklch(48% 0.020 154.9)",
+          "oklch(58% 0.019 154.9)",
+          "oklch(70% 0.018 154.9)",
+          "oklch(82% 0.014 154.9)",
+          "oklch(94% 0.009 154.9)"
+        ]
+      },
+      "success-strong": {
+        "role": "status",
+        "displayName": "Go Green Fill",
+        "canonical": "#15803d",
+        "oklch": "oklch(52.7% 0.137 150.1)",
+        "dark": "#15803d",
+        "themeInvariant": true,
+        "cssVar": "--t-success-strong",
+        "tonalRamp": [
+          "oklch(18% 0.098 150.1)",
+          "oklch(28% 0.119 150.1)",
+          "oklch(38% 0.132 150.1)",
+          "oklch(48% 0.137 150.1)",
+          "oklch(58% 0.135 150.1)",
+          "oklch(70% 0.122 150.1)",
+          "oklch(82% 0.098 150.1)",
+          "oklch(94% 0.063 150.1)"
+        ]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Caution Amber",
+        "canonical": "#9a5d00",
+        "oklch": "oklch(53.5% 0.118 66.7)",
+        "dark": "#e0a23b",
+        "themeInvariant": false,
+        "cssVar": "--t-warning",
+        "tonalRamp": [
+          "oklch(18% 0.084 66.7)",
+          "oklch(28% 0.102 66.7)",
+          "oklch(38% 0.114 66.7)",
+          "oklch(48% 0.118 66.7)",
+          "oklch(58% 0.116 66.7)",
+          "oklch(70% 0.105 66.7)",
+          "oklch(82% 0.084 66.7)",
+          "oklch(94% 0.054 66.7)"
+        ]
+      },
+      "warning-wash": {
+        "role": "status",
+        "displayName": "Caution Amber Tint",
+        "canonical": "#fbf0dc",
+        "oklch": "oklch(95.8% 0.029 82.6)",
+        "dark": "#3a2d16",
+        "themeInvariant": false,
+        "cssVar": "--t-warning-wash",
+        "tonalRamp": [
+          "oklch(18% 0.021 82.6)",
+          "oklch(28% 0.025 82.6)",
+          "oklch(38% 0.028 82.6)",
+          "oklch(48% 0.029 82.6)",
+          "oklch(58% 0.028 82.6)",
+          "oklch(70% 0.026 82.6)",
+          "oklch(82% 0.021 82.6)",
+          "oklch(94% 0.013 82.6)"
+        ]
+      },
+      "warning-strong": {
+        "role": "status",
+        "displayName": "Caution Amber Fill",
+        "canonical": "#9a5d00",
+        "oklch": "oklch(53.5% 0.118 66.7)",
+        "dark": "#9a5d00",
+        "themeInvariant": true,
+        "cssVar": "--t-warning-strong",
+        "tonalRamp": [
+          "oklch(18% 0.084 66.7)",
+          "oklch(28% 0.102 66.7)",
+          "oklch(38% 0.114 66.7)",
+          "oklch(48% 0.118 66.7)",
+          "oklch(58% 0.116 66.7)",
+          "oklch(70% 0.105 66.7)",
+          "oklch(82% 0.084 66.7)",
+          "oklch(94% 0.054 66.7)"
+        ]
+      },
+      "danger": {
+        "role": "status",
+        "displayName": "Stop Red",
+        "canonical": "#c23636",
+        "oklch": "oklch(54.5% 0.177 25.3)",
+        "dark": "#ef6262",
+        "themeInvariant": false,
+        "cssVar": "--t-danger",
+        "tonalRamp": [
+          "oklch(18% 0.126 25.3)",
+          "oklch(28% 0.153 25.3)",
+          "oklch(38% 0.170 25.3)",
+          "oklch(48% 0.177 25.3)",
+          "oklch(58% 0.174 25.3)",
+          "oklch(70% 0.157 25.3)",
+          "oklch(82% 0.126 25.3)",
+          "oklch(94% 0.081 25.3)"
+        ]
+      },
+      "danger-wash": {
+        "role": "status",
+        "displayName": "Stop Red Tint",
+        "canonical": "#fbe9e7",
+        "oklch": "oklch(94.8% 0.020 25.2)",
+        "dark": "#3a1d1b",
+        "themeInvariant": false,
+        "cssVar": "--t-danger-wash",
+        "tonalRamp": [
+          "oklch(18% 0.014 25.2)",
+          "oklch(28% 0.017 25.2)",
+          "oklch(38% 0.019 25.2)",
+          "oklch(48% 0.020 25.2)",
+          "oklch(58% 0.020 25.2)",
+          "oklch(70% 0.018 25.2)",
+          "oklch(82% 0.014 25.2)",
+          "oklch(94% 0.009 25.2)"
+        ]
+      },
+      "danger-strong": {
+        "role": "status",
+        "displayName": "Stop Red Fill",
+        "canonical": "#b42318",
+        "oklch": "oklch(50.0% 0.182 29.5)",
+        "dark": "#b42318",
+        "themeInvariant": true,
+        "cssVar": "--t-danger-strong",
+        "tonalRamp": [
+          "oklch(18% 0.130 29.5)",
+          "oklch(28% 0.157 29.5)",
+          "oklch(38% 0.175 29.5)",
+          "oklch(48% 0.182 29.5)",
+          "oklch(58% 0.179 29.5)",
+          "oklch(70% 0.162 29.5)",
+          "oklch(82% 0.130 29.5)",
+          "oklch(94% 0.083 29.5)"
+        ]
+      },
+      "info": {
+        "role": "status",
+        "displayName": "Steel Blue",
+        "canonical": "#4f6d8f",
+        "oklch": "oklch(52.6% 0.064 252.1)",
+        "dark": "#8aa4c8",
+        "themeInvariant": false,
+        "cssVar": "--t-info",
+        "tonalRamp": [
+          "oklch(18% 0.046 252.1)",
+          "oklch(28% 0.056 252.1)",
+          "oklch(38% 0.062 252.1)",
+          "oklch(48% 0.064 252.1)",
+          "oklch(58% 0.063 252.1)",
+          "oklch(70% 0.057 252.1)",
+          "oklch(82% 0.046 252.1)",
+          "oklch(94% 0.029 252.1)"
+        ]
+      },
+      "info-wash": {
+        "role": "status",
+        "displayName": "Steel Blue Tint",
+        "canonical": "#e9eef5",
+        "oklch": "oklch(94.7% 0.011 256.7)",
+        "dark": "#1f2836",
+        "themeInvariant": false,
+        "cssVar": "--t-info-wash",
+        "tonalRamp": [
+          "oklch(18% 0.009 256.7)",
+          "oklch(28% 0.010 256.7)",
+          "oklch(38% 0.012 256.7)",
+          "oklch(48% 0.012 256.7)",
+          "oklch(58% 0.012 256.7)",
+          "oklch(70% 0.011 256.7)",
+          "oklch(82% 0.009 256.7)",
+          "oklch(94% 0.005 256.7)"
+        ]
+      },
+      "info-strong": {
+        "role": "status",
+        "displayName": "Steel Blue Fill",
+        "canonical": "#3d5674",
+        "oklch": "oklch(44.6% 0.058 253.5)",
+        "dark": "#3d5674",
+        "themeInvariant": true,
+        "cssVar": "--t-info-strong",
+        "tonalRamp": [
+          "oklch(18% 0.042 253.5)",
+          "oklch(28% 0.050 253.5)",
+          "oklch(38% 0.056 253.5)",
+          "oklch(48% 0.058 253.5)",
+          "oklch(58% 0.057 253.5)",
+          "oklch(70% 0.052 253.5)",
+          "oklch(82% 0.042 253.5)",
+          "oklch(94% 0.027 253.5)"
+        ]
+      },
+      "neutral": {
+        "role": "status",
+        "displayName": "Graphite (neutral tone)",
+        "canonical": "#646a77",
+        "oklch": "oklch(52.4% 0.022 265.8)",
+        "dark": "#98a0ac",
+        "themeInvariant": false,
+        "cssVar": "--t-neutral",
+        "tonalRamp": [
+          "oklch(18% 0.016 265.8)",
+          "oklch(28% 0.019 265.8)",
+          "oklch(38% 0.021 265.8)",
+          "oklch(48% 0.022 265.8)",
+          "oklch(58% 0.021 265.8)",
+          "oklch(70% 0.019 265.8)",
+          "oklch(82% 0.016 265.8)",
+          "oklch(94% 0.010 265.8)"
+        ]
+      },
+      "neutral-wash": {
+        "role": "status",
+        "displayName": "Graphite Tint",
+        "canonical": "#eceff3",
+        "oklch": "oklch(95.1% 0.006 255.5)",
+        "dark": "#252a33",
+        "themeInvariant": false,
+        "cssVar": "--t-neutral-wash",
+        "tonalRamp": [
+          "oklch(18% 0.009 255.5)",
+          "oklch(28% 0.010 255.5)",
+          "oklch(38% 0.012 255.5)",
+          "oklch(48% 0.012 255.5)",
+          "oklch(58% 0.012 255.5)",
+          "oklch(70% 0.011 255.5)",
+          "oklch(82% 0.009 255.5)",
+          "oklch(94% 0.005 255.5)"
+        ]
+      },
+      "neutral-strong": {
+        "role": "status",
+        "displayName": "Graphite Fill",
+        "canonical": "#5b6472",
+        "oklch": "oklch(50.1% 0.025 259.2)",
+        "dark": "#5b6472",
+        "themeInvariant": true,
+        "cssVar": "--t-neutral-strong",
+        "tonalRamp": [
+          "oklch(18% 0.018 259.2)",
+          "oklch(28% 0.022 259.2)",
+          "oklch(38% 0.024 259.2)",
+          "oklch(48% 0.025 259.2)",
+          "oklch(58% 0.025 259.2)",
+          "oklch(70% 0.022 259.2)",
+          "oklch(82% 0.018 259.2)",
+          "oklch(94% 0.011 259.2)"
+        ]
+      },
+      "brand": {
+        "role": "brand",
+        "displayName": "Viper Green",
+        "canonical": "#22c55e",
+        "oklch": "oklch(72.3% 0.192 149.6)",
+        "dark": "#22c55e",
+        "themeInvariant": true,
+        "cssVar": "--t-brand",
+        "tonalRamp": [
+          "oklch(18% 0.137 149.6)",
+          "oklch(28% 0.166 149.6)",
+          "oklch(38% 0.184 149.6)",
+          "oklch(48% 0.192 149.6)",
+          "oklch(58% 0.189 149.6)",
+          "oklch(70% 0.171 149.6)",
+          "oklch(82% 0.137 149.6)",
+          "oklch(94% 0.088 149.6)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display (ten-foot numeral)",
+        "cssVar": "--fs-4xl",
+        "purpose": "Kiosk status-tile numerals only; 36px, 45px at --scale 1.25. --fs-3xl (30px) is the second ten-foot step."
+      },
+      "headline": {
+        "displayName": "Headline (stat numeral)",
+        "cssVar": "--fs-2xl",
+        "purpose": "Stat-tile numerals at the top of a detail pane."
+      },
+      "title": {
+        "displayName": "Title",
+        "cssVar": "--fs-xl",
+        "purpose": "Settings section h2; the metro node glyph and queue-health word read from across a room."
+      },
+      "title-sm": {
+        "displayName": "Title (page)",
+        "cssVar": "--fs-lg",
+        "purpose": "The page h1 in PageHeader and a dialog title."
+      },
+      "body": {
+        "displayName": "Body",
+        "cssVar": "--fs-sm",
+        "purpose": "The working size: rows, controls, descriptions, buttons. Markdown prose runs at 1.6. --fs-base (16px) is the root and the pipeline charts’ floor."
+      },
+      "label": {
+        "displayName": "Label",
+        "cssVar": "--fs-xs",
+        "purpose": "Badges, pills, field help and errors, uppercase section headings and fieldset legends, card subtitles."
+      },
+      "micro": {
+        "displayName": "Micro (counter)",
+        "cssVar": "--fs-2xs",
+        "purpose": "Counters only: delta arrows, nav count badge, menu digit hints. Never a sentence."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "cssVar": "--font-mono",
+        "purpose": "Inline code (0.875em on Pressed Paper), pre blocks, Kbd."
+      },
+      "scale": {
+        "displayName": "Kiosk scale",
+        "cssVar": "--scale",
+        "purpose": "Every --fs-* step is calc(rem * var(--scale)). 1 everywhere; AppShell sets 1.25 on <html> in kiosk mode. The only type-size knob."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating-overlay",
+        "value": "0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)",
+        "purpose": "Dialog and Sheet panels, over a rgb(0 0 0 / 0.5) backdrop, with a 1px edge border."
+      },
+      {
+        "name": "anchored-popover",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "Menu, command palette, mention and export menus. No backdrop."
+      },
+      {
+        "name": "live-halo",
+        "value": "0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)",
+        "purpose": "The metro track’s active node. A status signal, not elevation; breathes to 7px/11% behind prefers-reduced-motion: no-preference."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 2px var(--t-accent)",
+        "purpose": "Every focus-visible ring (Tailwind ring-2 ring-accent). Buttons add a 2px canvas offset; tabs use it inset."
+      }
+    ],
+    "motion": [
+      {
+        "name": "transition-colors",
+        "value": "color, background-color, border-color 150ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Default hover/active transition on buttons, tabs, nav items, cards, switch."
+      },
+      {
+        "name": "sheet-right",
+        "value": "slide-in-right 200ms ease-out (translateX(100%) → 0)",
+        "purpose": "Right-side Sheet entry. motion-reduce:animate-none."
+      },
+      {
+        "name": "sheet-bottom",
+        "value": "slide-in-bottom 200ms ease-out (translateY(100%) → 0)",
+        "purpose": "Bottom Sheet entry on a phone. motion-reduce:animate-none."
+      },
+      {
+        "name": "pulse",
+        "value": "opacity 1 → 0.5 → 1, 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        "purpose": "StatusPill and tier/attention dot for action-required tiers only, and the Skeleton bar. Always motion-safe:; a bare animate-pulse is a defect."
+      },
+      {
+        "name": "working-shimmer",
+        "value": "background-position 200% → -200%, 1.8s linear infinite, background-clip: text",
+        "purpose": "The WorkingIndicator phrase while a session is mid-turn. The class is dropped under prefers-reduced-motion and the media query also neutralises it."
+      },
+      {
+        "name": "metro-pulse",
+        "value": "box-shadow halo 4px/22% → 7px/11%, 1.5s infinite",
+        "purpose": "Only a live track’s active node; legend swatches never pulse. Gated on prefers-reduced-motion: no-preference."
+      },
+      {
+        "name": "spin",
+        "value": "rotate 360deg 1s linear infinite",
+        "purpose": "Button loading glyph. motion-reduce:animate-none."
+      },
+      {
+        "name": "reduced-motion-gate",
+        "value": "prefers-reduced-motion: reduce",
+        "purpose": "One JS subscriber (useViewport().reducedMotion) plus motion-safe:/motion-reduce: utilities. Nothing animates when the viewer asks it not to."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "max-width: 430px",
+        "note": "Custom variant: a phone in portrait; sheds secondary chrome (pill labels, header controls)."
+      },
+      {
+        "name": "short",
+        "value": "max-height: 580px",
+        "note": "Custom variant: keyboard-up or landscape phone; sheds optional chrome."
+      },
+      {
+        "name": "charts",
+        "value": "max-width: 560px",
+        "note": "Pipeline charts reflow (nodes flex, Gantt name takes its own line). Also a desktop at 200% zoom."
+      },
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px",
+        "note": "The desktop breakpoint; CardFrame and the shell branch on it."
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      },
+      {
+        "name": "kiosk",
+        "value": "mode, not a width",
+        "note": "?kiosk=1: read-only, --scale 1.25, no dialogs or page actions, idle cursor hidden, queue train wraps in portrait."
+      }
+    ],
+    "zLayers": {
+      "raised": 1,
+      "sticky": 20,
+      "nav": 25,
+      "popover": 30,
+      "overlay": 40,
+      "drawer": 50,
+      "dialog": 60,
+      "palette": 1000,
+      "toast": 1100
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one primary action on a surface: Save, Confirm, New. Signal Blue fill, Ink-on-Blue text, 40px (md); use the 44px lg size for a dialog confirm.",
+      "html": "<button class=\"ds-btn-primary\">Save</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:8px 16px;border:0;border-radius:var(--r-md,6px);background:var(--t-accent,#2461e7);color:var(--t-accent-ink,#fff);font-family:system-ui,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:500;line-height:1.5;cursor:pointer;transition:background-color .15s}.ds-btn-primary:hover{background:color-mix(in oklab,var(--t-accent,#2461e7) 90%,transparent)}.ds-btn-primary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--t-canvas,#f6f7f9),0 0 0 4px var(--t-accent,#2461e7)}.ds-btn-primary:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The default button for anything that is not the primary action. Sheet White, hairline border, Slate Ink; hover fills with Pressed Paper.",
+      "html": "<button class=\"ds-btn-secondary\">Refresh</button>",
+      "css": ".ds-btn-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:8px 16px;border:1px solid var(--t-edge,#d9dde3);border-radius:var(--r-md,6px);background:var(--t-surface,#fff);color:var(--t-ink,#1a1f29);font-family:system-ui,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:500;line-height:1.5;cursor:pointer;transition:background-color .15s}.ds-btn-secondary:hover{background:var(--t-surface-raised,#eef1f5)}.ds-btn-secondary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--t-canvas,#f6f7f9),0 0 0 4px var(--t-accent,#2461e7)}.ds-btn-secondary:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive confirm (Delete, Discard and leave). Stop Red theme-invariant -strong fill with Fill Ink so it reads the same in both themes; always 44px tall in a dialog footer.",
+      "html": "<button class=\"ds-btn-danger\">Discard and leave</button>",
+      "css": ".ds-btn-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:44px;min-height:44px;padding:0 24px;border:0;border-radius:var(--r-md,6px);background:var(--t-danger-strong,#b42318);color:var(--t-on-strong,#fff);font-family:system-ui,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:500;line-height:1.5;cursor:pointer;transition:background-color .15s}.ds-btn-danger:hover{background:color-mix(in oklab,var(--t-danger-strong,#b42318) 90%,transparent)}.ds-btn-danger:focus-visible{outline:none;box-shadow:0 0 0 2px var(--t-canvas,#f6f7f9),0 0 0 4px var(--t-accent,#2461e7)}.ds-btn-danger:disabled{opacity:.5;pointer-events:none}"
+    },
+    {
+      "name": "Text Input (Field)",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A labelled control: 14px/500 label, 40px (min 44px) Sheet White input with hairline border, Graphite placeholder, accent border + 2px ring on focus, 12px Graphite help. Error turns border and ring Stop Red.",
+      "html": "<div class=\"ds-field\"><label class=\"ds-field-label\" for=\"ds-input-1\">Session title</label><input id=\"ds-input-1\" class=\"ds-input\" type=\"text\" placeholder=\"e.g. Fix the flaky WS test\" aria-describedby=\"ds-input-1-help\"><p id=\"ds-input-1-help\" class=\"ds-field-help\">Shown in the list and the browser tab.</p></div>",
+      "css": ".ds-field{display:flex;flex-direction:column;gap:4px;max-width:360px;font-family:system-ui,'Segoe UI',Roboto,sans-serif;}.ds-field-label{font-size:14px;font-weight:500;color:var(--t-ink,#1a1f29)}.ds-input{width:100%;height:40px;min-height:44px;padding:0 12px;border:1px solid var(--t-edge,#d9dde3);border-radius:var(--r-md,6px);background:var(--t-surface,#fff);color:var(--t-ink,#1a1f29);font:inherit;font-size:14px;transition:border-color .15s,box-shadow .15s}.ds-input::placeholder{color:var(--t-ink-muted,#646a77);opacity:1}.ds-input:hover{border-color:var(--t-edge-strong,#b9c1cc)}.ds-input:focus{outline:none;border-color:var(--t-accent,#2461e7);box-shadow:0 0 0 2px var(--t-accent,#2461e7)}.ds-input:focus-visible{outline:none}.ds-input[aria-invalid=\"true\"]{border-color:var(--t-danger,#c23636)}.ds-input[aria-invalid=\"true\"]:focus{box-shadow:0 0 0 2px var(--t-danger,#c23636)}.ds-input:disabled{opacity:.5;cursor:not-allowed}.ds-field-help{margin:0;font-size:12px;color:var(--t-ink-muted,#646a77)}"
+    },
+    {
+      "name": "Status Pill",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Tone text on tone wash, 12px/500, full pill, with a 12px glyph so the state is never colour alone. Count badges are the same pill without the icon, in neutral.",
+      "html": "<span class=\"ds-pill ds-pill-success\" aria-label=\"Status: Ready\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg><span>Ready</span></span> <span class=\"ds-pill ds-pill-warning ds-pill-pulse\" aria-label=\"Status: Needs you\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg><span>Needs you</span></span> <span class=\"ds-pill ds-pill-neutral\" style=\"font-variant-numeric:tabular-nums\">12</span>",
+      "css": ".ds-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:var(--r-pill,999px);font-family:system-ui,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:500;line-height:1.5;vertical-align:middle}.ds-pill-success{color:var(--t-success,#147c3b);background:var(--t-success-wash,#e6f4ea)}.ds-pill-warning{color:var(--t-warning,#9a5d00);background:var(--t-warning-wash,#fbf0dc)}.ds-pill-danger{color:var(--t-danger,#c23636);background:var(--t-danger-wash,#fbe9e7)}.ds-pill-info{color:var(--t-info,#4f6d8f);background:var(--t-info-wash,#e9eef5)}.ds-pill-neutral{color:var(--t-ink-muted,#646a77);background:var(--t-neutral-wash,#eceff3);padding:2px 6px;line-height:1}@media (prefers-reduced-motion:no-preference){.ds-pill-pulse{animation:ds-pulse 2s cubic-bezier(.4,0,.6,1) infinite}}@keyframes ds-pulse{50%{opacity:.5}}"
+    },
+    {
+      "name": "Tabs",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "The page tab strip: hairline baseline, 44px tabs at 14px/500, Graphite at rest with a transparent 2px underline, Signal Blue text and underline when selected; count badges and the amber attention dot ride inside the tab.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Automation\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\">Overview</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Needs you <span class=\"ds-tab-dot\" aria-hidden=\"true\"></span></button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">In flight <span class=\"ds-tab-count\">3</span></button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Events</button></div>",
+      "css": ".ds-tabs{display:flex;gap:4px;border-bottom:1px solid var(--t-edge,#d9dde3);font-family:system-ui,'Segoe UI',Roboto,sans-serif;}.ds-tab{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-height:44px;padding:8px 12px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:none;color:var(--t-ink-muted,#646a77);font:inherit;font-size:14px;font-weight:500;cursor:pointer;transition:color .15s,border-color .15s}.ds-tab:hover{color:var(--t-ink,#1a1f29)}.ds-tab[aria-selected=\"true\"]{color:var(--t-accent,#2461e7);border-bottom-color:var(--t-accent,#2461e7)}.ds-tab:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--t-accent,#2461e7)}.ds-tab-dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--t-warning,#9a5d00)}.ds-tab-count{display:inline-flex;align-items:center;padding:2px 6px;border-radius:999px;background:var(--t-neutral-wash,#eceff3);color:var(--t-ink-muted,#646a77);font-size:12px;line-height:1;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Status Tile Strip",
+      "kind": "card",
+      "refersTo": "tile",
+      "description": "The pipeline number band: wash-on-hairline tiles, 6px corners, toned 20px/600 numeral over an uppercase Graphite label; empty tiles dim to 50%, the active filter takes the accent ring. On the kiosk the numeral grows to the 36px display step.",
+      "html": "<div class=\"ds-tiles\" role=\"group\" aria-label=\"Status overview\"><button class=\"ds-tile ds-tile-warning\" aria-pressed=\"true\"><b>2</b><span>Needs you</span></button><button class=\"ds-tile ds-tile-danger\" aria-pressed=\"false\"><b>1</b><span>Failed</span><i aria-hidden=\"true\">▲1</i></button><button class=\"ds-tile ds-tile-accent\" aria-pressed=\"false\"><b>4</b><span>In flight</span></button><button class=\"ds-tile ds-tile-neutral\" aria-pressed=\"false\" disabled><b>0</b><span>Idle</span></button></div>",
+      "css": ".ds-tiles{display:flex;flex-wrap:wrap;gap:8px;font-family:system-ui,'Segoe UI',Roboto,sans-serif;}.ds-tile{position:relative;display:flex;flex:1 1 96px;flex-direction:column;gap:2px;min-height:44px;padding:8px 12px;border:1px solid var(--t-edge,#d9dde3);border-radius:var(--r-md,6px);text-align:left;font:inherit;cursor:pointer;transition:opacity .15s}.ds-tile b{font-size:20px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums}.ds-tile span{font-size:11px;letter-spacing:.025em;text-transform:uppercase;color:var(--t-ink-muted,#646a77)}.ds-tile i{position:absolute;top:8px;right:10px;font-style:normal;font-size:11px;font-weight:700;line-height:1;color:var(--t-danger,#c23636)}.ds-tile-warning{background:var(--t-warning-wash,#fbf0dc)}.ds-tile-warning b{color:var(--t-warning,#9a5d00)}.ds-tile-danger{background:var(--t-danger-wash,#fbe9e7)}.ds-tile-danger b{color:var(--t-danger,#c23636)}.ds-tile-accent{background:var(--t-accent-wash,#e8effc)}.ds-tile-accent b{color:var(--t-accent,#2461e7)}.ds-tile-neutral{background:var(--t-neutral-wash,#eceff3)}.ds-tile-neutral b{color:var(--t-ink-muted,#646a77)}.ds-tile:hover{opacity:.9}.ds-tile:disabled{opacity:.5;cursor:default}.ds-tile[aria-pressed=\"true\"]{box-shadow:0 0 0 2px var(--t-accent,#2461e7)}.ds-tile:focus-visible{outline:none;box-shadow:0 0 0 2px var(--t-accent,#2461e7)}"
+    },
+    {
+      "name": "List Card with Tone Rail",
+      "kind": "card",
+      "refersTo": "tile",
+      "description": "The CardFrame every sessions and roadmap row shares: Sheet White, hairline, 10px corners, a 3px tone rail set into the left edge, 14px/500 title with a tier dot, 12px Graphite subtitle naming the tier, a trailing pill. Hover strengthens the border; selection is an accent ring on Blue Tint.",
+      "html": "<article class=\"ds-card\"><span class=\"ds-card-rail ds-rail-warning\" aria-hidden=\"true\"></span><div class=\"ds-card-row\"><button class=\"ds-card-open\" aria-label=\"Open initiative Account rotation\"><span class=\"ds-dot ds-dot-warning ds-dot-pulse\" aria-hidden=\"true\"></span><span class=\"ds-card-title\">Account rotation</span></button><span class=\"ds-pill ds-pill-warning\">Discovery</span></div><span class=\"ds-card-sub\"><span class=\"ds-card-reason\">Ready to advance → Build</span> · 3/8 done · priority 2</span></article>",
+      "css": ".ds-card{position:relative;display:flex;flex-direction:column;gap:2px;max-width:420px;min-height:44px;padding:8px 12px 8px 20px;border:1px solid var(--t-edge,#d9dde3);border-radius:var(--r-lg,10px);background:var(--t-surface,#fff);color:var(--t-ink,#1a1f29);font-family:system-ui,'Segoe UI',Roboto,sans-serif;cursor:pointer;transition:border-color .15s}.ds-card:hover{border-color:var(--t-edge-strong,#b9c1cc)}.ds-card:focus-within{box-shadow:0 0 0 2px var(--t-accent,#2461e7)}.ds-card[aria-selected=\"true\"]{background:var(--t-accent-wash,#e8effc);box-shadow:0 0 0 2px var(--t-accent,#2461e7)}.ds-card-rail{position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:0 999px 999px 0}.ds-rail-warning{background:var(--t-warning,#9a5d00)}.ds-rail-danger{background:var(--t-danger,#c23636)}.ds-rail-success{background:var(--t-success,#147c3b)}.ds-card-row{display:flex;align-items:center;gap:8px;min-width:0}.ds-card-open{display:flex;flex:1;align-items:center;gap:8px;min-width:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:4px}.ds-card-open:focus-visible{outline:none;box-shadow:0 0 0 2px var(--t-accent,#2461e7)}.ds-dot{display:inline-block;flex-shrink:0;width:8px;height:8px;border-radius:999px}.ds-dot-warning{background:var(--t-warning,#9a5d00)}@media (prefers-reduced-motion:no-preference){.ds-dot-pulse{animation:ds-pulse 2s cubic-bezier(.4,0,.6,1) infinite}}@keyframes ds-pulse{50%{opacity:.5}}.ds-card-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500}.ds-card-sub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--t-ink-muted,#646a77)}.ds-card-reason{color:var(--t-warning,#9a5d00)}.ds-pill{display:inline-flex;align-items:center;flex-shrink:0;padding:2px 6px;border-radius:999px;font-size:12px;font-weight:500;line-height:1}.ds-pill-warning{color:var(--t-warning,#9a5d00);background:var(--t-warning-wash,#fbf0dc)}"
+    },
+    {
+      "name": "Metro Track",
+      "kind": "custom",
+      "refersTo": "tile",
+      "description": "The pipeline as a transit line: 32px nodes on 4px hairline segments. Done fills Go Green -strong with Fill Ink, the live node fills Signal Blue with a Cool Paper glyph and a breathing accent halo (reduced-motion gated), failed is Stop Red, parked is bold Caution Amber -strong.",
+      "html": "<div class=\"ds-track\"><div class=\"ds-node ds-node-done\"><span class=\"ds-node-c\">✓</span><span class=\"ds-node-label\">CI</span></div><span class=\"ds-seg ds-seg-done\"></span><div class=\"ds-node ds-node-active\"><span class=\"ds-node-c\">●</span><span class=\"ds-node-label\">Queue</span><span class=\"ds-node-eta\">4m</span></div><span class=\"ds-seg\"></span><div class=\"ds-node ds-node-parked\"><span class=\"ds-node-c\">P</span><span class=\"ds-node-label\">QA</span></div><span class=\"ds-seg\"></span><div class=\"ds-node\"><span class=\"ds-node-c\">○</span><span class=\"ds-node-label\">Merged</span></div></div>",
+      "css": ".ds-track{display:flex;align-items:flex-start;max-width:440px;font-family:system-ui,'Segoe UI',Roboto,sans-serif;}.ds-node{display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:84px}.ds-node-c{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--t-edge,#d9dde3);color:var(--t-ink-muted,#646a77);font-size:20px}.ds-node-done .ds-node-c{background:var(--t-success-strong,#15803d);color:var(--t-on-strong,#fff)}.ds-node-active .ds-node-c{background:var(--t-accent,#2461e7);color:var(--t-canvas,#f6f7f9);box-shadow:0 0 0 4px color-mix(in srgb,var(--t-accent,#2461e7) 22%,transparent)}.ds-node-fail .ds-node-c{background:var(--t-danger,#c23636);color:var(--t-canvas,#f6f7f9)}.ds-node-parked .ds-node-c{background:var(--t-warning-strong,#9a5d00);color:var(--t-on-strong,#fff);font-weight:700}.ds-node-label{margin-top:3px;font-size:16px;color:var(--t-ink-muted,#646a77)}.ds-node-active .ds-node-label{color:var(--t-accent,#2461e7);font-weight:700}.ds-node-parked .ds-node-label{color:var(--t-warning,#9a5d00);font-weight:700}.ds-node-eta{font-size:16px;color:var(--t-accent,#2461e7);font-variant-numeric:tabular-nums}.ds-seg{flex:1;min-width:24px;height:4px;margin-top:14px;border-radius:2px;background:var(--t-edge,#d9dde3)}.ds-seg-done{background:var(--t-success,#147c3b)}@media (prefers-reduced-motion:no-preference){.ds-node-active .ds-node-c{animation:ds-metro-pulse 1.5s infinite}}@keyframes ds-metro-pulse{0%,100%{box-shadow:0 0 0 4px color-mix(in srgb,var(--t-accent,#2461e7) 22%,transparent)}50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--t-accent,#2461e7) 11%,transparent)}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Pit Wall",
+    "overview": "A race team's pit wall is a bank of quiet screens read at a glance by one person who is responsible for everything on them. Nothing on the wall is decorative; the only colour is status, the controls are few and deliberate, and the same screens are read from a stool and from across the garage. ViberPit's interface is built the same way. It is a console for one operator who is interrupt-driven: the queue of things that need a human is the product, and everything else is calm, dense context around it. (Alternates, if the owner prefers: **\"The Instrument Panel\"** or **\"The Dispatch Desk\"**. Swap the name; the rules below do not change.)\n\nThe material is near-neutral paper and ink. Surfaces are flat white or cool grey, separated by hairlines rather than shadows; depth is a one-step tonal lift (`surface` → `surface-raised`) and a border, and a drop shadow appears only under the three things that actually float (dialog, sheet, menu). There is exactly one interactive accent, a signal blue used for focus rings, the selected tab, the active nav item and the primary button, and four status tones (success, warning, danger, info) plus a neutral, each with a text value, a tint and a theme-invariant fill. Status is always a tone *and* a word or glyph, never a colour alone. Type is the system face at a small working size, 14px body on a 4px grid, with weight (500/600/700) doing the hierarchical work rather than size. The kiosk reads the same screens at ten feet by multiplying one variable, not by a second design.\n\nThe voice is serious about the work, not about itself. Density, speed and glanceability beat explanation. Confirmed rejections, all enforced in code: no brand colour in the UI (the Viper Green logotype is the one exception and is text-exempt), no webfonts, no hard-coded colour outside `index.css` (an ESLint rule and a contrast test fail the build), no dark-mode class variants (the tokens flip at `:root`), and no motion that is not a live signal.",
+    "keyCharacteristics": [
+      "Near-neutral ink/edge/surface palette with one accent and four status tones; every pair held at ≥ 4.5:1 in light and dark by a test.",
+      "Flat surfaces, 1px hairline borders, one tonal step for raised chrome; shadows only on floating overlays.",
+      "System type (`system-ui`) on a 4px rhythm; 14px body, 12px labels, weight carries hierarchy.",
+      "One type scale: the kiosk sets `--scale: 1.25` and every size follows.",
+      "44px minimum target on every control a finger can reach; `focus-visible` ring in the accent everywhere.",
+      "Status rails, dots and pills carry tone; the word or glyph beside them carries the meaning.",
+      "Motion is rare, short (150–200ms) and always behind `motion-safe` / `prefers-reduced-motion`.",
+      "Four layout modes (phone, tablet, desktop, kiosk) from one shell; chrome is shed, never shrunk, when the viewport is short or narrow."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Signal Blue is the only interactive colour. If something is blue it is focusable, selected, active or live; nothing is blue for emphasis.",
+        "section": "colors"
+      },
+      {
+        "name": "The Logotype-Only Rule",
+        "body": "Brand colours are never UI tokens. Viper Green appears in the wordmark and nowhere a person reads, points or taps; Vibe Purple does not appear at all.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tone-Plus-Word Rule",
+        "body": "A status is a tone and a word or glyph together (pill: icon + label; tier: rail/dot + the tier named in the subtitle; failed bars: colour + hatch texture). Colour alone never carries a state.",
+        "section": "colors"
+      },
+      {
+        "name": "The Invariant Fill Rule",
+        "body": "`-strong` fills and `on-strong` ink are declared once and never flip with the theme, so white-on-fill stays AA in both. Ink on a plain `accent` fill is `accent-ink`, never white.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Scale Rule",
+        "body": "There is one type scale. The kiosk enlarges it by setting `--scale: 1.25` on `<html>` and nothing else; a second kiosk-only size rule anywhere is a defect.",
+        "section": "typography"
+      },
+      {
+        "name": "The Read Ink Rule",
+        "body": "Text a person reads is Slate Ink or Graphite (both ≥ 4.5:1). Pencil Grey (`ink-faint`) is for icons and decoration only. Placeholders are read, so they are Graphite at full opacity, set once in `@layer base`.",
+        "section": "typography"
+      },
+      {
+        "name": "The Weight-Not-Size Rule",
+        "body": "Within a row or card, hierarchy is weight and ink, not size: title 14px/500 Slate, subtitle 12px Graphite. Size steps are reserved for page, section and numeral levels.",
+        "section": "typography"
+      },
+      {
+        "name": "The 44px Rule",
+        "body": "Every control a finger can reach is at least 44px tall (`min-h-target`): tabs, nav items, icon buttons, inputs at `md`, menu items, list cards, the `lg` button that every destructive or primary confirm action in a dialog footer must use. Dense desktop controls lift the floor only behind `@media (hover: hover)`.",
+        "section": "layout"
+      },
+      {
+        "name": "The Shed-Not-Shrink Rule",
+        "body": "When a viewport is short or narrow, optional chrome is hidden with the `short:` / `narrow:` variants; the title is never squeezed to make room.",
+        "section": "layout"
+      },
+      {
+        "name": "The Panes-Scroll Rule",
+        "body": "The document never scrolls. A page that can scroll past the viewport is a bug, not a layout.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hairline-First Rule",
+        "body": "A boundary is a 1px `edge` border before it is anything else. Reach for a tonal step second, and for a shadow only when the element portals out of the page flow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Nothing is lifted at rest. Hover is a fill change (to Pressed Paper) or a border change (to Rule Grey); selection is a 2px accent ring plus Blue Tint; focus is the same 2px accent ring.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** take every colour from a `--t-*` token through its Tailwind namespace (`bg-surface`, `text-ink-muted`, `border-edge`); the ESLint `no-raw-palette` rule and `contrast.test.ts` are the gate.",
+      "**Do** keep status as tone plus word or glyph: a `StatusPill` with its icon, a tier rail with the tier named in the subtitle, a failed bar with its hatch.",
+      "**Do** put `text-on-strong` on any `-strong` fill and `text-accent-ink` on a plain `accent` fill; never `text-white`.",
+      "**Do** give every reachable control a 44px minimum (`min-h-target`) and the 2px Signal Blue `focus-visible` ring; use the `lg` button for a dialog's confirm or destructive action.",
+      "**Do** gate every animation behind `motion-safe:` (or `motion-reduce:animate-none`) and animate only a live signal: one needs-you dot, one active node, one working shimmer.",
+      "**Do** separate with a 1px Hairline Grey border or a step to Pressed Paper before reaching for anything else; reserve shadows for dialog, sheet and menu.",
+      "**Do** write Graphite for secondary text and placeholders (5.4:1), and reserve Pencil Grey for icons and decoration.",
+      "**Do** make headings carry hierarchy by weight (600) and level, not by size jumps; keep the page `h1` in `PageHeader` and section headings as 12px uppercase Graphite.",
+      "**Do** shed optional chrome with `short:` and `narrow:` when a phone runs out of room, and keep the title."
+    ],
+    "donts": [
+      "**Don't** use Viper Green or Vibe Purple anywhere a person reads, points or taps; the wordmark is the only home for `brand`.",
+      "**Don't** add a webfont, a `dark:` variant, a literal hex outside `index.css`, or a second `--on-wash`-style token family.",
+      "**Don't** add a kiosk-only size, a second `@media (prefers-reduced-motion)` subscriber in JS, or a second scale: `--scale` is the one knob.",
+      "**Don't** convey a state by colour alone, or hide a setting's description behind a tooltip.",
+      "**Don't** let a tree of dots or a legend swatch pulse; motion belongs to the one live element on screen.",
+      "**Don't** lift a card at rest, add a shadow to a header, tile or input, or signal hover by elevation; hover is a fill or border change.",
+      "**Don't** let the document scroll, render a dialog on the kiosk, or render disabled page actions on it; the wall shows the title and the numbers.",
+      "**Don't** use a sentence at the 11px Micro step; it is for counters."
+    ]
+  }
+}

@@ -19,12 +19,14 @@ test-results/
 # Impeccable (design skill, .claude/README.md § Impeccable): the installer drops a
 # 16 MB native engine binary next to the skill; the launcher re-fetches it
 # (sha256-verified) into ~/.impeccable when absent. Under `.impeccable/` only the
-# shared project config is tracked; `config.local.json` is per-developer and the
-# rest is per-run scratch (comps, review screenshots, build state).
+# shared project config and the DESIGN.md sidecar are tracked; `config.local.json`
+# is per-developer and the rest is per-run scratch (comps, review screenshots,
+# build state).
 .agents/skills/impeccable/scripts/bin/
 .claude/skills/impeccable/scripts/bin/
 .impeccable/*
 !.impeccable/config.json
+!.impeccable/design.json
 !.impeccable/live/
 .impeccable/live/*
 !.impeccable/live/config.json
