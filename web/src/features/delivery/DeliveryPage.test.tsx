@@ -12,7 +12,7 @@ import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryPage } from './DeliveryPage'
-import { AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
+import { AUTOMATION_ROUTE, CAPACITY_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
 
 const patch = vi.fn()
 
@@ -99,7 +99,7 @@ function qc() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-const DELIVERY_ROUTE_PATHS = [DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE]
+const DELIVERY_ROUTE_PATHS = [DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE, CAPACITY_ROUTE]
 
 function mount(path: string) {
   const router = createMemoryRouter([
@@ -163,6 +163,26 @@ describe('DeliveryPage', () => {
     expect(h1()).toHaveTextContent('Delivery')
     expect(screen.getByText('Pick an automation')).toBeInTheDocument()
     expect(screen.getByText(/3 registered/)).toBeInTheDocument()
+  })
+
+  // 2026-10-01 Delivery re-critique, P0: below desktop the single band goes
+  // to the list whenever nothing is open, so the Capacity pane — the push
+  // level, the runner ceiling, the products table — did not exist on a phone.
+  // It opens as an item now, with the way back to the scope's list.
+  it('the Capacity pane opens as an item on a phone, titled Capacity, with a Back link to the scope', () => {
+    stubMatchMedia(LAYOUT_MODE_QUERIES.phone)
+    mount('/delivery/capacity/governor')
+    expect(h1()).toHaveTextContent('Capacity')
+    expect(screen.getByText('Push level')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Capacity' })).toHaveAttribute('href', '/delivery?scope=capacity')
+    expect(screen.queryByText('Pick an automation')).not.toBeInTheDocument()
+  })
+
+  it('an unknown capacity pane is not an item: the page falls back to the scope, never an empty pane', () => {
+    mount('/delivery/capacity/bogus')
+    expect(h1()).toHaveTextContent('Delivery')
+    expect(screen.getByText('Push level')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /^Back to/ })).toBeNull()
   })
 
   it('the Capacity scope has no welcome pane — it always shows the readout', () => {

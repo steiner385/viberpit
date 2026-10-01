@@ -148,6 +148,16 @@ describe('DeliveryListColumn', () => {
     expect(within(list).getAllByRole('listitem')).toHaveLength(5)
     expect(screen.getByRole('link', { name: 'Capacity (needs attention)' })).toHaveAttribute('aria-current', 'page')
   })
+  // 2026-10-01 Delivery re-critique, P0: below desktop the pane with the
+  // controls was unreachable. The column carries the way into it (hidden from
+  // the desktop breakpoint, where the pane is already beside the list).
+  it('Capacity scope: offers the way into the controls pane below desktop', () => {
+    mount({ scope: 'capacity', capacity: CAPACITY })
+    const link = screen.getByRole('link', { name: 'Open capacity controls' })
+    expect(link).toHaveAttribute('href', '/delivery/capacity/governor')
+    expect(link.className).toMatch(/\blg:hidden\b/)
+    expect(link.className).toMatch(/\bmin-h-target\b/)
+  })
   it('search narrows the Automations scope', () => {
     mount()
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'doctor' } })

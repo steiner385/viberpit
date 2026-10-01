@@ -1,8 +1,8 @@
 /**
- * `/delivery`, `/delivery/automations/:automationId`, `/delivery/ci/:owner/:repo`
- * — one routed page, three detail levels chosen by the params (finish-line spec
- * §4.2, §4.4), plus the two welcome scopes chosen by `?scope=`. Modelled on
- * `features/roadmap/RoadmapPage.tsx`.
+ * `/delivery`, `/delivery/automations/:automationId`, `/delivery/ci/:owner/:repo`,
+ * `/delivery/capacity/governor` — one routed page, four detail levels chosen by
+ * the params (finish-line spec §4.2, §4.4), plus the two welcome scopes chosen
+ * by `?scope=`. Modelled on `features/roadmap/RoadmapPage.tsx`.
  */
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAutomations, useStageModels } from '@/api/hooks'
@@ -26,7 +26,7 @@ import { AutomationDetail } from './automation/AutomationDetail'
 import { engineBadge } from './automation/engineBadge'
 import { CapacityDetail } from './capacity/CapacityDetail'
 import { CiRepoDetail, WINDOWS, type CiWindow } from './ci/CiRepoDetail'
-import { deliveryOpenItem, deliveryPath, deliveryScope } from './deliveryNavState'
+import { deliveryOpenItem, deliveryPath, deliveryScope, type DeliveryScope } from './deliveryNavState'
 import { DeliveryWelcome } from './DeliveryWelcome'
 
 export function DeliveryPage() {
@@ -65,6 +65,14 @@ export function DeliveryPage() {
   } else if (item?.kind === 'ciRepo') {
     title = item.repo
     crumbs.push({ label: DELIVERY.ci, to: deliveryPath('ci') }, { label: title })
+  } else if (item?.kind === 'capacity') {
+    title = DELIVERY.capacity
+    crumbs.push({ label: title })
+  }
+  const scopeOf = (i: NonNullable<typeof item>): DeliveryScope =>
+    i.kind === 'ciRepo' ? 'ci' : i.kind === 'capacity' ? 'capacity' : 'automations'
+  const scopeLabel: Record<DeliveryScope, string> = {
+    automations: DELIVERY.automations, ci: DELIVERY.ci, capacity: DELIVERY.capacity,
   }
 
   const hasObservation = isValidTimestamp(automation?.status.observedAt)
@@ -80,8 +88,8 @@ export function DeliveryPage() {
   const { mode: viewportMode } = useViewport()
   const back = item && viewportMode !== 'desktop'
     ? {
-      to: deliveryPath(item.kind === 'ciRepo' ? 'ci' : 'automations'),
-      label: `Back to ${item.kind === 'ciRepo' ? DELIVERY.ci : DELIVERY.automations}`,
+      to: deliveryPath(scopeOf(item)),
+      label: `Back to ${scopeLabel[scopeOf(item)]}`,
     }
     : undefined
 
@@ -197,9 +205,12 @@ export function DeliveryPage() {
           />
         )}
         {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={ciWindow} automations={automations.data} />}
-        {/* Capacity has no per-item route — this scope is always "nothing
-            open", and its pane is the controls/table/plan, never the welcome. */}
-        {item === null && scope === 'capacity' && <CapacityDetail />}
+        {/* The Capacity pane is the controls/table/plan, never a welcome: on
+            desktop it is simply what the `capacity` scope shows beside the
+            list; below desktop it opens as an ITEM (`/delivery/capacity/governor`,
+            2026-10-01 Delivery re-critique, P0), the only way the single band
+            ever shows it. */}
+        {(item?.kind === 'capacity' || (item === null && scope === 'capacity')) && <CapacityDetail />}
         {/* Nothing open: the pane says what is waiting rather than sitting blank. */}
         {item === null && scope !== 'capacity' && (
           <DeliveryWelcome

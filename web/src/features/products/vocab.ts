@@ -196,6 +196,8 @@ export const DELIVERY = {
   automations: 'Automations',
   ci: 'CI health',
   capacity: 'Capacity',
+  /** The phone list column's way into the Capacity pane (`/delivery/capacity/governor`). */
+  capacityControls: 'Open capacity controls',
   help: 'Is delivery healthy? Every automation that runs against your repos and sessions — what it is doing, what it needs from you, its schedule and configuration — and the CI health of each tracked repository: slow, flaky and regressing checks.',
   // Said in more than one place (the list column's empty state and the detail
   // pane's welcome pane; the error strings also in a header-level banner), so
