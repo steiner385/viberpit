@@ -34,6 +34,24 @@ export function hostRows(deploy: DeployProgress | undefined): Array<[string, Dep
   return Object.entries(deploy?.hosts ?? {}).sort(([a], [b]) => a.localeCompare(b))
 }
 
+/** Statuses whose turn the daemon drains before it restarts (mirrors
+ *  `server/sessions/status.py` MID_TURN_STATUSES). */
+export const MID_TURN_STATUSES: ReadonlySet<string> = new Set(['in_progress', 'condensing', 'retrying'])
+
+/** What a deploy does to the sessions that are live right now — the one
+ *  sentence the confirm gate exists to say (2026-09-30 Settings critique, P1).
+ *  Restart semantics per `deploy/README.md`: the daemon drains turns in flight
+ *  before it restarts, then autopilot resumes every session; a session it
+ *  cannot resume is reported, never lost silently. */
+export function deployConsequence(liveCount: number, midTurn: number): string {
+  if (liveCount === 0) return 'Restarts the server and the session daemon. No session is live right now.'
+  const live = liveCount === 1 ? '1 live session pauses' : `${liveCount} live sessions pause`
+  const turns = midTurn === 0 ? ''
+    : midTurn === 1 ? ' The turn in progress finishes first (up to a few minutes).'
+      : ` The ${midTurn} turns in progress finish first (up to a few minutes).`
+  return `Restarts the server and the session daemon. ${live} while it restarts, then autopilot resumes them.${turns} A session that cannot be resumed is reported here and on the banner.`
+}
+
 export type DeployOutcome = 'success' | 'failure' | 'idle'
 
 export function deployOutcome(deploy: DeployProgress | undefined): DeployOutcome {

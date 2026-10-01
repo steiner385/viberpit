@@ -98,6 +98,46 @@ describe('DeploySection', () => {
     expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument()
   })
 
+  // 2026-09-30 Settings critique: the description promises "how the last
+  // deploy went" but only a failure was ever rendered.
+  it('says a clean last deploy completed, with the sessions it restored and the running sha', () => {
+    mockHooks({ behind: false, commits: [], liveSha: 'abcdef0123' }, {
+      running: false,
+      phases: Object.fromEntries(['preflight', 'save', 'update', 'report', 'runners', 'restart', 'resume'].map((k) => [k, 'done'])),
+      restore: { restored: ['a', 'b', 'c'], failed: [] },
+    })
+    render(<DeploySection />)
+    expect(screen.getByRole('group', { name: 'Last deploy' })).toBeInTheDocument()
+    expect(screen.getByTestId('deploy-last-success')).toHaveTextContent('Completed — 3 sessions restored. Running abcdef0.')
+  })
+
+  it('says nothing about the last deploy when none has run, and yields to a failure', () => {
+    mockHooks({ behind: false, commits: [] }, { running: false, phases: {} })
+    const { unmount } = render(<DeploySection />)
+    expect(screen.queryByTestId('deploy-last-success')).toBeNull()
+    unmount()
+    mockHooks({ behind: false, commits: [] }, {
+      running: false, phases: { restart: 'done' }, restore: { failed: [], gaveUp: ['sess-42'] },
+    })
+    render(<DeploySection />)
+    expect(screen.queryByTestId('deploy-last-success')).toBeNull()
+    expect(screen.getByText(/sess-42/)).toBeInTheDocument()
+  })
+
+  // P0 of the same critique: a long commit subject widened the fieldset past a
+  // phone viewport and pushed Deploy now off-canvas (x=676 in 390px). The
+  // truncating chain has to be min-w-0 all the way down.
+  it('keeps the commit list shrinkable so a long subject cannot push Deploy off-screen', () => {
+    mockHooks({ behind: true, ci: 'green', commits: [
+      { sha: 'ccccccc3333', subject: 'a'.repeat(200), author: 'tony', iso: '2026-09-06T02:00:00Z' },
+    ] }, { running: false })
+    render(<DeploySection />)
+    const subject = screen.getByText('a'.repeat(200))
+    expect(subject).toHaveClass('min-w-0', 'truncate')
+    expect(subject.closest('li')).toHaveClass('min-w-0')
+    expect(screen.getByRole('group', { name: 'Pending changes' })).toHaveClass('min-w-0')
+  })
+
   it('has no accessibility violations', async () => {
     mockHooks({ behind: true, commits: COMMITS, ci: 'green' }, { running: false })
     const { container } = render(<DeploySection />)

@@ -1,6 +1,8 @@
 import { Button } from '@/ui/Button'
+import { useDeployStatus, usePendingDeploy } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { useDeployController } from '@/lib/deployController'
+import { deployOutcome } from '@/lib/deployPhases'
 import { DeployFailureNotice } from '@/shell/DeployFailureNotice'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
@@ -25,13 +27,18 @@ import { SettingsGroup } from '../chassis/SettingsGroup'
 export function DeploySection() {
   const s = useDeployState()
   const { start, starting } = useDeployController()
+  const { data: deploy } = useDeployStatus()
+  const { data: pending } = usePendingDeploy()
+  const outcome = deployOutcome(deploy)
+  const restored = deploy?.restore?.restored?.length ?? null
+  const liveSha = pending?.liveSha ? pending.liveSha.slice(0, 7) : null
 
   return (
     <SettingsSection id="deploy" title="Deploy" scope="server"
       description={SETTINGS_BY_ID.deploy.description}>
       <SettingsGroup legend="Pending changes">
         {s.behind ? (
-          <div className="flex flex-col gap-3 py-3">
+          <div className="flex min-w-0 flex-col gap-3 py-3">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-sm text-ink">
                 {s.count} change{s.count === 1 ? '' : 's'} pending deploy
@@ -51,9 +58,9 @@ export function DeploySection() {
                 navigated here to see it, and the page can afford the height. */}
             <ul className="flex flex-col gap-1">
               {s.commits.map((c) => (
-                <li key={c.sha} className="flex gap-2 font-mono text-xs">
+                <li key={c.sha} className="flex min-w-0 gap-2 font-mono text-xs">
                   <span className="text-warning">{c.sha.slice(0, 7)}</span>
-                  <span className="flex-1 truncate text-ink">{c.subject}</span>
+                  <span className="min-w-0 flex-1 truncate text-ink">{c.subject}</span>
                   <span className="text-ink-muted">{c.author}</span>
                 </li>
               ))}
@@ -65,6 +72,20 @@ export function DeploySection() {
           </p>
         )}
       </SettingsGroup>
+
+      {/* The description promises "how the last deploy went"; until now only a
+          failure was ever rendered, so a clean deploy left the promise empty
+          (2026-09-30 Settings critique). The controller reports no timestamp,
+          so this says what it knows: it completed, and how many sessions came
+          back. It yields to the failure group below whenever anything is wrong. */}
+      {!s.running && !s.hasFailure && outcome === 'success' && (
+        <SettingsGroup legend="Last deploy">
+          <p className="py-3 text-sm text-ink-muted" data-testid="deploy-last-success">
+            Completed{restored != null ? ` — ${restored} session${restored === 1 ? '' : 's'} restored` : ''}.
+            {' '}Running <code>{liveSha}</code>.
+          </p>
+        </SettingsGroup>
+      )}
 
       {s.hasFailure && (
         <SettingsGroup legend="Last deploy" tone="danger">

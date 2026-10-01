@@ -20,6 +20,15 @@ function setStart(mutate = vi.fn(), over: Record<string, unknown> = {}) {
   return mutate
 }
 
+function setSessions(statuses: string[] = []) {
+  vi.spyOn(hooks, 'useSessions').mockReturnValue(
+    { data: statuses.map((status, i) => ({ id: `s${i}`, status })) } as unknown as ReturnType<typeof hooks.useSessions>)
+}
+
+/** `start()` now asks first (2026-09-30 Settings critique, P1): the confirm is
+ *  the gate both Deploy buttons share. Answer it. */
+const confirmDeploy = () => act(() => { fireEvent.click(screen.getByRole('button', { name: 'Deploy now' })) })
+
 function Probe() {
   const c = useDeployController()
   return (
@@ -35,17 +44,48 @@ const renderProbe = () =>
   render(<DeployControllerProvider><Probe /></DeployControllerProvider>)
 
 describe('deployController', () => {
-  beforeEach(() => { vi.restoreAllMocks(); vi.useFakeTimers() })
+  // Every test gets an empty session list: the provider's gate reads `useSessions`.
+  beforeEach(() => { vi.restoreAllMocks(); vi.useFakeTimers(); setSessions() })
   afterEach(() => vi.useRealTimers())
 
-  it('start() goes to starting and fires the mutation (visible)', () => {
+  it('start() asks first; confirming goes to starting and fires the mutation (visible)', () => {
     setStatus({ running: false, phases: {} })
+    setSessions()
     const mutate = setStart()
     renderProbe()
     act(() => { fireEvent.click(screen.getByText('start')) })
-    expect(mutate).toHaveBeenCalled()
+    // Nothing has started yet: the gate is up.
+    expect(mutate).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Deploy now?' })).toBeInTheDocument()
+    expect(screen.getByTestId('intent').textContent).toBe('idle')
+    confirmDeploy()
+    expect(mutate).toHaveBeenCalledWith(undefined, expect.anything())
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('intent').textContent).toBe('starting')
     expect(screen.getByTestId('visible').textContent).toBe('true')
+  })
+
+  it('cancelling the gate starts nothing', () => {
+    setStatus({ running: false, phases: {} })
+    setSessions()
+    const mutate = setStart()
+    renderProbe()
+    act(() => { fireEvent.click(screen.getByText('start')) })
+    act(() => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })) })
+    expect(mutate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByTestId('intent').textContent).toBe('idle')
+  })
+
+  it('the gate names the live sessions and the turns that drain first', () => {
+    setStatus({ running: false, phases: {} })
+    setSessions(['in_progress', 'idle', 'waiting_input', 'ended', 'archived'])
+    setStart()
+    renderProbe()
+    act(() => { fireEvent.click(screen.getByText('start')) })
+    const dialog = screen.getByRole('dialog', { name: 'Deploy now?' })
+    expect(dialog).toHaveTextContent('3 live sessions pause while it restarts, then autopilot resumes them.')
+    expect(dialog).toHaveTextContent('The turn in progress finishes first')
   })
 
   it('is visible while the server reports running', () => {
@@ -101,9 +141,11 @@ describe('deployController', () => {
 
   it('mutation error sends intent to held-failure', () => {
     setStatus({ running: false, phases: {} })
+    setSessions()
     setStart(vi.fn((_: unknown, opts?: { onError?: () => void }) => opts?.onError?.()))
     renderProbe()
     act(() => { fireEvent.click(screen.getByText('start')) })
+    confirmDeploy()
     expect(screen.getByTestId('intent').textContent).toBe('held-failure')
   })
 })

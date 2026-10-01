@@ -1,8 +1,10 @@
 // web/src/lib/deployController.tsx
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useDeployStatus, useStartDeploy } from '@/api/hooks'
-import { deployOutcome } from './deployPhases'
+import { useDeployStatus, useSessions, useStartDeploy } from '@/api/hooks'
+import { INACTIVE_SESSION_STATUSES } from '@/api/types'
+import { ConfirmDialog } from '@/ui/ConfirmDialog'
+import { deployConsequence, deployOutcome, MID_TURN_STATUSES } from './deployPhases'
 
 export type DeployIntent = 'idle' | 'starting' | 'held-success' | 'held-failure'
 
@@ -63,6 +65,22 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     start.mutate(targetSha, { onError: () => setIntent('held-failure') })
   }, [start])
 
+  // The gate (2026-09-30 Settings critique, P1): a deploy restarts the daemon
+  // that owns every live session, and both Deploy buttons — the banner's and
+  // Settings › Deploy's — started one on a single tap. Both call `start`, so
+  // the confirm lives HERE, once, and neither surface can bypass it. `null`
+  // = nothing asked; `{ sha }` = asked, awaiting the answer. The session list is
+  // the app-wide poll `useNavBadges` already keeps warm, so counting it costs
+  // no extra request.
+  const [asking, setAsking] = useState<{ sha: string | undefined } | null>(null)
+  const { data: sessions = [] } = useSessions()
+  const ask = useCallback((targetSha?: string) => setAsking({ sha: targetSha }), [])
+  const confirm = useCallback(() => {
+    if (!asking) return
+    setAsking(null)
+    doStart(asking.sha)
+  }, [asking, doStart])
+
   const dismiss = useCallback(() => setIntent('idle'), [])
 
   const value: DeployControllerValue = {
@@ -71,10 +89,25 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
       || intent === 'held-success' || intent === 'held-failure',
     starting: start.isPending,
     startError: start.isError ? (start.error?.message ?? 'Could not start deploy') : null,
-    start: doStart,
+    start: ask,
     dismiss,
   }
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+  const live = sessions.filter((s) => !INACTIVE_SESSION_STATUSES.has(s.status))
+  const midTurn = live.filter((s) => MID_TURN_STATUSES.has(s.status)).length
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      <ConfirmDialog
+        open={asking !== null}
+        onClose={() => setAsking(null)}
+        onConfirm={confirm}
+        title={asking?.sha ? 'Deploy up to the green frontier?' : 'Deploy now?'}
+        description={deployConsequence(live.length, midTurn)}
+        confirmLabel="Deploy now"
+        tone="warning"
+      />
+    </Ctx.Provider>
+  )
 }
 
 /**
