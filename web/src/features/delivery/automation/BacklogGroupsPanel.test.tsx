@@ -83,6 +83,22 @@ describe('BacklogGroupsPanel', () => {
     expect(screen.getByRole('button', { name: /dispatch/i })).toBeInTheDocument()
   })
 
+  // 2026-10-01 Delivery critique, P1: Dispatch spawns a session and was a
+  // 65×20 hand-rolled wash beside a 40px link. It is the system's `lg`
+  // primary button now — the 44px size every primary confirm takes.
+  it('Dispatch is the lg primary Button, not a hand-rolled wash', () => {
+    render(<BacklogGroupsPanel enabled />)
+    const btn = screen.getByRole('button', { name: /dispatch/i })
+    expect(btn.className).toMatch(/\bmin-h-target\b/)
+    expect(btn.className).toMatch(/\bbg-accent\b/)
+  })
+
+  it('a consumed group is a status pill with a word, not a wash span', () => {
+    currentGroups = [{ ...baseGroup(), consumedAt: '2026-07-20T11:00:00Z' }]
+    render(<BacklogGroupsPanel enabled />)
+    expect(screen.getByLabelText('Status: Picked up')).toBeInTheDocument()
+  })
+
   it('hides dispatch button for consumed groups', () => {
     currentGroups = [{ ...baseGroup(), consumedAt: '2026-07-20T11:00:00Z' }]
     render(<BacklogGroupsPanel enabled />)

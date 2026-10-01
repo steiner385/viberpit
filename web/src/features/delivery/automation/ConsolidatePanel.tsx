@@ -1,6 +1,12 @@
 import { useMemo, useState } from 'react'
+import { AlertTriangle, Check, Clock, X } from 'lucide-react'
 import { useConsolidation, useConsolidate } from '@/api/hooks'
 import type { ActiveConsolidation, ConsolidationCandidate, ConsolidationCluster } from '@/api/automations'
+import { Badge, type Tone } from '@/ui/Badge'
+import { Button } from '@/ui/Button'
+import { SectionHeading } from '@/ui/SectionHeading'
+import { StatusPill } from '@/ui/StatusPill'
+import { SelectableRow } from '@/ui/list/SelectableRow'
 
 type OutcomeLevel = 'ok' | 'warn' | 'error'
 
@@ -10,11 +16,16 @@ const OUTCOME_TONE: Record<OutcomeLevel, string> = {
   error: 'text-danger',
 }
 
-function ciDot(checks: string): string {
-  if (checks === 'passing') return 'bg-success'
-  if (checks === 'failing') return 'bg-danger'
-  return 'bg-warning'
+// A candidate's checks as tone PLUS word (DESIGN.md's Tone-Plus-Word rule):
+// the 8px colour-only dot this replaces was unnamed to a screen reader and
+// meaningless to anyone who cannot tell its three colours apart
+// (2026-10-01 Delivery critique, P1). Same icons `PrPill` uses for the same
+// states, so a PR reads the same here and on a session card.
+const CHECKS: Record<string, { label: string; Icon: typeof Check; tone: Tone }> = {
+  passing: { label: 'passing', Icon: Check, tone: 'success' },
+  failing: { label: 'failing', Icon: X, tone: 'danger' },
 }
+const CHECKS_PENDING = { label: 'pending', Icon: Clock, tone: 'warning' as Tone }
 
 export function ConsolidatePanel({ enabled, onOpenSession }: {
   enabled: boolean
@@ -75,76 +86,90 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
   if (!group.candidates.length) return null
 
   return (
-    <div className="mt-3 border-t border-edge pt-3">
-      <div className="mb-2 text-xs font-medium text-ink-muted">
-        Consolidate PRs · {repo}
-      </div>
+    <section className="mt-3 space-y-2 border-t border-edge pt-3">
+      <SectionHeading>Consolidate PRs · {repo}</SectionHeading>
 
       {group.clusters.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2">
+        // A cluster is a one-click selection, so it is a button of the system
+        // — not a rounded-full chip of its own: "there is no selected/
+        // unselected chip; selection in this system is a ring" (DESIGN.md).
+        // A risky cluster says so with a glyph AND a word.
+        <div className="flex flex-wrap gap-2">
           {group.clusters.map((cl) => (
-            <button
+            <Button
               key={cl.numbers.join('-')}
               type="button"
+              size="sm"
+              variant="secondary"
               onClick={() => selectCluster(cl)}
-              className={`rounded-full px-3 py-1 text-xs ${
-                cl.risk === 'risky'
-                  ? 'bg-danger-wash text-danger hover:ring-1 hover:ring-danger'
-                  : 'bg-surface-raised text-ink hover:bg-edge'
-              }`}
+              iconLeft={cl.risk === 'risky' ? <AlertTriangle size={14} aria-hidden="true" className="text-danger" /> : undefined}
             >
+              {cl.risk === 'risky' && <span className="sr-only">Risky: </span>}
               {cl.numbers.length} PRs · {cl.rationale}
-            </button>
+            </Button>
           ))}
         </div>
       )}
 
-      <ul className="mb-3 space-y-1">
-        {group.candidates.map((c) => (
-          <li key={c.number} className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              aria-label={`select PR ${c.number}`}
-              checked={!!selected[c.number]}
-              onChange={() => toggle(c.number)}
-            />
-            <span className={`inline-block h-2 w-2 rounded-full ${ciDot(c.checks)}`} />
-            <a href={c.url} target="_blank" rel="noreferrer" className="truncate hover:underline">
-              #{c.number} {c.title}
-            </a>
-            {c.mergeable === 'CONFLICTING' && (
-              <span className="rounded bg-danger-wash px-1 text-xs text-danger">conflict</span>
-            )}
-            {underway.has(c.number) && (
-              <button
-                type="button"
-                aria-label={`consolidation underway for PR ${c.number} — open session`}
-                onClick={() => onOpenSession?.(underway.get(c.number)!)}
-                className="rounded bg-warning-wash px-1 text-xs text-warning hover:ring-1 hover:ring-warning shrink-0"
+      <ul className="space-y-1">
+        {group.candidates.map((c) => {
+          const checks = CHECKS[c.checks] ?? CHECKS_PENDING
+          return (
+            // The system's selection row (`ui/list/SelectableRow`, the sessions
+            // list's) rather than a bare 13×13 native checkbox — one checkbox
+            // kind on the page, labelled "Select PR N".
+            <li key={c.number} className="min-h-target flex items-center text-sm">
+              <SelectableRow
+                id={String(c.number)}
+                name={`PR ${c.number}`}
+                checked={!!selected[c.number]}
+                onToggle={(id) => toggle(Number(id))}
               >
-                consolidating…
-              </button>
-            )}
-          </li>
-        ))}
+                <span className="flex min-w-0 items-center gap-2">
+                  <StatusPill label={checks.label} Icon={checks.Icon} tone={checks.tone} hideLabelNarrow className="shrink-0" />
+                  <a href={c.url} target="_blank" rel="noreferrer" className="truncate hover:underline">
+                    #{c.number} {c.title}
+                  </a>
+                  {c.mergeable === 'CONFLICTING' && <Badge tone="danger">conflict</Badge>}
+                  {underway.has(c.number) && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="shrink-0 text-warning"
+                      aria-label={`consolidation underway for PR ${c.number} — open session`}
+                      onClick={() => onOpenSession?.(underway.get(c.number)!)}
+                    >
+                      consolidating…
+                    </Button>
+                  )}
+                </span>
+              </SelectableRow>
+            </li>
+          )
+        })}
       </ul>
 
-      <button
+      {/* Spawns a session: the `lg` primary button, like every heaviest
+          action on a Queue tab (see `BacklogGroupsPanel`'s Dispatch). */}
+      <Button
         type="button"
+        size="lg"
+        variant="primary"
         onClick={run}
         disabled={!canConsolidate}
-        className="rounded bg-accent px-3 py-1 text-sm text-accent-ink disabled:opacity-40"
+        loading={consolidate.isPending}
       >
         {consolidate.isPending ? 'Consolidating…' : `Consolidate ${chosen.length} PRs`}
-      </button>
+      </Button>
       {outcome && (
         <p
           role={outcome.level === 'error' ? 'alert' : 'status'}
-          className={`mt-2 text-sm ${OUTCOME_TONE[outcome.level]}`}
+          className={`text-sm ${OUTCOME_TONE[outcome.level]}`}
         >
           {outcome.message}
         </p>
       )}
-    </div>
+    </section>
   )
 }
