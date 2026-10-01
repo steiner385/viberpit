@@ -97,7 +97,14 @@ export function Tabs({ items, value, onChange, label, panelId, orientation = 'ho
       data-hidden-left={hidden.left || undefined}
       data-hidden-right={hidden.right || undefined}
       className={cn(
-        'flex gap-1',
+        // `shrink-0`: a horizontal strip is `overflow-x-auto`, which makes it a
+        // scroll container whose automatic min-height is ZERO — so inside a
+        // `min-h-0` flex column (every `PageContent`) a tall panel below it
+        // squeezed the strip to its 1px border. Measured on 9 of 11 Delivery
+        // detail routes on desktop and every one on a phone (2026-10-01
+        // Delivery critique, P0). The strip owns the rule so no caller can
+        // reproduce it.
+        'flex shrink-0 gap-1',
         // `relative` so a tab's offsetLeft is measured from the strip. The
         // baseline rule belongs to the strip, not its callers: the tabs'
         // `-mb-px` exists to sit their 2px indicator on it.
