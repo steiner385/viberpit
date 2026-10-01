@@ -408,6 +408,20 @@ describe('DrawerHost', () => {
     expect(screen.getByRole('separator', { name: /resize drawer/i })).toBeInTheDocument()
   })
 
+  // 2026-10-01 shell critique, P1: the push column opened with focus on `body`
+  // and ignored Escape, so the drawer a key opened at a desk width could not be
+  // reached or closed by the keyboard — the overlay below 1280px could.
+  it('push mode: focus lands on Close and Escape clears ?drawer=, like the overlay', async () => {
+    stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
+    const user = userEvent.setup()
+    const router = renderAt(['/sessions?drawer=help'])
+    expect(region()).not.toHaveAttribute('aria-modal')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close Help & Shortcuts' }))
+    await user.keyboard('{Escape}')
+    expect(router.state.location.search).toBe('')
+    expect(region()).toBeNull()
+  })
+
   it('renders at the persisted width and writes nudges back to viberpit.drawerWidth', async () => {
     stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
     localStorage.setItem(DRAWER_STORAGE_KEY, '520')
