@@ -27,7 +27,13 @@ interface SelectableRowProps {
 export function SelectableRow({ id, name, checked, onToggle, children }: SelectableRowProps) {
   const shiftHeld = useRef(false)
   return (
-    <div className="flex items-center gap-2">
+    // `min-w-0 w-full`: as a flex child of a row (`ConsolidatePanel`'s and
+    // `ManualDispatchDialog`'s `<li class="flex">`) a flex item cannot shrink
+    // below its content without `min-w-0`, so a truncating link inside kept
+    // its 500–590px and the phone's PAGE scrolled sideways by 275px (2026-10-01
+    // Delivery re-critique, P1). In the block contexts the sessions lists use
+    // it in, both classes are no-ops.
+    <div className="flex min-w-0 w-full items-center gap-2">
       <input
         type="checkbox"
         checked={checked}

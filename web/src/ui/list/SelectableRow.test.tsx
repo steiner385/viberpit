@@ -15,6 +15,16 @@ describe('SelectableRow', () => {
     expect(screen.getByText('row body')).toBeInTheDocument()
   })
 
+  // 2026-10-01 Delivery re-critique, P1: as a flex child of a row the root
+  // could not shrink below a truncating link's content, and the phone's page
+  // scrolled sideways by 275px on PR Doctor's Queue tab.
+  it('can shrink inside a flex row (min-w-0) and fills it (w-full), so a truncating child truncates', () => {
+    render(<SelectableRow id="s1" name="A" checked={false} onToggle={vi.fn()}>x</SelectableRow>)
+    const root = screen.getByRole('checkbox').parentElement!
+    expect(root.className).toMatch(/\bmin-w-0\b/)
+    expect(root.className).toMatch(/\bw-full\b/)
+  })
+
   it('reports a plain click as shift=false', async () => {
     const onToggle = vi.fn()
     render(<SelectableRow id="s1" name="A" checked={false} onToggle={onToggle}>x</SelectableRow>)
