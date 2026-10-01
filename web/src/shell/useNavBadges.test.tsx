@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
-import type { Account, PullRequestInfo, Session } from '@/api/types'
+import type { Account, Session } from '@/api/types'
 import type { Automation } from '@/api/automations'
 import type { TriageProposal } from '@/api/triage'
 
 const useSessions = vi.fn()
-const useAllPrs = vi.fn()
 const useAutomations = vi.fn()
 const useAccounts = vi.fn()
 const useTriage = vi.fn()
@@ -16,7 +15,6 @@ const useDeployState = vi.fn()
 
 vi.mock('@/api/hooks', () => ({
   useSessions: () => useSessions(),
-  useAllPrs: () => useAllPrs(),
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
   useTriage: () => useTriage(),
@@ -78,7 +76,6 @@ function proposal(over: Partial<TriageProposal> = {}): TriageProposal {
 describe('useNavBadges', () => {
   beforeEach(() => {
     useSessions.mockReturnValue({ data: [] })
-    useAllPrs.mockReturnValue({ data: [] })
     useAutomations.mockReturnValue({ data: [] })
     useAccounts.mockReturnValue({ data: [] })
     useTriage.mockReturnValue({ data: [] })
@@ -103,9 +100,17 @@ describe('useNavBadges', () => {
   it('a zero count comes back as undefined so no badge renders', () => {
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.sessions).toBeUndefined()
-    expect(result.current.pipeline).toBeUndefined()
     expect(result.current.delivery).toBeUndefined()
     expect(result.current.roadmap).toBeUndefined()
+  })
+
+  // 2026-10-01 shell critique, P1: four badge conventions in one pill. The rule
+  // is now one — an amber needs-you count, an amber dot, or nothing — and the
+  // in-flight PR inventory Pipeline wore ("19") is not a badge at all.
+  it('Pipeline has no badge key: the rail never counts inventory', () => {
+    expect(NAV_DEFS.find((d) => d.id === 'pipeline')?.badge).toBeUndefined()
+    const { result } = renderHook(() => useNavBadges())
+    expect(Object.keys(result.current)).not.toContain('pipeline')
   })
 
   // Finish-line row 3: the Triage section is gone and its queue is the Inbox
@@ -115,7 +120,8 @@ describe('useNavBadges', () => {
   it('roadmap counts pending proposals, and an empty queue shows no badge', () => {
     useTriage.mockReturnValue({ data: [proposal({ id: 'a' }), proposal({ id: 'b' })] })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.roadmap).toBe(2)
+    // An amber count: the Inbox is a queue, and reads like Sessions' queue.
+    expect(result.current.roadmap).toEqual({ count: 2, attention: true })
 
     useTriage.mockReturnValue({ data: [] })
     const { result: empty } = renderHook(() => useNavBadges())
@@ -134,7 +140,7 @@ describe('useNavBadges', () => {
       ],
     })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.roadmap).toBe(5)
+    expect(result.current.roadmap).toEqual({ count: 5, attention: true })
   })
 
   // Spec 2026-09-18 §6: a decision proposal notifies through the EXISTING
@@ -152,7 +158,7 @@ describe('useNavBadges', () => {
       ],
     })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.roadmap).toBe(3)
+    expect(result.current.roadmap).toEqual({ count: 3, attention: true })
   })
 
   it('the badge asks for the bare, impact-free decisions list', () => {
@@ -164,7 +170,7 @@ describe('useNavBadges', () => {
     useTriage.mockReturnValue({ data: [] })
     useDecisions.mockReturnValue({ data: [{ id: 'd1', status: 'pending' }] })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.roadmap).toBe(1)
+    expect(result.current.roadmap).toEqual({ count: 1, attention: true })
   })
 
   it('settings is boolean-or-undefined, never a number', () => {
@@ -267,23 +273,28 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toEqual({ count: 1, attention: true })
   })
 
-  it('navBadgeProps renders an attention count as an amber count (count AND attention)', () => {
+  it('navBadgeProps renders an attention count as an amber count (count AND attention); there is no bare count', () => {
     const def = NAV_DEFS.find((d) => d.badge === 'sessions')!
     expect(navBadgeProps(def, { sessions: { count: 2, attention: true } } as NavBadges)).toEqual({ count: 2, attention: true })
-    expect(navBadgeProps(def, { sessions: 4 } as NavBadges)).toEqual({ count: 4 })
     expect(navBadgeProps(def, { sessions: true } as NavBadges)).toEqual({ attention: true })
     expect(navBadgeProps(def, { sessions: undefined } as NavBadges)).toEqual({ attention: false })
+    // A section with no badge key renders nothing, whatever the badges hold.
+    expect(navBadgeProps(NAV_DEFS.find((d) => d.id === 'pipeline')!, { sessions: true } as NavBadges)).toEqual({ attention: false })
   })
 
-  it('pipeline counts in-flight PRs; delivery counts actionable work independently of live sessions', () => {
-    const prs: PullRequestInfo[] = [
-      { number: 1, url: 'https://example/pr/1', state: 'open', checks: 'pending', title: 't', deployed: false },
-    ]
-    useAllPrs.mockReturnValue({ data: prs })
+  it('delivery is an amber count of the decisions automations are waiting on, independent of live sessions', () => {
     useAutomations.mockReturnValue({ data: [automation({ activeSessions: 3, actionableCount: 2 })] })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.pipeline).toBe(1)
-    expect(result.current.delivery).toBe(2)
+    expect(result.current.delivery).toEqual({ count: 2, attention: true })
+  })
+
+  it('a blocked automation (a warn with no typed wait) lights the Delivery dot with nothing to decide', () => {
+    useAutomations.mockReturnValue({ data: [automation({ actionableCount: 0, status: { text: 'Reconcile refused', level: 'warn', counts: null } })] })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.delivery).toBe(true)
+    // …but an expected pause (a typed wait) does not.
+    useAutomations.mockReturnValue({ data: [automation({ actionableCount: 0, status: { text: 'Paused', level: 'warn', waitingReason: 'schedule', counts: null } })] })
+    expect(renderHook(() => useNavBadges()).result.current.delivery).toBeUndefined()
   })
 
   // spec 2026-09-20 C8: "nothing can run" must be visible from any section.
@@ -296,7 +307,7 @@ describe('useNavBadges', () => {
     useAutomations.mockReturnValue({ data: [automation({ actionableCount: 2 })] })
     useCapacityBinding.mockReturnValue({ data: { binding: { layer: 'product', code: 'product_capacity_full', text: 'x' } } })
     const { result } = renderHook(() => useNavBadges())
-    expect(result.current.delivery).toBe(2)
+    expect(result.current.delivery).toEqual({ count: 2, attention: true })
   })
 })
 
