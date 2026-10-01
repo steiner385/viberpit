@@ -31,7 +31,7 @@ import { TopBar } from './TopBar'
  *  existing is a type error here rather than a silently dead override. */
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
-    sessions: undefined, pipeline: undefined, roadmap: undefined,
+    sessions: undefined, roadmap: undefined,
     delivery: undefined, settings: undefined,
     ...over,
   }
@@ -74,7 +74,7 @@ async function openMore() {
 
 describe('NavBar', () => {
   beforeEach(() => {
-    badges.mockReturnValue(navBadges({ sessions: 3, settings: true }))
+    badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true }, settings: true }))
   })
 
   it('renders exactly the first four sections as links, in order', () => {
@@ -95,13 +95,13 @@ describe('NavBar', () => {
     // with a numeric badge; now that it has left the nav, Settings — boolean
     // only — is the sole overflow badge, so there is no real-data example of a
     // COUNT folding into More any more.)
-    badges.mockReturnValue(navBadges({ sessions: 3, settings: true }))
+    badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true }, settings: true }))
     renderPhoneNav()
     expect(within(bar()).getByRole('button', { name: 'More (needs attention)' })).toBeInTheDocument()
   })
 
   it('shows a plain More when nothing behind it is badged', () => {
-    badges.mockReturnValue(navBadges({ sessions: 3 }))
+    badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true } }))
     renderPhoneNav()
     expect(within(bar()).getByRole('button', { name: 'More' })).toBeInTheDocument()
   })
@@ -111,19 +111,23 @@ describe('NavBar', () => {
   // by Dashboard) draws the count unconditionally — losing it here would be a
   // visible regression for every phone user, not a cosmetic one.
   it('draws a visible count badge on the phone bar, not only in the accessible name', () => {
-    badges.mockReturnValue(navBadges({ sessions: 3 }))
+    badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true } }))
     renderPhoneNav()
-    const sessions = within(bar()).getByRole('link', { name: 'Sessions (3)' })
+    // A nav count is always a needs-you count (2026-10-01 shell critique, P1:
+    // one badge rule), so the name carries "needs attention" with it.
+    const sessions = within(bar()).getByRole('link', { name: 'Sessions (3, needs attention)' })
     expect(visibleText(sessions)).toContain('3')
   })
 
   it('draws the attention dot on the phone bar', () => {
-    // `pipeline: true` is the attention shape (`navBadgeProps` maps any non-number
-    // that is `true`), on a section that sits on the bar rather than behind More.
-    badges.mockReturnValue(navBadges({ pipeline: true }))
+    // `delivery: true` is the bare attention shape (a blocked loop, a binding
+    // capacity constraint), on a section that sits on the bar rather than
+    // behind More. Pipeline has no badge key at all: its number was inventory.
+    badges.mockReturnValue(navBadges({ delivery: true }))
     renderPhoneNav()
-    const pipeline = within(bar()).getByRole('link', { name: 'Pipeline (needs attention)' })
-    expect(pipeline.querySelector('span.bg-warning')).not.toBeNull()
+    const delivery = within(bar()).getByRole('link', { name: 'Delivery (needs attention)' })
+    expect(delivery.querySelector('span.bg-warning')).not.toBeNull()
+    expect(within(bar()).getByRole('link', { name: 'Pipeline' }).querySelector('span.rounded-pill')).toBeNull()
   })
 
   it('carries Settings’ attention flag onto More, and shows it inline in the sheet', async () => {
@@ -180,7 +184,7 @@ describe('NavBar', () => {
 
   it('marks the active section with aria-current, including a nested route', () => {
     renderPhoneNav('/sessions/abc123')
-    expect(within(bar()).getByRole('link', { name: 'Sessions (3)' })).toHaveAttribute('aria-current', 'page')
+    expect(within(bar()).getByRole('link', { name: 'Sessions (3, needs attention)' })).toHaveAttribute('aria-current', 'page')
     expect(within(bar()).getByRole('link', { name: 'Pipeline' })).not.toHaveAttribute('aria-current')
   })
 

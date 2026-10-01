@@ -6,8 +6,12 @@ import {
 import { DELIVERY_PATH, deliveryScope } from '@/features/delivery/deliveryNavState'
 import { DELIVERY, ROADMAP } from '@/features/products/vocab'
 
-/** Which count `useNavBadges()` supplies for this section, if any. */
-export type NavBadgeKey = 'sessions' | 'pipeline' | 'roadmap' | 'delivery' | 'settings'
+/** Which badge `useNavBadges()` supplies for this section, if any. ONE rule
+ *  (2026-10-01 shell critique, P1): a nav badge is an amber needs-you count or
+ *  an amber attention dot, or nothing. Inventory — how many PRs are in flight,
+ *  how many products exist — lives in the section's own scope pills. Pipeline
+ *  has no key because its only number was inventory. */
+export type NavBadgeKey = 'sessions' | 'roadmap' | 'delivery' | 'settings'
 
 /** Shape of a nav entry, before `id` is narrowed to the derived union. */
 interface NavDefShape {
@@ -98,7 +102,12 @@ const DEFS = [
     help: 'Live sessions. Start one from the prompt; open one to read its transcript and reply. Switch the list to Archived to reread, restore or delete a past session.' },
   // showInKiosk:true — the pre-cutover kiosk section, and the one whose actions
   // consult `useInteractive()` (`StatusStrip` tiles, `PrRow` expansion).
-  { id: 'pipeline',    label: 'Pipeline',    icon: GitPullRequest,  path: '/pipeline',    badge: 'pipeline',    showInKiosk: true,  hasList: false,
+  //
+  // No `badge`: the "19" it wore was the in-flight PR INVENTORY, drawn in the
+  // same pill as the Sessions queue and read as one (2026-10-01 shell critique,
+  // P1). The page's own health header carries lane attention; the rail does not
+  // badge inventory.
+  { id: 'pipeline',    label: 'Pipeline',    icon: GitPullRequest,  path: '/pipeline',                          showInKiosk: true,  hasList: false,
     help: 'Pull-request health for each repo, lane by lane, with the fix actions each lane offers.' },
   // showInKiosk:false — `RoadmapPage` advances initiatives (`advance.mutate`),
   // creates them, and syncs products; every one is a mutation. Since finish-line
@@ -108,7 +117,8 @@ const DEFS = [
   // keydown listener, so a passer-by (or a stray keyboard on a wall display)
   // would empty the queue.
   //
-  // `badge: 'roadmap'` is that queue's depth. It came off the deleted Triage row:
+  // `badge: 'roadmap'` is that queue's depth, drawn amber because it IS a queue
+  // (an `AttentionCount`, like Sessions'). It came off the deleted Triage row:
   // a queue nothing points at from outside the section is a queue nobody drains.
   { id: 'roadmap',     label: ROADMAP.label, icon: MapIcon,         path: '/roadmap',     badge: 'roadmap',     showInKiosk: false, hasList: true,
     help: ROADMAP.help },

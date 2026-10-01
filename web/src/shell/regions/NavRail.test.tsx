@@ -33,7 +33,7 @@ import { NavRail } from './NavRail'
  *  existing is a type error here rather than a silently dead override. */
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
-    sessions: undefined, pipeline: undefined, roadmap: undefined,
+    sessions: undefined, roadmap: undefined,
     delivery: undefined, settings: undefined,
     ...over,
   }
@@ -66,7 +66,7 @@ function renderRail(path = '/sessions', matching: string[] = [W768, W1024]) {
 describe('NavRail', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
-    badges.mockReturnValue(navBadges({ sessions: 3, settings: true }))
+    badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true }, settings: true }))
   })
 
   it('is a landmark carrying the region id', () => {
@@ -92,17 +92,17 @@ describe('NavRail', () => {
   it('marks the active section with aria-current', () => {
     renderRail('/pipeline')
     expect(screen.getByRole('link', { name: /Pipeline/ })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: /Sessions \(3\)/ })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: /Sessions \(3, needs attention\)/ })).not.toHaveAttribute('aria-current')
   })
 
   it('marks the section active on a nested route', () => {
     renderRail('/sessions/abc123')
-    expect(screen.getByRole('link', { name: /Sessions \(3\)/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: /Sessions \(3, needs attention\)/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('folds the badge count into the accessible name, matching the Tabs convention', () => {
     renderRail()
-    const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
+    const sessions = screen.getByRole('link', { name: 'Sessions (3, needs attention)' })
     expect(sessions.textContent).toContain('3')
     // `settings: true` is the attention flag, never a count.
     expect(screen.getByRole('link', { name: 'Settings (needs attention)' })).toBeInTheDocument()
@@ -146,20 +146,20 @@ describe('NavRail', () => {
     expect(screen.queryByRole('button', { name: /navigation/i })).not.toBeInTheDocument()
     // Collapsed: no visible label, and the name comes from real text — not an
     // aria-label, which is free to drift from whatever is on screen.
-    const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
+    const sessions = screen.getByRole('link', { name: 'Sessions (3, needs attention)' })
     // Was `querySelector('span:not(.sr-only)')` toBeNull, i.e. "nothing visible
     // at all". A collapsed item now draws its count badge over the icon (the
     // test below asserts that), so the claim narrows to the one it was making:
     // the LABEL is not visible. Everything else in this test is unchanged.
     const visible = [...sessions.querySelectorAll('span')].filter((s) => !s.classList.contains('sr-only'))
     expect(visible.map((s) => s.textContent)).not.toContain('Sessions')
-    expect(sessions.querySelector('.sr-only')?.textContent).toBe('Sessions (3)')
+    expect(sessions.querySelector('.sr-only')?.textContent).toBe('Sessions (3, needs attention)')
     expect(sessions).not.toHaveAttribute('aria-label')
   })
 
   it('draws the count badge on the collapsed rail, where there is no label to carry it', () => {
     renderRail('/sessions', [W768, W1024])
-    const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
+    const sessions = screen.getByRole('link', { name: 'Sessions (3, needs attention)' })
     const visible = [...sessions.querySelectorAll('span')].filter((s) => !s.classList.contains('sr-only'))
     expect(visible.map((s) => s.textContent)).toContain('3')
     // Still decorative: the count is announced once, via the sr-only name.
@@ -171,9 +171,9 @@ describe('NavRail', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Expand navigation' }))
     expect(localStorage.getItem(RAIL_EXPANDED_KEY)).toBe('true')
     // Expanded: the label becomes visible; the accessible name is unchanged.
-    const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
+    const sessions = screen.getByRole('link', { name: 'Sessions (3, needs attention)' })
     expect(sessions.querySelector('span[aria-hidden="true"]')?.textContent).toBe('Sessions')
-    expect(sessions.querySelector('.sr-only')?.textContent).toBe('Sessions (3)')
+    expect(sessions.querySelector('.sr-only')?.textContent).toBe('Sessions (3, needs attention)')
     expect(screen.getByRole('button', { name: 'Collapse navigation' })).toHaveAttribute(
       'aria-expanded',
       'true',
