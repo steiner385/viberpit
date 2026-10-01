@@ -3,15 +3,16 @@
  * nothing (issue #602). A sibling of Notifications and Channels since #2077.
  */
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
 import { api } from '@/api/client'
+import { useConfirm } from '@/ui/useConfirm'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import {
-  ACTIONS, EVENT_CLASSES, NOTIF_KEYS, errMessage, eventLabel, inputClass, useNotificationChannels,
+  ACTIONS, EVENT_CLASSES, NOTIF_KEYS, errMessage, eventLabel, inputClass, useNotificationChannels, useNotificationRules,
   type Channel, type Rule, type TestDecision,
 } from './notificationsApi'
 
@@ -26,13 +27,20 @@ function scopeSummary(r: Rule): string {
 export function NotificationRulesSection() {
   const def = SETTINGS_BY_ID.rules
   const qc = useQueryClient()
-  const { data: rules, isLoading } = useQuery({
-    queryKey: NOTIF_KEYS.rules,
-    queryFn: () => api.get<Rule[]>('/notifications/rules'),
-  })
+  const { data: rules, isLoading } = useNotificationRules()
   const { data: channels } = useNotificationChannels()
   const channelName = (id: string | null) =>
     (id && channels?.find((c) => c.id === id)?.name) || id || '—'
+  const { confirm, dialog } = useConfirm()
+  const askDelete = async (r: Rule) => {
+    const target = r.action === 'channel' ? `${r.action} (${channelName(r.channelId)})` : r.action
+    const ok = await confirm({
+      title: 'Delete this rule?',
+      description: `${eventLabel(r.eventClass)} → ${target}. Events it matched fall through to the next rule, or to the default.`,
+      confirmLabel: 'Delete rule',
+    })
+    if (ok) remove.mutate(r.id)
+  }
 
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -46,6 +54,7 @@ export function NotificationRulesSection() {
 
   return (
     <SettingsSection id={def.id} title={def.label} description={def.description} scope={def.scope}>
+      {dialog}
       <SettingsGroup legend="Configured rules">
         <div className="py-3">
           {isLoading ? (
@@ -87,7 +96,7 @@ export function NotificationRulesSection() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => remove.mutate(r.id)}
+                    onClick={() => void askDelete(r)}
                     aria-label={`Delete rule ${r.id}`}
                     className="text-sm text-danger underline"
                   >

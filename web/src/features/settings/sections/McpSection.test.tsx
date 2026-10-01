@@ -125,7 +125,6 @@ describe('McpSection', () => {
 
   // (c) Delete flow calls api.del
   it('delete flow calls api.del', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderSection()
 
     // Click the user server row to open edit dialog
@@ -135,9 +134,12 @@ describe('McpSection', () => {
     // Dialog opens
     expect(await screen.findByRole('dialog')).toBeTruthy()
 
-    // Click Delete
+    // Click Delete — it asks in a ConfirmDialog over the editor (2026-09-30
+    // Settings critique, P1 — was window.confirm).
     const deleteBtn = await screen.findByRole('button', { name: /^delete$/i })
     await userEvent.click(deleteBtn)
+    expect(api.del).not.toHaveBeenCalled()
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete my-server' }))
 
     await waitFor(() => {
       expect(api.del).toHaveBeenCalledWith('/library/mcp/my-server')

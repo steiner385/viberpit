@@ -117,6 +117,21 @@ describe('HooksSection', () => {
     expect(await screen.findByText('0')).toBeTruthy()
   })
 
+  // 2026-09-30 Settings critique, P1: Delete PUT the whole list on one tap.
+  it('Delete asks in a dialog naming the hook, then api.put without the row; Cancel keeps it', async () => {
+    renderSection()
+    const del = await screen.findByRole('button', { name: /^delete$/i })
+    await userEvent.click(del)
+    expect(api.put).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this PreToolUse hook?' })
+    expect(dialog).toHaveTextContent('Matcher Bash · echo hi')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(api.put).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete hook' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/hooks', { events: [] }))
+  })
+
   it('surfaces a 422 detail inline without losing the form', async () => {
     // Match the mocked ApiRequestError so instanceof works in errorMessage().
     const { ApiRequestError } = await import('@/api/client')

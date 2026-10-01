@@ -55,6 +55,12 @@ export const NOTIF_KEYS = {
   rules: ['notif-rules'],
 } as const
 
+/** The routing rules — read by the Rules section and by the Channels section's
+ *  delete gate (a channel delete cascades to the rules that target it). */
+export function useNotificationRules() {
+  return useQuery({ queryKey: NOTIF_KEYS.rules, queryFn: () => api.get<Rule[]>('/notifications/rules') })
+}
+
 export function useNotificationChannels() {
   return useQuery({
     queryKey: NOTIF_KEYS.channels,

@@ -10,6 +10,7 @@ import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
 import { Input } from '@/ui/Input'
+import { useConfirm } from '@/ui/useConfirm'
 import { Textarea } from '@/ui/Textarea'
 
 interface ItemEditorDialogProps {
@@ -118,8 +119,14 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
     )
   }
 
-  function handleDelete() {
-    if (!window.confirm(`Delete "${effectiveId}"?`)) return
+  const { confirm, dialog } = useConfirm()
+  async function handleDelete() {
+    const ok = await confirm({
+      title: `Delete ${effectiveId}?`,
+      description: 'Removes it from the shared config for every session. There is no undo.',
+      confirmLabel: `Delete ${effectiveId}`,
+    })
+    if (!ok) return
     setSaveError(null)
     deleteMutation.mutate(
       { id: effectiveId },
@@ -209,7 +216,7 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
           <Button
             type="button"
             variant="danger"
-            onClick={handleDelete}
+            onClick={() => void handleDelete()}
             disabled={deleteMutation.isPending || saveMutation.isPending}
           >
             Delete
@@ -227,6 +234,7 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
           </Button>
         )}
       </div>
+      {dialog}
     </Dialog>
   )
 }

@@ -51,6 +51,7 @@ vi.mock('@/api/client', async (importOriginal) => {
       }),
       put: vi.fn(async () => hosts[0]),
       post: vi.fn(async () => ({ started: true })),
+      del: vi.fn(async () => ({})),
     },
   }
 })
@@ -111,26 +112,45 @@ describe('FleetSection', () => {
     expect(screen.queryByRole('button', { name: 'update fresh' })).toBeNull()
   })
 
-  it('confirms, then POSTs the upgrade', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    wrap(<FleetSection />)
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'update rocky' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'update rocky' }))
-    expect(confirm).toHaveBeenCalled()
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith('/fleet/hosts/rocky/upgrade', {}))
-    confirm.mockRestore()
-  })
-
-  it('does not POST when the confirm is dismissed', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  // The gate is a ConfirmDialog, not window.confirm (2026-09-30 Settings critique, P1).
+  it('asks in a dialog, then POSTs the upgrade', async () => {
     wrap(<FleetSection />)
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'update rocky' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'update rocky' }))
     expect(api.post).not.toHaveBeenCalled()
-    confirm.mockRestore()
+    const dialog = await screen.findByRole('dialog', { name: 'Update rocky?' })
+    expect(dialog).toHaveTextContent(/daemon restarts/)
+    fireEvent.click(screen.getByRole('button', { name: 'Update host' }))
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/fleet/hosts/rocky/upgrade', {}))
+  })
+
+  it('does not POST when the dialog is cancelled', async () => {
+    wrap(<FleetSection />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'update rocky' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'update rocky' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  // Removing a host had no gate at all; it takes the Typed tier (the host name).
+  it('removing a host asks for its name typed, then DELETEs', async () => {
+    wrap(<FleetSection />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'remove rocky' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'remove rocky' }))
+    expect(api.del).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog', { name: 'Remove rocky?' })
+    expect(dialog).toHaveTextContent(/leaves the fleet/)
+    const remove = screen.getByRole('button', { name: 'Remove host' })
+    expect(remove).toBeDisabled()
+    fireEvent.change(screen.getByLabelText(/Type rocky to confirm/), { target: { value: 'rocky' } })
+    expect(remove).toBeEnabled()
+    fireEvent.click(remove)
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith('/fleet/hosts/rocky'))
   })
 
   it('shows a running upgrade state instead of the button', async () => {

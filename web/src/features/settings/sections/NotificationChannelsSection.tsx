@@ -10,12 +10,28 @@ import { api } from '@/api/client'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
-import { NOTIF_KEYS, errMessage, inputClass, useNotificationChannels, type Channel } from './notificationsApi'
+import { useConfirm } from '@/ui/useConfirm'
+import { NOTIF_KEYS, errMessage, inputClass, useNotificationChannels, useNotificationRules, type Channel } from './notificationsApi'
 
 export function NotificationChannelsSection() {
   const def = SETTINGS_BY_ID.channels
   const qc = useQueryClient()
   const { data: channels, isLoading } = useNotificationChannels()
+  const { data: rules = [] } = useNotificationRules()
+  const { confirm, dialog } = useConfirm()
+  // Deleting a channel cascades to every rule that targets it, which the old
+  // one-tap Delete never said (2026-09-30 Settings critique, P1).
+  const askDelete = async (c: Channel) => {
+    const dependents = rules.filter((r) => r.channelId === c.id).length
+    const ok = await confirm({
+      title: `Delete ${c.name}?`,
+      description: dependents === 0
+        ? 'No routing rule sends to it. Notifications routed here stop.'
+        : `${dependents} routing rule${dependents === 1 ? '' : 's'} send${dependents === 1 ? 's' : ''} to it and ${dependents === 1 ? 'is' : 'are'} deleted with it.`,
+      confirmLabel: 'Delete channel',
+    })
+    if (ok) remove.mutate(c.id)
+  }
 
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -33,6 +49,7 @@ export function NotificationChannelsSection() {
 
   return (
     <SettingsSection id={def.id} title={def.label} description={def.description} scope={def.scope}>
+      {dialog}
       <SettingsGroup legend="Configured channels">
         <div className="py-3">
           {isLoading ? (
@@ -60,7 +77,7 @@ export function NotificationChannelsSection() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => remove.mutate(c.id)}
+                    onClick={() => void askDelete(c)}
                     aria-label={`Delete ${c.name}`}
                     className="text-sm text-danger underline"
                   >

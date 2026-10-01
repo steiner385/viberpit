@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { QK, usePendingDeploy, useFleetHostPatch, useSettings } from '@/api/hooks'
 import { settingsSectionPath } from '@/shell/navDefs'
+import { useConfirm } from '@/ui/useConfirm'
 // The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
 // shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
 // below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
@@ -130,6 +131,33 @@ export function FleetSection() {
     },
   })
 
+  // Both fleet-wide actions go through one gate (2026-09-30 Settings critique,
+  // P1): removing a host was a 10×16px "✕" with no question; updating one was a
+  // `window.confirm`. Removal takes the Typed tier — the operator types the host
+  // name — because it is the only action here with nothing to undo.
+  const { confirm, dialog } = useConfirm()
+  const askRemove = async (h: FleetHost) => {
+    const active = h.activeSessions ?? 0
+    const ok = await confirm({
+      title: `Remove ${h.name}?`,
+      description: `${h.name} leaves the fleet: nothing new is dispatched to it and its cap and weight are forgotten.`
+        + (active > 0 ? ` ${active} session${active === 1 ? ' is' : 's are'} running on it right now.` : '')
+        + ' To drain it first, disable it instead.',
+      confirmLabel: 'Remove host',
+      typed: h.name,
+    })
+    if (ok) remove.mutate(h.name)
+  }
+  const askUpdate = async (h: FleetHost) => {
+    const ok = await confirm({
+      title: `Update ${h.name}?`,
+      description: 'Its daemon restarts to the deployed version. Sessions on it are drained first, then resumed.',
+      confirmLabel: 'Update host',
+      tone: 'warning',
+    })
+    if (ok) upgrade.mutate(h.name)
+  }
+
   const upgrade = useMutation({
     mutationFn: (name: string) =>
       api.post<{ started: boolean }>(`/fleet/hosts/${encodeURIComponent(name)}/upgrade`, {}),
@@ -161,6 +189,7 @@ export function FleetSection() {
 
   return (
     <section className="space-y-3">
+      {dialog}
       {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
 
       {!isLoading && hosts.length === 0 && (
@@ -218,14 +247,7 @@ export function FleetSection() {
                         aria-label={`update ${h.name}`}
                         title={`Update ${h.name} to the deployed version`}
                         disabled={upgrade.isPending}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Update ${h.name} to the deployed version? Its daemon will restart.`,
-                            )
-                          )
-                            upgrade.mutate(h.name)
-                        }}
+                        onClick={() => void askUpdate(h)}
                         className="ml-2 rounded border border-accent px-1.5 py-0.5 font-sans text-xs text-accent hover:bg-accent hover:text-accent-ink disabled:opacity-40"
                       >
                         Update
@@ -336,7 +358,7 @@ export function FleetSection() {
                       aria-label={`remove ${h.name}`}
                       title="Remove host"
                       disabled={remove.isPending}
-                      onClick={() => remove.mutate(h.name)}
+                      onClick={() => void askRemove(h)}
                       className="text-xs text-ink-muted hover:text-danger disabled:opacity-40"
                     >
                       ✕

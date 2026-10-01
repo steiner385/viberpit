@@ -113,8 +113,8 @@ describe('SnapshotsSection', () => {
     expect(await screen.findByText('a.md')).toBeTruthy()
   })
 
-  it('"Restore" calls the restore endpoint after confirm', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  // The gate is a ConfirmDialog, not window.confirm (2026-09-30 Settings critique, P1).
+  it('"Restore" asks in a dialog that names the snapshot, then calls the restore endpoint', async () => {
     vi.mocked(api.post).mockResolvedValue({ restored: 5, backupId: 'bk-1' })
 
     renderSection()
@@ -122,6 +122,10 @@ describe('SnapshotsSection', () => {
 
     const restoreBtns = screen.getAllByRole('button', { name: /^restore$/i })
     await userEvent.click(restoreBtns[0])
+    expect(api.post).not.toHaveBeenCalledWith('/snapshots/s1/restore')
+    const dialog = await screen.findByRole('dialog', { name: 'Restore Before refactor?' })
+    expect(dialog).toHaveTextContent(/pre-restore backup/)
+    await userEvent.click(screen.getByRole('button', { name: 'Restore snapshot' }))
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/snapshots/s1/restore')
@@ -129,15 +133,15 @@ describe('SnapshotsSection', () => {
     expect(await screen.findByText(/Restored 5 files/)).toBeTruthy()
   })
 
-  it('"Restore" does nothing when confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-
+  it('"Restore" does nothing when the dialog is cancelled', async () => {
     renderSection()
     await screen.findByText('Before refactor')
 
     const restoreBtns = screen.getAllByRole('button', { name: /^restore$/i })
     await userEvent.click(restoreBtns[0])
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
 
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(api.post).not.toHaveBeenCalledWith('/snapshots/s1/restore')
   })
 

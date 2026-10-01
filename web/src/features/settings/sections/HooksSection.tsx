@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
+import { useConfirm } from '@/ui/useConfirm'
 import { api, ApiRequestError } from '@/api/client'
 
 /** A single hook row, matching the backend `HookRow` shape. */
@@ -120,7 +121,18 @@ export function HooksSection() {
     saveRows(next)
   }
 
-  function handleDelete(index: number) {
+  const { confirm, dialog } = useConfirm()
+  // Deleting a hook PUTs the whole list; a mis-tap used to take effect for every
+  // session with no question asked (2026-09-30 Settings critique, P1).
+  async function handleDelete(index: number) {
+    const row = rows[index]
+    if (!row) return
+    const ok = await confirm({
+      title: `Delete this ${row.event} hook?`,
+      description: `${row.matcher ? `Matcher ${row.matcher} · ` : ''}${row.command}. It stops running for every session on this host.`,
+      confirmLabel: 'Delete hook',
+    })
+    if (!ok) return
     const next = rows.filter((_, i) => i !== index)
     if (dryRunFor === index) setDryRunFor(null)
     saveRows(next)
@@ -144,6 +156,7 @@ export function HooksSection() {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {dialog}
       {/* Danger banner */}
       <div
         role="alert"
@@ -222,7 +235,7 @@ export function HooksSection() {
                           type="button"
                           variant="danger"
                           size="sm"
-                          onClick={() => handleDelete(index)}
+                          onClick={() => void handleDelete(index)}
                           disabled={saveMutation.isPending}
                         >
                           Delete

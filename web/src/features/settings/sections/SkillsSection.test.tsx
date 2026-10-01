@@ -94,7 +94,6 @@ describe('SkillsSection', () => {
 
   // (c) Opening existing user skill loads content + Delete calls api.del
   it('opening existing user skill loads content and Delete calls api.del', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderSection()
 
     const skillRow = await screen.findByRole('button', { name: /my-skill/i })
@@ -105,9 +104,12 @@ describe('SkillsSection', () => {
       expect(api.get).toHaveBeenCalledWith('/library/skills/my-skill')
     })
 
-    // Dialog open, Delete button present
+    // Dialog open, Delete button present; it asks in a ConfirmDialog over the
+    // editor (2026-09-30 Settings critique, P1 — was window.confirm).
     const deleteBtn = await screen.findByRole('button', { name: /^delete$/i })
     await userEvent.click(deleteBtn)
+    expect(api.del).not.toHaveBeenCalled()
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete my-skill' }))
 
     await waitFor(() => {
       expect(api.del).toHaveBeenCalledWith('/library/skills/my-skill')
