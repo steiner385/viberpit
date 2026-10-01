@@ -816,7 +816,6 @@ export function DispatchBar({
             'flex-1 @max-md:basis-full resize-none rounded-md border border-edge-strong',
             'bg-surface text-ink',
             'px-3 py-2 text-sm',
-            'placeholder:text-ink-faint',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
             'min-h-target overflow-y-auto',
             'disabled:opacity-50 disabled:cursor-not-allowed',
