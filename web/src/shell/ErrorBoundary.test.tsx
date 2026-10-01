@@ -15,6 +15,13 @@ describe('ErrorBoundary', () => {
     render(<ErrorBoundary logger={logger}><Boom /></ErrorBoundary>)
     expect(screen.getByText(/something went wrong/i)).toBeInTheDocument()
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('render-crash'), expect.any(Object))
+    // On the primitives and tokens like every other surface (2026-10-01 shell
+    // critique, minor): the one action is the lg Button, the box is on the canvas.
+    const reload = screen.getByRole('button', { name: 'Reload' })
+    expect(reload.className).toMatch(/\bmin-h-target\b/)
+    expect(screen.getByRole('alert').className).toMatch(/\bbg-canvas\b/)
+    expect(screen.getByRole('alert').className).not.toMatch(/min-h-screen/)
+    expect(screen.getByText(/has been logged/i)).toBeInTheDocument()
   })
 
   it('renders children when no error', () => {

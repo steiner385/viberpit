@@ -86,11 +86,14 @@ export function NavItem(props: NavItemProps) {
         // Label-less: the badge overlays the icon's top-right corner, and when
         // the item also needs attention it carries the attention tone rather
         // than sharing that corner with a dot.
+        // `font-bold`: at 11px this is DESIGN.md's Micro counter, which is 700
+        // — the Badge primitive's 500 is for 12px labels (2026-10-01 shell
+        // critique, minor).
         <Badge
           tone={attention ? 'warning' : 'neutral'}
           count={count}
           aria-hidden="true"
-          className="absolute top-0.5 right-0.5 px-1 text-2xs"
+          className="absolute top-0.5 right-0.5 px-1 text-2xs font-bold"
         />
       ) : attention ? (
         <Badge tone="warning" dot className="absolute top-1 right-1" />

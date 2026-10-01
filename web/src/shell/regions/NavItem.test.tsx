@@ -36,6 +36,9 @@ describe('NavItem — label-less count + attention', () => {
     const badge = button.querySelector('[class*="rounded-pill"]')
     expect(badge).toHaveTextContent('2')
     expect(badge?.className).toContain('text-warning')
+    // The 11px collapsed counter is DESIGN.md's Micro size, weight 700.
+    expect(badge?.className).toMatch(/\btext-2xs\b/)
+    expect(badge?.className).toMatch(/\bfont-bold\b/)
     expect(await axe(container)).toHaveNoViolations()
   })
 })
