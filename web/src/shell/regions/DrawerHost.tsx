@@ -29,7 +29,8 @@ import { HelpSheet } from './HelpSheet'
  * ## Placement (D13)
  *
  * From 1280px the drawer is a layout column (`mode="push"` — inline, no
- * backdrop, no focus trap, resizable) and below it an overlay sheet. The
+ * backdrop, no focus trap, resizable; focus still lands on its Close button and
+ * Escape still closes it while focus is inside) and below it an overlay sheet. The
  * threshold itself is `useViewport().drawerPushes`, because `useViewport` is the
  * only module allowed to read a layout media query (there is a source-walking
  * guard in `useViewport.test.tsx`) and 1280 falls between its width tiers.
@@ -74,9 +75,10 @@ function DrawerHostInner() {
   const { title, content } = DRAWERS[drawer]
 
   // Esc normally just closes the drawer (Sheet's focus trap calls `onClose` on Escape
-  // in overlay mode — see useFocusTrap.ts). When the assistant drawer is open with a
-  // live turn, Esc should stop that turn first and leave the drawer open, matching
-  // the in-session Esc/interrupt behavior instead of abandoning the turn silently.
+  // in overlay mode — see useFocusTrap.ts; in push mode the panel itself does, while
+  // focus is inside it). When the assistant drawer is open with a live turn, Esc
+  // should stop that turn first and leave the drawer open, matching the in-session
+  // Esc/interrupt behavior instead of abandoning the turn silently.
   const onClose = () => {
     if (drawer === 'assistant' && assistantGestures.current?.turnLive) {
       assistantGestures.current.interrupt()

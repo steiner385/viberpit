@@ -194,8 +194,45 @@ describe('Sheet', () => {
     expect(screen.getByRole('dialog', { name: 'Inline panel' })).not.toHaveAttribute('aria-modal')
     expect(screen.queryByTestId('sheet-backdrop')).toBeNull()
     expect(document.getElementById('root')!.hasAttribute('inert')).toBe(false)
-    // No focus trap: focus was not stolen into the panel.
+    // No trap: Tab is free to leave the panel (nothing wraps), and the body
+    // content was not focused in place of the panel's own first control.
     expect(document.activeElement).not.toBe(screen.getByText('focusable'))
+  })
+
+  // 2026-10-01 shell critique, P1: at ≥1280px the help drawer opened as a push
+  // column with focus left on `body`, Esc ignored, and Close unreachable in 40
+  // Tabs — while the same key below 1280 (overlay) landed on Close and Esc
+  // closed. A non-modal dialog still owes the keyboard a landing and an exit.
+  it('push mode lands focus on Close, closes on Escape only while focus is inside, and returns focus on close', () => {
+    // The opener lives OUTSIDE the render container: `render` replaces the
+    // container's children, and an opener inside it would be gone (and focus
+    // already on `body`) before the panel's effect could remember it.
+    document.body.innerHTML = '<button id="opener">open</button><div id="root"></div><div id="overlays"></div>'
+    const opener = document.getElementById('opener') as HTMLButtonElement
+    opener.focus()
+    const onClose = vi.fn()
+    const { rerender } = render(
+      <Sheet open onClose={onClose} title="Inline panel" mode="push"><button>focusable</button></Sheet>,
+      { container: document.getElementById('root')! },
+    )
+    const close = screen.getByRole('button', { name: 'Close Inline panel' })
+    expect(document.activeElement).toBe(close)
+
+    // Escape with focus OUTSIDE the panel is not the drawer's to take.
+    opener.focus()
+    fireEvent.keyDown(opener, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    // Escape with focus inside closes, and the key is consumed.
+    screen.getByText('focusable').focus()
+    const ev = fireEvent.keyDown(screen.getByText('focusable'), { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(ev).toBe(false) // defaultPrevented
+
+    // On close, focus goes back where it was before the panel opened.
+    close.focus()
+    rerender(<Sheet open={false} onClose={onClose} title="Inline panel" mode="push"><button>focusable</button></Sheet>)
+    expect(document.activeElement).toBe(opener)
   })
 
   it('side="bottom" renders as a bottom sheet, not a right-anchored one', () => {
