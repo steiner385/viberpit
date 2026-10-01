@@ -17518,16 +17518,7 @@ class SessionOrchestrator:
             # previously dropped rec.model on resume (rotation kept it, a plain
             # detach → attach lost it to the account default). Placed after the
             # final driver assignment so the fresh-start fallback gets it too.
-            if rec.model is not None:
-                try:
-                    await driver.set_model(rec.model)
-                except Exception:
-                    # The driver is live and registered; a failed model re-apply must
-                    # not become a failed resume — the caller would treat the session
-                    # as un-resumed (and log nothing) while its process runs on. It
-                    # continues on the launch model; the user can re-pick.
-                    log.warning("session.resume id=%s set_model(%r) failed — continuing "
-                                "on the launch model", session_id, rec.model, exc_info=True)
+            await self._reapply_model(driver, rec, site="session.resume")
             # INVARIANT: a session holding a live driver is not capacity-exempt.
             # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
             # its process was released; resuming it makes that false again. Without
@@ -20370,6 +20361,26 @@ class SessionOrchestrator:
         if cb is not None:
             cb(session_id, driver)
 
+    async def _reapply_model(self, driver: AgentDriver, record: SessionRecord, *,
+                             site: str) -> None:
+        """Re-apply *record*'s persisted model to a freshly built, already-installed
+        driver (resume and rotation both rebuild one on the launch default).
+
+        By the time this runs the driver is live and registered, so a failed re-apply
+        must not become a failed resume or rotation: the caller would treat a running
+        process as missing — ensure_driver's caller logged nothing, and _reassign
+        parked a live session ``reassign_failed``, skipped the DB account write and
+        dropped the replayed turn (#2572, "Couldn't confirm model … with the API" on
+        the rotation target). The session continues on the launch model; the user
+        can re-pick."""
+        if record.model is None:
+            return
+        try:
+            await driver.set_model(record.model)
+        except Exception:
+            log.warning("%s id=%s set_model(%r) failed — continuing on the launch model",
+                        site, record.id, record.model, exc_info=True)
+
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str,
                         replay_last_prompt: bool = True) -> str:
         """Resume the session's claude conversation on *new_account* (may equal the
@@ -20576,8 +20587,7 @@ class SessionOrchestrator:
                     await assistant_api.aclose()
                 raise
             self._install_driver(record.id, new_driver)
-            if record.model is not None:
-                await new_driver.set_model(record.model)
+            await self._reapply_model(new_driver, record, site="reassign")
             # A parked session (needs_attention / limited) has no turn in flight, so
             # nothing will move its status once the swap succeeds — a replayed prompt
             # flips it to in_progress, but a session with no prompt to replay (the

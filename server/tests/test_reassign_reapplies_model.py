@@ -186,3 +186,80 @@ async def test_reassign_rotated_event_carries_rev_token(monkeypatch):
     # And it must be strictly newer than the pre-rotation rev so the client's
     # revIsNewer/shouldApplyRev comparisons keep the WS patch over a stale in-flight poll.
     assert event["revAt"] > iso_utc(stale_rev)
+
+
+@pytest.mark.asyncio
+async def test_reassign_model_reapply_failure_still_completes_the_swap(monkeypatch, caplog):
+    """#2572: the target account's CLI refused to confirm the model ("Couldn't confirm
+    model ... with the API") AFTER the new driver was started and installed. The swap
+    had already happened, yet the bare set_model let the exception reach the generic
+    `reassign.error` branch: ERROR logged (auto-filed), session paused reassign_failed
+    with a live driver attached, the DB account write and the prompt replay skipped.
+    A failed re-apply is a degraded swap, not a failed one — the same rule
+    ensure_driver applies to this exact call."""
+    import logging
+    from server.sessions import orchestrator as orch_mod
+
+    sent = []
+
+    class _NewDriver:
+        def __init__(self, *a, **k):
+            self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
+            self.engine_session_id = "c1"
+        async def start(self): pass
+        async def send_prompt(self, p): sent.append(p)
+        async def set_model(self, m):
+            raise Exception(f'Couldn\'t confirm model "{m}" with the API.')
+
+    class _OldDriver:
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
+        async def interrupt(self): pass
+        async def aclose(self): pass
+
+    executed = []
+
+    class _RecordingCtx(_NullCtx):
+        async def execute(self, stmt, *a, **k):
+            executed.append(stmt.compile().params)
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver())
+    monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _RecordingCtx())
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.types import SessionRecord
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp", model="claude-fable-5-1")
+    orch._records = {"s1": rec}
+    orch._drivers = {"s1": _OldDriver()}
+    orch._last_prompt = {"s1": "keep going"}
+    orch._turn_restart_at = {}
+    orch._swapping = {}
+    orch._clock = time.time
+    orch._registry = None
+    orch._suggester = None
+    orch._session_factory = lambda sid: None
+    orch._persist_engine_session_id = lambda *a, **k: None
+    orch._persist_status = lambda *a, **k: None
+    orch._handle_recoverable_failure = lambda *a, **k: None
+    paused = []
+
+    async def _spy_pause(record, *, reason, **k):
+        paused.append(reason)
+    orch._pause_session = _spy_pause
+    published = []
+    orch._publish_event = lambda e: published.append(e)
+
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        outcome = await orch._reassign(rec, "b", reason="manual")
+
+    assert outcome == "rotated"
+    assert paused == []
+    assert rec.account == "b"
+    assert any(p.get("account_name") == "b" for p in executed), executed
+    assert sent == ["keep going"]
+    assert [e["type"] for e in published] == ["rotated"]
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("set_model" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
