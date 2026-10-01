@@ -60,6 +60,37 @@ describe('AutomationActions', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  // 2026-10-01 Delivery critique, P0: a muted signature's Unmute is not a
+  // decision. Maintenance rows are folded under the list in `full`, never
+  // counted in the preview's "See all N", and the subtitle is finally shown.
+  it('splits decisions from maintenance: folded in full, absent from the preview count', () => {
+    items = [
+      { id: 'fpA', title: 'decide me', subtitle: 'WARNING · 3 since filed', actions: [{ kind: 'file_now', label: 'File now' }] },
+      ...[1, 2, 3, 4].map((n) => ({ id: `fp${n}`, title: `muted ${n}`, kind: 'maintenance', actions: [{ kind: 'unmute', label: 'Unmute' }] })),
+    ]
+    const { unmount } = render(<AutomationActions automationId="error-triage" enabled variant="full" />)
+    expect(screen.getByText('decide me')).toBeInTheDocument()
+    expect(screen.getByText('WARNING · 3 since filed')).toBeInTheDocument()
+    const fold = screen.getByText('4 maintenance')
+    expect(fold.closest('details')).not.toHaveAttribute('open')
+    expect(screen.getAllByRole('button', { name: 'Unmute' })).toHaveLength(4)
+    unmount()
+    render(<AutomationActions automationId="error-triage" enabled variant="preview" onSeeAll={vi.fn()} />)
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /See all/ })).toBeNull()
+    expect(screen.queryByText(/maintenance/)).toBeNull()
+  })
+
+  it('full: says nothing needs you while still offering the maintenance fold; preview is empty', () => {
+    items = [{ id: 'fp1', title: 'muted 1', kind: 'maintenance', actions: [{ kind: 'unmute', label: 'Unmute' }] }]
+    const { unmount } = render(<AutomationActions automationId="error-triage" enabled variant="full" />)
+    expect(screen.getByText('Nothing needs you.')).toBeInTheDocument()
+    expect(screen.getByText('1 maintenance')).toBeInTheDocument()
+    unmount()
+    const { container } = render(<AutomationActions automationId="error-triage" enabled variant="preview" />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
   it('full: every row, no heading, no scroll box, and a sentence when empty', () => {
     items = [1, 2, 3, 4, 5].map((n) => ({ id: `o/r#${n}`, title: `item ${n}`, actions: [], status: 'waiting' }))
     const { unmount, container } = render(<AutomationActions automationId="pr-doctor" enabled variant="full" />)

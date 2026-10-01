@@ -59,8 +59,13 @@ export interface Automation {
   mode: string | null
   modes: string[]
   status: AutomationStatus
-  /** One server snapshot shared by navigation, list, and detail. Missing means unknown. */
+  /** One server snapshot shared by navigation, list, and detail. Missing means unknown.
+   *  Counts DECISIONS only (`ActionableItem.kind === 'decision'`): what a human
+   *  must decide. This is what the tier and the nav badge read. */
   actionableCount?: number | null
+  /** Housekeeping the automation already settled and merely lets a human revisit
+   *  (un-mute, override a throttle). Shown, never badged. Missing means unknown. */
+  maintenanceCount?: number | null
   oversight?: {
     responsibility: { id: string; label: string }
     scope: string
@@ -158,6 +163,23 @@ export interface ActionableItem {
   /** Plain text shown instead of a button when a live predecessor makes the
    *  action a guaranteed refusal (`actions` is empty then). */
   status?: string | null
+  /** `decision` (the automation waits on a human) or `maintenance` (settled
+   *  housekeeping a human may revisit). Absent on a pre-upgrade payload = decision. */
+  kind?: 'decision' | 'maintenance'
+}
+
+/** The one place the kind is read: a row is a decision unless it says otherwise. */
+export function isDecision(item: Pick<ActionableItem, 'kind'>): boolean {
+  return item.kind !== 'maintenance'
+}
+
+/** Decisions first, housekeeping apart — the Needs you tab, its badge and the
+ *  Overview preview all count the first list only. */
+export function splitActionable<T extends Pick<ActionableItem, 'kind'>>(items: T[]): { decisions: T[]; maintenance: T[] } {
+  const decisions: T[] = []
+  const maintenance: T[] = []
+  for (const item of items) (isDecision(item) ? decisions : maintenance).push(item)
+  return { decisions, maintenance }
 }
 
 export interface TriggerResult {

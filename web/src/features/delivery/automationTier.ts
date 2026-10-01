@@ -5,7 +5,7 @@ import { TIER_LABEL } from '@/features/products/vocab'
 import { TIER_RANK } from '@/features/roadmap/roadmapTier'
 
 export type AutomationTier = Extract<RoadmapTier, 'needs-you' | 'in-flight' | 'idle'>
-type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount'>
+type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount' | 'maintenanceCount'>
 
 export function automationTier(a: TierInput): AutomationTier {
   if ((a.actionableCount ?? 0) > 0 || a.status.level === 'error' || a.status.waitingReason === 'human') return 'needs-you'
@@ -25,6 +25,9 @@ export function automationTierLine(tier: AutomationTier, a: TierInput): string {
   if (a.actionableCount == null) parts.push('Actionable count unknown')
   else if (a.actionableCount > 0) parts.push(`${a.actionableCount} actionable`)
   else parts.push('0 actionable')
+  // Settled housekeeping a human may revisit: said, never tiered or badged
+  // (2026-10-01 Delivery critique, P0 — 96 of a 103 badge were these).
+  if ((a.maintenanceCount ?? 0) > 0) parts.push(`${a.maintenanceCount} maintenance`)
   if (a.status.waitingReason) parts.push(`Waiting for ${a.status.waitingReason}`)
   else if (a.status.level === 'warn') parts.push('Notice')
   if (a.activeSessions > 0) parts.push(`${a.activeSessions} live ${a.activeSessions === 1 ? 'session' : 'sessions'}`)

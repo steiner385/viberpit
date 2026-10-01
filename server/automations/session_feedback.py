@@ -429,10 +429,15 @@ class SessionFeedbackLoop:
                         f"{ctx.get('name') or ctx.get('sessionId') or '?'} · "
                         f"{_fmt(r.reported_at)}")
             url = ci_issues.issue_url(repo, int(r.issue_number)) if r.issue_number and repo else None
+            # ``pending`` awaits the human's file-or-dismiss call: a decision. A
+            # ``throttled`` or ``capped`` row is one the loop already deferred by
+            # its own rule; the buttons let a human override that, which is
+            # housekeeping, not a wait (2026-10-01 Delivery critique, P0).
             items.append(ActionableItem(
                 id=str(r.id), title=str(r.title or r.fingerprint), subtitle=subtitle, url=url,
                 actions=[ActionSpec(kind="file_now", label="File now"),
-                         ActionSpec(kind="dismiss", label="Dismiss", style="risky")]))
+                         ActionSpec(kind="dismiss", label="Dismiss", style="risky")],
+                kind="decision" if r.status == "pending" else "maintenance"))
         return items
 
     async def action_result(self, row_id: str, kind: str) -> tuple[str, int | None]:

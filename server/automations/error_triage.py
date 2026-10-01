@@ -411,10 +411,18 @@ class ErrorTriageLoop:
         for r in rows:
             subtitle = f"{r.level} · {r.source} · {int(r.count or 0)}× · last {_fmt(r.last_seen_at)}"
             url = ci_issues.issue_url(repo, int(r.issue_number)) if r.issue_number and repo else None
+            # A muted signature (Unmute) or a filed one (Mute) is settled: the
+            # automation already acted and merely lets a human revisit. Only a
+            # signature awaiting the file-or-mute call is a decision. The
+            # Delivery badge once counted 47 of these toggles as "needs you"
+            # (2026-10-01 Delivery critique, P0).
+            kind = "decision"
             if r.status == "muted":
                 actions = [ActionSpec(kind="unmute", label="Unmute")]
+                kind = "maintenance"
             elif r.status == "filed":
                 actions = [ActionSpec(kind="mute", label="Mute", style="risky")]
+                kind = "maintenance"
             else:
                 if is_ignored(r.logger, config) or not should_file(
                         level=str(r.level or ""), count_since_filed=int(r.count_since_filed or 0),
@@ -423,7 +431,7 @@ class ErrorTriageLoop:
                 actions = [ActionSpec(kind="file_now", label="File now"),
                            ActionSpec(kind="mute", label="Mute", style="risky")]
             items.append(ActionableItem(id=str(r.fingerprint), title=str(r.title or r.fingerprint),
-                                        subtitle=subtitle, url=url, actions=actions))
+                                        subtitle=subtitle, url=url, actions=actions, kind=kind))
             if len(items) >= limit:
                 break
         return items

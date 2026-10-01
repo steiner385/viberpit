@@ -104,11 +104,20 @@ class ActionableItem:
     # (e.g. PR Doctor's own claim check would refuse it) — see
     # ``PrDoctorActionProvider.actionable``. ``None`` for the normal case.
     status: str | None = None
+    # What the row asks of a person (2026-10-01 Delivery critique, P0). A
+    # ``decision`` is work the automation is waiting on a human for — a hold, a
+    # proposal, a candidate to implement, a finding to file. ``maintenance`` is
+    # housekeeping the automation already settled and merely lets a human
+    # revisit — un-muting a muted signature, muting a filed one, overriding a
+    # throttle. Only decisions count toward "needs you": the Delivery badge once
+    # read 103 of which 96 were mute toggles and throttled rows, and a queue
+    # that is 93% inventory stops being read.
+    kind: str = "decision"  # "decision" | "maintenance"
 
     def to_dict(self) -> dict:
         return {"id": self.id, "title": self.title, "subtitle": self.subtitle,
                 "url": self.url, "actions": [a.to_dict() for a in self.actions],
-                "status": self.status}
+                "status": self.status, "kind": self.kind}
 
 
 @dataclass

@@ -16259,25 +16259,35 @@ class SessionOrchestrator:
         if not hasattr(self, "_automation_overview_lock"):
             self._automation_overview_lock = asyncio.Lock()
             self._automation_actionable_counts: dict[str, int | None] = {}
+            self._automation_maintenance_counts: dict[str, int | None] = {}
             self._automation_actionable_expires = 0.0
         async with self._automation_overview_lock:
             if time.monotonic() >= self._automation_actionable_expires:
-                async def count(automation_id: str) -> tuple[str, int | None]:
+                async def count(automation_id: str) -> tuple[str, int | None, int | None]:
                     try:
                         async with asyncio.timeout(AUTOMATION_ACTIONABLE_TIMEOUT_S):
                             items = await self.automation_actionable(automation_id)
                         # A status-only row (no action to click) is not "actionable".
-                        return automation_id, sum(1 for it in items if it["actions"])
+                        # Of the clickable rows, only DECISIONS count toward "needs
+                        # you" (``ActionableItem.kind``); settled housekeeping a human
+                        # may revisit is tallied apart, so a row can say
+                        # "7 actionable · 47 maintenance" without the 47 badging.
+                        clickable = [it for it in items if it["actions"]]
+                        maintenance = sum(1 for it in clickable if it.get("kind") == "maintenance")
+                        return automation_id, len(clickable) - maintenance, maintenance
                     except Exception:
                         log.debug("automation_overview.count_failed id=%s", automation_id,
                                   exc_info=True)
-                        return automation_id, None
+                        return automation_id, None, None
 
-                self._automation_actionable_counts = dict(await asyncio.gather(
-                    *(count(a.id) for a in registry.all())))
+                rows = await asyncio.gather(*(count(a.id) for a in registry.all()))
+                self._automation_actionable_counts = {aid: n for aid, n, _ in rows}
+                self._automation_maintenance_counts = {aid: m for aid, _, m in rows}
                 self._automation_actionable_expires = time.monotonic() + AUTOMATION_ACTIONABLE_CACHE_S
             counts = dict(self._automation_actionable_counts)
-        return {"statuses": self.automation_statuses(), "actionableCounts": counts}
+            maintenance_counts = dict(self._automation_maintenance_counts)
+        return {"statuses": self.automation_statuses(), "actionableCounts": counts,
+                "maintenanceCounts": maintenance_counts}
 
     async def automation_actionable(self, automation_id: str) -> list[dict]:
         provider = self._action_providers.get(automation_id)

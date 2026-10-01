@@ -17,6 +17,17 @@ describe('automation attention', () => {
       expect(automationTierLine(automationTier(a), a)).toBe('Actionable count unknown')
     }
   })
+  // 2026-10-01 Delivery critique, P0: housekeeping is said, never tiered.
+  it('says maintenance in the line but never tiers or badges on it', () => {
+    const a = { ...base, actionableCount: 0, maintenanceCount: 47 }
+    expect(automationTier(a)).toBe('idle')
+    expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · 47 maintenance')
+    const b = { ...base, actionableCount: 7, maintenanceCount: 47 }
+    expect(automationTier(b)).toBe('needs-you')
+    expect(automationTierLine(automationTier(b), b)).toBe('7 actionable · 47 maintenance')
+    expect(automationTierLine(automationTier(base), { ...base, maintenanceCount: 0 })).not.toMatch(/maintenance/)
+  })
+
   it('preserves live sessions during expected schedule pauses without claiming blocked', () => {
     const a: typeof base = { ...base, activeSessions: 3, status: { text: 'Paused', level: 'warn', waitingReason: 'schedule', counts: null } }
     expect(automationTier(a)).toBe('in-flight')
