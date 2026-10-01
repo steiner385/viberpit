@@ -77,7 +77,7 @@ import {
   inboxPath, productPath, roadmapPath,
 } from '@/features/roadmap/roadmapNavState'
 import {
-  AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH, deliveryPath,
+  AUTOMATION_ROUTE, CAPACITY_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH, deliveryPath,
 } from '@/features/delivery/deliveryNavState'
 import { Skeleton } from '@/ui/Skeleton'
 import { PageContent } from '@/ui/PageContent'
@@ -332,12 +332,13 @@ const PAGES: RouteObject[] = [
   { path: SESSION_ROUTE, element: <SessionsPage /> },
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: NAV_BY_ID.pipeline.path, element: <DeferredPage><PipelinePage /></DeferredPage> },
-  // One page at three levels — the section welcome (whose scope `?scope=`
-  // chooses), one automation, one CI repo — chosen from the params by
-  // `deliveryOpenItem`, never from the path.
+  // One page at four levels — the section welcome (whose scope `?scope=`
+  // chooses), one automation, one CI repo, the Capacity pane — chosen from
+  // the params by `deliveryOpenItem`, never from the path.
   { path: DELIVERY_PATH, element: <DeferredPage><DeliveryPage /></DeferredPage> },
   { path: AUTOMATION_ROUTE, element: <DeferredPage><DeliveryPage /></DeferredPage> },
   { path: CI_REPO_ROUTE, element: <DeferredPage><DeliveryPage /></DeferredPage> },
+  { path: CAPACITY_ROUTE, element: <DeferredPage><DeliveryPage /></DeferredPage> },
   // One page at three detail levels — portfolio, product, capability — chosen
   // from the params by `roadmapOpenItem`, never from the path.
   { path: NAV_BY_ID.roadmap.path, element: <DeferredPage><RoadmapPage /></DeferredPage> },

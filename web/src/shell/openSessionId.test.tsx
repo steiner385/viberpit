@@ -6,7 +6,7 @@ import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH,
 } from '@/features/roadmap/roadmapNavState'
 import {
-  AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH,
+  AUTOMATION_ROUTE, CAPACITY_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH,
 } from '@/features/delivery/deliveryNavState'
 import type { OpenItem } from './openItems'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
@@ -25,6 +25,7 @@ function describeItem(item: OpenItem | null): string {
     case 'portfolio': return 'portfolio'
     case 'automation': return `automation:${item.automationId}`
     case 'ciRepo': return `ciRepo:${item.repo}`
+    case 'capacity': return 'capacity'
   }
 }
 
@@ -42,7 +43,7 @@ function renderAt(path: string) {
           SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE,
           '/pipeline',
           ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE, INITIATIVE_ROUTE,
-          DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE,
+          DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE, CAPACITY_ROUTE,
         ].map((p) => (
           <Route key={p} path={p} element={<Probe />} />
         ))}
@@ -75,6 +76,10 @@ describe('useOpenItem', () => {
     ['/delivery', 'none|-'],
     ['/delivery/automations/pr-doctor', 'automation:pr-doctor|-'],
     ['/delivery/ci/o/r', 'ciRepo:o/r|-'],
+    // The Capacity pane as an item (2026-10-01 Delivery re-critique, P0); an
+    // unknown pane name is not an item.
+    ['/delivery/capacity/governor', 'capacity|-'],
+    ['/delivery/capacity/bogus', 'none|-'],
   ])('%s → %s', (path, expected) => {
     renderAt(path)
     expect(screen.getByTestId('probe')).toHaveTextContent(expected)

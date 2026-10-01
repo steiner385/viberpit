@@ -1,14 +1,16 @@
 /**
- * Delivery → Capacity, detail pane (design 2026-09-19 §7.1). Always what's
- * open for the `capacity` scope — there is no per-item route, so `DeliveryPage`
- * renders this whenever `scope === 'capacity'` and nothing else is open.
+ * Delivery → Capacity, detail pane (design 2026-09-19 §7.1). What the
+ * `capacity` scope shows beside the list on desktop, and — since the 2026-10-01
+ * re-critique — an item of its own (`/delivery/capacity/governor`) so a phone or
+ * tablet can open it; `DeliveryPage` renders it in both cases.
  * Self-contained: reads `GET /api/capacity` itself (owns the 30 s poll) rather
  * than taking the readout as a prop, the same shape `AutomationDetail` and
  * `CiRepoDetail` already use for their own data.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
+import { scrollBehavior } from '@/pipeline/motion'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
 import type { CapacityDefect, CapacityProduct, PushLevel } from '@/api/capacity'
@@ -363,6 +365,17 @@ export function CapacityDetail() {
   })
 
   const now = useNow(60_000, isValidTimestamp(readout?.plan?.computedAt))
+
+  // Opened as an item with a hash (`/delivery/capacity/governor#runner`, from
+  // a stack row on a phone): the page scroller, not the document, owns the
+  // scroll, so the browser's own fragment jump never fires. Scroll once the
+  // readout has rendered the target.
+  const { hash } = useLocation()
+  const hasReadout = readout !== undefined
+  useEffect(() => {
+    if (!hash || !hasReadout) return
+    document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: scrollBehavior() })
+  }, [hash, hasReadout])
 
   if (capacityQuery.isError) {
     return <Banner tone="danger" title={DELIVERY.capacityError} />
