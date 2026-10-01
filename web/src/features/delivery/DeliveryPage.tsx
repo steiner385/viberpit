@@ -190,7 +190,7 @@ export function DeliveryPage() {
             )}
           />
         )}
-        {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={ciWindow} />}
+        {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={ciWindow} automations={automations.data} />}
         {/* Capacity has no per-item route — this scope is always "nothing
             open", and its pane is the controls/table/plan, never the welcome. */}
         {item === null && scope === 'capacity' && <CapacityDetail />}
