@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiRequestError } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
+import { Input } from '@/ui/Input'
+import { Select } from '@/ui/Select'
 
 // --- Schedule shape ----------------------------------------------------------
 
@@ -203,17 +205,20 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
         <label className="block text-sm font-medium mb-1" htmlFor="schedule-preset">
           Preset
         </label>
-        <select
+        {/* The form primitives (`ui/Input`, `ui/Select`), not hand-rolled
+            controls: these were the only inputs on the Delivery page off the
+            primitive, with their own corner radius, fill and no focus ring
+            (2026-10-01 Delivery critique, P3). */}
+        <Select
           id="schedule-preset"
           aria-label="Schedule preset"
           value={preset}
           onChange={(e) => applyPreset(e.target.value)}
-          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-full min-h-target"
         >
           {PRESETS.map((p) => (
             <option key={p.key} value={p.key}>{p.label}</option>
           ))}
-        </select>
+        </Select>
       </div>
 
       {/* Active hours */}
@@ -222,22 +227,22 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
         <div className="flex items-center gap-2 flex-wrap">
           <label className="flex items-center gap-1 text-sm">
             <span className="text-ink-muted">from</span>
-            <input
+            <Input
               type="time"
               aria-label="Active hours start"
               value={activeHours.start ?? ''}
               onChange={(e) => setStart(e.target.value)}
-              className="text-sm rounded border border-edge bg-canvas px-2 py-1 min-h-target"
+              className="w-auto"
             />
           </label>
           <label className="flex items-center gap-1 text-sm">
             <span className="text-ink-muted">to</span>
-            <input
+            <Input
               type="time"
               aria-label="Active hours end"
               value={activeHours.end ?? ''}
               onChange={(e) => setEnd(e.target.value)}
-              className="text-sm rounded border border-edge bg-canvas px-2 py-1 min-h-target"
+              className="w-auto"
             />
           </label>
         </div>
@@ -271,14 +276,14 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
         <label className="block text-sm font-medium mb-1" htmlFor="schedule-cron">
           Cron (advanced)
         </label>
-        <input
+        <Input
           id="schedule-cron"
           type="text"
           aria-label="Cron expression"
           placeholder="min hour dom mon dow"
           value={cron}
           onChange={(e) => setCronValue(e.target.value)}
-          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-full min-h-target font-mono"
+          className="font-mono"
         />
         <p className="text-xs text-ink-muted mt-0.5">
           Fields: minute · hour · day-of-month · month · day-of-week

@@ -258,6 +258,11 @@ describe('AutomationDetail', () => {
     mount(runner, '/delivery/automations/backlog-runner')
     expect([...document.querySelectorAll('dl dt')].map((dt) => dt.textContent)).toEqual(['In flight', 'Eligible', 'Blocked'])
   })
+  it('the Overview prose takes the prose measure (P3: 139–165ch lines in a wide pane)', () => {
+    mount()
+    expect(screen.getByText('Fixes failing PRs.').className).toMatch(/\bmax-w-prose\b/)
+    expect(screen.getByText(/auto — Repairs eligible PRs/).className).toMatch(/\bmax-w-prose\b/)
+  })
   it('the tab strip sticks to the top of the page scroller, on the canvas', () => {
     mount()
     const strip = screen.getByRole('tablist')

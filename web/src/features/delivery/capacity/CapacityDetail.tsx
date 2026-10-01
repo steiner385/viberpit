@@ -377,6 +377,11 @@ export function CapacityDetail() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* The pane's own level-2 heading, for the outline only: the page's h1
+          is the header and the sections below are h3s, so without this every
+          Delivery pane skipped a level (2026-10-01 Delivery critique, P3;
+          `PipelineView` does the same). */}
+      <h2 className="sr-only">{DELIVERY.capacity}</h2>
       <div className="flex flex-wrap items-start gap-8">
         <div className="flex flex-col gap-1.5">
           <RadioGroup

@@ -52,6 +52,13 @@ describe('ManualDispatchDialog', () => {
     expect(screen.getByLabelText('Select a/b#1')).toHaveAttribute('type', 'checkbox')
   })
 
+  it('dismisses with "Cancel", the word every other dialog uses (P3)', () => {
+    render(<ManualDispatchDialog open onClose={onClose} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+
   it('dispatch button is disabled when nothing selected', () => {
     render(<ManualDispatchDialog open onClose={onClose} />)
     expect(screen.getByRole('button', { name: /dispatch 0/i })).toBeDisabled()
@@ -119,7 +126,7 @@ describe('ManualDispatchDialog', () => {
     fireEvent.click(screen.getByLabelText('Select o/r#7'))
     fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
     expect(onClose).toHaveBeenCalled()
     rerender(<ManualDispatchDialog open={false} onClose={onClose} />)
     rerender(<ManualDispatchDialog open onClose={onClose} />)

@@ -113,8 +113,11 @@ export function ManualDispatchDialog({
       </div>
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       <div className="flex justify-end gap-3">
+        {/* "Cancel", the word every other dialog's dismiss uses (`ConfirmDialog`);
+            "Close" beside a primary action read as a third thing (2026-10-01
+            Delivery critique, P3). */}
         <Button type="button" variant="ghost" onClick={close}>
-          Close
+          Cancel
         </Button>
         <Button type="button" variant="primary" size="lg" onClick={run} disabled={selected.size === 0} loading={dispatch.isPending}>
           {dispatch.isPending

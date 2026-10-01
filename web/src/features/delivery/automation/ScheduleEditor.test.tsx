@@ -50,6 +50,18 @@ describe('ScheduleEditor', () => {
     })
   })
 
+  it('its controls are the form primitives, not hand-rolled inputs (2026-10-01 Delivery critique, P3)', () => {
+    render(<ScheduleEditor schedule={null} onSave={vi.fn()} />)
+    for (const name of ['Schedule preset', 'Active hours start', 'Active hours end', 'Cron expression']) {
+      const control = screen.getByLabelText(name)
+      // `ui/Input`'s `controlClass` + `md` size: 6px corners, surface fill,
+      // 44px floor, the shared focus ring.
+      expect(control.className, name).toMatch(/\brounded-md\b/)
+      expect(control.className, name).toMatch(/\bmin-h-target\b/)
+      expect(control.className, name).toMatch(/\bfocus:ring-accent\b/)
+    }
+  })
+
   it('renders the returned next-run time from the preview', async () => {
     render(<ScheduleEditor schedule={{ cron: '0 8 * * *' }} onSave={vi.fn()} />)
 

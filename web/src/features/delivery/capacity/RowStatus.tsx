@@ -72,5 +72,8 @@ export function RowStatus({ status, error }: RowStatusProps) {
     text = 'Saved'
     tone = 'text-success'
   }
-  return <span role="status" className={`text-xs ${tone}`}>{text}</span>
+  // `aria-live` spelled out although `role="status"` implies it: the always-
+  // mounted empty span reads as an orphan live region to an auditor otherwise
+  // (2026-10-01 Delivery critique, P3: "15 empty role=status without aria-live").
+  return <span role="status" aria-live="polite" className={`text-xs ${tone}`}>{text}</span>
 }

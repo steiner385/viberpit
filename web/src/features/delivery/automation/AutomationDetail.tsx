@@ -102,14 +102,20 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
         className="sticky top-0 z-raised mb-4 bg-canvas"
       />
       <div role="tabpanel" id={`automation-panel-${tab}`} aria-labelledby={`tab-${tab}`} className="space-y-4">
+        {/* No heading of its own, not even sr-only: the selected tab labels the
+            panel (`aria-labelledby`) and the standard — tested below — is that
+            a panel never restates its tab. The h1 → h3 skip the 2026-10-01
+            critique's detector flags is that decision, kept on purpose. */}
         {tab === 'overview' && (
           <>
-            {a.description && <p className="text-sm text-ink-muted">{a.description}</p>}
+            {/* `max-w-prose`: the Overview is sentences, and in a wide detail
+                pane they ran 139–165 characters a line (same critique, P3). */}
+            {a.description && <p className="max-w-prose text-sm text-ink-muted">{a.description}</p>}
             {/* The tier dot and `status.text` are NOT repeated here: the page
                 header carries them (R9), where they stay visible on every tab
                 rather than only on this one. */}
             {a.oversight ? (
-              <div className="space-y-2 text-sm">
+              <div className="max-w-prose space-y-2 text-sm">
                 <p><strong>Responsibility: </strong>{a.oversight.responsibility.label}</p>
                 <p><strong>Scope: </strong>{a.oversight.scope}</p>
                 {a.oversight.relationships.length > 0 && (
@@ -129,12 +135,12 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
                   </ul>
                 )}
               </div>
-            ) : <p className="text-sm text-ink-muted">Responsibility and scope unavailable.</p>}
+            ) : <p className="max-w-prose text-sm text-ink-muted">Responsibility and scope unavailable.</p>}
             {/* What the configured mode means, as a sentence (R9) — part of the
                 identity block, where a paragraph belongs; the header keeps the
                 mode's name, which fits on one line on a phone. */}
             {!operatorTriggered && (
-              <p className="text-sm">
+              <p className="max-w-prose text-sm">
                 <strong>Mode: </strong>{a.mode ?? 'unknown'} — {modeMeaning ?? 'Mode effects unavailable'}
               </p>
             )}
