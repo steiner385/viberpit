@@ -11,17 +11,20 @@ import { Skeleton } from '@/ui/Skeleton'
 import { DELIVERY } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { CI_ID_SCOPE, ciRepoKey } from './deliveryNavState'
+import type { CiThresholds } from './ci/ciHealth'
 import { CiRepoRow } from './rows/CiRepoRow'
 
 export interface CiScopeBodyProps {
   repos: readonly string[]
   isLoading: boolean
   isError: boolean
+  /** The CI/CD Doctor's flake thresholds, for every row's verdict (`ciHealth`). */
+  thresholds: CiThresholds | null
   selectedKey: string | null
   onOpen: (repo: string) => void
 }
 
-export function CiScopeBody({ repos, isLoading, isError, selectedKey, onOpen }: CiScopeBodyProps) {
+export function CiScopeBody({ repos, isLoading, isError, thresholds, selectedKey, onOpen }: CiScopeBodyProps) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
   const visible = useMemo(
@@ -62,6 +65,7 @@ export function CiScopeBody({ repos, isLoading, isError, selectedKey, onOpen }: 
               key={repo}
               repo={repo}
               selected={selectedKey === ciRepoKey(repo)}
+              thresholds={thresholds}
               focusable={rovingKey === repo}
               idScope={CI_ID_SCOPE}
               onOpen={onOpen}

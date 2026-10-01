@@ -11,6 +11,7 @@ import type { CapacityReadout } from '@/api/capacity'
 import { AutomationsScopeBody } from './AutomationsScopeBody'
 import { CapacityScopeBody } from './capacity/CapacityScopeBody'
 import { CiScopeBody } from './CiScopeBody'
+import { ciThresholds } from './ci/ciHealth'
 import { DeliveryScopeSegment } from './DeliveryScopeSegment'
 import type { DeliveryScope } from './deliveryNavState'
 
@@ -61,6 +62,9 @@ export function DeliveryListColumn({
           repos={repos}
           isLoading={reposLoading}
           isError={reposError}
+          // The CI/CD Doctor's thresholds come off the automations list this
+          // column already holds — no second fetch for a verdict.
+          thresholds={ciThresholds(automations)}
           selectedKey={selectedKey}
           onOpen={onOpenRepo}
         />

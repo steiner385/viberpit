@@ -106,15 +106,35 @@ describe('DeliveryListColumn', () => {
     expect(control('Open CI health o/r')).toHaveAttribute('tabindex', '0')
   })
 
-  it('CI health scope: one row per repo with the 7-day meta line', () => {
+  it('CI health scope: one row per repo with the 7-day meta line, led by the lane word', () => {
+    // No CI/CD Doctor row in the fixture → thresholds unknown → the flake is
+    // counted, not judged, and the verdict rests on regressions (none): green.
     const { onOpenRepo } = mount({ scope: 'ci' })
     const list = screen.getByRole('list', { name: 'CI health' })
     expect(within(list).getAllByRole('listitem')).toHaveLength(2)
-    expect(screen.getByText('1 flaky · slowest e2e 6m 40s')).toBeInTheDocument()
+    expect(screen.getByText('green · 1 flaky · slowest e2e 6m 40s')).toBeInTheDocument()
     expect(screen.getByText('No check history in 7d')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open CI health o/r' }))
     expect(onOpenRepo).toHaveBeenCalledWith('o/r')
     expect(screen.getByTestId(`row-${ciRepoKey('a/b')}`)).toBeInTheDocument()
+  })
+  // 2026-10-01 Delivery critique, P2: a neutral rail and "1 flaky" with no
+  // judgement. With the doctor's thresholds the row reads a verdict in the
+  // pipeline's lane vocabulary, and the rail takes its tone.
+  it('CI health scope: with the CI/CD Doctor\'s thresholds a 20% flake is red on the rail and in words', () => {
+    const doctor = {
+      ...AUTOMATIONS[0], id: 'cicd-doctor', name: 'CI/CD Doctor', config: {},
+      configSchema: [
+        { key: 'max_flake_pct', label: '', type: 'int' as const, default: 2, help: '', choices: null },
+        { key: 'demote_flake_pct', label: '', type: 'int' as const, default: 5, help: '', choices: null },
+      ],
+    }
+    mount({ scope: 'ci', automations: [...AUTOMATIONS, doctor] })
+    expect(screen.getByText('red · 1 flaky ≥5% · slowest e2e 6m 40s')).toBeInTheDocument()
+    const row = screen.getByTestId(`row-${ciRepoKey('o/r')}`)
+    expect(row.querySelector('.bg-danger')).not.toBeNull()
+    // The repo with no history keeps the muted idle rail.
+    expect(screen.getByTestId(`row-${ciRepoKey('a/b')}`).querySelector('[class*="bg-neutral/20"]')).not.toBeNull()
   })
   it('the scope segment links all three scopes and counts them', () => {
     mount()

@@ -28,9 +28,12 @@ export function CheckTable<T>({ title, description, columns, rows, empty, placeh
       ) : rows.length === 0 ? (
         <p className="px-3 py-3 text-xs text-ink-muted">{empty}</p>
       ) : (
-        <table aria-label={title} className="w-full text-xs">
+        // Body text at the reading size (Read Ink: 12px is for labels, not
+        // for the numbers a reader is here to judge — 2026-10-01 Delivery
+        // critique, P2); the header row keeps the label size.
+        <table aria-label={title} className="w-full text-sm tabular-nums">
           <thead>
-            <tr className="text-left text-ink-muted">
+            <tr className="text-left text-xs text-ink-muted">
               {columns.map((c) => (
                 <th key={c.header} className={`px-3 py-1 font-medium ${c.className ?? ''}`}>
                   {c.header}
@@ -42,7 +45,7 @@ export function CheckTable<T>({ title, description, columns, rows, empty, placeh
             {rows.map((row, i) => (
               <tr key={i} className="border-t border-edge">
                 {columns.map((c) => (
-                  <td key={c.header} className={`px-3 py-1 ${c.className ?? ''}`}>
+                  <td key={c.header} className={`px-3 py-1.5 ${c.className ?? ''}`}>
                     {c.cell(row)}
                   </td>
                 ))}
