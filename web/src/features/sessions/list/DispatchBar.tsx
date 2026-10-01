@@ -462,7 +462,11 @@ export function DispatchBar({
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
     'disabled:opacity-50 disabled:cursor-not-allowed',
   )
-  const selectLabelClass = 'text-xs text-ink-muted'
+  // `short:hidden`: on a short viewport the label row over the selects is the
+  // 20px the dock can give back — the selects keep their `aria-label`, so
+  // nothing is unnamed (2026-10-01 shell critique, P2: at 640×400 the dock was
+  // 133px over a 29px list scroller).
+  const selectLabelClass = 'text-xs text-ink-muted short:hidden'
 
   // ── what the selected engine leaves on offer ───────────────────────────────
 

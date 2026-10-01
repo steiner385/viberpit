@@ -52,9 +52,15 @@ export function Banner({ tone, title, icon, actions, onDismiss, role, className,
       {icon === undefined
         ? <DefaultIcon size={18} aria-hidden="true" className={cn('shrink-0 mt-0.5', t.icon)} />
         : icon && <span className={cn('shrink-0 mt-0.5', t.icon)}>{icon}</span>}
+      {/* Under `short:` (Shed-Not-Shrink) a banner is one line: the title
+          truncates and the body folds away, so a stack of them cannot eat a
+          viewport the keyboard already halved — the two-line daemon banner
+          alone was 66px of a 560px phone (2026-10-01 shell critique, P2). The
+          actions and Dismiss stay; the full text is still in the DOM for a
+          screen reader. */}
       <div className="flex-1 min-w-0">
-        {title && <p className="text-sm font-medium">{title}</p>}
-        {children && <div className="text-xs text-ink-muted mt-0.5">{children}</div>}
+        {title && <p className="text-sm font-medium short:truncate">{title}</p>}
+        {children && <div className="text-xs text-ink-muted mt-0.5 short:hidden">{children}</div>}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
       {onDismiss && (

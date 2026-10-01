@@ -22,7 +22,14 @@ export function TopBar() {
     <header
       data-region="app.rail"
       data-rail="top"
-      className="z-nav flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-3 pb-2"
+      // `short:hidden` (Shed-Not-Shrink): with the keyboard up or the phone on
+      // its side, 61px of brand plus two buttons the More sheet also carries is
+      // the chrome to give back — at 390×560 the Sessions list was 207px (one
+      // card) and at 640×400 (a desktop at 200% zoom) 99px with a 29px
+      // scroller under it (2026-10-01 shell critique, P2). Nothing is lost:
+      // Assistant and Help are in `NavBar`'s More sheet, and the brand is not
+      // navigation.
+      className="z-nav flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-3 pb-2 short:hidden"
       // Clears the iOS status bar; env() is 0 elsewhere. Inline style to match
       // the pre-shell mobile chrome.
       style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}
