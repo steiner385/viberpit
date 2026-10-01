@@ -57,6 +57,17 @@ describe('Tabs', () => {
     expect(document.activeElement).toBe(tabs[0])
   })
 
+  // 2026-10-01 Delivery critique, P0: an `overflow-x-auto` strip is a scroll
+  // container with a zero automatic min-height, so inside a `min-h-0` flex
+  // column a tall panel squeezed it to its 1px border on 9 of 11 detail routes.
+  // The strip refuses to shrink itself; no caller has to remember to.
+  it('never yields its height to the panel below it (shrink-0 on both orientations)', () => {
+    const { rerender } = render(<Tabs items={items} value="a" onChange={vi.fn()} label="Sections" />)
+    expect(screen.getByRole('tablist')).toHaveClass('shrink-0')
+    rerender(<Tabs items={items} value="a" onChange={vi.fn()} label="Sections" orientation="vertical" />)
+    expect(screen.getByRole('tablist')).toHaveClass('shrink-0')
+  })
+
   it('composes the combined count + attention accessible name', () => {
     const onChange = vi.fn()
     const combined = [{ id: 'a', label: 'Alpha', count: 3, attention: true }]
