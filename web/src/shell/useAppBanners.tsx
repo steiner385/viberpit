@@ -47,11 +47,11 @@ export function useAppBanners({
         ? <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
         : null,
     },
-    // `hideOn: ['phone']` — the tallest banner in the stack (title row, CI
-    // reason, Deploy button, expandable commit list) against the screen with the
-    // least room. Settings › Deploy is the full surface on a phone, and the
-    // Settings nav badge is what points at it.
-    { id: 'deploy', priority: 50, tone: 'info', hideOn: ['phone'], node: <DeployPanel /> },
+    // A deploy FAILURE only (2026-10-01 shell critique, P2): pending commits
+    // moved to the rail-foot `DeployChip`. `hideOn: ['phone']` stays — the
+    // phone has no rail, and Settings › Deploy is its one deploy surface, with
+    // the Settings nav badge pointing at it.
+    { id: 'deploy', priority: 50, tone: 'warning', hideOn: ['phone'], node: <DeployPanel /> },
     { id: 'update', priority: 30, tone: 'info', node: <GlobalUpdateBanner /> },
   ]
 }

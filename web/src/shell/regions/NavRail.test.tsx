@@ -20,6 +20,12 @@ vi.mock('@/shell/useNavBadges', async (importOriginal) => {
   return { ...actual, useNavBadges: () => badges() }
 })
 
+// The rail-foot `DeployChip` reads the derived deploy state; mocked at that
+// level (like `useNavBadges.test.tsx` does) so this file never learns how
+// "behind" is derived. Default: nothing pending, so the chip is absent.
+const deployState = vi.fn()
+vi.mock('@/lib/deployState', () => ({ useDeployState: () => deployState() }))
+
 import type { NavBadges } from '@/shell/useNavBadges'
 import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -67,6 +73,26 @@ describe('NavRail', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
     badges.mockReturnValue(navBadges({ sessions: { count: 3, attention: true }, settings: true }))
+    deployState.mockReturnValue({ behind: false, count: 0 })
+  })
+
+  // 2026-10-01 shell critique, P2: pending commits were a 124px banner at the
+  // top of every desktop page and the first two Tab stops. They are a quiet
+  // rail item now, opening Settings › Deploy, present only while pending.
+  it('shows a pending-deploy item at the rail foot only while behind, linking to Settings › Deploy', () => {
+    const { unmount } = renderRail()
+    expect(screen.queryByRole('link', { name: /pending deploy/ })).toBeNull()
+    unmount()
+
+    deployState.mockReturnValue({ behind: true, count: 3 })
+    renderRail()
+    const chip = screen.getByRole('link', { name: '3 changes pending deploy' })
+    expect(chip).toHaveAttribute('href', '/settings/deploy')
+    expect(chip).not.toHaveAttribute('aria-current')
+    // No count pill: the rail's one badge rule is an amber needs-you count or
+    // nothing, and inventory is neither — the item's presence is the signal.
+    expect(chip.querySelector('span.rounded-pill')).toBeNull()
+    expect(chip.className).toMatch(/\bmin-h-target\b/)
   })
 
   it('is a landmark carrying the region id', () => {
