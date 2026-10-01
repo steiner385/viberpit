@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { CAPACITY } from './capacity/__fixtures__/capacity'
 import { DeliveryListColumn } from './DeliveryListColumn'
-import { automationKey, ciRepoKey } from './deliveryNavState'
+import { AUTOMATIONS_ID_SCOPE, CI_ID_SCOPE, automationKey, ciRepoKey } from './deliveryNavState'
 import { ViewportProvider } from '@/shell/useViewport'
 
 vi.mock('@/api/hooks', () => ({
@@ -20,7 +20,7 @@ vi.mock('@/api/hooks', () => ({
 
 function mount(over: Partial<React.ComponentProps<typeof DeliveryListColumn>> = {}) {
   const onOpenAutomation = vi.fn(); const onOpenRepo = vi.fn()
-  render(
+  const { unmount } = render(
     <ViewportProvider kiosk={null}>
       <MemoryRouter>
         <DeliveryListColumn scope="automations" automations={AUTOMATIONS} automationsLoading={false} automationsError={false}
@@ -31,7 +31,7 @@ function mount(over: Partial<React.ComponentProps<typeof DeliveryListColumn>> = 
       </MemoryRouter>
     </ViewportProvider>,
   )
-  return { onOpenAutomation, onOpenRepo }
+  return { onOpenAutomation, onOpenRepo, unmount }
 }
 
 describe('DeliveryListColumn', () => {
@@ -56,6 +56,55 @@ describe('DeliveryListColumn', () => {
     expect(onOpenAutomation).toHaveBeenCalledWith('pr-doctor')
     expect(screen.getByTestId(`row-${automationKey('pr-doctor')}`)).toHaveAttribute('aria-current', 'true')
   })
+  // ── the keyboard can enter the list (2026-10-01 Delivery critique, P1) ──
+  // Every row used to be `tabindex -1` until one was selected, and nothing is
+  // selected on arrival: Tab skipped the whole column. Same contract as the
+  // roadmap tree (`ui/list/useRovingRows`): one tab stop, arrows to walk it.
+  const control = (name: string) => screen.getByRole('button', { name })
+
+  it('Automations list has ONE tab stop: the first row on arrival, the open row once there is one', () => {
+    const { unmount } = mount()
+    expect(control('Open automation Backlog runner')).toHaveAttribute('tabindex', '0')
+    expect(control('Open automation PR doctor')).toHaveAttribute('tabindex', '-1')
+    expect(control('Open automation PM classify')).toHaveAttribute('tabindex', '-1')
+    unmount()
+    mount({ selectedKey: automationKey('pr-doctor') })
+    expect(control('Open automation PR doctor')).toHaveAttribute('tabindex', '0')
+    expect(control('Open automation Backlog runner')).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('ArrowDown/ArrowUp/Home/End move focus between automation rows, under a namespaced id', () => {
+    mount()
+    const first = control('Open automation Backlog runner')
+    expect(first.id).toBe(`row-${AUTOMATIONS_ID_SCOPE}-backlog-runner`)
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(control('Open automation PR doctor'))
+    fireEvent.keyDown(document.activeElement!, { key: 'End' })
+    expect(document.activeElement).toBe(control('Open automation PM classify'))
+    // The tab stop follows the cursor: Tab away and back lands where you left.
+    expect(control('Open automation PM classify')).toHaveAttribute('tabindex', '0')
+    expect(first).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })  // last row: stays
+    expect(document.activeElement).toBe(control('Open automation PM classify'))
+    fireEvent.keyDown(document.activeElement!, { key: 'Home' })
+    expect(document.activeElement).toBe(first)
+    fireEvent.keyDown(first, { key: 'ArrowUp' })  // first row: stays
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('CI health list has the same roving tab stop and arrows', () => {
+    mount({ scope: 'ci' })
+    const first = control('Open CI health a/b')
+    expect(first).toHaveAttribute('tabindex', '0')
+    expect(first.id).toBe(`row-${CI_ID_SCOPE}-a/b`)
+    expect(control('Open CI health o/r')).toHaveAttribute('tabindex', '-1')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(control('Open CI health o/r'))
+    expect(control('Open CI health o/r')).toHaveAttribute('tabindex', '0')
+  })
+
   it('CI health scope: one row per repo with the 7-day meta line', () => {
     const { onOpenRepo } = mount({ scope: 'ci' })
     const list = screen.getByRole('list', { name: 'CI health' })

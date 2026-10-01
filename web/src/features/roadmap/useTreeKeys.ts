@@ -2,20 +2,18 @@
  * Tree keyboard semantics for the Map scope (WAI-ARIA tree pattern): one tab
  * stop for the whole tree, arrows to walk it, `←`/`→` to fold and unfold.
  *
- * Why a local hook and not `session/useListNavigation`: that hook is a flat
- * cursor over `NavItem`s (Session-typed, index-only, no DOM focus and no notion
- * of depth). A tree needs the two things it does not have — parent/child moves
- * from `depth`, and REAL focus on the row so `→` lands somewhere visible — so
- * generalising it would have meant rewriting it, not parameterising it. It stays
- * the sessions list's cursor; this is the tree's.
+ * The flat half — the roving tab stop, `↑`/`↓`/Home/End, real DOM focus through
+ * `rowElementId` — is `ui/list/useRovingRows`, shared with the Delivery list
+ * column. This hook adds only what a tree has and a list does not: parent/child
+ * moves from `depth`, and fold/unfold on `←`/`→`.
  *
  * Focus-scoped by construction: the handler hangs off the tree container, so it
  * can only fire while focus is inside the tree. Nothing is registered with
  * `shell/shortcuts.ts`, which is where GLOBAL keys live — an arrow key that
  * moved a tree cursor from the prompt dock would be a bug, not a feature.
  */
-import { useCallback, useRef, useState } from 'react'
-import { rowElementId } from '@/ui/list/rowId'
+import { useCallback, useMemo } from 'react'
+import { rowKeyOf, useRovingRows } from '@/ui/list/useRovingRows'
 import type { TreeRow } from './treeRows'
 
 /**
@@ -51,52 +49,13 @@ export function useTreeKeys(
   selectedKey: string | null,
   setCollapsed: (key: string, collapsed: boolean) => void,
 ): TreeKeys {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [focusKey, setFocusKey] = useState<string | null>(null)
-
-  // A NEW selection retires the keyboard's cursor. `focusKey` used to be write-
-  // only: it was set by every arrow key and never cleared, so after arrowing down
-  // three rows and then CLICKING a fourth, the tab stop stayed on the arrowed row
-  // — Tab took the user back to a row they had left, not to the one highlighted
-  // in front of them. Selection is the more recent intent, whichever way it was
-  // expressed, so it wins. Render-phase adjustment (React's "resetting state when
-  // a prop changes"), not an effect: the tab stop must be right in the same frame
-  // the new selection paints.
-  //
-  // Arrowing itself does NOT re-enter here — `focusRow` only moves focus, it does
-  // not open a row — so the cursor still survives a walk through the tree.
-  const [seenSelection, setSeenSelection] = useState(selectedKey)
-  if (seenSelection !== selectedKey) {
-    setSeenSelection(selectedKey)
-    setFocusKey(null)
-  }
-
-  // The open row owns the tab stop until the keyboard moves off it. Either can
-  // vanish (a fold, a search, a deleted product), and then the first row takes
-  // it — a tree whose only tab stop is a row that no longer exists is a tree the
-  // Tab key skips entirely.
-  const preferred = focusKey ?? selectedKey
-  const rovingKey = rows.some((r) => r.key === preferred)
-    ? preferred
-    : (rows[0]?.key ?? null)
-
-  const focusRow = useCallback((key: string) => {
-    setFocusKey(key)
-    // `CardFrame` ids its open control through `rowElementId`; getElementById
-    // avoids having to escape a key full of `:` for a CSS selector. The scope is
-    // what makes the lookup unambiguous — the detail pane beside this tree
-    // renders the same keys — and the `contains` check stays as the belt to that
-    // brace, so a future second tree in the same scope still cannot steal focus.
-    const el = document.getElementById(rowElementId(key, TREE_ID_SCOPE))
-    if (el && containerRef.current?.contains(el)) el.focus()
-  }, [])
+  const keys = useMemo(() => rows.map((r) => r.key), [rows])
+  const { containerRef, rovingKey, focusRow, onKeyDown: flatKeys } =
+    useRovingRows(keys, selectedKey, TREE_ID_SCOPE)
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // Enter and Space are deliberately absent: `CardFrame` already opens the
-    // focused row on both (its `listMode={false}` branch), and a second handler
-    // here would open it twice.
-    const wrapper = (e.target as HTMLElement).closest<HTMLElement>('[data-row-key]')
-    const key = wrapper?.dataset.rowKey
+    if (flatKeys(e)) return
+    const key = rowKeyOf(e)
     if (key === undefined) return
     const i = rows.findIndex((r) => r.key === key)
     if (i < 0) return
@@ -110,10 +69,6 @@ export function useTreeKeys(
     }
 
     switch (e.key) {
-      case 'ArrowDown': move(i + 1); break
-      case 'ArrowUp': move(i - 1); break
-      case 'Home': move(0); break
-      case 'End': move(rows.length - 1); break
       case 'ArrowRight':
         if (!expandable(row)) break
         e.preventDefault()
@@ -136,7 +91,7 @@ export function useTreeKeys(
         break
       default: break
     }
-  }, [rows, setCollapsed, focusRow])
+  }, [rows, setCollapsed, focusRow, flatKeys])
 
   return { containerRef, rovingKey, onKeyDown }
 }

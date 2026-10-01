@@ -11,10 +11,13 @@ import { fmtSecs } from '../ci/format'
 export interface CiRepoRowProps {
   repo: string
   selected: boolean
+  /** The list's roving tab stop (`ui/list/useRovingRows`); see `AutomationRow`. */
+  focusable?: boolean
+  idScope?: string
   onOpen: (repo: string) => void
 }
 
-export function CiRepoRow({ repo, selected, onOpen }: CiRepoRowProps) {
+export function CiRepoRow({ repo, selected, focusable, idScope, onOpen }: CiRepoRowProps) {
   const { data, isLoading } = useCheckInsights(repo, '7d', { poll: false })
   const key = ciRepoKey(repo)
   const slowest = data?.slowest[0]
@@ -24,14 +27,16 @@ export function CiRepoRow({ repo, selected, onOpen }: CiRepoRowProps) {
       ? `${data.flakiest.length} flaky · slowest ${slowest.check_name} ${fmtSecs(slowest.p90)}`
       : 'No check history in 7d'
   return (
-    <div data-testid={`row-${key}`} role="listitem" aria-current={selected ? 'true' : undefined}>
+    <div data-testid={`row-${key}`} data-row-key={repo} role="listitem" aria-current={selected ? 'true' : undefined}>
       <CardFrame
         id={repo}
+        idScope={idScope}
         openLabel={`Open CI health ${repo}`}
         // Every repo starts at the same neutral rail — CI health has no tier
         // computed today (unlike an automation's), just its own text.
         railClass="bg-neutral/40"
         selected={selected}
+        focusable={focusable}
         listMode={false}
         swipeEnabled={false}
         onOpen={onOpen}

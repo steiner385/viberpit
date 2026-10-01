@@ -1,8 +1,8 @@
 /**
  * The DOM id of a row's open control — ONE producer, so every party that has to
  * name the same element agrees on the string: `CardFrame`, which renders it, and
- * whoever focuses it afterwards (`features/roadmap/useTreeKeys`) or points at it
- * (`DispatchBar`'s `aria-activedescendant`).
+ * whoever focuses it afterwards (`ui/list/useRovingRows`, under the roadmap tree
+ * and the Delivery list) or points at it (`DispatchBar`'s `aria-activedescendant`).
  *
  * ## Why `scope` exists
  *
