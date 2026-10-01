@@ -193,4 +193,29 @@ describe('Notifications, Channels and Routing rules sections', () => {
       )
     })
   })
+
+  // 2026-09-30 Settings critique, P1: both deletes were one tap with no
+  // question, and a channel delete cascades to the rules that target it.
+  it('deleting a channel asks, names the rules it takes with it, and only then calls api.del', async () => {
+    renderSection(NotificationChannelsSection)
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete Slack #alerts' }))
+    expect(api.del).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog', { name: 'Delete Slack #alerts?' })
+    expect(dialog).toHaveTextContent('1 routing rule sends to it and is deleted with it.')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(api.del).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Slack #alerts' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete channel' }))
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith('/notifications/channels/ch1'))
+  })
+
+  it('deleting a rule asks with the rule spelled out, then calls api.del', async () => {
+    renderSection(NotificationRulesSection)
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete rule r1' }))
+    expect(api.del).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this rule?' })
+    expect(dialog).toHaveTextContent('→ channel (Slack #alerts)')
+    await userEvent.click(screen.getByRole('button', { name: 'Delete rule' }))
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith('/notifications/rules/r1'))
+  })
 })

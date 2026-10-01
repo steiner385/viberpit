@@ -8,6 +8,7 @@ import { Field } from '@/ui/Field'
 import { Input } from '@/ui/Input'
 import { Textarea } from '@/ui/Textarea'
 import { Select } from '@/ui/Select'
+import { useConfirm } from '@/ui/useConfirm'
 
 interface McpServerDialogProps {
   /** null = create-new mode */
@@ -196,8 +197,14 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
     )
   }
 
-  function handleDelete() {
-    if (!window.confirm(`Delete "${effectiveName}"?`)) return
+  const { confirm, dialog } = useConfirm()
+  async function handleDelete() {
+    const ok = await confirm({
+      title: `Delete ${effectiveName}?`,
+      description: 'Every session loses this MCP server at its next start. There is no undo.',
+      confirmLabel: `Delete ${effectiveName}`,
+    })
+    if (!ok) return
     deleteMutation.mutate({ name: effectiveName }, { onSuccess: () => onClose() })
   }
 
@@ -365,7 +372,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
           <Button
             type="button"
             variant="danger"
-            onClick={handleDelete}
+            onClick={() => void handleDelete()}
             disabled={deleteMutation.isPending || saveMutation.isPending}
           >
             Delete
@@ -383,6 +390,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
           </Button>
         )}
       </div>
+      {dialog}
     </Dialog>
   )
 }

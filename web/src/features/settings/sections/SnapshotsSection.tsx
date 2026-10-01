@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
+import { useConfirm } from '@/ui/useConfirm'
 import { api } from '@/api/client'
 
 type SnapshotKind = 'manual' | 'auto' | 'pre-restore' | 'pre-import'
@@ -209,16 +210,19 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
     },
   })
 
-  function handleRestore() {
-    const ok = window.confirm(
-      'Restore this snapshot? This overwrites your live shared Claude config. ' +
-        'A pre-restore backup is created automatically first.',
-    )
+  const { confirm, dialog } = useConfirm()
+  async function handleRestore() {
+    const ok = await confirm({
+      title: `Restore ${snapshot.label ?? 'this snapshot'}?`,
+      description: 'Overwrites your live shared Claude config with this snapshot. A pre-restore backup is taken first, so the current config can be brought back the same way.',
+      confirmLabel: 'Restore snapshot',
+    })
     if (ok) restore.mutate()
   }
 
   return (
     <li className="rounded-md border border-edge p-3 space-y-2">
+      {dialog}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-ink">
           {snapshot.label ?? '(unlabeled)'}
@@ -244,7 +248,7 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
             type="button"
             variant="danger"
             size="sm"
-            onClick={handleRestore}
+            onClick={() => void handleRestore()}
             disabled={restore.isPending}
           >
             {restore.isPending ? 'Restoring…' : 'Restore'}
@@ -334,17 +338,20 @@ function ImportPanel() {
     if (f) preview.mutate(f)
   }
 
-  function handleApply() {
+  const { confirm, dialog } = useConfirm()
+  async function handleApply() {
     if (!file) return
-    const ok = window.confirm(
-      'Apply this import? This overwrites your live shared Claude config. ' +
-        'A pre-import backup is created automatically first.',
-    )
+    const ok = await confirm({
+      title: `Apply ${file.name}?`,
+      description: 'Overwrites your live shared Claude config with the bundle. A pre-import backup is taken first, so the current config can be restored.',
+      confirmLabel: 'Apply import',
+    })
     if (ok) apply.mutate(file)
   }
 
   return (
     <div className="space-y-3 border-t border-edge pt-4">
+      {dialog}
       <h3 className="text-sm font-semibold text-ink">Import bundle</h3>
       <div className="space-y-1">
         <label
@@ -395,7 +402,7 @@ function ImportPanel() {
           <Button
             type="button"
             variant="danger"
-            onClick={handleApply}
+            onClick={() => void handleApply()}
             disabled={apply.isPending}
             className="min-h-target"
           >
