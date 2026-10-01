@@ -50,6 +50,24 @@ describe('DeployPanel', () => {
     expect(mutate).toHaveBeenCalled()   // mutate is wired as controller.start in mockHooks
   })
 
+  // 2026-10-01 shell critique (P2): the title is the first Tab stop on most
+  // desktop pages and was a bare 183×20 button with no disclosure state.
+  it('the pending title is a 44px disclosure that says whether it is open and what it controls', () => {
+    mockHooks(
+      { behind: true, commits: [{ sha: 'abc1234', subject: 'feat x', author: 't', iso: 'i' }], ci: 'green' },
+      { running: false, phases: {} })
+    render(<DeployPanel />)
+    const title = screen.getByRole('button', { name: /1 change pending deploy/i })
+    expect(title.className).toMatch(/\bmin-h-target\b/)
+    expect(title).toHaveAttribute('aria-expanded', 'false')
+    expect(title).not.toHaveAttribute('aria-controls')
+    fireEvent.click(title)
+    expect(title).toHaveAttribute('aria-expanded', 'true')
+    const listId = title.getAttribute('aria-controls')
+    expect(listId).toBeTruthy()
+    expect(document.getElementById(listId!)).toContainElement(screen.getByText('feat x'))
+  })
+
   // 2026-09-29 critique (P2): on desktop this banner sits above the session pane
   // and in amber it out-shouted the needs-you states beneath it. Pending commits
   // are information with a button; amber is for a failure.

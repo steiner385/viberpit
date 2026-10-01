@@ -36,7 +36,7 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     if (was && !running) {
       // 'idle' means the status was wiped rather than concluded (a controller process
       // replaced mid-poll reports an empty DeployStatus, #865): there is no outcome to
-      // hold, so dismiss instead of flashing a spurious "Upgrade failed".
+      // hold, so dismiss instead of flashing a spurious "Deploy failed".
       const outcome = deployOutcome(deploy)
       setIntent(outcome === 'success' ? 'held-success'
         : outcome === 'failure' ? 'held-failure' : 'idle')
@@ -53,12 +53,11 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running])
 
-  // Auto-dismiss a clean success after a brief confirmation window.
-  useEffect(() => {
-    if (intent !== 'held-success') return
-    const t = setTimeout(() => setIntent('idle'), 2000)
-    return () => clearTimeout(t)
-  }, [intent])
+  // A clean success is HELD, like a failure, until the operator closes it. It
+  // used to auto-dismiss after 2 s: a ✓ gone before the eye landed, under a
+  // dialog still named "Deploying", never announced to a screen reader — the
+  // end of the one journey that restarts every live session was its weakest
+  // moment (2026-10-01 shell critique, P2). `DeployOverlay` renders the Close.
 
   const doStart = useCallback((targetSha?: string) => {
     setIntent('starting')

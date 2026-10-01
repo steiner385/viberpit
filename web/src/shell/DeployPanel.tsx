@@ -1,5 +1,5 @@
 // web/src/shell/DeployPanel.tsx
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { useDeployState } from '@/lib/deployState'
@@ -48,6 +48,7 @@ export function DeployPanel() {
   const s = useDeployState()
   const { start, starting } = useDeployController()
   const [open, setOpen] = useState(false)
+  const commitsId = useId()
 
   // Only the failure notice is dismissible. Pending commits are actionable (Deploy button)
   // and clear on their own once deployed — hiding them would hide the only way to deploy.
@@ -73,8 +74,17 @@ export function DeployPanel() {
       // runs, and role="status" would announce every one of those to a screen reader.
       role="none"
       title={s.behind ? (
-        <button type="button" onClick={() => setOpen((o) => !o)}>
-          {s.count} change{s.count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}
+        // A disclosure, and the first Tab stop on most desktop pages: it says
+        // so (`aria-expanded`, `aria-controls`) and meets the 44px floor. It
+        // was a bare 183×20 button with no state (2026-10-01 shell critique, P2).
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls={open && s.count > 0 ? commitsId : undefined}
+          className="inline-flex min-h-target items-center gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          {s.count} change{s.count === 1 ? '' : 's'} pending deploy <span aria-hidden="true">{open ? '▾' : '▸'}</span>
         </button>
       ) : undefined}
       actions={s.behind ? (
@@ -93,7 +103,7 @@ export function DeployPanel() {
       onDismiss={showFailure ? dismissFailure : undefined}
     >
       {open && s.count > 0 && (
-        <ul className="mt-2 space-y-1">
+        <ul id={commitsId} className="mt-2 space-y-1">
           {s.commits.map((c) => (
             <li key={c.sha} className="flex gap-2 font-mono text-xs">
               <span className="text-warning">{c.sha.slice(0, 7)}</span>
