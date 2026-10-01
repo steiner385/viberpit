@@ -110,7 +110,7 @@ describe('Overlays — app.overlays', () => {
     render(<Shell />)
 
     const dialog = screen.getByRole('dialog', { name: 'Deploying' })
-    expect(dialog).toHaveTextContent(/Upgrading ViberPit/)
+    expect(dialog).toHaveTextContent(/Deploying ViberPit/)
     // The overlay is not merely on the page — it is in this region's subtree.
     expect(region()!.contains(dialog)).toBe(true)
   })

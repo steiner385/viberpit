@@ -95,7 +95,10 @@ describe('deployController', () => {
     expect(screen.getByTestId('visible').textContent).toBe('true')
   })
 
-  it('held-success on clean finish, then auto-dismiss after 2s', () => {
+  // 2026-10-01 shell critique, P2: success auto-dismissed after 2 s, under a
+  // dialog still named "Deploying" and never announced. It is held now, like a
+  // failure, until the operator closes it.
+  it('held-success on clean finish stays held — no auto-dismiss', () => {
     setStart()
     // Provide an initial status before rendering (no QueryClient in test env).
     setStatus({ running: true, phases: {} })
@@ -107,9 +110,11 @@ describe('deployController', () => {
     // Drive the transition by re-rendering the provider.
     act(() => { rerender.rerender(<DeployControllerProvider><Probe /></DeployControllerProvider>) })
     // Note: the edge is observed across renders; see implementation note below.
-    expect(['held-success', 'idle']).toContain(screen.getByTestId('intent').textContent)
-    act(() => { vi.advanceTimersByTime(2000) })
-    expect(screen.getByTestId('intent').textContent).toBe('idle')
+    const after = screen.getByTestId('intent').textContent
+    expect(['held-success', 'idle']).toContain(after)
+    act(() => { vi.advanceTimersByTime(10_000) })
+    // Whatever the edge produced, time alone does not change it.
+    expect(screen.getByTestId('intent').textContent).toBe(after)
   })
 
   it('a transient status-poll error mid-run does NOT classify as held-failure', () => {

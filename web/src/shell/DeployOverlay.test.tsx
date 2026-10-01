@@ -41,7 +41,11 @@ describe('DeployOverlay', () => {
       pending: { commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], targetSha: 'deadbee' },
     })
     render(<DeployOverlay />)
-    expect(screen.getByText(/upgrading/i)).toBeInTheDocument()
+    // "Deploy", the verb the banner, Settings › Deploy and the nav dot use —
+    // never "Upgrade" (2026-10-01 shell critique, heuristic 2).
+    expect(screen.getByRole('dialog', { name: 'Deploying' })).toBeInTheDocument()
+    expect(screen.getByText(/deploying/i)).toBeInTheDocument()
+    expect(screen.queryByText(/upgrad/i)).toBeNull()
     expect(screen.getByText(/backing up live sessions/i)).toBeInTheDocument()
   })
 
@@ -77,15 +81,27 @@ describe('DeployOverlay', () => {
                 restore: { restored: [], failed: ['s2'] } },
     })
     render(<DeployOverlay />)
+    expect(screen.getByRole('dialog', { name: 'Deploy failed' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Deploy failed' })).toBeInTheDocument()
     expect(screen.getByText(/fast-forward failed/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /close/i }))
     expect(dismiss).toHaveBeenCalled()
   })
 
-  it('shows the success confirmation', () => {
-    mock({ ctrl: { visible: true, intent: 'held-success' }, deploy: { running: false, phases: {}, warnings: [] } })
+  // 2026-10-01 shell critique, P2: success was a ✓ auto-dismissed after 2 s
+  // under a dialog still named "Deploying", never announced. It is held,
+  // named, announced, and closed by the operator.
+  it('holds the success, names the dialog by it, announces it, and closes on the lg Close', () => {
+    const dismiss = vi.fn()
+    mock({ ctrl: { visible: true, intent: 'held-success', dismiss }, deploy: { running: false, phases: {}, warnings: [] } })
     render(<DeployOverlay />)
-    expect(screen.getByText(/deployed/i)).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Deployed' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/Deployed/)
+    expect(screen.getByRole('heading', { name: /Deployed/ })).toBeInTheDocument()
+    const close = screen.getByRole('button', { name: 'Close' })
+    expect(close.className).toMatch(/\bmin-h-target\b/)
+    fireEvent.click(close)
+    expect(dismiss).toHaveBeenCalledTimes(1)
   })
 
   it('surfaces lost sessions as a warning on the success screen', () => {

@@ -265,7 +265,7 @@ describe('App deploy overlay', () => {
       return Promise.resolve([])
     })
     renderApp({ path: '/sessions' })
-    expect(await screen.findByText(/upgrading viberpit/i)).toBeInTheDocument()
+    expect(await screen.findByText(/deploying viberpit/i)).toBeInTheDocument()
   })
 })
 

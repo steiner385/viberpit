@@ -8,7 +8,7 @@ import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 
 const DOT: Record<string, string> = {
-  done: 'bg-success', running: 'bg-warning animate-pulse',
+  done: 'bg-success', running: 'bg-warning motion-safe:animate-pulse',
   failed: 'bg-danger', pending: 'bg-edge-strong',
 }
 
@@ -38,22 +38,37 @@ export function DeployOverlay() {
     ? DEPLOY_PHASES.find(p => phaseState(deploy, p.key) === 'running')?.key
     : undefined
 
+  // The dialog is named by its state, so a screen reader hears which of the
+  // three it is: a success that auto-dismissed after 2 s under a dialog still
+  // called "Deploying" was never announced at all (2026-10-01 shell critique,
+  // P2). "Deploy", never "Upgrade": the banner, Settings › Deploy and the nav
+  // dot all use the one verb.
+  const label = intent === 'held-success' ? 'Deployed' : intent === 'held-failure' ? 'Deploy failed' : 'Deploying'
+
   return (
-    <Dialog open onClose={() => {}} aria-label="Deploying" dismissable={false} size="md" className="w-[28rem]">
+    <Dialog open onClose={() => {}} aria-label={label} dismissable={false} size="md">
       {intent === 'held-success' ? (
-        <div className="text-center py-6">
-          <div className="text-3xl">✓</div>
-          <p className="mt-2 font-medium text-ink">Deployed{shortSha && <span className="font-mono text-sm text-ink-muted"> · {shortSha}</span>}</p>
-          {deploy?.restore?.failed?.length ? (
-            <p className="mt-2 text-sm text-warning">
-              {deploy.restore.failed.length} session{deploy.restore.failed.length === 1 ? '' : 's'} couldn’t be resumed:{' '}
-              <span className="font-mono">{deploy.restore.failed.join(', ')}</span>
-            </p>
-          ) : null}
+        // Held until closed, and announced: the end of a deploy is the moment
+        // the operator wants confirmed, not a ✓ that is gone before the eye
+        // lands. Failure already held; success now does the same.
+        <div>
+          <div role="status" className="text-center py-6">
+            <div className="text-3xl text-success" aria-hidden="true">✓</div>
+            <h2 className="mt-2 text-lg font-semibold text-ink">Deployed{shortSha && <span className="font-mono text-sm text-ink-muted"> · {shortSha}</span>}</h2>
+            {deploy?.restore?.failed?.length ? (
+              <p className="mt-2 text-sm text-warning">
+                {deploy.restore.failed.length} session{deploy.restore.failed.length === 1 ? '' : 's'} couldn’t be resumed:{' '}
+                <span className="font-mono">{deploy.restore.failed.join(', ')}</span>
+              </p>
+            ) : null}
+          </div>
+          <div className="text-right">
+            <Button type="button" variant="secondary" size="lg" onClick={dismiss}>Close</Button>
+          </div>
         </div>
       ) : intent === 'held-failure' ? (
         <div>
-          <h2 className="text-lg font-semibold text-danger">Upgrade failed</h2>
+          <h2 className="text-lg font-semibold text-danger">Deploy failed</h2>
           <p className="mt-2 text-sm text-danger">{startError ?? deploy?.error ?? 'The deploy did not complete.'}</p>
           {deploy?.restore?.failed?.length ? (
             <p className="mt-2 text-sm text-danger">
@@ -67,7 +82,7 @@ export function DeployOverlay() {
         </div>
       ) : (
         <div>
-          <h2 className="text-lg font-semibold text-ink">Upgrading {BRAND_NAME}</h2>
+          <h2 className="text-lg font-semibold text-ink">Deploying {BRAND_NAME}</h2>
           <p className="text-xs text-ink-muted">
             {count} change{count === 1 ? '' : 's'}{shortSha && <> · <span className="font-mono">{shortSha}</span></>}
           </p>
