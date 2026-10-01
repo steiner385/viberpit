@@ -18,6 +18,11 @@ export interface RadioGroupProps<V extends string> {
   options: RadioOption<V>[]
   'aria-describedby'?: string
   className?: string
+  /** `horizontal` lays the options on one wrapping row under the legend — for a
+   *  short list of one-word choices inside a sheet (the phone's Theme picker),
+   *  where a stacked column would cost three rows for three words. Options
+   *  with a `description` or `disabledReason` want the default column. */
+  orientation?: 'vertical' | 'horizontal'
 }
 
 /**
@@ -27,11 +32,12 @@ export interface RadioGroupProps<V extends string> {
  * row's one visible label and the row passes `selfLabelled`.
  */
 export function RadioGroup<V extends string>({
-  name, legend, value, onChange, options, className, ...aria
+  name, legend, value, onChange, options, className, orientation = 'vertical', ...aria
 }: RadioGroupProps<V>) {
   return (
     <fieldset className={cn('flex flex-col gap-1.5', className)} aria-describedby={aria['aria-describedby']}>
       <legend className="text-sm font-medium text-ink">{legend}</legend>
+      <div className={orientation === 'horizontal' ? 'flex flex-wrap gap-x-6' : 'flex flex-col gap-1.5'}>
       {options.map((o) => {
         const id = `${name}-${o.value}`
         const reasonId = o.disabled && o.disabledReason ? `${id}-reason` : undefined
@@ -62,6 +68,7 @@ export function RadioGroup<V extends string>({
           </div>
         )
       })}
+      </div>
     </fieldset>
   )
 }

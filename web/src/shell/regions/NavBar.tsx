@@ -99,7 +99,9 @@ export function NavBar() {
               {...navBadgeProps(def, badges)}
             />
           ))}
-          <GlobalActions showLabel />
+          {/* `inline`: a popover anchored from inside this sheet stacks UNDER it
+              (`z-popover` 30 < `z-drawer` 50) — see `GlobalActions`. */}
+          <GlobalActions showLabel layout="inline" />
           <NavItem
             to={settings.path}
             icon={settings.icon}

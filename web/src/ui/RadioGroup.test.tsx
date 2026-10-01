@@ -26,4 +26,19 @@ describe('RadioGroup', () => {
     expect(screen.getByText('Pinned by the kiosk URL')).toBeInTheDocument()
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('horizontal orientation lays the options on one wrapping row and keeps the group semantics', async () => {
+    const { container } = render(
+      <RadioGroup name="theme" legend="Theme" orientation="horizontal" value="light" onChange={() => {}}
+        options={[{ value: 'system', label: 'System' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />,
+    )
+    const group = screen.getByRole('group', { name: 'Theme' })
+    expect(screen.getAllByRole('radio')).toHaveLength(3)
+    expect(screen.getByRole('radio', { name: 'Light' })).toBeChecked()
+    // The options' wrapper is the row; the legend stays above it.
+    const row = group.querySelector('legend + div')!
+    expect(row.className).toMatch(/\bflex-wrap\b/)
+    expect(row.className).not.toMatch(/\bflex-col\b/)
+    expect(await axe(container)).toHaveNoViolations()
+  })
 })
