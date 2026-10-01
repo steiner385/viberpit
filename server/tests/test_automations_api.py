@@ -330,7 +330,8 @@ def test_list_uses_one_overview_for_counts_and_missing_entries_are_unknown():
         overview = AsyncMock(return_value={
             "statuses": {"pr-doctor": {"text": "all PRs green", "level": "idle",
                                        "counts": {"failing": 0}, "products": None}},
-            "actionableCounts": {"pr-doctor": 0, "backlog-runner": 4},
+            "actionableCounts": {"pr-doctor": 0, "backlog-runner": 4, "error-triage": 7},
+            "maintenanceCounts": {"error-triage": 47},
         })
         with patch.object(c.app.state.sessions, "automation_overview", new=overview):
             response = c.get("/api/automations", headers=H)
@@ -342,6 +343,11 @@ def test_list_uses_one_overview_for_counts_and_missing_entries_are_unknown():
         assert rows["backlog-runner"]["actionableCount"] == 4
         assert rows["pm-sync"]["status"]["level"] == "unknown"
         assert rows["pm-sync"]["actionableCount"] is None
+        # Decisions badge; housekeeping rides beside it and is None when the
+        # daemon predates the split (2026-10-01 Delivery critique, P0).
+        assert rows["error-triage"]["actionableCount"] == 7
+        assert rows["error-triage"]["maintenanceCount"] == 47
+        assert rows["pr-doctor"]["maintenanceCount"] is None
 
 
 def test_list_suppresses_obsolete_waits_when_off_without_hiding_human_decisions():

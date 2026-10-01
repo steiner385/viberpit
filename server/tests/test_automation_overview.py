@@ -50,6 +50,27 @@ async def test_counts_use_manual_provider_items_and_isolate_failure():
 
 
 @pytest.mark.asyncio
+async def test_maintenance_items_count_apart_from_decisions():
+    # 2026-10-01 Delivery critique, P0: the badge once read 103 of which 96 were
+    # mute toggles and throttled rows. ``actionableCounts`` is decisions only;
+    # housekeeping rides in ``maintenanceCounts`` so a row can still say it.
+    orch = object.__new__(SessionOrchestrator)
+    provider = SimpleNamespace(actionable=AsyncMock(return_value=[
+        ActionableItem("a", "decide", actions=_ACTION),
+        ActionableItem("b", "unmute me", actions=_ACTION, kind="maintenance"),
+        ActionableItem("c", "mute me", actions=_ACTION, kind="maintenance"),
+        ActionableItem("d", "settled, no button", kind="maintenance", status="held elsewhere"),
+    ]))
+    orch._action_providers = {"error-triage": provider}
+    overview = await orch.automation_overview()
+    assert overview["actionableCounts"]["error-triage"] == 1
+    assert overview["maintenanceCounts"]["error-triage"] == 2
+    # A provider with no items is 0 / 0; an unwired automation is 0 / 0 too.
+    assert overview["actionableCounts"]["pm-sync"] == 0
+    assert overview["maintenanceCounts"]["pm-sync"] == 0
+
+
+@pytest.mark.asyncio
 async def test_status_only_item_does_not_count_as_actionable():
     # #16348: an item with `status` text and no `actions` (a live predecessor
     # makes the click a guaranteed refusal) must not inflate "N actionable".

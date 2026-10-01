@@ -31,6 +31,11 @@ def test_actionable_lists_candidates_filed_and_muted(tmp_path):
         assert {a.kind for a in items["filed"].actions} == {"mute"}
         assert items["filed"].url == "https://github.com/o/r/issues/42"
         assert {a.kind for a in items["muted"].actions} == {"unmute"}
+        # Only the candidate awaits a human; filed and muted are settled
+        # housekeeping and must not badge (2026-10-01 Delivery critique, P0).
+        assert items["cand"].kind == "decision"
+        assert items["filed"].kind == "maintenance"
+        assert items["muted"].kind == "maintenance"
     _run(body, tmp_path)
 
 

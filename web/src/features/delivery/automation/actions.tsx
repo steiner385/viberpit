@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useAutomationActionable, useAutomationTrigger } from '@/api/hooks'
-import { fetchPrDoctorJob, type ActionSpec } from '@/api/automations'
+import { fetchPrDoctorJob, splitActionable, type ActionableItem, type ActionSpec } from '@/api/automations'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
@@ -142,39 +142,68 @@ export function AutomationActions({ automationId, enabled, variant, onSeeAll }: 
   onSeeAll?: () => void
 }) {
   const actionable = useAutomationActionable(automationId, enabled)
-  const list = actionable.data ?? []
-  if (list.length === 0) {
-    return variant === 'full' ? <p className="text-sm text-ink-muted">Nothing needs you.</p> : null
-  }
-  const rows = variant === 'preview' ? list.slice(0, PREVIEW_ROWS) : list
-  const items = (
-    <ul className="space-y-1.5 text-sm">
-      {rows.map((item) => (
-        <li key={item.id} className="flex items-center gap-2">
-          <span className="flex-1 truncate">
-            <span className="text-ink-muted tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
-            {item.title}
-          </span>
-          {item.actions.length === 0 && item.status && (
-            <span className="text-xs text-ink-muted">{item.status}</span>
-          )}
-          {item.actions.map((action) => (
-            <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
-          ))}
-        </li>
-      ))}
-    </ul>
-  )
-  if (variant === 'full') return items
-  return (
-    <section className="space-y-2">
-      <SectionHeading>Actionable items</SectionHeading>
-      <div className="rounded-md border border-edge p-2">{items}</div>
-      {onSeeAll && list.length > PREVIEW_ROWS && (
-        <div>
-          <Button size="sm" variant="ghost" onClick={onSeeAll}>See all {list.length}</Button>
+  // Decisions are what "needs you"; maintenance (an Unmute on a muted
+  // signature, a File-now on a row the loop itself throttled) is settled
+  // housekeeping — said, folded, never counted (2026-10-01 Delivery critique, P0).
+  const { decisions, maintenance } = splitActionable(actionable.data ?? [])
+  if (variant === 'preview') {
+    if (decisions.length === 0) return null
+    return (
+      <section className="space-y-2">
+        <SectionHeading>Actionable items</SectionHeading>
+        <div className="rounded-md border border-edge p-2">
+          <ActionableRows items={decisions.slice(0, PREVIEW_ROWS)} automationId={automationId} />
         </div>
+        {onSeeAll && decisions.length > PREVIEW_ROWS && (
+          <div>
+            <Button size="sm" variant="ghost" onClick={onSeeAll}>See all {decisions.length}</Button>
+          </div>
+        )}
+      </section>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      {decisions.length === 0
+        ? <p className="text-sm text-ink-muted">Nothing needs you.</p>
+        : <ActionableRows items={decisions} automationId={automationId} />}
+      {maintenance.length > 0 && (
+        <details className="text-sm">
+          <summary className="cursor-pointer select-none text-ink-muted">
+            {maintenance.length} maintenance
+          </summary>
+          <div className="mt-2">
+            <ActionableRows items={maintenance} automationId={automationId} />
+          </div>
+        </details>
       )}
-    </section>
+    </div>
+  )
+}
+
+function ActionableRows({ items, automationId }: { items: ActionableItem[]; automationId: string }) {
+  return (
+    <ul className="space-y-1.5 text-sm">
+      {items.map((item) => {
+        const number = item.id.split('#')[1]
+        return (
+          <li key={item.id} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">
+                {number && <span className="text-ink-muted tabular-nums">#{number}</span>}{number ? ' ' : ''}
+                {item.title}
+              </span>
+              {item.subtitle && <span className="block truncate text-xs text-ink-muted">{item.subtitle}</span>}
+            </span>
+            {item.actions.length === 0 && item.status && (
+              <span className="text-xs text-ink-muted">{item.status}</span>
+            )}
+            {item.actions.map((action) => (
+              <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
+            ))}
+          </li>
+        )
+      })}
+    </ul>
   )
 }

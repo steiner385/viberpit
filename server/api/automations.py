@@ -97,12 +97,14 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
     # orchestrator is unreachable, retain unknown rather than inventing idle.
     statuses: dict = {}
     actionable_counts: dict = {}
+    maintenance_counts: dict = {}
     orch = getattr(request.app.state, "sessions", None)
     if orch is not None:
         try:
             overview = await orch.automation_overview()
             statuses = overview.get("statuses") or {}
             actionable_counts = overview.get("actionableCounts") or {}
+            maintenance_counts = overview.get("maintenanceCounts") or {}
         except Exception:
             statuses = {}
     out = []
@@ -129,7 +131,12 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             # concept of products (e.g. PR Doctor). Published once, so the browser
             # cannot read a stale sibling copy of the same fact (R3-8).
             "status": status,
+            # Decisions only (``ActionableItem.kind``): what a human must decide.
+            # Housekeeping the automation already settled rides separately so a
+            # row can say "7 actionable · 47 maintenance" without the 47
+            # lighting the badge.
             "actionableCount": actionable_count,
+            "maintenanceCount": maintenance_counts.get(a.id),
             "oversight": oversight.to_dict() if oversight is not None else None,
             # The schema INCLUDING the engine fields this origin's audited
             # ceiling admits (none for a claude_only origin). Same source the

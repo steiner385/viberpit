@@ -346,6 +346,11 @@ def test_actionable_items_list_the_inbox(tmp_path):
         items = await loop.actionable_items()
         assert {i.id for i in items} == {"r1", "r2"}   # filed rows need no action
         assert {a.kind for a in items[0].actions} == {"file_now", "dismiss"}
+        # A pending row awaits the human; a throttled one the loop already
+        # deferred by rule — overriding it is housekeeping, so it must not
+        # badge (2026-10-01 Delivery critique, P0).
+        kinds = {i.id: i.kind for i in items}
+        assert kinds == {"r1": "decision", "r2": "maintenance"}
     _run(go, tmp_path)
 
 

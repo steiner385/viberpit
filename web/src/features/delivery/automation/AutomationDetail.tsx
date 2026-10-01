@@ -9,7 +9,7 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { Automation, AutomationStatusProduct } from '@/api/automations'
+import { splitActionable, type Automation, type AutomationStatusProduct } from '@/api/automations'
 import { useAutomationActionable, useAutomationSessions } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
@@ -66,9 +66,10 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // request either. The fetched list's length is what the tab and the rows
   // underneath it actually agree on; `a.actionableCount` — a field on the
   // separate `/automations` list payload — is only the fallback while that
-  // fetch has not answered yet.
+  // fetch has not answered yet. Decisions only: maintenance rows are folded
+  // under the list, not counted over it (2026-10-01 Delivery critique, P0).
   const actionable = useAutomationActionable(a.id)
-  const needsYou = actionable.data?.length ?? a.actionableCount ?? undefined
+  const needsYou = actionable.data ? splitActionable(actionable.data).decisions.length : a.actionableCount ?? undefined
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
   const tiles = countTiles(a.status.counts)
 
