@@ -116,11 +116,17 @@ export function DeliveryPage() {
                     </Badge>
                   )}
                 </div>
-                {/* Two lines at most: the runner's status carries a per-product
-                    breakdown that the Queue tab tabulates in full, and the
-                    title holds the whole string. */}
-                <p className="line-clamp-2" title={automation.status.text}>{automation.status.text}</p>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                {/* Two lines at most — ONE on a narrow phone: the runner's status
+                    carries a per-product breakdown that the Queue tab tabulates
+                    in full, and the title holds the whole string. The header
+                    never scrolls away, and on a 390px phone it was 189px over
+                    ten lines before the tiles even began (2026-10-01 Delivery
+                    critique, P1). */}
+                <p className="line-clamp-2 narrow:line-clamp-1" title={automation.status.text}>{automation.status.text}</p>
+                {/* Shed below `narrow:` (Shed-Not-Shrink): the mode's name is
+                    also the value of the header's mode select, and the
+                    observation age is one scroll away on the Events tab. */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 narrow:hidden">
                   {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
                   {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
                   {/* The mode's name here; what it means is a sentence on the
