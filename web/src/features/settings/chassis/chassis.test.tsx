@@ -35,6 +35,9 @@ describe('settings chassis', () => {
     const grp = screen.getByRole('group', { name: 'Danger zone' })
     expect(grp).toHaveAttribute('data-tone', 'danger')
     expect(screen.getByText('Cannot be undone.')).toBeInTheDocument()
+    // A fieldset's default min-inline-size is min-content: one unbreakable
+    // line widened a group past a phone viewport (2026-09-30 Settings critique, P0).
+    expect(grp).toHaveClass('min-w-0')
   })
 
   it('row wires label, description and error to the control via aria-describedby', () => {

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import {
-  DEPLOY_PHASES, phaseState, allPhasesDone, deployProgress, deployOutcome, hostRows,
+  DEPLOY_PHASES, MID_TURN_STATUSES, phaseState, allPhasesDone, deployProgress, deployOutcome, deployConsequence, hostRows,
 } from './deployPhases'
 import type { DeployProgress } from '@/api/types'
 
@@ -68,5 +68,18 @@ describe('deployPhases', () => {
     const all = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
     expect(deployOutcome(D({ phases: { ...all, runners: 'failed' }, error: 'runners: rocky failed' })))
       .toBe('failure')
+  })
+
+  // 2026-09-30 Settings critique, P1: the deploy gate's one sentence — what
+  // happens to the sessions that are live right now.
+  it('deployConsequence names the live sessions, the draining turns, and the quiet case', () => {
+    expect(deployConsequence(0, 0)).toBe('Restarts the server and the session daemon. No session is live right now.')
+    expect(deployConsequence(1, 0)).toContain('1 live session pauses while it restarts, then autopilot resumes them.')
+    expect(deployConsequence(1, 0)).not.toContain('turn')
+    expect(deployConsequence(3, 1)).toContain('3 live sessions pause')
+    expect(deployConsequence(3, 1)).toContain('The turn in progress finishes first (up to a few minutes).')
+    expect(deployConsequence(3, 2)).toContain('The 2 turns in progress finish first')
+    expect(deployConsequence(3, 2)).toContain('A session that cannot be resumed is reported here and on the banner.')
+    expect([...MID_TURN_STATUSES]).toEqual(['in_progress', 'condensing', 'retrying'])
   })
 })

@@ -71,6 +71,8 @@ vi.mock('@/api/hooks', async (importOriginal) => ({
   useDeployStatus: () => ({ data: api.deploy, isError: false, failureCount: 0 }),
   usePendingDeploy: () => ({ data: api.pending }),
   useStartDeploy: () => ({ mutate: () => {}, isPending: false, isError: false, error: null }),
+  // The provider's confirm gate counts live sessions (2026-09-30 Settings critique).
+  useSessions: () => ({ data: [] }),
 }))
 
 const COMMANDS: Command[] = [
