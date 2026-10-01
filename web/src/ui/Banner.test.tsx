@@ -45,6 +45,15 @@ describe('Banner', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  // 2026-10-01 shell critique, P2 (Shed-Not-Shrink): on a short viewport a
+  // banner is one line — the title truncates, the body folds, actions stay.
+  it('sheds its body and truncates its title under short:, keeping the actions', () => {
+    render(<Banner tone="info" title="Pending" actions={<button type="button">Act</button>}>long body</Banner>)
+    expect(screen.getByText('Pending').className).toMatch(/\bshort:truncate\b/)
+    expect(screen.getByText('long body').className).toMatch(/\bshort:hidden\b/)
+    expect(screen.getByRole('button', { name: 'Act' }).parentElement!.className).not.toMatch(/short:hidden/)
+  })
+
   it('role="none" renders no role attribute and no live region, for content unsafe to announce', () => {
     const { container } = render(<Banner tone="warning" role="none" title="Pending deploy" />)
     expect(screen.queryByRole('status')).toBeNull()

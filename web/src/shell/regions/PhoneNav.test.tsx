@@ -168,6 +168,15 @@ describe('NavBar', () => {
   // 2026-10-01 shell critique, P1: Theme in the More sheet opened a `Menu` that
   // portals at z-popover (30) UNDER the sheet at z-drawer (50) — the keyboard
   // could still pick, a thumb saw nothing happen. The picker is inline now.
+  // 2026-10-01 shell critique, P2: nothing in the shell shed under `short:`.
+  // The TopBar is brand plus two buttons the More sheet also carries, so it is
+  // the chrome a keyboard-up or landscape phone gives back first.
+  it('the TopBar sheds itself on a short viewport (short:hidden), the bottom bar does not', () => {
+    renderPhoneNav()
+    expect(topBar().className).toMatch(/\bshort:hidden\b/)
+    expect(bar().className).not.toMatch(/short:hidden/)
+  })
+
   it('picks a theme inline in the More sheet, with no popover mounted at all', async () => {
     renderPhoneNav()
     const sheet = await openMore()
