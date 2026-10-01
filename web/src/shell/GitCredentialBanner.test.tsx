@@ -45,6 +45,12 @@ describe('GitCredentialBanner', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/cairnea\/KinDash/)
     const link = screen.getByRole('link', { name: /refresh token/i })
     expect(link).toHaveAttribute('href', 'https://github.com/settings/tokens')
+    // The system's danger button, not a hand-rolled 24px wash: 36px `sm`,
+    // `focus-visible` ring (2026-10-01 shell critique, minor).
+    expect(link.className).toMatch(/\bbg-danger-strong\b/)
+    expect(link.className).toMatch(/\bh-9\b/)
+    expect(link.className).toMatch(/focus-visible:ring-2/)
+    expect(link.className).not.toMatch(/\bfocus:ring-2\b/)
   })
 
   it('renders in normal flow, never as a fixed overlay', () => {

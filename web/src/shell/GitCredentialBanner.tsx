@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, KeyRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Banner } from '@/ui/Banner'
+import { buttonVariants } from '@/ui/Button'
 import { IconButton } from '@/ui/IconButton'
 import { useCredentialAlerts, useDismissCredentialAlert } from '@/hooks/useCredentialAlerts'
 
@@ -51,14 +52,15 @@ export function GitCredentialBanner() {
           }
           actions={
             <>
+              {/* The system's danger button, worn by a link: `buttonVariants`
+                  gives it the 36px `sm` height, the `focus-visible` ring and
+                  the token fill the hand-rolled 24px copy lacked (2026-10-01
+                  shell critique, minor). */}
               <a
                 href={alert.settingsUrl}
                 target="_blank"
                 rel="noreferrer"
-                className={cn(
-                  'rounded-md bg-danger-strong px-3 py-1 text-xs font-semibold text-on-strong',
-                  'hover:bg-danger-strong/90 focus:outline-none focus:ring-2 focus:ring-accent',
-                )}
+                className={cn(buttonVariants({ variant: 'danger', size: 'sm' }), 'no-underline')}
               >
                 {alert.viaApp ? 'Review App access' : 'Refresh token'}
               </a>
