@@ -22,6 +22,7 @@ vi.mock('@/shell/useNavBadges', async (importOriginal) => {
 
 import type { NavBadges } from '@/shell/useNavBadges'
 import { ThemeProvider } from '@/shell/theme'
+import { THEME_STORAGE_KEY } from '@/shell/themeKey'
 import { NAV_DEFS } from '@/shell/navDefs'
 import { NavBar } from './NavBar'
 import { TopBar } from './TopBar'
@@ -151,10 +152,30 @@ describe('NavBar', () => {
     // that was a link, moved to the foot of the Sessions list column, so every
     // remaining global action is a button.
     expect(within(sheet).getAllByRole('link')).toHaveLength(OVERFLOW.length)
-    for (const name of ['Assistant', 'Help', 'Theme']) {
+    for (const name of ['Assistant', 'Help']) {
       expect(within(sheet).getByRole('button', { name })).toBeInTheDocument()
     }
+    // Theme is a radio row IN the sheet, not a button that would anchor a
+    // popover under it (below).
+    expect(within(sheet).getByRole('group', { name: 'Theme' })).toBeInTheDocument()
     expect(within(sheet).queryByRole('link', { name: /new session/i })).not.toBeInTheDocument()
+  })
+
+  // 2026-10-01 shell critique, P1: Theme in the More sheet opened a `Menu` that
+  // portals at z-popover (30) UNDER the sheet at z-drawer (50) — the keyboard
+  // could still pick, a thumb saw nothing happen. The picker is inline now.
+  it('picks a theme inline in the More sheet, with no popover mounted at all', async () => {
+    renderPhoneNav()
+    const sheet = await openMore()
+    expect(within(sheet).queryByRole('button', { name: 'Theme' })).toBeNull()
+    const group = within(sheet).getByRole('group', { name: 'Theme' })
+    expect(within(group).getByRole('radio', { name: 'System' })).toBeChecked()
+    await userEvent.click(within(group).getByRole('radio', { name: 'Dark' }))
+    expect(within(group).getByRole('radio', { name: 'Dark' })).toBeChecked()
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
+    expect(screen.queryByRole('menu')).toBeNull()
+    // Still inside the sheet: the choice did not close it or move focus out.
+    expect(sheet).toContainElement(document.activeElement as HTMLElement)
   })
 
   it('marks the active section with aria-current, including a nested route', () => {

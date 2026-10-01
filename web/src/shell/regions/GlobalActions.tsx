@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { HelpCircle, Monitor, Moon, Sparkles, Sun, type LucideIcon } from 'lucide-react'
 import { Menu } from '@/ui/Menu'
+import { RadioGroup } from '@/ui/RadioGroup'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { useTheme, type ThemeChoice } from '@/shell/theme'
 import { NavItem } from './NavItem'
@@ -27,6 +28,18 @@ import { NavItem } from './NavItem'
  *
  * `showLabel` is passed straight through to `NavItem`; the accessible name is
  * present either way.
+ *
+ * ## `layout`: the Theme picker's two forms
+ *
+ * On the rail Theme is a button that anchors a `Menu` (`layout="menu"`, the
+ * default). Inside the phone's More sheet that same menu rendered UNDER the
+ * sheet: `Menu` portals at `z-popover` (30) and the sheet is `z-drawer` (50), so
+ * the picker opened at y 590–732 beneath a sheet spanning y 554–844 — the
+ * keyboard could still pick, a thumb saw nothing happen (2026-10-01 shell
+ * critique, P1). A popover must not be anchored from inside a modal, so the
+ * sheet asks for `layout="inline"`: the three choices as a one-row `RadioGroup`
+ * right in the sheet, no second overlay at all. Same `THEME_CHOICES`, same
+ * `setChoice`, one list.
  */
 
 /** The theme picker's options. `setChoice` is fed an id straight off this list, so
@@ -37,7 +50,12 @@ const THEME_CHOICES: { id: ThemeChoice; label: string; icon: LucideIcon }[] = [
   { id: 'dark', label: 'Dark', icon: Moon },
 ]
 
-export function GlobalActions({ showLabel = false }: { showLabel?: boolean }) {
+export function GlobalActions({ showLabel = false, layout = 'menu' }: {
+  showLabel?: boolean
+  /** `menu`: Theme is a button anchoring a popover (the rail). `inline`: Theme is
+   *  a radio row in place (inside a sheet, where a popover would stack under it). */
+  layout?: 'menu' | 'inline'
+}) {
   const openDrawer = useOpenDrawer()
   const { choice, setChoice } = useTheme()
 
@@ -49,29 +67,45 @@ export function GlobalActions({ showLabel = false }: { showLabel?: boolean }) {
     <>
       <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" showLabel={showLabel} />
       <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" showLabel={showLabel} />
-      <NavItem
-        onClick={() => setThemeOpen((o) => !o)}
-        buttonRef={themeRef}
-        icon={THEME_CHOICES.find((t) => t.id === choice)?.icon ?? Monitor}
-        label="Theme"
-        showLabel={showLabel}
-      />
-      <Menu
-        open={themeOpen}
-        onClose={closeThemeMenu}
-        anchorRef={themeRef}
-        label="Theme"
-        items={THEME_CHOICES.map((t) => ({
-          id: t.id,
-          label: t.label,
-          icon: <t.icon size={16} aria-hidden="true" />,
-          selected: t.id === choice,
-        }))}
-        onSelect={(id) => {
-          const picked = THEME_CHOICES.find((t) => t.id === id)
-          if (picked) setChoice(picked.id)
-        }}
-      />
+      {layout === 'inline' ? (
+        // Padded to the NavItem rows' text column so the legend lines up with
+        // "Assistant" and "Help" above it and "Settings" below.
+        <RadioGroup
+          name="theme"
+          legend="Theme"
+          orientation="horizontal"
+          value={choice}
+          onChange={setChoice}
+          options={THEME_CHOICES.map((t) => ({ value: t.id, label: t.label }))}
+          className="px-3 py-1"
+        />
+      ) : (
+        <>
+          <NavItem
+            onClick={() => setThemeOpen((o) => !o)}
+            buttonRef={themeRef}
+            icon={THEME_CHOICES.find((t) => t.id === choice)?.icon ?? Monitor}
+            label="Theme"
+            showLabel={showLabel}
+          />
+          <Menu
+            open={themeOpen}
+            onClose={closeThemeMenu}
+            anchorRef={themeRef}
+            label="Theme"
+            items={THEME_CHOICES.map((t) => ({
+              id: t.id,
+              label: t.label,
+              icon: <t.icon size={16} aria-hidden="true" />,
+              selected: t.id === choice,
+            }))}
+            onSelect={(id) => {
+              const picked = THEME_CHOICES.find((t) => t.id === id)
+              if (picked) setChoice(picked.id)
+            }}
+          />
+        </>
+      )}
     </>
   )
 }
