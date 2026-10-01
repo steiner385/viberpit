@@ -136,6 +136,24 @@ describe('FleetSection', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 
+  // 2026-09-30 Settings critique, P1: eleven columns ran 613px in a 358px
+  // viewport with every editable control off-screen. One DOM: below `sm` the
+  // row is a two-column card of labelled cells, the header hides, the remove
+  // control is a labelled 44px target; from `sm` up it is the same table.
+  it('is a card below sm and a table above it, with the same cells and controls', async () => {
+    wrap(<FleetSection />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'remove rocky' })).toBeInTheDocument())
+    const tr = screen.getByRole('button', { name: 'remove rocky' }).closest('tr')!
+    expect(tr).toHaveClass('grid', 'grid-cols-2', 'sm:table-row')
+    expect(tr.closest('table')!.querySelector('thead')).toHaveClass('hidden', 'sm:table-header-group')
+    // Each cell carries its phone label, hidden from AT (the header names the column).
+    const labels = Array.from(tr.querySelectorAll('td > span[aria-hidden="true"]')).map((s) => s.textContent)
+    expect(labels).toEqual(expect.arrayContaining(['Status', 'Sessions', 'Weight (dispatch share)', 'Cap', 'Enabled']))
+    expect(screen.getByRole('button', { name: 'remove rocky' })).toHaveClass('min-h-target')
+    expect(screen.getByLabelText('weight (dispatch share) for rocky')).toHaveClass('min-h-target', 'sm:min-h-0')
+    expect(screen.getByLabelText('enable rocky').closest('label')).toHaveClass('min-h-target')
+  })
+
   // Removing a host had no gate at all; it takes the Typed tier (the host name).
   it('removing a host asks for its name typed, then DELETEs', async () => {
     wrap(<FleetSection />)
