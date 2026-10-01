@@ -40,6 +40,20 @@ interface Props {
   onAsk?: (text: string) => void
 }
 
+/**
+ * Reading measure for assistant prose only. In a wide pane prose ran ~139
+ * characters a line (976px at 14px — 2026-09-29 critique, detector
+ * `line-length`). The first cap, 88ch, still measured 725px ≈ 104 real
+ * characters: a `ch` is the width of "0" (~8.2px in this face) while running
+ * text averages ~6.9px, so 70ch ≈ 574px ≈ 80–85 characters — the top of the
+ * 65–75ch craft-floor band. Left-aligned, not centred: an Operate surface reads
+ * top-left, and the composer beneath spans the pane either way. A no-op
+ * wherever the pane is already narrower (phone, the assistant drawer, a nested
+ * sub-agent turn). Prose only — tool cards and results are not reading matter
+ * and need the width (see the turn column below).
+ */
+const PROSE_MEASURE = 'max-w-[70ch]'
+
 export const Turn = memo(function Turn({
   turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
   onAnswer, subAgents, sessionModel, variant = 'session', onAsk,
@@ -60,16 +74,11 @@ export const Turn = memo(function Turn({
   if (items.length === 0) return null
 
   return (
-    // `max-w-[70ch]`: a reading measure. In a wide pane assistant prose ran ~139
-    // characters a line (976px at 14px — 2026-09-29 critique, detector
-    // `line-length`). The first cap, 88ch, still measured 725px ≈ 104 real
-    // characters: a `ch` is the width of "0" (~8.2px in this face) while running
-    // text averages ~6.9px, so 70ch ≈ 574px ≈ 80–85 characters — the top of the
-    // 65–75ch craft-floor band once code blocks and tool cards are allowed for.
-    // Left-aligned, not centred: an Operate surface reads top-left, and the
-    // composer beneath spans the pane either way. A no-op wherever the pane is
-    // already narrower (phone, the assistant drawer, a nested sub-agent turn).
-    <div className="max-w-[70ch] px-4 py-2">
+    // No width cap on the turn column: tool cards, code and raw results take the
+    // whole pane. The reading measure lives on the prose block (`PROSE_MEASURE`
+    // below) — when it sat here (#2529/#2535) a wide pane rendered every tool
+    // card into ~574px at the left and left the right two thirds blank.
+    <div className="px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only
@@ -107,7 +116,13 @@ export const Turn = memo(function Turn({
         switch (block.kind) {
           case 'text':
             if (!isUser)
-              return <BlockRow key={block.id} ts={rowTs}><AssistantText text={block.text} streaming={block.id === streamingBlockId} /></BlockRow>
+              return (
+                <BlockRow key={block.id} ts={rowTs}>
+                  <div className={PROSE_MEASURE}>
+                    <AssistantText text={block.text} streaming={block.id === streamingBlockId} />
+                  </div>
+                </BlockRow>
+              )
             // A prompt nobody typed leaves the right-aligned "you" lane entirely
             // rather than being re-tinted inside it (see AutomatedPrompt).
             return <BlockRow key={block.id} ts={rowTs}>{turn.origin
