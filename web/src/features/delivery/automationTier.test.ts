@@ -33,9 +33,27 @@ describe('automation attention', () => {
     expect(automationTier(a)).toBe('in-flight')
     expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · Waiting for schedule · 3 live sessions')
   })
-  it('shows warning observations without inventing a blocked state', () => {
-    const a: typeof base = { ...base, status: { text: 'Budget reached', level: 'warn', counts: null } }
-    expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · Notice')
+  // 2026-10-01 Delivery critique, P2: "Reconcile refused" and "a defect, not
+  // load" tiered idle and read calm. A warn with no typed wait is blocked.
+  it('a warn with no waiting reason is blocked, and says so in the line', () => {
+    const a: typeof base = { ...base, status: { text: 'Reconcile refused: master is 9 commits ahead', level: 'warn', counts: null } }
+    expect(automationTier(a)).toBe('blocked')
+    expect(automationTierLine(automationTier(a), a)).toBe('Blocked · 0 actionable')
+    // Live sessions do not soften a defect into in-flight; the word still leads.
+    const live = { ...a, activeSessions: 1 }
+    expect(automationTier(live)).toBe('blocked')
+    expect(automationTierLine(automationTier(live), live)).toBe('Blocked · 0 actionable · 1 live session')
+  })
+  it('a warn with a typed wait is an expected pause, not blocked; actionable items outrank it; a switched-off loop is idle', () => {
+    const paused: typeof base = { ...base, status: { text: 'Capacity limit reached', level: 'warn', waitingReason: 'policy', counts: null } }
+    expect(automationTier(paused)).toBe('idle')
+    expect(automationTierLine(automationTier(paused), paused)).toBe('0 actionable · Waiting for policy')
+    const decided = { ...base, actionableCount: 2, status: { text: 'Budget reached', level: 'warn' as const, counts: null } }
+    expect(automationTier(decided)).toBe('needs-you')
+    expect(automationTierLine(automationTier(decided), decided)).toBe('2 actionable · Notice')
+    const off = { ...base, enabled: false, status: { text: 'Budget reached', level: 'warn' as const, counts: null } }
+    expect(automationTier(off)).toBe('idle')
+    expect(automationTierLine(automationTier(off), off)).toBe('0 actionable · Notice')
   })
   it('human waits need attention without being service errors or requiring action buttons', () => {
     const a: typeof base = { ...base, status: { text: 'Approval required', level: 'idle', waitingReason: 'human', counts: null } }
