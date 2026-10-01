@@ -7,6 +7,7 @@ import { NAV_BY_ID, NAV_DEFS, navDefForPath } from '@/shell/navDefs'
 import { navBadgeProps, useNavBadges } from '@/shell/useNavBadges'
 import { useViewport } from '@/shell/useViewport'
 import { useRailExpanded } from '@/shell/railExpanded'
+import { DeployChip } from '@/shell/DeployChip'
 import { GlobalActions } from './GlobalActions'
 import { NavItem } from './NavItem'
 
@@ -78,6 +79,10 @@ export function NavRail() {
 
       <div className="flex-1" />
 
+      {/* Pending deploy, as a rail item rather than the top-of-page banner it
+          was — see `DeployChip`. First in the foot cluster so it sits beside
+          the app-level actions, not among the sections. */}
+      <DeployChip showLabel={expanded} />
       <GlobalActions showLabel={expanded} />
       <NavItem
         to={settings.path}

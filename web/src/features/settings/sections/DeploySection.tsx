@@ -11,9 +11,10 @@ import { SettingsGroup } from '../chassis/SettingsGroup'
 /**
  * Deploy, at full size — and on a phone, the ONLY size.
  *
- * The app-level banner (`DeployPanel`) carries this state everywhere except
- * phone, where it is hidden (`hideOn: ['phone']` in `shell/useAppBanners`)
- * because it is the tallest banner in the stack. Both surfaces read
+ * The rail-foot `DeployChip` points here while commits are pending (it took
+ * over from the top-of-page banner, 2026-10-01 shell critique, P2); the
+ * app-level `DeployPanel` banner carries only a FAILURE, and not on phone
+ * (`hideOn: ['phone']` in `shell/useAppBanners`). All three read
  * `useDeployState`, so the CI verdict, the green-frontier target and the Deploy
  * button's enabled-ness cannot disagree between them.
  *

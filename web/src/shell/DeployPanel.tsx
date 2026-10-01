@@ -1,9 +1,7 @@
 // web/src/shell/DeployPanel.tsx
-import { useId, useState } from 'react'
+import { useState } from 'react'
 import { Banner } from '@/ui/Banner'
-import { Button } from '@/ui/Button'
 import { useDeployState } from '@/lib/deployState'
-import { useDeployController } from '@/lib/deployController'
 import { DeployFailureNotice } from './DeployFailureNotice'
 import { storageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
@@ -38,20 +36,25 @@ function writeDismissedSignature(sig: string): void {
 }
 
 /**
- * The deploy state as a BANNER, for the app-level stack.
+ * A deploy FAILURE as a banner, for the app-level stack — and only a failure.
  *
- * Hidden on phone (`hideOn: ['phone']` in `shell/useAppBanners`) — it is the
- * tallest item in the stack and Settings › Deploy is its full-size home. The
- * state itself comes from `useDeployState`, shared with that section.
+ * Pending commits used to live here too, with a Deploy button and a commit
+ * list: 124px of information-with-a-button at the top of every desktop page,
+ * above the needs-you states the operator actually came for, and the first
+ * two Tab stops on every non-Sessions route (2026-10-01 shell critique, P2).
+ * "N changes pending" is inventory, not an interruption. It is now the
+ * `DeployChip` at the rail's foot, which opens Settings › Deploy — the full
+ * surface, with the CI verdict, the green-frontier target and Deploy now.
+ * The stack keeps what genuinely needs a look: a failed deploy, or sessions
+ * that did not come back.
+ *
+ * Hidden on phone (`hideOn: ['phone']` in `shell/useAppBanners`); Settings ›
+ * Deploy is the phone's only deploy surface and the Settings nav badge points
+ * at it. The state itself comes from `useDeployState`, shared with that section.
  */
 export function DeployPanel() {
   const s = useDeployState()
-  const { start, starting } = useDeployController()
-  const [open, setOpen] = useState(false)
-  const commitsId = useId()
 
-  // Only the failure notice is dismissible. Pending commits are actionable (Deploy button)
-  // and clear on their own once deployed — hiding them would hide the only way to deploy.
   const [dismissedSig, setDismissedSig] = useState(readDismissedSignature)
   const failureSig = failureSignature(s.showError ? s.error : null, s.failed, s.gaveUp)
   const showFailure = s.hasFailure && dismissedSig !== failureSig
@@ -60,64 +63,17 @@ export function DeployPanel() {
     setDismissedSig(failureSig)
   }
 
-  if (!s.behind && !showFailure) return null
+  if (!showFailure) return null
 
   return (
     <Banner
-      // Pending commits are information with a button, not a warning: on desktop
-      // this banner sits above the session pane, and in amber it was the loudest
-      // element on the page — louder than the needs-you states beneath it that
-      // actually want the operator (2026-09-29 critique, P2). Amber is kept for
-      // a failure, which is the case that genuinely needs a look.
-      tone={showFailure ? 'warning' : 'info'}
-      // Not a live region: commits, phase state and error text all change while a deploy
+      tone="warning"
+      // Not a live region: phase state and error text change while a deploy
       // runs, and role="status" would announce every one of those to a screen reader.
       role="none"
-      title={s.behind ? (
-        // A disclosure, and the first Tab stop on most desktop pages: it says
-        // so (`aria-expanded`, `aria-controls`) and meets the 44px floor. It
-        // was a bare 183×20 button with no state (2026-10-01 shell critique, P2).
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          aria-controls={open && s.count > 0 ? commitsId : undefined}
-          className="inline-flex min-h-target items-center gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          {s.count} change{s.count === 1 ? '' : 's'} pending deploy <span aria-hidden="true">{open ? '▾' : '▸'}</span>
-        </button>
-      ) : undefined}
-      actions={s.behind ? (
-        <>
-          {s.reason && <span className="text-xs text-warning">{s.reason}</span>}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!s.canDeploy || starting}
-            onClick={() => start(s.deployTarget)}
-          >
-            {starting ? 'Starting…' : 'Deploy now'}
-          </Button>
-        </>
-      ) : undefined}
-      onDismiss={showFailure ? dismissFailure : undefined}
+      onDismiss={dismissFailure}
     >
-      {open && s.count > 0 && (
-        <ul id={commitsId} className="mt-2 space-y-1">
-          {s.commits.map((c) => (
-            <li key={c.sha} className="flex gap-2 font-mono text-xs">
-              <span className="text-warning">{c.sha.slice(0, 7)}</span>
-              <span className="flex-1 truncate">{c.subject}</span>
-              <span className="text-ink-muted">{c.author}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {showFailure && (
-        <div className="mt-2 space-y-1 border-t border-edge pt-2">
-          <DeployFailureNotice state={s} />
-        </div>
-      )}
+      <DeployFailureNotice state={s} />
     </Banner>
   )
 }
