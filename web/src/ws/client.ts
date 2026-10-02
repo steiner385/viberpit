@@ -20,7 +20,7 @@ import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean; suspectedCompleteReason?: string | null }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean; suspectedCompleteReason?: string | null; handBackReason?: string | null }
 export interface WsUsageMsg        { type: 'usage';         account: string; usage: AccountUsage }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 // `questionId` / `permId` are set only for a refused answerQuestion / permissionResponse
@@ -832,7 +832,7 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled' | 'suspectedCompleteReason'>) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled' | 'suspectedCompleteReason' | 'handBackReason'>) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
@@ -860,6 +860,12 @@ export class SessionSocket {
                  // so the "likely complete" hint appears and drops without the poll.
                  ...(stall?.suspectedCompleteReason !== undefined
                      ? { suspectedCompleteReason: stall.suspectedCompleteReason ?? null }
+                     : {}),
+                 // The hand-back ask rides the frame too (#2647): a mid-turn hand_back
+                 // shows on the card the moment it is made, and the next turn's first
+                 // write clears it in the same frame — never a stale ask beside Working.
+                 ...(stall?.handBackReason !== undefined
+                     ? { handBackReason: stall.handBackReason ?? null }
                      : {}) }
       })
     })

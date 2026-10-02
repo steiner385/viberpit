@@ -126,3 +126,131 @@ def test_a_done_status_never_audits_a_stale_reason(tmp_path):
         await orch._persist_status("s1", "done")
         return await _audits("session.hand_back")
     assert asyncio.run(run()) == []
+
+
+# ── The ask is recorded the moment it is made, not when the turn ends (#2647) ─────
+#
+# Prod 2026-10-02 (session bfc8ccbf): `hand_back(...)` followed by "While waiting for
+# your approval, I'm starting the gate fix" and 13+ minutes of further tool calls in
+# the SAME turn. `handed_back` is a turn-end status, so the card read "Working…" and
+# nothing — no banner, no push, no audit — reached the owner. The driver now parks the
+# reason as `pending_hand_back_reason` while the turn runs, and `_persist_status`
+# records, audits and pushes it beside the busy status.
+
+def _pushes(monkeypatch) -> list[dict]:
+    from server.sessions import orchestrator as om
+    calls: list[dict] = []
+
+    async def fake_notify(kind, title, body, **kw):
+        calls.append({"kind": kind, "title": title, "body": body, **kw})
+    monkeypatch.setattr(om.push_mod, "notify_event", fake_notify)
+    return calls
+
+
+def test_a_pending_hand_back_is_persisted_audited_and_pushed_while_the_turn_runs(
+        tmp_path, monkeypatch):
+    pushes = _pushes(monkeypatch)
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            pending_hand_back_reason="approve the dequeue", last_hand_back_reason=None)
+        final = await orch._persist_status("s1", "in_progress")
+        rec = orch.record("s1")
+        async with db_session() as db:
+            row = (await db.execute(sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first()
+        return final, rec, row, await _audits("session.hand_back")
+    final, rec, row, audits = asyncio.run(run())
+
+    assert final == "in_progress", "the status is untouched: the session IS still working"
+    assert rec.hand_back_reason == "approve the dequeue"
+    assert row.hand_back_reason == "approve the dequeue"
+    assert len(audits) == 1 and audits[0].detail["reason"] == "approve the dequeue"
+    assert len(pushes) == 1
+    assert pushes[0]["kind"] == "needs_input" and pushes[0]["session_id"] == "s1"
+    assert "approve the dequeue" in pushes[0]["body"]
+
+
+def test_a_pending_hand_back_audits_and_pushes_once_across_repeated_busy_writes(
+        tmp_path, monkeypatch):
+    """`in_progress` is persisted on every status derive; the ask is one event."""
+    pushes = _pushes(monkeypatch)
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            pending_hand_back_reason="approve the dequeue", last_hand_back_reason=None)
+        await orch._persist_status("s1", "in_progress")
+        await orch._persist_status("s1", "in_progress")
+        await orch._persist_status("s1", "retrying")
+        return await _audits("session.hand_back")
+    audits = asyncio.run(run())
+    assert len(audits) == 1
+    assert len(pushes) == 1
+
+
+def test_the_turn_end_hand_back_does_not_re_audit_or_re_push_the_same_ask(
+        tmp_path, monkeypatch):
+    """Mid-turn ask, then the turn ends with the latched reason: same ask, one
+    audit row, one push — and the status lands at `handed_back` as before."""
+    pushes = _pushes(monkeypatch)
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        drv = types.SimpleNamespace(
+            pending_hand_back_reason="approve the dequeue", last_hand_back_reason=None)
+        orch._drivers["s1"] = drv
+        await orch._persist_status("s1", "in_progress")
+        drv.pending_hand_back_reason = None
+        drv.last_hand_back_reason = "approve the dequeue"
+        final = await orch._persist_status("s1", "handed_back")
+        rec = orch.record("s1")
+        return final, rec, await _audits("session.hand_back")
+    final, rec, audits = asyncio.run(run())
+    assert final == "handed_back"
+    assert rec.hand_back_reason == "approve the dequeue"
+    assert len(audits) == 1
+    assert len(pushes) == 1
+
+
+def test_the_next_turn_clears_a_mid_turn_ask_and_re_arms_the_push(tmp_path, monkeypatch):
+    pushes = _pushes(monkeypatch)
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        drv = types.SimpleNamespace(
+            pending_hand_back_reason="approve the dequeue", last_hand_back_reason=None)
+        orch._drivers["s1"] = drv
+        await orch._persist_status("s1", "in_progress")
+        drv.pending_hand_back_reason = None            # a new turn started
+        await orch._persist_status("s1", "in_progress")
+        cleared_rec = orch.record("s1").hand_back_reason
+        async with db_session() as db:
+            row = (await db.execute(sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first()
+        cleared_row = row.hand_back_reason
+        drv.pending_hand_back_reason = "a second ask"
+        await orch._persist_status("s1", "in_progress")
+        return cleared_rec, cleared_row, orch.record("s1").hand_back_reason
+    cleared_rec, cleared_row, second = asyncio.run(run())
+    assert cleared_rec is None and cleared_row is None
+    assert second == "a second ask"
+    assert len(pushes) == 2, "a fresh ask after the clear pushes again"
+
+
+def test_a_pending_reason_is_ignored_beside_a_non_busy_status(tmp_path, monkeypatch):
+    """Only a MID-TURN status may carry the pending slot; a stop status beside a stale
+    pending value would be a claim the session is not making (the structured
+    `waiting_question` is the same shape the stale-latch test above uses)."""
+    pushes = _pushes(monkeypatch)
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            pending_hand_back_reason="stale", last_hand_back_reason=None)
+        await orch._persist_status("s1", "waiting_question")
+        return orch.record("s1").hand_back_reason, await _audits("session.hand_back")
+    reason, audits = asyncio.run(run())
+    assert reason is None and audits == []
+    # `waiting_question` is push-worthy in its own right; what must NOT fire is the
+    # ask-shaped push carrying the stale reason.
+    assert not any("stale" in p["body"] for p in pushes)

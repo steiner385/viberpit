@@ -11,6 +11,7 @@ import json
 import pytest
 
 from server.mcp_spec import ToolClass
+from server.sessions.completion import HAND_BACK_TURN_NOTE
 from server.sessions.tools.context import SessionToolContext
 from server.sessions.tools.registry import SESSION_TOOL_SPECS
 from server.sessions.tools.tools import build_session_tools, mounted_tool_names
@@ -266,7 +267,8 @@ def test_hand_back_is_mounted_regardless_of_self_model_switch():
 async def test_hand_back_acknowledges_with_the_trimmed_reason():
     result = await _call(_ctx(signalling_tools=True), "hand_back", {"reason": "  scope decision "})
     assert result.get("is_error") is not True
-    assert _payload(result) == {"acknowledged": True, "reason": "scope decision"}
+    assert _payload(result) == {"acknowledged": True, "reason": "scope decision",
+                                "note": HAND_BACK_TURN_NOTE}
 
 
 @pytest.mark.asyncio
@@ -327,7 +329,7 @@ async def test_hand_back_stays_a_bare_acknowledgement_when_the_prose_is_unknowab
     data = await _call_with_prose(None)
     assert "userSees" not in data
     bare = _payload(await _call(_ctx(signalling_tools=True), "hand_back", {"reason": "x"}))
-    assert bare == {"acknowledged": True, "reason": "x"}
+    assert bare == {"acknowledged": True, "reason": "x", "note": HAND_BACK_TURN_NOTE}
 
 
 @pytest.mark.asyncio
@@ -337,7 +339,8 @@ async def test_a_failing_prose_probe_never_fails_the_hand_back():
     ctx = _ctx(signalling_tools=True, signal_prose=boom)
     result = await _call(ctx, "hand_back", {"reason": "still a hand-back"})
     assert result.get("is_error") is not True
-    assert _payload(result) == {"acknowledged": True, "reason": "still a hand-back"}
+    assert _payload(result) == {"acknowledged": True, "reason": "still a hand-back",
+                                "note": HAND_BACK_TURN_NOTE}
 
 
 def test_hand_back_description_says_thinking_is_invisible_and_where_the_question_goes():
@@ -345,3 +348,30 @@ def test_hand_back_description_says_thinking_is_invisible_and_where_the_question
                 if t.name == "hand_back").lower()
     assert "thinking is never shown" in desc
     assert "every option" in desc
+
+
+# ── The turn contract travels with the acknowledgement (#2647) ─────────────────────
+#
+# Prod 2026-10-02 (session bfc8ccbf): the session called hand_back and then kept
+# working in the same turn for 13+ minutes — nothing told it the hand-back lands
+# only when the turn ends. The result now says so, every time, and so does the
+# description; `request_model` next to it says "keep working", so the contrast has
+# to be explicit.
+
+def test_hand_back_result_and_description_say_to_finish_the_message():
+    from server.sessions.tools.tools import build_session_tools
+    desc = {t.name: t.description for t in build_session_tools(_ctx(signalling_tools=True))}
+    low = HAND_BACK_TURN_NOTE.lower()
+    assert "turn ends" in low and "finish this message" in low
+    assert HAND_BACK_TURN_NOTE in desc["hand_back"]
+    # `request_model`'s "never wait for the switch — keep working" must not bleed
+    # into this tool's contract: the only "keep working" here is STATUS_ONLY_CLAUSE's
+    # "if the objective is not met, keep working" — a different sentence.
+    assert "never wait" not in desc["hand_back"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hand_back_result_carries_the_turn_note_beside_user_sees():
+    data = await _call_with_prose("Options:\n1. A\n2. B")
+    assert data["note"] == HAND_BACK_TURN_NOTE
+    assert "userSees" in data

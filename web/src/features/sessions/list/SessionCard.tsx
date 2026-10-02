@@ -128,11 +128,15 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // parked on usage) is deliberately not taking input, and an `unreachable`
   // one sits on a host that cannot honour a send. Management (⋯) stays.
   const canResume = !NO_RESUME_TIERS.has(presentation.tier)
-  // The session's own one-line ask, shown only while it IS handed back (#2321).
-  // Status-gated rather than field-gated for the same reason prResolution is: the
-  // column survives a resume, so the field alone would strand a stale ask on a
-  // session that has since moved on.
-  const handBackReason = session.status === 'handed_back' ? session.handBackReason : null
+  // The session's own one-line ask, shown while it IS handed back (#2321) — and while
+  // it is still WORKING after a mid-turn hand_back (#2647): the server writes the
+  // reason the moment the call is read and clears it on the next turn's first write,
+  // so beside a busy status the field is a live ask, never a leftover. Every other
+  // status is gated out for the reason prResolution is: the column survives a resume,
+  // so the field alone would strand a stale ask on a session that has since moved on.
+  const askedMidTurn = isBusy && !!session.handBackReason
+  const handBackReason =
+    session.status === 'handed_back' || askedMidTurn ? session.handBackReason : null
   // The suspected-complete overlay: the server's own reading that this hand-back
   // was a status report on a met objective. Same status gate as the reason — a
   // resumed session keeps its old row value until the next status write clears it.
@@ -714,10 +718,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         {handBackReason && (
           <span
             data-testid="card-hand-back-reason"
-            className="min-w-0 flex-1 truncate text-ink-muted"
+            data-mid-turn={askedMidTurn ? 'true' : undefined}
+            // Mid-turn the pill still reads "Working…", so the ask carries the
+            // needs-you tone itself (#2647); handed back, the pill already does.
+            className={cn('min-w-0 flex-1 truncate', askedMidTurn ? 'text-warning' : 'text-ink-muted')}
             title={handBackReason}
           >
-            {' '}— {handBackReason}
+            {' '}— {askedMidTurn ? 'asked you: ' : ''}{handBackReason}
           </span>
         )}
         {/* Suppressed while a hand-back reason shows: two "— …" clauses on one line

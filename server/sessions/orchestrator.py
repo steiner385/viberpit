@@ -5571,6 +5571,19 @@ class SessionOrchestrator:
         # break status persist.
         hand_back_reason = (getattr(driver, "last_hand_back_reason", None)
                             if status == "handed_back" else None)
+        # A hand_back made in the turn that is STILL RUNNING (#2647): the driver parks
+        # it as `pending_hand_back_reason` the moment the call is read, and it rides
+        # the busy status so the card, the banner and the push do not wait for a turn
+        # end the session may not reach for a long time. Mid-turn statuses only — a
+        # stale pending value beside `done`/`idle` would be a claim the session is not
+        # making, and the turn-end latch above owns `handed_back`.
+        if hand_back_reason is None and status in _status_mod.MID_TURN_STATUSES:
+            hand_back_reason = getattr(driver, "pending_hand_back_reason", None) or None
+        # One ask is one event: `in_progress` is persisted on every status derive, and
+        # the turn-end `handed_back` carries the same reason the mid-turn write did.
+        # The audit row and the push fire when the ask CHANGES, never per write.
+        new_ask = bool(hand_back_reason) and hand_back_reason != (
+            getattr(rec, "hand_back_reason", None) if rec is not None else None)
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
@@ -5648,8 +5661,9 @@ class SessionOrchestrator:
         # decision and the persisted guard live in child_sessions.notify_decision.
         if rec is not None and getattr(rec, "parent_session_id", None):
             await self._child_stop_transition(rec, status, hand_back_reason)
-        if hand_back_reason:
-            log.info("session.hand_back sid=%s reason_len=%d", session_id, len(hand_back_reason))
+        if hand_back_reason and new_ask:
+            log.info("session.hand_back sid=%s status=%s reason_len=%d",
+                     session_id, status, len(hand_back_reason))
             # Best-effort audit in its own transaction: the status write above must
             # never be held hostage by an audit failure.
             try:
@@ -5660,9 +5674,11 @@ class SessionOrchestrator:
                     await db.commit()
             except Exception:  # noqa: BLE001 - audit must never fail the status write
                 log.warning("session.hand_back audit failed sid=%s", session_id, exc_info=True)
+        if hand_back_reason and status == "handed_back":
             # Suspected-complete overlay: is this hand-back a status report on a
             # finished objective? Off the pump — it may refresh PR facts over the
-            # network — and guarded by still-current checks inside.
+            # network — and guarded by still-current checks inside. Turn end only:
+            # a mid-turn ask has no finished objective to judge yet.
             self._spawn(self._judge_suspected_complete(session_id, hand_back_reason),
                         name=f"suspected_complete:{session_id}")
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
@@ -5683,6 +5699,11 @@ class SessionOrchestrator:
                              # Cleared above on every write; the judge re-publishes
                              # its own frame when it sets one.
                              "suspectedCompleteReason": None,
+                             # The ask rides the frame (#2647) so a mid-turn hand-back
+                             # shows on the card without the poll — and the next
+                             # turn's first write clears it in the same frame, so a
+                             # stale reason never sits beside "Working…".
+                             "handBackReason": hand_back_reason,
                              "interruptedByRestart": (
                                  rec.interrupted_by_restart if rec is not None else False),
                              "pausedReason": rec.paused_reason if rec is not None else None,
@@ -6388,18 +6409,25 @@ class SessionOrchestrator:
         transitions to a non-push-worthy status so re-entry fires again (AUT-02).
         Never raises — failures in push_mod.push are already swallowed by the sink.
         """
-        if is_push_worthy(status):
+        rec = self._records.get(session_id)
+        # A hand_back made mid-turn (#2647) is a needs-you even though the status is
+        # still busy: the ask is on the record only while it is live (cleared by the
+        # next turn's first write), so its presence is the condition. Same debounce —
+        # the turn-end `handed_back` that follows carries the same ask and does not
+        # re-fire; the next turn clears both the ask and the latch.
+        ask: str | None = getattr(rec, "hand_back_reason", None) if rec is not None else None
+        if is_push_worthy(status) or ask:
             if session_id not in self._pushed:
                 self._pushed.add(session_id)
-                rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
+                detail = status if is_push_worthy(status) else f"asked you — {ask}"
                 # Every scope a NotificationRule can carry (`notify_rules.scope_matches`):
                 # `account` is the record's field name (a stale `account_name` read here
                 # left every account-scoped rule unmatched), `automation` is the origin
                 # so a rule can single out — or leave out — maintenance sessions, and
                 # `session_id` lets a kind="session" watch match its own needs-you.
                 await push_mod.notify_event(
-                    "needs_input", f"{brand.NAME} — needs you", f"{name}: {status}",
+                    "needs_input", f"{brand.NAME} — needs you", f"{name}: {detail}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account", None),
                     automation=getattr(rec, "origin", None),

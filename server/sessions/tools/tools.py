@@ -16,7 +16,8 @@ from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
 from server.sessions.artifacts import ARTIFACT_KINDS, parse_share_artifact, read_image
 from server.sessions.child_sessions import ChildSessionLimit
-from server.sessions.completion import (FINISHED_STATE_CLAUSE, NO_PR_RESOLUTIONS,
+from server.sessions.completion import (FINISHED_STATE_CLAUSE, HAND_BACK_TURN_NOTE,
+                                        NO_PR_RESOLUTIONS,
                                         STATUS_ONLY_CLAUSE, hand_back_visibility,
                                         parse_hand_back, parse_mark_no_pr)
 from server.sessions.permissions import MODE_WIDTH
@@ -186,13 +187,16 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "the session reads as calmly idle and nobody is alerted. "
                + STATUS_ONLY_CLAUSE +
                " Call `hand_back` in the same message as your question, and never in the "
-               "same turn as `mark_complete` or `mark_no_pr`.",
+               "same turn as `mark_complete` or `mark_no_pr`. " + HAND_BACK_TURN_NOTE,
                {"type": "object",
                 "properties": {"reason": {"type": "string"}},
                 "required": ["reason"]})
     @guarded
     async def hand_back(args: dict[str, Any]) -> Any:
-        data: dict[str, Any] = {"acknowledged": True, **parse_hand_back(args)}
+        data: dict[str, Any] = {"acknowledged": True, **parse_hand_back(args),
+                                # The turn contract, every time (#2647): the ask is
+                                # shown now, the hand-back lands when the turn ends.
+                                "note": HAND_BACK_TURN_NOTE}
         # What actually reached the user, read off the live driver. Best-effort: the
         # hand-back itself is the Translator's to record from the tool-use block, so
         # a probe failure must never turn the call into an error.

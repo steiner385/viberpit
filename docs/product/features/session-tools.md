@@ -281,6 +281,25 @@ error. `hand_back` has its own `handed_back` status since #2326: it used to borr
 `waiting_question`, which promised a card to tap that was never rendered. The two cardless
 prose paths (the parked-`done` overlay and the completion open-question hold) land there too.
 
+**A hand-back lands when the turn ends — but the ask shows the moment it is made (#2647).**
+Prod 2026-10-02 (session bfc8ccbf): the session called `hand_back("Approve a lock-gated
+dequeue…")`, wrote "While waiting for your approval, I'm starting the gate fix", and kept
+issuing tool calls in the same turn for 13+ minutes. `handed_back` is derived from the turn's
+`ResultMessage`, so the card read "Working…" and nothing — no banner, no push, no audit row —
+reached the owner. Two halves fixed it. The Translator now also emits an internal
+`HandBackRequested` when it reads a top-level `hand_back` tool-use block; the driver parks the
+reason as `pending_hand_back_reason` and re-derives status, and `_persist_status` writes it to
+`sessions.hand_back_reason` beside the busy status (`MID_TURN_STATUSES` only), audits it, and
+fires the needs-you push with the ask in the body. The card shows "asked you — …" over the
+Working state, the in-session panel pins the ask above the composer, and the status frame
+carries `handBackReason` so both update without the poll. The audit and push fire once per
+ask (when the reason changes), so the turn-end `handed_back` that follows does not repeat
+them; the next turn's first write clears the ask. The other half is the contract: every
+`hand_back` acknowledgement carries `note` = `HAND_BACK_TURN_NOTE` ("finish this message
+after the call and start no further work in this turn"), and the description says the same —
+`request_model` next to it says "keep working", so the contrast is explicit. Eval case
+`hand-back-then-stop`.
+
 **The suspected-complete overlay.** When a turn ends in `hand_back`, the orchestrator judges
 the hand-back off the pump (`_judge_suspected_complete`): if the reason asks for nothing
 (`completion.hand_back_reason_asks` is the precision guard, `background_tasks.text_awaits_user`

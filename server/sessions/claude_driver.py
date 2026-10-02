@@ -420,6 +420,12 @@ class ClaudeAgentDriver:
         # that handed back, and the next turn clears it so the orchestrator can never
         # audit a stale reason against a later waiting_question.
         self._last_hand_back_reason: str | None = None
+        # The ask of a `hand_back` call read MID-TURN (#2647): set from
+        # ev.HandBackRequested the moment the Translator sees the tool-use block, read
+        # by `_persist_status` beside a busy status, and handed over to
+        # `_last_hand_back_reason` by the TurnEnd that latches it. Cleared at turn
+        # start and by `_reset_turn_flags` (interrupt) so it never outlives its turn.
+        self._pending_hand_back_reason: str | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
@@ -871,6 +877,7 @@ class ClaudeAgentDriver:
         self._retrying = False
         self._condensing = False
         self._condense_started_at = None
+        self._pending_hand_back_reason = None
 
     def _dash_signals(self) -> StatusSignals:
         """Snapshot the live driver state into the inputs of derive_status."""
@@ -1174,6 +1181,7 @@ class ClaudeAgentDriver:
         self._turn_started_at = time.time()
         self._turn_first_delta_at = None
         self._last_turn_outcome = "success"
+        self._pending_hand_back_reason = None
         await self._emit_status()
         # Build the live UserMessage image refs (url/mime/name only).
         wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
@@ -1419,6 +1427,15 @@ class ClaudeAgentDriver:
             if isinstance(e, ev.Condensing):
                 await self._consume_condensing(e)
                 continue
+            if isinstance(e, ev.HandBackRequested):
+                # Internal (#2647): park the ask and re-derive status NOW, so the
+                # orchestrator persists and pushes it beside `in_progress` instead
+                # of waiting for a turn end that a still-working session may not
+                # reach for a long time. The TurnEnd latch below remains the
+                # authority on the final status.
+                self._pending_hand_back_reason = e.reason
+                await self._emit_status()
+                continue
             # Genuine assistant output proves compaction is over. The clean
             # signal is the SDK's compact_boundary (a Condensing(active=False),
             # handled above), but it does not always arrive before the
@@ -1454,6 +1471,8 @@ class ClaudeAgentDriver:
                     self._last_pr_resolution_note = e.pr_resolution_note
                 self._last_hand_back_reason = (
                     e.hand_back_reason if e.outcome == "hand_back" else None)
+                # The latched reason takes over from the mid-turn slot (#2647).
+                self._pending_hand_back_reason = None
                 self._latch_model_request(e)
             elif isinstance(e, ev.ErrorEvent):
                 failure = await self._maybe_signal_recovery(
@@ -1787,6 +1806,13 @@ class ClaudeAgentDriver:
         ``None`` if that turn did not hand back. Read by ``_persist_status`` when it
         writes ``waiting_question``."""
         return self._last_hand_back_reason
+
+    @property
+    def pending_hand_back_reason(self) -> str | None:
+        """The reason of a ``hand_back`` call made in the turn that is STILL RUNNING
+        (#2647), or ``None``. Read by ``_persist_status`` beside a mid-turn status;
+        ``last_hand_back_reason`` takes over once the turn ends."""
+        return self._pending_hand_back_reason
 
     async def signal_message_prose(self, stem: str, *, timeout: float = 2.0) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem``

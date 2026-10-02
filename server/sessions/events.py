@@ -114,6 +114,20 @@ class TurnEnd:
                                "handBackReason": self.hand_back_reason}
 
 @dataclass
+class HandBackRequested:
+    """A top-level ``hand_back`` call was READ off the tool-use block, mid-turn (#2647).
+
+    The turn-end latch (``TurnEnd.outcome == "hand_back"``) still decides the final
+    status; this is the early copy that lets the driver park the ask as
+    ``pending_hand_back_reason`` and re-derive status while the turn is still running,
+    so the orchestrator can persist and push it beside ``in_progress``. Deliberately
+    has NO ``to_wire``: the browser learns of the ask from the status frame's
+    ``handBackReason``, and a top-level hand_back has no transcript card (reducer.ts).
+    """
+    turn_id: str; reason: str | None = None
+
+
+@dataclass
 class TextDelta:
     turn_id: str; text: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
     ts: float | None = field(default_factory=_now_ms)

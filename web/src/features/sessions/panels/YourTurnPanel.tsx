@@ -10,8 +10,10 @@ interface Props {
   suggestions: string[]
   onPrompt: (text: string, attachmentIds: string[]) => void
   /** The one sentence the session passed to `hand_back(reason)` (Session.handBackReason).
-   *  Read only while `statusState === 'handed_back'` — a resumed session keeps the
-   *  stale row value, exactly the gate the list card applies. */
+   *  Read while `statusState === 'handed_back'`, and beside a busy status (#2647: a
+   *  mid-turn hand_back is written the moment it is read and cleared by the next
+   *  turn's first write, so there it is a live ask). Other states ignore it — a
+   *  resumed session keeps the stale row value, exactly the gate the list card applies. */
   handBackReason?: string | null
   /** The server's "likely complete" reading of this hand-back (Session.suspectedCompleteReason).
    *  Same status gate. A hint with two one-tap answers, never an automatic archive. */
@@ -42,34 +44,45 @@ interface Props {
  * card's "Likely complete → Mark complete / Not done" so the decision can be
  * taken where the evidence is.
  *
+ * A busy state WITH a hand-back reason — the session called hand_back and kept
+ * working in the same turn (#2647). The hand-back itself lands when the turn
+ * ends, but the ask is real now: pin it in the needs-you tone with the same
+ * one-tap replies (the composer queues a reply into a busy session), minus the
+ * "Likely complete" hint, which judges a finished turn.
+ *
  * Other states render nothing: 'idle'/'complete'/'ended' need no reply to make
  * progress, 'waiting_external' is the agent still working, and the remaining
  * needs-you states already pin their own actionable panels.
  */
+const BUSY_STATES = new Set(['in_progress', 'condensing', 'retrying'])
 export function YourTurnPanel({
   statusState, suggestions, onPrompt,
   handBackReason, suspectedCompleteReason, onResolveSuspectedComplete, resolvePending = false,
 }: Props) {
   const handedBack = statusState === 'handed_back'
-  if (statusState !== 'done' && !handedBack) return null
+  const askedMidTurn = BUSY_STATES.has(statusState) && !!handBackReason?.trim()
+  if (statusState !== 'done' && !handedBack && !askedMidTurn) return null
 
   // Tone follows statusTier: 'done' is the calm your-turn tier (accent CTA);
-  // 'handed_back' is the needs-you tier (warning), matching its pill and card rail.
-  const tone = handedBack
+  // 'handed_back' — and a live mid-turn ask — is the needs-you tier (warning),
+  // matching the handed-back pill and card rail.
+  const needsYou = handedBack || askedMidTurn
+  const tone = needsYou
     ? { border: 'border-warning', wash: 'bg-warning-wash/60', text: 'text-warning', ring: 'focus-visible:ring-warning', hover: 'hover:bg-warning-wash' }
     : { border: 'border-accent', wash: 'bg-accent-wash/60', text: 'text-accent', ring: 'focus-visible:ring-accent', hover: 'hover:bg-accent-wash' }
-  const Icon = handedBack ? HandHelping : MessageCircleReply
-  const reason = handedBack ? handBackReason?.trim() || null : null
+  const Icon = needsYou ? HandHelping : MessageCircleReply
+  const reason = needsYou ? handBackReason?.trim() || null : null
   const suspected = handedBack ? suspectedCompleteReason?.trim() || null : null
+  const mode = handedBack ? 'handed_back' : askedMidTurn ? 'asked_mid_turn' : 'done'
 
   return (
     <div
       role="region"
-      aria-label={handedBack ? 'Handed back' : 'Your turn'}
+      aria-label={handedBack ? 'Handed back' : askedMidTurn ? 'Asked you' : 'Your turn'}
       aria-live="polite"
       className={cn('flex-shrink-0 border-t px-3 py-2', tone.border, tone.wash)}
       data-testid="your-turn-panel"
-      data-mode={handedBack ? 'handed_back' : 'done'}
+      data-mode={mode}
     >
       <div className={cn('flex items-start gap-2 text-sm', tone.text)}>
         <Icon size={16} aria-hidden="true" className="mt-0.5 flex-shrink-0" />
@@ -80,6 +93,14 @@ export function YourTurnPanel({
               {/* The session's own sentence is the one fact the user needs now; it
                   reads as prose, not a truncated meta clause, so a long ask wraps. */}
               <span> — {reason ?? 'the session stopped and is waiting on you.'}</span>
+            </>
+          ) : askedMidTurn ? (
+            <>
+              <span className="font-semibold">Asked you</span>
+              <span> — {reason}</span>
+              {/* Say what the state actually is: the turn is still running, so a
+                  reply queues behind it rather than interrupting it. */}
+              <span className="text-ink-muted"> (still working — a reply is queued for it)</span>
             </>
           ) : (
             <>

@@ -138,4 +138,43 @@ describe('YourTurnPanel — handed back', () => {
     )
     expect(screen.getByRole('region', { name: /your turn/i })).not.toHaveTextContent(REASON)
   })
+
+  // #2647: a hand_back made mid-turn. The server writes the reason the moment the call
+  // is read, so beside a busy status it is a live ask; the turn is still running.
+  describe('a mid-turn ask (busy status with a hand-back reason)', () => {
+    it.each(['in_progress', 'condensing', 'retrying'])('pins the ask while %s', (state) => {
+      render(
+        <YourTurnPanel statusState={state} handBackReason={REASON} suggestions={['Approved']} onPrompt={vi.fn()} />,
+      )
+      const region = screen.getByRole('region', { name: /asked you/i })
+      expect(region).toHaveAttribute('data-mode', 'asked_mid_turn')
+      expect(region).toHaveTextContent(REASON)
+      expect(region).toHaveTextContent(/still working/i)
+      expect(screen.getByRole('button', { name: 'Approved' })).toBeInTheDocument()
+    })
+
+    it('renders nothing while busy without a reason, and never for a parked session', () => {
+      const a = render(<YourTurnPanel statusState="in_progress" suggestions={['x']} onPrompt={vi.fn()} />)
+      expect(a.container).toBeEmptyDOMElement()
+      a.unmount()
+      const b = render(
+        <YourTurnPanel statusState="waiting_external" handBackReason={REASON} suggestions={[]} onPrompt={vi.fn()} />,
+      )
+      expect(b.container).toBeEmptyDOMElement()
+    })
+
+    it('never shows the "Likely complete" hint mid-turn — it judges a finished turn', () => {
+      render(
+        <YourTurnPanel
+          statusState="in_progress"
+          handBackReason={REASON}
+          suspectedCompleteReason="PR #1 open with auto-merge armed"
+          onResolveSuspectedComplete={vi.fn()}
+          suggestions={[]}
+          onPrompt={vi.fn()}
+        />,
+      )
+      expect(screen.queryByText(/likely complete/i)).toBeNull()
+    })
+  })
 })

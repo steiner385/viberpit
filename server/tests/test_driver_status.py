@@ -334,3 +334,63 @@ def test_claude_driver_latches_the_hand_back_reason_per_turn():
         assert d.last_hand_back_reason is None
 
     asyncio.run(run())
+
+
+def test_a_mid_turn_hand_back_is_pending_until_the_turn_ends_then_latched():
+    """#2647: `HandBackRequested` (read off the tool-use block) parks the reason as
+    `pending_hand_back_reason` and re-derives status so the orchestrator persists the
+    ask while the turn is still `in_progress`; the TurnEnd then moves it to
+    `last_hand_back_reason` and clears the pending slot. A new turn clears both."""
+    from server.sessions import events as ev
+
+    async def run():
+        d = _make_driver()
+        emitted: list[str] = []
+
+        async def on_status(sid, status):
+            emitted.append(status)
+            return status
+        d._on_status = on_status
+        d._turn_active = True
+
+        d._tr.feed = lambda msg: iter([ev.HandBackRequested("t1", "approve the dequeue")])
+        await d._handle_msg(object())
+        assert d.pending_hand_back_reason == "approve the dequeue"
+        assert d.last_hand_back_reason is None
+        assert emitted and emitted[-1] == "in_progress", "status re-derived at the call"
+
+        d._tr.feed = lambda msg: iter(
+            [ev.TurnEnd("t1", outcome="hand_back", hand_back_reason="approve the dequeue")])
+        await d._handle_msg(object())
+        assert d.pending_hand_back_reason is None
+        assert d.last_hand_back_reason == "approve the dequeue"
+
+    asyncio.run(run())
+
+
+def test_a_mid_turn_hand_back_is_not_forwarded_to_the_client():
+    from server.sessions import events as ev
+
+    async def run():
+        d = _make_driver()
+        wire: list = []
+        d._emit = lambda e: wire.append(e)
+        d._tr.feed = lambda msg: iter([ev.HandBackRequested("t1", "r")])
+        await d._handle_msg(object())
+        assert not any(isinstance(e, ev.HandBackRequested) for e in wire)
+
+    asyncio.run(run())
+
+
+def test_interrupt_clears_a_pending_hand_back():
+    from server.sessions import events as ev
+
+    async def run():
+        d = _make_driver()
+        d._tr.feed = lambda msg: iter([ev.HandBackRequested("t1", "r")])
+        await d._handle_msg(object())
+        assert d.pending_hand_back_reason == "r"
+        d._reset_turn_flags()
+        assert d.pending_hand_back_reason is None
+
+    asyncio.run(run())
