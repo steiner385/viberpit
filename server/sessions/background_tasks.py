@@ -196,6 +196,11 @@ def scan_open_background_tasks(
     completed/failed), so counting it as open would pin the session on
     ``waiting_external`` forever.
     """
+    return _open_tasks_from(_iter_jsonl(jsonl_path), treat_killed_as_open)
+
+
+def _open_tasks_from(entries, treat_killed_as_open: bool) -> list[OpenBgTask]:
+    """``scan_open_background_tasks`` over already-parsed transcript entries."""
     terminal = _TERMINAL if treat_killed_as_open else _TERMINAL | {"killed"}
     launches: dict[str, OpenBgTask] = {}
     # tool_use blocks whose result has not been journaled yet (popped on the ack, so
@@ -203,76 +208,62 @@ def scan_open_background_tasks(
     pending: dict[str, tuple[str, dict, str | None]] = {}
     by_task: dict[str, set[str]] = {}   # CLI task-id → tool-use ids dispatched under it
     terminated: set[str] = set()
-    try:
-        f = open(jsonl_path, errors="ignore")
-    except OSError:
-        return []
-    with f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                o = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(o, dict) or o.get("isSidechain"):
-                continue
-            if o.get("type") == "assistant":
-                content = (o.get("message") or {}).get("content")
-                ts = o.get("timestamp") if isinstance(o.get("timestamp"), str) else None
-                if isinstance(content, list):
-                    for b in content:
-                        if not isinstance(b, dict) or b.get("type") != "tool_use":
-                            continue
-                        name = b.get("name") or ""
-                        inp: dict = cast(dict, b.get("input")) if isinstance(b.get("input"), dict) else {}
-                        tid = b.get("id")
-                        if not tid:
-                            continue
-                        if _is_background_launch(name, inp):
-                            launches[tid] = _launch(tid, name, inp, ts)
-                        else:
-                            pending[tid] = (name, inp, ts)
-            elif o.get("type") == "user":
-                task_id = _background_ack_task_id(o)
-                for tid, is_error in _tool_result_ids(o):
-                    call = pending.pop(tid, None)
-                    if is_error:
-                        # The launch was REFUSED — rejected on a permission card, or
-                        # cut off by an interrupt. Nothing runs, so no notification
-                        # will ever close it; counting it open pinned a session on
-                        # "Waiting…" with nothing running (2026-09-16).
-                        terminated.add(tid)
+    for o in entries:
+        if o.get("type") == "assistant":
+            content = (o.get("message") or {}).get("content")
+            ts = o.get("timestamp") if isinstance(o.get("timestamp"), str) else None
+            if isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    if call is not None and call[0] == "TaskStop":
-                        # The agent stopped this task itself. The CLI journals the
-                        # stop only as the TaskStop's own result — never as a
-                        # task-notification — so nothing else ever closes the
-                        # launch. Left open it pinned the session on "Waiting…" and
-                        # had every restart ask it to relaunch a task it had killed
-                        # on purpose (a50a5873, 2026-09-19: four refusals, twelve
-                        # hours on waiting_external). Closed for BOTH scans: a
-                        # deliberately stopped task is not one to re-arm either.
-                        terminated |= by_task.get(str(call[1].get("task_id") or ""), set())
+                    name = b.get("name") or ""
+                    inp: dict = cast(dict, b.get("input")) if isinstance(b.get("input"), dict) else {}
+                    tid = b.get("id")
+                    if not tid:
                         continue
-                    if task_id is None:
-                        continue
-                    if tid not in launches and call is not None:
-                        launches[tid] = _launch(tid, call[0], call[1], call[2])
-                    if task_id and tid in launches:
-                        by_task.setdefault(task_id, set()).add(tid)
-            # Terminations: any entry whose content carries a task-notification with a
-            # terminal status (queue-operation enqueue or the user delivery).
-            notif = _notification_text(o)
-            if notif is not None:
-                ms = _STATUS.search(notif)
-                if ms and ms.group(1) in terminal:
-                    mt, mtask = _TUID.search(notif), _TASK_ID.search(notif)
-                    if mt:
-                        terminated.add(mt.group(1))
-                    if mtask:
-                        terminated |= by_task.get(mtask.group(1), set())
+                    if _is_background_launch(name, inp):
+                        launches[tid] = _launch(tid, name, inp, ts)
+                    else:
+                        pending[tid] = (name, inp, ts)
+        elif o.get("type") == "user":
+            task_id = _background_ack_task_id(o)
+            for tid, is_error in _tool_result_ids(o):
+                call = pending.pop(tid, None)
+                if is_error:
+                    # The launch was REFUSED — rejected on a permission card, or
+                    # cut off by an interrupt. Nothing runs, so no notification
+                    # will ever close it; counting it open pinned a session on
+                    # "Waiting…" with nothing running (2026-09-16).
+                    terminated.add(tid)
+                    continue
+                if call is not None and call[0] == "TaskStop":
+                    # The agent stopped this task itself. The CLI journals the
+                    # stop only as the TaskStop's own result — never as a
+                    # task-notification — so nothing else ever closes the
+                    # launch. Left open it pinned the session on "Waiting…" and
+                    # had every restart ask it to relaunch a task it had killed
+                    # on purpose (a50a5873, 2026-09-19: four refusals, twelve
+                    # hours on waiting_external). Closed for BOTH scans: a
+                    # deliberately stopped task is not one to re-arm either.
+                    terminated |= by_task.get(str(call[1].get("task_id") or ""), set())
+                    continue
+                if task_id is None:
+                    continue
+                if tid not in launches and call is not None:
+                    launches[tid] = _launch(tid, call[0], call[1], call[2])
+                if task_id and tid in launches:
+                    by_task.setdefault(task_id, set()).add(tid)
+        # Terminations: any entry whose content carries a task-notification with a
+        # terminal status (queue-operation enqueue or the user delivery).
+        notif = _notification_text(o)
+        if notif is not None:
+            ms = _STATUS.search(notif)
+            if ms and ms.group(1) in terminal:
+                mt, mtask = _TUID.search(notif), _TASK_ID.search(notif)
+                if mt:
+                    terminated.add(mt.group(1))
+                if mtask:
+                    terminated |= by_task.get(mtask.group(1), set())
     open_tasks = [t for tid, t in launches.items() if tid not in terminated]
     open_tasks.reverse()   # newest-first (dict preserves file order)
     return open_tasks
@@ -373,9 +364,14 @@ def pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> PendingWa
 
     Pure given ``now`` (defaults to the current UTC time); side-effect-free otherwise.
     """
+    return _wakeup_from(_iter_jsonl(jsonl_path), now)
+
+
+def _wakeup_from(entries, now: datetime | None) -> PendingWakeup | None:
+    """``pending_wakeup`` over already-parsed transcript entries."""
     armed_at: datetime | None = None
     delay: float | None = None
-    for o in _iter_jsonl(jsonl_path):
+    for o in entries:
         if o.get("type") == "user" and not is_tool_result_entry(o):
             armed_at, delay = None, None   # a fresh prompt / fired wakeup starts a new turn
         else:
@@ -419,6 +415,15 @@ def background_work_snapshot(tasks: list[OpenBgTask], wakeup: PendingWakeup | No
             "wakeupAt": wakeup.fire_at.isoformat() if wakeup and wakeup.fire_at else None}
 
 
+def scan_background_state(jsonl_path: str) -> tuple[list[OpenBgTask], PendingWakeup | None]:
+    """Live background tasks (killed excluded) and the armed wakeup, from ONE read.
+
+    The two answers ``is_parked`` and the "Background" chip snapshot both need; a long
+    transcript is parsed once instead of once per question."""
+    entries = list(_iter_jsonl(jsonl_path))
+    return _open_tasks_from(entries, False), _wakeup_from(entries, None)
+
+
 def is_parked(jsonl_path: str | None) -> bool:
     """True iff a CLAUDE session is waiting on an external event rather than the user:
     it has an open background task (Monitor / ``run_in_background``) or an armed
@@ -431,8 +436,8 @@ def is_parked(jsonl_path: str | None) -> bool:
     Claude projects tree for a thread id that is not in it."""
     if not jsonl_path:
         return False
-    return (bool(scan_open_background_tasks(jsonl_path, treat_killed_as_open=False))
-            or scan_pending_wakeup(jsonl_path))
+    tasks, wakeup = scan_background_state(jsonl_path)
+    return bool(tasks) or wakeup is not None
 
 
 # Tail of the final hand-back message scanned for a solicitation phrase. The closing of

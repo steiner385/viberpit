@@ -634,3 +634,15 @@ def test_background_work_snapshot_shape(tmp_path):
     assert background_work_snapshot([], None) == EMPTY_BACKGROUND_WORK
     assert background_work_snapshot([], PendingWakeup(fire_at=None)) == {
         "items": [], "wakeup": True, "wakeupAt": None}
+
+
+def test_scan_background_state_reads_the_transcript_once(tmp_path, monkeypatch):
+    from server.sessions import background_tasks as bt
+    path = tmp_path / "t.jsonl"
+    path.write_text("")
+    opened = []
+    real = bt._iter_jsonl
+    monkeypatch.setattr(bt, "_iter_jsonl", lambda p: opened.append(p) or real(p))
+    assert bt.scan_background_state(str(path)) == ([], None)
+    assert bt.is_parked(str(path)) is False
+    assert len(opened) == 2   # one read per call, not two
