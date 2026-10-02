@@ -279,7 +279,7 @@ def test_purge_skips_archive_whose_dispatch_is_still_unsettled(tmp_path):
     ``dispatch_outcomes`` row is still ``running`` must not be purged; the oldest
     human archive goes instead, and once the outcome is finalised the automation
     archive is first in line again."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
