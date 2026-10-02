@@ -7,7 +7,7 @@ import pytest
 
 CFG = {"target_repo": "steiner385/viberpit", "min_count_error": 1, "min_count_warning": 3,
        "warning_window_h": 24, "daily_cap": 10, "comment_every_h": 24,
-       "ignore_loggers": "uvicorn.error,websockets,claude_agent_sdk", "retention_days": 90}
+       "ignore_loggers": "uvicorn.error,websockets", "retention_days": 90}
 
 
 def _row(**kw):
@@ -65,7 +65,37 @@ def test_is_ignored_claude_agent_sdk_reader_noise():
     # cursor (#1885) — ignored here so triage never files it as a second issue.
     from server.automations.error_triage import is_ignored
     assert is_ignored("claude_agent_sdk._internal.query", CFG)
-    assert not is_ignored("claude_agent_sdk", {**CFG, "ignore_loggers": ""})
+    assert is_ignored("claude_agent_sdk._internal.query", {**CFG, "ignore_loggers": ""})
+
+
+def test_a_persisted_pre_1886_ignore_list_still_ignores_claude_agent_sdk(tmp_path):
+    # #2626: #2457 fixed #1886 by changing the ignore_loggers DEFAULT, but the live
+    # row already persisted "uvicorn.error,websockets" — validate_config only fills
+    # ABSENT keys, so the new default never reached is_ignored() and the vendor line
+    # re-filed as a [regression]. Go through the real reader with that saved row.
+    import asyncio
+
+    from sqlalchemy import update as sa_update
+
+    from server.automations.config_store import read_automation_config
+    from server.automations.error_triage import ErrorTriage, is_ignored
+    from server.automations.registry import registry
+    from server.db import db_session, init_db
+    from server.db.models import Automation
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'cfg.db'}")
+        await registry.ensure_rows()
+        async with db_session() as db:
+            await db.execute(sa_update(Automation).where(Automation.id == "error-triage").values(
+                enabled=True, mode="file", config={"ignore_loggers": "uvicorn.error,websockets"}))
+        return await read_automation_config(ErrorTriage, modes=("file",))
+
+    mode, config = asyncio.run(run())
+    assert mode == "file" and config["ignore_loggers"] == "uvicorn.error,websockets"
+    assert is_ignored("claude_agent_sdk._internal.query", config)
+    assert is_ignored("uvicorn.error", config)
+    assert not is_ignored("server.sessions.claude_driver", config)
 
 
 def test_issue_title_and_labels():

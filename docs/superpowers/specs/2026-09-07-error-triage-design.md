@@ -207,7 +207,7 @@ Config schema:
 | `warning_window_h` | int | 24 | a WARNING burst that goes quiet this long without filing starts counting again from zero |
 | `daily_cap` | int | 10 | new issues (file + regress) per UTC day |
 | `comment_every_h` | int | 24 | minimum gap between recurrence comments on one open issue |
-| `ignore_loggers` | string | `uvicorn.error,websockets` | comma-separated logger-name prefixes never filed (still counted) |
+| `ignore_loggers` | string | `uvicorn.error,websockets` | comma-separated logger-name prefixes never filed (still counted); added to the code-level `ALWAYS_IGNORED_LOGGERS` (`claude_agent_sdk`, #2626) |
 | `retention_days` | int | 90 | `observed`/`resolved` rows not seen this long are deleted |
 
 Each tick:
