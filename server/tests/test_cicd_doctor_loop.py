@@ -194,6 +194,34 @@ def test_non_transient_gh_failure_on_a_repo_still_warns(tmp_path, caplog):
     assert "cicd_doctor.repo_failed repo=o/r" in warnings[0].getMessage()
 
 
+def test_host_unreachable_files_one_host_issue_not_one_per_repo(tmp_path, caplog):
+    """#2613: an offline host failed every repo at WARNING, and the repo slug is
+    in the message — one network blip filed one auto-error per repo. It is the
+    host condition, so it collapses onto the shared throttled host event."""
+    from server.github import host_failures
+    host_failures._HOST_THROTTLE.clear()
+    unreachable = ("error connecting to api.github.com\n"
+                   "check your internet connection or https://githubstatus.com")
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=_runs(1), junit_by_run={}, repos=("o/a", "o/b", "o/c"),
+                     fetch_jobs=_failing_jobs(unreachable))
+        with caplog.at_level(logging.DEBUG):
+            await loop.tick()
+    try:
+        asyncio.run(run())
+    finally:
+        host_failures._HOST_THROTTLE.clear()
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [(r.name, getattr(r, "event", None)) for r in warnings] == [
+        (host_failures.log.name, "github.host_gh_unreachable")]
+    # Demoted, not dropped: each lost repo is still named at DEBUG.
+    debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    for repo in ("o/a", "o/b", "o/c"):
+        assert f"cicd_doctor.repo_failed repo={repo}" in debug
+
+
 def test_malformed_junit_warnings_are_throttled_per_repo(tmp_path, caplog):
     """#1704: a repo whose CI keeps producing bad junit XML re-entered the
     per-run warning on every ingested run — 145 records for one standing
