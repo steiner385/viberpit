@@ -83,6 +83,10 @@ class SessionRecord:
     last_turn_at: datetime | None = None  # last turn's response; drives the "active … ago" label (see ACTIVITY_STATUSES)
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
+    # Open background work snapshot ({items, wakeup, wakeupAt} — background_tasks.
+    # background_work_snapshot), refreshed at turn end and on task start/end. None =
+    # nothing open. Drives the "Background" chip (#2635).
+    background_work: dict | None = None
     model: str | None = None         # persisted model alias/id; None = account default
     reasoning_effort: str | None = None  # engine-native effort; None = model default
     # Requested model held pending human approval while status == "pending_approval"
@@ -265,6 +269,8 @@ class SessionRecord:
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
             "ownerIdentity": self.owner_identity,
+            "subAgents": self.sub_agents,
+            "backgroundWork": self.background_work,
         }
 
     @classmethod
@@ -328,6 +334,8 @@ class SessionRecord:
             command_catalog=d.get("commandCatalog"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
+            sub_agents=d.get("subAgents"),
+            background_work=d.get("backgroundWork"),
         )
 
 

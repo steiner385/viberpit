@@ -58,11 +58,52 @@ def test_task_started_without_tool_use_id_is_ignored():
     assert out == []
 
 
-def test_task_started_non_agent_type_is_ignored_even_with_tool_use_id():
-    """Isolates the task_type filter from the tool_use_id one: a tool_use_id alone
-    is not enough, a local_bash/monitor task is ignored even when it carries one."""
-    _, out = _run([f.task_started(TASK, TID, task_type="local_bash")])
-    assert out == []
+def test_local_bash_task_started_becomes_background_task_started():
+    """A backgrounded Bash / Monitor is a `local_bash` task whose task_started carries the
+    Bash call's tool_use_id (claude 2.1.287, read from the binary 2026-10-02). It is not a
+    sub-agent — it gets its own event (#2635)."""
+    _, out = _run([f.task_started(TASK, TID, description="pytest -q", task_type="local_bash",
+                                  backgrounded=True)])
+    assert len(out) == 1 and isinstance(out[0], ev.BackgroundTaskStarted)
+    e = out[0]
+    assert (e.tool_use_id, e.task_id, e.description, e.task_type, e.backgrounded) == (
+        TID, TASK, "pytest -q", "local_bash", True)
+    w = e.to_wire()
+    assert w["type"] == "backgroundTaskStarted" and w["toolUseId"] == TID
+    assert w["taskType"] == "local_bash" and w["backgrounded"] is True and isinstance(w["ts"], float)
+
+
+def test_background_task_notification_resolves_tool_use_id_from_the_map():
+    """The CLI's task_notification carries no task_type; the map started by task_started
+    is what says this is a shell, even when the notice itself names the tool_use_id."""
+    _, out = _run([f.task_started(TASK, TID, task_type="local_bash", backgrounded=True),
+                   f.task_notification(TASK, None, status="completed", summary="ok")])
+    e = out[1]
+    assert isinstance(e, ev.BackgroundTaskEnded)
+    assert (e.tool_use_id, e.task_id, e.status) == (TID, TASK, "completed")
+    assert e.to_wire() == {"type": "backgroundTaskEnded", "toolUseId": TID, "taskId": TASK,
+                           "status": "completed", "ts": e.ts}
+
+
+def test_background_kill_sequence_emits_one_ended_per_frame_but_evicts_once():
+    tr, out = _run([f.task_started(TASK, TID, task_type="local_bash", backgrounded=True),
+                    f.task_updated(TASK, "killed"),
+                    f.task_notification(TASK, TID, status="stopped", summary="")])
+    ended = [e for e in out if isinstance(e, ev.BackgroundTaskEnded)]
+    assert [e.status for e in ended] == ["stopped", "stopped"]
+    assert TASK not in tr._bg_task_tool
+
+
+def test_background_progress_emits_nothing():
+    _, out = _run([f.task_started(TASK, TID, task_type="local_bash", backgrounded=True),
+                   f.task_progress(TASK, TID)])
+    assert len(out) == 1
+
+
+def test_agent_task_path_is_unchanged_by_the_background_map():
+    """A local_agent still becomes SubAgentStarted and never touches _bg_task_tool."""
+    tr, out = _run([f.task_started(TASK, TID)])
+    assert isinstance(out[0], ev.SubAgentStarted) and tr._bg_task_tool == {}
 
 
 def test_progress_resolves_tool_use_id_from_the_map():

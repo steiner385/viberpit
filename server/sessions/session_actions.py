@@ -58,7 +58,7 @@ async def stop_subagent(orch, db, *, session_id: str, tool_use_id: str, identity
     if task_id is None:
         raise ActionError(
             "SUBAGENT_NOT_RUNNING",
-            "That sub-agent is not running — it may have already finished.",
+            "That task is not running — it may have already finished.",
             404,
         )
     await _audit(db, "session.subagent_stop", identity,

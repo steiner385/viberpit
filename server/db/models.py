@@ -125,6 +125,12 @@ class Session(Base):
     # refreshed from the transcript on status changes. Nullable so init_db backfills
     # it on the dev SQLite DB without a migration.
     sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Open background work snapshot ({items, wakeup, wakeupAt}) behind a "Waiting…"
+    # session — background shells / Monitors / Codex terminals and the armed wakeup —
+    # refreshed at turn end (#2635). Nullable so init_db backfills it; none_as_null so
+    # clearing persists SQL NULL.
+    background_work: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # Open background tasks (Monitors / backgrounded Bash|Task) snapshotted at deploy
     # drain so the daemon can relaunch them after the restart that reaps them. JSON list
     # of {tool_use_id, kind, name, input, description}; NULL = nothing pending. Nullable

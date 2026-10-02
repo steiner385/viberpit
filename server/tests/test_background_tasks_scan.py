@@ -572,3 +572,65 @@ def test_task_stop_of_some_other_task_closes_nothing(tmp_path):
     ])
     assert [t.tool_use_id for t in scan_open_background_tasks(path)] == ["toolu_bg"]
     assert is_parked(path) is True
+
+
+def test_open_task_carries_the_launch_timestamp(tmp_path):
+    launch = _assistant_tool("tu1", "Bash", {"command": "sleep 99", "run_in_background": True,
+                                             "description": "long sleep"})
+    launch["timestamp"] = "2026-10-02T11:00:00.000Z"
+    path = _write(tmp_path, [launch, _tool_result("tu1")])
+    [t] = scan_open_background_tasks(path)
+    assert t.started_at == "2026-10-02T11:00:00.000Z"
+    assert OpenBgTask.from_dict(t.to_dict()).started_at == t.started_at
+    # a pre-#2635 snapshot has no key → None, not a crash
+    assert OpenBgTask.from_dict({"tool_use_id": "x", "kind": "task"}).started_at is None
+
+
+def test_pending_wakeup_reports_the_fire_time(tmp_path):
+    from server.sessions.background_tasks import pending_wakeup
+    arm = _assistant_tool("tu1", "ScheduleWakeup", {"delaySeconds": 600, "prompt": "p", "reason": "r"})
+    arm["timestamp"] = "2026-10-02T11:00:00.000Z"
+    path = _write(tmp_path, [_user("go"), arm, _tool_result("tu1")])
+    now = datetime(2026, 10, 2, 11, 5, tzinfo=timezone.utc)
+    w = pending_wakeup(path, now=now)
+    assert w is not None and w.fire_at == datetime(2026, 10, 2, 11, 10, tzinfo=timezone.utc)
+    assert scan_pending_wakeup(path, now=now) is True
+    # well past fire + grace → lost, not pending
+    late = datetime(2026, 10, 2, 11, 20, tzinfo=timezone.utc)
+    assert pending_wakeup(path, now=late) is None
+
+
+def test_pending_wakeup_without_timestamp_is_armed_with_unknown_fire_time(tmp_path):
+    from server.sessions.background_tasks import pending_wakeup
+    arm = _assistant_tool("tu1", "ScheduleWakeup", {"delaySeconds": 600, "prompt": "p", "reason": "r"})
+    path = _write(tmp_path, [_user("go"), arm, _tool_result("tu1")])
+    w = pending_wakeup(path)
+    assert w is not None and w.fire_at is None
+
+
+def test_background_work_snapshot_shape(tmp_path):
+    from server.sessions.background_tasks import (background_work_snapshot, PendingWakeup,
+                                                  EMPTY_BACKGROUND_WORK)
+    shell = OpenBgTask(tool_use_id="tu1", kind="task", name="Bash",
+                       input={"command": "pytest -q", "run_in_background": True},
+                       description="", started_at="2026-10-02T11:00:00.000Z")
+    mon = OpenBgTask(tool_use_id="tu2", kind="monitor", name="Monitor",
+                     input={"command": "gh pr checks 1", "description": "watch CI"},
+                     description="watch CI")
+    agent = OpenBgTask(tool_use_id="tu3", kind="agent", name="Agent", input={}, description="brief",
+                       replayable=False)
+    snap = background_work_snapshot([shell, mon, agent],
+                                    PendingWakeup(fire_at=datetime(2026, 10, 2, 11, 10, tzinfo=timezone.utc)))
+    assert snap == {
+        "items": [
+            {"toolUseId": "tu1", "kind": "task", "name": "Bash", "description": "pytest -q",
+             "startedAt": "2026-10-02T11:00:00.000Z"},
+            {"toolUseId": "tu2", "kind": "monitor", "name": "Monitor", "description": "watch CI",
+             "startedAt": None},
+        ],
+        "wakeup": True,
+        "wakeupAt": "2026-10-02T11:10:00+00:00",
+    }
+    assert background_work_snapshot([], None) == EMPTY_BACKGROUND_WORK
+    assert background_work_snapshot([], PendingWakeup(fire_at=None)) == {
+        "items": [], "wakeup": True, "wakeupAt": None}

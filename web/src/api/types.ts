@@ -312,6 +312,14 @@ export interface SubAgentSummary {
   status: 'running' | 'done' | 'failed'
 }
 
+/** One open background task behind a "Waiting…" session — a backgrounded Bash shell, a
+ *  Monitor, a Codex background terminal — from the server's transcript snapshot. Mirrors
+ *  `background_work_snapshot` (server/sessions/background_tasks.py). Background AGENTS
+ *  are excluded: `subAgents` owns them. `kind` is the server's OpenBgTask.kind
+ *  ('monitor' | 'task' | 'terminal'); `name` the launching tool. */
+export interface BackgroundWorkItem { toolUseId: string; kind: string; name: string; description: string; startedAt: string | null }
+export interface BackgroundWork { items: BackgroundWorkItem[]; wakeup: boolean; wakeupAt: string | null }
+
 export interface Session {
   id: string
   name: string
@@ -338,6 +346,8 @@ export interface Session {
   nameIsAuto?: boolean
   /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
   subAgents?: SubAgentSummary[]
+  /** Open background work (shells / Monitors / terminals / armed wakeup) — what "Waiting…" waits on (#2635). */
+  backgroundWork?: BackgroundWork | null
   /** True when the user has pinned the account (disables auto-rotation). */
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */

@@ -255,6 +255,10 @@ class AgentDriverConfig:
     #: so the orchestrator can refresh the persisted sub-agent summary mid-turn. Only
     #: engines with sub-agents (Claude) ever call it; others ignore it.
     on_sub_agents_changed: Callable[[str], None] | None = None
+    #: Fired (synchronously, with the session id) when a background shell/Monitor task
+    #: starts or ends, so the orchestrator can refresh the persisted background-work
+    #: snapshot (#2635). Only Claude calls it.
+    on_background_work_changed: Callable[[str], None] | None = None
     clock: Callable[[], float] | None = None
     suggester: SuggestionProvider | None = None
     assistant_api: AsyncCloser | None = None

@@ -18,6 +18,9 @@ import { UsageBadge } from '@/features/accounts/UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import { ChildSessionRows } from './ChildSessionRows'
+import { BackgroundWorkRows } from './BackgroundWorkRows'
+import { selectBackgroundWork } from '@/session/selectors'
+import { backgroundWorkSummary } from '@/features/sessions/backgroundWorkSummary'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { CardMenu, Sep, actionBtn, menuItem } from '@/ui/list/CardMenu'
 import { useViewport } from '@/shell/useViewport'
@@ -102,11 +105,6 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
-  // One chevron expands both nested lists (sub-agent threads and child sessions), and
-  // says which it holds so a screen reader is not told "sub-agents" for a children-only card.
-  const hasNested = hasSubAgents || hasChildren
-  const nestedNoun = hasSubAgents && hasChildren ? 'sub-agents and child sessions'
-    : hasChildren ? 'child sessions' : 'sub-agents'
   const [expanded, setExpanded] = useState(false)
   const [generating, setGenerating] = useState(false)
 
@@ -177,6 +175,19 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const showFix = prAutofixMode === 'propose' && !!failingPr
 
   const now = useNow()
+
+  // Background shells/Monitors/wakeup a parked session waits on (#2635). Ticks with the card's
+  // shared clock; `now === 0` is the pre-first-tick frame, so fall back to the mount instant.
+  const [mountedAt] = useState(Date.now)
+  const backgroundWork = selectBackgroundWork([], {}, session.backgroundWork)
+  const bgSummary = backgroundWorkSummary(backgroundWork, now || mountedAt)
+  const hasBackground = bgSummary != null
+  // One chevron expands both nested lists (sub-agent threads and child sessions), and
+  // says which it holds so a screen reader is not told "sub-agents" for a children-only card.
+  const hasNested = hasSubAgents || hasChildren || hasBackground
+  const nestedNoun = ['sub-agents', 'child sessions', 'background work']
+    .filter((_, i) => [hasSubAgents, hasChildren, hasBackground][i])
+    .join(' and ')
 
   // Autopilot human-deference countdown: show while the server-supplied cooldown instant is still
   // in the future. `now === 0` is the pre-first-tick frame (useNow returns 0 until it ticks) — show
@@ -416,6 +427,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
+          {bgSummary && !expanded && (
+            <span data-testid="card-background-pill" className="flex-shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded bg-info-wash text-info">{bgSummary}</span>
+          )}
           {hasChildren && !expanded && (
             <span className="flex-shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded bg-info-wash text-info">
               {childSessions.length} {childSessions.length === 1 ? 'child' : 'children'}
@@ -611,6 +625,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             rail + dot carry the same tier as color. */}
         <span
           aria-label={`Status: ${presentation.label}`}
+          title={session.status === 'waiting_external' && bgSummary ? `Waiting on ${bgSummary}` : undefined}
           className={cn('flex-shrink-0 font-medium', presentation.textClass)}
         >
           {presentation.label}
@@ -944,6 +959,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       </div>
 
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
+      {bgSummary && expanded && <BackgroundWorkRows work={backgroundWork} />}
       {hasChildren && expanded && <ChildSessionRows sessions={childSessions} />}
     </CardFrame>
   )

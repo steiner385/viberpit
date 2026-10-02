@@ -18,7 +18,7 @@ import { PROMPT_ACK_TIMEOUT_MS } from '@/session/promptStage'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command, PromptContext } from '@/session/events'
-import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
+import { selectBackgroundWork, type BackgroundWorkView, selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
@@ -68,6 +68,8 @@ export interface SessionRuntime {
    *  show a different set than its neighbour (2026-09-29 critique, H4). */
   suggestions: string[]
   subAgents: ReturnType<typeof selectSubAgents>
+  /** Open background work — the shells / Monitors / wakeup a "Waiting…" session waits on (#2635). Live events win; the record snapshot covers reload. */
+  backgroundWork: BackgroundWorkView
   hasOpenAction: boolean
   /** True when at least one open permission block is pending (permission blocks only). */
   hasOpenPermission: boolean
@@ -530,6 +532,11 @@ export function useSessionRuntime(
     ?? remainingContextPct(state.usage, state.model)
   // Sub-agent chips derive from the visible turns so they hold steady through a heal.
   const subAgents = selectSubAgents(viewState.turns, viewState.subAgents)
+  const recordBackgroundWork = sessionRecord?.backgroundWork
+  const backgroundWork = useMemo(
+    () => selectBackgroundWork(viewState.turns, viewState.backgroundTasks, recordBackgroundWork),
+    [viewState.turns, viewState.backgroundTasks, recordBackgroundWork],
+  )
 
   // See the interface doc: live event first, record cache second, one place.
   const suggestions = state.latestSuggestions.length > 0
@@ -576,6 +583,7 @@ export function useSessionRuntime(
     contextPct,
     suggestions,
     subAgents,
+    backgroundWork,
     hasOpenAction,
     hasOpenPermission,
     armedQuestionId,

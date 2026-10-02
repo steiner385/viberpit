@@ -87,18 +87,22 @@ class OpenBgTask:
     #: Defaults True so a ``pending_rearm`` snapshot written by an older daemon —
     #: which could only ever hold Claude tasks — round-trips unchanged.
     replayable: bool = True
+    #: ISO-8601 ``timestamp`` of the transcript entry that launched it (the CLI stamps
+    #: every entry); None for a snapshot written before #2635 or an entry without one.
+    started_at: str | None = None
 
     def to_dict(self) -> dict:
         return {"tool_use_id": self.tool_use_id, "kind": self.kind,
                 "name": self.name, "input": self.input, "description": self.description,
-                "replayable": self.replayable}
+                "replayable": self.replayable, "started_at": self.started_at}
 
     @classmethod
     def from_dict(cls, d: dict) -> "OpenBgTask":
         return cls(tool_use_id=d.get("tool_use_id", ""), kind=d.get("kind", "task"),
                    name=d.get("name", ""), input=d.get("input") or {},
                    description=d.get("description", ""),
-                   replayable=d.get("replayable", True) is not False)
+                   replayable=d.get("replayable", True) is not False,
+                   started_at=d.get("started_at"))
 
 
 def _is_background_launch(name: str, inp: dict) -> bool:
@@ -148,7 +152,7 @@ def _tool_result_ids(entry: dict) -> list[tuple[str, bool]]:
             if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id")]
 
 
-def _launch(tid: str, name: str, inp: dict) -> OpenBgTask:
+def _launch(tid: str, name: str, inp: dict, started_at: str | None = None) -> OpenBgTask:
     if name == "Monitor":
         kind = "monitor"
     elif name in _AGENT_TOOLS:
@@ -158,7 +162,7 @@ def _launch(tid: str, name: str, inp: dict) -> OpenBgTask:
     # SendMessage carries its one-line label as ``summary``, not ``description``.
     return OpenBgTask(tool_use_id=tid, kind=kind, name=name, input=inp,
                       description=str(inp.get("description") or inp.get("summary") or ""),
-                      replayable=name not in _AGENT_TOOLS)
+                      replayable=name not in _AGENT_TOOLS, started_at=started_at)
 
 
 def _notification_text(entry: dict) -> str | None:
@@ -196,7 +200,7 @@ def scan_open_background_tasks(
     launches: dict[str, OpenBgTask] = {}
     # tool_use blocks whose result has not been journaled yet (popped on the ack, so
     # this holds only the in-flight calls of the current turn, never the whole file).
-    pending: dict[str, tuple[str, dict]] = {}
+    pending: dict[str, tuple[str, dict, str | None]] = {}
     by_task: dict[str, set[str]] = {}   # CLI task-id → tool-use ids dispatched under it
     terminated: set[str] = set()
     try:
@@ -216,6 +220,7 @@ def scan_open_background_tasks(
                 continue
             if o.get("type") == "assistant":
                 content = (o.get("message") or {}).get("content")
+                ts = o.get("timestamp") if isinstance(o.get("timestamp"), str) else None
                 if isinstance(content, list):
                     for b in content:
                         if not isinstance(b, dict) or b.get("type") != "tool_use":
@@ -226,9 +231,9 @@ def scan_open_background_tasks(
                         if not tid:
                             continue
                         if _is_background_launch(name, inp):
-                            launches[tid] = _launch(tid, name, inp)
+                            launches[tid] = _launch(tid, name, inp, ts)
                         else:
-                            pending[tid] = (name, inp)
+                            pending[tid] = (name, inp, ts)
             elif o.get("type") == "user":
                 task_id = _background_ack_task_id(o)
                 for tid, is_error in _tool_result_ids(o):
@@ -254,7 +259,7 @@ def scan_open_background_tasks(
                     if task_id is None:
                         continue
                     if tid not in launches and call is not None:
-                        launches[tid] = _launch(tid, *call)
+                        launches[tid] = _launch(tid, call[0], call[1], call[2])
                     if task_id and tid in launches:
                         by_task.setdefault(task_id, set()).add(tid)
             # Terminations: any entry whose content carries a task-notification with a
@@ -334,8 +339,15 @@ def _parse_ts(s) -> datetime | None:
         return None
 
 
-def scan_pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> bool:
-    """True iff the agent is parked on a self-scheduled wakeup it hasn't acted on yet.
+@dataclass
+class PendingWakeup:
+    """An armed ``ScheduleWakeup``. ``fire_at`` is None when the arming entry carried no
+    parseable timestamp — still armed, just untimed."""
+    fire_at: datetime | None
+
+
+def pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> PendingWakeup | None:
+    """The armed ``ScheduleWakeup`` the agent is parked on, or None when nothing is pending.
 
     A ``ScheduleWakeup`` tool call arms exactly one future re-invocation; when it fires,
     a new ``user`` turn begins (in ``/loop`` dynamic mode an ``isMeta`` re-injection).
@@ -371,13 +383,40 @@ def scan_pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> bool
             if d is not None:
                 armed_at, delay = _parse_ts(o.get("timestamp")), d   # current turn armed one
     if delay is None:
-        return False
+        return None
     # Armed. If we can time it and its fire moment is well past, the daemon missed it.
-    if armed_at is not None:
-        now = now or datetime.now(timezone.utc)
-        if now > armed_at + timedelta(seconds=delay + _WAKEUP_GRACE_SEC):
-            return False
-    return True
+    if armed_at is None:
+        return PendingWakeup(fire_at=None)
+    fire_at = armed_at + timedelta(seconds=delay)
+    now = now or datetime.now(timezone.utc)
+    if now > fire_at + timedelta(seconds=_WAKEUP_GRACE_SEC):
+        return None
+    return PendingWakeup(fire_at=fire_at)
+
+
+def scan_pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> bool:
+    """True iff the agent is parked on a self-scheduled wakeup — see ``pending_wakeup``."""
+    return pending_wakeup(jsonl_path, now=now) is not None
+
+
+EMPTY_BACKGROUND_WORK: dict = {"items": [], "wakeup": False, "wakeupAt": None}
+
+
+def background_work_snapshot(tasks: list[OpenBgTask], wakeup: PendingWakeup | None) -> dict:
+    """The browser's view of a session's open background work (#2635): the shells /
+    Monitors / Codex terminals behind "Waiting…", plus the armed wakeup. Background
+    AGENTS are excluded — the sub-agent surface already shows them. Mirrors
+    ``BackgroundWork`` in web/src/api/types.ts."""
+    items = []
+    for t in tasks:
+        if t.kind == "agent":
+            continue
+        cmd = t.input.get("command") if isinstance(t.input, dict) else None
+        items.append({"toolUseId": t.tool_use_id, "kind": t.kind, "name": t.name,
+                      "description": t.description or (cmd if isinstance(cmd, str) else ""),
+                      "startedAt": t.started_at})
+    return {"items": items, "wakeup": wakeup is not None,
+            "wakeupAt": wakeup.fire_at.isoformat() if wakeup and wakeup.fire_at else None}
 
 
 def is_parked(jsonl_path: str | None) -> bool:

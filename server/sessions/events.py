@@ -186,6 +186,29 @@ class SubAgentEnded:
                                "totalTokens": self.total_tokens, "toolUses": self.tool_uses,
                                "durationMs": self.duration_ms, "ts": self.ts}
 
+# ── Background task lifecycle (#2635) ──
+# A backgrounded Bash shell / Monitor (`local_bash`) or Workflow (`local_workflow`) task,
+# keyed by the launching call's tool-use id — the key the web reducer's
+# `state.backgroundTasks` and the snapshot's `items[].toolUseId` share. Sourced from the
+# CLI's system/task_* notices (translator.py), never from the transcript.
+
+@dataclass
+class BackgroundTaskStarted:
+    tool_use_id: str; task_id: str; description: str; task_type: str
+    backgrounded: bool = True
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "backgroundTaskStarted", "toolUseId": self.tool_use_id,
+                               "taskId": self.task_id, "description": self.description,
+                               "taskType": self.task_type, "backgrounded": self.backgrounded,
+                               "ts": self.ts}
+
+@dataclass
+class BackgroundTaskEnded:
+    tool_use_id: str; task_id: str; status: str   # "completed" | "failed" | "stopped"
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "backgroundTaskEnded", "toolUseId": self.tool_use_id,
+                               "taskId": self.task_id, "status": self.status, "ts": self.ts}
+
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from server.api.sessions import _record_to_dict
 from server.app import create_app
 from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS
+from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
 from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -118,6 +119,26 @@ def test_record_to_dict_queue_stall_reason_none_by_default():
     assert d.get("queueStallReason") is None
 
 
+_SNAPSHOT = {
+    "items": [{"toolUseId": "tu1", "kind": "task", "name": "Bash",
+               "description": "pytest -q", "startedAt": None}],
+    "wakeup": True,
+    "wakeupAt": None,
+}
+
+
+def test_record_to_dict_ended_session_serves_empty_background_work():
+    rec = _make_record("e1", status="ended")
+    rec.background_work = _SNAPSHOT
+    assert _record_to_dict(rec)["backgroundWork"] == EMPTY_BACKGROUND_WORK
+
+
+def test_record_to_dict_waiting_external_keeps_background_work_snapshot():
+    rec = _make_record("w1", status="waiting_external")
+    rec.background_work = _SNAPSHOT
+    assert _record_to_dict(rec)["backgroundWork"] == _SNAPSHOT
+
+
 # ---------------------------------------------------------------------------
 # Integration: GET /api/sessions
 # ---------------------------------------------------------------------------
@@ -203,7 +224,7 @@ def test_response_is_backward_compatible():
         expected_types = {
             "id": str, "name": str, "accountName": str, "status": str,
             "nameIsAuto": bool, "detached": bool, "adoptedInPlace": bool,
-            "subAgents": list, "accountPinned": bool, "latestSuggestions": list,
+            "subAgents": list, "backgroundWork": dict, "accountPinned": bool, "latestSuggestions": list,
             "prs": list, "usageUnverified": bool, "interruptedByRestart": bool,
             "summary": str,
         }

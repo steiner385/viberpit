@@ -1,7 +1,8 @@
 /**
  * Derived views over transcript state for the session status strip.
  */
-import type { Turn, SubThread, SubThreadTaskStatus, TranscriptState } from './reducer'
+import type { Block, Turn, SubThread, SubThreadTaskStatus, TranscriptState, BackgroundTaskState, BackgroundTaskStatus } from './reducer'
+import type { BackgroundWork } from '@/api/types'
 
 // ── Visible transcript (double-buffer during replay) ──────────────────────────
 //
@@ -105,6 +106,82 @@ export function selectSubAgents(turns: Turn[], threads: Record<string, SubThread
  */
 export function selectRunningSubAgentCount(turns: Turn[], threads?: Record<string, SubThread>): number {
   return selectSubAgents(turns, threads).filter((a) => a.status === 'running').length
+}
+
+// ── Background work (#2635) ───────────────────────────────────────────────────
+
+export type BackgroundWorkKind = 'shell' | 'monitor' | 'terminal' | 'workflow' | 'task'
+export interface BackgroundWorkRow {
+  toolUseId: string
+  kind: BackgroundWorkKind
+  description: string
+  status: BackgroundTaskStatus
+  startedAt?: number
+  endedAt?: number
+  /** True when the CLI's live task notices back this row — Stop can act on it. */
+  live: boolean
+}
+export interface BackgroundWorkView { rows: BackgroundWorkRow[]; wakeup: boolean; wakeupAt: number | null }
+export const EMPTY_BACKGROUND_WORK_VIEW: BackgroundWorkView = { rows: [], wakeup: false, wakeupAt: null }
+
+type ToolBlock = Extract<Block, { kind: 'tool' }>
+
+function bgKind(toolName: string | undefined, taskType: string | undefined, snapshotKind: string | undefined): BackgroundWorkKind {
+  if (toolName === 'Monitor' || snapshotKind === 'monitor') return 'monitor'
+  if (snapshotKind === 'terminal') return 'terminal'
+  if (taskType === 'local_workflow') return 'workflow'
+  if (toolName === 'Bash' || taskType === 'local_bash') return 'shell'
+  return 'task'
+}
+function bgDescription(b: ToolBlock | undefined): string {
+  const i = (b?.input ?? {}) as { description?: unknown; command?: unknown }
+  if (typeof i.description === 'string' && i.description) return i.description
+  return typeof i.command === 'string' ? i.command : ''
+}
+function launchedInBackground(l: BackgroundTaskState, b: ToolBlock | undefined): boolean {
+  return l.backgrounded || b?.name === 'Monitor' || (b?.input as { run_in_background?: unknown } | undefined)?.run_in_background === true
+}
+
+/**
+ * Merge the server's resting snapshot (`Session.backgroundWork`) with the live task
+ * state (`state.backgroundTasks`), the way selectSubAgents merges turns + threads:
+ * snapshot items are running unless the stream saw them end; live entries not in the
+ * snapshot show only when launched in the background (a foreground Bash is also a
+ * `local_bash` task and must never appear here).
+ */
+export function selectBackgroundWork(turns: Turn[], live: Record<string, BackgroundTaskState>, snapshot?: BackgroundWork | null): BackgroundWorkView {
+  const blocks = new Map<string, ToolBlock>()
+  for (const t of turns) for (const b of t.blocks) if (b.kind === 'tool') blocks.set(b.toolId, b)
+  const rows = new Map<string, BackgroundWorkRow>()
+  const snapshotIds = new Set<string>()
+  for (const item of snapshot?.items ?? []) {
+    snapshotIds.add(item.toolUseId)
+    const l = live[item.toolUseId]
+    if (l && l.status !== 'running') continue // the stream saw it end
+    const b = blocks.get(item.toolUseId)
+    const parsed = item.startedAt ? Date.parse(item.startedAt) : NaN
+    const started = l?.startedAt ?? b?.ts ?? (Number.isFinite(parsed) ? parsed : undefined)
+    rows.set(item.toolUseId, {
+      toolUseId: item.toolUseId, kind: bgKind(b?.name ?? item.name, l?.taskType, item.kind),
+      description: item.description || bgDescription(b), status: 'running',
+      ...(started != null && { startedAt: started }), live: l != null,
+    })
+  }
+  for (const [toolUseId, l] of Object.entries(live)) {
+    if (snapshotIds.has(toolUseId)) continue
+    const b = blocks.get(toolUseId)
+    if (!launchedInBackground(l, b)) continue
+    rows.set(toolUseId, {
+      toolUseId, kind: bgKind(b?.name, l.taskType, undefined), description: l.description || bgDescription(b),
+      status: l.status, ...((l.startedAt ?? b?.ts) != null && { startedAt: (l.startedAt ?? b?.ts) as number }), ...(l.endedAt != null && { endedAt: l.endedAt }), live: true,
+    })
+  }
+  const parsedWake = snapshot?.wakeupAt ? Date.parse(snapshot.wakeupAt) : NaN
+  return {
+    rows: [...rows.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
+    wakeup: snapshot?.wakeup ?? false,
+    wakeupAt: Number.isFinite(parsedWake) ? parsedWake : null,
+  }
 }
 
 // ── Sub-agent tree (for the dashboard session-list drill-down) ────────────────

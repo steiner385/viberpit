@@ -12,7 +12,7 @@ describe('SESSION_EVENT_TYPES', () => {
     expect(SESSION_EVENT_TYPES.has('contextUsage')).toBe(true)
   })
 
-  it.each(['notice', 'subAgentStarted', 'subAgentProgress', 'subAgentEnded'])(
+  it.each(['notice', 'subAgentStarted', 'subAgentProgress', 'subAgentEnded', 'backgroundTaskStarted', 'backgroundTaskEnded'])(
     'includes %s so a top-level frame is not dropped',
     (type) => {
       expect(SESSION_EVENT_TYPES.has(type)).toBe(true)

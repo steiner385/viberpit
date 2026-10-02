@@ -283,7 +283,8 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None,
-                 assistant_api=None, on_sub_agents_changed=None, before_execution=None,
+                 assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
+                 before_execution=None,
                  automation_execution_id=None, after_execution_close=None):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
@@ -335,6 +336,7 @@ class ClaudeAgentDriver:
         # status change, and a card stays "no agents" for a whole turn that spawned
         # four (seen 2026-09-12: header chip said 4 agents, card showed none).
         self._on_sub_agents_changed = on_sub_agents_changed
+        self._on_background_work_changed = on_background_work_changed
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -1476,6 +1478,22 @@ class ClaudeAgentDriver:
                     except Exception:  # noqa: BLE001 - a summary refresh must never break the pump
                         log.debug("driver.on_sub_agents_changed failed session=%s",
                                   self.session_id, exc_info=True)
+            if isinstance(e, (ev.BackgroundTaskStarted, ev.BackgroundTaskEnded)):
+                # A foreground Bash is a local_bash task too; only backgrounded work is a
+                # snapshot change, so only it registers and fires the refresh.
+                changed = False
+                if isinstance(e, ev.BackgroundTaskStarted):
+                    if e.backgrounded:
+                        self._subagent_tasks[e.tool_use_id] = e.task_id
+                        changed = True
+                else:
+                    changed = self._subagent_tasks.pop(e.tool_use_id, None) is not None
+                if changed and self._on_background_work_changed is not None:
+                    try:
+                        self._on_background_work_changed(self.session_id)
+                    except Exception:  # noqa: BLE001 - a snapshot refresh must never break the pump
+                        log.debug("driver.on_background_work_changed failed session=%s",
+                                  self.session_id, exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -1963,7 +1981,8 @@ class ClaudeAgentDriver:
         return None
 
     async def stop_subagent(self, tool_use_id: str) -> str | None:
-        """Stop ONE running Task sub-agent via the SDK's stop_task control request.
+        """Stop ONE running task — a Task sub-agent or a backgrounded shell/Monitor (#2635) —
+        via the SDK's stop_task control request.
         Returns the task id it stopped, or None when the sub-agent is not running
         (unknown id, already ended, or no live client). The map entry is NOT dropped
         here: it is dropped by `_handle_msg` on ANY SubAgentEnded — in the kill
@@ -2266,6 +2285,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
             on_sub_agents_changed=config.on_sub_agents_changed,
+            on_background_work_changed=config.on_background_work_changed,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,
