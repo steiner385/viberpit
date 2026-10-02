@@ -886,3 +886,30 @@ test('user block carries ts', () => {
   const s = transcriptReducer(initialTranscript, { type: 'user', turnId: 'u1', text: 'hi', ts: 42 })
   expect(s.turns[0].blocks[0].ts).toBe(42)
 })
+
+// ── Prose beside a hidden hand_back call (2026-10-02, session 6ab5c602) ───────
+//
+// The server never emits a toolCall for a top-level hand_back, so the reducer sees
+// [thinkingDelta, textDelta] for the message that made the call, then the tool
+// result, then the closing textDelta. Both texts must land as their own text
+// blocks — never folded into the Thinking row, never replaced by the later one.
+
+describe('transcriptReducer — prose around a hand_back', () => {
+  it('keeps the options text beside the thinking row and the closing text after the result', () => {
+    const options = 'Everything shipped. Options:\n1. **Update graphy**\n2. **Verify**'
+    const closing = "I've handed the session back with the options above."
+    const s = reduce([
+      { type: 'turnStart',     turnId: 't1' },
+      { type: 'thinkingDelta', turnId: 't1', text: 'weigh the options' },
+      { type: 'textDelta',     turnId: 't1', text: options },
+      { type: 'toolResult',    toolId: 'toolu_hb', ok: true, payload: { content: [] } },
+      { type: 'textDelta',     turnId: 't1', text: closing },
+      { type: 'turnEnd',       turnId: 't1' },
+    ])
+    const blocks = s.turns[0].blocks
+    const texts = blocks.filter((b) => b.kind === 'text').map((b) => (b.kind === 'text' ? b.text : ''))
+    expect(texts).toEqual([options, closing])
+    const thinking = blocks.filter((b) => b.kind === 'thinking').map((b) => (b.kind === 'thinking' ? b.text : ''))
+    expect(thinking).toEqual(['weigh the options'])
+  })
+})

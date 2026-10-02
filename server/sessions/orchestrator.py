@@ -1835,7 +1835,11 @@ class SessionOrchestrator:
                                 and get_settings().child_sessions_enabled),
             dispatch_child=functools.partial(self.dispatch_child_session, session_id,
                                              identity=identity),
-            children=lambda: self.children_of(session_id))
+            children=lambda: self.children_of(session_id),
+            # What the user will actually see for a hand-back: the prose of the
+            # message that carried the call, read off the live driver (lazily — the
+            # driver is built after this overlay). None when there is none to ask.
+            signal_prose=functools.partial(self._signal_message_prose, session_id))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -1844,6 +1848,16 @@ class SessionOrchestrator:
         from server.sessions.tools.server import build_session_server
         self.register_overlay(
             session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
+        """The prose of the top-level message that carried this turn's ``stem`` call,
+        from the live driver; None when no driver (or engine) can answer. Bound into
+        the session tool context so `hand_back` can tell the session what reached
+        the user (spec: hand-back visibility, 2026-10-02)."""
+        probe = getattr(self._drivers.get(session_id), "signal_message_prose", None)
+        if not callable(probe):
+            return None
+        return await probe(stem)
 
     async def _setup_overlay_for_kind(self, session_id: str, *, kind: str | None, identity: str,
                                       model: str | None,
@@ -14920,6 +14934,14 @@ class SessionOrchestrator:
             command_catalog=getattr(row, "command_catalog", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
+            # The hand-back ask and the judge's verdict on it. Both only mean
+            # anything beside status == handed_back, a resting status that survives
+            # a restart — so they must survive with it. Dropped here until
+            # 2026-10-02: after a deploy every handed-back card and banner on the
+            # host read "the session stopped and is waiting on you" while the row
+            # still held the session's own sentence (session 6ab5c602).
+            hand_back_reason=getattr(row, "hand_back_reason", None),
+            suspected_complete_reason=getattr(row, "suspected_complete_reason", None),
             host=getattr(row, "host", None),
             display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),

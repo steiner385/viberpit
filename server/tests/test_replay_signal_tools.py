@@ -75,3 +75,37 @@ def test_replay_and_the_live_translator_share_one_signal_name_set():
     from server.sessions.tools.registry import TURN_SIGNAL_NAMES
     assert replay.TURN_SIGNAL_NAMES is TURN_SIGNAL_NAMES
     assert translator.TURN_SIGNAL_NAMES is TURN_SIGNAL_NAMES
+
+
+def test_replay_keeps_the_prose_beside_a_hand_back_call(tmp_path):
+    """The CLI writes one JSONL entry per content block of a message (same
+    message id, apiBlockIndex 0..n). Replaying [thinking, text, hand_back] that way,
+    then the tool result and the closing prose, must yield BOTH texts and no card —
+    what a reload of session 6ab5c602 would have shown had the text existed."""
+    hb = "mcp__viberpit__hand_back"
+    options = "Everything shipped. Options:\n1. **Update graphy**\n2. **Verify**"
+    closing = "I've handed the session back with the options above."
+
+    def entry(uuid, parent, content, role="assistant", ts="2026-10-02T08:53:42.768Z"):
+        msg = {"role": role, "content": content}
+        if role == "assistant":
+            msg.update(id="msg_1", model="claude-fable-5-1")
+        return json.dumps({"type": role, "uuid": uuid, "parentUuid": parent,
+                           "timestamp": ts, "message": msg})
+
+    lines = [
+        entry("u0", None, "what should we do next?", role="user"),
+        entry("a1", "u0", [{"type": "thinking", "thinking": "weigh", "signature": "s"}]),
+        entry("a2", "a1", [{"type": "text", "text": options}]),
+        entry("a3", "a2", [{"type": "tool_use", "id": "toolu_hb", "name": hb,
+                            "input": {"reason": "Pick the next piece"}}]),
+        entry("u1", "a3", [{"type": "tool_result", "tool_use_id": "toolu_hb",
+                            "content": [{"type": "text", "text": "{}"}]}], role="user"),
+        entry("a4", "u1", [{"type": "text", "text": closing}]),
+    ]
+    p = tmp_path / "s.jsonl"
+    p.write_text("\n".join(lines) + "\n")
+    out = _parse(str(p), max_turns=20)
+    assert [e.text for e in out if isinstance(e, ev.TextDelta)] == [options, closing]
+    assert [e.text for e in out if isinstance(e, ev.ThinkingDelta)] == ["weigh"]
+    assert not any(isinstance(e, ev.ToolCall) for e in out)

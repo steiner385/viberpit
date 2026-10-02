@@ -33,6 +33,12 @@ class SessionToolContext:
     dispatch_child: Callable[..., Awaitable[Any]] | None = None
     #: Live accessor for this session's children (records), read by `session_context`.
     children: Callable[[], list[Any]] | None = None
+    #: ``signal_prose(stem) -> str | None``: the prose of the top-level message that
+    #: carried this turn's ``stem`` signal call (``"hand_back"``), once the driver has
+    #: read it; None when unknowable (no driver, the call never arrived). Read by
+    #: `hand_back` so its acknowledgement says what the user actually sees — thinking
+    #: is invisible, and a session cannot tell otherwise.
+    signal_prose: Callable[[str], Awaitable[str | None]] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:

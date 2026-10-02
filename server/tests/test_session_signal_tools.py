@@ -280,3 +280,68 @@ def test_hand_back_schema_requires_reason():
     tool = next(t for t in build_session_tools(_ctx(signalling_tools=True)) if t.name == "hand_back")
     assert tool.input_schema["required"] == ["reason"]
     assert tool.input_schema["properties"]["reason"]["type"] == "string"
+
+
+# ---- hand_back tells the session what the user will actually see -------------------
+#
+# Prod 2026-10-02 (session 6ab5c602): the session wrote five options INSIDE its
+# thinking, called hand_back with a one-sentence reason, got `{"acknowledged": true}`
+# back, and closed with "the five options above". The user saw a Thinking row and no
+# options. Nothing in the loop could have told the session that thinking is invisible
+# — so the acknowledgement now says what reached the user.
+
+async def _call_with_prose(prose, args=None):
+    async def signal_prose(stem: str):
+        assert stem == "hand_back"
+        return prose
+    ctx = _ctx(signalling_tools=True, signal_prose=signal_prose)
+    return _payload(await _call(ctx, "hand_back", args or {"reason": "Pick one of the options"}))
+
+
+@pytest.mark.asyncio
+async def test_hand_back_warns_when_no_prose_preceded_it_in_its_message():
+    data = await _call_with_prose("")
+    assert data["acknowledged"] is True and data["reason"] == "Pick one of the options"
+    seen = data["userSees"]
+    assert seen["proseChars"] == 0
+    note = seen["note"].lower()
+    assert "only" in note and "`reason`" in note
+    assert "thinking is never shown" in note
+    assert "write them out" in note
+
+
+@pytest.mark.asyncio
+async def test_hand_back_reports_the_prose_the_user_sees_beside_the_reason():
+    data = await _call_with_prose("Everything shipped. Options:\n1. **Update graphy**\n2. **Verify**")
+    seen = data["userSees"]
+    assert seen["proseChars"] == len("Everything shipped. Options:\n1. **Update graphy**\n2. **Verify**")
+    assert "thinking is never shown" in seen["note"].lower()
+    assert "write them out" not in seen["note"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hand_back_stays_a_bare_acknowledgement_when_the_prose_is_unknowable():
+    """No probe bound (Codex surface, a test double) or the translator never saw the
+    call: the harness must not GUESS that nothing was shown — a false "write it out"
+    would make every hand-back repeat itself."""
+    data = await _call_with_prose(None)
+    assert "userSees" not in data
+    bare = _payload(await _call(_ctx(signalling_tools=True), "hand_back", {"reason": "x"}))
+    assert bare == {"acknowledged": True, "reason": "x"}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_prose_probe_never_fails_the_hand_back():
+    async def boom(stem: str):
+        raise RuntimeError("driver gone")
+    ctx = _ctx(signalling_tools=True, signal_prose=boom)
+    result = await _call(ctx, "hand_back", {"reason": "still a hand-back"})
+    assert result.get("is_error") is not True
+    assert _payload(result) == {"acknowledged": True, "reason": "still a hand-back"}
+
+
+def test_hand_back_description_says_thinking_is_invisible_and_where_the_question_goes():
+    desc = next(t.description for t in build_session_tools(_ctx(signalling_tools=True))
+                if t.name == "hand_back").lower()
+    assert "thinking is never shown" in desc
+    assert "every option" in desc

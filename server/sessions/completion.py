@@ -329,6 +329,34 @@ def parse_hand_back(args: dict | None) -> dict:
     return {"reason": reason.strip()[:HAND_BACK_REASON_MAX]}
 
 
+#: What a hand-back shows the user, told back to the session in the tool result.
+#: The banner carries `reason`; the transcript carries the message's prose; thinking
+#: is never rendered as anything but a collapsed "Thinking" row.
+_HAND_BACK_SEEN = ("The user sees `reason` in the hand-back banner and this message's "
+                   "prose in the transcript. Thinking is never shown to the user.")
+_HAND_BACK_UNSEEN = (
+    "No prose preceded this call in this message, so the user sees ONLY `reason` in "
+    "the hand-back banner plus whatever you write after this result. Thinking is never "
+    "shown to the user: if your question, or the options you want chosen among, were "
+    "only in thinking, write them out in full now.")
+
+
+def hand_back_visibility(prose: str | None) -> dict | None:
+    """The ``userSees`` block of a ``hand_back`` acknowledgement, or None.
+
+    *prose* is the text of the message that carried the call (``Translator
+    .message_prose``), None when the harness could not read it — then there is no
+    block at all, because a guessed "nothing was shown" would make every hand-back
+    repeat itself. Prod 2026-10-02 (session 6ab5c602): five options written inside
+    thinking, a one-sentence reason, and a closing "the five options above" — the
+    session had no way to learn that only the sentence had reached the user.
+    """
+    if prose is None:
+        return None
+    n = len(prose.strip())
+    return {"proseChars": n, "note": _HAND_BACK_SEEN if n else _HAND_BACK_UNSEEN}
+
+
 #: Negated need-phrases in a hand-back reason ("no action needed", "nothing further
 #: needed from you", "not required") are the SIGNATURE of a status-only hand-back, so
 #: they are removed before the ask scan below can trip on the "need" inside them.

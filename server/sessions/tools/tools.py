@@ -17,8 +17,8 @@ from server.obs.metrics import session_tool_calls_total
 from server.sessions.artifacts import ARTIFACT_KINDS, parse_share_artifact, read_image
 from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import (FINISHED_STATE_CLAUSE, NO_PR_RESOLUTIONS,
-                                        STATUS_ONLY_CLAUSE, parse_hand_back,
-                                        parse_mark_no_pr)
+                                        STATUS_ONLY_CLAUSE, hand_back_visibility,
+                                        parse_hand_back, parse_mark_no_pr)
 from server.sessions.permissions import MODE_WIDTH
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
@@ -176,7 +176,11 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "Hand this session back to the user because you need something from them "
                "before the objective can be finished: a decision, a review, an approval, or "
                "information you do not have. reason: one sentence naming exactly what you "
-               "need. "
+               "need. The user sees `reason` in the hand-back banner and the prose of "
+               "this message in the transcript; thinking is never shown to them. Put the "
+               "question itself — every option you want chosen among — in prose in the "
+               "same message, before this call; the result tells you what reached the "
+               "user. "
                + _THREE_WAYS +
                "Ending your message with a question and calling nothing is NOT a hand-back: "
                "the session reads as calmly idle and nobody is alerted. "
@@ -188,7 +192,21 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                 "required": ["reason"]})
     @guarded
     async def hand_back(args: dict[str, Any]) -> Any:
-        return {"acknowledged": True, **parse_hand_back(args)}
+        data: dict[str, Any] = {"acknowledged": True, **parse_hand_back(args)}
+        # What actually reached the user, read off the live driver. Best-effort: the
+        # hand-back itself is the Translator's to record from the tool-use block, so
+        # a probe failure must never turn the call into an error.
+        prose: str | None = None
+        if ctx.signal_prose is not None:
+            try:
+                prose = await ctx.signal_prose("hand_back")
+            except Exception:  # noqa: BLE001 - a visibility probe must never fail a hand-back
+                log.warning("hand_back: prose probe failed session=%s", ctx.session_id,
+                            exc_info=True)
+        seen = hand_back_visibility(prose)
+        if seen is not None:
+            data["userSees"] = seen
+        return data
 
     @spec_tool("request_model",
                "Ask to run on a different model tier, when the work has turned out "

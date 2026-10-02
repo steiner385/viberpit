@@ -117,3 +117,35 @@ def test_rehydrate_is_idempotent(tmp_path):
 
     first, second, count = asyncio.run(run())
     assert (first, second, count) == (1, 0, 1)
+
+
+def test_rehydrate_keeps_the_hand_back_ask_and_its_suspected_complete_verdict(tmp_path):
+    """Prod 2026-10-02 (session 6ab5c602 on rocky): a deploy restarted the daemon while
+    the session sat at `handed_back`. The row still held the reason the session gave
+    `hand_back(reason)`, but the rebuilt in-memory record did not — `_record_from_row`
+    never mapped the column — so the edge serializer (which reads the record, not the
+    row) sent `handBackReason: null` and both the card and the banner fell back to
+    "the session stopped and is waiting on you". The reason named four of the five
+    options the user was then told were "above". Same for the judge's verdict beside
+    it: both columns only mean anything with status == handed_back, which survives a
+    restart (it is a resting status), so both must survive with it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed([
+            dict(id="hb", name="Plan", account_name="acct1", engine_session_id="claude-hb",
+                 status="handed_back", cwd="/repo/hb",
+                 hand_back_reason="Pick the next piece of work: A, B, C or D.",
+                 suspected_complete_reason="PR #239 merged; nothing left to do"),
+        ])
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        return orch.record("hb")
+
+    rec = asyncio.run(run())
+    assert rec.status == "handed_back"
+    assert rec.hand_back_reason == "Pick the next piece of work: A, B, C or D."
+    assert rec.suspected_complete_reason == "PR #239 merged; nothing left to do"
+    # The daemon→edge RPC copy is what a remote host's card is drawn from.
+    assert rec.to_dict()["handBackReason"] == "Pick the next piece of work: A, B, C or D."
