@@ -48,7 +48,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterator, Mapping
 
-from . import paths
+from . import fleet_role, paths
 from .account_names import aliases_store_root
 
 log = logging.getLogger(__name__)
@@ -156,10 +156,11 @@ def _iso(dt: datetime | None) -> str | None:
 def is_manifest_writer() -> bool:
     """True on the host that owns ``accounts.json``.
 
-    Reuses the existing per-host role switch (``VIBERPIT_DAEMON_ROLE``, default
-    ``primary``) rather than inventing a second notion of "am I dobby?".
+    Reuses the existing per-host role switch (``VIBERPIT_DAEMON_ROLE``, read in
+    one place by ``viberpit.fleet_role``) rather than inventing a second notion of
+    "am I dobby?".
     """
-    return os.environ.get("VIBERPIT_DAEMON_ROLE", "primary").strip().lower() != "worker"
+    return not fleet_role.is_worker()
 
 
 @dataclass(frozen=True)

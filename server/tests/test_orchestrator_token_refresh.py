@@ -42,6 +42,23 @@ async def test_refresh_idle_tokens_enumerates_accounts_off_event_loop():
 
 
 @pytest.mark.asyncio
+async def test_worker_never_sweeps_idle_tokens(monkeypatch):
+    """#2625: the primary is the fleet's only refresher. A worker's sweep does not
+    even enumerate accounts — the real role gate (env → fleet_role → accounts) is
+    exercised, not a patched predicate."""
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    orch = _orch()
+    orch.has_live_session = lambda name: False
+    from viberpit import accounts as real_accounts
+    with mock.patch.object(real_accounts, "list_accounts",
+                           return_value=[{"name": "idle", "status": "ok"}]) as la, \
+            mock.patch.object(real_accounts, "acquire_valid_token") as avt:
+        await orch._refresh_idle_tokens_once()
+    la.assert_not_called()
+    avt.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_refresh_idle_tokens_handles_account_enumeration_failure():
     orch = _orch()
     with mock.patch(_ACCOUNTS_TARGET) as ca:

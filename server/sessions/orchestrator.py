@@ -54,7 +54,9 @@ from viberpit import accounts as ccswitch_accounts
 from viberpit import brand
 from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from viberpit.accounts import (
+    RefreshDeferred,
     eligible_enabled_accounts as _eligible_enabled_accounts,
+    is_refresh_authority,
     provider_or_none as _provider_of,
 )
 from viberpit.account_names import (
@@ -62,6 +64,7 @@ from viberpit.account_names import (
 )
 from viberpit.config import load_config
 from viberpit.configdir import compose
+from viberpit.fleet_role import daemon_role
 from viberpit.paths import account_cfg_dir, shared_base
 from viberpit.quota import QuotaSnapshot
 from viberpit.selector import at_ceiling, exhausted, usage_known
@@ -707,22 +710,9 @@ def _limiting_window(usage, ceiling: float, model: str | None = None):
     return over[0] if over else usage.binding_window(model)
 
 
-def daemon_role() -> str:
-    """Return this daemon's role from ``VIBERPIT_DAEMON_ROLE``.
-
-    ``primary`` (the default) runs every background loop and owns fleet-global
-    automation; ``worker`` serves dispatched sessions only (#840). Any other
-    value raises: silently falling back to ``primary`` would double-drive the
-    fleet on a typo, and silently becoming ``worker`` would quietly stop every
-    automation — both are worse than a loud failed boot.
-    """
-    role = os.environ.get("VIBERPIT_DAEMON_ROLE", "primary").strip().lower()
-    if role not in ("primary", "worker"):
-        raise ValueError(
-            f"VIBERPIT_DAEMON_ROLE={role!r} — expected 'primary' or 'worker'"
-        )
-    return role
-
+# ``daemon_role`` is imported from ``viberpit.fleet_role`` (the one reader of
+# ``VIBERPIT_DAEMON_ROLE``) and kept in this namespace: the loop gates below call
+# it by name and tests pin a role by patching ``orchestrator.daemon_role``.
 
 # Loop-task attributes that ONLY a primary daemon starts (#919). A worker "serves
 # dispatched sessions only" (#840); if it also drove these fleet-global automation
@@ -1027,21 +1017,23 @@ class SessionOrchestrator:
         # calls sync_back first and returns None on an expired-but-owned token
         # (the SDK will refresh on its next request).
         #
-        # A WORKER daemon never refreshes at all (#852): the shared refresh-token
-        # files admit exactly one refresher (the primary's poller / token-refresh
-        # monitor — two race the token family), but the rotation monitor and
-        # _account_is_dead/_account_limited read THIS process's poller cache, so
-        # a worker with no poll signal loses proactive ceiling rotation and its
-        # crash recovery can't tell a dead account from a healthy one. Read-only
-        # polling restores that signal without the refresh race.
+        # A WORKER daemon never refreshes at all (#852, #2625): the shared
+        # refresh-token files admit exactly one refresher (the primary's poller /
+        # token-refresh monitor — two race the token family), but the rotation
+        # monitor and _account_is_dead/_account_limited read THIS process's poller
+        # cache, so a worker with no poll signal loses proactive ceiling rotation
+        # and its crash recovery can't tell a dead account from a healthy one.
+        # Read-only polling restores that signal without the refresh race. The
+        # role half of that policy is not decided here: usage_for itself takes
+        # its read-only path on a worker (accounts.is_refresh_authority), so every
+        # caller in the process — not just this closure — is covered.
         if usage_fn is not None:
             _poller_usage_fn = usage_fn
         else:
             def _poller_usage_fn(name: str):
                 return ccswitch_accounts.usage_for(
                     name,
-                    allow_refresh=(daemon_role() != "worker"
-                                   and not self.has_live_session(name)),
+                    allow_refresh=not self.has_live_session(name),
                     path="poller-idle",
                 )
 
@@ -3103,7 +3095,13 @@ class SessionOrchestrator:
 
         Per-account errors are swallowed — status transitions stay owned by the
         usage_for path.
+
+        A WORKER does not sweep at all (#2625): the primary keeps every idle slot
+        fresh and a worker may not call the token endpoint (``is_refresh_authority``),
+        so a sweep here would only raise ``RefreshDeferred`` once per account.
         """
+        if not is_refresh_authority():
+            return
         try:
             accounts = await asyncio.to_thread(ccswitch_accounts.list_accounts)
         except Exception:
@@ -14409,7 +14407,7 @@ class SessionOrchestrator:
         from viberpit.oauth import AuthError
         try:
             await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, account)
-        except (AuthError, FileNotFoundError) as exc:
+        except (AuthError, FileNotFoundError, RefreshDeferred) as exc:
             log.debug("title gen — token refresh failed account=%s: %s", account, exc)
             try:
                 has_setup_token = bool(oauth_env_for(account))
@@ -14419,9 +14417,14 @@ class SessionOrchestrator:
             if not has_setup_token:
                 failed_until = self._title_auth_failed_until.get(account)
                 if failed_until is None or time.monotonic() >= failed_until:
-                    log.warning(
+                    # A deferred refresh (this is a worker, the primary rotates the
+                    # slot within its poll interval) is a routine wait, not a dead
+                    # credential — INFO, since a WARNING auto-files an issue.
+                    log.log(
+                        logging.INFO if isinstance(exc, RefreshDeferred)
+                        else logging.WARNING,
                         "title gen: giving up for account=%s — no valid OAuth token and no "
-                        "setup-token", account,
+                        "setup-token (%s)", account, exc,
                     )
                     self._title_auth_failed_until[account] = (
                         time.monotonic() + _TITLE_AUTH_WARN_BACKOFF_S
@@ -18234,8 +18237,9 @@ class SessionOrchestrator:
             from viberpit.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
-            except (AuthError, FileNotFoundError):
-                # Browser-OAuth refresh is dead. Fall back to the same setup-token auth
+            except (AuthError, FileNotFoundError, RefreshDeferred) as exc:
+                # Browser-OAuth refresh is dead (or, on a worker, deferred to the
+                # primary — #2625). Fall back to the same setup-token auth
                 # session launch uses (oauth_env_for is the single source of truth for
                 # model-auth env): a non-empty env means the account can still launch a
                 # session even though acquire_valid_token gave up — though the API may
@@ -18252,10 +18256,15 @@ class SessionOrchestrator:
                     self._suggest_auth_failed_until[rec.account] = (
                         time.monotonic() + _SUGGEST_AUTH_FAIL_BACKOFF_S
                     )
-                    log.warning(
+                    # Deferred-to-primary is a routine wait, not a dead credential:
+                    # INFO, because a WARNING auto-files an issue.
+                    log.log(
+                        logging.INFO if isinstance(exc, RefreshDeferred)
+                        else logging.WARNING,
                         "detached suggestions: giving up for account=%s (session=%s) — no "
-                        "valid OAuth token and no setup-token; not caching, retrying in %ss",
-                        rec.account, session_id, _SUGGEST_AUTH_FAIL_BACKOFF_S,
+                        "valid OAuth token and no setup-token (%s); not caching, retrying "
+                        "in %ss",
+                        rec.account, session_id, exc, _SUGGEST_AUTH_FAIL_BACKOFF_S,
                     )
                     return  # do NOT cache: this is "could not be made", not "no answer"
             events = await replay_events(path)
@@ -18377,7 +18386,7 @@ class SessionOrchestrator:
             from viberpit.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
-            except (AuthError, FileNotFoundError):
+            except (AuthError, FileNotFoundError, RefreshDeferred):
                 return []
             path = await self.resolve_transcript_path(session_id)
             if not path:
@@ -19696,9 +19705,15 @@ class SessionOrchestrator:
         """Heal a clobbered live .credentials.json. Force a token refresh FIRST so the
         relaunch picks up a fresh access token (the dominant in-session 401 cause — a stale
         stored token would otherwise 401 again immediately and falsely flip needs-reauth),
-        then recompose from the store and relaunch the same account in place."""
+        then recompose from the store and relaunch the same account in place.
+
+        On a WORKER the refresh is deferred to the primary (#2625): the relaunch
+        composes the slot as the primary last left it, and a token that is still
+        stale is the relaunched CLI's own to rotate."""
         try:
             await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, record.account)
+        except RefreshDeferred as exc:
+            log.info("recompose: relaunching without a refresh — %s", exc)
         except Exception:
             log.warning("recompose.ensure_valid_token failed account=%s",
                         record.account, exc_info=True)

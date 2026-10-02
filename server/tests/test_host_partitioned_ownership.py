@@ -10,9 +10,12 @@ A fleet daemon must only ACT on sessions it owns:
   per-row ownership via ``_owns_record`` so two daemons never race duplicate
   ``_rotate_away`` spawns over the same shared row, and so the primary never runs a
   cwd-bound Claude query for a directory that lives on another host;
-- a worker's usage poller never refreshes shared tokens (``allow_refresh=False``
-  unconditionally): the poll signal feeds its rotation monitor and
-  ``_account_is_dead`` without racing the primary over the refresh-token files.
+- a worker's usage poller never refreshes shared tokens: the poll signal feeds
+  its rotation monitor and ``_account_is_dead`` without racing the primary over
+  the refresh-token files. The role half of that gate lives in
+  ``viberpit.accounts.is_refresh_authority`` (#2625) so it covers every
+  ``usage_for`` caller in the process, not just the poller closure, which now
+  passes only the live-session answer.
 """
 import asyncio
 from types import SimpleNamespace
@@ -335,12 +338,29 @@ def _captured_usage_calls(monkeypatch):
 
 
 def test_worker_poller_never_refreshes_tokens(monkeypatch):
+    """End to end through the REAL usage_for: a worker's poll of an idle account
+    with an expired slot reaches neither the token endpoint nor needs-reauth
+    (#852, gate relocated into accounts.is_refresh_authority by #2625)."""
+    import time
+    from unittest import mock
+    from tests.helpers import temp_env
+    from viberpit import accounts, ledger, paths
+    from viberpit.creds import write_json_secure
+
     monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
-    calls = _captured_usage_calls(monkeypatch)
-    orch = _new_orch()
-    orch._poller._usage_fn("acct-idle")   # no live session either way
-    assert calls == [
-        {"name": "acct-idle", "allow_refresh": False, "path": "poller-idle"}]
+    with temp_env():
+        write_json_secure(paths.slot_path("acct-idle"), {
+            "accessToken": "stale", "refreshToken": "R0",
+            "expiresAt": int(time.time() * 1000) - 10_000, "subscriptionType": "max"})
+        write_json_secure(paths.shared_mcp_path(), {})
+        orch = _new_orch()
+        with mock.patch.object(accounts.oauth, "refresh_access_token",
+                               side_effect=AssertionError("worker refreshed")), \
+                mock.patch.object(accounts.oauth, "fetch_usage",
+                                  side_effect=AssertionError("fetched with an expired token")):
+            assert orch._poller._usage_fn("acct-idle") is None   # no live session either way
+        with ledger.locked_ledger() as led:
+            assert ledger.get_status(led, "acct-idle") != "needs-reauth"
 
 
 def test_primary_poller_keeps_refreshing_idle_accounts(monkeypatch):

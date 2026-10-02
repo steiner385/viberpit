@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import account_registry, brand, copilot, ledger, oauth, paths
+from . import account_registry, brand, copilot, fleet_role, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
@@ -116,6 +116,41 @@ def _refresh_guard(name: str):
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+class RefreshDeferred(Exception):
+    """This process may not refresh *account*'s token; the primary daemon will.
+
+    Raised by :func:`ensure_valid_token` on a fleet WORKER instead of calling the
+    Anthropic token endpoint. Deliberately NOT an :class:`oauth.AuthError`: the
+    grant is not known to be dead, the slot is merely stale until the primary's
+    idle-token sweep (one ``poll_interval``, 60 s by default) rotates it, so no
+    caller may flip the account to needs-reauth on it. A caller that needs a
+    token NOW falls back exactly as it does for a dead grant — the stored
+    setup-token (``oauth_env_for``) or a short back-off — and retries.
+    """
+
+    def __init__(self, account: str) -> None:
+        super().__init__(
+            f"{account}: token refresh is deferred to the primary daemon — this "
+            f"process is a fleet worker ({fleet_role.ROLE_ENV}=worker)")
+        self.account = account
+
+
+def is_refresh_authority() -> bool:
+    """True iff THIS process may call the Anthropic token endpoint for a Claude account.
+
+    Refresh tokens are single-use, and the ``flock`` in :func:`_refresh_guard` is
+    taken by the kernel of the host that opens the file: on a runner whose store
+    is an sshfs mount of the primary's it never reaches the primary (verified
+    against the live mount in both directions, #2625), so a refresh on each host
+    is unserialised against the other and the loser's ``invalid_grant`` falsely
+    flips the account to needs-reauth. Until the credential broker lands, exactly
+    one host — the primary — refreshes. A worker reads the slot the primary keeps
+    fresh and recovers a rotation its own live ``claude`` process made through
+    :func:`sync_back` (see :func:`acquire_valid_token`).
+    """
+    return not fleet_role.is_worker()
 
 
 def _anthropic_account_names() -> list[str]:
@@ -241,6 +276,8 @@ def ensure_valid_token(name: str) -> dict:
         # of letting a bare KeyError escape and crash the whole usage sweep.
         if not blob.get("refreshToken"):
             raise oauth.AuthError("credential slot has no refreshToken")
+        if not is_refresh_authority():
+            raise RefreshDeferred(name)
         new_blob = oauth.refresh_access_token(
             blob["refreshToken"], blob,
             max_retries=cfg.retry_max_retries, max_total_sec=cfg.retry_max_total_sec)
@@ -256,10 +293,14 @@ def acquire_valid_token(name: str) -> dict:
     into the slot; if that yields a fresh token we use it instead of flipping the
     account to needs-reauth. Idle accounts with no fresher copy re-raise, so the
     genuine-dead-token case still surfaces.
+
+    The same recovery serves a WORKER, where the refresh itself is deferred to the
+    primary (RefreshDeferred): the one token a worker can legitimately pick up is
+    the rotation its own live ``claude`` process wrote to the cfg dir.
     """
     try:
         return ensure_valid_token(name)
-    except oauth.AuthError:
+    except (oauth.AuthError, RefreshDeferred):
         sync_back(name)
         cfg = load_config()
         blob = read_credentials(paths.slot_path(name))
@@ -402,6 +443,10 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             the token is still expired after sync_back, returns None WITHOUT
             refreshing and WITHOUT marking needs-reauth (the live SDK owns the
             token family and will refresh on its next request).
+
+    On a fleet WORKER the read-only path is taken regardless of *allow_refresh*
+    (``is_refresh_authority``, #2625): the primary is the only refresher, so a
+    stale slot here is "not rotated yet", never "dead".
     """
     try:
         provider = provider_of(name)
@@ -450,15 +495,17 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             log.debug("usage_for(%s): fetch-failure cooldown active — skipping", name)
             return None
 
-    if not allow_refresh:
-        # Live-session path: sync_back first so we pick up the SDK's latest
+    if not allow_refresh or not is_refresh_authority():
+        # Read-only path: sync_back first so we pick up the SDK's latest
         # rotation, then attempt usage with whatever is in the slot.  If the
         # token is expired we return None without touching needs-reauth — the
-        # SDK process that owns the token will refresh it on its next request.
+        # process that owns the token (the live SDK, or the primary daemon when
+        # this is a worker) will refresh it.
         sync_back(name)
         blob = read_credentials(paths.slot_path(name))
         if not _is_fresh(blob, cfg):
-            log.debug("usage_for(%s): token expired, live session owns it — skipping", name)
+            log.debug("usage_for(%s): token expired, owned by %s — skipping", name,
+                      "a live session" if allow_refresh else "the refresh owner")
             return None
         try:
             u = oauth.fetch_usage(blob["accessToken"], **retry_kw)
