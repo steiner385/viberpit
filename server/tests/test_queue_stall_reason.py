@@ -203,7 +203,7 @@ def test_response_is_backward_compatible():
         expected_types = {
             "id": str, "name": str, "accountName": str, "status": str,
             "nameIsAuto": bool, "detached": bool, "adoptedInPlace": bool,
-            "subAgents": list, "accountPinned": bool, "latestSuggestions": list,
+            "subAgents": list, "backgroundWork": dict, "accountPinned": bool, "latestSuggestions": list,
             "prs": list, "usageUnverified": bool, "interruptedByRestart": bool,
             "summary": str,
         }

@@ -49,6 +49,7 @@ from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
+from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
@@ -265,6 +266,7 @@ def _record_to_dict(
         "detached": record.detached,
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
+        "backgroundWork": getattr(record, "background_work", None) or EMPTY_BACKGROUND_WORK,
         "createdAt": iso_utc(record.created_at),
         # Last-turn-response time for the "active … ago" label (NOT record.updated_at,
         # which any row write bumps — that pinned every card to "0s ago"). Fall back to

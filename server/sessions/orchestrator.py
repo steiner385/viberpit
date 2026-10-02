@@ -131,7 +131,9 @@ from server.sessions.selection import (  # noqa: F401
     AllAccountsBusy, Picked, has_alternative_account, select_account,
 )
 from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
-from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
+from server.sessions.background_tasks import (
+    EMPTY_BACKGROUND_WORK, OpenBgTask, background_work_snapshot, build_rearm_prompt,
+    scan_open_background_tasks)
 from server.sessions import child_sessions as _cs
 from server.obs.context import bind_session, log_event, PROC_EPOCH
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -2324,6 +2326,7 @@ class SessionOrchestrator:
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
+            on_background_work_changed=self._refresh_background_work,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -5501,9 +5504,13 @@ class SessionOrchestrator:
         # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
+        # The snapshot behind the "Background" chip (#2635): taken only at a finished
+        # turn (None when nothing is open), left untouched by every other status.
+        background_work: dict | None = None
         if completed_turn:
             from .completion import strip_markers
             if await self._session_is_parked(session_id):
+                background_work = await self._background_work_snapshot(session_id)
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
@@ -5591,6 +5598,8 @@ class SessionOrchestrator:
             # the previous one the moment the session moves on. A resumed session must
             # never keep showing what it wanted two turns ago.
             rec.hand_back_reason = hand_back_reason
+            if completed_turn:
+                rec.background_work = background_work
             # The suspected-complete overlay is a verdict ON a hand-back, so it lives
             # exactly as long as the hand-back it judged: every status write clears
             # it, and the judge re-derives it (off the pump, below) for the new one.
@@ -5603,6 +5612,8 @@ class SessionOrchestrator:
             # Mirrors the in-memory assignment above, and unconditional for the same
             # reason: the row must clear the old ask, not just gain a new one.
             values["hand_back_reason"] = hand_back_reason
+            if completed_turn:
+                values["background_work"] = background_work
             values["suspected_complete_reason"] = None
             if status in _STALLED_STATUSES:
                 if rec is not None:
@@ -14386,6 +14397,44 @@ class SessionOrchestrator:
         from server.sessions import compaction_stats
         await compaction_stats.record_duration(ms)
 
+    async def _background_work_snapshot(self, session_id: str) -> dict:
+        """What a parked session is waiting on, for the browser (#2635). Claude: the
+        transcript scan with killed tasks EXCLUDED (dead, not waiting — the same read
+        ``is_parked`` makes) plus the armed wakeup. Other engines: the driver's live
+        list, no wakeup half. Never raises; a failed read is "nothing open"."""
+        try:
+            if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+                from .background_tasks import pending_wakeup
+                path = await asyncio.to_thread(self.transcript_path, session_id)
+                if not path:
+                    return EMPTY_BACKGROUND_WORK
+                tasks = await asyncio.to_thread(
+                    scan_open_background_tasks, path, treat_killed_as_open=False)
+                wakeup = await asyncio.to_thread(pending_wakeup, path)
+                return background_work_snapshot(tasks, wakeup)
+            return background_work_snapshot(await self._open_background_work(session_id), None)
+        except Exception:
+            log.debug("bg_work.snapshot_failed sid=%s", session_id, exc_info=True)
+            return EMPTY_BACKGROUND_WORK
+
+    def _refresh_background_work(self, session_id: str) -> None:
+        """Driver ``on_background_work_changed`` callback: a background shell/Monitor
+        started or ended. Scheduled, never awaited — fired from inside the pump."""
+        self._spawn(self._persist_background_work(session_id), name="background-work-refresh")
+
+    async def _persist_background_work(self, session_id: str) -> None:
+        try:
+            snapshot = await self._background_work_snapshot(session_id)
+            rec = self._records.get(session_id)
+            if rec is not None:
+                rec.background_work = snapshot
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(background_work=snapshot))
+        except Exception:
+            log.debug("persist_background_work failed (non-fatal) session=%s", session_id, exc_info=True)
+
     def _refresh_sub_agents_summary(self, session_id: str) -> None:
         """Driver ``on_sub_agents_changed`` callback: a Task sub-agent started or ended,
         so re-derive the persisted summary the board's cards read. Scheduled, never
@@ -14957,6 +15006,7 @@ class SessionOrchestrator:
             # still held the session's own sentence (session 6ab5c602).
             hand_back_reason=getattr(row, "hand_back_reason", None),
             suspected_complete_reason=getattr(row, "suspected_complete_reason", None),
+            background_work=getattr(row, "background_work", None),
             host=getattr(row, "host", None),
             display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),
@@ -15061,6 +15111,7 @@ class SessionOrchestrator:
             if status == "waiting_external":
                 if not await self._session_is_parked(row.id):
                     self._records[row.id].status = "done"
+                    self._records[row.id].background_work = None
                     healed[row.id] = "done"
                     log_event(log, logging.INFO, "session.unpark",
                               session_id=row.id,
@@ -15076,7 +15127,7 @@ class SessionOrchestrator:
                     )
                 for sid, st in healed.items():
                     await db.execute(
-                        sa_update(DbSession).where(DbSession.id == sid).values(status=st)
+                        sa_update(DbSession).where(DbSession.id == sid).values(status=st, background_work=None)
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
