@@ -7325,8 +7325,14 @@ class SessionOrchestrator:
         comment — never gate a spawn. Best-effort and non-raising: the callers
         (loop refill, the propose tap, manual dispatch) have already claimed."""
         from server.automations import backlog_github
+        from server.pm.outcomes import dispatch_kind_for_hold
+        # Name the kind the spawn will actually run (#2640): an ``evidence``-held
+        # primary is INVESTIGATED, and a thread reading "implementation" for those
+        # led triage to count investigate passes as implement sessions with no PR.
+        kind = ("an investigation" if dispatch_kind_for_hold(batch.primary_hold_kind)
+                == "investigate" else "an implementation")
         comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
-                   f"an implementation session is in progress.")
+                   f"{kind} session is in progress.")
         try:
             await asyncio.to_thread(
                 backlog_github.announce_claim, batch, comment, gh_run=self._gh_run)
@@ -21095,6 +21101,8 @@ class SessionOrchestrator:
         Ordering: automation-origin sessions (``origin IS NOT NULL``) are purged first
         so that human-launched sessions survive as long as any automation archive
         exists to fill the cap (#921).  Within each origin tier, oldest first.
+        A session whose Backlog Runner dispatch is still ``running`` (its claim not
+        yet settled) is never selected (#2632).
         """
         if count <= 0:
             return []
@@ -21112,6 +21120,18 @@ class SessionOrchestrator:
                 .order_by(origin_priority.asc(), order_key.asc())
                 .limit(count)
             )
+            # Never purge a session the Backlog Runner has not settled yet (#2632).
+            # A runner session is auto-archived the moment it ends, before the sweep
+            # reads its exit off the session row; with the cap full of human archives
+            # the automation-first order above picked exactly that fresh archive, the
+            # sweep found the row gone, and released the claim as orphaned with the
+            # investigation's exit unread. The outcome row stays ``running`` until the
+            # settle finalises it, so it is the "still needed" signal.
+            from server.db.models import DispatchOutcome
+            unsettled = (sa_select(DispatchOutcome.session_id)
+                         .where(DispatchOutcome.outcome == "running",
+                                DispatchOutcome.session_id.is_not(None)))
+            stmt = stmt.where(DbSession.id.notin_(unsettled))
             # Skip sessions that have already exhausted their delete strikes, so one
             # un-deletable oldest archive (stale sshfs handle, containment rejection)
             # can't monopolise every selection and starve disk reclamation (#825).
