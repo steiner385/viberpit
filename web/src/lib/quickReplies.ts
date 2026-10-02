@@ -9,6 +9,12 @@
 // Composer. Do not inline a second copy in either component (the two resume
 // affordances are already parallel implementations; a duplicated list is how
 // they would silently drift). Edit the list here and both stay in sync.
-export const QUICK_REPLIES = ['continue', 'approved', 'proceed', 'try again'] as const
+export const QUICK_REPLIES = [
+  'continue',
+  'approved',
+  'proceed',
+  'try again',
+  'what do you recommend?',
+] as const
 
 export type QuickReply = (typeof QUICK_REPLIES)[number]
