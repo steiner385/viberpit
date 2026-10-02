@@ -111,7 +111,7 @@ async def refine_prompt(
         if outcome.failure_kind == "timeout":
             log.warning("refine_prompt: exceeded %.0fs — no refinement", timeout)
         else:
-            log.warning("refine_prompt: model call failed: %s", outcome.describe())
+            log.log(outcome.log_level, "refine_prompt: model call failed: %s", outcome.describe())
         return None
 
     text_parts: list[str] = []

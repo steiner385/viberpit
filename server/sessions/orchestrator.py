@@ -110,6 +110,7 @@ from server.sessions.engine import (
     parse_agent_engine,
 )
 from server.sessions.failure import classify as classify_failure
+from server.sessions.failure import log_level as failure_log_level
 from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
@@ -3874,13 +3875,13 @@ class SessionOrchestrator:
                 # A rate-limit/overload failure here is an ordinary external condition
                 # that this restore-and-retry path already handles by design — the
                 # approver just tries again once the account cools down. WARNING made
-                # every 429 auto-file an error report (9 in 3 days, #1688); anything
+                # every 429 auto-file an error report (9 in 3 days, #1688), and a DNS
+                # outage is no defect either (#2623); anything
                 # else (a bad worktree branch, a dead credential) is a real defect and
                 # keeps WARNING so it still surfaces.
-                level = (logging.INFO
-                         if classify_failure(None, str(exc)).kind in
-                            ("rate_limit", "overloaded")
-                         else logging.WARNING)
+                spawn_kind = classify_failure(None, str(exc)).kind
+                level = (logging.INFO if spawn_kind == "overloaded"
+                         else failure_log_level(spawn_kind))
                 log.log(
                     level,
                     "session.model_approval_spawn_failed id=%s model=%s — restoring "

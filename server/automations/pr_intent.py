@@ -112,7 +112,7 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
     if outcome.skipped:
         return _UNRESOLVED  # account lane cooled-down — fall back to the normal nudge
     if outcome.error is not None:
-        log.warning("pr_intent.classify failed: %s", outcome.describe())
+        log.log(outcome.log_level, "pr_intent.classify failed: %s", outcome.describe())
         return _UNRESOLVED
     parts: list[str] = []
     for msg in outcome.messages:

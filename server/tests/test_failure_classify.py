@@ -150,3 +150,32 @@ def test_a_403_in_prose_alone_is_not_an_org_denial():
     # Only the explicit code or an org-denial marker counts; a stray "403" in a
     # tool result must not block an account from helper duty.
     assert classify("driver_error", "the fixture returned 403 rows").kind == "other"
+
+
+# #2623: a dead resolver or unreachable endpoint is the host's network, not a
+# defect — the CLI's spellings, seen in an 11h EAI_AGAIN outage on dobby.
+@pytest.mark.parametrize("message", [
+    "Claude Code returned an error result: success | server_error | API Error: "
+    "Can't reach the API server — check your internet or DNS (EAI_AGAIN)",
+    "getaddrinfo ENOTFOUND api.anthropic.com",
+    "connect ECONNREFUSED 127.0.0.1:443",
+    "connect ETIMEDOUT 160.79.104.10:443",
+    "read ECONNRESET",
+])
+def test_connectivity_failure_is_network(message):
+    f = classify("driver_error", message)
+    assert f.kind == "network"
+    # Not recoverable for a live turn: rotating to another account cannot fix
+    # the host's network, so it surfaces like any other failure.
+    assert not f.is_recoverable
+
+
+def test_network_kind_logs_below_warning_and_a_defect_does_not():
+    import logging
+
+    from server.sessions.failure import log_level
+
+    assert log_level("network") == logging.INFO
+    assert log_level("rate_limit") == logging.INFO
+    assert log_level("other") == logging.WARNING
+    assert log_level(None) == logging.WARNING

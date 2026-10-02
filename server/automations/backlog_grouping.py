@@ -323,7 +323,13 @@ def family_groups(candidates: list[dict], *,
 class GroupingModelError(RuntimeError):
     """The grouping model call itself failed (SDK/transport/auth), as opposed to
     the model answering with an unparseable plan. Carries the SDK's own message so
-    the runner's ``groups_refresh_failed`` event can name the actual cause."""
+    the runner's ``groups_refresh_failed`` event can name the actual cause.
+    ``kind`` is the classified failure kind (``failure.classify``), None when the
+    call never ran, so the runner can pick its log level (#2623)."""
+
+    def __init__(self, message: str, *, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def _default_sdk_query_fn():
@@ -390,7 +396,8 @@ async def propose_groups(
     if outcome.skipped:
         raise GroupingModelError(f"call skipped: {outcome.skip_reason}")
     if outcome.error is not None:
-        raise GroupingModelError(outcome.describe()) from outcome.error
+        raise GroupingModelError(outcome.describe(),
+                                 kind=outcome.failure_kind) from outcome.error
     text_parts: list[str] = []
     for msg in outcome.messages:
         content = getattr(msg, "content", None)

@@ -498,3 +498,32 @@ def test_skip_reason_tells_a_cooled_lane_from_a_barred_account():
     out2 = asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/denied",
                                        _now=clock, _sleep=sleep))
     assert (out2.skipped, out2.skip_reason) == (True, "account-blocked")
+
+
+def test_network_failure_is_retried_and_reported_as_network():
+    """#2623: EAI_AGAIN classified "other" — never retried, and every caller
+    logged it as a WARNING (one auto-error issue per helper subsystem)."""
+    clock = Clock()
+    delays, sleep = _sleeps_recorded()
+    counter = {"n": 0}
+    ms = _stream_factory(
+        # The CLI's API-error assistant message, as the issue's detail shows it.
+        yield_msgs=[SimpleNamespace(error="server_error", content=[SimpleNamespace(
+            text="API Error: Can't reach the API server — check your internet "
+                 "or DNS (EAI_AGAIN)")])],
+        raise_exc=RuntimeError("Claude Code returned an error result: success"),
+        counter=counter)
+    out = asyncio.run(run_helper_call(ms, subsystem="test", account_key="/cfg/acct1",
+                                      retries=1, _now=clock, _sleep=sleep))
+    assert out.failure_kind == "network"
+    assert counter["n"] == 2          # initial + 1 retry
+    assert delays == [1.0]
+    import logging
+    assert out.log_level == logging.INFO
+
+
+def test_a_defect_outcome_still_logs_at_warning():
+    import logging
+    out = _run(_stream_factory(raise_exc=RuntimeError("boom")))
+    assert out.failure_kind == "other"
+    assert out.log_level == logging.WARNING

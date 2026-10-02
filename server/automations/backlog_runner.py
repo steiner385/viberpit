@@ -32,6 +32,7 @@ from server.pm.outcomes import (
     top_tier,
 )
 from server.sessions.engine import AgentEngine, parse_agent_engine
+from server.sessions.failure import log_level as failure_log_level
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
@@ -1172,8 +1173,14 @@ class BacklogRunnerLoop:
             # error rather than per streak — a changed cause is news. The journal
             # line names it too: this is the ONE record of a failed refresh
             # (``propose_groups`` no longer logs its own copy, #1845/#1846).
+            # A host network outage logs below WARNING (the auto-error filing
+            # floor) and without a traceback: 23 issues-worth of EAI_AGAIN over
+            # one DNS outage was #2623. A defect, or an unclassified error, stays
+            # WARNING.
             error = f"{type(exc).__name__}: {exc}"
-            log.warning("backlog_runner.group_refresh_failed: %s", error, exc_info=True)
+            level = failure_log_level(getattr(exc, "kind", None))
+            log.log(level, "backlog_runner.group_refresh_failed: %s", error,
+                    exc_info=level >= logging.WARNING)
             self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
             if error != self._group_refresh_last_error:
                 self._group_refresh_last_error = error

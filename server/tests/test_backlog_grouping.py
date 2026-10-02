@@ -641,3 +641,21 @@ def test_order_by_pool_rank_then_urgent_float_keeps_urgent_first():
     assert [g["refs"] for g in ranked] == [["o/r#1"], ["o/r#900"], ["o/r#2"]]
     assert [g["refs"] for g in float_urgent_first(ranked, candidates)] == [
         ["o/r#900"], ["o/r#1"], ["o/r#2"]]
+
+
+@pytest.mark.asyncio
+async def test_propose_groups_failure_carries_the_classified_kind():
+    """#2623: the runner picks its log level off the failure kind, so the error
+    carries it rather than leaving the runner to re-parse the message."""
+    from server.automations.backlog_grouping import GroupingModelError
+    from server.sessions.helper_call import reset_breakers
+
+    reset_breakers()
+
+    def _query(*, prompt, options):  # noqa: ARG001
+        raise RuntimeError("getaddrinfo EAI_AGAIN api.anthropic.com")
+
+    with pytest.raises(GroupingModelError) as err:
+        await propose_groups(C, {"max_issues_per_pr": 2}, _config_dir="/cfg/offline",
+                             _query_fn=_query)
+    assert err.value.kind == "network"
