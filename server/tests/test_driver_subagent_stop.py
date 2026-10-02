@@ -103,3 +103,21 @@ def test_background_shell_registers_in_the_task_map_and_stop_kills_it():
         assert seen == ["s1", "s1"]
         await d.aclose()
     _run(run())
+
+
+def test_foreground_bash_task_neither_registers_nor_fires_the_callback():
+    """A foreground Bash is a local_bash task too (is_backgrounded false) — not a snapshot change."""
+    clients: list[FakeSDKClient] = []
+    d = _driver(clients)
+    seen: list[str] = []
+    d._on_background_work_changed = seen.append
+
+    async def run():
+        await d.start()
+        clients[0].inject([f.task_started(TASK, TID, task_type="local_bash", backgrounded=False),
+                           f.task_notification(TASK, TID, status="completed", summary="")])
+        await asyncio.sleep(0.2)
+        assert d.subagent_task_id(TID) is None
+        assert seen == []
+        await d.aclose()
+    _run(run())

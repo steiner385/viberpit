@@ -1479,11 +1479,16 @@ class ClaudeAgentDriver:
                         log.debug("driver.on_sub_agents_changed failed session=%s",
                                   self.session_id, exc_info=True)
             if isinstance(e, (ev.BackgroundTaskStarted, ev.BackgroundTaskEnded)):
+                # A foreground Bash is a local_bash task too; only backgrounded work is a
+                # snapshot change, so only it registers and fires the refresh.
+                changed = False
                 if isinstance(e, ev.BackgroundTaskStarted):
-                    self._subagent_tasks[e.tool_use_id] = e.task_id
+                    if e.backgrounded:
+                        self._subagent_tasks[e.tool_use_id] = e.task_id
+                        changed = True
                 else:
-                    self._subagent_tasks.pop(e.tool_use_id, None)
-                if self._on_background_work_changed is not None:
+                    changed = self._subagent_tasks.pop(e.tool_use_id, None) is not None
+                if changed and self._on_background_work_changed is not None:
                     try:
                         self._on_background_work_changed(self.session_id)
                     except Exception:  # noqa: BLE001 - a snapshot refresh must never break the pump
