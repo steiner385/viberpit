@@ -141,7 +141,8 @@ def test_purge_detaches_dispatch_outcomes_instead_of_blocking_delete(tmp_path):
             await _seed([_archived(0, archived_at=_BASE, origin="automation")])
             from server.db.models import DispatchOutcome
             async with db_session() as db:
-                db.add(DispatchOutcome(session_id="arch0"))
+                # Finalised: a still-``running`` row would pin the session (#2632).
+                db.add(DispatchOutcome(session_id="arch0", outcome="no_pr"))
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             deleted = await orch.purge_oldest_archived(1)
             async with db_session() as db:
@@ -266,6 +267,44 @@ def test_purge_prioritizes_automation_over_human(tmp_path):
     assert set(deleted) == {"arch1", "arch2"}
     # The human session (oldest timestamp) survives.
     assert remaining == ["arch0"]
+
+
+def test_purge_skips_archive_whose_dispatch_is_still_unsettled(tmp_path):
+    """#2632: a runner session is auto-archived the moment it ends, BEFORE the
+    runner's sweep settles its claim by reading the session row (the investigation
+    exit is the session's ``mark_no_pr`` note). With the cap full of human archives
+    the automation-first order (#921) used to select that fresh archive and delete
+    it, so the sweep found the row gone and released the claim as orphaned —
+    every exit unread, the ``evidence`` hold never released. A session whose
+    ``dispatch_outcomes`` row is still ``running`` must not be purged; the oldest
+    human archive goes instead, and once the outcome is finalised the automation
+    archive is first in line again."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([
+                _archived(0, archived_at=_BASE + timedelta(hours=0), origin=None),
+                _archived(1, archived_at=_BASE + timedelta(hours=1), origin=None),
+                _archived(2, archived_at=_BASE + timedelta(hours=2), origin="backlog-runner"),
+            ])
+            from server.db.models import DispatchOutcome
+            async with db_session() as db:
+                db.add(DispatchOutcome(id="out2", session_id="arch2", outcome="running",
+                                       dispatch_kind="investigate"))
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            first = await orch.purge_oldest_archived(1)
+            async with db_session() as db:
+                row = await db.get(DispatchOutcome, "out2")
+                row.outcome = "no_pr"
+            second = await orch.purge_oldest_archived(1)
+            return first, second, await _archived_ids()
+
+    first, second, remaining = asyncio.run(run())
+    assert first == ["arch0"]      # the unsettled runner archive is pinned
+    assert second == ["arch2"]     # settled → automation-first again (#921)
+    assert remaining == ["arch1"]
 
 
 def test_purge_human_purged_when_no_automation_left(tmp_path):

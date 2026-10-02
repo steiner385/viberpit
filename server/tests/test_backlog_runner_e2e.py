@@ -711,6 +711,18 @@ def test_backlog_announce_posts_linking_comment(tmp_path, monkeypatch):
         assert comments, "expected a linking comment on claim"
         body = comments[0][comments[0].index("--body") + 1]
         assert "Backlog Runner" in body and "o/r#1" in body
+        assert "an implementation session is in progress" in body
         assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
+
+        # #2640: an evidence-held primary is dispatched to INVESTIGATE, and its
+        # claim comment must say so rather than "implementation".
+        gh.calls.clear()
+        held = Batch(primary="o/r#2", issues=["o/r#2"], repo="o/r",
+                     primary_hold_kind="evidence")
+        assert await orch._backlog_announce(held) is None
+        comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+        body = comments[0][comments[0].index("--body") + 1]
+        assert "an investigation session is in progress" in body
+        assert "implementation" not in body
 
     run(go())
