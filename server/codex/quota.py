@@ -155,6 +155,10 @@ class CodexQuotaReader:
         self._cache_ttl_s = cache_ttl_s
         self._clock = clock
         self._last_good: dict[str, _CachedRead] = {}
+        # (availability, detail) last WARNed per account: the unavailable WARNING
+        # is edge-triggered, since the poller re-reads continuously and a WARNING
+        # auto-files an issue per occurrence.
+        self._warned: dict[str, tuple[str, str]] = {}
 
     async def read(
         self, account: str, *, client: RateLimitReader | None
@@ -189,6 +193,10 @@ class CodexQuotaReader:
                 account, UNKNOWN, redaction.scrub_exception(exc)
             )
         self._last_good[account] = _CachedRead(now, snapshot)
+        if self._warned.pop(account, None) is not None:
+            log_event(
+                logger, logging.INFO, "codex.quota.recovered", account=account
+            )
         # Read TIME, not age: a gauge nothing re-sets between reads would be stale
         # by construction, so the consumer computes `now - value` instead.
         codex_quota_last_read_timestamp_s.labels(account).set(now)
@@ -205,8 +213,10 @@ class CodexQuotaReader:
     def invalidate(self, account: str | None = None) -> None:
         if account is None:
             self._last_good.clear()
+            self._warned.clear()
         else:
             self._last_good.pop(account, None)
+            self._warned.pop(account, None)
 
     def _degraded(
         self, account: str, availability: str, detail: str
@@ -228,9 +238,16 @@ class CodexQuotaReader:
                 detail=detail,
             )
             return replace(entry.snapshot, availability=availability)
+        state = (availability, detail)
+        level = (
+            logging.DEBUG
+            if self._warned.get(account) == state
+            else logging.WARNING
+        )
+        self._warned[account] = state
         log_event(
             logger,
-            logging.WARNING,
+            level,
             "codex.quota.unavailable",
             account=account,
             availability=availability,
