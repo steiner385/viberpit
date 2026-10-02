@@ -992,7 +992,14 @@ export function transcriptReducer(
         // Not found on the main thread (and, per the routing block above, not in any
         // sub-thread either — an untagged toolResult only reaches here). Park it: the
         // matching toolCall may still be in flight around a reconnect/heal boundary.
-        return { ...state, orphanToolResults: parkOrphanResult(state.orphanToolResults, toolId, { ok, payload, ts: ev.ts }) }
+        // A result still marks a message boundary, so it closes the open block: the
+        // server hides a top-level signal call (hand_back) but streams its result, and
+        // without this the next message's text would glue onto the previous one's.
+        return {
+          ...state,
+          openBlockId: null,
+          orphanToolResults: parkOrphanResult(state.orphanToolResults, toolId, { ok, payload, ts: ev.ts }),
+        }
       }
       return { ...state, turns: nextTurns }
     }

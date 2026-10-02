@@ -129,7 +129,7 @@ def test_rehydrate_keeps_the_hand_back_ask_and_its_suspected_complete_verdict(tm
     options the user was then told were "above". Same for the judge's verdict beside
     it: both columns only mean anything with status == handed_back, which survives a
     restart (it is a resting status), so both must survive with it."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'viberpit.db'}"
 
     async def run():
         await init_db(db_url=db_url)
