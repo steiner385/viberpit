@@ -374,6 +374,33 @@ async def test_unavailable_warning_names_the_specific_failure(caplog, exc, expec
     assert warnings[0].fields["detail"] != "runtime_error"
 
 
+@pytest.mark.asyncio
+async def test_unavailable_warning_is_edge_triggered_per_account(caplog):
+    """The poller re-reads continuously; one persistent fault must file one
+    WARNING (each WARNING auto-files an issue), not one per poll (#2600)."""
+    fail = protocol.CodexRequestFailed(-32603, "internal error", method="x")
+    client = FakeRateLimitClient(fail, fail, fail, _response(), fail)
+    clock = FakeClock()
+    reader = CodexQuotaReader(clock=clock)
+
+    def warnings() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    with caplog.at_level(logging.DEBUG, logger="server.codex.quota"):
+        for _ in range(3):
+            snap = await reader.read("acct", client=client)
+            assert snap.availability == UNKNOWN
+        assert len(warnings()) == 1
+        # A different account is its own edge.
+        await reader.read("other", client=FakeRateLimitClient(fail))
+        assert len(warnings()) == 2
+        # Recovery clears the latch, so the next failure warns again.
+        assert (await reader.read("acct", client=client)).availability == AVAILABLE
+        clock.now += reader._cache_ttl_s * STALE_CEILING_MULTIPLIER + 1
+        await reader.read("acct", client=client)
+        assert len(warnings()) == 3
+
+
 # ---------------------------------------------------------------------------
 # Last-good cache and its staleness ceiling
 # ---------------------------------------------------------------------------
