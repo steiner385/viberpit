@@ -3114,3 +3114,127 @@ def test_issue_detail_guidance_for_evidence_and_none_for_stronger_model():
         r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["holdKind"] == "stronger_model" and r.json()["guidance"] is None
+
+
+def _hold_for_escalation(c, wid, reason="bounced at opus; fable needs approval"):
+    r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "owner_action", "holdReason": reason},
+                headers=IDENTITY_HEADERS)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_approve_escalation_releases_the_hold_dispatches_pinned_and_approves():
+    """The Roadmap's "Approve escalation to fable" (an owner_action hold the runner
+    wrote at an approval-clamped top): the hold ends with signal ``escalation``, the
+    issue is dispatched NOW pinned to the approved tier, and the session the gate
+    parks is approved by THIS person through the same path the Sessions page uses."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        held = _hold_for_escalation(c, wid)
+        assert held["holdKind"] == "owner_action"
+        detail = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()
+        assert detail["escalation"] == {"bouncedAt": "opus", "needsApproval": "fable"}
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "spawned", "session_id": "s-9", "session_name": "backlog o/r#1"})
+        orch.resolve_model_approval = AsyncMock(return_value=None)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "Fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "spawned" and body["session_id"] == "s-9"
+        assert body["approval"] == "approved" and body["model"] == "fable"
+        assert body["item"]["holdKind"] is None
+        orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")
+        orch.resolve_model_approval.assert_awaited_once_with(
+            "s-9", "approve", identity="testuser@example.com")
+        after = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()
+        assert after["holdKind"] is None and after["escalation"] is None
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import AuditEvent
+
+        async def _rows():
+            async with db_session() as db:
+                return [(e.type, e.detail) for e in (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type.in_(["pm.hold.release", "pm.hold.escalation_approved"])
+                ))).scalars().all()]
+        rows = c.portal.call(_rows)
+        kinds = {t: d for t, d in rows}
+        assert kinds["pm.hold.release"]["signal"] == "escalation"
+        assert kinds["pm.hold.escalation_approved"] == {
+            "workItemId": wid, "model": "fable", "requested": "fable", "bouncedAt": "opus"}
+
+
+def test_approve_escalation_reports_an_already_allowed_tier_and_a_stuck_approval():
+    """``resolve_model_approval`` raising ValueError means the gate did not park the
+    session (the tier is allowed now) — not an error. Any other failure leaves the
+    session parked for the Sessions page, reported as ``pending`` rather than 500."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "spawned", "session_id": "s-1", "session_name": None})
+        _hold_for_escalation(c, wid)
+        orch.resolve_model_approval = AsyncMock(side_effect=ValueError("no pending"))
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["approval"] == "not_needed"
+        _hold_for_escalation(c, wid)
+        orch.resolve_model_approval = AsyncMock(side_effect=KeyError("s-1"))
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["approval"] == "pending"
+        # A refused dispatch never reaches the approval step; the hold is still
+        # released (Implement now's documented order), and the status says why.
+        _hold_for_escalation(c, wid)
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "no_account", "session_id": None, "session_name": None})
+        orch.resolve_model_approval = AsyncMock()
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["status"] == "no_account"
+        orch.resolve_model_approval.assert_not_awaited()
+        assert r.json()["item"]["holdKind"] is None
+
+
+def test_approve_escalation_refuses_what_is_not_an_escalation(monkeypatch):
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock()
+        # Unheld, and a plain owner_action hold: Retry is the tap, not approval.
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_hold"
+        _hold_for_escalation(c, wid, reason="needs the keyring")
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_hold"
+        # A real escalation, but not a ladder tier / a blocked tier.
+        _hold_for_escalation(c, wid)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "gpt-9"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_model"
+
+        async def blocked(db, *, model, account=None):
+            return "block"
+        monkeypatch.setattr("server.sessions.model_policy.resolve_model_policy", blocked)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 409 and r.json()["detail"]["error"] == "model_blocked"
+        # Nothing was released or dispatched by any refusal.
+        detail = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()
+        assert detail["holdKind"] == "owner_action"
+        orch.backlog_runner_dispatch.assert_not_awaited()
+        missing = c.post("/api/pm/work-items/nope/hold/approve-escalation",
+                         json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert missing.status_code == 404

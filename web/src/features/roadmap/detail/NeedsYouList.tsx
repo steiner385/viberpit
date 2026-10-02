@@ -4,19 +4,32 @@
 // place rather than by three panels a human has to remember to visit.
 import { Link } from 'react-router-dom'
 import type { CapabilityNode, ProductNode } from '@/api/roadmap'
+import { useHolds } from '@/api/hooks'
 import { IncidentQueue } from '@/initiatives/IncidentQueue'
 import { EmptyState } from '@/ui/EmptyState'
+import { SectionHeading } from '@/ui/SectionHeading'
 import { initiativeAsk } from '@/features/products/vocab'
 import { capabilityPath, inboxPath, initiativePath } from '../roadmapNavState'
 import { TIER_TEXT } from '../roadmapTier'
 import { needsYouRows } from './needsYou'
 import { LeafList } from './LeafList'
+import { HeldIssueCard } from './HeldIssueCard'
 
 export function NeedsYouList({ products, repos, capability, overview = false }: {
   products: ProductNode[]; repos?: readonly string[]; capability?: CapabilityNode; overview?: boolean
 }) {
   const { initiatives, issues, pseudo } = needsYouRows(products, capability)
-  const empty = initiatives.length === 0 && issues.length === 0 && pseudo.length === 0
+  // The held issues themselves, from the escalation read model — not the map's
+  // per-capability counts. The map only counts a held issue under the capability
+  // it is classified into, so an UNCLASSIFIED held issue (ghostdriver-mcp#28,
+  // 2026-10-02) showed up here only as "1 need a home" with no title, no reason
+  // and no Retry. A capability scope is served by its own `LeafList` rows below,
+  // so the read is skipped there; a portfolio scope reads fleet-wide and keeps
+  // the products on screen.
+  const inScope = new Set(products.map((p) => p.slug))
+  const { data: holds } = useHolds(products.length === 1 ? products[0].slug : undefined, { enabled: !capability })
+  const held = capability ? [] : (holds?.held ?? []).filter((h) => inScope.has(h.product))
+  const empty = initiatives.length === 0 && issues.length === 0 && pseudo.length === 0 && held.length === 0
   if (overview && empty) return null
 
   return (
@@ -27,6 +40,14 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
       {!empty && <p className="max-w-prose text-sm text-ink-muted">Review the items below to decide what happens next. Issue counts include each issue waiting for attention.</p>}
       {empty && (
         <EmptyState title="Nothing needs you" description="No issues, initiatives or proposals need a decision in this scope. Incidents are checked separately below." />
+      )}
+      {held.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <SectionHeading>Held issues · {held.length}</SectionHeading>
+          <ul className="flex flex-col gap-2" aria-label="Held issues">
+            {held.map((item) => <HeldIssueCard key={item.ref} item={item} showProduct={products.length > 1} />)}
+          </ul>
+        </div>
       )}
       {initiatives.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Initiatives that need you">

@@ -145,3 +145,25 @@ def test_chain_simulation_on_a_reconciled_board_with_blocked_stamps():
             _row(ref="o/r#6", number=6, status="Done", open_blockers=("o/r#1",))]
     (item,) = held_items(rows, {}, **KW)
     assert item.downstream_dispatchable == 1  # only #2; #5 keeps #8, #6 is Done
+
+
+def test_held_items_carry_the_work_item_id_and_the_approvable_escalation():
+    """The Roadmap's held list acts on the item (Retry / Approve escalation by
+    work-item id), so the read model has to say WHICH row and whether the hold is
+    one the runner wrote at an approval-clamped top. ``released_by`` names the
+    approval too, so the digest and the assistant say the same thing the card does."""
+    from server.pm.outcomes import Escalation
+    rows = [_row(ref="o/r#1", number=1, hold_kind="owner_action", hold_by="runner",
+                 hold_reason="bounced at opus; fable needs approval", work_item_id="w1"),
+            _row(ref="o/r#2", number=2, hold_kind="owner_action", hold_by="runner",
+                 hold_reason="needs the keyring", work_item_id="w2"),
+            _held("o/r#3", "decision", work_item_id=None)]
+    items = {i.ref: i for i in held_items(rows, {}, **KW)}
+    assert items["o/r#1"].work_item_id == "w1"
+    assert items["o/r#1"].escalation == Escalation(bounced_at="opus", needs_approval="fable")
+    assert items["o/r#1"].released_by == (
+        "Retry, a board move to Ready/Backlog, an issue-body edit, "
+        "or approving the escalation to fable")
+    assert items["o/r#2"].escalation is None
+    assert items["o/r#2"].released_by == "Retry, a board move to Ready/Backlog, or an issue-body edit"
+    assert items["o/r#3"].work_item_id is None and items["o/r#3"].escalation is None

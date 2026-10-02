@@ -722,3 +722,32 @@ async def test_runner_status_reports_same_refusal_codes_as_action(dispatch_orch)
     assert status.waiting_reason == "policy"
     assert status.observed_at
     assert all(code in status.text for code in result["reason_codes"])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_model_pin_reaches_the_spawn_and_the_claim(dispatch_orch):
+    """The approve-escalation tap's one input: ``model`` pins the spawn in place of
+    the product's ``default_model`` (which the loop would otherwise read off the
+    admission policy) and is recorded on the claim like any other dispatch's model."""
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"], model="fable")
+    assert r["status"] == "spawned"
+    assert dispatch_orch._backlog_spawn.await_args.kwargs["default_model"] == "fable"
+
+
+@pytest.mark.asyncio
+async def test_remote_orch_forwards_the_model_pin_only_when_set():
+    """Wire compatibility: an unpinned call is byte-for-byte the pre-``model`` call,
+    so a daemon from before the parameter still accepts it mid-rollout."""
+    from server.sessions.remote import RemoteOrchestrator
+    calls: list[dict] = []
+
+    class _Client:
+        async def call(self, name, **kw):
+            calls.append({"name": name, **kw})
+            return {"status": "spawned"}
+    orch = RemoteOrchestrator.__new__(RemoteOrchestrator)
+    orch._client = _Client()  # type: ignore[attr-defined]
+    await orch.backlog_runner_dispatch(["o/r#7"])
+    await orch.backlog_runner_dispatch(["o/r#7"], model="fable")
+    assert "model" not in calls[0] and calls[0]["refs"] == ["o/r#7"]
+    assert calls[1]["model"] == "fable"

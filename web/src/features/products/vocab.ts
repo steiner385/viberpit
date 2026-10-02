@@ -129,6 +129,65 @@ export const HOLD_LABEL: Record<string, string> = {
 export const holdLabel = (kind: string | null | undefined): string =>
   kind ? (HOLD_LABEL[kind] ?? kind) : ''
 
+/** Who parked the item, in words a person reads: the Backlog Runner, a coding
+ *  session, the AI assistant, the reconciler, or the person themselves. */
+export function holdActorLabel(holdBy: string | null | undefined): string {
+  if (!holdBy) return 'Someone'
+  if (holdBy === 'runner') return 'The Backlog Runner'
+  if (holdBy.startsWith('automation:')) return `The ${holdBy.slice('automation:'.length)} automation`
+  if (holdBy.startsWith('session:')) return 'A coding session'
+  if (holdBy.startsWith('assistant:')) return 'The assistant'
+  if (holdBy === 'lan@local') return 'Someone on the LAN'
+  return holdBy
+}
+
+/** The plain-language "why is this held, and what ends it" for one hold — the
+ *  ONE source both the Roadmap's held card and the Review-and-decide dialog
+ *  read, so the two surfaces never explain the same hold two ways. `tier` names
+ *  model tiers for a person (`session/modelName.tierLabel`); passed in rather
+ *  than imported so this module stays free of the session layer. */
+export function holdExplanation(hold: {
+  holdKind: string | null | undefined
+  holdReason: string | null | undefined
+  holdBy: string | null | undefined
+  escalation?: { bouncedAt: string | null; needsApproval: string } | null
+}, tier: (id: string) => string = (id) => id): { why: string; next: string } {
+  const who = holdActorLabel(hold.holdBy)
+  const reason = hold.holdReason?.trim()
+  if (hold.escalation) {
+    const to = tier(hold.escalation.needsApproval)
+    const at = hold.escalation.bouncedAt ? ` at ${tier(hold.escalation.bouncedAt)}` : ''
+    return {
+      why: `${who} could not get a pull request merged${at} and stopped: the next step up is ${to}, which your model-approval policy gates behind a person.`,
+      next: `Approve escalation to run it once at ${to} now, or Retry to re-queue it at the product's default model. Nothing happens until you choose.`,
+    }
+  }
+  switch (hold.holdKind) {
+    case 'owner_action':
+      return {
+        why: `${who} handed this to you${reason ? `: ${reason}` : ''}. The runner will not touch it again until you act.`,
+        next: 'Retry re-queues it for the next run. You can also move its card to Ready or Backlog on the GitHub board, or edit the issue — either releases it too.',
+      }
+    case 'decision':
+      return {
+        why: `A session proposed options instead of guessing${reason ? `: ${reason}` : ''}.`,
+        next: 'Pick an option in the Inbox; the next run implements it. Retry does not apply to a decision.',
+      }
+    case 'evidence':
+      return {
+        why: `This report is parked until it is investigated${reason ? `: ${reason}` : ''}.`,
+        next: 'The runner investigates it on its own schedule; Investigate now starts that immediately.',
+      }
+    case 'stronger_model':
+      return {
+        why: `The runner is climbing the model ladder${reason ? `: ${reason}` : ''}.`,
+        next: 'Nothing to do — the next dispatch runs at the next tier and clears this on its own.',
+      }
+    default:
+      return { why: reason ?? 'This item is held.', next: '' }
+  }
+}
+
 /** The leaf chip's text for `reason === 'needs_spec'` (product automation
  *  policy §7): the issue's body has bounced `n` times at its current
  *  fingerprint without merging, so the runner has stopped re-dispatching it

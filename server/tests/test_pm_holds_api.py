@@ -200,3 +200,36 @@ def test_holds_and_decisions_impact_share_the_products_reach():
                         headers=IDENTITY_HEADERS).json()["held"]
         (w,) = [i for i in what_if if i["ref"] == "o/d#10"]
         assert w["downstream"] == 1 and w["downstreamDispatchable"] == 0
+
+
+def test_holds_names_the_row_and_the_approvable_escalation():
+    """A hold the runner wrote at an approval-clamped ladder top ("bounced at opus;
+    fable needs approval") is the one the Roadmap offers "Approve escalation to
+    fable" for — so the wire carries the work-item id to act on and the parsed
+    escalation, and ``releasedBy`` names that fourth way out. An ordinary
+    owner_action hold carries ``escalation: null``."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from sqlalchemy import select, update
+
+    with _client() as c:
+        _seed(c)
+
+        async def _escalate():
+            async with db_session() as db:
+                await db.execute(update(WorkItem).where(WorkItem.repo == "o/k", WorkItem.number == 7)
+                                 .values(hold_reason="bounced at opus; fable needs approval",
+                                         hold_by="runner"))
+                await db.commit()
+                return (await db.execute(select(WorkItem.id).where(
+                    WorkItem.repo == "o/k", WorkItem.number == 7))).scalar_one()
+        wid = c.portal.call(_escalate)
+        body = c.get("/api/pm/holds?kind=owner_action", headers=IDENTITY_HEADERS).json()
+        by_ref = {i["ref"]: i for i in body["held"]}
+        gated = by_ref["o/k#7"]
+        assert gated["workItemId"] == wid
+        assert gated["escalation"] == {"bouncedAt": "opus", "needsApproval": "fable"}
+        assert gated["releasedBy"].endswith("or approving the escalation to fable")
+        plain = by_ref["o/r#4"]
+        assert plain["workItemId"] and plain["escalation"] is None
+        assert plain["releasedBy"] == "Retry, a board move to Ready/Backlog, or an issue-body edit"

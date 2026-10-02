@@ -82,7 +82,12 @@ issue body edit (the fingerprint no longer matches), or `POST
 /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
 `server/pm/holds.py:release_by_signals` / `clear_hold`, each audited `pm.hold.release` with its
 `signal` from the one `RELEASE_SIGNALS` tuple. An explicit `clearHold` through the overlay editor is
-a fourth spelling (`signal: "overlay"`) and, unlike the other three, stamps `classified_by`. The
+a fourth spelling (`signal: "overlay"`) and, unlike the other three, stamps `classified_by`. A
+fifth, `signal: "escalation"`, is `POST /api/pm/work-items/{id}/hold/approve-escalation` — only
+for a hold the runner wrote at an approval-clamped ladder top ("bounced at opus; fable needs
+approval"; `server/pm/outcomes.py:escalation_for`): it releases the hold AND dispatches the issue
+now at the approved tier, resolving the model gate's parked session as the tapping person (see the
+Backlog Runner feature doc, ladder section). The
 roadmap's Review-and-decide dialog shows the hold (kind, reason, who, when) and offers **Retry**
 (the release endpoint) and **Implement now** (manual dispatch, which releases the hold with
 `signal = implement` first), each with server-computed consequence copy from
@@ -236,6 +241,16 @@ per capability, and product triage groups. A capability includes attention under
 issue groups link to the capability that owns those issues. The selected capability shows its
 attention issues inline, with guidance and actions. Counts include individual attention issues
 plus initiative and product triage rows. Incidents retain their separate live queue.
+
+**Held issues** lead the product and portfolio Needs-you lists, read from the escalation read
+model (`GET /api/pm/holds`) rather than from the map's per-capability counts — an unclassified
+held issue has no capability row to appear under, so without this list it surfaced only as a
+"need a home" count. Each card names the issue (title, GitHub link), says in plain language who
+parked it and why and what ends it (`features/products/vocab.ts:holdExplanation`, the same text
+the Review-and-decide dialog shows), and carries the taps that release it, each bound to that
+card's own work item: **Retry**, **Approve escalation to <tier>** on an approval-gated hand-off,
+**Review and decide**, **Edit on GitHub**, and the board-move wording; a `decision` hold links to
+its Inbox proposal instead of offering Retry.
 
 Click a summary tile to open its corresponding work list. Issues needing input appear before
 blocked and other open issues. An issue that needs a spec explains that its description needs

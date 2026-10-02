@@ -8435,13 +8435,15 @@ class SessionOrchestrator:
             candidate["waiting_account"] = bool(state.get("waiting_account"))
         return candidates
 
-    async def backlog_runner_dispatch(self, refs: list[str]) -> dict:
+    async def backlog_runner_dispatch(self, refs: list[str], model: str | None = None) -> dict:
         """Manual dispatch: claim + spawn a batch for *refs*.
 
         *refs[0]* is the primary; all refs are bundled into one PR. Does NOT
         require refs to be in the current candidate set — picker state may lag
         by seconds and blocking an explicit user request is worse than a missing
-        title. Returns ``{"status": ..., "session_id": ..., "session_name": ...}``."""
+        title. *model* pins the spawn's tier (the approve-escalation tap); ``None``
+        is the product's own ``default_model``, as every other dispatch.
+        Returns ``{"status": ..., "session_id": ..., "session_name": ...}``."""
         from server.automations.backlog_selection import Batch
         if not refs:
             return {"status": "no_refs", "session_id": None, "session_name": None}
@@ -8462,7 +8464,7 @@ class SessionOrchestrator:
                       # hold — which is what the dispatch KIND is read from (§5).
                       primary_hold_kind=(by_ref.get(primary, {}).get("hold_kind")
                                          or previous.get("primary_hold_kind")))
-        return await self._backlog_dispatch_batch(batch, source="manual")
+        return await self._backlog_dispatch_batch(batch, source="manual", model=model)
 
     async def _backlog_admission(self, batch, *, source: str, existing_slot: bool,
                                  existing_token: str | None = None):
@@ -8474,7 +8476,8 @@ class SessionOrchestrator:
             target_refs=[batch.primary, *batch.issues], existing_token=existing_token,
             pr_doctor_pending=self._pr_doctor_pending_products)
 
-    async def _backlog_dispatch_batch(self, batch, *, source: str) -> dict:
+    async def _backlog_dispatch_batch(self, batch, *, source: str,
+                                      model: str | None = None) -> dict:
         """Manual actions share the runner's claims, budget and spawn lifecycle."""
         loop = self._backlog_loop
         async with loop._lock:
@@ -8483,7 +8486,7 @@ class SessionOrchestrator:
             loop._prune_day()
             account = await self._automation_account_for(self._backlog_ctx, batch.primary)
             return await loop.dispatch_batch(batch, source=source, account=account,
-                                             default_model="auto")
+                                             default_model="auto", model=model)
 
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every

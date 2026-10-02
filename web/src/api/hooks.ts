@@ -41,8 +41,9 @@ import {
   editMapChanges, abandonMapChanges, rebaseMapChanges, retireCapability, mergeCapabilities,
   fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
-  fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold,
+  fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold, approveEscalation,
   type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult, type HoldReleaseResult,
+  type ApproveEscalationResult,
   type Project, type CreateProjectInput, type UpdateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
@@ -1938,15 +1939,38 @@ export function useDispositionIssue(itemId: string) {
   })
 }
 
+/** Every view that asserts a hold, invalidated by prefix: the issue dialog, the
+ *  leaf lists, the map's tiers/counts, the queue — and the escalation read model
+ *  (`QK.holds`), which the Roadmap's held list and the Inbox's starvation banner
+ *  read; without it a released hold kept its card for up to the 30 s poll. */
+function invalidateHoldViews(qc: ReturnType<typeof useQueryClient>, itemId: string) {
+  void qc.invalidateQueries({ queryKey: QK.workItemIssue(itemId) })
+  void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+  void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+  void qc.invalidateQueries({ queryKey: QK.queue })
+  void qc.invalidateQueries({ queryKey: QK.holds })
+}
+
 export function useReleaseHold(itemId: string) {
   const qc = useQueryClient()
   return useMutation<HoldReleaseResult, ApiRequestError, void>({
     mutationFn: () => releaseHold(itemId),
+    onSuccess: () => invalidateHoldViews(qc, itemId),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Approve the climb an approval-gated hand-off asked for: releases the hold and
+ *  dispatches the issue now at `model`, approving the gate's parked session as
+ *  this person (server `POST …/hold/approve-escalation`). Failures show inline,
+ *  like the other hold taps, so the toast layer stays quiet. */
+export function useApproveEscalation(itemId: string) {
+  const qc = useQueryClient()
+  return useMutation<ApproveEscalationResult, ApiRequestError, string>({
+    mutationFn: (model) => approveEscalation(itemId, model),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QK.workItemIssue(itemId) })
-      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
-      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
-      void qc.invalidateQueries({ queryKey: QK.queue })
+      invalidateHoldViews(qc, itemId)
+      void qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
     },
     meta: PM_MUTATION_META,
   })

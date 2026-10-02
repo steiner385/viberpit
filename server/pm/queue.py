@@ -96,6 +96,10 @@ class QueueRow:
     hold_reason: str | None = None
     hold_by: str | None = None
     hold_set_at: datetime | None = None
+    # The mirror row's id, so a held item the escalation read model lists can be
+    # ACTED on (Retry / approve-escalation are per-work-item routes) without the
+    # client resolving ``ref`` → id itself. Defaulted for positional constructors.
+    work_item_id: str | None = None
 
 
 @dataclass(frozen=True)

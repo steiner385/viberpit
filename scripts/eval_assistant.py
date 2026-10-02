@@ -586,7 +586,10 @@ def _holds(now: datetime) -> dict[str, Any]:
     item in it is parked on the owner. The ``decision`` row mirrors ``dp-1``."""
     def age(hours: int) -> str:
         return (now - timedelta(hours=hours)).isoformat()
-    base: dict[str, Any] = {"options": [], "recommendedKey": None, "proposalId": None}
+    # Every row names its mirror id and whether the hold is an approval-gated
+    # hand-off (``outcomes.escalation_for``); these fixtures are plain holds.
+    acted: dict[str, Any] = {"workItemId": None, "escalation": None}
+    base: dict[str, Any] = {**acted, "options": [], "recommendedKey": None, "proposalId": None}
     held = [
         {**base, "ref": "steiner385/kindash#212", "repo": "steiner385/kindash", "number": 212,
          "product": "kindash", "title": "Rotate the Stripe webhook secret",
@@ -604,7 +607,7 @@ def _holds(now: datetime) -> dict[str, Any]:
          "downstream": 1, "downstreamDispatchable": 0,
          "downstreamRefs": ["steiner385/kindash#231"],
          "dispatchableOnRelease": True, "releasedBy": RELEASED_BY["owner_action"]},
-        {"ref": "acme/checkout#14", "repo": "acme/checkout", "number": 14,
+        {**acted, "ref": "acme/checkout#14", "repo": "acme/checkout", "number": 14,
          "product": "acme-checkout", "title": "Guest checkout or account required?",
          "url": "https://github.com/acme/checkout/issues/14",
          "holdKind": "decision", "holdReason": "Awaiting a product decision",
@@ -613,7 +616,7 @@ def _holds(now: datetime) -> dict[str, Any]:
          "recommendedKey": "b", "downstream": 0, "downstreamDispatchable": 0,
          "downstreamRefs": [], "dispatchableOnRelease": True,
          "releasedBy": RELEASED_BY["decision"]},
-        {"ref": "acme/billing#52", "repo": "acme/billing", "number": 52,
+        {**acted, "ref": "acme/billing#52", "repo": "acme/billing", "number": 52,
          "product": "acme-billing", "title": "Migrate invoices to the new tax engine?",
          "url": "https://github.com/acme/billing/issues/52",
          "holdKind": "decision", "holdReason": "Awaiting a product decision",

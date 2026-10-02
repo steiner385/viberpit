@@ -303,7 +303,8 @@ def test_release_by_signals_board_edit_and_body_edit():
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
     # not one of them.
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch", "investigation", "decision"}
+                                    "implement", "dispatch", "investigation", "decision",
+                                    "escalation"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]

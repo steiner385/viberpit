@@ -36,6 +36,7 @@ const editMapChanges = vi.hoisted(() => vi.fn())
 // in `LeafList`, and the two incident hooks in `IncidentQueue` (mounted by
 // `NeedsYouList`).
 vi.mock('@/api/hooks', () => ({
+  useHolds: () => ({ data: undefined }),
   useLeaves: () => leavesQuery,
   useRemoveDependency: () => ({ mutate: removeMutate, ...removeState }),
   useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),

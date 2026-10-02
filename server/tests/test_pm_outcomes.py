@@ -277,3 +277,29 @@ async def test_a_null_cause_row_still_counts(tmp_path):
         assert rows_to_bounces(rows, [("o/r#1", "fp")]) == {"o/r#1": 1}
         assert await last_attempt_model(db, "o/r#1") == "sonnet"
         assert await prior_attempts(db, "o/r#1") == 1
+
+
+def test_needs_approval_suffix_round_trips_through_escalation_for():
+    """The hand-off reason the runner writes at an approval-clamped top and the
+    structured ``escalation`` the holds API reads back are ONE pair: the writer
+    (``needs_approval_suffix``) and the reader (``escalation_for``) live side by
+    side so the Roadmap can offer "Approve escalation to fable" for exactly the
+    holds the runner wrote that way."""
+    from server.pm.outcomes import (Escalation, escalation_for, escalation_to_wire,
+                                    needs_approval_suffix)
+    reason = f"bounced at opus{needs_approval_suffix('fable')}"
+    assert reason == "bounced at opus; fable needs approval"
+    assert escalation_for("owner_action", reason) == Escalation(bounced_at="opus",
+                                                                needs_approval="fable")
+    # PR Doctor's top-of-ladder hand-off names the gate without a bounce tier.
+    assert escalation_for("owner_action", f"PR Doctor gave up at the top{needs_approval_suffix('fable')}") \
+        == Escalation(bounced_at=None, needs_approval="fable")
+    # Only an owner_action hold can be approved into a climb; every other kind,
+    # an ordinary give-up and an unknown tier read as "not an escalation".
+    assert escalation_for("stronger_model", reason) is None
+    assert escalation_for(None, reason) is None
+    assert escalation_for("owner_action", "bounced at opus: no mergeable PR after 3 attempts") is None
+    assert escalation_for("owner_action", "bounced at opus; gpt-9 needs approval") is None
+    assert escalation_for("owner_action", None) is None
+    assert escalation_to_wire(Escalation("opus", "fable")) == {"bouncedAt": "opus", "needsApproval": "fable"}
+    assert escalation_to_wire(None) is None

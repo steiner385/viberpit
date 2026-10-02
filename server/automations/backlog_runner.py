@@ -28,6 +28,7 @@ from server.pm.outcomes import (
     bounced_out,
     dispatch_kind_for_hold,
     gated_ladder_top,
+    needs_approval_suffix,
     next_rung,
     top_tier,
 )
@@ -1427,8 +1428,14 @@ class BacklogRunnerLoop:
 
     async def dispatch_batch(self, batch: Batch, *, source: str,
                              account: str | None, default_model: str,
-                             propose: bool = False) -> dict:
-        """One durable all-target dispatch path for automatic, manual and taps."""
+                             propose: bool = False, model: str | None = None) -> dict:
+        """One durable all-target dispatch path for automatic, manual and taps.
+
+        *model*, when given, PINS the spawn to that tier in place of the product's
+        ``default_model`` — the approve-escalation tap's one input (a person
+        approving the climb the runner's hand-off asked for). Recorded as the
+        claim's ``model`` like any other dispatch, so the outcome row and the
+        ladder's "previous attempt" read it back as the tier that actually ran."""
         from .ownership import OwnershipConflict, ReleaseProof, StaleOwnership, owned
 
         def result(status: str, rec=None) -> dict:
@@ -1488,7 +1495,7 @@ class BacklogRunnerLoop:
                 detail={"reason_codes": codes, "product": decision.product_slug})
             return {**result(status), "reason_codes": codes}
         batch = replace(batch, product=decision.product_slug)
-        default_model = policy["default_model"]
+        default_model = model or policy["default_model"]
         propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")
         # Every bounce deletes the claim row now (spec 2026-09-18 §4), so
         # ``previous`` carries no ``attempts`` for a re-queued item — the
@@ -2321,7 +2328,7 @@ class BacklogRunnerLoop:
                 # handoff, not the (now rung-only) escalate seam.
                 gated = gated_ladder_top(ladder_policy)
                 await self._give_up(target, st, "PR Doctor gave up at the top" + (
-                    f"; {gated} needs approval" if gated else ""), outcome=pd_outcome)
+                    needs_approval_suffix(gated) if gated else ""), outcome=pd_outcome)
                 return
             dial = await self._dial_stops_the_ladder(target, ladder_policy)
             if dial is not None:
@@ -2411,7 +2418,7 @@ class BacklogRunnerLoop:
             # previous model can only reach this branch when the top IS the tier
             # ``next_rung`` would have climbed from, so the top names it.
             bounced_at = model_tier(previous) or top
-            reason = (f"bounced at {bounced_at}; {gated} needs approval" if gated else
+            reason = (f"bounced at {bounced_at}{needs_approval_suffix(gated)}" if gated else
                       f"bounced at {bounced_at}: "
                       f"no mergeable PR after {attempts} attempts")
             await self._give_up(target, st, reason, outcome=no_pr_outcome)

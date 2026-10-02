@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -346,6 +347,59 @@ def gated_ladder_top(policy: dict) -> str | None:
     """
     configured = str((policy or {}).get("ladder_top_configured") or "")
     return configured if configured and configured != top_tier(policy) else None
+
+
+# --- The approval-gated hand-off: writer and reader as ONE pair -----------------
+#
+# When the ladder stops below the operator's configured top because the
+# model-approval gate clamped it, the runner's owner_action hold says so
+# ("bounced at opus; fable needs approval"). The Roadmap offers "Approve
+# escalation to fable" on exactly those holds, so the sentence the runner WRITES
+# and the structure the holds API READS back must be one definition — the same
+# shape ``server/sessions/model_request.py`` uses for its prompt/scan halves.
+
+#: The hand-off clause that names the gated tier. Appended to the runner's bounce
+#: prefix ("bounced at <tier>" / "PR Doctor gave up at the top").
+_NEEDS_APPROVAL = "; {tier} needs approval"
+_NEEDS_APPROVAL_RE = re.compile(
+    r"^(?:bounced at (?P<bounced>[a-z0-9\[\]\-\.]+)|.+?); (?P<tier>[a-z]+) needs approval$")
+
+
+def needs_approval_suffix(gated: str) -> str:
+    """The one spelling of "<tier> needs approval" the hand-off reason carries."""
+    return _NEEDS_APPROVAL.format(tier=gated)
+
+
+@dataclass(frozen=True)
+class Escalation:
+    """An owner_action hold a person can release by approving a climb: the tier
+    the ladder bounced at (``None`` when the hand-off came from PR Doctor and
+    names no bounce) and the gated tier that needs the approval."""
+    bounced_at: str | None
+    needs_approval: str
+
+
+def escalation_for(hold_kind: str | None, hold_reason: str | None) -> Escalation | None:
+    """Read the structured escalation back out of a hold, or ``None`` when the hold
+    is not one the runner wrote at an approval-clamped top. Only an
+    ``owner_action`` hold qualifies — a ``stronger_model`` park is already climbing
+    and a ``decision``/``evidence`` hold ends another way — and the gated tier must
+    be a real ladder tier (``TIER_ORDER``), so a hand-rolled reason that merely
+    resembles the sentence cannot produce an approve button for a model the ladder
+    has no rung for."""
+    if hold_kind != "owner_action" or not hold_reason:
+        return None
+    m = _NEEDS_APPROVAL_RE.match(hold_reason.strip())
+    if m is None or m.group("tier") not in TIER_ORDER:
+        return None
+    return Escalation(bounced_at=m.group("bounced"), needs_approval=m.group("tier"))
+
+
+def escalation_to_wire(esc: Escalation | None) -> dict | None:
+    """``{"bouncedAt", "needsApproval"}`` — the shape every route serialises it as."""
+    if esc is None:
+        return None
+    return {"bouncedAt": esc.bounced_at, "needsApproval": esc.needs_approval}
 
 
 def next_rung(previous_model: str | None, *, floor: str | None, default_model: str | None,
