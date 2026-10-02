@@ -502,6 +502,17 @@ PAUSE_REASONS: frozenset[str] = frozenset({
 # and the `paused` event, which the dashboard reads, are unaffected.
 _EXPECTED_PAUSE_REASONS: frozenset[str] = frozenset({"all_accounts_busy"})
 
+# Pause reasons whose cause is already journaled by a dedicated record at the park
+# site: `reassign_failed` follows `reassign.error` (ERROR, with the traceback) and
+# `automation_ownership_stale` follows `reassign.ownership_stale` or is the autopilot's
+# handled terminal outcome. A WARNING `session.paused` for them only files a second
+# issue carrying nothing but "the session is now parked" (#2595), so `_pause_session`
+# journals them at INFO too. The failure itself is still filed by its own record.
+_ECHOED_PAUSE_REASONS: frozenset[str] = frozenset({
+    _REASSIGN_FAILED_PAUSE_REASON,
+    "automation_ownership_stale",
+})
+
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
 # debounce a fleet of healthy accounts would re-run the sweep every few seconds.
@@ -19836,8 +19847,10 @@ class SessionOrchestrator:
         # (#1780). `earliest_reset` stays out of the key for the same reason a
         # shifting reset time is not news (#1702).
         # An expected capacity wait is INFO so the sink does not file it (#2330); every
-        # other reason is an anomaly a human should see, so it stays WARNING.
-        level = logging.INFO if reason in _EXPECTED_PAUSE_REASONS else logging.WARNING
+        # other reason is an anomaly a human should see, so it stays WARNING — unless
+        # its cause was already journaled by its own record (#2595).
+        quiet = reason in _EXPECTED_PAUSE_REASONS or reason in _ECHOED_PAUSE_REASONS
+        level = logging.INFO if quiet else logging.WARNING
         log_event_throttled(
             log, _PAUSE_LOG, f"{record.id}:{reason}", level,
             "session.paused", session_id=record.id, reason=reason)
