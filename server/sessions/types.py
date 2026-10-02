@@ -101,6 +101,11 @@ class SessionRecord:
     # SessionOrchestrator._settle_model_pending). Never a DB column: a daemon restart
     # drops the turn anyway and resume re-applies `model` before any new turn.
     model_pending: bool = False
+    # transient: re-applying `model` to a rebuilt driver (resume/rotation) failed, so the
+    # process may be on the launch default while `model` still names the user's pick
+    # (#2594). send_prompt retries once before the next turn. Never a DB column: a
+    # daemon restart rebuilds the driver, which re-applies `model` anyway.
+    model_unapplied: bool = False
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)

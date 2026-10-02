@@ -263,3 +263,96 @@ async def test_reassign_model_reapply_failure_still_completes_the_swap(monkeypat
     assert [e["type"] for e in published] == ["rotated"]
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert any("set_model" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
+
+
+# ── #2594: a failed re-apply is retried before the next turn, never silently dropped ──
+
+class _FlakyModelDriver:
+    """A live driver whose set_model fails the first ``fail_times`` calls (the 429 a
+    rate-limited account returns at resume), then succeeds."""
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.set_model_calls = []
+        self.prompts = []
+        self.errors = []
+    async def set_model(self, m):
+        self.set_model_calls.append(m)
+        if len(self.set_model_calls) <= self.fail_times:
+            raise Exception("API error: 429 This request would exceed your account's "
+                            "rate limit. Please try again later · model not changed")
+    async def send_prompt(self, text, attachments=None, **kw):
+        self.prompts.append(text)
+    async def emit_error(self, code, message):
+        self.errors.append((code, message))
+
+
+def _orch_with(driver, rec):
+    from server.sessions.orchestrator import SessionOrchestrator
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {rec.id: rec}
+    orch._drivers = {rec.id: driver}
+    orch._last_prompt = {}
+    orch._draining = False
+    return orch
+
+
+def _rec(model="claude-fable-5-1"):
+    from server.sessions.types import SessionRecord
+    return SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                         engine_session_id="c1", cols=80, rows=24, cwd="/tmp", model=model)
+
+
+@pytest.mark.asyncio
+async def test_failed_reapply_is_retried_before_the_next_turn(caplog):
+    """The resume-time 429 is transient. The record keeps the user's model, and the
+    next turn re-applies it before the prompt reaches the CLI — so the turn runs on
+    the model the session reports, and a recovered blip files nothing."""
+    import logging
+    drv, rec = _FlakyModelDriver(fail_times=1), _rec()
+    orch = _orch_with(drv, rec)
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await orch._reapply_model(drv, rec, site="session.resume")
+        assert rec.model == "claude-fable-5-1"
+        assert rec.model_unapplied is True
+        assert await orch.send_prompt("s1", "go") == "sent"
+
+    assert drv.set_model_calls == ["claude-fable-5-1", "claude-fable-5-1"]
+    assert drv.prompts == ["go"]
+    assert rec.model_unapplied is False
+    assert drv.errors == []
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_retry_failure_tells_the_user_and_still_sends(caplog):
+    """When the turn-time retry fails too, the session says so — an error card naming
+    the model it could not apply — instead of a log line nobody reads. The prompt is
+    still delivered (a failed re-apply never fails a turn), and the retry is not
+    repeated on every later turn."""
+    import logging
+    drv, rec = _FlakyModelDriver(fail_times=2), _rec()
+    orch = _orch_with(drv, rec)
+
+    await orch._reapply_model(drv, rec, site="session.resume")
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        assert await orch.send_prompt("s1", "go") == "sent"
+    assert drv.prompts == ["go"]
+    assert [c for c, _ in drv.errors] == ["model_not_applied"]
+    assert "claude-fable-5-1" in drv.errors[0][1]
+    assert any("set_model" in r.getMessage() and r.levelno == logging.WARNING
+               for r in caplog.records)
+
+    assert await orch.send_prompt("s1", "again") == "sent"
+    assert len(drv.set_model_calls) == 2
+    assert len(drv.errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_applied_model_sends_without_a_retry():
+    drv, rec = _FlakyModelDriver(fail_times=0), _rec()
+    orch = _orch_with(drv, rec)
+    await orch._reapply_model(drv, rec, site="session.resume")
+    assert await orch.send_prompt("s1", "go") == "sent"
+    assert drv.set_model_calls == ["claude-fable-5-1"]
+    assert rec.model_unapplied is False
