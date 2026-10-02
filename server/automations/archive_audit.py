@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from viberpit import gitrepos
 
+from server.github.host_failures import log_gh_failure
+
 from .base import AutomationStatus, ConfigField
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
 from .engine_policy import EnginePolicy
@@ -478,7 +480,9 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         if r.returncode != 0:
             raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
     except Exception as exc:  # gh missing / auth / network / non-zero / timeout
-        log.warning("archive_audit gh graphql pr list failed repo=%s head=%s: %s", repo, branch, exc)
+        log_gh_failure(
+            log, str(exc),
+            "archive_audit gh graphql pr list failed repo=%s head=%s: %s", repo, branch, exc)
         return []
     try:
         data = json.loads(r.stdout or "{}")
@@ -534,7 +538,9 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
         if _is_not_a_pr(exc):
             log.debug("archive_audit ref is not a PR repo=%s number=%s", repo, number)
         else:
-            log.warning("archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
+            log_gh_failure(
+                log, str(exc),
+                "archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
         return None
     try:
         data = json.loads(r.stdout or "{}")

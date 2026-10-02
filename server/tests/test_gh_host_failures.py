@@ -46,6 +46,7 @@ from server.github import (
     pr_poller,
     pr_population,
 )
+from server.automations import archive_audit
 from server.obs.error_signature import signature_of
 from server.sessions import dispatch
 
@@ -412,3 +413,33 @@ def test_every_classified_condition_has_an_event():
 def test_each_event_name_is_distinct():
     events = [event for event, _ in host_failures._EVENTS.values()]
     assert len(set(events)) == len(events)
+
+
+# --------------------------------------------------------------------------
+# archive_audit's two gh boundaries (#2611)
+# --------------------------------------------------------------------------
+
+def _archive_audit_calls(stderr: str, monkeypatch) -> None:
+    monkeypatch.setattr(archive_audit.gitrepos, "_run_gh", _runner(stderr))
+    monkeypatch.setattr(archive_audit.gitrepos, "app_token_for_owner", lambda owner: None)
+    archive_audit._real_gh("a/b", "x")
+    archive_audit._real_gh("c/d", "y")
+    archive_audit._real_gh_num("a/b", 1)
+    archive_audit._real_gh_num("c/d", 2)
+
+
+def test_archive_audit_host_outage_files_one_issue(caplog, monkeypatch):
+    """One outage probed across different repos/branches/PR numbers was seven issues."""
+    with caplog.at_level(logging.DEBUG):
+        _archive_audit_calls(STDERR_UNREACHABLE, monkeypatch)
+    assert len(_fingerprints(caplog)) == 1
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert {getattr(r, "event", None) for r in warned} == {"github.host_gh_unreachable"}
+
+
+def test_archive_audit_target_failure_still_names_the_target(caplog, monkeypatch):
+    with caplog.at_level(logging.DEBUG):
+        _archive_audit_calls(STDERR_UNRELATED, monkeypatch)
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("repo=a/b head=x" in m for m in warned)
+    assert any("repo=c/d number=2" in m for m in warned)
