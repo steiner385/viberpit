@@ -21,9 +21,9 @@ this doc, not the other way around.
 | Role | web edge, Postgres, canonical credentials | session daemon — owns every live `claude` process |
 | Identity | tailnet `dobby`, `100.102.11.121` | tailnet `rocky.tail0dd570.ts.net`, `100.69.70.109` |
 | `viberpit.service` (edge) | active | not installed |
-| `viberpit-daemon.service` | **stopped + disabled** | active + enabled |
+| `viberpit-daemon.service` | active as **primary** (`VIBERPIT_DAEMON_ROLE` unset) since the fleet cutover (#852); it was stopped + disabled during the single-runner period | active + enabled as **worker** |
 | Postgres | binds `localhost` + `100.102.11.121` only — **no LAN listener** | client only (asyncpg over tailnet) |
-| `~/.claude-accounts` (account store, credentials, ledger) | canonical | sshfs mount from dobby |
+| `~/.claude-accounts` (account store, credentials, ledger) | canonical; **the only host that refreshes a Claude OAuth token** (`viberpit.accounts.is_refresh_authority`, #2625 — `flock` does not cross the sshfs mount, so a worker never calls the token endpoint) | sshfs mount from dobby; read, and written only by `sync_back` / the ledger — never a token refresh. Replaced by the credential broker in #2629 |
 | `~/.claude` (shared skills/commands/hooks/plugins/projects) | canonical | sshfs mount from dobby |
 
 ```
