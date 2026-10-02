@@ -67,3 +67,5 @@ of the Waiting… pill.
 
 **Out of scope.** Streaming the shell's `output_file`; a Monitor/shell drill-down page;
 changing the `waiting_external` label itself.
+
+**Shipped:** PR #2643 (`feat/background-work-visibility`), 2026-10-02.
