@@ -1,10 +1,22 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionMeta } from './SessionMeta'
 import type { SubAgent } from '@/session/selectors'
 import type { UsageWindow } from '@/api/types'
 import { STATUS_TONE } from './subAgentStatus'
+
+vi.mock('@/api/hooks', () => ({ useStopSubAgent: () => ({ mutate: vi.fn(), isPending: false }) }))
+
+function Wrapper({ children }: { children: ReactNode }) {
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
+    </MemoryRouter>
+  )
+}
 
 const baseProps = {
   sessionId: 's1',
@@ -26,6 +38,26 @@ const baseProps = {
 }
 
 describe('SessionMeta', () => {
+  it('renders no Background chip when nothing is open', () => {
+    render(<SessionMeta {...baseProps} />)
+    expect(screen.queryByRole('button', { name: /Background work/ })).toBeNull()
+  })
+  it('shows a Background chip with the summary and opens the list', () => {
+    render(<Wrapper><SessionMeta {...baseProps} backgroundWork={{ rows: [{ toolUseId: 'tu1', kind: 'shell', description: 'pytest -q', status: 'running', live: true }], wakeup: false, wakeupAt: null }} /></Wrapper>)
+    const chip = screen.getByRole('button', { name: 'Background work: 1 shell' })
+    expect(chip).toHaveTextContent('1 shell')
+    fireEvent.click(chip)
+    expect(screen.getByRole('list', { name: 'Background work' })).toHaveTextContent('pytest -q')
+  })
+  it('opening the Background chip closes the sub-agent popover', () => {
+    const agent: SubAgent = { toolId: 'a1', type: 'Explore', description: 'find', status: 'running' }
+    render(<Wrapper><SessionMeta {...baseProps} subAgents={[agent]} backgroundWork={{ rows: [{ toolUseId: 'tu1', kind: 'monitor', description: 'ci', status: 'running', live: false }], wakeup: false, wakeupAt: null }} /></Wrapper>)
+    fireEvent.click(screen.getByRole('button', { name: '1 sub-agents' }))
+    expect(screen.getByRole('list', { name: 'Sub-agents' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Background work: 1 monitor' }))
+    expect(screen.queryByRole('list', { name: 'Sub-agents' })).toBeNull()
+    expect(screen.getByRole('list', { name: 'Background work' })).toBeInTheDocument()
+  })
   it('shows the current account and model', () => {
     render(<SessionMeta {...baseProps} />)
     // Account is shown as the selected value of the account switcher dropdown.

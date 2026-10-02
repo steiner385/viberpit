@@ -10,15 +10,18 @@
  * from the server's per-engine capability report rather than inferring here.
  */
 import { Fragment, useId, useState } from 'react'
+import { useNow } from '@/hooks/useNow'
 import { Pin, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
-import type { SubAgent, SubAgentStatus } from '@/session/selectors'
+import { EMPTY_BACKGROUND_WORK_VIEW, type BackgroundWorkView, type SubAgent, type SubAgentStatus } from '@/session/selectors'
 import { engineBadge, modelName } from '@/session/modelName'
 import { windowLabel } from '@/lib/usageWindows'
 import { SubAgentList } from './SubAgentList'
-import { STATUS_TONE } from './subAgentStatus'
+import { BackgroundWorkList } from './BackgroundWorkList'
+import { backgroundWorkSummary } from './backgroundWorkSummary'
+import { STATUS_TONE, statusTone } from './subAgentStatus'
 import type { AgentEngine, UsageWindow } from '@/api/types'
 
 /** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
@@ -59,6 +62,8 @@ interface Props {
   contextPct: number | null
   quota: UsageWindow[] | null
   subAgents: SubAgent[]
+  /** Open background work (shells / Monitors / wakeup) for the "Background" chip (#2635). */
+  backgroundWork?: BackgroundWorkView
   /** Live status node (the StatusBar) folded into this strip so the session pane
    *  has a single status line instead of two stacked bars. Optional so the
    *  component stays usable standalone. */
@@ -91,8 +96,11 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
-  const [open, setOpen] = useState(false)
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+  const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
+  const now = useNow(1000, backgroundWork.wakeupAt != null)
+  // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
+  const bgSummary = backgroundWorkSummary(now === 0 ? { ...backgroundWork, wakeupAt: null } : backgroundWork, now)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
   // Narrow-strip fold (2026-09-29 re-critique, P2). In a pane under 28rem this
@@ -320,7 +328,7 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
         {/* Right cluster: live status (folded-in StatusBar) + export + session
             actions (archive/⋮) + sub-agents toggle. Outside the fold: this is
             what a narrow pane keeps on its one visible row. */}
-        {(statusSlot || exportSlot || actionsSlot || agentCount > 0) && (
+        {(statusSlot || exportSlot || actionsSlot || agentCount > 0 || bgSummary) && (
           <div className="ml-auto flex items-center gap-2">
             {statusSlot}
             {exportSlot}
@@ -328,8 +336,8 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
             {agentCount > 0 && (
               <button
                 type="button"
-                onClick={() => setOpen((v) => !v)}
-                aria-expanded={open}
+                onClick={() => setPanel((p) => (p === 'agents' ? null : 'agents'))}
+                aria-expanded={panel === 'agents'}
                 aria-label={`${agentCount} sub-agents`}
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-7',
@@ -342,12 +350,26 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
                 <span className="text-ink-muted">{agentCount === 1 ? 'agent' : 'agents'}</span>
               </button>
             )}
+            {bgSummary && (
+              <button
+                type="button"
+                onClick={() => setPanel((p) => (p === 'background' ? null : 'background'))}
+                aria-expanded={panel === 'background'}
+                aria-label={`Background work: ${bgSummary}`}
+                className={cn('inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-7',
+                  'hover:bg-edge active:bg-edge-strong',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent')}
+              >
+                <span className={cn('h-2 w-2 rounded-full', statusTone('running'))} aria-hidden="true" />
+                <span className="text-ink">{bgSummary}</span>
+              </button>
+            )}
           </div>
         )}
       </div>
 
       {/* Sub-agent popover */}
-      {open && agentCount > 0 && (
+      {panel === 'agents' && agentCount > 0 && (
         <div
           className={cn(
             'absolute right-2 top-full z-sticky mt-1 w-72 max-h-72 overflow-y-auto',
@@ -355,6 +377,18 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
           )}
         >
           <SubAgentList sessionId={sessionId} subAgents={subAgents} />
+        </div>
+      )}
+
+      {/* Background-work popover */}
+      {panel === 'background' && bgSummary && (
+        <div
+          className={cn(
+            'absolute right-2 top-full z-sticky mt-1 w-72 max-h-72 overflow-y-auto',
+            'rounded-md border border-edge bg-surface shadow-lg px-2 py-1',
+          )}
+        >
+          <BackgroundWorkList sessionId={sessionId} work={backgroundWork} />
         </div>
       )}
     </div>
