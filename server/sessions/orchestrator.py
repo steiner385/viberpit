@@ -3657,6 +3657,7 @@ class SessionOrchestrator:
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            initial_prompt=initial_prompt,
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
             display_mode=display_mode, permission_mode=permission_mode,
@@ -3739,6 +3740,7 @@ class SessionOrchestrator:
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            initial_prompt=initial_prompt,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             pending_model_reason=model_reason,
             kind=kind, owner_identity=owner_identity,
@@ -4090,6 +4092,7 @@ class SessionOrchestrator:
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
                 created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
+                initial_prompt=kwargs.get("initial_prompt"),
                 model=None, reasoning_effort=kwargs.get("reasoning_effort"),
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
@@ -4751,6 +4754,7 @@ class SessionOrchestrator:
                 parent_notified_status=getattr(_prior, "parent_notified_status", None),
                 updated_at=_now, usage_unverified=usage_unverified,
                 origin=origin, origin_ref=origin_ref, model=None,
+                initial_prompt=initial_prompt,
                 reasoning_effort=reasoning_effort, host=_host,
                 kind=kind, owner_identity=owner_identity,
                 last_activity_at=time.monotonic(),
@@ -14786,8 +14790,13 @@ class SessionOrchestrator:
         if rec is None:
             return None
         tail = await self._autopilot_transcript_tail(session_id)
+        # A dispatch that forbids a PR (a backlog investigation) must not be projected
+        # to a shipped-PR goal: that contradicts the prompt the session is following.
+        from server.automations.completion_bar import has_no_pr_dispatch
+        no_pr = has_no_pr_dispatch(getattr(rec, "initial_prompt", None) or "")
         if rec.engine is AgentEngine.CODEX:
-            return await self.infer_goal_codex(rec.account, rec.name, tail)
+            return await self.infer_goal_codex(rec.account, rec.name, tail,
+                                               no_pr_dispatch=no_pr)
         if rec.engine is AgentEngine.CLAUDE_CODE:
             # The readiness-checked, engine-safe helper identity — never the session's
             # own account composed unconditionally: a disabled, de-authed or
@@ -14798,11 +14807,13 @@ class SessionOrchestrator:
             if cfg_dir is None:
                 return None
             from server.sessions.goal_inference import infer_goal
-            return await infer_goal(rec.name, tail, config_dir=cfg_dir, cwd=rec.cwd)
+            return await infer_goal(rec.name, tail, config_dir=cfg_dir, cwd=rec.cwd,
+                                    no_pr_dispatch=no_pr)
         return None
 
     async def infer_goal_codex(
-        self, account: str, name: str, transcript_tail: list[dict], *, timeout_s: float | None = None,
+        self, account: str, name: str, transcript_tail: list[dict], *,
+        timeout_s: float | None = None, no_pr_dispatch: bool = False,
     ) -> str | None:
         """One-shot, tool-less Codex thread that infers a session's goal statement.
 
@@ -14854,7 +14865,8 @@ class SessionOrchestrator:
             # runner nobody attached to is idle-reaped by the manager either way).
             self._codex.attach(account, session_id)
             attached = True
-            await driver.send_prompt(build_codex_goal_prompt(name, transcript_tail))
+            await driver.send_prompt(build_codex_goal_prompt(
+                name, transcript_tail, no_pr_dispatch=no_pr_dispatch))
             reply = await self._collect_codex_reply(driver, timeout=timeout_s)
             return normalize_goal_text(reply)
         except Exception:
@@ -15019,6 +15031,7 @@ class SessionOrchestrator:
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
             inferred_goal=getattr(row, "inferred_goal", None),
+            initial_prompt=getattr(row, "initial_prompt", None),
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
             auto_archive_opt_out_reason=getattr(row, "auto_archive_opt_out_reason", None),
             authored_branches=list(getattr(row, "authored_branches", None) or []),

@@ -111,7 +111,7 @@ def test_infer_goal_for_codex_session_never_touches_claude_compose(monkeypatch):
     orch._autopilot_transcript_tail = fake_tail
 
     calls = {}
-    async def fake_codex(account, name, tail):
+    async def fake_codex(account, name, tail, **_kw):
         calls["args"] = (account, name, tail)
         return "Ship the fix as a merged PR"
     orch.infer_goal_codex = fake_codex
@@ -138,7 +138,7 @@ def test_infer_goal_for_claude_session_uses_verified_helper_config_dir(monkeypat
     monkeypatch.setattr(orch_mod, "compose", _boom)
 
     calls = {}
-    async def fake_infer_goal(name, tail, *, config_dir, cwd):
+    async def fake_infer_goal(name, tail, *, config_dir, cwd, **_kw):
         calls["args"] = (name, config_dir, cwd)
         return "Ship the fix"
     monkeypatch.setattr(

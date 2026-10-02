@@ -50,14 +50,27 @@ def _default_query_fn():
     return query
 
 
-def _format_tail_body(name: str, transcript_tail: list[dict]) -> str:
+# Appended when the session was dispatched with instructions that forbid a PR (a backlog
+# investigation). The tail window rarely still holds the dispatch prompt, and the system
+# prompt's "project past the step to a shipped PR" rule would otherwise contradict it —
+# the goal then demands a PR the session was told not to open (#2600).
+_NO_PR_SCOPE = (
+    "SCOPE OVERRIDE: this session's dispatch instructions forbid implementing or opening "
+    "a pull request (an investigation). State the goal as the investigation outcome, "
+    "with no pull request in it."
+)
+
+
+def _format_tail_body(name: str, transcript_tail: list[dict], *,
+                      no_pr_dispatch: bool = False) -> str:
     """Compose the session-title + transcript-excerpt body shared by both providers."""
     tail_lines = "\n".join(
         f"[{e.get('role', '?')}] {e.get('text', '')}"
         for e in transcript_tail[-_MAX_TAIL_ENTRIES:]
     )
+    scope = f"{_NO_PR_SCOPE}\n\n" if no_pr_dispatch else ""
     return (f"Session title: {name}\n\nTranscript excerpt:\n---\n{tail_lines}\n---\n\n"
-            f"{_INSTRUCTION}")
+            f"{scope}{_INSTRUCTION}")
 
 
 def normalize_goal_text(text: str | None) -> str | None:
@@ -73,7 +86,8 @@ def normalize_goal_text(text: str | None) -> str | None:
     return goal[:_MAX_GOAL_CHARS] if goal else None
 
 
-def build_codex_goal_prompt(name: str, transcript_tail: list[dict]) -> str:
+def build_codex_goal_prompt(name: str, transcript_tail: list[dict], *,
+                            no_pr_dispatch: bool = False) -> str:
     """Compose the one-shot Codex turn text for goal inference.
 
     Codex threads have no separate system-prompt slot a one-shot caller can set
@@ -82,7 +96,8 @@ def build_codex_goal_prompt(name: str, transcript_tail: list[dict]) -> str:
     ``_SYSTEM_PROMPT`` is folded into the turn text instead, exactly like
     ``prompt_refiner.build_codex_refine_prompt`` does for prompt refinement.
     """
-    return f"{_SYSTEM_PROMPT}\n\n{_format_tail_body(name, transcript_tail)}"
+    return (f"{_SYSTEM_PROMPT}\n\n"
+            f"{_format_tail_body(name, transcript_tail, no_pr_dispatch=no_pr_dispatch)}")
 
 
 async def infer_goal(
@@ -93,12 +108,13 @@ async def infer_goal(
     cwd: str,
     model: str = "haiku",
     query_fn=None,
+    no_pr_dispatch: bool = False,
 ) -> str | None:
     """Infer a one-line goal from the session name + a compact transcript tail.
 
     Returns the goal text, or ``None`` on empty output or any failure. Never raises.
     """
-    body = _format_tail_body(name, transcript_tail)
+    body = _format_tail_body(name, transcript_tail, no_pr_dispatch=no_pr_dispatch)
     try:
         # Lazy options: construct SDK options ONLY on the real-model path, so an
         # injected query_fn (tests) never touches the SDK (same pattern as

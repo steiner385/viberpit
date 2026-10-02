@@ -113,6 +113,10 @@ class SessionRecord:
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
+    # The dispatch prompt, mirroring DB Session.initial_prompt. The completion bar and
+    # goal inference read it to honour an explicit no-PR dispatch (an investigation);
+    # without it on the record those reads were silently None (#2600).
+    initial_prompt: str | None = None
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
     kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
     owner_identity: str | None = None # identity owning an assistant thread (idempotency key)

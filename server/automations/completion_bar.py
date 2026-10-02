@@ -45,7 +45,7 @@ _NO_PR_DISPATCH_RE = re.compile(
 )
 
 
-def _has_no_pr_dispatch(text: str) -> bool:
+def has_no_pr_dispatch(text: str) -> bool:
     """True when *text* (the session's initial dispatch prompt) explicitly forbids
     opening a PR — "do not implement", "open no PR", "read-only", "investigate only" —
     the phrasing observed in the #2474 hand-back trail."""
@@ -225,7 +225,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             False, f"PR #{unarmed.number} is open but not armed",
             f"ready the PR and arm auto-merge: `gh pr ready {unarmed.number}` then "
             f"`gh pr merge {unarmed.number} --squash --auto`", "high")
-    if instructions and _has_no_pr_dispatch(instructions):
+    if instructions and has_no_pr_dispatch(instructions):
         return BarVerdict(
             True, "dispatch instructions explicitly forbid opening a PR "
             "(investigate-only/read-only)", None, "high")
