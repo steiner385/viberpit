@@ -38,6 +38,9 @@ describe('selectBackgroundWork', () => {
     const turns = [bashTurn('tu4', { command: 'sleep 9', run_in_background: true })]
     expect(selectBackgroundWork(turns, { tu4: live({ backgrounded: false, description: '' }) }, null).rows[0]).toMatchObject({ kind: 'shell', description: 'sleep 9' })
   })
+  it('shows nothing for an ended foreground fallback entry with no block and no snapshot', () => {
+    expect(selectBackgroundWork([], { tu5: live({ status: 'completed', backgrounded: false, description: '' }) }, null).rows).toEqual([])
+  })
   it('maps task types and snapshot kinds', () => {
     const v = selectBackgroundWork([], { w: live({ taskType: 'local_workflow' }) }, { items: [{ toolUseId: 'c', kind: 'terminal', name: 'BackgroundTerminal', description: 'npm test', startedAt: null }], wakeup: false, wakeupAt: null })
     expect(v.rows.map((r) => r.kind).sort()).toEqual(['terminal', 'workflow'])

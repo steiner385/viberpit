@@ -27,7 +27,7 @@ describe('background task lifecycle', () => {
     expect(s.backgroundTasks[TID]).toMatchObject({ status: 'stopped', endedAt: 3000 })
   })
   it('ended before started still records the task', () => {
-    expect(reduce([killed]).backgroundTasks[TID]).toMatchObject({ taskId: 'bg1', status: 'stopped', endedAt: 3000 })
+    expect(reduce([killed]).backgroundTasks[TID]).toMatchObject({ taskId: 'bg1', status: 'stopped', endedAt: 3000, backgrounded: false })
   })
   it('replayReset preserves live task state (the replay never re-emits task notices)', () => {
     const s = reduce([{ type: 'turnStart', turnId: 't1' }, { type: 'replayComplete' }, started, { type: 'replayReset' }])

@@ -266,7 +266,11 @@ def _record_to_dict(
         "detached": record.detached,
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
-        "backgroundWork": getattr(record, "background_work", None) or EMPTY_BACKGROUND_WORK,
+        "backgroundWork": (
+            EMPTY_BACKGROUND_WORK
+            if record.status == "ended"
+            else getattr(record, "background_work", None) or EMPTY_BACKGROUND_WORK
+        ),
         "createdAt": iso_utc(record.created_at),
         # Last-turn-response time for the "active … ago" label (NOT record.updated_at,
         # which any row write bumps — that pinned every card to "0s ago"). Fall back to

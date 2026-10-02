@@ -28,6 +28,10 @@ describe('SessionCard background work (#2635)', () => {
     renderCard(makeSession({ backgroundWork: work }))
     expect(screen.getByLabelText('Status: Waiting…')).toHaveAttribute('title', 'Waiting on 1 shell · wakeup armed')
   })
+  it('does not title a queued pill with background work', () => {
+    renderCard(makeSession({ status: 'queued', backgroundWork: work }))
+    expect(screen.getByLabelText(/^Status:/)).not.toHaveAttribute('title')
+  })
   it('renders nothing extra when there is no background work', () => {
     renderCard(makeSession({ backgroundWork: { items: [], wakeup: false, wakeupAt: null } }))
     expect(screen.queryByTestId('card-background-pill')).toBeNull()

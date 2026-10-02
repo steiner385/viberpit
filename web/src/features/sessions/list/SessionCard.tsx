@@ -625,7 +625,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             rail + dot carry the same tier as color. */}
         <span
           aria-label={`Status: ${presentation.label}`}
-          title={presentation.tier === 'waiting' && bgSummary ? `Waiting on ${bgSummary}` : undefined}
+          title={session.status === 'waiting_external' && bgSummary ? `Waiting on ${bgSummary}` : undefined}
           className={cn('flex-shrink-0 font-medium', presentation.textClass)}
         >
           {presentation.label}

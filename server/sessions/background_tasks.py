@@ -347,7 +347,7 @@ class PendingWakeup:
 
 
 def pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> PendingWakeup | None:
-    """True iff the agent is parked on a self-scheduled wakeup it hasn't acted on yet.
+    """The armed ``ScheduleWakeup`` the agent is parked on, or None when nothing is pending.
 
     A ``ScheduleWakeup`` tool call arms exactly one future re-invocation; when it fires,
     a new ``user`` turn begins (in ``/loop`` dynamic mode an ``isMeta`` re-injection).

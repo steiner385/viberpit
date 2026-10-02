@@ -47,7 +47,7 @@ SNAP = {"items": [{"toolUseId": "tu1", "kind": "task", "name": "Bash",
 
 
 async def _orch(tmp_path, *, status="idle", background_work=None):
-    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}")
     async with db_session() as db:
         db.add(DbSession(id="s1", name="n", account_name="acct1",
                          engine_session_id="claude-s1", status=status, cwd="/repo/s1",
@@ -116,7 +116,7 @@ def test_a_non_finished_status_leaves_the_stored_snapshot_alone(tmp_path):
 
 def test_rehydrate_unpark_heal_clears_the_snapshot(tmp_path):
     async def run():
-        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}")
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}")
         async with db_session() as db:
             db.add(DbSession(id="s1", name="n", account_name="acct1",
                              engine_session_id="claude-s1", status="waiting_external",

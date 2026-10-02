@@ -1444,7 +1444,7 @@ export function transcriptReducer(
     }
     case 'backgroundTaskEnded': {
       const cur: BackgroundTaskState = state.backgroundTasks[ev.toolUseId]
-        ?? { taskId: ev.taskId, description: '', taskType: 'local_bash', backgrounded: true, status: 'running' }
+        ?? { taskId: ev.taskId, description: '', taskType: 'local_bash', backgrounded: false, status: 'running' }
       if (cur.status !== 'running') return state   // the kill sequence delivers two terminal frames
       return { ...state, backgroundTasks: { ...state.backgroundTasks, [ev.toolUseId]: { ...cur, status: ev.status, endedAt: ev.ts } } }
     }
