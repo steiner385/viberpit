@@ -209,9 +209,16 @@ _PATTERNS = (_RE_401, _RE_UNAUTH_RATE_LIMIT, _RE_NOT_LOGGED_IN)
 #:
 #: Same condition — the request never reached GitHub — so it collapses into the
 #: same host record instead of minting one auto-error issue per repo.
+#:
+#: ``git`` over HTTPS (libcurl) words the same condition differently, and a
+#: DNS blip on the host surfaces as it (#2610)::
+#:
+#:     fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com
 _RE_UNREACHABLE = re.compile(
     r"error connecting to |check your internet connection"
-    r"|net/http: TLS handshake timeout",
+    r"|net/http: TLS handshake timeout"
+    r"|could not resolve host:|failed to connect to \S+ port"
+    r"|connection timed out|network is unreachable",
     re.IGNORECASE,
 )
 

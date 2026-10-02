@@ -32,7 +32,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import brand, paths
+from . import brand, gh_credential, paths
 from .gitrepos import git_env_for_remote
 
 log = logging.getLogger(__name__)
@@ -186,8 +186,12 @@ def _try_fetch_origin(repo_top: str) -> bool:
     r = _run(["git", "-C", repo_top, "fetch", "origin"],
              env=git_env_for_remote(_origin_url(repo_top)))
     if r.returncode != 0:
-        log.warning("worktree.fetch_failed repo=%s — basing on local ref: %s",
-                    repo_top, r.stderr.strip())
+        # An unreachable host is the expected offline case, not a defect (#2610).
+        level = (logging.INFO
+                 if gh_credential.classify_gh_failure(r.stderr) == gh_credential.UNREACHABLE
+                 else logging.WARNING)
+        log.log(level, "worktree.fetch_failed repo=%s — basing on local ref: %s",
+                repo_top, r.stderr.strip())
         return False
     return True
 

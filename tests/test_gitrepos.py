@@ -653,6 +653,35 @@ class StaleCredentialRegistryTests(unittest.TestCase):
         self.assertTrue(gitrepos.has_stale_credentials("acme/widget"))
         self.assertTrue(any("credential refresh needed" in line for line in cm.output))
 
+    def test_ensure_clone_unreachable_fetch_is_not_a_warning(self) -> None:
+        """A DNS blip is the designed best-effort path: stale ref returned, no
+        WARNING (the sink files one issue per WARNING fingerprint — #2610)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "GitHub"
+        remote = Path(tmp.name) / "remote.git"
+        root.mkdir()
+        _make_remote(remote)
+        gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        real_run = gitrepos._run_git
+
+        def fake_run(args, owner=None):
+            if "fetch" in args:
+                return subprocess.CompletedProcess(
+                    args, 128, stdout="",
+                    stderr="fatal: unable to access "
+                           "'https://github.com/acme/widget.git/': "
+                           "Could not resolve host: github.com")
+            return real_run(args, owner=owner)
+
+        with mock.patch.object(gitrepos, "_run_git", side_effect=fake_run), \
+                mock.patch.object(gitrepos, "record_fetch_result") as rec:
+            with self.assertLogs("viberpit.gitrepos", level="INFO") as cm:
+                dest = gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        self.assertTrue(Path(dest, ".git").exists())
+        self.assertEqual([r.levelname for r in cm.records], ["INFO"])
+        self.assertIs(rec.call_args.kwargs["ok"], False)
+
     def test_ensure_clone_successful_refresh_clears_alert(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
