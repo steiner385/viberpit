@@ -396,3 +396,39 @@ def test_hand_back_state_clears_between_turns():
     assert feed_result(t).outcome == "hand_back"
     feed_assistant_text(t, "continuing", pid=None)
     assert feed_result(t).outcome == "success"
+
+
+def test_prose_beside_a_hand_back_call_streams_whole_and_the_closing_prose_too():
+    """Regression for the 2026-10-02 report "the five options above" (session
+    6ab5c602): the hypothesis was that hiding the hand_back card also hid the text
+    block sharing its message, or folded it into the Thinking row. It did not — the
+    transcript had no text block to show — but pin it: an assistant message shaped
+    [thinking, text, hand_back] streams BOTH the thinking and the text, the call
+    itself renders nothing, and the short prose after the tool result streams as well.
+    """
+    from claude_agent_sdk import ThinkingBlock, ToolUseBlock
+
+    from server.sessions.events import TextDelta, ThinkingDelta, ToolCall
+    options = "Everything shipped. Options:\n1. **Update graphy**\n2. **Verify**"
+    closing = "I've handed the session back with the options above."
+    t = Translator()
+    out: list = []
+    out += t.feed(f.stream_start(uuid="m1"))
+    out += t.feed(f.stream_thinking("weigh the options", uuid="m1"))
+    out += t.feed(f.stream_text(options, uuid="m1"))
+    out += t.feed(f.assistant(ThinkingBlock(thinking="weigh the options", signature="sig"),
+                              TextBlock(text=options),
+                              ToolUseBlock(id="toolu_hb", name=HAND_BACK,
+                                           input={"reason": "Pick the next piece"}),
+                              uuid="m1"))
+    assert t.has_signal("hand_back") and t.message_prose() == options
+    out += t.feed(f.user_tool_result("toolu_hb", [{"type": "text", "text": "{}"}]))
+    out += t.feed(f.stream_start(uuid="m2"))
+    out += t.feed(f.stream_text(closing, uuid="m2"))
+    out += t.feed(f.assistant(TextBlock(text=closing), uuid="m2"))
+    end = feed_result(t)
+
+    assert [e.text for e in out if isinstance(e, TextDelta)] == [options, closing]
+    assert [e.text for e in out if isinstance(e, ThinkingDelta)] == ["weigh the options"]
+    assert not any(isinstance(e, ToolCall) for e in out)
+    assert end.outcome == "hand_back" and end.hand_back_reason == "Pick the next piece"

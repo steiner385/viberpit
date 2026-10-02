@@ -148,6 +148,17 @@ class Translator:
         except Exception:  # noqa: BLE001 - a bad argument must not fail the turn
             pass
 
+    def has_signal(self, stem: str) -> bool:
+        """Has the top-level agent made a usable ``stem`` signal call this turn?"""
+        return stem in self._turn_signals
+
+    def message_prose(self) -> str:
+        """The text blocks of the LATEST top-level assistant message, as the user sees
+        them — never thinking. The consolidated AssistantMessage is queued ahead of the
+        in-process MCP call it carries, so once `has_signal` answers True this is the
+        prose of the message that made the call."""
+        return self._turn_text
+
     def _turn_end_model_request(self) -> dict | None:
         """Self-directed model request carried by this turn's text, or None.
 

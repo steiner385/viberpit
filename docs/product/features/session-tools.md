@@ -232,6 +232,24 @@ signalling call still renders as an ordinary tool card and has no effect on the 
 Tool-call state is turn-scoped, not message-scoped, and precedence is tool-over-marker: if a turn
 carries both a signalling tool call and a stray marker in its prose, the tool call wins.
 
+**`hand_back` also tells the session what the user sees.** Thinking is never rendered as more
+than a collapsed "Thinking" row, and a session cannot tell: on 2026-10-02 one wrote five options
+inside its thinking, called `hand_back` with a one-sentence reason, and closed with "the five
+options above" (session 6ab5c602). So the acknowledgement carries a `userSees` block — the
+character count of the prose in the message that made the call (`Translator.message_prose`,
+read through `ClaudeAgentDriver.signal_message_prose`, which waits for the Translator to have
+recorded the call before answering) and a note: with prose, that `reason` and the prose are
+what the user sees; without, that the user sees ONLY `reason` and the session should write its
+question and options out now. No block at all when the prose is unknowable (no driver probe,
+the call never reached the Translator): a guessed "nothing was shown" would make every hand-back
+repeat itself. The description says the same up front, so the question goes in prose before the
+call rather than in thinking.
+
+The persisted ask survives a daemon restart: `_record_from_row` maps `hand_back_reason` and
+`suspected_complete_reason` back onto the rebuilt record (dropped until 2026-10-02 — a deploy
+turned every handed-back card and banner on the host into "the session stopped and is waiting on
+you" while the row still held the sentence).
+
 `set_hold` (and `share_artifact`'s image ingest) do NOT follow this split: the handler acts
 immediately (calls `apply_session_hold` / stores the image) rather than deferring to the
 Translator, because a hold or a shared deliverable is not a claim about the session's own

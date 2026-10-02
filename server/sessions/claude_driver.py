@@ -1770,6 +1770,25 @@ class ClaudeAgentDriver:
         writes ``waiting_question``."""
         return self._last_hand_back_reason
 
+    async def signal_message_prose(self, stem: str, *, timeout: float = 2.0) -> str | None:
+        """The prose of the top-level message that carried this turn's ``stem``
+        signal call (``"hand_back"``), or None if the translator never reads one.
+
+        Called from the in-process MCP handler of that very call. The SDK queues the
+        message's stream events and its consolidated AssistantMessage BEFORE it
+        spawns the handler (``query.py:_read_messages``), but this driver's consumer
+        may not have processed them yet — so wait for the translator to have recorded
+        the signal from the tool-use block, then read that message's text. Never
+        returns an earlier message's prose: without the signal the answer is
+        "unknown", and the handler says nothing rather than guessing.
+        """
+        deadline = time.monotonic() + timeout
+        while not self._tr.has_signal(stem):
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.02)
+        return self._tr.message_prose()
+
     def open_stream(self) -> DriverStream:
         """Open an attach stream ATOMICALLY — no await anywhere in this method,
         so no event (and no turn settle) can slip between snapshotting the
