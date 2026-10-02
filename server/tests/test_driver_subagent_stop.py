@@ -82,3 +82,24 @@ def test_stop_subagent_unknown_returns_none_and_calls_nothing():
 def test_stop_subagent_before_start_returns_none():
     d = _driver([])
     assert _run(d.stop_subagent(TID)) is None
+
+
+def test_background_shell_registers_in_the_task_map_and_stop_kills_it():
+    """A backgrounded Bash shares the Task map so POST /agents/{toolUseId}/stop stops it."""
+    clients: list[FakeSDKClient] = []
+    d = _driver(clients)
+    seen: list[str] = []
+    d._on_background_work_changed = seen.append
+
+    async def run():
+        await d.start()
+        clients[0].inject([f.task_started(TASK, TID, task_type="local_bash", backgrounded=True)])
+        await _settle(d, lambda: d.subagent_task_id(TID) == TASK)
+        assert seen == ["s1"]
+        assert await d.stop_subagent(TID) == TASK
+        assert clients[0].stopped_tasks == [TASK]
+        clients[0].inject([f.task_notification(TASK, TID, status="stopped", summary="")])
+        await _settle(d, lambda: d.subagent_task_id(TID) is None)
+        assert seen == ["s1", "s1"]
+        await d.aclose()
+    _run(run())

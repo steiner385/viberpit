@@ -51,6 +51,14 @@ class Translator:
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
         # after the turn that spawned it ended (through the driver's idle listener).
         self._task_tool: dict[str, str] = {}
+        # Background (non-agent) tasks: CLI task id -> the launching tool-use id. Same
+        # lifetime as _task_tool, same reason (#2635).
+        self._bg_task_tool: dict[str, str] = {}
+        # Every tool-use id that launched a background task, append-only (one id per
+        # launch). The kill sequence is task_updated(killed) — which evicts the map —
+        # then task_notification carrying the tool-use id with no map entry left; this
+        # set keeps that second frame from falling through to the sub-agent path.
+        self._bg_tool_ids: set[str] = set()
 
     def _ensure_turn(self, uuid, pid=None) -> list:
         if pid in self._open:
@@ -75,15 +83,21 @@ class Translator:
         self._turn_signals = {}
 
     def _sub_agent_notice(self, msg) -> list:
-        """system/task_* notices for a Task sub-agent → SubAgent* events (spec §4.2).
-        Returns [] for a task with no Task tool-use id to attach to (a Bash/Monitor
-        task, or a task this translator never saw start)."""
+        """system/task_* notices → SubAgent* events for a Task sub-agent (spec §4.2), or
+        BackgroundTask* events for a backgrounded shell / Monitor / Workflow (#2635). A
+        notice with no tool-use id to attach to (and no map entry) is dropped."""
         if isinstance(msg, TaskStartedMessage):
             tuid = msg.tool_use_id
-            if not tuid or (msg.task_type not in (None, "local_agent")):
+            if not tuid:
                 return []
-            self._task_tool[msg.task_id] = tuid
             d = msg.data or {}
+            if msg.task_type not in (None, "local_agent"):
+                self._bg_task_tool[msg.task_id] = tuid
+                self._bg_tool_ids.add(tuid)
+                return [ev.BackgroundTaskStarted(
+                    tuid, msg.task_id, msg.description or "", str(msg.task_type),
+                    backgrounded=bool(d.get("is_backgrounded", True)))]
+            self._task_tool[msg.task_id] = tuid
             atype = d.get("subagent_type")
             raw_depth = d.get("spawn_depth")
             return [ev.SubAgentStarted(
@@ -92,6 +106,8 @@ class Translator:
                 backgrounded=bool(d.get("is_backgrounded", False)),
                 depth=int(raw_depth) if raw_depth is not None else 1)]
         if isinstance(msg, TaskProgressMessage):
+            if msg.task_id in self._bg_task_tool:
+                return []          # shells report no progress worth a frame
             if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
                 return []
             tuid = msg.tool_use_id or self._task_tool.get(msg.task_id)
@@ -105,6 +121,10 @@ class Translator:
         if isinstance(msg, TaskUpdatedMessage):
             if msg.status not in TERMINAL_TASK_STATUSES:
                 return []
+            btuid = self._bg_task_tool.pop(msg.task_id, None)
+            if btuid:
+                return [ev.BackgroundTaskEnded(
+                    btuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"))]
             tuid = self._task_tool.get(msg.task_id)
             if not tuid:
                 return []
@@ -114,6 +134,12 @@ class Translator:
             self._task_tool.pop(msg.task_id, None)
             return [ev.SubAgentEnded(tuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"))]
         if isinstance(msg, TaskNotificationMessage):
+            btuid = self._bg_task_tool.pop(msg.task_id, None)
+            if not btuid and msg.tool_use_id in self._bg_tool_ids:
+                btuid = msg.tool_use_id
+            if btuid:
+                return [ev.BackgroundTaskEnded(
+                    btuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"))]
             if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
                 return []
             tuid = msg.tool_use_id or self._task_tool.pop(msg.task_id, None)
