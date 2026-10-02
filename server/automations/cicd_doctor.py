@@ -18,7 +18,7 @@ from .base import AutomationStatus, ConfigField
 from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
 from .issue_filing import Decision, Linked, apply, decide
-from server.github.host_failures import is_transient_github_edge_failure
+from server.github.host_failures import is_transient_github_edge_failure, log_gh_failure
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
@@ -492,6 +492,10 @@ class CicdDoctorLoop:
                     # repo, so filing it at WARNING re-mints the same
                     # non-actionable auto-error until GitHub recovers (#2051).
                     log.info("cicd_doctor.repo_unavailable repo=%s: %s", repo, exc)
+                elif isinstance(exc, gitrepos.GhError):
+                    # An offline host fails every repo identically; the slug in
+                    # the message would file one auto-error per repo (#2613).
+                    log_gh_failure(log, str(exc), "cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
                 else:
                     log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
         if repos:  # an empty list is a transient failure, not "every repo is gone"

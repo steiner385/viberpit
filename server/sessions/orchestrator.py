@@ -18097,6 +18097,9 @@ class SessionOrchestrator:
                 resolved = await _attachments.resolve_and_bind(
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
+        rec = self._records.get(session_id)
+        if rec is not None:
+            await self._retry_unapplied_model(d, rec)
         if interrupt:
             await d.send_prompt(text, resolved, interrupt=True, context=context,
                                 origin=origin)
@@ -20484,15 +20487,49 @@ class SessionOrchestrator:
         process as missing — ensure_driver's caller logged nothing, and _reassign
         parked a live session ``reassign_failed``, skipped the DB account write and
         dropped the replayed turn (#2572, "Couldn't confirm model … with the API" on
-        the rotation target). The session continues on the launch model; the user
-        can re-pick."""
+        the rotation target).
+
+        Nor is it final: the usual cause is a transient 429 on an account that is
+        rate-limited at the moment of resume (#2594). ``record.model`` keeps the
+        user's pick and ``model_unapplied`` marks the drift, so
+        ``_retry_unapplied_model`` tries again before the next turn. INFO here — the
+        WARNING (which files an issue) belongs to a retry that still fails."""
+        record.model_unapplied = False
         if record.model is None:
             return
         try:
             await driver.set_model(record.model)
         except Exception:
-            log.warning("%s id=%s set_model(%r) failed — continuing on the launch model",
-                        site, record.id, record.model, exc_info=True)
+            record.model_unapplied = True
+            log.info("%s id=%s set_model(%r) failed — retrying before the next turn",
+                     site, record.id, record.model, exc_info=True)
+
+    async def _retry_unapplied_model(self, driver: AgentDriver, record: SessionRecord) -> None:
+        """Before a turn starts, retry a model re-apply that failed at resume/rotation.
+
+        One retry per failed re-apply, not one per turn: the flag is cleared up front.
+        If it fails again the turn still runs (on the launch model), but the session
+        says so with an error card rather than reporting a model it is not running;
+        re-picking the model is the user's retry."""
+        if not record.model_unapplied:
+            return
+        record.model_unapplied = False
+        if record.model is None:
+            return
+        try:
+            await driver.set_model(record.model)
+        except Exception as exc:
+            log.warning("session id=%s set_model(%r) retry before the turn failed — the "
+                        "turn runs on the launch model", record.id, record.model,
+                        exc_info=True)
+            with contextlib.suppress(Exception):
+                await driver.emit_error(
+                    "model_not_applied",
+                    f"Couldn't switch this session to {record.model} "
+                    f"({str(exc)[:200]}), so this turn runs on the account's default "
+                    "model. Pick the model again to retry.")
+        else:
+            log.info("session id=%s set_model(%r) applied on retry", record.id, record.model)
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str,
                         replay_last_prompt: bool = True) -> str:
@@ -20710,6 +20747,8 @@ class SessionOrchestrator:
             if record.status in _STALLED_STATUSES:
                 await self._persist_status(record.id, "idle")
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
+            if last or carried:
+                await self._retry_unapplied_model(new_driver, record)
             if last:
                 await new_driver.send_prompt(last)
             for text in carried:

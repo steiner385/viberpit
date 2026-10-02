@@ -59,15 +59,11 @@ class ErrorTriage:
         ConfigField(key="daily_cap", label="New issues per day", type="int", default=10),
         ConfigField(key="comment_every_h", label="Recurrence comment gap (hours)",
                     type="int", default=24),
-        # claude_agent_sdk: the vendored SDK logs its own ERROR ("Fatal error in
-        # message reader: …") whenever the CLI subprocess exits between turns —
-        # the exact RAISED-cursor-end condition claude_driver._idle_listen/_drain
-        # already catch and settle with one canonical record of their own (#1885).
-        # Left un-ignored, error triage fingerprinted the vendor's log line as a
-        # second, separate incident for the same event (#1886).
+        # Operator additions only — ALWAYS_IGNORED_LOGGERS is applied on top.
         ConfigField(key="ignore_loggers", label="Ignored logger prefixes", type="string",
-                    default="uvicorn.error,websockets,claude_agent_sdk",
-                    help="Comma-separated; still counted, never filed."),
+                    default="uvicorn.error,websockets",
+                    help="Comma-separated; still counted, never filed. "
+                         "claude_agent_sdk is always ignored."),
         ConfigField(key="retention_days", label="Retention (days)", type="int", default=90,
                     help="Unfiled/resolved signatures not seen this long are deleted."),
     ]
@@ -102,9 +98,20 @@ def should_file(*, level: str, count_since_filed: int, config: dict) -> bool:
     return count_since_filed >= int(config.get("min_count_warning", 3))
 
 
+# Logger prefixes never filed, whatever the operator's ignore_loggers says.
+# claude_agent_sdk: the vendored SDK logs its own ERROR ("Fatal error in message
+# reader: …") whenever the CLI subprocess exits between turns — the exact
+# RAISED-cursor-end condition claude_driver._idle_listen/_drain already catch and
+# settle with one canonical record of their own (#1885). Filing it is a duplicate
+# of that record (#1886). This is an invariant, not a preference, so it lives in
+# code: #2457 put it in the ignore_loggers DEFAULT, which never reached the live
+# row that already persisted the old value, and the line re-filed (#2626).
+ALWAYS_IGNORED_LOGGERS: tuple[str, ...] = ("claude_agent_sdk",)
+
+
 def is_ignored(logger: str | None, config: dict) -> bool:
     prefixes = [p.strip() for p in str(config.get("ignore_loggers") or "").split(",") if p.strip()]
-    return any((logger or "").startswith(p) for p in prefixes)
+    return any((logger or "").startswith(p) for p in (*ALWAYS_IGNORED_LOGGERS, *prefixes))
 
 
 def _fmt(ts: datetime | None) -> str:
