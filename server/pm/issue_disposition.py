@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.db.models import WorkItem
 
 from . import journal
+from .outcomes import escalation_for, escalation_to_wire
 from .gh_mutations import build_batch, build_issue_query, parse_batch
 from .materialize_apply import Mutate, error_text
 from .reconcile_diff import Mutation
@@ -46,7 +47,10 @@ def detail(src: WorkItem) -> dict:
     return dict(id=src.id, repo=src.repo, number=src.number, title=title, body=body,
                 state=state, url=src.url, version=version, ref=f"{src.repo}#{src.number}",
                 holdKind=src.hold_kind, holdReason=src.hold_reason, holdBy=src.hold_by,
-                holdSetAt=held_at.isoformat() if held_at else None)
+                holdSetAt=held_at.isoformat() if held_at else None,
+                # Same reader the holds list uses, so the dialog and the card agree
+                # about which holds carry an "Approve escalation" button.
+                escalation=escalation_to_wire(escalation_for(src.hold_kind, src.hold_reason)))
 
 
 def _issue(payload: object, node_id: str) -> dict:

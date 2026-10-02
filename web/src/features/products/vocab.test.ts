@@ -132,3 +132,34 @@ describe('DELIVERY vocabulary (finish-line D9)', () => {
     expect(DELIVERY.ciError).toBe('Could not load CI health.')
   })
 })
+
+describe('holdExplanation — one plain-language account per hold, shared by the card and the dialog', () => {
+  it('translates an approval-gated hand-off into who stopped, why, and the two ways out', async () => {
+    const { holdExplanation } = await import('./vocab')
+    const tier = (id: string) => ({ opus: 'Opus', fable: 'Fable' })[id] ?? id
+    const { why, next } = holdExplanation({
+      holdKind: 'owner_action', holdReason: 'bounced at opus; fable needs approval', holdBy: 'runner',
+      escalation: { bouncedAt: 'opus', needsApproval: 'fable' },
+    }, tier)
+    expect(why).toBe('The Backlog Runner could not get a pull request merged at Opus and stopped: the next step up is Fable, which your model-approval policy gates behind a person.')
+    expect(next).toBe("Approve escalation to run it once at Fable now, or Retry to re-queue it at the product's default model. Nothing happens until you choose.")
+    // PR Doctor's hand-off names no bounce tier.
+    expect(holdExplanation({ holdKind: 'owner_action', holdReason: 'x', holdBy: 'runner', escalation: { bouncedAt: null, needsApproval: 'fable' } }, tier).why)
+      .toBe('The Backlog Runner could not get a pull request merged and stopped: the next step up is Fable, which your model-approval policy gates behind a person.')
+  })
+
+  it('names the actor and the three release signals for a plain owner hold, and routes a decision to the inbox', async () => {
+    const { holdExplanation, holdActorLabel } = await import('./vocab')
+    const owner = holdExplanation({ holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'tony@example.com' })
+    expect(owner.why).toBe('tony@example.com handed this to you: needs the keyring. The runner will not touch it again until you act.')
+    expect(owner.next).toMatch(/^Retry re-queues it for the next run\. You can also move its card to Ready or Backlog on the GitHub board, or edit the issue/)
+    const decision = holdExplanation({ holdKind: 'decision', holdReason: null, holdBy: 'session:s1' })
+    expect(decision.why).toBe('A session proposed options instead of guessing.')
+    expect(decision.next).toMatch(/Pick an option in the Inbox/)
+    expect(holdActorLabel('runner')).toBe('The Backlog Runner')
+    expect(holdActorLabel('automation:error-triage')).toBe('The error-triage automation')
+    expect(holdActorLabel('session:abc')).toBe('A coding session')
+    expect(holdActorLabel('assistant:tony')).toBe('The assistant')
+    expect(holdActorLabel(null)).toBe('Someone')
+  })
+})

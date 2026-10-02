@@ -2,7 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
-import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup, useDecisions } from '@/api/hooks'
+import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup, useDecisions, useApproveEscalation } from '@/api/hooks'
 import type { IssueDispositionInput, WorkItemIssue } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
@@ -14,15 +14,18 @@ import { Skeleton } from '@/ui/Skeleton'
 import { Banner } from '@/ui/Banner'
 import { Markdown } from '@/features/sessions/transcript/Markdown'
 import { ConsequenceList } from '../guidance/ConsequenceList'
-import { holdLabel, ROADMAP } from '@/features/products/vocab'
+import { holdExplanation, holdLabel, ROADMAP } from '@/features/products/vocab'
+import { tierLabel } from '@/session/modelName'
 import { sessionPath } from '@/session/sessionNavState'
 import { inboxPath } from '../roadmapNavState'
+import { dispatchOutcomeText } from './holdOutcome'
 
 /** Lazy-mounted by the list: its queries exist only after an explicit review. */
 export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; onClose: () => void }) {
   const issue = useWorkItemIssue(itemId)
   const mutation = useDispositionIssue(itemId)
   const release = useReleaseHold(itemId)
+  const approve = useApproveEscalation(itemId)
   const dispatch = useDispatchBacklogGroup()
   const [mode, setMode] = useState<'read' | 'edit' | 'resolve' | 'dismiss'>('read')
   const [draft, setDraft] = useState<WorkItemIssue | null>(null)
@@ -37,7 +40,10 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
   // decision hold, so every other hold kind costs no request.
   const { data: decisions } = useDecisions(undefined, { enabled: data?.holdKind === 'decision', poll: false })
   const proposalId = decisions?.find((d) => d.workItemId === data?.id && d.status === 'pending')?.id ?? null
-  const pending = busy || mutation.isPending || release.isPending || dispatch.isPending
+  const pending = busy || mutation.isPending || release.isPending || dispatch.isPending || approve.isPending
+  // One explanation for both surfaces (the held card on the Roadmap reads the
+  // same function), so the dialog never says something the card did not.
+  const explanation = data?.holdKind ? holdExplanation(data, tierLabel) : null
   const conflict = failure instanceof ApiRequestError && failure.status === 409
   const start = (next: typeof mode) => {
     if (!issue.data) return
@@ -94,8 +100,32 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
   const retryHold = async () => {
     try {
       await release.mutateAsync()
+      // A saved edit leaves `draft` holding the pre-release issue; drop it so the
+      // refetched (unheld) issue is what renders, not a stale hold panel.
+      setDraft(null)
     } catch {
       // surfaced inline via release.error below
+    }
+  }
+  // Approve escalation (an approval-gated hand-off, `data.escalation`): releases
+  // the hold and dispatches NOW at the gated tier, approving the parked session
+  // as this person — see `POST …/hold/approve-escalation`. Same outcome handling
+  // as Implement now below: a 200 can still carry a refusal in `status`.
+  const approveNow = async () => {
+    if (!data?.escalation) return
+    setDispatchError(null)
+    setSpawned(null)
+    try {
+      const result = await approve.mutateAsync(data.escalation.needsApproval)
+      setDraft(null)
+      const text = dispatchOutcomeText(result, result.model)
+      if (text) setDispatchError(text)
+      if (result.status === 'spawned' && result.session_id) {
+        setSpawned({ id: result.session_id, name: result.session_name })
+        toast.success(result.session_name ? `Started ${result.session_name}` : 'Started a session')
+      }
+    } catch (e) {
+      setDispatchError(extractMutationErrorMessage(e, 'Could not approve the escalation.'))
     }
   }
   // Implement now / Investigate now (#1963): both dispatch a coding session for
@@ -143,7 +173,8 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
         </>}
         {mode === 'read' && data.holdKind && <div role="region" aria-label="Hold" className="rounded-md border border-edge p-3 space-y-3">
           <p className="font-medium">{holdLabel(data.holdKind)}</p>
-          {data.holdReason && <p className="text-sm text-ink">{data.holdReason}</p>}
+          {explanation && <p className="text-sm text-ink">{explanation.why}</p>}
+          {explanation?.next && <p className="text-sm text-ink-muted">{explanation.next}</p>}
           {(data.holdBy || data.holdSetAt) && <p className="text-sm text-ink-muted">
             {data.holdBy && <>by {data.holdBy}</>}
             {data.holdBy && data.holdSetAt && ' · '}
@@ -152,6 +183,11 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
           {data.holdKind === 'owner_action' && <>
             <div className="flex flex-wrap gap-2">
               <Button size="lg" loading={release.isPending} disabled={pending} onClick={() => void retryHold()}>Retry</Button>
+              {data.escalation && (
+                <Button size="lg" variant="secondary" loading={approve.isPending} disabled={pending} onClick={() => void approveNow()}>
+                  Approve escalation to {tierLabel(data.escalation.needsApproval)}
+                </Button>
+              )}
               <Button
                 size="lg"
                 variant="secondary"

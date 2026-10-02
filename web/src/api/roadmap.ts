@@ -217,6 +217,15 @@ export interface HoldsProduct {
   oldestHoldHours: number | null
 }
 
+/** An owner_action hold the Backlog Runner wrote at an approval-clamped ladder
+ *  top (`server/pm/outcomes.py:escalation_for`): the tier it bounced at (null
+ *  when PR Doctor handed off without a bounce) and the gated tier a person can
+ *  approve. Null on every other hold. */
+export interface HoldEscalation {
+  bouncedAt: string | null
+  needsApproval: string
+}
+
 export interface HeldItem {
   ref: string
   repo: string
@@ -237,6 +246,10 @@ export interface HeldItem {
   downstreamRefs: string[]
   dispatchableOnRelease: boolean
   releasedBy: string
+  /** The mirror row the per-item taps (Retry, approve escalation, Review and
+   *  decide) act on; null only for a row the mirror has not resolved. */
+  workItemId: string | null
+  escalation: HoldEscalation | null
 }
 
 export interface HoldsView {

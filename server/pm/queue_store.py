@@ -155,5 +155,6 @@ def load_queue_rows(db: Session, *, now: datetime,
                 bounces=bounces.get(ref, 0),
                 hold_reason=w.hold_reason, hold_by=w.hold_by,
                 hold_set_at=_aware(w.hold_set_at),
+                work_item_id=w.id,
             ))
     return rows

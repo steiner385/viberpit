@@ -6,6 +6,13 @@ import { cap, ini, product } from '../__fixtures__/map'
 import { NeedsYouList } from './NeedsYouList'
 
 vi.mock('@/initiatives/IncidentQueue', () => ({ IncidentQueue: () => null }))
+const h = vi.hoisted(() => ({ held: [] as unknown[], calls: [] as unknown[] }))
+vi.mock('@/api/hooks', () => ({
+  useHolds: (product: string | undefined, opts: { enabled: boolean }) => { h.calls.push([product, opts.enabled]); return { data: { products: [], held: h.held, truncated: 0, generatedAt: '' } } },
+}))
+vi.mock('./HeldIssueCard', () => ({ HeldIssueCard: ({ item, showProduct }: { item: { ref: string; product: string }; showProduct: boolean }) => (
+  <li data-testid="held-issue">{item.ref} {item.product} {String(showProduct)}</li>
+) }))
 vi.mock('./LeafList', () => ({ LeafList: ({ scope, attentionOnly, product }: { scope: { capability: string }; attentionOnly: boolean; product: ProductNode }) => (
   <div aria-label="Attention issue actions">{scope.capability} {String(attentionOnly)} {product.capabilities.map((c) => c.slug).join(",")}</div>
 ) }))
@@ -58,5 +65,44 @@ describe('NeedsYouList issue groups', () => {
     expect(screen.getByLabelText('Attention issue actions')).toHaveTextContent('f-root true')
     expect(screen.queryByRole('link', { name: 'Review issues in Root capability' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Review issues in Child capability' })).toBeInTheDocument()
+  })
+})
+
+describe('NeedsYouList held issues — the escalation read model, not the map counts', () => {
+  const heldRow = (ref: string, product: string) => ({ ref, product, number: Number(ref.split('#')[1]), workItemId: `w-${product}` })
+
+  it('lists every held issue of the product, including one no capability counts, and is not "Nothing needs you"', () => {
+    h.calls.length = 0
+    // ghostdriver-mcp#28 (2026-10-02): held, unclassified — the map says needsYou 0.
+    h.held = [heldRow('steiner385/ghostdriver-mcp#28', 'ghostdriver')]
+    render(<MemoryRouter><NeedsYouList products={[product({ slug: 'ghostdriver', counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 2, awaitingTriage: 0, needsHome: 1 } })]} /></MemoryRouter>)
+    expect(h.calls).toEqual([['ghostdriver', true]])
+    expect(screen.getByText('Held issues · 1')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Held issues' })).toHaveTextContent('steiner385/ghostdriver-mcp#28 ghostdriver false')
+    expect(screen.queryByText('Nothing needs you')).not.toBeInTheDocument()
+  })
+
+  it('reads fleet-wide for a portfolio, keeps only products in scope, and names the product on each card', () => {
+    h.calls.length = 0
+    h.held = [heldRow('o/a#1', 'alpha'), heldRow('o/z#9', 'zeta')]
+    render(<MemoryRouter><NeedsYouList products={[product({ slug: 'alpha' }), product({ slug: 'beta' })]} /></MemoryRouter>)
+    expect(h.calls).toEqual([[undefined, true]])
+    const list = screen.getByRole('list', { name: 'Held issues' })
+    expect(list).toHaveTextContent('o/a#1 alpha true')
+    expect(list).not.toHaveTextContent('o/z#9')
+  })
+
+  it('skips the read in a capability scope, whose own issue rows carry the hold', () => {
+    h.calls.length = 0
+    h.held = [heldRow('o/p#1', 'p')]
+    render(<MemoryRouter><NeedsYouList products={products} capability={root} /></MemoryRouter>)
+    expect(h.calls).toEqual([['p', false]])
+    expect(screen.queryByRole('list', { name: 'Held issues' })).not.toBeInTheDocument()
+  })
+
+  it('still says nothing needs you when nothing is held either', () => {
+    h.held = []
+    render(<MemoryRouter><NeedsYouList products={[product({ slug: 'quiet' })]} /></MemoryRouter>)
+    expect(screen.getByText('Nothing needs you')).toBeInTheDocument()
   })
 })

@@ -241,7 +241,10 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: kind outright: it does not end on a generic tap, it ends when the person picks
 #: an option (spec 2026-09-18 §6).
 RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch", "investigation", "decision")
+                                    "implement", "dispatch", "investigation", "decision",
+                                    # A person approved the climb the runner's hand-off
+                                    # asked for; the item is dispatched at that tier now.
+                                    "escalation")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 

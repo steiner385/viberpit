@@ -113,7 +113,7 @@ describe('IssueDispositionDialog', () => {
       .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
     const { onClose } = mount()
     expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for the owner')
-    expect(screen.getByText('needs the keyring')).toBeInTheDocument()
+    expect(screen.getByText('tony@example.com handed this to you: needs the keyring. The runner will not touch it again until you act.')).toBeInTheDocument()
     expect(screen.getByText('Releases the hold')).toBeInTheDocument()
     click('Retry')
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
@@ -250,5 +250,38 @@ describe('IssueDispositionDialog', () => {
     expect(await screen.findByText(/Dispatch failed: no_account/)).toBeInTheDocument()
     click('Edit details')
     expect(screen.queryByText(/Dispatch failed: no_account/)).toBeNull()
+  })
+})
+
+describe('IssueDispositionDialog — approval-gated hand-off', () => {
+  const escalated = { ...detail, holdKind: 'owner_action', holdReason: 'bounced at opus; fable needs approval', holdBy: 'runner',
+    holdSetAt: '2026-09-20T12:29:56+00:00', escalation: { bouncedAt: 'opus', needsApproval: 'fable' },
+    guidance: { retry: { available: true, unavailableReason: null, immediate: [{ text: 'Releases the hold', spawnsSession: false, writesGithub: false }], then: [], when: 'never', reversal: null, gate: null },
+                implement: { available: true, unavailableReason: null, immediate: [{ text: 'Dispatches a coding session', spawnsSession: true, writesGithub: false }], then: [], when: 'now', reversal: null, gate: null } } }
+
+  it('explains the escalation in plain words and approves it at the gated tier, linking the session', async () => {
+    fetchMock.mockResolvedValueOnce(reply(escalated))
+      .mockResolvedValueOnce(reply({ status: 'spawned', session_id: 's-28', session_name: 'backlog #28', approval: 'approved', model: 'fable', item: {} }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null, escalation: null }))
+    const { onClose } = mount()
+    const region = await screen.findByRole('region', { name: 'Hold' })
+    expect(region).toHaveTextContent(/The Backlog Runner could not get a pull request merged at Opus and stopped: the next step up is Fable/)
+    expect(region).toHaveTextContent(/Approve escalation to run it once at Fable now, or Retry/)
+    expect(region).not.toHaveTextContent('bounced at opus; fable needs approval')
+    click('Approve escalation to Fable')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[1][0]).toMatch(/\/api\/pm\/work-items\/w1\/hold\/approve-escalation$/)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ model: 'fable' })
+    expect(await screen.findByRole('link', { name: 'Open session' })).toHaveAttribute('href', expect.stringContaining('s-28'))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hold' })).toBeNull())
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('offers no approve button on a plain owner hold', async () => {
+    fetchMock.mockResolvedValueOnce(reply({ ...escalated, holdReason: 'needs the keyring', holdBy: 'tony@example.com', escalation: null }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    expect(screen.queryByRole('button', { name: /Approve escalation/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 })

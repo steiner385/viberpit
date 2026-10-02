@@ -548,10 +548,15 @@ class RemoteOrchestrator:
         r = await self._client.call("backlog_candidates")
         return r if isinstance(r, list) else []
 
-    async def backlog_runner_dispatch(self, refs: "list[str]") -> dict:
-        """Manually claim + spawn a batch for *refs*, via the daemon."""
-        return await self._client.call("backlog_runner_dispatch", refs=refs,
-                                       timeout=SPAWN_RPC_TIMEOUT)
+    async def backlog_runner_dispatch(self, refs: "list[str]", model: "str | None" = None) -> dict:
+        """Manually claim + spawn a batch for *refs*, via the daemon. *model* (the
+        approve-escalation pin) rides along only when set, so a daemon from before
+        the parameter still accepts the unpinned call during a rolling upgrade."""
+        params: dict = {"refs": refs}
+        if model is not None:
+            params["model"] = model
+        return await self._client.call("backlog_runner_dispatch", timeout=SPAWN_RPC_TIMEOUT,
+                                       **params)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)

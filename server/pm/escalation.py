@@ -24,6 +24,7 @@ from server.automations.product_policy import is_on
 from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
+from server.pm.outcomes import Escalation, escalation_for
 from server.pm.queue import QueueRow, rank, skip_reason
 
 #: How a parked item comes back (spec 2026-09-18 §6/§7), as the one line a card or a
@@ -33,6 +34,18 @@ RELEASED_BY: dict[str, str] = {
     "decision": "Accept an option in the Inbox",
     "owner_action": "Retry, a board move to Ready/Backlog, or an issue-body edit",
 }
+#: The owner_action line when the hold is an approval-gated hand-off
+#: (``outcomes.escalation_for``): the fourth way out is approving the climb.
+RELEASED_BY_ESCALATION = ("Retry, a board move to Ready/Backlog, an issue-body edit, "
+                          "or approving the escalation to {tier}")
+
+
+def released_by(hold_kind: str, escalation: Escalation | None) -> str:
+    """The one "how it comes back" sentence for a hold — every reader of the
+    escalation read model (card, digest, assistant) spells it through here."""
+    if escalation is not None:
+        return RELEASED_BY_ESCALATION.format(tier=escalation.needs_approval)
+    return RELEASED_BY.get(hold_kind, "")
 
 #: Spec §5 default: a product with this many or fewer dispatchable items while
 #: anything is held is starving. The automation's config overrides it.
@@ -63,6 +76,11 @@ class HeldItem:
     downstream_refs: tuple[str, ...]
     dispatchable_on_release: bool
     released_by: str
+    # The mirror row to act on, and — for an owner_action hold the runner wrote at
+    # an approval-clamped ladder top — the climb a person can approve. Defaulted so
+    # positional constructions in older callers keep working.
+    work_item_id: str | None = None
+    escalation: Escalation | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +179,7 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
                 freed += 1
         on_release = skipped(replace(row, hold_kind=None, status=_simulated_status(row))) is None
         proposal = proposals_by_ref.get(row.ref)
+        escalation = escalation_for(row.hold_kind, row.hold_reason)
         out.append(HeldItem(
             ref=row.ref, repo=row.repo, number=row.number, product=row.product,
             title=row.title, url=row.url, hold_kind=str(row.hold_kind),
@@ -172,7 +191,8 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
             downstream=len(chain_refs), downstream_dispatchable=freed,
             downstream_refs=chain_refs[:DOWNSTREAM_REFS_CAP],
             dispatchable_on_release=on_release,
-            released_by=RELEASED_BY.get(str(row.hold_kind), ""),
+            released_by=released_by(str(row.hold_kind), escalation),
+            work_item_id=row.work_item_id, escalation=escalation,
         ))
     return out
 

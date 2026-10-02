@@ -7,7 +7,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import type { ConfigField } from './automations'
-import type { MapChangesPointer } from './roadmap'
+import type { HoldEscalation, MapChangesPointer } from './roadmap'
 import type { Consequence } from './sdlc'
 
 export const PROJECT_ONBOARDING_STATES = [
@@ -525,6 +525,11 @@ export interface WorkItemIssue {
    *  inbox, other items in the series, have no copy here yet. */
   guidance?: { retry: Consequence; implement: Consequence }
     | { evidence: Consequence; investigate: Consequence } | null
+  /** The approvable climb behind an approval-gated hand-off, or null — the same
+   *  reader `HeldItem.escalation` comes from, so the dialog and the held list
+   *  offer "Approve escalation" for exactly the same holds. Absent on an older
+   *  server. */
+  escalation?: HoldEscalation | null
 }
 export type IssueDispositionInput = { version: string } & (
   | { action: 'edit'; title: string; body: string }
@@ -541,4 +546,22 @@ export function dispositionIssue(itemId: string, input: IssueDispositionInput): 
 export interface HoldReleaseResult { ok: true; released: string | null; item: Record<string, unknown> }
 export function releaseHold(itemId: string): Promise<HoldReleaseResult> {
   return api.post(`/pm/work-items/${encodeURIComponent(itemId)}/hold/release`)
+}
+
+/** `POST /pm/work-items/{id}/hold/approve-escalation`: the hold is released and
+ *  the issue dispatched now, pinned to `model`; `approval` says whether the gate
+ *  parked the session and this tap approved it (`approved`), the tier was already
+ *  allowed (`not_needed`), or the parked session still needs a hand on the
+ *  Sessions page (`pending`). `status` is the dispatch's own verdict, as for
+ *  Implement now — anything but `spawned` means nothing is running. */
+export interface ApproveEscalationResult {
+  status: string
+  session_id: string | null
+  session_name: string | null
+  approval: 'approved' | 'not_needed' | 'pending'
+  model: string
+  item: Record<string, unknown>
+}
+export function approveEscalation(itemId: string, model: string): Promise<ApproveEscalationResult> {
+  return api.post(`/pm/work-items/${encodeURIComponent(itemId)}/hold/approve-escalation`, { model })
 }

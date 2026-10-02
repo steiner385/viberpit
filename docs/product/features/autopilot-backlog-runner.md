@@ -275,6 +275,22 @@ PR linkage, never on labels alone.
   back through `gated_ladder_top`) so a hand-off at a clamped top can name the gated tier instead
   of silently stopping below the operator's setting.
 
+  That named tier is what a person can approve. The hand-off clause is written and read by ONE
+  pair (`server/pm/outcomes.py:needs_approval_suffix` / `escalation_for`), so `GET /api/pm/holds`
+  and `GET /api/pm/work-items/{id}/issue` carry a structured `escalation: {bouncedAt,
+  needsApproval}` for exactly those holds, and the Roadmap's held card and Review-and-decide
+  dialog offer **Approve escalation to <tier>** on them (`POST
+  /api/pm/work-items/{id}/hold/approve-escalation`). The tap releases the hold (signal
+  `escalation`, audited `pm.hold.escalation_approved`) and dispatches the issue NOW through the
+  manual-dispatch path with the model pinned (`backlog_runner_dispatch(refs, model=…)`); the
+  model-approval gate still parks that spawn as `pending_approval`, and the route resolves it as
+  the tapping person through the same `resolve_model_approval` path (and `model_approval.approve`
+  audit) the Sessions page uses — no gate bypass. A `block` policy still refuses (409); a tier the
+  policy meanwhile allows simply runs (`approval: not_needed`); an approval step that fails leaves
+  the session parked for the Sessions page (`approval: pending`). Like Implement now, the release
+  commits before the dispatch, so a refused dispatch re-queues the item at the product default and
+  the response's `status` says so.
+
   **Limits.** The ladder is Claude-only: a Codex bounce is still escalated onto the tier ladder
   (the same `stronger_model` hold, the same give-up at the top), but a Codex dispatch neither
   reads nor climbs a rung and never consumes the hold — a series follow-up. The rung is read from
