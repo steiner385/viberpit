@@ -33,7 +33,8 @@ import logging
 import os
 
 from viberpit import accounts as _accounts
-from viberpit import crypto
+from viberpit import credential_envelope, crypto
+from viberpit.config import load_config
 from viberpit import paths as _paths
 from server.sessions.adopt import _map_account
 from server.sessions.scratch_config import helper_config_dir
@@ -47,7 +48,13 @@ def oauth_env_for(account: str) -> dict[str, str]:
     Standard (non-Copilot) accounts only — Copilot accounts use a separate proxy-env path
     (``CopilotProxyManager.env_for``) that is out of scope here.
     """
-    tok = crypto.read_oauth_token(account)
+    if _accounts.runner_uses_envelope(account):
+        # Broker runner (#2629): only the primary's envelope authenticates here. A lapsed lease or
+        # a near-expiry access token yields {} (fail closed) rather than falling back to the mount.
+        tok = credential_envelope.runner_store().launch_token(
+            account, skew_s=load_config().expiry_skew_sec)
+    else:
+        tok = crypto.read_oauth_token(account)
     return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
 
 

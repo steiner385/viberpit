@@ -19,3 +19,20 @@ def test_oauth_env_for_never_logs_token_value(monkeypatch, caplog):
     with caplog.at_level("DEBUG"):
         account_auth.oauth_env_for("acct1")
     assert "sk-ant-oat01-super-secret" not in caplog.text
+
+
+def test_runner_env_comes_from_envelope_and_fails_closed(monkeypatch, tmp_path):
+    from viberpit import credential_envelope as ce
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_CLAUDE_CREDS_DIR", str(tmp_path))
+    ce.reset_runner_store()
+    monkeypatch.setattr(account_auth.crypto, "read_oauth_token", lambda a: "MOUNT-TOKEN")
+    try:
+        # Pre-broker: no envelope yet → the existing path.
+        assert account_auth.oauth_env_for("a") == {"CLAUDE_CODE_OAUTH_TOKEN": "MOUNT-TOKEN"}
+        ce.runner_store().sync([ce.Envelope("a", ce.SETUP_TOKEN, "ENV-TOKEN", None, 1)], 3600)
+        assert account_auth.oauth_env_for("a") == {"CLAUDE_CODE_OAUTH_TOKEN": "ENV-TOKEN"}
+        ce.runner_store().sync([ce.Envelope("a", ce.SETUP_TOKEN, "ENV-TOKEN", None, 1)], -1)
+        assert account_auth.oauth_env_for("a") == {}  # lease lapsed; never the mount token
+    finally:
+        ce.reset_runner_store()
