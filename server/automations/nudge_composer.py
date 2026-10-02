@@ -99,7 +99,7 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
         if outcome.skipped:
             return None  # lane cooled-down / account barred — the loop escalates
         if outcome.error is not None:
-            log.warning("nudge_composer failed: %s", outcome.describe())
+            log.log(outcome.log_level, "nudge_composer failed: %s", outcome.describe())
             return None
         for msg in outcome.messages:
             content = getattr(msg, "content", None)

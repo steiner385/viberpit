@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import Collection, Mapping
 from types import SimpleNamespace
 
@@ -5125,3 +5126,39 @@ def test_legacy_handed_off_released_when_session_gone_and_issue_closed(tmp_path)
         assert await ctx.get_target_state("o/r#2") != {}
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind, level", [
+    ("network", logging.INFO),     # #2623: 23 auto-filed WARNINGs over a DNS outage
+    ("other", logging.WARNING),    # a real defect still files
+    (None, logging.WARNING),       # an unclassified error is not presumed benign
+])
+def test_group_refresh_failure_logs_at_the_failure_kinds_level(tmp_path, caplog, kind, level):
+    """The failed-refresh journal line is the auto-error filing decision: a host
+    connectivity outage is not a defect, so it logs below WARNING — the backoff
+    and the ``groups_refresh_failed`` activity event are unchanged."""
+    from server.automations.backlog_grouping import GroupingModelError
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr8.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def refresh(_config):
+            raise GroupingModelError("kind=network can't reach the API server", kind=kind)
+
+        loop, rec, ctx = build_loop(mode="on", clock=FakeClock(), candidates=[],
+                                    refresh_groups=refresh)
+        with caplog.at_level(logging.DEBUG, logger="server.automations.backlog_runner"):
+            await loop.tick()
+
+        from sqlalchemy import select
+        from server.db.models import AutomationEvent
+        async with db_session() as db:
+            warns = (await db.execute(select(AutomationEvent).where(
+                AutomationEvent.kind == "groups_refresh_failed"))).scalars().all()
+        assert len(warns) == 1
+
+    asyncio.run(run())
+    records = [r for r in caplog.records if "group_refresh_failed" in r.getMessage()]
+    assert [r.levelno for r in records] == [level]

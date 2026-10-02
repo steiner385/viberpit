@@ -193,7 +193,7 @@ _COOLDOWN_S = 60.0       # how long an open lane stays open before a half-open t
 # Failure kinds (from failure.classify) that are worth retrying: transient
 # server/process conditions that a short wait can clear. Rate-limit and auth are
 # deliberately excluded — see module docstring.
-_TRANSIENT_KINDS = frozenset({"overloaded", "process_crash"})
+_TRANSIENT_KINDS = frozenset({"overloaded", "process_crash", "network"})
 # Failure kinds that open the breaker on the FIRST occurrence, without waiting
 # for _FAIL_THRESHOLD: the account is throttled, de-authed or org-denied, so
 # every further call is certain to fail until it recovers.
@@ -341,6 +341,13 @@ class HelperOutcome:
         """
         return (f"kind={self.failure_kind or 'unknown'} {self.error} "
                 f"detail={self.error_text or ''!r}")
+
+    @property
+    def log_level(self) -> int:
+        """The level a caller logs this failure at (see :func:`failure.log_level`):
+        a host network outage or a throttle is not a defect, so it never files an
+        auto-error issue (#2623)."""
+        return failure.log_level(self.failure_kind)
 
 
 @dataclass

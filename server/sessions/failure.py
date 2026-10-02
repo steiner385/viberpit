@@ -14,6 +14,7 @@ driver's drain fallback, so it is robust to whichever shape the SDK surfaces.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -53,15 +54,41 @@ _FORBIDDEN_MARKERS = (
     "ask your admin to enable access",
 )
 
+# ``network`` — the host could not reach the API at all: a dead resolver or an
+# unreachable endpoint. Not recoverable by rotation (every account shares the
+# host's network), but a short wait can clear it. Markers are Node's socket
+# errno spellings plus the CLI's own sentence, seen during an 11h EAI_AGAIN
+# outage on dobby (#2623): "API Error: Can't reach the API server — check your
+# internet or DNS (EAI_AGAIN)".
+_NETWORK_MARKERS = (
+    "eai_again",
+    "enotfound",
+    "econnrefused",
+    "econnreset",
+    "etimedout",
+    "can't reach the api server",
+)
+
+# Kinds that are an external condition, never a defect of ours: logged below
+# WARNING, because WARNING is the auto-error filing decision and filing an issue
+# per throttle (#1688, #1837) or per DNS outage (#2623) files noise.
+EXTERNAL_CONDITION_KINDS = frozenset({"rate_limit", "network"})
+
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "network" | "other"
     retry_after: float | None = None
 
     @property
     def is_recoverable(self) -> bool:
         return self.kind in _RECOVERABLE
+
+
+def log_level(kind: str | None) -> int:
+    """The level to log a failure of *kind* at: INFO for an external condition,
+    WARNING (an auto-filed error report) for everything else, unknown included."""
+    return logging.INFO if kind in EXTERNAL_CONDITION_KINDS else logging.WARNING
 
 
 def _cap(value: float | None) -> float | None:
@@ -141,6 +168,10 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
     # Check for process crash signatures before general content inference.
     if _is_process_crash(text):
         return TurnFailure(kind="process_crash")
+
+    # The request never reached the API, so no status-bearing content below applies.
+    if any(m in low for m in _NETWORK_MARKERS):
+        return TurnFailure(kind="network")
 
     # Otherwise infer from content. Auth is checked first: an "invalid
     # authentication credentials" / 401 message is unambiguous, whereas a bare

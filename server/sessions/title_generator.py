@@ -144,13 +144,12 @@ async def generate_title(
             # opened this account's lane and we degrade to no title — so it logs
             # below the auto-error filing floor; anything else (401, 5xx) stays
             # WARNING. Re-filing on every throttle was #1837.
-            level = logging.INFO if outcome.failure_kind == "rate_limit" else logging.WARNING
-            log.log(level, "generate_title HTTP %s config_dir=%s: %s",
+            log.log(outcome.log_level, "generate_title HTTP %s config_dir=%s: %s",
                     outcome.api_error_status, config_dir, outcome.describe())
             return None
         salvaged = sanitize_title(_extract_text(outcome.messages))
         if salvaged is None:
-            log.warning("generate_title failed for config_dir=%s: %s", config_dir, outcome.describe())
+            log.log(outcome.log_level, "generate_title failed for config_dir=%s: %s", config_dir, outcome.describe())
         return salvaged
 
     return sanitize_title(_extract_text(outcome.messages))
