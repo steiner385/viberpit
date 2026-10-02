@@ -705,6 +705,12 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
                 log.error(
                     "clone.fetch_failed path=%s err=%s — git credential refresh "
                     "needed for %s", dest, fetch.stderr.strip(), name_with_owner)
+            elif gh_credential.classify_gh_failure(fetch.stderr) == gh_credential.UNREACHABLE:
+                # Host can't reach GitHub (DNS blip, offline): the designed
+                # best-effort path — stale ref returned, failure recorded below.
+                # Not WARNING: the sink would file an issue per outage (#2610).
+                log.info("clone.fetch_failed path=%s err=%s (host offline)",
+                         dest, fetch.stderr.strip())
             else:
                 log.warning("clone.fetch_failed path=%s err=%s", dest, fetch.stderr.strip())
             record_fetch_result(

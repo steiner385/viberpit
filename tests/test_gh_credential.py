@@ -369,3 +369,17 @@ def test_suppressed_result_keeps_the_completedprocess_shape(monkeypatch):
     assert proc.stdout == ""
     assert isinstance(proc.stderr, str)
     assert proc.args == ["gh", "api", "user"]
+
+
+@pytest.mark.parametrize("stderr", [
+    "fatal: unable to access 'https://github.com/o/r.git/': "
+    "Could not resolve host: github.com",
+    "fatal: unable to access 'https://github.com/o/r.git/': "
+    "Failed to connect to github.com port 443 after 21 ms: Connection refused",
+    "fatal: unable to access 'https://github.com/o/r.git/': "
+    "Failed to connect to github.com port 443: Connection timed out",
+    "fatal: unable to access 'https://github.com/o/r.git/': Network is unreachable",
+])
+def test_classifies_gits_unreachable_phrasings(stderr):
+    """git over libcurl words a dead network differently from gh (#2610)."""
+    assert ghc.classify_gh_failure(stderr) == ghc.UNREACHABLE
