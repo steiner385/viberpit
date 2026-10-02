@@ -3,7 +3,7 @@ from server.automations.completion_bar import (
     PrFact,
     PrFacts,
     _has_explicit_arm_step,
-    _has_no_pr_dispatch,
+    has_no_pr_dispatch,
     is_unverified_self_resolution,
     met_bar,
 )
@@ -372,18 +372,18 @@ _INVESTIGATE_ONLY_LABEL_DISPATCH = (
 
 
 def test_has_no_pr_dispatch_detects_all_four_phrasings():
-    assert _has_no_pr_dispatch(_INVESTIGATE_ONLY_DISPATCH) is True
-    assert _has_no_pr_dispatch(_OPEN_NO_PR_DISPATCH) is True
-    assert _has_no_pr_dispatch(_INVESTIGATE_ONLY_LABEL_DISPATCH) is True
-    assert _has_no_pr_dispatch("read only access to the report") is True
+    assert has_no_pr_dispatch(_INVESTIGATE_ONLY_DISPATCH) is True
+    assert has_no_pr_dispatch(_OPEN_NO_PR_DISPATCH) is True
+    assert has_no_pr_dispatch(_INVESTIGATE_ONLY_LABEL_DISPATCH) is True
+    assert has_no_pr_dispatch("read only access to the report") is True
 
 
 def test_has_no_pr_dispatch_false_without_pattern():
-    assert _has_no_pr_dispatch("Implement the issue and open a PR.") is False
+    assert has_no_pr_dispatch("Implement the issue and open a PR.") is False
 
 
 def test_has_no_pr_dispatch_empty():
-    assert _has_no_pr_dispatch("") is False
+    assert has_no_pr_dispatch("") is False
 
 
 def test_no_pr_dispatch_overrides_code_flavored_goal_no_pr_resolution():
