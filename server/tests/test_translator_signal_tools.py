@@ -432,3 +432,43 @@ def test_prose_beside_a_hand_back_call_streams_whole_and_the_closing_prose_too()
     assert [e.text for e in out if isinstance(e, ThinkingDelta)] == ["weigh the options"]
     assert not any(isinstance(e, ToolCall) for e in out)
     assert end.outcome == "hand_back" and end.hand_back_reason == "Pick the next piece"
+
+
+# ── A hand_back is surfaced the moment it is READ, not at turn end (#2647) ────────
+#
+# Prod 2026-10-02 (session bfc8ccbf): `hand_back("Approve a lock-gated dequeue…")`,
+# then "While waiting for your approval, I'm starting the gate fix" and 13 more
+# minutes of tool calls in the same turn. The signal is latched for the
+# ResultMessage, so nothing — no status, no banner, no push — happened until the
+# turn ended. The Translator now also emits a HandBackRequested the moment it reads
+# the call, so the driver can record the ask while the turn is still running.
+
+def test_a_top_level_hand_back_emits_hand_back_requested_when_read():
+    from server.sessions.events import HandBackRequested
+    t = Translator()
+    out = feed_assistant_tool_call(t, HAND_BACK, {"reason": "approve the dequeue"}, pid=None)
+    asks = [e for e in out if isinstance(e, HandBackRequested)]
+    assert len(asks) == 1
+    assert asks[0].reason == "approve the dequeue"
+    assert asks[0].turn_id == t._turn_id
+    # The turn-end outcome is unchanged: the early event is in ADDITION to the latch.
+    assert feed_result(t).outcome == "hand_back"
+
+
+def test_a_sub_agent_hand_back_emits_no_hand_back_requested():
+    """Same guard as the latch: a Task sub-agent's call is its own sub-objective and
+    falls through to a card (the AskUserQuestion precedent), never an ask."""
+    from server.sessions.events import HandBackRequested, ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, HAND_BACK, {"reason": "sub ask"}, pid="task_1")
+    assert not any(isinstance(e, HandBackRequested) for e in out)
+    assert any(isinstance(e, ToolCall) for e in out)
+    assert feed_result(t).outcome == "success"
+
+
+def test_hand_back_requested_is_internal_and_has_no_wire_form():
+    """The driver consumes it (pending_hand_back_reason) and re-derives status; the
+    browser learns of the ask from the status frame's handBackReason, never from a
+    transcript event — there is no card for a top-level hand_back (reducer.ts)."""
+    from server.sessions.events import HandBackRequested
+    assert not hasattr(HandBackRequested("t1", "r"), "to_wire")

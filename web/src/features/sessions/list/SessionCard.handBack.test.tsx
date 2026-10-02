@@ -46,11 +46,26 @@ describe('SessionCard hand-back reason', () => {
     expect(screen.queryByTestId('card-hand-back-reason')).toBeNull()
   })
 
-  it('never shows a stale reason once the session is running again', () => {
-    // Mirrors the prResolution rule: a resumed session keeps its old row value, and
-    // "needs a decision" beside "Working…" would be a claim the session is not making.
+  it('shows a mid-turn ask beside "Working…", marked as asked (#2647)', () => {
+    // The server writes the reason the moment a hand_back call is read and clears it
+    // on the next turn's first write, so beside a busy status it is a live ask, not a
+    // leftover. Prod 2026-10-02: a session asked for an approval and kept working for
+    // 13 minutes; the card read "Working…" with nothing else.
     renderCard(makeSession({ status: 'in_progress', handBackReason: REASON }))
-    expect(screen.queryByTestId('card-hand-back-reason')).toBeNull()
+    const ask = screen.getByTestId('card-hand-back-reason')
+    expect(ask).toHaveTextContent(`asked you: ${REASON}`)
+    expect(ask).toHaveAttribute('data-mid-turn', 'true')
+    expect(screen.getByLabelText('Status: Working…')).toBeInTheDocument()
+  })
+
+  it('never shows a stale reason beside a resting status', () => {
+    // Mirrors the prResolution rule: a resumed session keeps its old row value, and
+    // "needs a decision" beside "Your turn" would be a claim the session is not making.
+    for (const status of ['done', 'idle', 'complete'] as const) {
+      const { unmount } = renderCard(makeSession({ status, handBackReason: REASON }))
+      expect(screen.queryByTestId('card-hand-back-reason')).toBeNull()
+      unmount()
+    }
   })
 
   it('does not also render the generic summary, which would compete with it', () => {

@@ -283,6 +283,13 @@ class Translator:
                     stem = brand.mcp_tool_stem(b.name)
                     if stem is not None and stem in TURN_SIGNAL_NAMES and pid is None:
                         self._record_signal(stem, b.input)
+                        # A hand-back is ALSO surfaced the moment it is read (#2647):
+                        # the latch above only lands at the ResultMessage, and a
+                        # session that keeps working after the call would otherwise
+                        # leave the ask invisible until its turn ends.
+                        if stem == "hand_back" and stem in self._turn_signals:
+                            out.append(ev.HandBackRequested(
+                                tid, self._turn_signals[stem].get("reason")))
                         continue
                     out.append(ev.ToolCall(tid, b.id, b.name, ev.tool_kind(b.name),
                                            b.input, getattr(msg, "uuid", None),

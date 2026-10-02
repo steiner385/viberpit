@@ -411,9 +411,11 @@ export interface Session {
   /** Where prResolution came from: "tool" | "marker" | "queue-drain". */
   prResolutionSource?: string | null
   /** The one sentence the session passed to `hand_back(reason)` — WHAT it needs from
-   *  the user (#2321). Only meaningful while `status === 'handed_back'`: the server
-   *  writes it with that status and clears it on any other, but a card must still gate
-   *  on the status, exactly as prResolution does. Null/absent = handed back silently. */
+   *  the user (#2321). Meaningful while `status === 'handed_back'`, and ALSO beside a
+   *  busy status (#2647): a hand_back made mid-turn is written the moment it is read,
+   *  while the session is still working, and the next turn's first write clears it.
+   *  The server clears it on every other status, but a card must still gate on the
+   *  status, exactly as prResolution does. Null/absent = handed back silently. */
   handBackReason?: string | null
   /** The suspected-complete overlay on a handed-back session: the completion bar's
    *  reason ("PR #N open with auto-merge armed") when the hand-back asked for nothing

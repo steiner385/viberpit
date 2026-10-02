@@ -41,6 +41,18 @@ STATUS_ONLY_CLAUSE = (
     "not, keep working."
 )
 
+#: Carried in every ``hand_back`` acknowledgement AND the tool description (#2647).
+#: Prod 2026-10-02 (session bfc8ccbf): the session called hand_back, wrote "While
+#: waiting for your approval, I'm starting the gate fix", and kept working for 13+
+#: minutes in the same turn. The ask is now shown the moment the call is read, but
+#: the session is only HANDED BACK when its turn ends — and `request_model` next door
+#: says "keep working", so the contrast has to be spelled out.
+HAND_BACK_TURN_NOTE = (
+    "Recorded and shown to the user now. The session is handed back only when this "
+    "turn ends: finish this message after the call and start no further work in this "
+    "turn — anything you do after it keeps the session on \"Working…\"."
+)
+
 COMPLETION_INSTRUCTION = (
     "When you have fully accomplished the objective of this session, end your "
     f"final message with `{COMPLETION_MARKER}` on its own line. Emit it ONLY "
