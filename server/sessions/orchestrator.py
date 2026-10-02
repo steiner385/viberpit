@@ -5513,8 +5513,9 @@ class SessionOrchestrator:
         background_work: dict | None = None
         if completed_turn:
             from .completion import strip_markers
-            if await self._session_is_parked(session_id):
-                background_work = await self._background_work_snapshot(session_id)
+            parked, snapshot = await self._parked_with_background_work(session_id)
+            if parked:
+                background_work = snapshot
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
@@ -6359,6 +6360,27 @@ class SessionOrchestrator:
             return await asyncio.to_thread(is_parked, path)
         tasks = await self._open_background_work(session_id)
         return bool(tasks)
+
+    async def _parked_with_background_work(self, session_id: str) -> tuple[bool, dict]:
+        """``(_session_is_parked, _background_work_snapshot)`` for the turn-end write.
+
+        A Claude transcript is read ONCE for both answers (parked counts background
+        agents too, which the snapshot omits, so it is derived from the raw scan, not
+        from ``items``). Other engines — and any failed read — fall back to the two
+        separate seams, so a patched ``_session_is_parked`` still decides."""
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            try:
+                from .background_tasks import scan_background_state
+                path = await asyncio.to_thread(self.transcript_path, session_id)
+                if not path:
+                    return False, EMPTY_BACKGROUND_WORK
+                tasks, wakeup = await asyncio.to_thread(scan_background_state, path)
+                return bool(tasks) or wakeup is not None, background_work_snapshot(tasks, wakeup)
+            except Exception:
+                log.debug("bg_work.scan_failed sid=%s", session_id, exc_info=True)
+        parked = await self._session_is_parked(session_id)
+        return parked, (await self._background_work_snapshot(session_id) if parked
+                        else EMPTY_BACKGROUND_WORK)
 
     async def _open_background_work(self, session_id: str) -> list[OpenBgTask]:
         """This session's open background work, in the engine-neutral vocabulary.
@@ -14436,13 +14458,11 @@ class SessionOrchestrator:
         list, no wakeup half. Never raises; a failed read is "nothing open"."""
         try:
             if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
-                from .background_tasks import pending_wakeup
+                from .background_tasks import scan_background_state
                 path = await asyncio.to_thread(self.transcript_path, session_id)
                 if not path:
                     return EMPTY_BACKGROUND_WORK
-                tasks = await asyncio.to_thread(
-                    scan_open_background_tasks, path, treat_killed_as_open=False)
-                wakeup = await asyncio.to_thread(pending_wakeup, path)
+                tasks, wakeup = await asyncio.to_thread(scan_background_state, path)
                 return background_work_snapshot(tasks, wakeup)
             return background_work_snapshot(await self._open_background_work(session_id), None)
         except Exception:

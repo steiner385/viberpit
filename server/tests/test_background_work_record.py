@@ -74,8 +74,11 @@ def _patch_parked(orch, parked):
 
     async def awaits(sid, text):
         return False
+    async def parked_with_snapshot(sid):
+        return parked, (SNAP if parked else EMPTY_BACKGROUND_WORK)
     orch._session_is_parked = is_parked
     orch._background_work_snapshot = snapshot
+    orch._parked_with_background_work = parked_with_snapshot
     orch._last_assistant_prose = prose
     orch._parked_prose_awaits_user = awaits
 
