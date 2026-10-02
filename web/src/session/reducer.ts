@@ -83,6 +83,15 @@ export interface SubThreadTask {
   summary?: string | null
 }
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+/** Live state of a backgrounded shell / Monitor / Workflow task (backgroundTaskStarted/
+ *  Ended). Live-only: the replay journals no task notices, so the resting view comes
+ *  from `Session.backgroundWork` — see selectBackgroundWork. */
+export interface BackgroundTaskState {
+  taskId: string; description: string; taskType: string; backgrounded: boolean
+  status: BackgroundTaskStatus
+  startedAt?: number; endedAt?: number
+}
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null; task?: SubThreadTask }
 
 // ── Rotation marker ────────────────────────────────────────────────────────────
@@ -139,6 +148,7 @@ export interface TranscriptState {
   queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
+  backgroundTasks: Record<string, BackgroundTaskState>   // keyed by the launching tool-use id (#2635)
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
   condense: { active: boolean; expectedMs: number } | null
   pendingSent: { id: string; text: string }[]  // sent-but-unconfirmed-on-disk prompts (FIFO); survives replayReset
@@ -169,6 +179,7 @@ export const initialTranscript: TranscriptState = {
   queued: [],
   rotations: [],
   subAgents: {},
+  backgroundTasks: {},
   latestSuggestions: [],
   condense: null,
   pendingSent: [],
@@ -1419,6 +1430,23 @@ export function transcriptReducer(
         durationMs: ev.durationMs ?? base.durationMs ?? null,
       }
       return { ...state, subAgents: { ...state.subAgents, [ev.parentToolUseId]: { ...cur, task } } }
+    }
+
+    // ── Background shell / Monitor lifecycle (#2635) ─────────────────────────
+    case 'backgroundTaskStarted': {
+      const cur = state.backgroundTasks[ev.toolUseId]
+      const task: BackgroundTaskState = {
+        taskId: ev.taskId, description: ev.description, taskType: ev.taskType, backgrounded: ev.backgrounded,
+        status: cur?.status ?? 'running', startedAt: cur?.startedAt ?? ev.ts,
+        ...(cur?.endedAt != null && { endedAt: cur.endedAt }),
+      }
+      return { ...state, backgroundTasks: { ...state.backgroundTasks, [ev.toolUseId]: task } }
+    }
+    case 'backgroundTaskEnded': {
+      const cur: BackgroundTaskState = state.backgroundTasks[ev.toolUseId]
+        ?? { taskId: ev.taskId, description: '', taskType: 'local_bash', backgrounded: true, status: 'running' }
+      if (cur.status !== 'running') return state   // the kill sequence delivers two terminal frames
+      return { ...state, backgroundTasks: { ...state.backgroundTasks, [ev.toolUseId]: { ...cur, status: ev.status, endedAt: ev.ts } } }
     }
 
     // ── Local synthetic actions ────────────────────────────────────────────────

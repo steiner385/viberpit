@@ -75,6 +75,12 @@ export interface EvNotice        { type: 'notice';        kind: string; title: s
 export interface EvSubAgentStarted  { type: 'subAgentStarted';  parentToolUseId: string; taskId: string; description: string; agentType: string; backgrounded: boolean; depth: number; ts?: number }
 export interface EvSubAgentProgress { type: 'subAgentProgress'; parentToolUseId: string; taskId: string; activity: string; totalTokens?: number | null; toolUses?: number | null; durationMs?: number | null; lastTool?: string | null; ts?: number }
 export interface EvSubAgentEnded    { type: 'subAgentEnded';    parentToolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; totalTokens?: number | null; toolUses?: number | null; durationMs?: number | null; ts?: number }
+// Background shell / Monitor / Workflow task lifecycle (#2635), sourced from the CLI's
+// system/task_* notices for non-agent tasks. `toolUseId` is the launching Bash/Monitor
+// call — the key shared with `Session.backgroundWork.items[].toolUseId`. Mirrors
+// BackgroundTaskStarted / BackgroundTaskEnded (server/sessions/events.py).
+export interface EvBackgroundTaskStarted { type: 'backgroundTaskStarted'; toolUseId: string; taskId: string; description: string; taskType: string; backgrounded: boolean; ts?: number }
+export interface EvBackgroundTaskEnded   { type: 'backgroundTaskEnded';   toolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; ts?: number }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
@@ -82,6 +88,7 @@ export type SessionEvent =
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering | EvNotice
   | EvSubAgentStarted | EvSubAgentProgress | EvSubAgentEnded
+  | EvBackgroundTaskStarted | EvBackgroundTaskEnded
 
 export interface Command {
   name: string
@@ -113,6 +120,7 @@ const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
   status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,
   suggestions: true, condensing: true, contextUsage: true, recovering: true, notice: true,
   subAgentStarted: true, subAgentProgress: true, subAgentEnded: true,
+  backgroundTaskStarted: true, backgroundTaskEnded: true,
 }
 
 // The set of `type` strings that are session events (used by the WS fan-out).
