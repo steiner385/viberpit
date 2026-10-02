@@ -14423,6 +14423,7 @@ class SessionOrchestrator:
         self._spawn(self._persist_background_work(session_id), name="background-work-refresh")
 
     async def _persist_background_work(self, session_id: str) -> None:
+        # Races _persist_status on this column; the turn-end write wins.
         try:
             snapshot = await self._background_work_snapshot(session_id)
             rec = self._records.get(session_id)
