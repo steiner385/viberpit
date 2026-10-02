@@ -300,6 +300,16 @@ after the call and start no further work in this turn"), and the description say
 `request_model` next to it says "keep working", so the contrast is explicit. Eval case
 `hand-back-then-stop`.
 
+**Autopilot never answers a hand-back (#2639).** `autopilot_policy.pre_decide` rule 1b
+escalates every `handed_back` session before the decider runs: a hand-back asks for what only
+the owner can give (a decision, an override of the dispatch's own constraints, approval), so no
+nudge or auto-answer is ever sent. The boundary is deliberate and visible — the card goes amber
+with the reason and a push alert fires — which is also why a hand-back that sits unanswered is
+waiting on the owner, not on a stalled autopilot. Autopilot does answer structured
+`question`/`permission`/`plan` cards. The hand-back in #2639 was provoked by a misfired completion
+nudge: `SessionRecord` carried no `initial_prompt`, so every live `met_bar` call received
+`instructions=None` and the investigate-only dispatch check (#2480) never ran (fixed in #2653).
+
 **The suspected-complete overlay.** When a turn ends in `hand_back`, the orchestrator judges
 the hand-back off the pump (`_judge_suspected_complete`): if the reason asks for nothing
 (`completion.hand_back_reason_asks` is the precision guard, `background_tasks.text_awaits_user`
