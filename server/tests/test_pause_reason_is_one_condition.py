@@ -148,9 +148,31 @@ async def test_anomaly_pause_reasons_still_warn(caplog, tmp_path):
     assert len(records) == 1 and records[0].getMessage().startswith("session.paused")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["reassign_failed", "automation_ownership_stale"])
+async def test_pause_reasons_echoing_their_own_record_are_journaled_below_warning(
+        caplog, tmp_path, reason):
+    """#2595: `reassign.error` / `reassign.ownership_stale` already file the cause; a
+    WARNING `session.paused` behind them filed a second issue saying only "parked"."""
+    o = _pause_orch()
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await o._pause_session(_rec(tmp_path), reason=reason)
+        await o._pause_session(_rec(tmp_path, sid="aaaaaaa1"), reason="crash_cap")
+
+    warned = [r.fields["reason"] for r in _warnings(caplog)]
+    assert warned == ["crash_cap"]
+    info = [r for r in caplog.records
+            if r.getMessage().startswith("session.paused") and r.levelno == logging.INFO]
+    assert [r.fields["reason"] for r in info] == [reason]
+    assert reason in [e["reason"] for e in o.events if e["type"] == "paused"]
+
+
 def test_expected_pause_reasons_are_a_subset_of_the_vocabulary():
     assert orch_mod._EXPECTED_PAUSE_REASONS
     assert orch_mod._EXPECTED_PAUSE_REASONS <= orch_mod.PAUSE_REASONS
+    assert orch_mod._ECHOED_PAUSE_REASONS
+    assert orch_mod._ECHOED_PAUSE_REASONS <= orch_mod.PAUSE_REASONS
 
 
 # ---------------------------------------------------------------------------
