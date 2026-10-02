@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import account_registry, brand, copilot, fleet_role, ledger, oauth, paths
+from . import account_registry, brand, copilot, credential_envelope, fleet_role, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
@@ -151,6 +151,16 @@ def is_refresh_authority() -> bool:
     :func:`sync_back` (see :func:`acquire_valid_token`).
     """
     return not fleet_role.is_worker()
+
+
+def runner_uses_envelope(name: str) -> bool:
+    """True iff this process is a runner that launches *name* from a broker envelope (#2629).
+
+    Such a runner holds no refresh token: it neither composes a ``claudeAiOauth`` blob nor
+    copies one back into the slot. Until the primary's first ``creds_sync`` delivers an envelope
+    for the account this is False and the pre-broker mount path applies unchanged.
+    """
+    return fleet_role.is_worker() and credential_envelope.runner_store().holds(name)
 
 
 def _anthropic_account_names() -> list[str]:
@@ -846,6 +856,10 @@ def sync_back(name: str) -> None:
     it touches the live cfgdir, not the shared slot, so it does not need
     serialisation and keeping it outside reduces contention.
     """
+    if runner_uses_envelope(name):
+        # Nothing to copy back: an envelope-launched session writes no credentials, and the
+        # slot belongs to the primary (the worker RMW here could clobber a fresh rotation).
+        return
     live_path = paths.account_cfg_dir(name) / ".credentials.json"
     if not live_path.exists():
         return

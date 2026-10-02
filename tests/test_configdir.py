@@ -97,3 +97,32 @@ class TestConfigDir(unittest.TestCase):
                 configdir.compose("alpha")
                 target = Path(os.readlink(acct / "plugins"))
                 self.assertEqual(target.resolve(), (real_home / ".claude" / "plugins").resolve())
+
+
+class TestComposeOnEnvelopeRunner(unittest.TestCase):
+    """#2629: a runner launched from a broker envelope never composes a claudeAiOauth blob."""
+
+    def test_no_blob_and_sync_back_is_noop(self):
+        with temp_env():
+            from viberpit import accounts, configdir, credential_envelope as ce, paths
+            from viberpit.creds import write_json_secure
+            write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
+            write_json_secure(paths.shared_mcp_path(), {"srv": {"k": 1}})
+            ce.reset_runner_store()
+            try:
+                with mock.patch.dict(os.environ, {"VIBERPIT_DAEMON_ROLE": "worker",
+                                                  "VIBERPIT_CLAUDE_CREDS_DIR": str(paths.root() / "ec")}):
+                    # Before any envelope arrives the pre-broker path is unchanged.
+                    cfg = configdir.compose("alpha")
+                    self.assertIn("claudeAiOauth", json.loads((cfg / ".credentials.json").read_text()))
+                    ce.runner_store().sync([ce.Envelope("alpha", ce.SETUP_TOKEN, "t", None, 1)], 60)
+                    cfg = configdir.compose("alpha")
+                    data = json.loads((cfg / ".credentials.json").read_text())
+                    self.assertNotIn("claudeAiOauth", data)
+                    # A refreshed blob in the cfg dir must not be copied into the slot.
+                    write_json_secure(cfg / ".credentials.json",
+                                      {"claudeAiOauth": {"accessToken": "ROTATED", "expiresAt": 99}})
+                    accounts.sync_back("alpha")
+                    self.assertEqual(json.loads(paths.slot_path("alpha").read_text())["accessToken"], "A")
+            finally:
+                ce.reset_runner_store()

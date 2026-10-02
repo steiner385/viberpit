@@ -168,7 +168,10 @@ def compose(name: str) -> Path:
     if accounts.provider_or_none(name) != "copilot":
         # read_credentials decrypts the refreshToken in memory so the composed file
         # that claude reads is always plaintext — we must never write ciphertext there.
-        claude_oauth = read_credentials(paths.slot_path(name))
+        # An envelope-launched runner holds no refresh token (#2629): the launch env carries
+        # the token and a composed claudeAiOauth blob would only be ignored — or rotated.
+        claude_oauth = ({} if accounts.runner_uses_envelope(name)
+                        else read_credentials(paths.slot_path(name)))
         mcp = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
         write_json_secure(cfg_dir / CREDENTIALS_NAME, compose_credentials(claude_oauth, mcp))
 
