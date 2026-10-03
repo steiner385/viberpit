@@ -751,6 +751,11 @@ DISPATCH_OUTCOMES: tuple[str, ...] = (
 # constant here (the one module both the writer in ``server/automations`` and the
 # readers in ``server/pm`` can import without a cycle), never a re-typed literal:
 DECISION_PROPOSED_CAUSE = "decision_proposed"
+# ``no_pr_needed`` (#2660): a ``no_pr`` row whose implement session ended
+# ``mark_no_pr("not-needed")`` — the objective was already satisfied. Read back by
+# ``_counts_as_attempt`` for the same reason as ``decision_proposed``: it is a finding,
+# not a failed attempt, so it must not charge a bounce.
+NOT_NEEDED_CAUSE = "no_pr_needed"
 # ``decision_proposed`` sits on a ``no_pr`` row whose session ended with
 # ``mark_no_pr("awaiting-decision")`` after proposing a decision (spec 2026-09-18
 # §6). Deliberately a cause and not a new outcome: nothing about the dispatch

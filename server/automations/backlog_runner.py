@@ -13,7 +13,7 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from viberpit.worktrees import DISK_EXHAUSTION_MARKERS
-from server.db.models import DECISION_PROPOSED_CAUSE
+from server.db.models import DECISION_PROPOSED_CAUSE, NOT_NEEDED_CAUSE
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
@@ -2393,6 +2393,8 @@ class BacklogRunnerLoop:
             # would read a deliberate, correct absence of a PR as a failed attempt.
             # The same call guards the investigate branch above.
             return
+        if await self._settle_not_needed(target, st, attempts):
+            return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
         top = top_tier(ladder_policy)
@@ -2550,6 +2552,52 @@ class BacklogRunnerLoop:
                 "fallback": self._outcome_fallback(st)}):
             await self._ctx.emit("info", f"{target}: decision proposed — awaiting a person",
                                  kind=DECISION_PROPOSED_CAUSE, target=target)
+        return True
+
+    async def _settle_not_needed(self, target: str, st: dict, attempts: int) -> bool:
+        """Settle an implement dispatch that ended ``mark_no_pr("not-needed")`` (#2660).
+
+        Answers whether this sweep handled the target. ``False`` is the ordinary case
+        (some other ending, or an unreadable resolution) and the caller continues into
+        the ladder.
+
+        "Already satisfied" is a finding, not a failed attempt, and a stronger model
+        cannot make it any more true — so this never climbs the ladder or charges a
+        bounce. It verifies cheaply from the issue's real state (the same seam the
+        investigation settle reads):
+
+        - issue **closed** → done: finalise the outcome row ``no_pr`` and release;
+        - issue **open** → park it for the owner through the existing ``_give_up``
+          (owner_action hold + comment) with the session's own note, so the item does
+          not re-enter the queue and re-dispatch;
+        - state **unknown** → ``False``: the ordinary path, which terminates, rather
+          than a release that could loop.
+        """
+        from server.sessions.completion import NOT_NEEDED
+
+        sid = st.get("session_id")
+        try:
+            if await self._session_resolution(sid) != NOT_NEEDED:
+                return False
+            info = await self._investigation_state(target, sid)
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.not_needed_read_failed target=%s session=%s",
+                        target, sid, exc_info=True)
+            return False
+        issue_state = info.get("issue_state")
+        fallback = self._outcome_fallback(st)
+        if issue_state == "closed":
+            if await self._write_state(target, st, None, outcome={
+                    "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback}):
+                await self._ctx.emit("info", f"{target}: no PR needed — issue closed",
+                                     kind=NOT_NEEDED_CAUSE, target=target)
+            return True
+        if issue_state != "open":
+            return False
+        safe = _reason_from_note(info.get("no_pr_note") or None)
+        reason = "session found no PR is needed (not-needed)" + (f": {safe}" if safe else "")
+        await self._give_up(target, st, reason, outcome={
+            "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback})
         return True
 
     async def _decision_hold_is_real(self, target: str, st: dict) -> bool:

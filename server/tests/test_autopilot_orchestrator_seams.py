@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+from types import SimpleNamespace
+
 import pytest
 
 from server.automations.autopilot_policy import Decision, DecisionContext
@@ -721,6 +723,31 @@ def test_pr_facts_falls_back_to_population_cache(orch):
     facts = orch._autopilot_pr_facts(orch._records["s1"])
     numbers = [p.number for p in facts.prs]
     assert 14160 in numbers, f"population-cache PR #14160 missing from facts.prs={numbers}"
+
+
+def test_pr_facts_counts_a_pr_shared_in_another_repo(orch):
+    """#2663: a session started in repo A whose deliverable is a PR in repo B shared it
+    via `share_artifact`; the bar must see it or every mark_complete re-nudges
+    "open a PR"."""
+    from server.github.pr_status import PullRequestInfo
+    info = PullRequestInfo(
+        number=2662, url="https://github.com/o/other/pull/2662", state="open",
+        checks="passing", title="fix", is_draft=False, auto_merge_enabled=True)
+    orch._records["s1"].foreign_pr_refs = [("o/other", "fix/x")]
+    orch.pr_for = lambda repo, branch: info if (repo, branch) == ("o/other", "fix/x") else None
+    facts = orch._autopilot_pr_facts(orch._records["s1"])
+    assert [p.number for p in facts.prs] == [2662]
+
+
+@pytest.mark.asyncio
+async def test_note_shared_pr_records_the_head_branch_once(orch, monkeypatch):
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/x")
+    orch._pr_poller = SimpleNamespace(in_cooldown=True)
+    await orch._note_shared_pr("s1", "o/other", 2662)
+    await orch._note_shared_pr("s1", "o/other", 2662)
+    assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/x")]
+    await orch._note_shared_pr("s1", orch._records["s1"].repo, 1)  # own repo: ignored
+    assert len(orch._records["s1"].foreign_pr_refs) == 1
 
 
 @pytest.mark.asyncio

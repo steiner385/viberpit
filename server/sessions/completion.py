@@ -297,7 +297,8 @@ def note_from_marker_text(text: str) -> str | None:
 #: The resolution tokens a no-PR completion can carry. Identical to what
 #: ``resolution_from_text`` answers, so the tool path and the marker fallback
 #: produce values that are comparable rather than merely similar.
-NO_PR_RESOLUTIONS: tuple[str, ...] = ("not-needed", "cancelled", AWAITING_DECISION)
+NOT_NEEDED = "not-needed"
+NO_PR_RESOLUTIONS: tuple[str, ...] = (NOT_NEEDED, "cancelled", AWAITING_DECISION)
 
 
 def parse_mark_no_pr(args: dict) -> dict:

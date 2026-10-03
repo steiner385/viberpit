@@ -79,6 +79,22 @@ async def test_url_artifact_is_acknowledged_with_its_fields(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_a_shared_github_pr_url_is_reported_to_the_completion_bar(isolated_db):
+    from server.sessions.tools.tools import build_session_tools
+    seen = []
+
+    async def note(repo, number):
+        seen.append((repo, number))
+    tool = next(t for t in build_session_tools(_ctx(note_shared_pr=note))
+                if t.name == "share_artifact")
+    await tool.handler({"kind": "url", "value": "https://github.com/o/other/pull/2662/files",
+                        "label": "PR"})
+    await tool.handler({"kind": "url", "value": "https://github.com/o/other/issues/5",
+                        "label": "issue"})
+    assert seen == [("o/other", 2662)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["javascript:alert(1)", "ftp://x/y", "github.com/o/n", ""])
 async def test_url_artifact_rejects_non_http_schemes(isolated_db, bad):
     out = await _tool().handler({"kind": "url", "value": bad, "label": "x"})
