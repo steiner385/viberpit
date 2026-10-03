@@ -18,7 +18,7 @@ from viberpit import gitrepos
 from server.aio import cancel_and_reap
 
 from .api_budget import PriorityGate
-from .host_failures import log_gh_failure
+from .host_failures import is_transient_github_edge_failure, log_gh_failure
 from .pr_status import (
     PullRequestInfo,
     build_env_deployments_query,
@@ -74,6 +74,14 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
             # owner is QUOTED so `normalize()` masks it: unquoted, #1926
             # (cairnea) and #1927 (steiner385) were filed as two issues for one
             # outage, and would be again for any per-owner-blind failure.
+            if is_transient_github_edge_failure(proc.stderr):
+                # GitHub's own outage; the poller retries every tick, so don't
+                # also file an auto-error (#2669, same shape as #2490).
+                log.info(
+                    "pr_poller.query_failed owner='%s' err=%s",
+                    owner, proc.stderr.strip(),
+                )
+                continue
             log_gh_failure(
                 log, proc.stderr,
                 "pr_poller.query_failed owner='%s' err=%s",
@@ -130,6 +138,12 @@ def _supplement_env_deployments(response: dict, pairs: list[tuple[str, str]]) ->
         except Exception as exc:
             # ``GhError`` carries gh's stderr as its message, so the host
             # condition is readable here without unwrapping the traceback.
+            if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
+                log.info(
+                    "pr_poller.env_supplement_failed targets='%s'",
+                    ",".join(t[0] for t in o_targets),
+                )
+                continue
             log_gh_failure(
                 log, str(exc),
                 "pr_poller.env_supplement_failed targets='%s'",
