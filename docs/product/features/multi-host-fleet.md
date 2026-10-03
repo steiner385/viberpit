@@ -54,6 +54,23 @@ workers (the primary is the sole refresher to avoid racing shared token files).
   time. The orchestrator's `_owns_record` gates recovery/rotation: a worker owns only rows stamped
   with its own host; the primary owns unstamped legacy rows, its own, the UDS default, and orphaned
   rows whose stamp has left the registry (PR #856).
+- **A full fleet queues, it never refuses**: when every enabled, healthy host is at its
+  `max_sessions`, `FleetRouter.pick` still raises `NoHostAvailable` (the split-brain guard — the
+  edge never runs a session in-process), but `FleetOrchestrator.create_session` turns a
+  capacity-only refusal into a `queue_only` create on the first reachable daemon (primary first),
+  which persists the session as `queued` exactly like the fleet-wide cap does. The API answers
+  201 with `status: "queued"` and `queuePosition`, never the `no_host_available` 409 — that 409 is
+  reserved for a fleet with no daemon reachable at all, and `no_engine_host_available` for an
+  engine no runner can run. The drain (`_maybe_start_queued`) then respects host capacity: a daemon
+  never starts a queued session past its own `max_sessions`, and a daemon with headroom ADOPTS an
+  entry whose stamped owner is known full / down / disabled — taking the session lease first (#1379)
+  and re-stamping the row with a compare-and-set, so the owner's own drain is refused rather than
+  racing it (`SessionLeaseHeld` mid-spawn = skip, never end). The edge's `queue_drain_loop` (probe
+  cadence, 30 s) nudges every host with headroom whenever the queue is non-empty, so "a slot freed
+  on any host" always reaches the queue even when that host's event-driven drain already ran. The
+  primary's `_resync_moved_queued_mirrors` re-reads the row of a driverless `queued` record whose
+  host moved, so an adopted session's stale mirror becomes an ordinary foreign mirror rather than
+  a zombie card.
 - **Host scoring / visibility** (`server/sessions/fleet.py`, `server/sessions/host_probe.py`,
   `server/api/fleet.py`): `probe_loop` (~30s) writes each enabled host's health, SHA, protocol
   version, load, free memory, and active-session count into the registry; failure is recorded

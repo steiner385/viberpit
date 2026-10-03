@@ -355,3 +355,39 @@ def test_queue_cancel_unknown_session_returns_404():
         assert resp.status_code == 404, resp.text
     finally:
         os.unlink(tf.name)
+
+
+# ---------------------------------------------------------------------------
+# Integration: POST /api/sessions when the fleet is full — queued, not an error
+# ---------------------------------------------------------------------------
+
+
+class _QueueingOrch(_FakeOrch):
+    """A fleet whose every host is full: create_session answers a queued record."""
+
+    async def create_session(self, **kwargs):
+        rec = _make_record("q-new", status="queued")
+        self._records[rec.id] = rec
+        self._positions[rec.id] = len(self._positions) + 1
+        return rec
+
+
+def test_create_when_every_host_is_full_answers_queued_with_a_position():
+    """The UI must get the queued state and its position, never the old
+    "no enabled, healthy host with capacity" 409 (see
+    test_fleet_queue_on_host_capacity for the edge turning that refusal into a
+    queued create)."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _QueueingOrch(positions={"q-old": 1})
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions", json={"initialPrompt": "hi"}, headers=_H)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["status"] == "queued"
+        assert body["queuePosition"] == 2
+        assert "error" not in body
+    finally:
+        os.unlink(tf.name)
