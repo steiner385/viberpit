@@ -77,6 +77,9 @@ STDERR_RATE_LIMITED_IP = (
 )
 STDERR_RATE_LIMITED_USER = "gh: API rate limit exceeded for user ID 1234567. (HTTP 403)"
 STDERR_UNRELATED = "gh: Bad Gateway (HTTP 502)"
+# Neither a host condition nor GitHub's transient edge: pr_poller demotes a 5xx
+# to INFO (#2669), so a lineage test driven through it needs a non-5xx failure.
+STDERR_UNRELATED_NOT_5XX = "gh: Resource not accessible by integration (HTTP 403)"
 
 
 @pytest.fixture(autouse=True)
@@ -318,7 +321,7 @@ def test_a_four_and_a_five_repo_group_are_one_lineage(caplog):
 
 def test_two_owners_are_one_lineage(caplog, monkeypatch):
     """#1926 vs #1927 — same, split by a bare slug."""
-    monkeypatch.setattr(pr_poller.gitrepos, "_run_gh", _runner(STDERR_UNRELATED))
+    monkeypatch.setattr(pr_poller.gitrepos, "_run_gh", _runner(STDERR_UNRELATED_NOT_5XX))
     monkeypatch.setattr(pr_poller.gitrepos, "app_token_for_owner", lambda owner: None)
     with caplog.at_level(logging.DEBUG):
         pr_poller._default_query([("steiner385/viberpit", "master")])
