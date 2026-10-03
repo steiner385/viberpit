@@ -14,7 +14,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from viberpit import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
-from server.sessions.artifacts import ARTIFACT_KINDS, parse_share_artifact, read_image
+from server.sessions.artifacts import ARTIFACT_KINDS, github_pr_ref, parse_share_artifact, read_image
 from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import (FINISHED_STATE_CLAUSE, HAND_BACK_TURN_NOTE,
                                         NO_PR_RESOLUTIONS,
@@ -452,6 +452,15 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             return parsed
         async with db_session() as db:
             await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
+        ref = github_pr_ref(parsed["value"]) if parsed["kind"] == "url" else None
+        if ref is not None and ctx.note_shared_pr is not None:
+            # A PR in another repo is this session's deliverable (#2663): tell the
+            # completion bar, which only looks at the session's own repo. Best-effort.
+            try:
+                await ctx.note_shared_pr(*ref)
+            except Exception:  # noqa: BLE001 - the card already landed
+                log.warning("share_artifact.note_shared_pr_failed session=%s",
+                            ctx.session_id, exc_info=True)
         return parsed
 
     by_name = {"session_context": session_context, "report_feedback": report_feedback,

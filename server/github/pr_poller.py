@@ -31,6 +31,18 @@ from .pr_status import (
 log = logging.getLogger(__name__)
 
 
+def pr_head_ref(repo: str, number: int) -> str | None:
+    """Head branch of ``repo#number`` (blocking ``gh`` call; run off the event loop),
+    or None when it cannot be read. Lets a PR a session opened in ANOTHER repo be
+    tracked by the per-branch poller, whose key is ``(repo, branch)``."""
+    proc = gitrepos._run_gh(
+        ["pr", "view", str(int(number)), "-R", repo, "--json", "headRefName",
+         "--jq", ".headRefName"],
+        token=gitrepos.app_token_for_owner(repo.partition("/")[0]))
+    out = (proc.stdout or "").strip()
+    return out if proc.returncode == 0 and out else None
+
+
 def _default_query(pairs: list[tuple[str, str]]) -> dict:
     if not pairs:
         return {"data": {}}

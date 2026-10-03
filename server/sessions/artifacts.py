@@ -24,6 +24,7 @@ by extension: a text file named ``.png`` is refused, not served as an image.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -62,6 +63,18 @@ def parse_share_artifact(args: dict) -> dict:
     if note:
         out["note"] = note[:NOTE_MAX]
     return out
+
+
+_GITHUB_PR_RE = re.compile(r"^/([^/]+/[^/]+)/pull/(\d+)(?:/|$)")
+
+
+def github_pr_ref(url: str) -> tuple[str, int] | None:
+    """``(owner/repo, number)`` when *url* is a github.com pull-request URL, else None."""
+    parts = urlsplit(url)
+    if parts.hostname not in ("github.com", "www.github.com"):
+        return None
+    m = _GITHUB_PR_RE.match(parts.path)
+    return (m.group(1), int(m.group(2))) if m else None
 
 
 def read_image(value: str) -> tuple[bytes, str]:

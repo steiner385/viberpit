@@ -176,6 +176,10 @@ class SessionRecord:
     paused_reason: str | None = None
     paused_until: datetime | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
+    # (repo, head branch) of PRs this session shared via `share_artifact` in a repo OTHER
+    # than its own (#2663). In-memory only: the bar re-learns them if the session
+    # re-shares; the poller cache is keyed (repo, branch) so these ride the same path.
+    foreign_pr_refs: list[tuple[str, str]] = field(default_factory=list)
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
     # remaining context instead of the per-call approximation — which divides by a window

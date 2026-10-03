@@ -4205,6 +4205,35 @@ def test_an_awaiting_decision_ending_is_neither_a_bounce_nor_a_hand_off(tmp_path
     asyncio.run(run())
 
 
+def test_a_not_needed_ending_on_a_closed_issue_settles_without_a_bounce(tmp_path):
+    """#2660: "already fixed" is a finding. Closed issue → finalise, release, no rung."""
+    async def run():
+        from server.db.models import NOT_NEEDED_CAUSE
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "not_needed_closed.db", "not-needed", held=(),
+            investigation_state={"issue_state": "closed"})
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", NOT_NEEDED_CAUSE)]
+        assert not await ctx.get_target_state("o/r#1")
+        assert rec.escalations == [] and rec.needs_humans == []
+
+    asyncio.run(run())
+
+
+def test_a_not_needed_ending_on_an_open_issue_parks_for_the_owner_not_the_ladder(tmp_path):
+    async def run():
+        from server.db.models import NOT_NEEDED_CAUSE
+        _loop, rec, _ctx = await _sweep_after_ending(
+            tmp_path, "not_needed_open.db", "not-needed", held=(),
+            investigation_state={"issue_state": "open", "no_pr_note": "fixed by #9"})
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", NOT_NEEDED_CAUSE)]
+        assert rec.escalations == []
+        assert len(rec.needs_humans) == 1 and "fixed by #9" in rec.needs_humans[0][1]
+
+    asyncio.run(run())
+
+
 def test_an_awaiting_decision_with_no_hold_behind_it_falls_through_to_the_ladder(tmp_path):
     """Review R1 F1: the token is the session's claim about itself; the HOLD is the
     proof. A refused ``propose_decision`` (or a marker heuristic reading a turn that
@@ -4295,13 +4324,14 @@ def test_an_unheld_investigation_decision_still_takes_an_investigation_exit(tmp_
 
 def test_any_other_no_pr_ending_still_climbs_the_ladder(tmp_path):
     """The branch is keyed on the ONE token, read from the session's own
-    ``mark_no_pr`` declaration: a session that finished "not-needed" without a PR is
-    the pre-§6 bounce and must still climb a rung."""
+    ``mark_no_pr`` declaration: a session that ended "cancelled" without a PR is
+    the pre-§6 bounce and must still climb a rung. (``not-needed`` settles from the
+    issue's state instead — #2660.)"""
     async def run():
         _loop, rec, ctx = await _sweep_after_ending(
-            tmp_path, "decision_not_needed.db", "not-needed")
+            tmp_path, "decision_not_needed.db", "cancelled")
 
-        assert rec.resolution_reads == ["sess-1"]
+        assert rec.resolution_reads[0] == "sess-1"
         assert rec.escalations == [
             ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
         assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [

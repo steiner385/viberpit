@@ -1845,7 +1845,8 @@ class SessionOrchestrator:
             # What the user will actually see for a hand-back: the prose of the
             # message that carried the call, read off the live driver (lazily — the
             # driver is built after this overlay). None when there is none to ask.
-            signal_prose=functools.partial(self._signal_message_prose, session_id))
+            signal_prose=functools.partial(self._signal_message_prose, session_id),
+            note_shared_pr=functools.partial(self._note_shared_pr, session_id))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -1854,6 +1855,22 @@ class SessionOrchestrator:
         from server.sessions.tools.server import build_session_server
         self.register_overlay(
             session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    async def _note_shared_pr(self, session_id: str, repo: str, number: int) -> None:
+        """Track a PR the session shared in a repo other than its own, so the
+        completion bar counts it (#2663). Resolves the head branch once, records the
+        ``(repo, branch)`` pair, and primes the poller cache for it."""
+        from server.github.pr_poller import pr_head_ref
+        rec = self._records.get(session_id)
+        if rec is None or repo == rec.repo:
+            return
+        branch = await asyncio.to_thread(pr_head_ref, repo, number)
+        if not branch or (repo, branch) in rec.foreign_pr_refs:
+            return
+        rec.foreign_pr_refs.append((repo, branch))
+        poller = getattr(self, "_pr_poller", None)
+        if poller is not None and not poller.in_cooldown:
+            await poller.refresh_once([(repo, branch)])
 
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
@@ -13075,10 +13092,10 @@ class SessionOrchestrator:
         the cheap per-tick path that feeds met_bar and the fleet snapshot."""
         from server.automations.completion_bar import PrFact, PrFacts
         seen: dict[int, PrFact] = {}
-        for br in self._session_pr_branches(rec):
-            if not rec.repo:
-                continue
-            info = self.pr_for(rec.repo, br)
+        pairs = [(rec.repo, br) for br in self._session_pr_branches(rec) if rec.repo]
+        pairs += getattr(rec, "foreign_pr_refs", None) or []
+        for pr_repo, br in pairs:
+            info = self.pr_for(pr_repo, br)
             # Per-branch poller cache miss (cooldown / high-volume repo / branch not
             # yet polled) → resolve from the population cache by head_ref. Without this
             # the snapshot stays prs=[] and met_bar re-fires a spurious "open a PR"
@@ -13086,7 +13103,7 @@ class SessionOrchestrator:
             # facts_contradicted's transcript gate is then the ONLY other path that
             # would trigger the population-cache-aware refresh.
             if info is None and getattr(self, "_pr_population", None) is not None:
-                info = self._pr_population_pr(rec.repo, br)
+                info = self._pr_population_pr(pr_repo, br)
             if info is not None and info.number not in seen:
                 seen[info.number] = PrFact(
                     number=info.number, state=info.state, is_draft=info.is_draft,
@@ -13345,6 +13362,7 @@ class SessionOrchestrator:
         try:
             await self.refresh_authored_branches()
             pairs = [(rec.repo, br) for br in self._session_pr_branches(rec)]
+            pairs += getattr(rec, "foreign_pr_refs", None) or []
             await poller.refresh_once(pairs)
         except Exception:
             log.warning("autopilot.refresh_pr_facts failed sid=%s", session_id, exc_info=True)

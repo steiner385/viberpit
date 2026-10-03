@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.sql import Select
 
 from server.db.models import (
-    DECISION_PROPOSED_CAUSE, DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem)
+    DECISION_PROPOSED_CAUSE, DISPATCH_OUTCOMES, NOT_NEEDED_CAUSE, DispatchOutcome, Project, WorkItem)
 from server.pm.refs import split_ref
 from server.sessions.model_catalog import TIER_ORDER, model_tier, tier_rank
 
@@ -78,6 +78,8 @@ def _counts_as_attempt():
     Two kinds of row are excluded, for the same reason in different columns:
 
     - an ``investigate`` dispatch (by KIND): it is not trying to open a PR;
+    - a ``no_pr_needed`` row (#2660): the session found the objective already
+      satisfied — a finding, not a failed attempt;
     - a ``decision_proposed`` row (by CAUSE, spec 2026-09-18 §6, review R1 F4): the
       session stopped to ask the owner a product question and parked the item on a
       ``decision`` hold. Counting it would charge the issue a bounce it did not
@@ -92,7 +94,8 @@ def _counts_as_attempt():
     """
     return and_(_implement_only(),
                 or_(DispatchOutcome.cause.is_(None),
-                    DispatchOutcome.cause != DECISION_PROPOSED_CAUSE))
+                    DispatchOutcome.cause.notin_((DECISION_PROPOSED_CAUSE,
+                                                  NOT_NEEDED_CAUSE))))
 
 
 def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
