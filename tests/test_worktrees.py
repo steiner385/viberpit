@@ -659,3 +659,37 @@ class BranchPrefixTests(unittest.TestCase):
         # rev-parse can fail and remove_worktree passes "" through; a TypeError here
         # would abort a teardown that has already removed the worktree.
         self.assertFalse(brand.is_session_branch(None))  # type: ignore[arg-type]
+
+
+class CommitsAheadOfDefaultTests(unittest.TestCase):
+    """``commits_ahead_of_default`` is the completion bar's evidence for a no-PR
+    claim (``PrFacts.commits_ahead``): 0 = nothing a PR could carry."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.local = self.root / "local"
+        _make_repo_with_origin(self.local, self.root)
+        _git("reset", "--hard", "origin/main", cwd=str(self.local))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_branch_at_the_base_has_nothing_ahead(self) -> None:
+        _git("checkout", "-b", "fix/x", cwd=str(self.local))
+        self.assertEqual(worktrees.commits_ahead_of_default(str(self.local)), 0)
+
+    def test_new_commits_are_counted(self) -> None:
+        _git("checkout", "-b", "fix/x", cwd=str(self.local))
+        for name in ("a.txt", "b.txt"):
+            (self.local / name).write_text(name)
+            _git("add", "-A", cwd=str(self.local))
+            _git("commit", "-m", name, cwd=str(self.local))
+        self.assertEqual(worktrees.commits_ahead_of_default(str(self.local)), 2)
+
+    def test_no_recorded_origin_head_is_unknown(self) -> None:
+        _git("remote", "set-head", "origin", "--delete", cwd=str(self.local))
+        self.assertIsNone(worktrees.commits_ahead_of_default(str(self.local)))
+
+    def test_a_non_git_dir_is_unknown(self) -> None:
+        self.assertIsNone(worktrees.commits_ahead_of_default(str(self.root)))

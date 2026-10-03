@@ -577,6 +577,22 @@ def test_self_declared_no_pr_row_on_code_goal_is_not_legit():
     assert unarchived == []
 
 
+def test_self_declared_no_pr_row_with_an_arm_step_dispatch_is_not_premature():
+    """A backlog dispatch carries `gh pr merge --squash --auto`. That arm step used to
+    out-rank the session's own no-PR claim with a HIGH-confidence verdict, which this
+    audit buckets as premature and auto-unarchives (a782f302, 2026-10-02). The claim
+    is still a claim: ambiguous, report-only."""
+    unarchived = []
+    row = _row_with_resolution("s1", "ship the color field PR", pr_resolution="not-needed")
+    row["pr_resolution_source"] = "tool"
+    row["initial_prompt"] = "Arm auto-merge: `gh pr merge <#> --squash --auto`."
+    out = asyncio.run(aa.run_audit([row], _gh_returning(None), unarchived.append))
+    assert out[0]["bucket"] == "ambiguous", (
+        f"expected ambiguous, got {out[0]['bucket']}: {out[0]['reason']}"
+    )
+    assert unarchived == []
+
+
 # ---------------------------------------------------------------------------
 # docs-only merged PR (#1756): 70904123 was auto-archived because its docs-only
 # spec/plan PR (#1644) merged, while the implementation branch was never pushed.

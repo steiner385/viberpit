@@ -428,3 +428,73 @@ def test_no_pr_dispatch_does_not_override_a_merged_pr():
                 _facts([_pr(state="merged")]),
                 instructions=_INVESTIGATE_ONLY_DISPATCH)
     assert v.met is True and "merged" in v.reason
+
+
+# ---------------------------------------------------------------------------
+# A recorded no-PR is a terminal claim, not an invitation to open a PR.
+#
+# Prod 2026-10-02 (session a782f302, cairnea/KinDash#17544, origin backlog-runner):
+# the issue was a CI latch whose fix had already merged, the branch had no commits
+# ahead of its base, and the session called `mark_no_pr` (not-needed) three times.
+# Each call was acknowledged, and each was answered with a completion nudge "open a
+# PR (if needed) then arm auto-merge" — four in all — until it handed back. The
+# backlog prompt carries `gh pr merge --squash --auto`, so the arm-step branch ran
+# BEFORE the self-claim branch: a high-confidence not-met verdict that skipped the
+# salvage classifier and told the session to do the one thing it had declared it
+# would not.
+# ---------------------------------------------------------------------------
+
+_BACKLOG_PROMPT = ("Fix #17544. Commit, push, open a PR and arm auto-merge: "
+                   "`gh pr merge <#> --squash --auto`.")
+
+
+def _branch(commits_ahead, prs=()):
+    return PrFacts(has_repo=True, prs=tuple(prs), commits_ahead=commits_ahead)
+
+
+def test_a_self_declared_no_pr_is_never_told_to_open_a_pr_by_the_arm_step():
+    """The a782f302 shape: the arm step in the dispatch must not out-rank the
+    session's own no-PR claim, and must not hide the claim from the salvage
+    classifier (which only runs on a low-confidence verdict)."""
+    for ahead in (None, 0, 2):
+        v = met_bar(_CODE_GOAL, "inferred", _branch(ahead), "not-needed",
+                    pr_resolution_source="tool", instructions=_BACKLOG_PROMPT)
+        assert v.met is False
+        assert v.confidence == "low", ahead
+        assert "arm auto-merge: `gh pr merge --squash --auto`" not in (v.remedy or "")
+
+
+def test_a_no_pr_claim_on_a_branch_with_nothing_ahead_has_no_remedy():
+    """Nothing on the branch to open a PR from: the claim matches the repository,
+    so there is nothing to nudge toward. Still unverified (low, not met) — the
+    salvage classifier decides whether it archives."""
+    v = met_bar(_CODE_GOAL, "inferred", _branch(0), "not-needed",
+                pr_resolution_source="tool", instructions=_BACKLOG_PROMPT)
+    assert v.met is False and v.confidence == "low"
+    assert v.remedy is None
+
+
+def test_a_no_pr_claim_followed_by_new_commits_is_still_nudged():
+    """New work after the claim makes the claim stale: commits exist that no PR
+    carries, so the session is told to finish (open the PR) or ask."""
+    v = met_bar(_CODE_GOAL, "inferred", _branch(3), "not-needed",
+                pr_resolution_source="tool", instructions=_BACKLOG_PROMPT)
+    assert v.met is False
+    assert v.remedy and "open a PR" in v.remedy
+
+
+def test_an_unknown_ahead_count_keeps_the_self_claim_nudge():
+    """No git evidence either way (no worktree, git failed): unchanged from the
+    fdc6b27a guard — verify, and nudge to finish or ask when unconfirmed."""
+    v = met_bar(_CODE_GOAL, "inferred", _branch(None), "not-needed",
+                pr_resolution_source="tool")
+    assert v.met is False and v.confidence == "low"
+    assert v.remedy and "ask" in v.remedy.lower()
+
+
+def test_an_empty_branch_without_a_no_pr_claim_is_still_nudged_by_the_arm_step():
+    """The ahead count only vouches for a declared no-PR. A session that signals
+    plain completion with no PR is still told to open and arm one."""
+    v = met_bar(_CODE_GOAL, "inferred", _branch(0), instructions=_BACKLOG_PROMPT)
+    assert v.met is False and v.confidence == "high"
+    assert "arm auto-merge" in (v.remedy or "")

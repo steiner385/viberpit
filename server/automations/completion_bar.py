@@ -86,6 +86,10 @@ class PrFact:
 class PrFacts:
     has_repo: bool
     prs: tuple[PrFact, ...] = ()
+    # Commits on the session's checked-out branch that its base (origin's default
+    # branch) does not have; None = unknown (no worktree, or git could not say). The
+    # only evidence for or against a no-PR claim that the claimant cannot write.
+    commits_ahead: int | None = None
 
     @property
     def merged_pr(self) -> "PrFact | None":
@@ -116,7 +120,7 @@ class PrFacts:
 class BarVerdict:
     met: bool
     reason: str
-    remedy: str | None
+    remedy: str | None     # None on a not-met verdict = nothing to nudge toward
     confidence: str        # 'high' | 'low'
 
 
@@ -182,7 +186,8 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             instructions: str | None = None) -> BarVerdict:
     """Is the session's goal genuinely met? Precedence: merged > armed >
     open-unarmed > no-PR-dispatch(instructions) > pr_resolution(no-PR, verified) >
-    instructions-arm-required > no-PR-nudge. Only high-confidence verdicts are safe
+    pr_resolution(no-PR, self-claimed) > instructions-arm-required > no-PR-nudge.
+    Only high-confidence verdicts are safe
     to auto-act on. A real PR fact always overrides a pr_resolution (a stale 'no PR'
     claim never masks an actual PR).
 
@@ -191,6 +196,9 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     (``is_unverified_self_resolution``) does NOT short-circuit — it lands on the
     low-confidence code-goal branch with a remedy that tells the session to finish
     or ask, so the caller's classifier salvage judges the claim against the goal.
+    When ``facts.commits_ahead`` is 0 that verdict carries NO remedy: a not-met
+    verdict with ``remedy=None`` means there is nothing to nudge toward, and callers
+    must not nudge. New commits after the claim restore the remedy.
     ``None`` (callers without provenance) keeps the resolution trusted.
 
     ``instructions`` is the session's initial prompt (or equivalent task text).
@@ -234,6 +242,27 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     if pr_resolution and not self_claim:
         return BarVerdict(True, f"session resolved no PR needed ({pr_resolution})",
                           None, "high")
+    # A self-declared no-PR is judged BEFORE the arm step below, and always at low
+    # confidence: low is what lets the caller's salvage classifier verify the claim.
+    # Prod 2026-10-02 (session a782f302, cairnea/KinDash#17544): the backlog prompt's
+    # `--squash --auto` step answered three acknowledged `mark_no_pr` calls with a
+    # high-confidence "open a PR then arm auto-merge", four nudges in all, and the
+    # classifier never ran.
+    if self_claim:
+        if facts.commits_ahead == 0:
+            # The branch carries nothing a PR could hold, so there is nothing to
+            # nudge toward: no remedy. Still not met — whether the work was owed
+            # at all (fdc6b27a) is the classifier's call, not the claimant's.
+            return BarVerdict(
+                False, "session declared no PR needed and its branch has no commits "
+                "ahead of its base (unverified)", None, "low")
+        return BarVerdict(
+            False, "code goal but no PR opened — session self-declared no PR needed "
+            "(unverified)",
+            "the objective is a code change, but no PR exists and the transcript does "
+            "not show the goal is already met. Either finish the work (open a PR and arm "
+            "auto-merge), or — if you need a decision from the user — ask it as a direct "
+            "question and do not signal completion until you have an answer.", "low")
     # When the task instructions include an explicit arming step (`--squash --auto`),
     # the session is not done until that step completes — even when no PR is visible
     # in the poller cache yet (race) or the goal text looks like research work.
@@ -242,14 +271,6 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             False, "task instructions require auto-merge but no armed PR found",
             "open a PR (if needed) then arm auto-merge: `gh pr merge --squash --auto`",
             "high")
-    if self_claim:
-        return BarVerdict(
-            False, "code goal but no PR opened — session self-declared no PR needed "
-            "(unverified)",
-            "the objective is a code change, but no PR exists and the transcript does "
-            "not show the goal is already met. Either finish the work (open a PR and arm "
-            "auto-merge), or — if you need a decision from the user — ask it as a direct "
-            "question and do not signal completion until you have an answer.", "low")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")
