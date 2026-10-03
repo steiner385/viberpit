@@ -770,3 +770,80 @@ def test_non_map_diff_self_claim_is_never_observed(monkeypatch):
         assert calls == [_CODE_GOAL]
         assert rec.pr_resolution_source == "classifier"
     asyncio.run(run())
+
+
+# Prod 2026-10-02 (session a782f302, cairnea/KinDash#17544): a backlog-runner session
+# found its issue already fixed, had no commits ahead of its base, and called
+# `mark_no_pr` (not-needed) three times. Every call was answered with the completion
+# nudge "open a PR (if needed) then arm auto-merge" — four in all — because the
+# dispatch's `--squash --auto` step made the bar's verdict high-confidence, which
+# skipped the salvage classifier and went straight to the nudge.
+
+_BACKLOG_PROMPT = ("Fix #17544. Commit, push, open a PR and arm auto-merge: "
+                   "`gh pr merge <#> --squash --auto`.")
+
+
+def _no_pr_backlog_rec(sid="s1"):
+    rec = _code_goal_rec(sid, resolution="not-needed", source="tool")
+    rec.origin = "backlog-runner"
+    rec.initial_prompt = _BACKLOG_PROMPT
+    return rec
+
+
+def _pin_commits_ahead(orch, ahead):
+    async def _ahead(rec):
+        return ahead
+    orch._session_commits_ahead = _ahead  # type: ignore[method-assign]
+
+
+def test_mark_no_pr_on_an_empty_branch_is_not_nudged_to_open_a_pr(monkeypatch):
+    """The a782f302 reproduction: the classifier does not confirm, but the branch has
+    nothing to open a PR from — no nudge, and no archive on the session's word alone."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _no_pr_backlog_rec()
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _pin_commits_ahead(orch, 0)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(calls))
+        await _drain()
+        assert nudged == [], "a recorded no-PR on an empty branch must not be nudged"
+        assert archived == []
+        assert "s1" not in orch._auto_archiving, "a later complete must be able to retry"
+    asyncio.run(run())
+
+
+def test_mark_no_pr_on_an_empty_branch_archives_when_the_classifier_confirms(monkeypatch):
+    """The salvage classifier now gets to see the claim (it never did while the arm
+    step's high-confidence verdict pre-empted it), and its confirmation archives."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _no_pr_backlog_rec()
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _pin_commits_ahead(orch, 0)
+        _stub_intent(monkeypatch, PrIntentVerdict(True, "not-needed", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert [a["session_id"] for a in archived] == ["s1"]
+        assert nudged == []
+    asyncio.run(run())
+
+
+def test_mark_no_pr_then_new_commits_is_still_nudged(monkeypatch):
+    """New work after the claim: commits on the branch that no PR carries reopen the
+    question, so the session is nudged to finish (open the PR) or ask."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _no_pr_backlog_rec()
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _pin_commits_ahead(orch, 2)
+        _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(nudged or archived))
+        assert archived == []
+        assert nudged and "open a PR" in nudged[0]
+    asyncio.run(run())

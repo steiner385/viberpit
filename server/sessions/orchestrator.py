@@ -6003,7 +6003,8 @@ class SessionOrchestrator:
         if rec is not None:
             from server.sessions.goals import effective_goal
             from server.automations.completion_bar import (
-                OBSERVED_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES, met_bar)
+                OBSERVED_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES,
+                is_unverified_self_resolution, met_bar)
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
             initial_prompt = getattr(rec, "initial_prompt", None)
@@ -6026,6 +6027,12 @@ class SessionOrchestrator:
                 except Exception:  # pragma: no cover — observation is best-effort
                     log.debug("completion.map_diff_observe_failed sid=%s",
                               session_id, exc_info=True)
+            # The branch's ahead count is the evidence the bar weighs a no-PR claim
+            # against (PrFacts.commits_ahead) — a git read, so only for that claim.
+            commits_ahead = None
+            if is_unverified_self_resolution(goal_text, pr, resolution, source):
+                commits_ahead = await self._session_commits_ahead(rec)
+                pr = dataclass_replace(pr, commits_ahead=commits_ahead)
             verdict = met_bar(goal_text, goal_source, pr, resolution,
                               pr_resolution_source=source, instructions=initial_prompt)
             if not verdict.met:
@@ -6033,7 +6040,7 @@ class SessionOrchestrator:
                 # Refresh once (a no-op without a poller), then re-judge.
                 refreshed = await self._autopilot_refresh_pr_facts(session_id)
                 if refreshed is not None:
-                    pr = refreshed
+                    pr = dataclass_replace(refreshed, commits_ahead=commits_ahead)
                     verdict = met_bar(goal_text, goal_source, pr, resolution,
                                       pr_resolution_source=source,
                                       instructions=initial_prompt)
@@ -6059,6 +6066,14 @@ class SessionOrchestrator:
                 # guard first lets a later `complete` retry; the nudge opens a fresh turn,
                 # moving the session out of `complete`. Cap prevents an endless loop.
                 self._auto_archiving.discard(session_id)
+                if verdict.remedy is None:
+                    # Nothing to nudge toward (met_bar: a no-PR claim on a branch with
+                    # no commits ahead that the classifier did not confirm). The session
+                    # rests at `complete` for a human; it is neither archived on its own
+                    # word nor told to open a PR it declared it would not (a782f302).
+                    log.info("completion.autoarchive_held sid=%s reason=%s",
+                             session_id, verdict.reason)
+                    return
                 if self._complete_nudge_over_cap(session_id):
                     log.info("completion.autoarchive_giveup sid=%s reason=%s",
                              session_id, verdict.reason)
@@ -13037,6 +13052,19 @@ class SessionOrchestrator:
                 name=r.name, repo=r.repo, goal=goal,
                 outcome=outcome or "archived", hours_ago=round(hours, 1)))
         return out
+
+    async def _session_commits_ahead(self, rec) -> "int | None":
+        """Commits on the session's branch that its base lacks (``PrFacts.commits_ahead``),
+        read off the event loop; None when unknown. Best-effort: a missing cwd or a git
+        failure answers None, which leaves the completion bar exactly as it was."""
+        cwd = getattr(rec, "cwd", None)
+        if not cwd:
+            return None
+        try:
+            return await asyncio.to_thread(worktrees.commits_ahead_of_default, cwd)
+        except Exception:
+            log.debug("completion.commits_ahead_failed id=%s", rec.id, exc_info=True)
+            return None
 
     def _autopilot_pr_facts(self, rec) -> "PrFacts":
         """Verified PR ground-truth for a governed session, from the cache only (no

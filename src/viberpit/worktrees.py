@@ -267,6 +267,24 @@ def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
     )
 
 
+def commits_ahead_of_default(cwd: str) -> int | None:
+    """Commits on ``cwd``'s HEAD that origin's default branch does not have, or None
+    when that cannot be told (not a git dir, no recorded ``origin/HEAD``). Local refs
+    only — no fetch, no ``set-head --auto``: this is read on a completion, not at
+    worktree creation, and must not touch the network."""
+    r = _run(["git", "-C", cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    base = r.stdout.strip() if r.returncode == 0 else ""
+    if not base:
+        return None
+    r = _run(["git", "-C", cwd, "rev-list", "--count", f"{base}..HEAD"])
+    if r.returncode != 0:
+        return None
+    try:
+        return int(r.stdout.strip())
+    except ValueError:
+        return None
+
+
 def worktrees_base(repo_root: str) -> Path:
     """ViberPit-owned root NEW session worktrees are created under (see
     ``paths.repo_namespace`` for which dot-dir that is)."""
