@@ -361,11 +361,13 @@ nothing like each other (#1857) — all carry `exit_code`, `uptime_s`, `pid` and
 |---|---|---|
 | `codex.manager.runner_crashed` | non-zero status or a signal — the app-server died | ERROR |
 | `codex.manager.runner_client_closed` | the connection latched closed with the process still alive (#1444); `detail` is the latch reason | ERROR |
-| `codex.manager.runner_exited` | the app-server exited **0** on its own, unasked | WARNING, or ERROR if it interrupted a turn |
+| `codex.manager.runner_exited` | the app-server exited **0** on its own, unasked | INFO when the restart budget was full; WARNING when it follows another fast exit; ERROR if it interrupted a turn |
 
 A clean `runner_exited` is absorbed by the supervisor, but it still spends a
-restart; three in a burst is the budget nearly gone, so watch it next to
-`codex_runner_restarts_total{outcome="gave_up"}`.
+restart. A lone one (the runner ran healthily, or it is the first exit) logs at
+INFO and files nothing (#2642); a second fast exit in a row is the budget being
+eaten and logs at WARNING. Three in a burst is the budget nearly gone, so watch
+it next to `codex_runner_restarts_total{outcome="gave_up"}`.
 
 ---
 

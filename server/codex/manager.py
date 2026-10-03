@@ -139,7 +139,7 @@ class RunnerEndingReport:
 
 
 def classify_runner_ending(
-    *, exit_code: int, interrupted_turns: int
+    *, exit_code: int, interrupted_turns: int, prior_restarts: int
 ) -> RunnerEndingReport:
     """Name the condition from how the runner ended, set the level from its cost.
 
@@ -147,6 +147,12 @@ def classify_runner_ending(
     An ending with nothing in flight is an ERROR only when the ending is itself a
     fault — a clean self-exit the supervisor absorbs costs nobody anything, and
     reporting every one of them as an error buries the ones that do.
+
+    ``prior_restarts`` is the restart budget already spent when this ending
+    arrived (after a healthy run's refill). A lone clean self-exit spends nothing
+    anyone will miss and logs at INFO; one that follows another fast exit is
+    eating the budget toward giving the account up, and stays a WARNING (#2642 —
+    47 auto-filed occurrences of the harmless lone case, regressed twice).
     """
     if exit_code == CLIENT_CLOSED_EXIT_CODE:
         ending, event = RunnerEnding.CLIENT_CLOSED, "codex.manager.runner_client_closed"
@@ -155,7 +161,12 @@ def classify_runner_ending(
     else:
         ending, event = RunnerEnding.CRASHED, "codex.manager.runner_crashed"
     fault = ending is not RunnerEnding.EXITED_CLEAN
-    level = logging.ERROR if fault or interrupted_turns else logging.WARNING
+    if fault or interrupted_turns:
+        level = logging.ERROR
+    elif prior_restarts:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
     return RunnerEndingReport(ending=ending, event=event, level=level)
 
 
@@ -1124,8 +1135,15 @@ class CodexRunnerManager:
     async def _handle_exit(self, runner: _Runner, code: int) -> bool:
         """React to one unexpected exit. Returns True when a replacement is live."""
         interrupted = self.active_turns(runner.account)
+        uptime_s = self._clock() - runner.started_at
+        # Refill BEFORE classifying: the level reads the budget this exit found,
+        # and a healthy run means it found a full one (#2642).
+        if uptime_s >= self._healthy_uptime_s:
+            runner.restarts = 0
         report = classify_runner_ending(
-            exit_code=code, interrupted_turns=len(interrupted)
+            exit_code=code,
+            interrupted_turns=len(interrupted),
+            prior_restarts=runner.restarts,
         )
         client_closed = report.ending is RunnerEnding.CLIENT_CLOSED
         detail = (
@@ -1145,7 +1163,7 @@ class CodexRunnerManager:
             # How long this one lived, and the post-mortem the ERROR form computed
             # for the notice and then dropped. #1857 ran for nine days without ever
             # saying why an app-server left, because the record carried neither.
-            uptime_s=round(self._clock() - runner.started_at, 1),
+            uptime_s=round(uptime_s, 1),
             pid=runner.process.pid,
             # `detail` goes last: the sink's issue title is the field summary
             # clipped to 100 characters, and a stderr tail that led would push out
@@ -1166,9 +1184,6 @@ class CodexRunnerManager:
         )
         self._close_all_turns(runner.account)
         await self._discard(runner.process, runner.client)
-
-        if self._clock() - runner.started_at >= self._healthy_uptime_s:
-            runner.restarts = 0  # a healthy run refills the budget
 
         while True:
             runner.restarts += 1
