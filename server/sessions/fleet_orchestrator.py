@@ -22,6 +22,10 @@ from server.sessions.types import is_assistant, is_assistant_kind
 
 log = logging.getLogger(__name__)
 
+# Credential broker cadence (#2629): the probe interval, and a lease of four missed pushes.
+CREDS_PUSH_INTERVAL_S = 30.0
+CREDS_LEASE_S = 120.0
+
 # --------------------------------------------------------------------------- #
 # "A worker is unreachable, skip it" — ONE record family for every fan-out site.
 #
@@ -600,6 +604,49 @@ class FleetOrchestrator:
                           "FAILED — the account may still be usable there",
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
+
+    async def push_credentials(self, lease_s: float = CREDS_LEASE_S) -> dict[str, dict[str, int]]:
+        """Mint the primary's Claude envelopes and push them to every runner (#2629).
+
+        Returns ``{host: acks}``. A runner that is unreachable is skipped (its lease lapses on
+        its own — that is the fail-closed path); one that acks a lower generation than was pushed
+        is reported as a fleet warning, never an error.
+        """
+        from viberpit import accounts as _accounts
+        from server.sessions.claude_authority import mint_envelopes
+
+        envs = await asyncio.to_thread(mint_envelopes, _accounts._anthropic_account_names())
+        wire = [{"account": e.account, "kind": e.kind, "token": e.token,
+                 "expires_at": e.expires_at, "generation": e.generation} for e in envs]
+        want = {e.account: e.generation for e in envs}
+
+        async def _one(name: str):
+            try:
+                res = await self._router.get(name).creds_sync(wire, lease_s)
+                return name, res.get("acks", {}), None
+            except Exception as e:  # noqa: BLE001 — one runner must not block the rest
+                return name, None, e
+
+        out: dict[str, dict[str, int]] = {}
+        targets = [n for n in await self._fanout_names() if n != self._primary]
+        for name, acks, exc in await asyncio.gather(*(_one(n) for n in targets)):
+            if exc is not None:
+                log.warning("fleet.creds_sync host=%s unreachable: %s", name, exc)
+                continue
+            out[name] = acks
+            behind = sorted(a for a, g in want.items() if acks.get(a, -1) < g)
+            if behind:
+                log.warning("fleet.creds_sync host=%s behind on accounts=%s", name, behind)
+        return out
+
+    async def creds_push_loop(self, interval_s: float = CREDS_PUSH_INTERVAL_S) -> None:
+        """Push envelopes forever on the fleet probe cadence; a raising tick is swallowed."""
+        while True:
+            try:
+                await self.push_credentials()
+            except Exception:
+                log.exception("fleet.creds_push_tick_failed")
+            await asyncio.sleep(interval_s)
 
     async def codex_account_status(self, account: str, *, force: bool = False) -> dict:
         """Merge every runner's status, then persist once from the edge.

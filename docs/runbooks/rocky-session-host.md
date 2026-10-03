@@ -100,6 +100,24 @@ else with the daemon.
 
 ## 4. Mount health
 
+### 4.0 Credential broker (#2629)
+
+Claude credentials no longer need the `~/.claude-accounts` mount. The edge mints one envelope
+per account on dobby (`server/sessions/claude_authority.py`) and pushes them to every runner over
+the daemon RPC every 30 s (`creds_sync`, `FleetOrchestrator.push_credentials`). A runner launches
+`claude` with the envelope token in `CLAUDE_CODE_OAUTH_TOKEN`, composes no `claudeAiOauth` blob and
+never copies anything back into the slot, so it holds no refresh token. Envelopes live in
+`$XDG_STATE_HOME/viberpit/state/claude-creds/` (host-local, `0600`) under a 120 s lease: a silent
+edge stops NEW launches on the runner once the lease lapses and never touches running sessions.
+A runner that lags the authority shows as `fleet.creds_sync host=… behind on accounts=…` in the
+edge log.
+
+Verify before unmounting (Principle III): on rocky, `ls ~/.claude-accounts/cfg/<account>/` shows no
+`.credentials.json` rewritten after a turn, and the edge log has no `creds_sync … behind` for the host.
+The ledger and `accounts.json` are still read through the mount until their own RPC lands, so the
+remount recipe below stays until then.
+
+
 Rocky depends on two sshfs mounts from dobby, both read continuously by the daemon:
 
 ```bash

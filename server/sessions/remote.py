@@ -1119,6 +1119,10 @@ class RemoteOrchestrator:
             "codex_validate_model", account=account, model=model, effort=effort
         )
 
+    async def creds_sync(self, envelopes: list[dict], lease_s: float) -> dict:
+        """Push the primary's Claude credential envelopes to this runner (#2629)."""
+        return await self._client.call("creds_sync", envelopes=envelopes, lease_s=lease_s)
+
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Drop this daemon's cached Codex credentials for an account."""
         return await self._client.call("codex_invalidate_credentials", account=account)
