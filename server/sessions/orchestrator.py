@@ -6003,11 +6003,10 @@ class SessionOrchestrator:
         if rec is not None:
             from server.sessions.goals import effective_goal
             from server.automations.completion_bar import (
-                OBSERVED_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES, met_bar)
+                OBSERVED_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES,
+                is_unverified_self_resolution, met_bar)
             goal_text, goal_source = effective_goal(rec)
-            commits_ahead = await self._session_commits_ahead(rec)
-            pr = dataclass_replace(self._autopilot_pr_facts(rec),
-                                 commits_ahead=commits_ahead)
+            pr = self._autopilot_pr_facts(rec)
             initial_prompt = getattr(rec, "initial_prompt", None)
             resolution = getattr(rec, "pr_resolution", None)
             # Provenance matters: a marker-sourced not-needed on a code goal is the
@@ -6028,6 +6027,12 @@ class SessionOrchestrator:
                 except Exception:  # pragma: no cover — observation is best-effort
                     log.debug("completion.map_diff_observe_failed sid=%s",
                               session_id, exc_info=True)
+            # The branch's ahead count is the evidence the bar weighs a no-PR claim
+            # against (PrFacts.commits_ahead) — a git read, so only for that claim.
+            commits_ahead = None
+            if is_unverified_self_resolution(goal_text, pr, resolution, source):
+                commits_ahead = await self._session_commits_ahead(rec)
+                pr = dataclass_replace(pr, commits_ahead=commits_ahead)
             verdict = met_bar(goal_text, goal_source, pr, resolution,
                               pr_resolution_source=source, instructions=initial_prompt)
             if not verdict.met:
