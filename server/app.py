@@ -363,6 +363,7 @@ async def _lifespan(app: FastAPI):
     # FleetOrchestrator so session creates route across the full host pool.
     app.state.host_name = None
     app.state.fleet_probe_task = None
+    app.state.fleet_creds_task = None
     _endpoint = getattr(app.state, "daemon_endpoint", None)
     if _endpoint is not None:
         try:
@@ -382,6 +383,8 @@ async def _lifespan(app: FastAPI):
             _primary_name = app.state.host_name or "local"
             _router = await build_fleet_router(_primary_name, app.state.remote_primary)
             app.state.sessions = FleetOrchestrator(_router, primary=_primary_name)
+            app.state.fleet_creds_task = asyncio.create_task(
+                app.state.sessions.creds_push_loop(), name="fleet-creds-push")
             _logging.getLogger("server").info(
                 "fleet: dispatcher ready; hosts=%s", list(_router.names()))
         except Exception:
@@ -520,7 +523,8 @@ async def _lifespan(app: FastAPI):
     for _attr, _phase in (("loop_lag_task", "loop-lag-watchdog"),
                           ("app_sessions_prune_task", "app-sessions-prune"),
                           ("codex_auth_sync_task", "codex-auth-sync"),
-                          ("fleet_probe_task", "fleet-probe")):
+                          ("fleet_probe_task", "fleet-probe"),
+                          ("fleet_creds_task", "fleet-creds-push")):
         _t = getattr(app.state, _attr, None)
         if _t is not None:
             _t.cancel()

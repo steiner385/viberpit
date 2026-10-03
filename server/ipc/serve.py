@@ -15,6 +15,7 @@ from server.http_keepalive import SERVER_KEEPALIVE_TIMEOUT_S
 from server.ipc.daemon import create_daemon_app
 from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
+from server.ipc.creds_rpc import register_creds
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
 from server.obs.jsonlog import configure_logging
@@ -99,6 +100,7 @@ def build_daemon(orchestrator=None):
         x11=lambda: app.state.x11,
     )
     register_reauth(app, app.state.reauth)
+    register_creds(app)
     from server.mcp_auth import build_default_manager as _build_mcp_auth
     app.state.mcp_auth = _build_mcp_auth()
     return app, orchestrator
