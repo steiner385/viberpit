@@ -539,3 +539,21 @@ def test_a_defect_outcome_still_logs_at_warning():
     out = _run(_stream_factory(raise_exc=RuntimeError("boom")))
     assert out.failure_kind == "other"
     assert out.log_level == logging.WARNING
+
+
+def test_cli_startup_timeout_is_retried_once_and_logs_below_warning():
+    """#2664: "Control request timeout: initialize" classified "other" — never
+    retried, logged at WARNING. Each attempt can cost the SDK's 60s handshake
+    window, so it gets one retry even when the caller allows more."""
+    import logging
+    clock = Clock()
+    delays, sleep = _sleeps_recorded()
+    counter = {"n": 0}
+    ms = _stream_factory(raise_exc=Exception("Control request timeout: initialize"),
+                         counter=counter)
+    out = asyncio.run(run_helper_call(ms, subsystem="test", account_key="/cfg/acct1",
+                                      retries=3, _now=clock, _sleep=sleep))
+    assert out.failure_kind == "cli_startup_timeout"
+    assert counter["n"] == 2          # initial + exactly 1 retry
+    assert delays == [1.0]
+    assert out.log_level == logging.INFO

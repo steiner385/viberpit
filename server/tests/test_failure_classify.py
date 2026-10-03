@@ -179,3 +179,22 @@ def test_network_kind_logs_below_warning_and_a_defect_does_not():
     assert log_level("rate_limit") == logging.INFO
     assert log_level("other") == logging.WARNING
     assert log_level(None) == logging.WARNING
+
+
+# #2664: the SDK's initialize handshake timing out is a slow CLI cold start on a
+# loaded host, not a defect — it must not file an auto-error per occurrence.
+def test_initialize_control_timeout_is_cli_startup_timeout():
+    import logging
+
+    from server.sessions.failure import log_level
+
+    f = classify(None, "Control request timeout: initialize")
+    assert f.kind == "cli_startup_timeout"
+    # Live turns keep today's handling until _recover_session is taught it.
+    assert not f.is_recoverable
+    assert log_level("cli_startup_timeout") == logging.INFO
+
+
+def test_interrupt_control_timeout_is_not_a_startup_timeout():
+    # A wedged interrupt is a separate defect pattern and keeps surfacing.
+    assert classify(None, "Control request timeout: interrupt").kind == "other"

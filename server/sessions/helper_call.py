@@ -193,7 +193,11 @@ _COOLDOWN_S = 60.0       # how long an open lane stays open before a half-open t
 # Failure kinds (from failure.classify) that are worth retrying: transient
 # server/process conditions that a short wait can clear. Rate-limit and auth are
 # deliberately excluded — see module docstring.
-_TRANSIENT_KINDS = frozenset({"overloaded", "process_crash", "network"})
+_TRANSIENT_KINDS = frozenset({"overloaded", "process_crash", "network", "cli_startup_timeout"})
+# Per-kind retry ceiling below the caller's ``retries``: a CLI startup timeout
+# already burned the SDK's 60s handshake window, so 3 retries would block the
+# caller for minutes (#2664). One retry rides out a momentary load spike.
+_KIND_MAX_RETRIES = {"cli_startup_timeout": 1}
 # Failure kinds that open the breaker on the FIRST occurrence, without waiting
 # for _FAIL_THRESHOLD: the account is throttled, de-authed or org-denied, so
 # every further call is certain to fail until it recovers.
@@ -501,7 +505,7 @@ async def run_helper_call(
             # carries neither the status nor the reason.
             kind = failure.classify(code, " | ".join(filter(None, (str(exc), detail)))).kind
             last_exc, last_kind, last_status = exc, kind, status
-            if kind in _TRANSIENT_KINDS and attempt < retries:
+            if kind in _TRANSIENT_KINDS and attempt < min(retries, _KIND_MAX_RETRIES.get(kind, retries)):
                 await _sleep(base_delay * (2 ** attempt))
                 continue
             now = _now()

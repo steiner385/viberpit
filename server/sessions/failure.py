@@ -69,15 +69,22 @@ _NETWORK_MARKERS = (
     "can't reach the api server",
 )
 
+# ``cli_startup_timeout`` — the spawned CLI did not answer the SDK's
+# ``initialize`` control handshake inside its fixed 60s window: a slow cold start
+# on a loaded host, not a defect (#2664). Only ``initialize`` matches — a timed-out
+# ``interrupt`` is a wedged live process and keeps surfacing as ``other``.
+_STARTUP_TIMEOUT_MARKERS = ("control request timeout: initialize",)
+
 # Kinds that are an external condition, never a defect of ours: logged below
 # WARNING, because WARNING is the auto-error filing decision and filing an issue
-# per throttle (#1688, #1837) or per DNS outage (#2623) files noise.
-EXTERNAL_CONDITION_KINDS = frozenset({"rate_limit", "network"})
+# per throttle (#1688, #1837), DNS outage (#2623) or slow CLI start (#2664) files
+# noise.
+EXTERNAL_CONDITION_KINDS = frozenset({"rate_limit", "network", "cli_startup_timeout"})
 
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "network" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "network" | "cli_startup_timeout" | "other"
     retry_after: float | None = None
 
     @property
@@ -172,6 +179,9 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
     # The request never reached the API, so no status-bearing content below applies.
     if any(m in low for m in _NETWORK_MARKERS):
         return TurnFailure(kind="network")
+
+    if any(m in low for m in _STARTUP_TIMEOUT_MARKERS):
+        return TurnFailure(kind="cli_startup_timeout")
 
     # Otherwise infer from content. Auth is checked first: an "invalid
     # authentication credentials" / 401 message is unambiguous, whereas a bare
