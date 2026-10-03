@@ -57,3 +57,38 @@ def test_default_query_sends_query_via_stdin_not_argv(monkeypatch):
     assert not any(query_text in arg for arg in captured["cmd"]), (
         "query text leaked into argv — this reintroduces the ARG_MAX crash"
     )
+
+
+def _failing_gh(stderr):
+    import subprocess
+
+    def fake_run_gh(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, "", stderr)
+
+    return fake_run_gh
+
+
+def test_default_query_transient_503_logs_info_not_a_warning(caplog, monkeypatch):
+    """#2669: a GitHub-side 503 retries every tick; it must not file an auto-error."""
+    import logging
+
+    monkeypatch.setattr(gitrepos, "_run_gh", _failing_gh(
+        "gh: No server is currently available to service your request. (HTTP 503)"))
+    with caplog.at_level(logging.DEBUG):
+        pr_poller._default_query([("o/r", "b")])
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert any("pr_poller.query_failed" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.INFO)
+
+
+def test_default_query_non_transient_failure_still_warns(caplog, monkeypatch):
+    import logging
+
+    monkeypatch.setattr(gitrepos, "_run_gh", _failing_gh("gh: not found (HTTP 404)"))
+    with caplog.at_level(logging.DEBUG):
+        pr_poller._default_query([("o/r", "b")])
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+    assert "pr_poller.query_failed" in warned[0].getMessage()
