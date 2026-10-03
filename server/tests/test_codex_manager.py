@@ -887,14 +887,14 @@ def test_a_clean_self_exit_is_reported_as_an_exit_and_still_restarts(caplog):
         manager, spawned = _manager(clock=lambda: now[0])
         await manager.ensure("a")
         manager.attach("a", "s1")
-        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+        with caplog.at_level(logging.INFO, logger="server.codex.manager"):
             now[0] += 42.0
             spawned[0].crash(rc=0)
             await manager.wait_settled("a", timeout=2.0)
 
         record = _ending_record(caplog)
         assert record.event == "codex.manager.runner_exited"
-        assert record.levelno == logging.WARNING
+        assert record.levelno == logging.INFO  # a lone one files nothing (#2642)
         assert record.fields["reason"] == "process_exited_clean"
         assert record.fields["exit_code"] == 0
         assert record.fields["uptime_s"] == 42.0
@@ -904,6 +904,45 @@ def test_a_clean_self_exit_is_reported_as_an_exit_and_still_restarts(caplog):
         await manager.stop_all()
 
     asyncio.run(go())
+
+
+def _clean_exit_levels(caplog, uptimes: list[float]) -> list[int]:
+    """Drive one clean self-exit per uptime through the real supervisor and
+    return the level each ``runner_exited`` record was logged at."""
+
+    async def go():
+        now = [1000.0]
+        manager, spawned = _manager(clock=lambda: now[0], healthy_uptime_s=60.0)
+        await manager.ensure("a")
+        for i, uptime in enumerate(uptimes):
+            now[0] += uptime
+            spawned[i].crash(rc=0)
+            await manager.wait_settled("a", timeout=2.0)
+        assert len(spawned) == len(uptimes) + 1, "every exit was still replaced"
+        await manager.stop_all()
+
+    with caplog.at_level(logging.INFO, logger="server.codex.manager"):
+        asyncio.run(go())
+    return [r.levelno for r in caplog.records
+            if getattr(r, "event", None) == "codex.manager.runner_exited"]
+
+
+def test_a_lone_clean_exit_is_info(caplog):
+    """#2642 (a): the 47 occurrences — nothing in flight, a full budget."""
+    assert _clean_exit_levels(caplog, [61.1]) == [logging.INFO]
+
+
+def test_consecutive_fast_clean_exits_warn_once_they_eat_the_budget(caplog):
+    """#2642 (b): the second fast exit in a row found the budget already spent,
+    and three gives the account up — that is worth an issue."""
+    assert _clean_exit_levels(caplog, [54.3, 54.3]) == [logging.INFO, logging.WARNING]
+
+
+def test_a_clean_exit_after_a_healthy_run_is_info_again(caplog):
+    """#2642 (d): the healthy run refills the budget BEFORE the level is chosen,
+    so a runner carrying ``restarts == 1`` that then lived past
+    ``healthy_uptime_s`` reports its next clean exit as a lone one."""
+    assert _clean_exit_levels(caplog, [54.3, 170.5]) == [logging.INFO, logging.INFO]
 
 
 def test_an_abnormal_death_is_still_reported_as_a_crash(caplog):
@@ -980,13 +1019,13 @@ def test_eof_followed_by_a_clean_exit_is_reported_as_the_exit_not_a_latch(caplog
     async def go():
         manager, spawned = _manager()
         await manager.ensure("a")
-        with caplog.at_level(logging.WARNING, logger="server.codex.manager"):
+        with caplog.at_level(logging.INFO, logger="server.codex.manager"):
             _exit_after_eof(spawned[0], rc=0, delay_s=0.01)
             await manager.wait_settled("a", timeout=2.0)
 
         record = _ending_record(caplog)
         assert record.event == "codex.manager.runner_exited"
-        assert record.levelno == logging.WARNING
+        assert record.levelno == logging.INFO  # a lone clean exit (#2642)
         assert record.fields["exit_code"] == 0
         assert record.fields["reason"] == "process_exited_clean"
         await manager.stop_all()

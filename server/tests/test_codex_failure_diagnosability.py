@@ -515,9 +515,10 @@ async def test_a_non_protocol_start_failure_still_logs_an_error(
 _MGR_LOGGER = logging.getLogger("server.codex.manager")
 
 
-def _ending(exit_code: int, *, interrupted: int = 0):
+def _ending(exit_code: int, *, interrupted: int = 0, prior_restarts: int = 0):
     return mgr_mod.classify_runner_ending(
-        exit_code=exit_code, interrupted_turns=interrupted
+        exit_code=exit_code, interrupted_turns=interrupted,
+        prior_restarts=prior_restarts,
     )
 
 
@@ -539,7 +540,30 @@ def test_an_app_server_that_exits_zero_by_itself_is_not_a_crash():
     report = _ending(0)
     assert report.ending is mgr_mod.RunnerEnding.EXITED_CLEAN
     assert report.event == "codex.manager.runner_exited"
-    assert report.level == logging.WARNING
+    # #2642: a lone one found a full budget and spent nothing anyone will miss —
+    # INFO, so the sink stops filing it (47 occurrences, regressed twice).
+    assert report.level == logging.INFO
+
+
+@pytest.mark.parametrize(
+    ("code", "interrupted", "prior_restarts", "level"),
+    [
+        (0, 0, 0, logging.INFO),       # a lone clean exit
+        (0, 0, 1, logging.WARNING),    # the second fast clean exit in a row
+        (0, 0, 2, logging.WARNING),    # ...and the one before giving up
+        (0, 1, 0, logging.ERROR),      # took a turn with it, budget or not
+        (0, 1, 2, logging.ERROR),
+        (1, 0, 0, logging.ERROR),      # a crash is a fault however full the budget
+        (mgr_mod.CLIENT_CLOSED_EXIT_CODE, 0, 0, logging.ERROR),
+    ],
+)
+def test_a_clean_exit_warns_only_once_it_is_eating_the_restart_budget(
+    code, interrupted, prior_restarts, level
+):
+    """#2642: the budget spent before this exit decides whether a clean one is
+    worth an issue. Only consecutive fast exits move the account toward being
+    given up; a fault or a lost turn is reported as before."""
+    assert _ending(code, interrupted=interrupted, prior_restarts=prior_restarts).level == level
 
 
 def test_a_clean_exit_that_took_a_turn_with_it_is_an_error():
@@ -573,7 +597,7 @@ def test_a_latched_client_keeps_a_name_of_its_own():
 def test_each_ending_files_as_its_own_issue(caplog):
     """The defect in #1857 was collision, so assert its absence at the sink — the
     only place that decides what is one issue — rather than trusting the names."""
-    reports = [_ending(0), _ending(0, interrupted=1), _ending(1),
+    reports = [_ending(0, prior_restarts=1), _ending(0, interrupted=1), _ending(1),
                _ending(mgr_mod.CLIENT_CLOSED_EXIT_CODE)]
     fingerprints = [_sink_fingerprint(caplog, r) for r in reports]
     assert len(set(fingerprints)) == len(fingerprints), (
