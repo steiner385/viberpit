@@ -86,6 +86,13 @@ _CLOSE_AEXIT_TIMEOUT_S = 15.0
 # the case worth paying for.
 _TRANSCRIPT_FLUSH_GRACE_S = 5.0
 _TRANSCRIPT_FLUSH_POLL_S = 0.1
+
+# What a clean-but-slow aclose() can legitimately take: the sum of its SEQUENTIAL
+# stage bounds — interrupt, pump wait, pump reap, source pending + cursor close
+# (each `_CLOSE_GRACE_SEC`), the transcript flush, then the SDK __aexit__. Derived,
+# never restated, so the orchestrator's wait for a completion release cannot drift
+# below the release it waits for again (#2655: a hand-tuned 20 s did, every time).
+ACLOSE_BUDGET_S = 5 * _CLOSE_GRACE_SEC + _TRANSCRIPT_FLUSH_GRACE_S + _CLOSE_AEXIT_TIMEOUT_S
 # Bytes of transcript tail scanned for the uuid. The entry we are waiting for is the
 # last (or near-last) line by construction; an entry bigger than this window simply
 # times out into the pre-#1012 behaviour rather than reading a multi-MB file 50x.
