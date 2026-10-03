@@ -271,7 +271,105 @@ def test_ensure_driver_awaits_in_flight_release_before_rebuilding(tmp_path):
     assert "s1" not in orch._releasing   # cleared once the release completed
 
 
-# --- Review findings (Task 3 follow-up: drain trigger) ---------------------------
+def test_release_wait_does_not_hold_the_orchestrator_wide_ensure_lock(tmp_path):
+    """#2655: the release wait ran under `_ensure_lock`, so one session's teardown
+    froze every WS attach / prompt resume of EVERY other session for up to 20 s.
+    It now waits before taking the lock; a concurrent attach elsewhere is untouched."""
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, cwd=cwd)
+        orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
+        driver = _GatedCloseDriver()
+        orch._drivers["s1"] = driver
+        await orch._persist_status("s1", "complete")
+        with patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            ensure_task = asyncio.create_task(orch.ensure_driver("s1"))
+            await asyncio.sleep(0.05)
+            assert not ensure_task.done(), "still waiting on the gated release"
+            locked = orch._ensure_lock.locked()
+            driver.gate.set()
+            new_driver = await asyncio.wait_for(ensure_task, timeout=5)
+        await _drain(orch)
+        return locked, new_driver
+    locked, new_driver = asyncio.run(run())
+    assert locked is False, "the release wait must not hold _ensure_lock"
+    assert new_driver is not None
+
+
+class _SlowCloseDriver(_FakeDriver):
+    """aclose() takes ``delay`` — a clean but slow teardown, like the real driver's
+    flush + SDK __aexit__ (≈20 s in prod) against the 20 s release wait."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+
+    async def aclose(self):
+        await asyncio.sleep(self.delay)
+        await super().aclose()
+
+
+def test_completion_nudge_waits_out_its_own_release_before_resuming(tmp_path, caplog):
+    """#2655: the nudge called ensure_driver milliseconds after `_persist_status`
+    spawned the release, so ensure_driver's DRIVER_RELEASE_WAIT_S always lapsed on a
+    slow-but-healthy aclose() and the replacement resumed the same conversation over
+    the old process (the #1012 lost-tail race), logging a WARNING every nudge cycle.
+    The nudge now waits for the release itself, with the driver's full close budget."""
+    import logging
+
+    verdict = _unmet_verdict()
+
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, cwd=cwd)
+        old = _SlowCloseDriver(delay=0.3)
+        orch._drivers["s1"] = old
+        closed_at_resume: list[bool] = []
+        real_ensure = orch.ensure_driver
+
+        async def spy_ensure(sid, identity="system"):
+            closed_at_resume.append(old.closed)
+            return await real_ensure(sid, identity)
+
+        orch.ensure_driver = spy_ensure
+        with patch("server.sessions.orchestrator.DRIVER_RELEASE_WAIT_S", 0.05), \
+             patch("server.automations.completion_bar.met_bar", return_value=verdict), \
+             patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            # Opt out only across the transition, so `_persist_status` does not
+            # schedule its own (unawaited) autoarchive task; the nudge is driven
+            # directly below, milliseconds after the release spawned — as in prod.
+            rec = orch.record("s1")
+            rec.auto_archive_opt_out_reason = "manual-unarchive"
+            await orch._persist_status("s1", "complete")
+            rec.auto_archive_opt_out_reason = None
+            assert "s1" in orch._releasing
+            await orch._auto_archive_completed("s1")
+            await _drain(orch)
+        return orch, old, closed_at_resume
+
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        orch, old, closed_at_resume = asyncio.run(run())
+    assert not [r for r in caplog.records
+                if "driver release still in flight" in r.getMessage()]
+    assert closed_at_resume and closed_at_resume[0] is True, (
+        "the replacement must be built only after the old aclose() returned")
+    assert orch._drivers.get("s1") is not None and orch._drivers["s1"] is not old
+    assert orch._last_prompt.get("s1") == verdict.remedy
+
+
+def test_completion_release_budget_covers_the_driver_close_budget():
+    """Single source of truth: the nudge's wait derives from aclose()'s own stage
+    bounds, so a future close-constant bump cannot slip past it again."""
+    from server.sessions import claude_driver
+    from server.sessions.orchestrator import COMPLETION_RELEASE_WAIT_S
+    assert COMPLETION_RELEASE_WAIT_S > claude_driver.ACLOSE_BUDGET_S
+    assert claude_driver.ACLOSE_BUDGET_S >= (claude_driver._TRANSCRIPT_FLUSH_GRACE_S
+                                             + claude_driver._CLOSE_AEXIT_TIMEOUT_S)
+
+
+# --- Review findings (Task 3 follow-up: drain trigger)---------------------------
 #
 # Task 3 exempted `complete` from the capacity count (CAPACITY_EXEMPT_STATUSES),
 # but the drain trigger a few lines below the driver-release block in

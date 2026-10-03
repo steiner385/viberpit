@@ -93,7 +93,7 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
-from server.sessions.claude_driver import ClaudeAgentDriverFactory
+from server.sessions.claude_driver import ACLOSE_BUDGET_S, ClaudeAgentDriverFactory
 from server.sessions.engine import (
     EFFORT_UNCHANGED,
     AgentCapabilities,
@@ -616,13 +616,21 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("VIBERPIT_TRANSCRIPT_EXPORT_CEILING_S", 
 
 # Ceiling on how long ensure_driver waits for an in-flight completion-driver release
 # before it gives up and builds the replacement driver anyway. That wait exists to
-# avoid racing the old process's session-file flush, but it runs under the
-# orchestrator-wide `_ensure_lock` and `AgentDriver.aclose()` is only partly
-# bounded (the SDK client's __aexit__ and the account sync-back are not), so an
-# unbounded wait would let one stuck teardown wedge every attach in the process.
+# avoid racing the old process's session-file flush, but `AgentDriver.aclose()` is
+# only partly bounded (the account sync-back is not), so an unbounded wait would
+# leave a session with a stuck teardown permanently unopenable. The wait runs BEFORE
+# `_ensure_lock` (#2655), so it bounds only the attaching caller's latency; it stays
+# well under the bridge's 90 s attach deadline, leaving room for the resume build.
 # minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
 # race protection entirely — fall back to the default instead.
 DRIVER_RELEASE_WAIT_S = env_float("VIBERPIT_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
+# How long the completion nudge waits for the session's OWN release before resuming
+# it (#2655). The nudge fires milliseconds after `_persist_status` spawned that
+# release, so a wait shorter than aclose() always timed out and resumed the same
+# conversation over a process still tearing down. Nobody is waiting on this
+# background task, so it gets the driver's full close budget plus headroom for the
+# DB snapshot/attest and account sync-back around aclose().
+COMPLETION_RELEASE_WAIT_S = ACLOSE_BUDGET_S + 15.0
 # How long ensure_driver waits for an IN-FLIGHT spawn of the same session before
 # giving up (asyncio.TimeoutError → the bridge's SESSION_RESUME_TIMEOUT hint). A
 # spawn is driver.start() — the SDK subprocess plus its MCP fleet — normally a few
@@ -6105,6 +6113,18 @@ class SessionOrchestrator:
                     # and the corrective nudge would be silently thrown away, parking the
                     # session at `complete` on a premature marker. Resume it first (which
                     # also moves it out of `complete`, so it stops being capacity-exempt).
+                    # Let that release finish first (#2655): it started milliseconds
+                    # ago, and resuming over it races the old process's session-file
+                    # flush. Waiting HERE blocks only this background task; inside
+                    # ensure_driver it would cap at DRIVER_RELEASE_WAIT_S and then
+                    # build the replacement anyway.
+                    release = getattr(self, "_releasing", {}).get(session_id)
+                    if release is not None:
+                        done, _ = await asyncio.wait({release},
+                                                     timeout=COMPLETION_RELEASE_WAIT_S)
+                        if not done:
+                            log.info("completion.nudge_release_slow sid=%s waited=%.0fs",
+                                     session_id, COMPLETION_RELEASE_WAIT_S)
                     if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
                         log.warning("completion.nudge_failed sid=%s reason=no_driver",
                                     session_id)
@@ -17379,6 +17399,19 @@ class SessionOrchestrator:
         log.info("auto-resume: resumed %d/%d interrupted session(s)", n, len(eligible))
         return n
 
+    async def _await_driver_release(self, session_id: str, release: asyncio.Task) -> None:
+        """Wait up to DRIVER_RELEASE_WAIT_S for an in-flight completion release.
+
+        ``asyncio.wait``, not ``wait_for(shield(...))``: it never cancels the release
+        on overrun, never re-raises the release's own failure or cancellation into
+        this caller, and lets the CALLER's cancellation propagate untouched.
+        """
+        done, _ = await asyncio.wait({release}, timeout=DRIVER_RELEASE_WAIT_S)
+        if not done:
+            log.warning("session.resume id=%s driver release still in flight "
+                        "after %.1fs — building a replacement anyway",
+                        session_id, DRIVER_RELEASE_WAIT_S)
+
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> AgentDriver | None:
         """Return the live AgentDriver for session_id, resuming from DB if detached.
 
@@ -17455,6 +17488,22 @@ class SessionOrchestrator:
         if rec.status == "queued":
             return None
 
+        # A completion-driver-release may still be in flight for this session (see
+        # _persist_status): its driver is already out of `_drivers`, but the old
+        # `claude` process may still be shutting down / flushing its session file.
+        # Building a replacement with the same resume=engine_session_id against the
+        # same cwd while that write is in flight races it — the SDK's own
+        # subprocess_cli.py warns this can lose the last assistant message. Wait for
+        # it BEFORE `_ensure_lock` (#2655): under the lock, every attach to every
+        # other session in the process stalled behind this one teardown. The release
+        # always clears its own `_releasing` entry (success or failure), and the wait
+        # is bounded because aclose()'s sync-back is not: on timeout we build the
+        # replacement anyway — losing the old transcript's tail beats an un-openable
+        # session.
+        waited_release = self._releasing.get(session_id)
+        if waited_release is not None:
+            await self._await_driver_release(session_id, waited_release)
+
         # Serialise the check-build-register section so that two concurrent WS
         # attaches to the same detached session cannot both pass the "no driver"
         # gate, each build+start a driver, and both register — which would attach
@@ -17484,34 +17533,12 @@ class SessionOrchestrator:
                     _rethread_identity(existing, identity)
                     return existing
 
-            # A completion-driver-release may still be in flight for this session
-            # (see _persist_status): its driver is already out of `_drivers`, but
-            # the old `claude` process may still be shutting down / flushing its
-            # session file to disk. Building a replacement driver with the same
-            # resume=engine_session_id against the same cwd while that write is
-            # still in flight races it — the SDK's own subprocess_cli.py warns this
-            # can lose the last assistant message. Wait for the release to finish
-            # first; it always clears its own `_releasing` entry (success or
-            # failure), so this cannot hang forever or leave the session stuck.
-            # Bounded: this runs under the orchestrator-wide `_ensure_lock`, and
-            # aclose() is only PARTLY bounded internally (its pump wait is; the SDK
-            # client's __aexit__ and the sync-back call are not). An unbounded await
-            # here would let one stuck teardown block every attach in the process and
-            # leave the session permanently unopenable. On timeout we proceed to build
-            # the replacement anyway: losing the tail of the old transcript is strictly
-            # better than an un-openable session, and the release task keeps running
-            # (it clears its own `_releasing` entry when it eventually finishes).
+            # Re-check the release under the lock: a NEW one may have started while
+            # we queued for it (another caller built a driver that then completed).
+            # One we already waited out above is not waited on twice.
             release_task = self._releasing.get(session_id)
-            if release_task is not None:
-                try:
-                    await asyncio.wait_for(asyncio.shield(release_task),
-                                           timeout=DRIVER_RELEASE_WAIT_S)
-                except asyncio.TimeoutError:
-                    log.warning("session.resume id=%s driver release still in flight "
-                                "after %.1fs — building a replacement anyway",
-                                session_id, DRIVER_RELEASE_WAIT_S)
-                except Exception:
-                    pass
+            if release_task is not None and release_task is not waited_release:
+                await self._await_driver_release(session_id, release_task)
 
             # Claim the session before spawning anything (#1379). This is the choke
             # point the duplicate-owner bug went through: after a fleet-wide daemon
