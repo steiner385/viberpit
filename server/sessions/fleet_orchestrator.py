@@ -14,7 +14,7 @@ from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions import host_upgrade
-from server.sessions.fleet_router import FleetRouter, NoHostAvailable
+from server.sessions.fleet_router import FleetRouter, NoEngineHostAvailable, NoHostAvailable
 from server.sessions.host_engines import expected_contract_sha256
 from server.sessions.engine import AgentEngine, parse_agent_engine
 from server.sessions.remote import RemoteOrchestrator
@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 # Credential broker cadence (#2629): the probe interval, and a lease of four missed pushes.
 CREDS_PUSH_INTERVAL_S = 30.0
 CREDS_LEASE_S = 120.0
+
+# Queue-drain nudge cadence: the fleet probe refreshes every host's
+# ``active_sessions`` on this interval, so this is how often "a host freed a slot"
+# can become visible to the edge at all.
+QUEUE_DRAIN_INTERVAL_S = 30.0
 
 # --------------------------------------------------------------------------- #
 # "A worker is unreachable, skip it" — ONE record family for every fan-out site.
@@ -370,10 +375,32 @@ class FleetOrchestrator:
         # `_consumes_capacity_slot`, `owned_active_session_count`), so ranking it
         # against `active_sessions >= max_sessions` refused a slotless session for
         # lack of a slot and left the drawer unopenable on a full primary (#2184).
-        order = await self._router.pick(
-            prefer=prefer, engine=engine,
-            expected_contract_sha256=expected_contract_sha256(engine),
-            ignore_capacity=assistant)
+        sha = expected_contract_sha256(engine)
+        try:
+            order = await self._router.pick(
+                prefer=prefer, engine=engine, expected_contract_sha256=sha,
+                ignore_capacity=assistant)
+        except NoEngineHostAvailable:
+            # "Install the Codex binary" stays the answer: a queued session would
+            # wait forever for a runner that does not exist.
+            raise
+        except NoHostAvailable as refusal:
+            if assistant:
+                # Capacity was already ignored for it, so this refusal is a health
+                # problem — and an assistant parked in a queue is a drawer that
+                # never opens.
+                raise
+            # Every host is enabled, healthy and FULL (dobby 5/4, rocky 8/6). That is
+            # a queueing condition, not a refusal: the daemon already persists a
+            # 'queued' row for the fleet-wide cap, so ask it to do exactly that. The
+            # split-brain half of the refusal is kept — nothing runs in-process here;
+            # the row is written by a daemon, and started by whichever daemon frees a
+            # slot (see SessionOrchestrator._maybe_start_queued's host-capacity rule).
+            return await self._queue_for_capacity(refusal, engine=engine, sha=sha, kwargs=kwargs)
+        return await self._dispatch(order, kwargs)
+
+    async def _dispatch(self, order: list[str], kwargs: dict):
+        """Try *order* best-first; the first daemon that accepts wins."""
         last_exc: Exception | None = None
         for host in order:
             try:
@@ -408,6 +435,101 @@ class FleetOrchestrator:
                 pass
             return rec
         raise last_exc if last_exc is not None else NoHostAvailable("no host accepted the session")
+
+    async def _queue_hosts(self, *, engine: AgentEngine | None, sha: str | None) -> list[str]:
+        """Daemons that can PERSIST a queued row, best first — the primary leads.
+
+        Preferring the primary keeps the row on the daemon that owns unstamped and
+        orphaned queue entries anyway, and whose edge is co-located. Hosts that are
+        up but full come first (``pick`` with the capacity leg dropped — the same
+        exemption the assistant uses); when none is dispatchable at all, any host the
+        registry does not know to be unreachable is still worth asking: a
+        skew-fenced daemon cannot START a session but can perfectly well persist one,
+        and a durable queued row beats an error.
+        """
+        try:
+            hosts = await self._router.pick(
+                engine=engine, expected_contract_sha256=sha, ignore_capacity=True)
+        except NoHostAvailable:
+            hosts = await self._fanout_names()
+        return sorted(hosts, key=lambda h: (h != self._primary, h))
+
+    async def _queue_for_capacity(self, refusal: NoHostAvailable, *,
+                                  engine: AgentEngine | None, sha: str | None, kwargs: dict):
+        """Persist the session as 'queued' on the first daemon that will take it.
+
+        Re-raises *refusal* (the typed NoHostAvailable the API already maps to its
+        409) only when no daemon could be reached at all — a transport error from a
+        queue attempt must not masquerade as the capacity verdict, and an older
+        daemon that rejects the ``queue_only`` kwarg is simply skipped.
+        """
+        hosts = await self._queue_hosts(engine=engine, sha=sha)
+        if not hosts:
+            raise refusal
+        log.info("fleet.create_session: every host is at capacity — queueing on %s",
+                 hosts[0])
+        try:
+            rec = await self._dispatch(hosts, {**kwargs, "queue_only": True})
+        except DaemonUnavailable as e:
+            if e.outcome_unknown:
+                raise
+            log.warning("fleet.create_session: no daemon could persist the queued "
+                        "session (%s) — refusing", e)
+            raise refusal from e
+        except Exception as e:  # noqa: BLE001 — any failure to queue is the refusal
+            log.warning("fleet.create_session: queueing failed (%s) — refusing", e)
+            raise refusal from e
+        log.info("fleet.create_session queued id=%s host=%s reason=host_capacity",
+                 rec.id, getattr(rec, "host", None))
+        return rec
+
+    async def _queued_count(self) -> int:
+        """How many sessions sit in the shared queue right now (a plain DB read)."""
+        from server.sessions import session_queue as sq
+        return len(await sq.positions())
+
+    async def drain_queue_once(self) -> list[str]:
+        """Ask every host with headroom to drain the queue; returns who was asked.
+
+        The daemons' own drains are event-driven and host-local: a slot freed on
+        rocky fires rocky's drain, which can adopt a session queued on a full dobby
+        — but only once the registry (refreshed by the 30 s probe) shows dobby full.
+        If rocky's drain ran before that, nothing on rocky fires again until its
+        next slot-free event, and the queued session waits for no reason. This
+        nudge closes that gap on the probe cadence. Every call is idempotent on the
+        daemon side (lock-serialized, lease-fenced), so asking too often is harmless.
+
+        Hosts WITHOUT headroom are not asked: their drain would stop at its own
+        cap anyway. An unreachable host is skipped quietly — the probe is the
+        detector that reports it, and a nudge that fails costs nothing.
+        """
+        if await self._queued_count() == 0:
+            return []
+        try:
+            hosts = await self._router.pick()
+        except NoHostAvailable:
+            return []
+        asked: list[str] = []
+        for host in hosts:
+            try:
+                started = await self._router.get(host).maybe_start_queued()
+            except Exception as e:  # noqa: BLE001 — a dead host must not stop the rest
+                log.debug("fleet.queue_drain host=%s nudge failed: %s", host, e)
+                continue
+            asked.append(host)
+            if started:
+                log.info("fleet.queue_drain host=%s started %d queued session(s)",
+                         host, started)
+        return asked
+
+    async def queue_drain_loop(self, interval_s: float = QUEUE_DRAIN_INTERVAL_S) -> None:
+        """Nudge forever on the probe cadence; a raising tick is swallowed."""
+        while True:
+            try:
+                await self.drain_queue_once()
+            except Exception:
+                log.exception("fleet.queue_drain_tick_failed")
+            await asyncio.sleep(interval_s)
 
     async def _stamp_host(self, session_id: str, host: str) -> None:
         from sqlalchemy import update as _upd

@@ -3307,8 +3307,16 @@ class SessionOrchestrator:
         auto_archive_opt_out_reason: str | None = None,
         ownership_token: str | None = None,
         parent_session_id: str | None = None,
+        queue_only: bool = False,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
+
+        *queue_only* is the edge's verdict that EVERY fleet host is at its
+        ``max_sessions``: persist the session as 'queued' without consulting the
+        local gates (the fleet-wide cap may be nowhere near reached — per-host caps
+        are what filled up). The row is started later by whichever daemon frees a
+        slot (``_maybe_start_queued``'s host-capacity rule), exactly like a cap-queued
+        one. Ignored for the assistant, which never queues.
 
         *autopilot_paused* / *auto_archive_opt_out_reason* are the per-session opt-outs
         the dispatch form's "Autopilot" / "Auto-archive" toggles map onto — the same
@@ -3435,6 +3443,11 @@ class SessionOrchestrator:
                 _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
                 if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
                     queue_reason = "product_capacity"
+            # Host capacity: the edge found every enabled, healthy host full. Product
+            # capacity wins the label when both apply — it is the stricter wait
+            # (the drain re-checks it per entry), host capacity merely a slot.
+            if queue_only and queue_reason is None and not is_assistant_kind(kind):
+                queue_reason = "host_capacity"
 
             # Global active-session cap: at/over the cap the session is created as a
             # queued row (real session, no worktree/account/driver yet) and started
@@ -4169,8 +4182,20 @@ class SessionOrchestrator:
         capacity_full: set[str] = set()
         enabled_hosts = await self._enabled_host_names()
         async with self._queue_drain_lock:
+            # THIS host's own cap (``Host.max_sessions``), the number the fleet ranker
+            # refuses dispatch on. The global gate below is fleet-wide and, on a worker,
+            # compared against a process-local count — neither stops a full host from
+            # starting one more here. None = uncapped / not in the registry. Read
+            # INSIDE the lock: it is the first real await on this path, and taking it
+            # before the lock let a concurrently scheduled drain (queue-drain-on-close)
+            # overtake a caller that was already past its own checks.
+            local_cap = await self._local_host_cap()
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():
+                    break
+                if local_cap is not None and await self.owned_active_session_count() >= local_cap:
+                    log.debug("session_queue.host_full host=%s cap=%d — leaving the "
+                              "queue for a host with headroom", self_host_name(), local_cap)
                     break
                 entry = await sq.next_entry(exclude=foreign | capacity_full)
                 if entry is None:
@@ -4211,11 +4236,28 @@ class SessionOrchestrator:
                     # rehydrate did not seed it): rebuild from the row, the single
                     # source of truth, rather than discarding a replayable entry.
                     in_mem = self._record_from_row(row)
+                elif in_mem.host != row.host and sid not in getattr(self, "_drivers", {}):
+                    # The row is the one truth every daemon sees: another host adopted
+                    # this entry (below) since this driverless copy was made, so judge
+                    # ownership by the stamp it carries NOW — a stale in-memory stamp
+                    # is how two daemons would both believe they own one entry.
+                    in_mem.host = row.host
                 if not self._owns_record(in_mem, enabled_hosts):
-                    foreign.add(sid)
-                    log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
-                              sid, row.host)
-                    continue
+                    # Ownership (#852) has one exception: an entry whose owner cannot
+                    # start it — at its own cap, down, or disabled — is started by the
+                    # first host that has room. That is what makes "every host was
+                    # full, queue it" (FleetOrchestrator) end in a session rather than
+                    # a row pinned to whichever daemon happened to persist it. The
+                    # lease fences the race with the owner's own drain (_adopt).
+                    if await self._queue_owner_can_start(row.host):
+                        foreign.add(sid)
+                        log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
+                                  sid, row.host)
+                        continue
+                    if not await self._adopt_queued_entry(sid, row):
+                        foreign.add(sid)
+                        continue
+                    in_mem.host = self_host_name()
                 if queue_reason == "product_capacity" and params.get("repo"):
                     from server.automations.product_admission import repo_capacity_status
                     _slug, _count, _cap = await repo_capacity_status(
@@ -4238,6 +4280,15 @@ class SessionOrchestrator:
                     await self._spawn_session(
                         sid, preexisting_row=True, resume=row.engine_session_id or None,
                         **params)
+                except SessionLeaseHeld:
+                    # Another host is building this very session (its adoption won
+                    # the lease between our ownership check and this spawn). Not a
+                    # start failure: ending the session here would end THEIRS. Leave
+                    # the entry — the winner removes it when its spawn commits.
+                    log.info("session_queue.lease_held id=%s — another host is starting "
+                             "it; leaving the entry to it", sid)
+                    foreign.add(sid)
+                    continue
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
@@ -4327,6 +4378,96 @@ class SessionOrchestrator:
                     await sq.remove(sid)
                     started += 1
         return started
+
+    async def _local_host_cap(self) -> int | None:
+        """``Host.max_sessions`` for THIS daemon's registry row; None = uncapped.
+
+        A registry that cannot be read also answers None: the drain then runs with
+        the global gate only — today's behaviour — rather than freezing the queue
+        on a DB blip."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import Host
+        try:
+            async with db_session() as db:
+                return (await db.execute(
+                    sa_select(Host.max_sessions).where(Host.name == self_host_name())
+                )).scalar_one_or_none()
+        except Exception:
+            log.warning("session_queue: host cap unreadable — draining without a "
+                        "per-host gate this pass", exc_info=True)
+            return None
+
+    async def _queue_owner_can_start(self, host: str | None) -> bool:
+        """Can the daemon a queued row is stamped for start it itself?
+
+        True on any doubt — an unstamped row (the primary's; a worker cannot tell
+        which registry row the primary is), a stamp the registry no longer has (the
+        primary adopts those through ``_owns_record`` already), a never-probed host,
+        an unreadable registry. Adoption needs POSITIVE evidence the owner is stuck:
+        disabled, probed down, or at its own ``max_sessions``.
+        """
+        if host is None:
+            return True
+        from sqlalchemy import select as sa_select
+        from server.db.models import Host
+        try:
+            async with db_session() as db:
+                owner = (await db.execute(
+                    sa_select(Host).where(Host.name == host))).scalar_one_or_none()
+        except Exception:
+            log.warning("session_queue: registry unreadable — not adopting from %r", host,
+                        exc_info=True)
+            return True
+        if owner is None:
+            return True
+        if not owner.enabled or owner.healthy is False:
+            return False
+        if owner.max_sessions is not None and (owner.active_sessions or 0) >= owner.max_sessions:
+            return False
+        return True
+
+    async def _adopt_queued_entry(self, session_id: str, row) -> bool:
+        """Take a queued entry away from a host that cannot start it (#852 exception).
+
+        Lease first, row second. The lease (#1379) is what the owner's own spawn
+        checks before it builds, so holding it means the owner's concurrent drain
+        is refused (``SessionLeaseHeld`` → it leaves the entry) rather than
+        racing ours. The re-stamp is then a compare-and-set against the stamp we
+        read, so two adopters cannot both "win" a row that moved under them.
+        """
+        from sqlalchemy import update as sa_update
+        me = self_host_name()
+        if not await self._claim_session(session_id, why="queue-adopt", adopt=True):
+            return False
+        stmt = (sa_update(DbSession)
+                .where(DbSession.id == session_id, DbSession.status == "queued")
+                .values(host=me))
+        stmt = (stmt.where(DbSession.host.is_(None)) if row.host is None
+                else stmt.where(DbSession.host == row.host))
+        try:
+            async with db_session() as db:
+                res = await db.execute(stmt)
+                won = bool(getattr(res, "rowcount", 0))
+        except Exception:
+            log.warning("session_queue.adopt_failed id=%s", session_id, exc_info=True)
+            won = False
+        if not won:
+            # Give the lease back rather than leaving a fence with no driver behind
+            # it for the lease tick to reap after its build grace.
+            fence = self._lease_fences().pop(session_id, None)
+            self._lease_building().pop(session_id, None)
+            if fence is not None:
+                try:
+                    await session_lease.release(session_id, me, fence)
+                except Exception:
+                    log.debug("session_queue.adopt_release_failed id=%s", session_id,
+                              exc_info=True)
+            log.info("session_queue.adopt_lost id=%s stamp=%s — the row moved first",
+                     session_id, row.host)
+            return False
+        log.info("session_queue.adopted id=%s from=%s to=%s — owner cannot start it",
+                 session_id, row.host, me)
+        return True
 
     def _queued_spawn_merged_pr(self, exc: Exception,
                                 params: dict) -> "PullRequestInfo | None":
@@ -22378,6 +22519,51 @@ class SessionOrchestrator:
         active = {i for i, status in rows if status not in INACTIVE_SESSION_STATUSES}
         return active, {i for i, _ in rows} - active
 
+    async def _resync_moved_queued_mirrors(self) -> None:
+        """Re-read the row of every driverless 'queued' record whose host moved.
+
+        A queued entry this daemon persisted can be ADOPTED by another host once
+        this one is full (``_maybe_start_queued``). That host re-stamps the row and
+        starts the session, but this process's in-memory copy still says
+        "queued, host=me": it reads as OWNED, so the mirror reconcile below never
+        considers it foreign and never evicts it — a zombie "queued" card the
+        dashboard would keep after the real session is long archived. The row is
+        the truth. On the PRIMARY, copy its host and status back so the record
+        becomes an ordinary foreign mirror and the existing eviction rules take it
+        from there. A WORKER holds nothing but its own sessions (rehydrate
+        host-partitions), so it drops the record outright: a worker-served copy
+        beats the primary's in the fleet list merge, and a stale one here would
+        shadow the live session on the host that adopted it.
+        """
+        drivers = getattr(self, "_drivers", {})
+        ids = [sid for sid, rec in list(self._records.items())
+               if rec.status == "queued" and sid not in drivers]
+        if not ids:
+            return
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession.id, DbSession.host, DbSession.status)
+                .where(DbSession.id.in_(ids)))).all()
+        worker = daemon_role() == "worker"
+        enabled_hosts = await self._enabled_host_names()
+        for sid, host, status in rows:
+            rec = self._records.get(sid)
+            if rec is None or rec.host == host:
+                continue
+            if self._owns_record_by_stamp(host, enabled_hosts):
+                # Still ours under its current stamp — e.g. the edge stamped the
+                # primary's own NULL-host enqueue with the primary's name. Not a move.
+                continue
+            log.info("session_queue.mirror_moved id=%s from=%s to=%s status=%s%s",
+                     sid, rec.host, host, status, " (dropped: worker)" if worker else "")
+            if worker:
+                self._records.pop(sid, None)
+                continue
+            rec.host = host
+            rec.status = status
+            rec.detached = True
+
     async def _reconcile_mirror_once(self) -> None:
         """Evict _records entries for sessions deleted or archived on another fleet host.
 
@@ -22400,6 +22586,7 @@ class SessionOrchestrator:
         pass. Only a MISSING row is ambiguous (deleted vs. a worker mid-create whose row
         has not committed yet), and that keeps the two-strike wait (_MIRROR_EVICT_STRIKES).
         """
+        await self._resync_moved_queued_mirrors()
         enabled_hosts = await self._enabled_host_names()
         foreign = [sid for sid, rec in list(self._records.items())
                    if not self._owns_record(rec, enabled_hosts)]

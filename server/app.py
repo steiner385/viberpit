@@ -364,6 +364,7 @@ async def _lifespan(app: FastAPI):
     app.state.host_name = None
     app.state.fleet_probe_task = None
     app.state.fleet_creds_task = None
+    app.state.fleet_queue_drain_task = None
     _endpoint = getattr(app.state, "daemon_endpoint", None)
     if _endpoint is not None:
         try:
@@ -385,6 +386,11 @@ async def _lifespan(app: FastAPI):
             app.state.sessions = FleetOrchestrator(_router, primary=_primary_name)
             app.state.fleet_creds_task = asyncio.create_task(
                 app.state.sessions.creds_push_loop(), name="fleet-creds-push")
+            # A session queued because every host was full starts on whichever host
+            # frees a slot; this nudge is what makes that true on the probe cadence
+            # rather than only on the freeing host's own event-driven drain.
+            app.state.fleet_queue_drain_task = asyncio.create_task(
+                app.state.sessions.queue_drain_loop(), name="fleet-queue-drain")
             _logging.getLogger("server").info(
                 "fleet: dispatcher ready; hosts=%s", list(_router.names()))
         except Exception:
@@ -524,7 +530,8 @@ async def _lifespan(app: FastAPI):
                           ("app_sessions_prune_task", "app-sessions-prune"),
                           ("codex_auth_sync_task", "codex-auth-sync"),
                           ("fleet_probe_task", "fleet-probe"),
-                          ("fleet_creds_task", "fleet-creds-push")):
+                          ("fleet_creds_task", "fleet-creds-push"),
+                          ("fleet_queue_drain_task", "fleet-queue-drain")):
         _t = getattr(app.state, _attr, None)
         if _t is not None:
             _t.cancel()
