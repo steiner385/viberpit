@@ -393,11 +393,11 @@ def test_rate_limit_block_uses_the_ledger_cached_reset_time(monkeypatch):
     assert helper_call.is_helper_account_blocked("/cfg/acct1", _now=clock) is False
 
 
-def test_rate_limit_logs_one_warning_per_block_not_per_call(caplog):
+def test_rate_limit_logs_one_info_per_block_not_per_call(caplog):
     clock = Clock()
     _, sleep = _sleeps_recorded()
     fail = _rate_limited_stream()
-    with caplog.at_level("WARNING", logger=helper_call.log.name):
+    with caplog.at_level("INFO", logger=helper_call.log.name):
         asyncio.run(run_helper_call(fail, subsystem="assess_model", account_key="/cfg/acct1",
                                     _now=clock, _sleep=sleep))
         # Further calls within the block are skipped before any stream is made
@@ -409,6 +409,18 @@ def test_rate_limit_logs_one_warning_per_block_not_per_call(caplog):
             assert out.skipped is True and out.skip_reason == "account-blocked"
     rate_limit_warnings = [r for r in caplog.records if "rate-limited" in r.getMessage()]
     assert len(rate_limit_warnings) == 1
+    # INFO, not WARNING: routine quota exhaustion must not auto-file an issue.
+    assert rate_limit_warnings[0].levelname == "INFO"
+
+
+def test_org_denial_block_still_logs_at_warning(caplog):
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    with caplog.at_level("INFO", logger=helper_call.log.name):
+        asyncio.run(run_helper_call(_org_denied_stream(), subsystem="decide",
+                                    account_key="/cfg/denied2", _now=clock, _sleep=sleep))
+    refused = [r for r in caplog.records if "refused authorization" in r.getMessage()]
+    assert [r.levelname for r in refused] == ["WARNING"]
 
 
 def test_a_partial_model_reply_is_never_mistaken_for_an_error_detail():

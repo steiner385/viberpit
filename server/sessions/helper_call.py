@@ -234,10 +234,10 @@ def is_helper_account_blocked(config_dir: str,
     return True
 
 
-def _block_account(config_dir: str, now: float, block_s: float,
+def _block_account(config_dir: str, now: float, block_s: float, level: int,
                    log_fmt: str, *log_args: object) -> None:
     """Bar *config_dir*'s account from helper duty for *block_s* seconds, logging
-    *log_fmt* % *log_args* once per block rather than once per failed call."""
+    *log_fmt* % *log_args* at *level* once per block rather than once per failed call."""
     key = config_dir or ""
     if not key:
         return  # no account to bar (a caller with no config dir picks nothing)
@@ -247,12 +247,12 @@ def _block_account(config_dir: str, now: float, block_s: float,
         # %r so the volatile text lands inside quotes: the error-sink fingerprint
         # normalizes a quoted run to <str>, which keeps one condition to one
         # auto-error issue instead of one per distinct CLI sentence.
-        log.warning(log_fmt, *log_args)
+        log.log(level, log_fmt, *log_args)
 
 
 def _note_auth_blocked(config_dir: str, detail: str | None, now: float) -> None:
     """Bar *config_dir*'s account from helper duty and say why, once per block."""
-    _block_account(config_dir, now, _AUTH_BLOCK_S,
+    _block_account(config_dir, now, _AUTH_BLOCK_S, logging.WARNING,
                    "helper account %s refused authorization — barred from helper "
                    "calls for %.0fs: %r", config_dir, _AUTH_BLOCK_S, detail or "")
 
@@ -297,7 +297,9 @@ def _note_rate_limited(config_dir: str, detail: str | None, now: float) -> None:
     """Bar *config_dir*'s account from helper duty until its usage resets (or a
     bounded fallback), and say why, once per block."""
     block_s = _reset_deadline_s(config_dir) or _RATE_LIMIT_BLOCK_S
-    _block_account(config_dir, now, block_s,
+    # INFO: routine quota exhaustion, already handled by the bar and shown in
+    # usage/rotation UI; WARNING would auto-file an error issue per window.
+    _block_account(config_dir, now, block_s, logging.INFO,
                    "helper account %s is rate-limited — barred from helper calls "
                    "for %.0fs: %r", config_dir, block_s, detail or "")
 
