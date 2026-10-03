@@ -554,7 +554,10 @@ def test_every_remote_method_is_classified():
                 # Fleet-wide method defined on FleetOrchestrator itself: it must
                 # report EVERY host's outcome rather than skip an unreachable one,
                 # so it cannot use the merge-all helper.
-                "codex_account_status", "codex_invalidate_credentials"}
+                "codex_account_status", "codex_invalidate_credentials",
+                # Per-host credential-envelope push (#2629): only push_credentials
+                # calls it, addressing each runner by name through the router.
+                "creds_sync"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
