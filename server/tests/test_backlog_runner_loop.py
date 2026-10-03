@@ -882,6 +882,55 @@ def test_orphaned_claim_released_despite_unattested_predecessor_execution(tmp_pa
     asyncio.run(run())
 
 
+def test_orphaned_claim_kept_quietly_while_another_session_in_tree_is_live(tmp_path, caplog):
+    """#2633: root session row deleted but a child session's execution is still
+    open — the sweep must keep the claim without raising (no
+    ``sweep_target_failed`` warning), then free it once the child is attested."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'orphan4.db'}"
+
+    async def run():
+        from server.automations.ownership import owned
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        pre_ctx = AutomationContext("backlog-runner")
+        await _set_owned_state(pre_ctx, "o/r#9", {"repo": "o/r", "claimed": True, "attempts": 0,
+                                                  "issues": ["o/r#9"]})
+        token = (await pre_ctx.get_target_state("o/r#9"))["ownership_token"]
+        async with owned(token) as tx:
+            sid = tx.reserve_session()
+            tx.bind_session(sid)
+        async with owned(token) as tx:
+            tx.operation.execution_generation = 2
+            tx.operation.execution_sessions = {
+                sid: {"current": "exec-1", "executions": {
+                    "exec-1": {"generation": 1, "stopped": None}}},
+                "child": {"current": "exec-2", "executions": {
+                    "exec-2": {"generation": 2, "stopped": None}}},
+            }
+
+        async def absent(probe_sid):
+            return probe_sid == sid
+
+        loop, rec, ctx = build_loop(candidates=[], session_absent=absent)
+        st = await ctx.get_target_state("o/r#9")
+        await ctx.set_target_state("o/r#9", {**st, "session_id": sid})
+        before = await ctx.get_target_state("o/r#9")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == before
+        assert not await ctx.list_events(kind="orphaned_claim_released")
+
+        async with owned(token) as tx:
+            tx.operation.execution_sessions["child"]["executions"]["exec-2"]["stopped"] = 2
+            tx.operation.execution_sessions = dict(tx.operation.execution_sessions)
+            tx.operation.stopped_generation = 2
+        await loop.tick()
+        assert len(await ctx.list_events(kind="orphaned_claim_released")) == 1
+
+    asyncio.run(run())
+    assert "sweep_target_failed" not in caplog.text
+
+
 def test_circuit_breaker_caps_and_resets_next_day(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'e.db'}"
 

@@ -2116,16 +2116,19 @@ class BacklogRunnerLoop:
             # earlier restart and never individually attested) so the
             # WORK_STOPPED proof below has something to validate against.
             # Scoped to *sid* alone — already proven absent above — never
-            # applied to any other session's still-open history. A failure
-            # here just leaves the release attempt below to fail as it would
-            # have anyway — never stalls the sweep.
+            # applied to any other session's still-open history. A False
+            # result means another session in the tree is still live (its own
+            # close attests later), so the WORK_STOPPED hand-off below would
+            # raise — report "not yet" instead (#2633).
             try:
-                await reconcile_absent_session_stopped(token, sid)
+                if not await reconcile_absent_session_stopped(token, sid):
+                    return False
             except StaleOwnership:
                 return False
             except Exception:  # pragma: no cover — a repair failure must not stall the sweep
                 log.warning("backlog_runner.tree_reconcile_failed target=%s sid=%s", target, sid,
                             exc_info=True)
+                return False
         if not await self._ctx.compare_target_state(
                 target, st, None, release_proof=ReleaseProof.WORK_STOPPED,
                 reason="session row deleted while the claim was open"):
