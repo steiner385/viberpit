@@ -1,4 +1,5 @@
 import { useId, useRef, useState } from 'react'
+import { dispatchStartedText } from '@/api/automations'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
@@ -122,7 +123,7 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
       if (text) setDispatchError(text)
       if (result.status === 'spawned' && result.session_id) {
         setSpawned({ id: result.session_id, name: result.session_name })
-        toast.success(result.session_name ? `Started ${result.session_name}` : 'Started a session')
+        toast.success(dispatchStartedText(result))
       }
     } catch (e) {
       setDispatchError(extractMutationErrorMessage(e, 'Could not approve the escalation.'))
@@ -143,7 +144,7 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
       const result = await dispatch.mutateAsync([data.ref])
       if (result.status === 'spawned' && result.session_id) {
         setSpawned({ id: result.session_id, name: result.session_name })
-        toast.success(result.session_name ? `Started ${result.session_name}` : 'Started a session')
+        toast.success(dispatchStartedText(result))
       } else {
         setDispatchError(`Dispatch failed: ${result.status}`)
       }

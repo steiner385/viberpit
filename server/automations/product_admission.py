@@ -100,23 +100,81 @@ async def repo_capacity_status(
     already saturated its own pin for that product; an idle or dispatch-off
     product (zero claims) is never gated. A states read failure answers
     "not full" (best-effort, matches every other capacity read's posture here)."""
-    async with db_session() as db:
-        ownership = (await resolve_repo_ownership(db, [repo])).get(repo)
-    if ownership is None or ownership.state != "unique" or ownership.owner is None:
-        return None, None, None
-    slug = ownership.owner.slug
     if plan is _PLAN_UNSET:
         plan = await live_plan()
-    async with db_session() as db:
-        raw = await db.scalar(select(Project.automation_policy).where(Project.slug == slug))
-    overlaid = apply_product_plan({slug: raw}, plan)[slug]
-    cap = effective_policy(overlaid)["max_in_flight"]
+    slug, policy = await _repo_product_policy(repo, plan)
+    if slug is None or policy is None:
+        return None, None, None
+    cap = policy["max_in_flight"]
     try:
         from .backlog_runner import in_flight_by_product
         states = await context.list_target_states()
     except Exception:
         return slug, None, cap
     return slug, in_flight_by_product(states).get(slug, 0), cap
+
+
+async def _repo_product_policy(repo: str, plan: dict | None) -> tuple[str | None, dict | None]:
+    """``(slug, effective policy)`` of *repo*'s product, capacity-plan overlaid, by
+    registration-only ownership; ``(None, None)`` without a unique registered owner."""
+    async with db_session() as db:
+        ownership = (await resolve_repo_ownership(db, [repo])).get(repo)
+    if ownership is None or ownership.state != "unique" or ownership.owner is None:
+        return None, None
+    slug = ownership.owner.slug
+    async with db_session() as db:
+        raw = await db.scalar(select(Project.automation_policy).where(Project.slug == slug))
+    return slug, effective_policy(apply_product_plan({slug: raw}, plan)[slug])
+
+
+#: Admission refusals that mean "full right now", not "not allowed": a MANUAL
+#: dispatch refused only by these is claimed and its session queued
+#: (``runner_capacity``) instead of failing — ``queued_claim_slot_free`` is the
+#: drain's re-check of exactly these four.
+CAPACITY_REFUSAL_CODES = frozenset({
+    "runner_ceiling_full", "product_capacity_full", "product_pipeline_full", "pr_doctor_priority"})
+
+
+async def queued_claim_slot_free(
+    repo: str, *, session_id: str, context: AutomationContext,
+    pr_doctor_pending: Callable[[], Awaitable[Mapping[str, tuple[str, ...]]]] | None = None,
+) -> bool:
+    """Whether a manual dispatch queued behind capacity may start now.
+
+    Re-asks the questions in ``CAPACITY_REFUSAL_CODES`` against the live ledger
+    with the claim's OWN row removed (matched by ``session_id``, which the
+    dispatch settle writes onto it): the queued claim already counts toward every
+    one of those caps, so leaving it in would make it wait for the slot it holds.
+    Registration-only ownership, like ``repo_capacity_status`` — this runs inside
+    the queue drain's lock, so no GitHub round-trip. A ledger read failure
+    answers "free", that function's best-effort posture."""
+    from . import runner_config
+    from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
+    try:
+        states = await context.list_target_states()
+    except Exception:
+        return True
+    others = {k: s for k, s in states.items() if s.get("session_id") != session_id}
+    plan = await live_plan()
+    _mode, config = await runner_config.read_runner_config(plan=plan)
+    ceiling = config.get("max_concurrent")
+    if type(ceiling) is int and sum(is_in_flight(s) for s in others.values()) >= ceiling:
+        return False
+    slug, policy = await _repo_product_policy(repo, plan)
+    if slug is None or policy is None:
+        return True
+    if in_flight_by_product(others).get(slug, 0) >= policy["max_in_flight"]:
+        return False
+    pipeline_cap = policy["max_pipeline_prs"]
+    if pipeline_cap is not None and pipeline_by_product(others).get(slug, 0) >= pipeline_cap:
+        return False
+    if pr_doctor_pending is not None:
+        try:
+            if slug in await pr_doctor_pending():
+                return False
+        except Exception:
+            pass
+    return True
 
 
 async def read_dispatch_accounting(

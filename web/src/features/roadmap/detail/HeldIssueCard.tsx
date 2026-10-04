@@ -7,6 +7,7 @@
 // Every mutation here is keyed on THIS card's `workItemId`, never on a list index
 // or the product: a card can only ever act on the issue it names.
 import { useContext, useState } from 'react'
+import { dispatchStartedText } from '@/api/automations'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import type { HeldItem } from '@/api/roadmap'
@@ -47,7 +48,7 @@ export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; s
       if (text) setNotice(text)
       if (result.status === 'spawned' && result.session_id) {
         setSpawned({ id: result.session_id, name: result.session_name })
-        toast.success(result.session_name ? `Started ${result.session_name}` : 'Started a session')
+        toast.success(dispatchStartedText(result))
       }
     } catch { /* shown inline below */ }
   }

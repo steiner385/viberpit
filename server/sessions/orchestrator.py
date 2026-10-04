@@ -3373,10 +3373,15 @@ class SessionOrchestrator:
 
         from server.automations.ownership import owned
 
+        # A manual Backlog Runner dispatch admitted only "wait for a slot" (its
+        # claim's intent says so): the launch is queued as ``runner_capacity``.
+        wait_for_slot = False
         if ownership_token is None:
             session_id = str(uuid.uuid4())
         else:
             async with owned(ownership_token) as tx:
+                wait_for_slot = bool((tx.operation.provenance.get("runner_dispatch") or {})
+                                     .get("wait_for_slot"))
                 if (tx.operation.owner != origin
                         or tx.operation.provenance.get("origin_ref") != origin_ref
                         or origin is None or origin_ref is None):
@@ -3438,7 +3443,11 @@ class SessionOrchestrator:
             # counting: re-checking here would self-refuse the last open slot.
             # The assistant is exempt for the same reason the global cap is.
             queue_reason: str | None = None
-            if not is_assistant_kind(kind) and ownership_token is None and repo is not None:
+            if wait_for_slot and not is_assistant_kind(kind):
+                # Admission already decided this claim waits; the drain re-checks
+                # the same caps (queued_claim_slot_free) before starting it.
+                queue_reason = "runner_capacity"
+            elif not is_assistant_kind(kind) and ownership_token is None and repo is not None:
                 from server.automations.product_admission import repo_capacity_status
                 _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
                 if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
@@ -4266,6 +4275,14 @@ class SessionOrchestrator:
                         capacity_full.add(sid)
                         log.debug("session_queue.product_capacity_full id=%s product=%s "
                                   "%d/%d — left queued", sid, _slug, _count, _cap)
+                        continue
+                if queue_reason == "runner_capacity" and params.get("repo"):
+                    from server.automations.product_admission import queued_claim_slot_free
+                    if not await queued_claim_slot_free(
+                            params["repo"], session_id=sid, context=self._backlog_ctx,
+                            pr_doctor_pending=self._pr_doctor_pending_products):
+                        capacity_full.add(sid)
+                        log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
                         continue
                 self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:

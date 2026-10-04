@@ -260,3 +260,23 @@ async def test_claim_database_failure_does_not_launch(launch, monkeypatch):
         await orch.create_session(**args(token))
     clone.assert_not_called()
     orch._spawn_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait", [True, False])
+async def test_wait_for_slot_intent_queues_the_launch_as_runner_capacity(launch, wait):
+    """A manual dispatch admitted only to WAIT for a slot (its claim's intent says
+    ``wait_for_slot``) is persisted queued, not spawned — under a cap with room."""
+    orch, token, _clone = launch
+    async with owned(token) as tx:
+        tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
+            "expected": {"repo": "o/r"}, "source": "manual",
+            **({"wait_for_slot": True} if wait else {})}}
+    await orch.create_session(**args(token))
+    if wait:
+        orch._enqueue_session.assert_awaited_once()
+        assert orch._enqueue_session.await_args.kwargs["queue_reason"] == "runner_capacity"
+        orch._spawn_session.assert_not_awaited()
+    else:
+        orch._spawn_session.assert_awaited_once()
+        orch._enqueue_session.assert_not_awaited()

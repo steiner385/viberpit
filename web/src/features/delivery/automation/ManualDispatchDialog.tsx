@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { useBacklogCandidates, useDispatchBacklogGroup } from '@/api/hooks'
-import type { BacklogCandidate } from '@/api/automations'
+import { dispatchStartedText, type BacklogCandidate } from '@/api/automations'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
@@ -64,7 +64,7 @@ export function ManualDispatchDialog({
       if (r.status === 'spawned') {
         // The dialog closes and navigates away, so there is no inline owner
         // left for a success message — a toast is the only surface.
-        toast.success(r.session_name ? `Session spawned: ${r.session_name}` : 'Session spawned')
+        toast.success(dispatchStartedText(r))
         if (r.session_id) onOpenSession?.(r.session_id)
         setSelected(new Set())
         close()
