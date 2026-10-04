@@ -1437,6 +1437,7 @@ class BacklogRunnerLoop:
         claim's ``model`` like any other dispatch, so the outcome row and the
         ladder's "previous attempt" read it back as the tier that actually ran."""
         from .ownership import OwnershipConflict, ReleaseProof, StaleOwnership, owned
+        from .product_admission import CAPACITY_REFUSAL_CODES
 
         def result(status: str, rec=None) -> dict:
             return {"status": status, "session_id": getattr(rec, "id", None),
@@ -1458,7 +1459,25 @@ class BacklogRunnerLoop:
             return {**result("refused"), "reason_codes": ["admission_unavailable"]}
         setattr(self._ctx, "backlog_admission_error", None)
         setattr(self._ctx, "backlog_last_admission", decision)
-        if not decision.permitted:
+        # A person asked for THIS issue now: when the only refusals are "full right
+        # now", the dispatch is claimed and its session queued behind the slot
+        # (``runner_capacity``) rather than failed. The claim holds its place in
+        # line — it counts in-flight, so the automatic refill cannot jump it. A cap
+        # of 0 is a pause, not "full": that still refuses, or it would wait forever.
+        wait_for_slot = False
+        if not decision.permitted and source == "manual":
+            wait_codes = [item.code for item in decision.constraints if item.state != "permitted"]
+            paused = 0 in (policy.get("max_in_flight"), policy.get("max_pipeline_prs"))
+            wait_for_slot = (not paused and bool(wait_codes)
+                             and set(wait_codes) <= CAPACITY_REFUSAL_CODES)
+        if wait_for_slot:
+            await self._ctx.emit(
+                "info", f"queued {batch.primary} for a free slot: "
+                + "; ".join(item.text for item in decision.constraints
+                            if item.state != "permitted"),
+                kind="queued_for_capacity", target=batch.primary,
+                detail={"reason_codes": wait_codes, "product": decision.product_slug})
+        elif not decision.permitted:
             self._waiting_reason = "policy"
             refused = [item for item in decision.constraints if item.state != "permitted"]
             codes = [item.code for item in refused]
@@ -1560,7 +1579,10 @@ class BacklogRunnerLoop:
                 # recovered investigation was recorded as an implementation and
                 # its by-design missing PR counted as a bounce (spec §5).
                 "dispatch_kind": dispatch_kind_for_hold(batch.primary_hold_kind),
-                "accounted_at": None}}
+                "accounted_at": None,
+                # Read by create_session, which queues the launch behind the slot
+                # instead of spawning it (durable, so no wire field is needed).
+                **({"wait_for_slot": True} if wait_for_slot else {})}}
         try:
             rec = await self._spawn(batch, account, default_model=default_model,
                                     ownership_token=token)
@@ -1614,6 +1636,10 @@ class BacklogRunnerLoop:
         self._consec_spawn_failures = 0
         if self._queue_tail is not None:
             await self._emit_pick(batch)
+        # "spawned" = claimed and the session exists; ``queued`` tells a caller
+        # it is waiting for a slot (capacity, or the session layer's own caps).
+        if getattr(rec, "status", None) == "queued":
+            return {**result("spawned", rec), "queued": True}
         return result("spawned", rec)
 
     async def _holder_summary(self, batch: "Batch") -> "dict | None":

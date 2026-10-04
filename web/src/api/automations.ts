@@ -313,6 +313,16 @@ export interface DispatchGroupResponse {
   status: 'spawned' | 'no_account' | 'refused' | string
   session_id: string | null
   session_name: string | null
+  // With 'spawned': the session exists but waits for a free slot (a manual
+  // dispatch at the runner/product cap queues instead of failing).
+  queued?: boolean
+}
+
+/** The success toast for a dispatch whose session exists: "Queued …" while it
+ *  waits for a slot, "Started …" otherwise. One copy for every dispatch surface. */
+export function dispatchStartedText(r: Pick<DispatchGroupResponse, 'queued' | 'session_name'>): string {
+  const verb = r.queued ? 'Queued' : 'Started'
+  return r.session_name ? `${verb} ${r.session_name}` : `${verb} a session`
 }
 
 export function fetchBacklogCandidates(): Promise<BacklogCandidatesView> {

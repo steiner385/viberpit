@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   fetchAutomations, patchAutomation, fetchAutomationActionable, postAutomationTrigger,
+  dispatchStartedText,
 } from './automations'
 
 afterEach(() => vi.restoreAllMocks())
@@ -43,5 +44,13 @@ describe('automations api', () => {
     const [url, init] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(url).toBe('/api/automations/pr-doctor/trigger')
     expect(init.method).toBe('POST')
+  })
+})
+
+describe('dispatchStartedText', () => {
+  it('says Queued for a dispatch waiting on a slot, Started otherwise', () => {
+    expect(dispatchStartedText({ session_name: 'backlog o/r#7', queued: true })).toBe('Queued backlog o/r#7')
+    expect(dispatchStartedText({ session_name: null, queued: true })).toBe('Queued a session')
+    expect(dispatchStartedText({ session_name: 'backlog o/r#7' })).toBe('Started backlog o/r#7')
   })
 })

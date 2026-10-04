@@ -610,21 +610,92 @@ async def test_manual_dispatch_zero_pipeline_cap_takes_no_claim(dispatch_orch):
     dispatch_orch._backlog_spawn.assert_not_awaited()
 
 
+async def _wait_for_slot_intent(ctx, ref: str) -> bool | None:
+    from server.automations.ownership import owned
+    token = (await ctx.get_target_state(ref))["ownership_token"]
+    async with owned(token) as tx:
+        return tx.operation.provenance["runner_dispatch"].get("wait_for_slot")
+
+
 @pytest.mark.asyncio
-async def test_manual_dispatch_pr_doctor_priority_takes_no_claim(dispatch_orch):
+async def test_manual_dispatch_pr_doctor_priority_queues_for_a_slot(dispatch_orch):
     """`_backlog_admission` must thread `_pr_doctor_pending_products` into real
-    admission: a product PR Doctor has a pending stuck PR for takes no new claim,
-    even on an ungated manual dispatch."""
+    admission — and a MANUAL dispatch that only that capacity gate refuses is
+    claimed and launched as a slot-waiting session, never failed ("Dispatch
+    failed: capacity" on Implement now, 2026-10-04)."""
     dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value={"test-product": ("o/r#9",)})
+    dispatch_orch._backlog_spawn.return_value = SimpleNamespace(
+        id="sess-42", name="backlog o/r#7", branch=None, model=None, status="queued")
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
-    # "capacity", not "refused": the same per-product shape as
-    # product_capacity_full/product_pipeline_full above — "refused" is reserved
-    # for outcomes that must halt the whole runner tick (_refill's
-    # {"refused", "uncertain"} break), which a single gated product must not do
-    # to every other product's unrelated, fully-permitted candidates.
+    assert result["status"] == "spawned" and result["queued"] is True
+    dispatch_orch._backlog_spawn.assert_awaited_once()
+    assert await _wait_for_slot_intent(dispatch_orch._backlog_ctx, "o/r#7") is True
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_at_a_full_product_cap_queues_for_a_slot(dispatch_orch):
+    from sqlalchemy import update
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 1}))
+    await dispatch_orch._backlog_ctx.claim_target_state("o/r#8", {
+        "repo": "o/r", "product": "test-product", "issues": ["o/r#8"], "claimed": True},
+        expected={}, source="automatic")
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "spawned"
+    assert await _wait_for_slot_intent(dispatch_orch._backlog_ctx, "o/r#7") is True
+
+
+@pytest.mark.asyncio
+async def test_automatic_dispatch_at_capacity_still_skips(dispatch_orch):
+    """Only a person's explicit request queues; the runner's own pick at a full
+    product keeps the per-product skip (no claim) it always had."""
+    from sqlalchemy import update
+    from server.automations.backlog_selection import Batch
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(automation_policy={"dispatch": "auto"}))
+    dispatch_orch._pr_doctor_pending_products = AsyncMock(return_value={"test-product": ("o/r#9",)})
+    batch = Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r", titles={})
+    result = await dispatch_orch._backlog_dispatch_batch(batch, source="automatic")
     assert result["status"] == "capacity"
     assert "pr_doctor_priority" in result["reason_codes"]
     dispatch_orch._backlog_spawn.assert_not_awaited()
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+
+
+@pytest.mark.asyncio
+async def test_unpressured_manual_dispatch_does_not_wait_for_a_slot(dispatch_orch):
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "spawned" and "queued" not in result
+    assert await _wait_for_slot_intent(dispatch_orch._backlog_ctx, "o/r#7") is None
+
+
+@pytest.mark.asyncio
+async def test_queued_claim_slot_free_excludes_its_own_claim(dispatch_orch):
+    """The queued claim counts in-flight itself; the drain's re-check must not make
+    it wait for the slot it already holds — but another claim still blocks it."""
+    from sqlalchemy import update
+    from server.automations.product_admission import queued_claim_slot_free
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 1}))
+    ctx = dispatch_orch._backlog_ctx
+    own = {"repo": "o/r", "product": "test-product", "issues": ["o/r#7"], "claimed": True,
+           "session_id": "sess-own"}
+    other = {"repo": "o/r", "product": "test-product", "issues": ["o/r#8"], "claimed": True,
+             "session_id": "sess-other"}
+    ctx.list_target_states = AsyncMock(return_value={"o/r#7": own})
+    assert await queued_claim_slot_free("o/r", session_id="sess-own", context=ctx)
+    ctx.list_target_states = AsyncMock(return_value={"o/r#7": own, "o/r#8": other})
+    assert not await queued_claim_slot_free("o/r", session_id="sess-own", context=ctx)
+    ctx.list_target_states = AsyncMock(return_value={"o/r#7": own})
+    pending = AsyncMock(return_value={"test-product": ("o/r#9",)})
+    assert not await queued_claim_slot_free("o/r", session_id="sess-own", context=ctx,
+                                            pr_doctor_pending=pending)
 
 
 @pytest.mark.asyncio

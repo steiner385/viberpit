@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { Check } from 'lucide-react'
 import { useBacklogGroups, useDispatchBacklogGroup } from '@/api/hooks'
-import type { BacklogGroup } from '@/api/automations'
+import { dispatchStartedText, type BacklogGroup } from '@/api/automations'
 import { Button } from '@/ui/Button'
 import { StatusPill } from '@/ui/StatusPill'
 import { issueUrl } from '@/lib/githubUrl'
@@ -93,7 +93,7 @@ export function BacklogGroupsPanel({
       if (r.status === 'spawned') {
         // The new session may open on another page, so success has no
         // reliable inline owner here — keep the toast for it.
-        toast.success(r.session_name ? `Session spawned: ${r.session_name}` : 'Session spawned')
+        toast.success(dispatchStartedText(r))
         if (r.session_id) onOpenSession?.(r.session_id)
       } else {
         setError(`Dispatch failed: ${r.status}`)

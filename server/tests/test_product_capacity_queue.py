@@ -134,3 +134,44 @@ def test_queue_drain_leaves_product_capacity_entry_queued_until_it_clears(tmp_pa
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_queue_drain_starts_a_runner_capacity_entry_once_another_claim_clears(tmp_path):
+    """A manual dispatch queued behind capacity (``runner_capacity``) has its OWN
+    claim in the ledger: the drain must wait only for OTHER claims to clear, never
+    for the slot the queued claim already holds."""
+    async def run():
+        import uuid
+        from sqlalchemy import delete
+        from server.db import db_session
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'r.db'}"
+        orch = await _make_capacity_orch(db_url=db_url, tmp_path=tmp_path)
+        try:
+            await _seed_product_at_cap("acme/widgets")
+            sid = str(uuid.uuid4())
+            async with db_session() as db:
+                db.add(AutomationTargetState(
+                    automation_id="backlog-runner", target="acme/widgets#2",
+                    state={"product": "acme", "claimed": True, "session_id": sid}))
+            rec = await orch._enqueue_session(
+                sid, name="backlog acme/widgets#2", account=None, initial_prompt="hi",
+                cols=80, rows=24, cwd=str(tmp_path / "reporoot"), branch=None,
+                repo="acme/widgets", identity="system", permission_mode="interactive",
+                attachment_ids=None, name_is_auto=True, origin=None, origin_ref=None,
+                model=None, queue_reason="runner_capacity")
+            assert rec.status == "queued"
+
+            # acme/widgets#1 still holds the product's one slot.
+            assert await orch._maybe_start_queued() == 0
+            assert orch.get_session(sid).status == "queued"
+
+            async with db_session() as db:
+                await db.execute(delete(AutomationTargetState).where(
+                    AutomationTargetState.target == "acme/widgets#1"))
+            # Only its own claim is left: it starts.
+            assert await orch._maybe_start_queued() == 1
+            assert orch.get_session(sid).status != "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
