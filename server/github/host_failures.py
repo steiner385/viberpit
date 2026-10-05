@@ -125,6 +125,16 @@ _RE_TRANSIENT_5XX = re.compile(r"\bHTTP 5\d\d\b")
 #: past every call site that only checked :func:`is_transient_5xx` (#2490).
 _RE_TRUNCATED_JSON = re.compile(r"unexpected end of JSON input")
 
+#: gh's Go HTTP/2 client's wording when GitHub's edge reset the stream
+#: mid-request — e.g. ``stream error: stream ID 1; CANCEL; received from peer``.
+#: The third wording of the same heavy-query edge timeout (#2677, after #1681's
+#: 5xx and #2490's truncated JSON). ``received from peer`` is required: it is
+#: what says GitHub sent the RST_STREAM, not our own client giving up.
+_RE_STREAM_RESET = re.compile(
+    r"stream error: stream ID \d+; (?:CANCEL|INTERNAL_ERROR|REFUSED_STREAM);"
+    r" received from peer"
+)
+
 
 def is_transient_5xx(stderr: str) -> bool:
     """Whether *stderr* is gh reporting a GitHub-side 5xx: the request reached
@@ -136,11 +146,16 @@ def is_transient_5xx(stderr: str) -> bool:
 
 def is_transient_github_edge_failure(stderr: str) -> bool:
     """Whether *stderr* is GitHub's own edge failing a request that reached
-    it — either a bare 5xx (:func:`is_transient_5xx`) or a response body cut
-    short by the same edge timeout (:data:`_RE_TRUNCATED_JSON`). Not a host
-    condition — just the shared read of when a per-target failure is GitHub's
-    outage rather than a defect to chase."""
-    return is_transient_5xx(stderr) or bool(_RE_TRUNCATED_JSON.search(stderr))
+    it — a bare 5xx (:func:`is_transient_5xx`), or a response cut short by the
+    same edge timeout, either mid-body (:data:`_RE_TRUNCATED_JSON`) or as an
+    HTTP/2 stream reset (:data:`_RE_STREAM_RESET`). Not a host condition — just
+    the shared read of when a per-target failure is GitHub's outage rather than
+    a defect to chase."""
+    return (
+        is_transient_5xx(stderr)
+        or bool(_RE_TRUNCATED_JSON.search(stderr))
+        or bool(_RE_STREAM_RESET.search(stderr))
+    )
 
 
 def log_gh_failure(
