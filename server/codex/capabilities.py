@@ -156,17 +156,15 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # session is: this catalog, plus the app-owned commands below.
     vendor_commands=True,
     vendor_skills=True,
-    # The pinned `thread/resume` carries neither `developerInstructions` nor
-    # `dynamicTools` (codex-cli 0.153.2, verified against the schema, not
-    # assumed — see server/sessions/tools/codex.py's module docstring and
-    # docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md). A
-    # resumed Codex coding session therefore keeps whatever instructions it
-    # started with and loses whatever tools it declared, with nothing sendable
-    # to correct either — so a session told "call mark_complete" would be
-    # unable to signal at all past its first resume. Codex keeps the marker
-    # contract instead; this flips True on its own once the vendor contract
-    # carries both fields on resume.
-    durable_tool_surface=False,
+    # The tools a thread declares on `thread/start` SURVIVE `thread/resume`:
+    # codex-cli 0.153.2 persists them in the rollout's `session_meta.dynamic_tools`
+    # (and its `thread_dynamic_tools` state table) and restores them, though
+    # `ThreadResumeParams` carries no field to re-declare them. Verified on a
+    # live production thread, which called a declared tool after two resumes
+    # (docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md,
+    # 2026-10-05 addendum). So Codex gets the signalling tools; the markers stay
+    # parsed for threads started before their tools were declared.
+    durable_tool_surface=True,
     # Deferred by design (docs/superpowers/specs/2026-09-04-native-openai-codex-
     # integration-design.md §11.2), not merely unimplemented: each Codex
     # account's configuration lives under a credential-authority-owned

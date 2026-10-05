@@ -125,9 +125,8 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
     """
     names = READ_TOOL_NAMES + mounted_signal_names(
         signalling_tools=signalling_tools, self_model_switch=self_model_switch)
-    # `dispatch_session` rides only on the durable (Claude) surface — Codex loses its
-    # declared tools on resume and has no marker for a dispatch — and only while the
-    # kill switch (``child_sessions``) is on.
+    # `dispatch_session` rides only on a durable surface — there is no marker for a
+    # dispatch — and only while the kill switch (``child_sessions``) is on.
     if signalling_tools and child_sessions:
         names = names + ("dispatch_session",)
     return names

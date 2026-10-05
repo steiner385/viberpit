@@ -50,7 +50,7 @@ def test_real_investigate_prompt_satisfies_the_bar_with_a_code_goal():
     code-flavoured goal the inferrer produced, is a met investigation."""
     from types import SimpleNamespace as NS
     batch = NS(repo="o/r", issues=["o/r#1"], primary="o/r#1", titles={}, decisions=None)
-    prompt = build_investigate_prompt(batch, engine=AgentEngine.CLAUDE_CODE)
+    prompt = build_investigate_prompt(batch)
     assert has_no_pr_dispatch(prompt)
     v = met_bar("Implement quota logging fix and open PR with auto-merge armed",
                 "inferred", PrFacts(has_repo=True), "not-needed",

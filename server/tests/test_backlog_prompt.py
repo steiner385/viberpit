@@ -14,7 +14,7 @@ from server.automations.backlog_prompt import (
 )
 from server.sessions.engine import AgentEngine
 from server.automations.backlog_selection import Batch
-from server.sessions.completion import NO_PR_MARKER, commit_trailer, resolution_from_text
+from server.sessions.completion import NO_PR_MARKER, commit_trailer
 
 
 # --------------------------------------------------------------------------- #
@@ -222,8 +222,7 @@ def test_the_investigate_prompt_carries_no_decisions():
     """Only the IMPLEMENT path takes decisions: an investigation is asking what
     the problem is, and its four exits are its whole contract."""
     result = build_investigate_prompt(
-        replace(SINGLE_BATCH, decisions={"owner/repo#42": DECISION_TEXT}),
-        engine=AgentEngine.CLAUDE_CODE)
+        replace(SINGLE_BATCH, decisions={"owner/repo#42": DECISION_TEXT}))
     assert DECISIONS_HEADING not in result
     assert DECISION_TEXT not in result
 
@@ -233,28 +232,28 @@ def test_the_investigate_prompt_carries_no_decisions():
 # --------------------------------------------------------------------------- #
 
 def test_investigate_returns_string():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert isinstance(result, str) and result
 
 
 def test_investigate_references_repo():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "owner/repo" in result
 
 
 def test_investigate_each_issue_ref_mentioned():
-    result = build_investigate_prompt(MULTI_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(MULTI_BATCH)
     for ref in MULTI_BATCH.issues:
         assert ref in result
 
 
 def test_investigate_names_primary_ref():
-    result = build_investigate_prompt(MULTI_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(MULTI_BATCH)
     assert MULTI_BATCH.primary in result
 
 
 def test_investigate_names_all_four_exits():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "Close as noise" in result
     assert "Consolidate" in result
     assert "Convert to a fix" in result
@@ -266,7 +265,7 @@ def test_investigate_mentions_mark_no_pr_but_not_set_hold_on_claude():
     tool Codex never has (durable_tool_surface=False), and the ruling made exit 3
     engine-neutral: the runner clears the hold itself once it sees the
     'converted to a fix' note (Task 4), not the session."""
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "mark_no_pr" in result
     assert "set_hold" not in result
     assert CONVERTED_NOTE_PREFIX in result
@@ -276,24 +275,24 @@ def test_investigate_says_read_only_no_pr():
     """The exact sentence, not a disjunction whose second arm is a substring of the
     first: "no pr" already covers "open no pr", so the alternative could never
     change the outcome and only read as a second check."""
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "Read-only on code: open no PR, push nothing." in result
 
 
 def test_investigate_frames_investigate_not_implement():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "do not implement" in result.lower()
 
 
 def test_investigate_states_no_exit_hand_off():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    result = build_investigate_prompt(SINGLE_BATCH)
     assert "hands the issue to the owner" in result
 
 
 def test_investigate_omits_implement_prompt_pr_instructions():
     """The investigate prompt must not carry the implement prompt's PR mechanics."""
     implement = build_implement_prompt(SINGLE_BATCH)
-    investigate = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
+    investigate = build_investigate_prompt(SINGLE_BATCH)
     # Phrases only the implement prompt should carry.
     assert "single pull request" in implement
     assert "single pull request" not in investigate
@@ -304,38 +303,10 @@ def test_investigate_omits_implement_prompt_pr_instructions():
     assert "Fixes #" not in investigate
 
 
-def test_investigate_default_engine_is_claude():
-    default_result = build_investigate_prompt(SINGLE_BATCH)
-    claude_result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
-    assert default_result == claude_result
-
-
-def test_investigate_codex_uses_no_pr_marker_not_the_tool():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
-    assert NO_PR_MARKER in result
-    assert "mark_no_pr(" not in result
-
-
-def test_investigate_codex_still_names_all_four_exits():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
-    assert "Close as noise" in result
-    assert "Consolidate" in result
-    assert "Convert to a fix" in result
-    assert "Escalate" in result
-
-
-def test_investigate_codex_escalate_reads_as_cancelled():
-    """The escalate exit's Codex phrasing must classify as 'cancelled' via the
-    same resolution_from_text the runner uses on a real transcript tail."""
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
-    # Extract a plausible final-message tail: the escalate sentence plus the marker.
-    idx = result.index("Escalate")
-    tail = result[idx:]
-    assert resolution_from_text(tail) == "cancelled"
-
-
-def test_investigate_codex_close_as_noise_reads_as_not_needed():
-    result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CODEX)
-    idx = result.index("Close as noise")
-    tail = result[idx:result.index("Consolidate")]
-    assert resolution_from_text(tail) == "not-needed"
+def test_investigate_prompt_finishes_through_the_tool_on_every_engine():
+    """Codex declares the signalling tools too (durable_tool_surface), so the
+    investigate prompt has no engine variant: every exit is a mark_no_pr call."""
+    result = build_investigate_prompt(SINGLE_BATCH)
+    assert 'mark_no_pr("not-needed"' in result
+    assert 'mark_no_pr("cancelled"' in result
+    assert NO_PR_MARKER not in result

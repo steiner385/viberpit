@@ -1631,6 +1631,11 @@ class DynamicToolCallItem:
     tool: str
     status: str
     arguments: Any = None
+    #: The `inputText` parts of the host's answer (`contentItems`), in order —
+    #: the text the handler returned. Image/audio parts are not read.
+    content_texts: tuple[str, ...] = ()
+    #: The host's own verdict on the call; None until it answered.
+    success: bool | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -1834,11 +1839,20 @@ def parse_thread_item(payload: Any) -> ThreadItem:
     if variant == "dynamicToolCall":
         if "arguments" not in body:
             raise CodexSchemaError(f"{what} field 'arguments' is required")
+        raw_items = body.get("contentItems")
         return DynamicToolCallItem(
             id=_require_str(body, "id", what),
             tool=_require_str(body, "tool", what),
             status=_require_str(body, "status", what),
             arguments=body["arguments"],
+            # Tolerant on purpose: the answer is display data, and a part this
+            # schema does not model must not refuse the whole item.
+            content_texts=tuple(
+                part["text"] for part in raw_items
+                if isinstance(part, Mapping) and part.get("type") == "inputText"
+                and isinstance(part.get("text"), str)
+            ) if isinstance(raw_items, list) else (),
+            success=_optional_bool(body, "success", what),
         )
     if variant == "functionCallOutput":
         return FunctionCallOutputItem(

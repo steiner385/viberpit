@@ -12,12 +12,9 @@ Engine-neutral by construction (Phase 7): every instruction is a git/gh fact
 that holds for any native agent. The one engine-specific detail in the implement
 prompt, the commit attribution trailer, comes from
 ``server.sessions.completion.commit_trailer`` — a Codex session must not be told
-to co-author its commits as Claude. The investigate prompt has its own
-engine-specific detail: finishing without a PR goes through the ``mark_no_pr``
-signalling tool on Claude (``AgentCapabilities.durable_tool_surface``), but
-Codex has no signalling tools at all — it keeps the ``NO_PR_MARKER`` HTML
-comment (``server.sessions.completion``), same as every other Codex completion
-signal.
+to co-author its commits as Claude. The investigate prompt has none: every
+engine finishes without a PR through the ``mark_no_pr`` signalling tool
+(``AgentCapabilities.durable_tool_surface``).
 """
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ from collections.abc import Callable
 
 from viberpit.engines import AgentEngine
 
-from server.sessions.completion import NO_PR_MARKER, commit_trailer
+from server.sessions.completion import commit_trailer
 
 from .backlog_selection import Batch
 
@@ -93,14 +90,6 @@ def _decisions_block(batch: Batch) -> str:
     )
 
 
-def _is_codex(engine: AgentEngine | str) -> bool:
-    """Whether *engine* is Codex — the one engine with no signalling-tool surface
-    (``AgentCapabilities.durable_tool_surface`` is False), so it finishes through
-    the HTML-comment markers in ``server.sessions.completion`` instead of a tool
-    call."""
-    return str(getattr(engine, "value", engine)) == AgentEngine.CODEX.value
-
-
 def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
                            engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
     """Return the seed prompt for a session that implements ``batch``.
@@ -152,29 +141,18 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
     )
 
 
-def _finish_not_needed(note: str, *, codex: bool) -> str:
+def _finish_not_needed(note: str) -> str:
     """The 'finish, no PR expected' step for a non-cancel exit (close-as-noise,
-    consolidate, convert-to-fix) — a tool call on Claude, the marker on Codex
-    (which has no signalling tools at all; see module docstring)."""
-    if codex:
-        return (f'note "{note}" in your final message, then end it with '
-                f'`{NO_PR_MARKER}` on its own line.')
+    consolidate, convert-to-fix)."""
     return f'call `mark_no_pr("not-needed", note="{note}")`.'
 
 
-def _finish_cancelled(note: str, *, codex: bool) -> str:
-    """The 'finish, no PR expected' step for the escalate exit. Same marker as
-    ``_finish_not_needed`` on Codex, but phrased so ``resolution_from_text``
-    (``server.sessions.completion``) reads it as 'cancelled' rather than
-    'not-needed' — it matches on 'not opening'."""
-    if codex:
-        return (f"state that you are not opening a PR because {note}, then end "
-                f"your final message with `{NO_PR_MARKER}` on its own line.")
+def _finish_cancelled(note: str) -> str:
+    """The 'finish, no PR expected' step for the escalate exit."""
     return f'call `mark_no_pr("cancelled", note="{note}")`.'
 
 
-def build_investigate_prompt(batch: Batch, *,
-                             engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
+def build_investigate_prompt(batch: Batch) -> str:
     """Return the seed prompt for a session that investigates ``batch``.
 
     Spawned instead of ``build_implement_prompt`` when the batch's primary issue
@@ -195,18 +173,14 @@ def build_investigate_prompt(batch: Batch, *,
     Pure: no I/O, no model calls. The returned string may be passed directly as
     the first user prompt of a spawned session on any engine.
     """
-    codex = _is_codex(engine)
     _, _, primary_number = batch.primary.partition("#")
 
     issues_block = _issue_ref_lines(batch.issues, lambda ref, number: f"- {ref}")
 
-    close_finish = _finish_not_needed("closed as noise: <why>", codex=codex)
-    consolidate_finish = _finish_not_needed(
-        f"consolidated into #{primary_number}", codex=codex)
-    convert_finish = _finish_not_needed(
-        f"{CONVERTED_NOTE_PREFIX}: <one line>", codex=codex)
-    escalate_finish = _finish_cancelled(
-        "needs owner: <the one specific thing>", codex=codex)
+    close_finish = _finish_not_needed("closed as noise: <why>")
+    consolidate_finish = _finish_not_needed(f"consolidated into #{primary_number}")
+    convert_finish = _finish_not_needed(f"{CONVERTED_NOTE_PREFIX}: <one line>")
+    escalate_finish = _finish_cancelled("needs owner: <the one specific thing>")
 
     return (
         f"Investigate the following auto-filed error report(s) {_repo_clause(batch.repo)}:\n\n"

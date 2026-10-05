@@ -263,8 +263,8 @@ bypass the model. Kill switch `VIBERPIT_ASSISTANT_ENABLED`; evals under
 
 ## Self-directed model switching
 
-To ask for a different model, Claude calls the `request_model(model, reason)` session tool;
-Codex ends a message with `<!-- viberpit:model=<tier> reason="..." -->` (parsed permanently). Both live in
+To ask for a different model, a session calls the `request_model(model, reason)` session tool;
+the `<!-- viberpit:model=<tier> reason="..." -->` marker is the permanent fallback. Both live in
 `server/sessions/model_request.py` so the prompt and scan halves cannot drift.
 
 - **Downgrades auto-apply** on the next turn; **upgrades park** for human approval in the existing `pending_model` columns.
@@ -283,9 +283,9 @@ Codex ends a message with `<!-- viberpit:model=<tier> reason="..." -->` (parsed 
 ## Session tool surface
 
 Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `viberpit.brand`) with
-`session_context`/`report_feedback` (READ-class, no card). Engines with `AgentCapabilities.durable_tool_surface` (Claude)
+`session_context`/`report_feedback` (READ-class, no card). Engines with `AgentCapabilities.durable_tool_surface` (both)
 also get the SIGNAL-class `mark_complete()`, `mark_no_pr(resolution, note?)`, `hand_back(reason)` and `request_model(model, reason)`, which
-replaced the HTML-comment markers. Codex lacks the capability and keeps the markers —
+replaced the HTML-comment markers. Codex declares them as `dynamicTools`; resume keeps them —
 **the marker parsers are permanent**. The Translator reads the signal from the tool-use block, not the handler, to
 keep the sub-agent (`parent_tool_use_id is None`) guard.
 The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch

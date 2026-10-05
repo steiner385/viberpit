@@ -5,9 +5,10 @@ Three layers, and the property under test differs at each:
 * ``CodexSessionTools`` — the declaration equals what the Claude MCP server
   publishes (the anti-drift assertion), and running a tool never raises.
 * ``CodexAgentDriver`` — a *fresh* coding thread declares the surface on
-  ``thread/start``; a *resumed* one keeps its thread (its context is the work)
-  and says so once in the journal, because the pinned ``thread/resume`` has no
-  ``dynamicTools`` field (docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md).
+  ``thread/start``; a *resumed* one re-declares nothing — the pinned
+  ``thread/resume`` has no ``dynamicTools`` field, and the app-server restores the
+  tools from the thread's rollout
+  (docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md, 2026-10-05 addendum).
 * the rest of the driver — everything assistant-specific stays keyed on the
   assistant overlay, so a coding session that gained tools keeps its own
   sandbox, approval policy, marker instructions and permission cards.
@@ -15,7 +16,6 @@ Three layers, and the property under test differs at each:
 from __future__ import annotations
 
 import json
-import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,16 +28,16 @@ from server.sessions.completion import marker_instructions
 from server.sessions.tools.context import SessionToolContext
 from server.tests.test_codex_driver import THREAD, Harness
 
-RESUME_EVENT = "codex.driver.session_tools_unavailable_on_resume"
-
-
-def _ctx() -> SessionToolContext:
+def _ctx(*, signalling_tools: bool = False,
+         self_model_switch: bool = False) -> SessionToolContext:
     rec = SimpleNamespace(id="s1", name="n", repo="o/n", branch="b", cwd="/w", origin=None,
                           origin_ref=None, engine="codex", model=None,
                           permission_mode="acceptEdits", account="a", host="h",
                           active_goal=None, inferred_goal=None, kind=None)
     return SessionToolContext(session_id="s1", identity="u", kind=None, engine="codex",
-                              record=lambda: rec, host="h")
+                              record=lambda: rec, host="h",
+                              signalling_tools=signalling_tools,
+                              self_model_switch=self_model_switch)
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +146,9 @@ async def test_a_fresh_coding_thread_declares_the_surface(harness, session_tools
 async def test_a_fresh_thread_is_TOLD_about_the_tools_it_declared(harness, session_tools):
     """Declaring a tool the model was never told about leaves a surface it never
     reaches for. The paragraph rides `developerInstructions` — the same string the
-    marker contracts do, through the same helper the Claude append uses. Codex's
-    `durable_tool_surface` is False, so it still gets the READ tools named AND the
-    full marker contract — never the SIGNAL tools, which it cannot keep past a resume."""
+    marker contracts do, through the same helper the Claude append uses. A surface
+    WITHOUT the signalling half (this fixture) gets the READ tools named AND the full
+    marker contract — the instruction is read off what was declared."""
     await harness.boot(session_tools=session_tools)
     instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
     assert "session_context" in instructions and "report_feedback" in instructions
@@ -164,6 +164,43 @@ async def test_a_fresh_thread_without_tools_is_not_told_about_them(harness):
     instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
     assert "session_context" not in instructions
     assert instructions == marker_instructions(self_model_switch=True)
+
+
+@pytest.mark.asyncio
+async def test_a_signalling_surface_is_declared_and_replaces_the_markers(harness,
+                                                                      isolated_db):
+    """The live shape since Codex's `durable_tool_surface` went True: the
+    orchestrator mounts the signalling half, the thread declares it, and the model
+    is told about the tools INSTEAD of the markers — one way to finish, never two."""
+    from server.sessions.tools.codex import CodexSessionTools
+
+    tools = CodexSessionTools.build(_ctx(signalling_tools=True, self_model_switch=True))
+    await harness.boot(session_tools=tools)
+    params = harness.params(schema.METHOD_THREAD_START)
+    declared = {t["name"] for t in params["dynamicTools"]}
+    assert {"mark_complete", "mark_no_pr", "hand_back", "request_model", "set_hold",
+            "propose_decision", "share_artifact"} <= declared
+    instructions = params["developerInstructions"]
+    assert "mark_complete" in instructions and "request_model" in instructions
+    assert marker_instructions(self_model_switch=True) not in instructions
+
+
+@pytest.mark.asyncio
+async def test_the_instruction_never_names_a_tool_the_thread_did_not_declare(harness,
+                                                                            isolated_db):
+    """`request_model` is mounted only with the self-model-switch kill switch on, and
+    `dispatch_session` only with child sessions on — the instruction follows the
+    declared set, not the engine capability, so a kill switch silences both halves."""
+    from server.sessions.tools.codex import CodexSessionTools
+
+    tools = CodexSessionTools.build(_ctx(signalling_tools=True, self_model_switch=False))
+    await harness.boot(session_tools=tools)
+    params = harness.params(schema.METHOD_THREAD_START)
+    declared = {t["name"] for t in params["dynamicTools"]}
+    assert "request_model" not in declared and "dispatch_session" not in declared
+    instructions = params["developerInstructions"]
+    assert "mark_complete" in instructions
+    assert "request_model" not in instructions and "dispatch_session" not in instructions
 
 
 @pytest.mark.asyncio
@@ -225,21 +262,14 @@ async def test_a_coding_thread_with_tools_keeps_its_own_profile(harness, session
 
 
 @pytest.mark.asyncio
-async def test_a_resumed_coding_thread_keeps_its_thread_and_logs_the_gap(
-        harness, session_tools, caplog):
-    with caplog.at_level(logging.INFO, logger="server.codex.driver"):
-        await harness.boot(session_tools=session_tools, resume="thread-from-yesterday")
+async def test_a_resumed_coding_thread_keeps_its_thread_and_redeclares_nothing(
+        harness, session_tools):
+    """The app-server restores a thread's declared tools from its rollout, so a
+    resume sends nothing — and keeps its thread, whose context is the work."""
+    await harness.boot(session_tools=session_tools, resume="thread-from-yesterday")
     assert len(harness.frames(schema.METHOD_THREAD_RESUME)) == 1
     assert harness.frames(schema.METHOD_THREAD_START) == []
     assert "dynamicTools" not in harness.params(schema.METHOD_THREAD_RESUME)
-    assert [r.message for r in caplog.records].count(RESUME_EVENT) == 1
-
-
-@pytest.mark.asyncio
-async def test_no_gap_is_logged_when_there_are_no_session_tools(harness, caplog):
-    with caplog.at_level(logging.INFO, logger="server.codex.driver"):
-        await harness.boot(resume="thread-from-yesterday")
-    assert RESUME_EVENT not in [r.message for r in caplog.records]
 
 
 @pytest.mark.asyncio

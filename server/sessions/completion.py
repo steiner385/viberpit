@@ -342,6 +342,32 @@ def parse_hand_back(args: dict | None) -> dict:
     return {"reason": reason.strip()[:HAND_BACK_REASON_MAX]}
 
 
+def parse_turn_signal(stem: str, args: dict | None) -> dict | None:
+    """The recorded payload of one observed TURN-signal call (``TURN_SIGNAL_NAMES``),
+    or None when it is not usable.
+
+    THE per-stem dispatch both engine translators read a signal call through — the
+    Claude translator off a tool-use block, the Codex translator off a
+    ``dynamicToolCall`` item — so the two cannot come to record different outcomes
+    for the same call. Never raises: a malformed argument is dropped (the handler
+    already returned an error to the model) rather than failing the turn it was
+    trying to close.
+    """
+    from server.sessions.model_request import parse_request_model
+    try:
+        if stem == "mark_complete":
+            return {}
+        if stem == "mark_no_pr":
+            return parse_mark_no_pr(args or {})
+        if stem == "hand_back":
+            return parse_hand_back(args or {})
+        if stem == "request_model":
+            return parse_request_model(args or {})
+    except Exception:  # noqa: BLE001 - a bad argument must not fail the turn
+        return None
+    return None
+
+
 #: What a hand-back shows the user, told back to the session in the tool result.
 #: The banner carries `reason`; the transcript carries the message's prose; thinking
 #: is never rendered as anything but a collapsed "Thinking" row.

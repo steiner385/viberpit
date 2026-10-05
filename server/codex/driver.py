@@ -568,39 +568,37 @@ class CodexAgentDriver:
         return client
 
     def _fresh_thread_params(self, profile: CodexPermissionProfile) -> schema.ThreadStartParams:
+        from server.config import get_settings
         from server.sessions.tools.instruction import session_instructions
 
+        tools = self._session_tools
         return schema.ThreadStartParams(
             cwd=self.cwd,
             model=self._model,
             sandbox=profile.sandbox_mode.value,
             approval_policy=profile.approval_policy.value,
-            # Codex is told about the model-request marker whenever
-            # `AgentCapabilities.self_model_switch` says it can act on one
-            # (#1273) — this call reads the SAME capability `codex/translator.py`
-            # cites for why it always scans for the marker, so the instruction
-            # and the parsing can never disagree about whether a session should
-            # see it.
+            # The session-tools paragraph rides the SAME string as the marker
+            # contracts, through the same helper the Claude factory's system-prompt
+            # append uses, and ONLY on this branch: declaring the tools without
+            # telling the model when to reach for them leaves a surface it never
+            # uses. Resume needs no matching call — the thread keeps both the
+            # instructions and the tools it started with.
             #
-            # The session-tools paragraph rides the SAME string, through the
-            # same helper the Claude factory's system-prompt append uses, and
-            # ONLY on this branch: declaring the tools without telling the
-            # model when to reach for them leaves a surface it never uses,
-            # and saying they exist on a RESUMED thread (which cannot declare
-            # them) would describe a surface that is not there. Resume needs
-            # no matching guard — `ThreadResumeParams` carries no
-            # `developerInstructions` at all.
-            #
-            # Both flags read `self.capabilities` rather than a literal — the
-            # capability is what says a declared surface does not survive
-            # `thread/resume` (§5) and that this engine cannot act on a model
-            # request, so the day either flips this call flips with it instead
-            # of disagreeing with the capability that already answers the
-            # question.
+            # With a surface mounted, every flag is read off what it DECLARES —
+            # the orchestrator already composed capability and kill switches into
+            # that set — so the paragraph can never name a tool the thread lacks.
+            # Without one, the markers carry the contract: the model-request
+            # marker is named when this engine can act on one (#1273) and the
+            # kill switch allows it, the SAME pair the orchestrator gates on.
             developer_instructions=session_instructions(
-                session_tools=self._session_tools is not None,
-                signalling_tools=self.capabilities.durable_tool_surface,
-                self_model_switch=self.capabilities.self_model_switch,
+                session_tools=tools is not None,
+                signalling_tools=tools is not None and tools.declares("mark_complete"),
+                self_model_switch=(
+                    tools.declares("request_model")
+                    if tools is not None and tools.declares("mark_complete")
+                    else self.capabilities.self_model_switch
+                    and get_settings().self_model_switch_enabled),
+                child_sessions=tools is not None and tools.declares("dispatch_session"),
             ),
             # The coding session's ViberPit tool surface, or nothing at
             # all: an empty tuple emits no `dynamicTools` field, so a
@@ -662,20 +660,10 @@ class CodexAgentDriver:
                 )
             response = await client.start_thread(overlay.thread_start_params())
         elif self.resume:
-            if self._session_tools is not None:
-                # Stated once, per resumed session, because it is a real capability
-                # gap rather than a warning: `thread/resume` has no `dynamicTools`
-                # field on the pinned contract (and an unknown one is ignored, not
-                # refused — see the 2026-09-06 spike), so this thread comes back
-                # without the ViberPit tools. A coding session cannot answer that
-                # the way the assistant does — by restarting — because its thread
-                # carries the work.
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "codex.driver.session_tools_unavailable_on_resume",
-                    session=self.session_id,
-                )
+            # Nothing is re-declared: `ThreadResumeParams` has no `dynamicTools`
+            # field, and needs none — the app-server restores the tools this thread
+            # declared on `thread/start` from its rollout (see the 2026-09-06 spike's
+            # 2026-10-05 addendum).
             response = (
                 await client.resume_thread(
                     schema.ThreadResumeParams(

@@ -8,16 +8,14 @@ them from the ``item/tool/call`` callback. The tool table itself — description
 schemas, handlers, permission annotations — is :func:`build_session_tools`,
 unchanged and unduplicated, so adding a session tool reaches both engines at once.
 
-**The pinned ``thread/resume`` has no ``dynamicTools`` field, so a RESUMED Codex
-coding session has no session tools until the vendor contract gains them.** That is
-verified against codex-cli 0.153.2, not assumed
-(docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md: ``dynamicTools``
-appears on ``ThreadStartParams`` and nowhere else in the v2 surface, and an unknown
-field on ``thread/resume`` is accepted and ignored rather than refused — so there is
-nothing to send and no error to detect if we sent it). The assistant answers the same
-gap by never resuming; a coding session cannot, because its thread *is* the work. So
-it resumes without the tools and says so once in the journal
-(``codex.driver.session_tools_unavailable_on_resume``).
+**Declared once, kept for the thread's life.** ``dynamicTools`` exists only on
+``ThreadStartParams``, and needs nothing more: codex-cli 0.153.2 saves a thread's
+declared tools with its session metadata and restores them on ``thread/resume`` —
+verified on a live thread that called a declared tool after two resumes
+(docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md, 2026-10-05
+addendum). The flip side: a thread keeps the set it STARTED with, so a thread
+started before a tool was added resumes without it — which is why the marker
+parsers stay permanent.
 """
 from __future__ import annotations
 
