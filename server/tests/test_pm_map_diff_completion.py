@@ -12,6 +12,9 @@ async def _map_orch(tmp_path):
         tmp_path, origin="pm-onboard", origin_ref="viberpit:map-diff:offline-mode",
         repo="steiner385/viberpit")
     orch._drivers["s1"] = _FakeDriver()
+    # This fixture has no background work or transcript. Keep the completion
+    # gate from scanning the host's shared transcript tree before observation.
+    orch._session_is_parked = AsyncMock(return_value=False)
     orch._completion_open_question = AsyncMock(return_value=None)
     orch._pm_onboard_observe_map_diff_not_needed = AsyncMock(return_value=True)
     orch._read_auto_archive_enabled = AsyncMock(return_value=False)
