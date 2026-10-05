@@ -63,6 +63,40 @@ def _layer_for(code: str) -> str:
     return "product"
 
 
+def capacity_bearing(rows: list[dict]) -> list[dict]:
+    """The ``account_headroom`` rows that can carry runner capacity at all (#2684):
+    enabled AND metered. A disabled account or an unmetered engine (Codex/Copilot
+    — governor spec D4) is never free, so counting it as "used" made the Accounts
+    row read 6/6 when only four accounts could ever have been free."""
+    return [r for r in rows if r.get("enabled", True) and r.get("metered")]
+
+
+def exhausted_models(rows: list[dict]) -> list[dict]:
+    """Per model, how many capacity-bearing accounts are out on its model-scoped
+    window, of how many, and the earliest reset among them (#2684). ``accounts ==
+    of`` means no account can run that model — the ONE reading of that both the
+    Accounts row and the runner's quota wait (``model_quota_out``) use."""
+    bearing = capacity_bearing(rows)
+    out: dict[str, list[str | None]] = {}
+    for r in bearing:
+        for e in r.get("exhaustedModels") or ():
+            out.setdefault(e["model"], []).append(e.get("resetsAt"))
+    return [{"model": m, "accounts": len(at), "of": len(bearing),
+             "resetsAt": min((t for t in at if t), default=None)}
+            for m, at in sorted(out.items())]
+
+
+def model_quota_out(rows: list[dict], model: str) -> str | None:
+    """The earliest reset when EVERY capacity-bearing account is out on *model*,
+    else None — also None with no capacity-bearing account at all (nothing to say
+    "out" about). An exhausted window with no reported reset answers ``""``: out,
+    reset unknown, so the caller rechecks on its own cadence."""
+    for m in exhausted_models(rows):
+        if m["model"] == model and m["of"] > 0 and m["accounts"] >= m["of"]:
+            return m["resetsAt"] or ""
+    return None
+
+
 @dataclass
 class CapacitySources:
     global_cap: Callable[[], Awaitable[int]]
@@ -174,8 +208,8 @@ async def build_readout(src: CapacitySources) -> dict:
         # second hand-rolled "auto + slug in perProduct" check that could
         # silently drift from the real one (e.g. the pinned-mode guard).
         overlaid_policy = apply_product_plan({slug: p.get("policy")}, plan if live else None)[slug]
-        effective = effective_policy(overlaid_policy)
-        effective_cap = effective["max_in_flight"]
+        overlaid_effective = effective_policy(overlaid_policy)
+        effective_cap = overlaid_effective["max_in_flight"]
         overlaid = live and plan_overlays(slug, p.get("policy"), plan)
         products.append({
             "slug": slug, "name": p.get("name"), "rank": p.get("priorityRank"),
@@ -188,7 +222,7 @@ async def build_readout(src: CapacitySources) -> dict:
             "primaryRepo": p.get("primaryRepo"),
             # #2684: where effectiveCap came from, so a 0/0 row says why.
             "capSource": "plan" if overlaid else "pin",
-            "capNote": product_cap_note(slug, effective, plan, overlaid=overlaid),
+            "capNote": product_cap_note(slug, overlaid_effective, plan, overlaid=overlaid),
         })
     ordered = product_order([ProductCapacity(
         slug=r["slug"], rank=r["rank"], created_at=r["createdAt"] or "", dispatch=r["dispatch"],
@@ -253,22 +287,10 @@ async def build_readout(src: CapacitySources) -> dict:
     runner_limiting = (str((plan.get("budget") or {}).get("limiting") or "none")
                        if reduced and plan else None)
 
-    # Capacity-bearing accounts (#2684): enabled AND metered. A disabled account
-    # or an unmetered engine (Codex/Copilot — governor spec D4) never carries
-    # runner capacity, so counting it as "used" made the row read 6/6 when only
-    # four accounts could ever have been free.
-    bearing = [r for r in account_rows if r.get("enabled", True) and r.get("metered")]
+    bearing = capacity_bearing(account_rows)
     excluded = {"disabled": sum(1 for r in account_rows if not r.get("enabled", True)),
                 "notMetered": sum(1 for r in account_rows
                                   if r.get("enabled", True) and not r.get("metered"))}
-    model_out: dict[str, list[str | None]] = {}
-    for r in bearing:
-        for e in r.get("exhaustedModels") or ():
-            model_out.setdefault(e["model"], []).append(e.get("resetsAt"))
-    exhausted_models = [
-        {"model": m, "accounts": len(at), "of": len(bearing),
-         "resetsAt": min((t for t in at if t), default=None)}
-        for m, at in sorted(model_out.items())]
 
     return {
         "computedAt": now.isoformat(), "pushLevel": push_level,
@@ -282,7 +304,7 @@ async def build_readout(src: CapacitySources) -> dict:
                    "binding": limits.get("binding") if limits else None},
         "hosts": hosts,
         "accounts": {"available": accounts_available, "eligible": len(bearing),
-                     "excluded": excluded, "exhaustedModels": exhausted_models,
+                     "excluded": excluded, "exhaustedModels": exhausted_models(account_rows),
                      "total": len(account_rows), "reservePct": reserve,
                      "sessionsPerAccount": sessions_per_account,
                      "accountCap": accounts_available * sessions_per_account,

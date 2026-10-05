@@ -270,7 +270,7 @@ class ImplementationSnapshot:
             limiting = (self.plan.get("budget") or {}).get("limiting")
             if limiting not in (None, "none", "runner"):
                 runner_note = fleet_reason(self.plan)
-            if from_plan:
+            if from_plan and slug:
                 product_note = product_cap_note(slug, policy, self.plan, overlaid=True)
         decision = decide_implementation(
             ownership=owner, requested_product_slug=requested_product, policy=raw,

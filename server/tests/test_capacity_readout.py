@@ -644,3 +644,14 @@ def test_product_cap_note_names_a_pin_when_no_plan_governs():
     row = r["products"][0]
     assert row["capSource"] == "pin"
     assert row["capNote"] == "pinned at 1"
+
+
+def test_model_quota_out_only_when_every_capacity_bearing_account_is_out():
+    from server.automations.capacity_readout import model_quota_out
+    rows = [_row("a", exhausted=("fable",)), _row("b", exhausted=("fable",)),
+            _row("off", enabled=False, available=False, reason="disabled"),
+            _row("codex", metered=False, available=False, reason="not_metered")]
+    assert model_quota_out(rows, "fable") == "2026-10-08T16:00:00+00:00"
+    assert model_quota_out(rows, "opus") is None
+    assert model_quota_out([*rows, _row("c")], "fable") is None   # c still has Fable
+    assert model_quota_out([], "fable") is None

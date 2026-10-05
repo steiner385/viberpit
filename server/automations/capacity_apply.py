@@ -111,7 +111,7 @@ def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -
         return dict(policies)
     out: dict[str, dict | None] = {}
     for slug, raw in policies.items():
-        if plan_overlays(slug, raw, plan):
+        if isinstance(raw, dict) and plan_overlays(slug, raw, plan):
             try:
                 cap = int(per_product[slug])
             except (TypeError, ValueError):

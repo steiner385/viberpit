@@ -270,7 +270,7 @@ def fleet_reason(plan: dict | None) -> str | None:
         return None
     try:
         budget = plan.get("budget") or {}
-        fleet = int(plan.get("fleetConcurrency"))
+        fleet = int(plan["fleetConcurrency"])
         limiting = str(budget.get("limiting") or "none")
         if limiting == "account":
             detail = (f"{budget['accountsAvailable']} of {budget['accountsTotal']} with headroom "

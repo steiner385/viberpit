@@ -148,7 +148,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                pr_doctor_attempts_fn=None, session_gone=None, session_absent=None,
                held: "Collection[str] | Mapping[str, str] | None" = None,
                escalate_raises=False,
-               investigation_state=None, session_resolution=None):
+               investigation_state=None, session_resolution=None, model_quota_out=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -365,6 +365,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         session_gone=session_gone,
         session_absent=session_absent,
         held_targets=lambda: _held(),
+        model_quota_out=model_quota_out,
     )
     # These policy/outcome tests model an observed stopped actor. Native proof
     # and unknown lifecycles are exercised by test_backlog_ownership.py.
@@ -4632,6 +4633,66 @@ def test_a_bounce_at_an_approval_clamped_top_names_the_gate(tmp_path):
         assert rec.escalations == []            # never climbs onto the gated tier
         assert [t for t, _r in rec.needs_humans] == ["r#1"]
         assert rec.needs_humans[0][1] == "bounced at opus; fable needs approval"
+
+    asyncio.run(run())
+
+
+def test_a_gated_bounce_with_no_quota_for_the_gated_tier_waits_for_the_reset(tmp_path):
+    """#2684: "bounced at opus; fable needs approval" became an owner hold even when
+    NO account had Fable quota left, so approving it could not have run anything.
+    The runner parks the item instead — no hold, no slot — says when the quota
+    returns, and re-asks at the reset: quota back → the usual approval hand-off;
+    still out → wait again."""
+    from datetime import datetime, timedelta, timezone
+    from server.automations.backlog_runner import is_in_flight
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_quota_wait.db'}"
+    now = [datetime(2026, 10, 5, 13, 0, tzinfo=timezone.utc)]
+    reset = "2026-10-05T16:00:00+00:00"
+    out: dict = {"fable": reset}
+    asked: list[str] = []
+
+    async def model_quota_out(tier):
+        asked.append(tier)
+        return out.get(tier)
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clamped = {**policy(max_in_flight=1000, ladder_top="opus"),
+                   "ladder_top_configured": "fable"}
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: clamped},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="opus"),
+                                    wall_clock=lambda: now[0], model_quota_out=model_quota_out)
+        await loop.tick()                       # spawn on opus — the clamped top
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # bounced at the clamped top, no fable quota
+
+        assert asked == ["fable"]
+        assert rec.needs_humans == [] and rec.escalations == []
+        st = await ctx.get_target_state("r#1")
+        assert st["quota_wait"] == {"model": "fable", "until": reset}
+        assert st["reason"] == f"bounced at opus; no fable quota until {reset}"
+        assert not is_in_flight(st)
+
+        await loop.tick()                       # before the reset: still parked, not re-asked
+        assert asked == ["fable"] and rec.needs_humans == []
+
+        later = "2026-10-05T20:00:00+00:00"
+        out["fable"] = later
+        now[0] = datetime(2026, 10, 5, 16, 1, tzinfo=timezone.utc)
+        await loop.tick()                       # at the reset but still out: wait again
+        assert rec.needs_humans == []
+        assert (await ctx.get_target_state("r#1"))["quota_wait"]["until"] == later
+
+        out.clear()
+        now[0] += timedelta(hours=5)
+        await loop.tick()                       # quota back: the usual approval hand-off
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        assert rec.needs_humans[0][1] == "bounced at opus; fable needs approval"
+        st = await ctx.get_target_state("r#1")
+        assert st["gave_up"] is True and "quota_wait" not in st
 
     asyncio.run(run())
 
