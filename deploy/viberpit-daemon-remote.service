@@ -73,6 +73,9 @@ MemoryHigh=24G
 # Shared with every `codex app-server` this runner supervises (one per ACCOUNT,
 # ref-counted and idle-reaped after VIBERPIT_CODEX_IDLE_GRACE_S).
 MemoryMax=28G
+# continue, NOT the default stop: one session's OOM-killed tool must not stop every
+# session on this host (#2673). Same rationale as the local unit.
+OOMPolicy=continue
 # TasksMax counts threads: this daemon owns every live claude session plus its MCP
 # fleet, Xvfb and thread pools. MemoryMax is the real backstop.
 TasksMax=infinity

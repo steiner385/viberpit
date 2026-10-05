@@ -51,6 +51,8 @@ def _make_shims(
     registry_endpoints: str = "",
     unit_main_pid: int = 0,
     config_counts: str = "0 0",
+    memory_current: str = "",
+    memory_max: str = "",
 ) -> tuple[Path, Path]:
     """Build the shim bin dir + state dir the script runs against.
 
@@ -74,6 +76,8 @@ if [ "$1" = "show" ]; then
     *Environment\\ --value*) echo '{unit_environment}' ;;
     *EnvironmentFiles*)      echo '{env_files_line}' ;;
     *MainPID*)               echo '{unit_main_pid}' ;;
+    *MemoryCurrent*)         echo '{memory_current}' ;;
+    *MemoryMax*)             echo '{memory_max}' ;;
     *)                       echo '' ;;
   esac
   exit 0
@@ -437,3 +441,44 @@ def test_the_alert_names_the_mount_option_that_fixes_it(tmp_path):
     proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
     assert "attr_timeout=0" in proc.stdout
     assert "bin-ccswitch-mounts.sh" in proc.stdout
+
+
+# --- #2673: the memory alert tracks the unit's REAL MemoryMax ---------------------------
+#
+# The script hardcoded "12G MemoryMax" in both its threshold and its message while dobby
+# ran a 15G drop-in, so it cried wolf at 11 GiB and named the wrong ceiling. It now reads
+# MemoryMax from systemd and alerts at a fraction of it; VIBERPIT_MEM_WARN_BYTES remains
+# an explicit override.
+
+GIB = 1024 ** 3
+
+
+def _memory_run(tmp_path: Path, *, current: int, memory_max: str,
+                script_env: dict[str, str] | None = None) -> str:
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            memory_current=str(current), memory_max=memory_max)
+    return _run(tmp_path, bindir, script_env=script_env or {}).stdout
+
+
+def test_memory_alert_names_the_units_real_memorymax(tmp_path):
+    out = _memory_run(tmp_path, current=int(14.5 * GIB), memory_max=str(15 * GIB))
+    assert "ALERT[memory]" in out, out
+    assert "15360MiB MemoryMax" in out, out
+    assert "12G" not in out
+
+
+def test_memory_below_a_fraction_of_a_raised_memorymax_is_quiet(tmp_path):
+    """12 GiB used under a 15G ceiling: the old hardcoded 11 GiB threshold fired here."""
+    out = _memory_run(tmp_path, current=12 * GIB, memory_max=str(15 * GIB))
+    assert "ALERT[memory]" not in out, out
+
+
+def test_unlimited_memorymax_falls_back_to_the_default_threshold(tmp_path):
+    out = _memory_run(tmp_path, current=int(11.5 * GIB), memory_max="infinity")
+    assert "ALERT[memory]" in out, out
+
+
+def test_explicit_mem_warn_bytes_overrides_the_derived_threshold(tmp_path):
+    out = _memory_run(tmp_path, current=12 * GIB, memory_max=str(15 * GIB),
+                      script_env={"VIBERPIT_MEM_WARN_BYTES": str(10 * GIB)})
+    assert "ALERT[memory]" in out, out

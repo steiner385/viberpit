@@ -71,7 +71,10 @@ SOCK="${VIBERPIT_SESSIOND_SOCKET:-${CCSWITCH_SESSIOND_SOCKET:-$RUN_ROOT/sessiond
 LEDGER="${VIBERPIT_LEDGER:-${CCSWITCH_LEDGER:-/home/tony/.claude-accounts/ledger.json}}"
 DISK_PATH="${VIBERPIT_DISK_PATH:-${CCSWITCH_DISK_PATH:-/}}"
 DISK_WARN_PCT="${VIBERPIT_DISK_WARN_PCT:-${CCSWITCH_DISK_WARN_PCT:-85}}"
-MEM_WARN_BYTES="${VIBERPIT_MEM_WARN_BYTES:-${CCSWITCH_MEM_WARN_BYTES:-11811160064}}"   # 11 GiB (below the 12G MemoryMax)
+# Explicit memory-alert threshold. Unset (the default) = 92% of the daemon unit's real
+# MemoryMax as systemd reports it, so a host drop-in that raises the ceiling (dobby: 15G)
+# moves the alert with it (#2673); 11 GiB if the unit has no MemoryMax.
+MEM_WARN_BYTES="${VIBERPIT_MEM_WARN_BYTES:-${CCSWITCH_MEM_WARN_BYTES:-}}"
 PROBE_RETRIES="${VIBERPIT_PROBE_RETRIES:-${CCSWITCH_PROBE_RETRIES:-3}}"
 PROBE_TIMEOUT="${VIBERPIT_PROBE_TIMEOUT:-${CCSWITCH_PROBE_TIMEOUT:-5}}"
 RESTART_COOLDOWN="${VIBERPIT_RESTART_COOLDOWN:-${CCSWITCH_RESTART_COOLDOWN:-300}}"        # >=1 auto-restart per 5 min
@@ -345,8 +348,16 @@ fi
 
 # --- 4. Daemon memory near the ceiling ------------------------------------------
 mem=$(systemctl show ${DAEMON_UNIT} -p MemoryCurrent --value 2>/dev/null)
-if [[ "$mem" =~ ^[0-9]+$ ]] && [ "$mem" -ge "$MEM_WARN_BYTES" ]; then
-  alert memory "daemon memory $(( mem / 1024 / 1024 ))MiB near the 12G MemoryMax — OOM-stop risk"
+mem_max=$(systemctl show ${DAEMON_UNIT} -p MemoryMax --value 2>/dev/null)
+if [[ "$mem_max" =~ ^[0-9]+$ ]]; then
+  mem_warn="${MEM_WARN_BYTES:-$(( mem_max * 92 / 100 ))}"
+  mem_ceiling="$(( mem_max / 1024 / 1024 ))MiB MemoryMax"
+else
+  mem_warn="${MEM_WARN_BYTES:-11811160064}"
+  mem_ceiling="memory ceiling"
+fi
+if [[ "$mem" =~ ^[0-9]+$ ]] && [ "$mem" -ge "$mem_warn" ]; then
+  alert memory "daemon memory $(( mem / 1024 / 1024 ))MiB near the ${mem_ceiling} — OOM-kill risk"
 else
   clear_alert memory
 fi

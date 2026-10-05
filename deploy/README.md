@@ -572,7 +572,8 @@ stack cannot:
    startup grace (won't fight a booting/deploying daemon) and a 300s cooldown (a genuine
    crash-loop is left to `Restart=on-failure`).
 2. **Early warning.** Alerts on disk `>=85%`, any account `status=needs-reauth`, or daemon
-   memory near the 12G `MemoryMax`. Alerts go to the journal; set `VIBERPIT_ALERT_WEBHOOK`
+   memory near the unit's `MemoryMax` (92% of the value `systemctl show` reports, so a host
+   drop-in that raises it is honoured; `VIBERPIT_MEM_WARN_BYTES` overrides). Alerts go to the journal; set `VIBERPIT_ALERT_WEBHOOK`
    (e.g. an ntfy topic URL) in `/etc/viberpit/viberpit.env` to also get push notifications.
 
 Install (rewrite `ExecStart` to this host's deploy checkout first, like the daemon unit):
@@ -583,10 +584,17 @@ Install (rewrite `ExecStart` to this host's deploy checkout first, like the daem
     sudo systemctl enable --now viberpit-health.timer
 
 The daemon unit also gains `MemoryHigh=10G` (soft reclaim pressure below the 12G hard
-`MemoryMax`/`OOMPolicy=stop`) so a restart-storm of relaunched session+MCP fleets degrades
-instead of being OOM-killed. On an already-running host apply it live without a restart:
+`MemoryMax`) so a restart-storm of relaunched session+MCP fleets degrades instead of being
+OOM-killed. On an already-running host apply it live without a restart:
 
     sudo systemctl set-property --runtime viberpit-daemon.service MemoryHigh=10G
+
+Both daemon units set `OOMPolicy=continue` (#2673). systemd's default, `stop`, stops the
+whole unit whenever the kernel OOM-kills *any* process in its cgroup — including on a
+host-wide OOM — so one session's runaway build took every live session down with it
+(2026-10-04). With `continue` only the OOM victim dies; if that is the daemon process
+itself, `Restart=always` brings it back. Reinstall the unit, `daemon-reload`, and confirm
+with `systemctl show -p OOMPolicy viberpit-daemon.service` (expect `continue`).
 
 ## Assistant nightly eval (`viberpit-assistant-eval.timer`)
 
