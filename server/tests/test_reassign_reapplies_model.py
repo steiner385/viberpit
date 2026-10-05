@@ -270,16 +270,17 @@ async def test_reassign_model_reapply_failure_still_completes_the_swap(monkeypat
 class _FlakyModelDriver:
     """A live driver whose set_model fails the first ``fail_times`` calls (the 429 a
     rate-limited account returns at resume), then succeeds."""
-    def __init__(self, fail_times):
+    def __init__(self, fail_times, message=None):
         self.fail_times = fail_times
+        self.message = message or ("API error: 429 This request would exceed your account's "
+                                   "rate limit. Please try again later · model not changed")
         self.set_model_calls = []
         self.prompts = []
         self.errors = []
     async def set_model(self, m):
         self.set_model_calls.append(m)
         if len(self.set_model_calls) <= self.fail_times:
-            raise Exception("API error: 429 This request would exceed your account's "
-                            "rate limit. Please try again later · model not changed")
+            raise Exception(self.message)
     async def send_prompt(self, text, attachments=None, **kw):
         self.prompts.append(text)
     async def emit_error(self, code, message):
@@ -331,7 +332,7 @@ async def test_retry_failure_tells_the_user_and_still_sends(caplog):
     still delivered (a failed re-apply never fails a turn), and the retry is not
     repeated on every later turn."""
     import logging
-    drv, rec = _FlakyModelDriver(fail_times=2), _rec()
+    drv, rec = _FlakyModelDriver(fail_times=2, message="API error: 500 boom"), _rec()
     orch = _orch_with(drv, rec)
 
     await orch._reapply_model(drv, rec, site="session.resume")
@@ -356,3 +357,17 @@ async def test_applied_model_sends_without_a_retry():
     assert await orch.send_prompt("s1", "go") == "sent"
     assert drv.set_model_calls == ["claude-fable-5-1"]
     assert rec.model_unapplied is False
+
+
+@pytest.mark.asyncio
+async def test_quota_429_on_retry_is_info_not_a_filed_warning(caplog):
+    """A rate-limit 429 on the turn-time retry is an exhausted account, not a defect
+    (#2675): the user still gets the error card, but nothing logs at WARNING."""
+    import logging
+    drv, rec = _FlakyModelDriver(fail_times=2), _rec()
+    orch = _orch_with(drv, rec)
+    await orch._reapply_model(drv, rec, site="reassign")
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await orch._retry_unapplied_model(drv, rec)
+    assert [c for c, _ in drv.errors] == ["model_not_applied"]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
