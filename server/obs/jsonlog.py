@@ -46,20 +46,41 @@ def _coerce(value: Any) -> Any:
 
 
 class _PoolCancelledFilter(logging.Filter):
-    """Suppress asyncio.CancelledError pool-reset records from sqlalchemy.pool.
+    """Suppress asyncio.CancelledError pool records from the sqlalchemy.pool tree.
 
     During shutdown or request cancellation SQLAlchemy logs CancelledError at
-    ERROR level from pool checkin/reset. These are expected and not actionable;
-    suppressing them at the source logger keeps ERROR-band signal-to-noise high.
-    Returning False stops propagation before any handler sees the record.
+    ERROR level from pool checkin/reset/close. These are expected and not
+    actionable; suppressing them keeps the ERROR band (and the error sink, which
+    auto-files issues) high signal.
+
+    Installed on the root HANDLERS, not the ``sqlalchemy.pool`` logger: a logger's
+    filters only run for records created on that exact logger, and SQLAlchemy
+    logs from children like ``sqlalchemy.pool.impl.AsyncAdaptedQueuePool`` whose
+    records reach the root handlers without passing a parent's filters (#2678).
+    Hence the explicit logger-name scope — a handler sees every record.
     """
 
+    _PREFIX = "sqlalchemy.pool"
+
     def filter(self, record: logging.LogRecord) -> bool:
+        if not (record.name == self._PREFIX or record.name.startswith(self._PREFIX + ".")):
+            return True
         if record.levelno >= logging.ERROR and record.exc_info:
             exc_type = record.exc_info[0]
             if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
                 return False
         return True
+
+
+def install_pool_cancelled_filter() -> None:
+    """Attach ``_PoolCancelledFilter`` to every root handler. Idempotent.
+
+    Handler-level because a filter on the ``sqlalchemy.pool`` logger never sees
+    records from its child loggers (#2678) — see the class docstring.
+    """
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, _PoolCancelledFilter) for f in handler.filters):
+            handler.addFilter(_PoolCancelledFilter())
 
 
 class ContextFilter(logging.Filter):
@@ -203,9 +224,6 @@ def configure_logging(*, process: str = "edge") -> None:
             root.warning("jsonlog: log dir %s unwritable (%s); stdout-only", log_dir, exc)
 
     install_redacting_filter()
-    # Suppress CancelledError pool-reset noise from sqlalchemy.pool (expected during
-    # shutdown/cancellation; ~400 per rotation at ERROR level — not actionable).
-    logging.getLogger("sqlalchemy.pool").addFilter(_PoolCancelledFilter())
 
     # Error-triage capture (spec 2026-09-07 §4): WARNING+ records → error_signatures.
     # Installed here so the edge and the daemon get it from the same call; the
@@ -213,5 +231,10 @@ def configure_logging(*, process: str = "edge") -> None:
     if bool(getattr(settings, "error_sink_enabled", True)):
         from server.obs.errsink import install_error_sink
         install_error_sink(source=process)
+
+    # Suppress CancelledError pool noise from sqlalchemy.pool (expected during
+    # shutdown/cancellation; ~400 per rotation at ERROR level — not actionable).
+    # After the error sink so it covers that handler too.
+    install_pool_cancelled_filter()
 
     _configured = True
