@@ -46,8 +46,14 @@ export function McpSection() {
               </div>
             </button>
             {/* Inline auth flow — rendered as sibling below the card button to avoid nesting interactive elements */}
-            {s.needsAuth.length > 0 && (
+            {s.needsAuth.length > 0 && (s.transport === 'http' || s.transport === 'sse') && (
               <McpAuthFlow server={s.name} accounts={s.needsAuth} />
+            )}
+            {s.needsAuth.length > 0 && s.transport === 'stdio' && (
+              <p className="mt-1 px-3 pb-2 text-sm text-ink-muted">
+                This server cannot use browser OAuth here. Configure credentials on the host
+                running the session using the server’s setup instructions, then start a new session.
+              </p>
             )}
           </li>
         ))}

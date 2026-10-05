@@ -74,6 +74,23 @@ beforeEach(() => {
 })
 
 describe('McpSection', () => {
+  it('shows credential guidance instead of OAuth for stdio servers', async () => {
+    renderSection()
+    expect(await screen.findByText(/configure credentials on the host/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /fix auth|retry/i })).toBeNull()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each(['http', 'sse'])('offers OAuth for %s servers needing auth', async (transport) => {
+    vi.mocked(api.get).mockResolvedValue({ servers: [{
+      ...mcpResponse.servers[0], transport,
+      config: { type: transport, url: 'https://example.com/mcp' },
+    }] })
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: /fix auth/i }))
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth')
+  })
+
   // (a) user + plugin rows render with transport and needs-auth badges
   it('renders rows with transport badges and needs-auth badge', async () => {
     renderSection()

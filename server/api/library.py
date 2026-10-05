@@ -246,6 +246,19 @@ async def mcp_auth_start(
 ) -> Any:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
+    servers = [s for s in scan.list_mcp_servers()["servers"] if s["name"] == name]
+    if not servers:
+        raise HTTPException(status_code=404, detail={"error": "mcp_server_not_found"})
+    if len(servers) != 1:
+        raise HTTPException(status_code=409, detail={
+            "error": "mcp_server_ambiguous",
+            "message": "Multiple servers have this name. Give the user-configured server a unique name before signing in.",
+        })
+    if servers[0]["transport"] not in ("http", "sse"):
+        raise HTTPException(status_code=400, detail={
+            "error": "mcp_oauth_unsupported",
+            "message": "Browser OAuth requires an HTTP or SSE server. Configure this server's credentials on the session host.",
+        })
     try:
         state = await _mcp_auth(request).start(name)
     except McpAuthBusy as exc:
