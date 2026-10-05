@@ -2,6 +2,8 @@ import asyncio
 import logging
 import subprocess
 
+import pytest
+
 import server.github.pr_population as pop
 from server.github.pr_population import PrPopulationPoller
 
@@ -132,15 +134,19 @@ def test_non_5xx_failure_still_warns(caplog):
     assert "pr_population.refresh_failed repo=o/bad" in warned[0].getMessage()
 
 
-def test_fetch_merged_truncated_json_logs_info_not_a_warning(caplog, monkeypatch):
-    """#2490: GitHub's edge can cut the merged-half response short before gh's
-    Go JSON decoder finishes reading it, which surfaces as "unexpected end of
-    JSON input" rather than a ``gh: ... (HTTP 5xx)``-style message — the same
-    self-healing edge condition as a bare 5xx (#1839's read), just a different
-    gh error string. This loop retries every poll, so it must not also file an
-    auto-error."""
+@pytest.mark.parametrize("stderr", [
+    "unexpected end of JSON input",                            # #2490
+    "stream error: stream ID 1; CANCEL; received from peer",   # #2677
+])
+def test_fetch_merged_edge_cutoff_logs_info_not_a_warning(caplog, monkeypatch, stderr):
+    """#2490/#2677: GitHub's edge can cut the merged-half response short —
+    surfacing as gh's Go JSON decoder hitting "unexpected end of JSON input", or
+    its HTTP/2 client reporting a peer stream reset — rather than a
+    ``gh: ... (HTTP 5xx)``-style message. The same self-healing edge condition
+    as a bare 5xx (#1839's read), just a different gh error string. This loop
+    retries every poll, so it must not also file an auto-error."""
     def fake_run_gh(args, **kwargs):
-        return subprocess.CompletedProcess(args, 1, "", "unexpected end of JSON input")
+        return subprocess.CompletedProcess(args, 1, "", stderr)
 
     monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
 

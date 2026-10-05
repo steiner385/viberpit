@@ -394,6 +394,25 @@ def test_is_transient_github_edge_failure_also_matches_truncated_json():
     assert host_failures.is_transient_github_edge_failure("") is False
 
 
+@pytest.mark.parametrize("code", ["CANCEL", "INTERNAL_ERROR", "REFUSED_STREAM"])
+def test_is_transient_github_edge_failure_matches_peer_stream_reset(code):
+    """#2677: the same edge timeout as #2490, reported by gh's Go HTTP/2
+    client as GitHub resetting the stream mid-request."""
+    assert host_failures.is_transient_github_edge_failure(
+        f"stream error: stream ID 1; {code}; received from peer") is True
+    assert host_failures.is_transient_github_edge_failure(
+        f"stream error: stream ID 17; {code}; received from peer") is True
+
+
+def test_a_locally_initiated_stream_reset_is_not_a_github_edge_failure():
+    """Without ``received from peer`` the reset was our own client's, not
+    GitHub's edge — not GitHub's outage to shrug off."""
+    assert host_failures.is_transient_github_edge_failure(
+        "stream error: stream ID 1; CANCEL") is False
+    assert host_failures.is_transient_github_edge_failure(
+        "stream error: stream ID 1; FLOW_CONTROL_ERROR; received from peer") is False
+
+
 def test_success_is_untouched():
     url = ci_issues.comment_on_issue(
         "o/r", 7, "hi",
