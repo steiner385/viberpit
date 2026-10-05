@@ -7680,8 +7680,21 @@ class SessionOrchestrator:
         The runner's ``gave_up`` row survives for slot accounting only and is
         dropped by ``_release_give_ups`` once the hold is gone."""
         from server.automations import backlog_github
+        from server.pm.outcomes import escalation_for
         batch = await self._backlog_write_runner_hold(
             target, kind="owner_action", reason=reason, log_key="give_up")
+        if escalation_for("owner_action", reason) is not None:
+            # An escalation the product's auto-approval covers (#2679) is approved
+            # after this tick, so telling the issue it waits on a person would be
+            # false. Best-effort: a failed read keeps the comment.
+            try:
+                covered = {row.ref for row, *_ in await self._backlog_auto_escalations()}
+                if covered and set(getattr(batch, "issues", None) or [target]) <= covered:
+                    log.info("backlog_needs_human.auto_escalation_covers target=%s", target)
+                    return
+            except Exception:
+                log.warning("backlog_needs_human.auto_escalation_read_failed target=%s",
+                            target, exc_info=True)
         try:
             await asyncio.to_thread(
                 backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
@@ -8770,6 +8783,202 @@ class SessionOrchestrator:
                 await self._bump_automation_active("backlog-runner")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
+            mode = "off"
+        if mode == "auto":
+            # Hold hygiene, after the tick and outside the loop's lock (an approval
+            # dispatches, and dispatch takes that lock): close superseded alerts
+            # (#2680), re-judge pre-#2681 close-out holds, then approve covered
+            # escalations within budget (#2679).
+            # Each is best-effort and logs its own failure.
+            await self._backlog_supersede_alerts()
+            await self._backlog_settle_legacy_closeout_holds()
+            await self._backlog_auto_approve_escalations()
+
+    async def _backlog_queue_inputs(self):
+        """``queue_store.queue_inputs`` in one sync session: the open board-linked
+        rows (hold, labels, author, claim) plus the per-product policies."""
+        from datetime import datetime, timezone
+
+        from server.pm.queue_store import queue_inputs
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            return await db.run_sync(lambda s: queue_inputs(s, now=now))
+
+    async def _backlog_supersede_alerts(self) -> list[str]:
+        """Close every open recurring-alert issue a newer one of the same type
+        supersedes (#2680, ``server/pm/alert_series.py``), with a comment naming the
+        survivor — at most one open issue (and so one hold) per alert type per repo.
+
+        An issue the runner has CLAIMED is left alone: a live session is working
+        it, and its own close-out settles it. At most ``SUPERSEDE_PER_PASS`` closes
+        per pass, so the one-time sweep of an existing pile spreads over ticks. The
+        mirror row is marked closed on success so the next pass does not re-close it
+        before the sync catches up. Returns the refs closed."""
+        from sqlalchemy import update as sa_update
+
+        from server.automations import backlog_github
+        from server.automations.product_policy import is_on
+        from server.db.models import WorkItem
+        from server.pm.alert_series import SUPERSEDE_PER_PASS, AlertIssue, superseded
+        closed: list[str] = []
+        try:
+            rows, policies = await self._backlog_queue_inputs()
+            # Only boards the runner works: a product with dispatch off is not
+            # accruing runner holds, and its issues are not this loop's to close.
+            rows = [r for r in rows if is_on(policies.get(r.product) or {})]
+            claimed = {r.ref for r in rows if r.claimed or r.live_session}
+            pairs = [(old, new) for old, new in superseded(
+                AlertIssue(repo=r.repo, number=r.number, title=r.title, author=r.author)
+                for r in rows) if old not in claimed]
+            for old, new in pairs[:SUPERSEDE_PER_PASS]:
+                new_number = new.split("#", 1)[1]
+                comment = (f"Superseded by #{new_number}, a newer alert of the same type — "
+                           f"closed by {brand.NAME} Backlog Runner so only the newest stays "
+                           "open.")
+                ok = await asyncio.to_thread(
+                    backlog_github._close_issue, old, comment, gh_run=self._gh_run)
+                if not ok:
+                    continue
+                repo, number = old.split("#", 1)
+                async with db_session() as db:
+                    await db.execute(sa_update(WorkItem).where(
+                        WorkItem.kind == "issue", WorkItem.repo == repo,
+                        WorkItem.number == int(number)).values(state="closed"))
+                closed.append(old)
+                await self._backlog_ctx.emit(
+                    "info", f"{old}: superseded by {new} — closed", kind="alert_superseded",
+                    target=old, detail={"supersededBy": new})
+        except Exception:
+            log.warning("backlog_runner.supersede_alerts_failed", exc_info=True)
+        return closed
+
+    async def _backlog_settle_legacy_closeout_holds(self) -> list[str]:
+        """Re-judge every close-out hold written before #2681 — the generic
+        ``LEGACY_CLOSEOUT_HOLD_REASON``, whose linked PR already merged — with the
+        current human gate (``backlog_github._human_gate_reason``): nothing left →
+        close the issue with a comment; something left → rewrite the hold reason so
+        it names it. A failed signals read leaves the hold for the next pass.
+        Returns the refs closed. Converges: neither outcome leaves the legacy
+        reason behind, so a settled pile costs one filtered read per tick."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select as sa_select
+
+        from server.automations import backlog_github
+        from server.db.models import WorkItem
+        from server.pm.holds import RUNNER_ACTOR, set_runner_hold
+        closed: list[str] = []
+        try:
+            rows, _policies = await self._backlog_queue_inputs()
+            legacy = [r for r in rows if r.hold_kind == "owner_action"
+                      and r.hold_by == RUNNER_ACTOR
+                      and r.hold_reason == backlog_github.LEGACY_CLOSEOUT_HOLD_REASON]
+            for row in legacy:
+                signals = await asyncio.to_thread(
+                    backlog_github._issue_signals, row.ref, gh_run=self._gh_run)
+                if signals is None:
+                    continue
+                gate = backlog_github._human_gate_reason(signals)
+                if gate is None:
+                    ok = await asyncio.to_thread(
+                        backlog_github._close_issue, row.ref,
+                        backlog_github.closed_with_nothing_left_comment(),
+                        gh_run=self._gh_run)
+                    if not ok:
+                        continue
+                async with db_session() as db:
+                    wi = (await db.execute(sa_select(WorkItem).where(
+                        WorkItem.id == row.work_item_id))).scalar_one_or_none()
+                    if wi is None:
+                        continue
+                    if gate is None:
+                        wi.state = "closed"
+                    else:
+                        set_runner_hold(wi, reason=backlog_github.closeout_hold_reason(gate),
+                                        now=datetime.now(timezone.utc))
+                if gate is None:
+                    closed.append(row.ref)
+                    await self._backlog_ctx.emit(
+                        "info", f"{row.ref}: merged PR left nothing for a person — closed",
+                        kind="closeout_closed", target=row.ref)
+        except Exception:
+            log.warning("backlog_runner.settle_closeout_holds_failed", exc_info=True)
+        return closed
+
+    async def _backlog_auto_escalations(self) -> list:
+        """The held rows the budget lets the runner approve right now
+        (``auto_escalation.candidates``), with the approvals already spent in the
+        period read off the ``AUTO_APPROVED_AUDIT`` ledger."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.clock import naive_utc_now
+        from server.db.models import AuditEvent
+        from server.pm import auto_escalation as ae
+        rows, policies = await self._backlog_queue_inputs()
+        since = naive_utc_now() - ae.AUTO_ESCALATION_PERIOD
+        async with db_session() as db:
+            details = (await db.execute(sa_select(AuditEvent.detail).where(
+                AuditEvent.type == ae.AUTO_APPROVED_AUDIT, AuditEvent.at >= since))).scalars()
+            used: dict[str, int] = {}
+            for detail in details:
+                product = str((detail or {}).get("product") or "")
+                used[product] = used.get(product, 0) + 1
+        return [(row, esc, entry, used.get(row.product, 0), ae.budget(policies.get(row.product) or {}))
+                for row, esc, entry in ae.candidates(rows, policies, used)]
+
+    async def _backlog_auto_approve_escalations(self) -> list[str]:
+        """Approve every approval-gated escalation a product's
+        ``auto_escalate_match`` covers, within its ``auto_escalate_budget`` (#2679),
+        through THE approval sequence a person's tap takes
+        (``escalation_approval.approve_escalation``) — attributed to the runner,
+        audited as ``AUTO_APPROVED_AUDIT`` (the budget's ledger) and reported in the
+        automation's events. Past the budget a hold simply stays for a person.
+        Returns the refs approved."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import WorkItem
+        from server.pm import auto_escalation as ae
+        from server.pm.escalation_approval import EscalationApprovalError, approve_escalation
+        from server.pm.holds import RUNNER_ACTOR
+        approved: list[str] = []
+        try:
+            plan = await self._backlog_auto_escalations()
+        except Exception:
+            log.warning("backlog_runner.auto_escalation_read_failed", exc_info=True)
+            return approved
+        spent: dict[str, int] = {}
+        for row, escalation, entry, used, budget in plan:
+            model = escalation.needs_approval
+            try:
+                async with db_session() as db:
+                    wi = (await db.execute(sa_select(WorkItem).where(
+                        WorkItem.id == row.work_item_id))).scalar_one_or_none()
+                    if wi is None:
+                        continue
+                    result = await approve_escalation(
+                        db, self, wi, model=model, actor=RUNNER_ACTOR,
+                        identity="backlog-runner", audit_type=ae.AUTO_APPROVED_AUDIT,
+                        audit_detail={"product": row.product, "ref": row.ref,
+                                      "matched": entry},
+                        via="runner")
+            except EscalationApprovalError as e:
+                log.info("backlog_runner.auto_escalation_refused ref=%s model=%s code=%s",
+                         row.ref, model, e.code)
+                continue
+            except Exception:
+                log.warning("backlog_runner.auto_escalation_failed ref=%s model=%s",
+                            row.ref, model, exc_info=True)
+                continue
+            spent[row.product] = spent.get(row.product, 0) + 1
+            approved.append(row.ref)
+            await self._backlog_ctx.emit(
+                "info",
+                f"{row.ref}: escalation to {model} auto-approved (matches {entry!r}; "
+                f"{used + spent[row.product]}/{budget} this week)",
+                kind="auto_escalated", target=row.ref, session_id=result.get("session_id"),
+                detail={"model": model, "matched": entry, "product": row.product,
+                        "dispatch": result.get("status"), "approval": result.get("approval")})
+        return approved
 
     # ------------------------------------------------------------------
     # SDLC Intake control-loop dependencies (injected into SdlcIntakeLoop)
@@ -9324,6 +9533,9 @@ class SessionOrchestrator:
             # fingerprint drift, checked against every owner_action-held row) releases
             # the hold — the reconcile pass is where that signal is observed.
             holds.release_by_signals(s, human_edits=edits, now=now)
+            # #2682: a conversion-era hold is no decision at all; past its TTL it
+            # goes back to the queue so the runner can make a real one.
+            holds.release_expired_migration_holds(s, now=now)
             return edits
 
         async with db_session() as db:

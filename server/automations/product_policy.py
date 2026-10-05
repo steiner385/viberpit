@@ -125,6 +125,20 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Issues carrying any of these labels are skipped by the queue for "
                      "this product, in addition to the built-in bot-noise filter "
                      "(dependencies, renovate)."),
+    # #2679: classes of issue whose approval-gated ladder climb ("bounced at opus;
+    # fable needs approval") is approved by the runner itself, within a budget —
+    # ``server/pm/auto_escalation.py``. Budget 0 (the default) keeps every such
+    # escalation waiting for a person, as before.
+    ConfigField(key="auto_escalate_match", label="Auto-approve escalation for",
+                type="string-list", default=[],
+                help="Issues carrying one of these as a label, or containing it in the "
+                     "title (e.g. flaky, [flaky], deploy-verify), have an escalation that "
+                     "needs approval approved automatically while the budget lasts."),
+    ConfigField(key="auto_escalate_budget", label="Auto-approved escalations per week",
+                type="int", default=0, min=0,
+                help="How many escalations the runner may approve by itself in any 7 days. "
+                     "0 turns automatic approval off; past the budget an escalation waits "
+                     "for a person."),
     # Phase 2 (spec §4, §8): the PM Triage loop's own dispatch decision. Ordered
     # by ``server/pm/classification.py:CONFIDENCE_LEVELS`` — "medium" means "medium
     # or better", so the choices read as a descending strictness, not a set.

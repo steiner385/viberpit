@@ -505,7 +505,6 @@ async def test_real_closeout_helper_failure_retains_sweep_ownership(
     loop._pr_status_for = AsyncMock(return_value=info)
     monkeypatch.setattr(backlog_github, "_pr_linkage", lambda *a, **kw: {})
     monkeypatch.setattr(backlog_github, "_pr_issue_linked", lambda *a, **kw: True)
-    monkeypatch.setattr(backlog_github, "_pr_changed_files", lambda *a, **kw: ["app.py"])
     monkeypatch.setattr(backlog_github, "_issue_signals", lambda *a, **kw: {})
     monkeypatch.setattr(backlog_github.gitrepos, "app_token_for_repo", lambda *a: None)
     calls = []

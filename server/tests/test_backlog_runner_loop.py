@@ -1461,7 +1461,14 @@ def test_close_out_unknown_keeps_exclusive_claim_without_replay(tmp_path):
     asyncio.run(run())
 
 
-def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
+@pytest.mark.parametrize("outcome,expected", [
+    ("escalated", "human gate: merged PR needs a human close-out"),
+    # #2681: the hold names what is left, not a generic "needs a close-out".
+    ("escalated: 1 unchecked acceptance item(s) remain on the issue (first: 'QA retest')",
+     "human gate: merged PR left the issue open — 1 unchecked acceptance item(s) "
+     "remain on the issue (first: 'QA retest')"),
+])
+def test_close_out_escalated_leaves_a_gave_up_row(tmp_path, outcome, expected):
     """The human gate fired for every issue (#784): the PR merged but a human has
     to finish and close the work. That is a handoff, not a completion — the row
     must survive as a stamped ``gave_up`` row (Phase D's needs-human signal),
@@ -1476,7 +1483,7 @@ def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
         merged = PullRequestInfo(number=42, url="", state="merged",
                                  checks="none", title="", merged=True)
         loop, rec, ctx = build_loop(pr_status={"r#1": merged},
-                                    close_out_result="escalated",
+                                    close_out_result=outcome,
                                     wall_clock=lambda: at)
         await _set_owned_state(ctx, "r#1", {"session_id": "s1", "repo": "r",
                                            "issues": ["r#1"], "claimed": True})
@@ -1485,7 +1492,7 @@ def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
 
         st = await ctx.get_target_state("r#1")
         assert st["gave_up"] is True and "needs_human_at" not in st
-        assert "human gate" in st["reason"]
+        assert st["reason"] == expected
         assert not st.get("claimed")
         assert [t for t, _ in rec.needs_humans] == ["r#1"]
 
