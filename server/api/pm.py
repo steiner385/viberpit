@@ -2265,77 +2265,24 @@ async def approve_work_item_escalation(
     """Approve the climb an approval-gated hand-off asked for ("bounced at opus;
     fable needs approval", ``outcomes.escalation_for``): release the owner_action
     hold (signal ``escalation``) and dispatch the issue NOW, pinned to ``body.model``.
-
-    The model-approval gate still runs — ``create_session`` parks a denylisted tier
-    as ``pending_approval`` — and THIS person's tap is the approval it asks for, so
-    the parked session is resolved through the same ``resolve_model_approval`` path
-    (and ``model_approval.approve`` audit) the Sessions page uses. No gate bypass:
-    a ``block`` policy still refuses (409), and if the approval step itself fails
-    the session stays parked where the Sessions page can approve it by hand
-    (``approval: "pending"``).
-
-    Like Implement now, the hold is released and committed before the dispatch, so
-    a refused dispatch (``status`` ≠ ``spawned``) leaves the item re-queued at the
-    product default; the response says so and the UI reports it.
-    """
-    from server.pm.holds import (
-        DecisionHoldError,
-        HoldPermissionError,
-        actor_for_request,
-        release_via_api,
-    )
-    from server.pm.outcomes import escalation_for
-    from server.sessions import model_policy
-    from server.sessions.model_catalog import TIER_ORDER
+    THE sequence lives in ``server/pm/escalation_approval.py`` — shared with the
+    backlog tick's budgeted auto-approval (#2679) — so this route only maps its
+    refusals onto the wire."""
+    from server.pm.escalation_approval import EscalationApprovalError, approve_escalation
+    from server.pm.holds import actor_for_request
     wi = (await db.execute(
         select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    escalation = escalation_for(wi.hold_kind, wi.hold_reason)
-    if escalation is None:
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_hold",
-            "message": "this hold is not an approval-gated hand-off; use Retry"})
-    model = body.model.strip().lower()
-    if model not in TIER_ORDER:
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_model", "message": f"unknown ladder tier: {body.model}"})
-    if await model_policy.resolve_model_policy(db, model=model) == "block":
-        raise HTTPException(status_code=409, detail={
-            "error": "model_blocked", "message": f"{model} is blocked by policy"})
-    ref = f"{wi.repo}#{wi.number}"
     try:
-        await release_via_api(db, wi, actor=actor_for_request(request), identity=identity,
-                              signal="escalation")
-    except DecisionHoldError as e:
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_hold", "message": str(e)}) from e
-    except HoldPermissionError as e:
-        raise HTTPException(status_code=422, detail={
-            "error": "hold_not_permitted", "message": str(e)}) from e
-    await record_audit(db=db, type="pm.hold.escalation_approved", identity=identity,
-                       detail={"workItemId": wi.id, "model": model,
-                               "requested": escalation.needs_approval,
-                               "bouncedAt": escalation.bounced_at})
-    item = _work_item_to_dict(wi)
-    # Committed before the orchestrator call for the same reason the dispatch
-    # route commits: it claims ownership in its own DB session.
-    await db.commit()
-    orch = request.app.state.sessions
-    result = await orch.backlog_runner_dispatch([ref], model=model)
-    approval = "not_needed"
-    session_id = result.get("session_id")
-    if result.get("status") == "spawned" and session_id:
-        try:
-            await orch.resolve_model_approval(session_id, "approve", identity=identity)
-            approval = "approved"
-        except ValueError:
-            approval = "not_needed"   # the gate allowed the tier; it is already running
-        except Exception:
-            log.warning("pm.approve_escalation.approval_failed item=%s session=%s model=%s",
-                        wi.id, session_id, model, exc_info=True)
-            approval = "pending"      # parked; the Sessions page can approve it by hand
-    return {**result, "approval": approval, "model": model, "item": item}
+        result = await approve_escalation(
+            db, request.app.state.sessions, wi, model=body.model,
+            actor=actor_for_request(request), identity=identity,
+            describe=_work_item_to_dict)
+    except EscalationApprovalError as e:
+        raise HTTPException(status_code=e.status, detail={
+            "error": e.code, "message": str(e)}) from e
+    return result
 
 
 # --------------------------------------------------------------------------- #

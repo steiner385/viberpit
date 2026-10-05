@@ -36,7 +36,11 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
 // (`surface: 'capacity'`) and appear here as one read-only line; a deprecated
 // field (D6) appears nowhere. A key this schema does not yet know about falls
 // into Dispatch rather than vanishing.
-const MODELS_FIELD_KEYS = new Set(['default_model', 'ladder_top', 'unattended_model_floor'])
+// The two auto-escalation dials (#2679) belong beside the ladder top they climb past.
+const MODELS_FIELD_KEYS = new Set([
+  'default_model', 'ladder_top', 'unattended_model_floor', 'auto_escalate_match',
+  'auto_escalate_budget',
+])
 const GATES_FIELD_KEYS = new Set([
   'risk_tolerance', 'triage_auto_accept', 'give_up_after_bounces', 'max_initiatives_in_flight',
 ])

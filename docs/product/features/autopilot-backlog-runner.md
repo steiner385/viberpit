@@ -60,8 +60,9 @@ verification. Both expose a manual "do this now" action surface for the operator
 **Success metrics** — (proposed, no baseline recorded)
 - Sessions advanced to a merged PR without human intervention vs. total spawned.
 - Nudge-loop / double-act incidents (target: caught by loop detection + single-lock, ~0).
-- Wrongful auto-closes (target 0 after the #784/#786 human-gate; action-required and
-  docs-only-satisfied issues escalate to needs-human instead).
+- Wrongful auto-closes (target 0 after the #784/#786 human-gate; action-required issues and
+  issues with unchecked acceptance items escalate to needs-human instead, and the hold names
+  what is left — #2681 dropped the docs-only gate, whose holds only ever waited on a close).
 - Per-repo fairness: no single repo's backlog monopolizes all slots under the balanced
   strategy.
 - Quota respected: actions charged against per-session hourly and global daily caps; no
@@ -575,8 +576,20 @@ PR linkage, never on labels alone.
   which requests a fresh claim after prior ownership is safely reconciled; moving the board card
   now DOES release the hold (#1540). Backoff + disk-exhaustion circuit breaker in #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
-  on PR↔issue linkage before closing (#643), and not to auto-close action-required /
-  docs-only issues (#784/#786).
+  on PR↔issue linkage before closing (#643), and not to auto-close action-required issues
+  (#784/#786) or ones with unchecked `- [ ]` acceptance items (#2681). The hold names what is
+  left; a close-out hold written before #2681 (generic "needs a human close-out") is re-judged
+  after each `auto` tick — closed if nothing is left, otherwise re-worded to say what is.
+- Hold hygiene after every `auto` tick (#2679/#2680): recurring alert issues an automation
+  files per occurrence (bot author + a title ending in an ISO date, e.g. "Weekly failed —
+  <date>") are closed as superseded by the newest of their type (`server/pm/alert_series.py`),
+  so at most one stays open per type per repo; and an approval-gated escalation ("bounced at
+  opus; fable needs approval") on an issue a product's `auto_escalate_match` covers (a label or
+  title substring such as `flaky`) is approved by the runner itself while
+  `auto_escalate_budget` (per rolling 7 days, default 0 = off) lasts — through the same
+  sequence as the roadmap's approve tap (`server/pm/escalation_approval.py`), audited as
+  `pm.hold.escalation_auto_approved` and shown as an `auto_escalated` event. Past the budget
+  the hold waits for a person as before.
 - Consolidation (`consolidation_engine.py`) clusters same-scope open PRs into low-risk merge
   candidates for a human-driven consolidation session; PRs already being consolidated are
   flagged and linked (#555). Manual actions for all automations are enumerated by

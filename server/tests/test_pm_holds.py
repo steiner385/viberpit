@@ -301,16 +301,48 @@ def test_release_by_signals_board_edit_and_body_edit():
     assert evidence.hold_kind == "evidence"
     # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
-    # not one of them.
+    # not one of them — except ``expired``, which ends only a migration hold (#2682).
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
                                     "implement", "dispatch", "investigation", "decision",
-                                    "escalation"}
+                                    "escalation", "expired"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
     assert all(r.detail["actorClass"] == "system" and r.detail["kind"] == "owner_action" for r in rows)
     # idempotent: a second pass releases nothing
     assert release_by_signals(db, human_edits=edits, now=NOW) == []
+
+
+def test_release_expired_migration_holds_returns_only_conversion_holds_past_the_ttl():
+    """#2682: the legacy conversion's "pre-ladder needs_human" holds are no decision,
+    so they expire; every other owner_action hold — the runner's, a person's, a
+    fresh conversion hold — is untouched, and a re-run releases nothing."""
+    from datetime import timedelta
+
+    from server.db.models import AuditEvent
+    from server.pm.holds import (MIGRATION_ACTOR, MIGRATION_HOLD_TTL,
+                                 release_expired_migration_holds)
+    db = _sync_db()
+    old = _held(db, 1)
+    undated = _held(db, 2)
+    fresh = _held(db, 3)
+    person = _held(db, 4)
+    for wi, age in ((old, MIGRATION_HOLD_TTL + timedelta(days=16)), (undated, None),
+                    (fresh, timedelta(days=1))):
+        wi.hold_by = MIGRATION_ACTOR
+        wi.hold_reason = "pre-ladder needs_human"
+        wi.hold_set_at = None if age is None else (NOW - age).replace(tzinfo=None)
+    person.hold_set_at = (NOW - timedelta(days=60)).replace(tzinfo=None)
+    db.commit()
+    released = release_expired_migration_holds(db, now=NOW)
+    db.commit()
+    assert sorted((w.number, s) for w, s in released) == [(1, "expired"), (2, "expired")]
+    assert old.hold_kind is None and undated.hold_kind is None
+    assert fresh.hold_kind == "owner_action" and person.hold_kind == "owner_action"
+    rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
+    assert [r.detail["signal"] for r in rows] == ["expired", "expired"]
+    assert all(r.identity == "reconciler" for r in rows)
+    assert release_expired_migration_holds(db, now=NOW) == []
 
 
 def test_release_on_dispatch_clears_stronger_model_holds_only():

@@ -68,7 +68,9 @@ writes an `owner_action` hold by the rejecting actor this way (spec §8 authoris
 reject flows" whoever drives them, through `holds.py:set_reject_hold`, no actor-class gate — it
 records `lan@local` or `assistant:<login>` truthfully rather than attributing the reject to a
 person); migration 0049 (`scripts/convert_legacy_needs_human.py`) converted the surviving pre-ladder
-rows on the live DB. Every overlay write still records its actor in `classified_by`.
+rows on the live DB. Those conversion holds (`hold_by = migration`) record no decision, so the
+reconcile pass releases each once it is older than `MIGRATION_HOLD_TTL` (7 days), audited with
+signal `expired` (#2682) — the one hold time ends. Every overlay write still records its actor in `classified_by`.
 
 Only `owner_action` and a pending `decision` derive the board's "Held" status and the roadmap's
 needs-you tier; `evidence` and `stronger_model` are agent-settable AND queue-eligible, so an item

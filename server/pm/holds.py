@@ -6,7 +6,7 @@ the set/clear operations every route and tool must go through.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 from server.db.models import HOLD_KINDS, WorkItem
@@ -217,11 +217,17 @@ def set_reject_decision_hold(wi: WorkItem, *, actor: str, now: datetime) -> None
 
 RUNNER_ACTOR = "runner"
 RECONCILER_ACTOR = "reconciler"
-SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
+#: The actor ``LEGACY_CONVERSION_SQL`` stamps on the holds it converted from
+#: pre-ladder ``needs_human`` rows — an artifact of the migration, not a decision.
+MIGRATION_ACTOR = "migration"
+SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, MIGRATION_ACTOR})
 
 #: Every way a hold ends (spec §7), as ONE tuple so the two API paths, the reconcile
 #: pass and the runner cannot audit a release in different shapes. Time is not one
-#: of them. ``board_edit`` / ``body_edit`` are detected by ``release_by_signals``;
+#: of them — with ONE exception, ``expired``: a hold the legacy conversion wrote
+#: (``hold_by == MIGRATION_ACTOR``) records no decision anyone made, so the reconcile
+#: pass returns it to the queue after ``MIGRATION_HOLD_TTL`` (#2682,
+#: ``release_expired_migration_holds``). ``board_edit`` / ``body_edit`` are detected by ``release_by_signals``;
 #: ``retry`` is the Retry endpoint; ``overlay`` is an explicit clear through the
 #: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
 #: hold), which is an overlay EDIT as well as a release and so also stamps
@@ -244,7 +250,9 @@ RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay
                                     "implement", "dispatch", "investigation", "decision",
                                     # A person approved the climb the runner's hand-off
                                     # asked for; the item is dispatched at that tier now.
-                                    "escalation")
+                                    "escalation",
+                                    # A conversion-era hold outlived MIGRATION_HOLD_TTL.
+                                    "expired")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -350,6 +358,41 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
     return released
 
 
+#: How long a hold the legacy conversion wrote may park its item (#2682). The
+#: conversion ran once, so every such hold is at least this old by the first
+#: reconcile after this shipped — the one-time release IS this rule's first pass.
+MIGRATION_HOLD_TTL = timedelta(days=7)
+
+
+def release_expired_migration_holds(db: "Session", *, now: datetime,
+                                    ttl: timedelta = MIGRATION_HOLD_TTL) -> list[Released]:
+    """Release every ``owner_action`` hold ``LEGACY_CONVERSION_SQL`` wrote
+    (``hold_by == MIGRATION_ACTOR``) once it is older than *ttl*, audited as
+    ``expired`` (#2682). Such a hold is "pre-ladder needs_human" carried across the
+    hold-ladder migration, not a person's or the runner's decision: back in the
+    queue, the runner makes a real one (dispatch, or a hold with a real reason).
+
+    A row with no ``hold_set_at`` (the conversion copies ``classified_at``, which
+    may be NULL) counts as expired — its age is unknowable and it is a conversion
+    artifact either way. Run once per reconcile pass next to
+    :func:`release_by_signals`; idempotent. *now* may be aware or naive — every
+    column is naive UTC (``server/db/clock.py``)."""
+    from sqlalchemy import select
+    cutoff = (now.replace(tzinfo=None) if now.tzinfo else now) - ttl
+    released: list[Released] = []
+    for wi in db.scalars(select(WorkItem).where(
+            WorkItem.kind == "issue", WorkItem.hold_kind == "owner_action",
+            WorkItem.hold_by == MIGRATION_ACTOR)).all():
+        set_at = wi.hold_set_at
+        if set_at is not None and set_at.replace(tzinfo=None) > cutoff:
+            continue
+        clear_hold(wi, actor=RECONCILER_ACTOR)
+        _audit_release(db, wi, kind="owner_action", signal="expired", actor=RECONCILER_ACTOR)
+        released.append((wi, "expired"))
+    db.flush()
+    return released
+
+
 def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) -> list[str]:
     """A dispatch CONSUMES the ``stronger_model`` hold it was climbing for (spec
     §4): clear it on every issue of the batch that carries one, audited as
@@ -434,7 +477,7 @@ def clear_hold(wi: WorkItem, *, actor: str) -> None:
 
 
 async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal: str,
-                          only_kind: str | None = None) -> str | None:
+                          only_kind: str | None = None, via: str = "api") -> str | None:
     """THE release-and-audit sequence behind every API tap that ends a hold (spec §7):
     the Retry endpoint (``signal="retry"``) and Implement now (``signal="implement"``).
 
@@ -445,8 +488,9 @@ async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal
     on its own — is left untouched and returns ``None`` instead of failing the request.
 
     Returns the kind that WAS released, or ``None`` when nothing was (unheld item, or a
-    kind ``only_kind`` skipped). Audits ``pm.hold.release`` with ``via="api"`` only when a
-    hold actually ended."""
+    kind ``only_kind`` skipped). Audits ``pm.hold.release`` with *via* (``"api"``; the
+    runner's automatic escalation approval passes ``"runner"``, #2679) only when a hold
+    actually ended."""
     from server.audit import record_audit
     refuse_decision_release(wi)
     if only_kind is not None and wi.hold_kind is not None and wi.hold_kind != only_kind:
@@ -459,7 +503,7 @@ async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal
     await record_audit(db=db, type="pm.hold.release", identity=identity,
                        detail={"workItemId": wi.id, "kind": released,
                                "actorClass": actor_class(actor), "signal": signal},
-                       via="api")
+                       via=via)
     return released
 
 
@@ -538,7 +582,7 @@ HOLD_INDEX_SQL = f"CREATE INDEX IF NOT EXISTS {HOLD_INDEX_NAME} ON work_items (h
 #: actually converts the live rows. Order matters: the hold is written from the row
 #: while ``triage_state`` still says needs_human, then the state is rewritten.
 LEGACY_CONVERSION_SQL: tuple[str, ...] = (
-    "UPDATE work_items SET hold_kind = 'owner_action', hold_by = 'migration', "
+    f"UPDATE work_items SET hold_kind = 'owner_action', hold_by = '{MIGRATION_ACTOR}', "
     "hold_reason = 'pre-ladder needs_human', hold_set_at = classified_at "
     "WHERE triage_state = 'needs_human' AND hold_kind IS NULL",
     "UPDATE work_items SET triage_state = 'classified' WHERE triage_state = 'needs_human' "

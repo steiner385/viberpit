@@ -16,6 +16,7 @@ from viberpit.worktrees import DISK_EXHAUSTION_MARKERS
 from server.db.models import DECISION_PROPOSED_CAUSE, NOT_NEEDED_CAUSE
 from server.github.pr_status import PullRequestInfo
 
+from .backlog_github import closeout_hold_reason, escalation_detail
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
@@ -584,8 +585,8 @@ HeldTargets = Callable[[], Awaitable["Mapping[str, str]"]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
 # forever. Returns the close-out outcome: "closed" (≥1 issue verifiably linked to
-# the PR and closed — proceed), "escalated" (the human gate fired and nothing was
-# closed: a human must finish it, #784), "unlinked" (the PR references NO batch
+# the PR and closed — proceed), "escalated[: <what is left>]" (the human gate
+# fired: a human must finish it, #784; the detail is the hold reason, #2681), "unlinked" (the PR references NO batch
 # issue: a shared-clone misattribution, #642 — ignore + denylist it), or "retry"
 # (linkage unverifiable — try again next sweep). ``None`` (legacy stubs) reads as
 # "closed".
@@ -2396,8 +2397,11 @@ class BacklogRunnerLoop:
                 await self._ctx.compare_target_state(target, st, {
                     **st, "ownership_wait_reason": "close-out incomplete; review required"})
                 return  # keep the operation; never replay an uncertain external effect
-            if outcome == "escalated":
-                reason = "human gate: merged PR needs a human close-out"
+            gate = escalation_detail(outcome)
+            if gate is not None:
+                # The hold names what is left (#2681): a close-out hold says
+                # which acceptance item or manual step still needs a person.
+                reason = closeout_hold_reason(gate)
                 await self._give_up(target, st, reason, action_completed=True, outcome={
                     "outcome": "needs_human", "cause": reason,
                     "pr_number": info.number, "pr_url": info.url, "fallback": fallback})
