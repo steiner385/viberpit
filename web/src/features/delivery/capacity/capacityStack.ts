@@ -65,6 +65,22 @@ export function capacityRowLink(row: CapacityStackRow): CapacityRowLink {
   return { kind: 'route', to: row.href }
 }
 
+/** The Accounts row's second line (#2684): which accounts were left out of the
+ *  count, and any model a model-scoped window has run out on. */
+function accountsSecondary(a: CapacityReadout['accounts']): string | undefined {
+  const excluded = a.excluded
+  const models = (a.exhaustedModels ?? []).map((m) => {
+    const reset = formatResetTime(m.resetsAt)
+    const head = m.accounts >= m.of ? `no ${m.model} quota` : `${m.model} out on ${m.accounts} of ${m.of}`
+    return reset ? `${head} until ${reset}` : head
+  })
+  return joinClauses(
+    excluded && excluded.disabled > 0 ? `${excluded.disabled} disabled` : null,
+    excluded && excluded.notMetered > 0 ? `${excluded.notMetered} unmetered` : null,
+    ...models,
+  )
+}
+
 /** A row's secondary line from optional clauses; undefined when none apply. */
 function joinClauses(...clauses: (string | null)[]): string | undefined {
   const present = clauses.filter((c): c is string => c !== null)
@@ -83,7 +99,11 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
   const hostsCap = hostsUnbounded ? null : countedHosts.reduce((s, h) => s + (h.max ?? 0), 0)
   const hostsFree = hostsUnbounded ? null : countedHosts.reduce((s, h) => s + (h.free ?? 0), 0)
   const hostsActive = countedHosts.reduce((s, h) => s + h.active, 0)
-  const accountsUsed = Math.max(0, r.accounts.total - r.accounts.available)
+  // Capacity-bearing accounts only (#2684): a disabled or unmetered account can
+  // never be free, so counting it as "used" read 6/6 with four usable accounts.
+  // `?? total` keeps a readout cached from an older server rendering as before.
+  const accountsCap = r.accounts.eligible ?? r.accounts.total
+  const accountsUsed = Math.max(0, accountsCap - r.accounts.available)
   // `effective`, not `ceiling`: what the runner is actually enforcing right
   // now (the live plan's overlay), not the operator's stored value alone —
   // fix round 2, N1.
@@ -105,24 +125,20 @@ export function buildCapacityStack(r: CapacityReadout): CapacityStackRow[] {
         : undefined,
     },
     {
-      key: 'accounts', label: 'Accounts', used: accountsUsed, cap: r.accounts.total, free: r.accounts.available,
+      key: 'accounts', label: 'Accounts', used: accountsUsed, cap: accountsCap, free: r.accounts.available,
       href: settingsSectionPath('accounts'), binding: isBindingLayer(r.binding, 'account'),
+      secondary: accountsSecondary(r.accounts),
     },
     {
       key: 'runner', label: 'Runner ceiling', used: r.runner.inFlight, cap: r.runner.effective, free: runnerFree,
       // The runner ceiling is edited on this page (spec 2026-09-20 D7): anchor to the form.
       href: '#runner', binding: isBindingLayer(r.binding, 'runner'),
-      secondary: joinClauses(
-        r.runner.effective !== r.runner.ceiling ? `stored ceiling ${r.runner.ceiling}` : null,
-        // Quota only "binds" when there IS a live plan and the plan's derived
-        // value is what the account leg actually produced — `derived` may
-        // instead reflect the host or global leg binding, and with no live
-        // plan at all (the default production posture) nothing caps the
-        // runner on accounts yet, however small `accountCap` looks.
-        r.runner.derived !== null && r.runner.derived === r.accounts.accountCap && r.accounts.accountCap < r.runner.ceiling
-          ? `quota binds: ${r.accounts.available} account${r.accounts.available === 1 ? '' : 's'} × ${r.accounts.sessionsPerAccount} = ${r.accounts.accountCap}`
-          : null,
-      ),
+      // "stored N → effective M" plus the server's own sentence of why (#2684)
+      // — the server names the binding layer from the plan it applied, so this
+      // row never re-derives which leg bound from its own numbers.
+      secondary: r.runner.effective !== r.runner.ceiling
+        ? joinClauses(`stored ${r.runner.ceiling} → effective ${r.runner.effective}`, r.runner.reason ?? null)
+        : undefined,
     },
     {
       key: 'products', label: 'Products', used: productsUsed, cap: productsCap,

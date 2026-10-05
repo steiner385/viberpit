@@ -32,8 +32,9 @@ from viberpit import account_registry, copilot, paths
 from viberpit.account_names import assert_valid_account_name, InvalidAccountName
 from viberpit.account_registry import UnknownAccountError
 from viberpit.config import load_config
-from viberpit.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
-from viberpit.selector import at_ceiling, rank_accounts, reserve_pct
+from viberpit.quota import (AVAILABLE, QUOTA_BLOB_VERSION, SCOPE_ACCOUNT, QuotaSnapshot,
+                            unknown_snapshot)
+from viberpit.selector import rank_accounts, reserve_pct
 from server.audit import record_audit
 from server.automations.capacity_governor import CapacityGovernor
 from server.automations.capacity_plan import RESERVE_PCT, normalise_push_level, push_level_of
@@ -294,9 +295,13 @@ async def account_headroom(orch, *, push_level: str,
     ``selector.rank_accounts``' two exclusion legs so the governor and the account
     selector agree on what "usable" means:
 
-    - HARD ceiling (``at_ceiling``, this module's ``load_config().hard_ceiling``):
-      ANY window at/over it means the account is truly out of quota — a session on
-      it 429s on its next turn — so every window counts, reserve or not.
+    - HARD ceiling (this module's ``load_config().hard_ceiling``): ANY
+      account-scoped window at/over it means the account is truly out of quota — a
+      session on it 429s on its next turn — so every such window counts, reserve or
+      not. A MODEL-scoped window (a Fable weekly) only rules the account out for
+      that model, so it lands in ``exhaustedModels`` instead (#2684): the governor
+      plans fleet capacity without knowing the model, and the selector applies the
+      model-scoped window at spawn.
     - RESERVE (``effective_reserve_pct``: the account's ``weeklyReservePct``
       override, else the push level's — spec 2026-09-20 D4): binds ONLY the
       reserve window (the longest one the provider reports — weekly for
@@ -320,13 +325,26 @@ async def account_headroom(orch, *, push_level: str,
         metered = usage is not None and usage.provider == "anthropic" and usage.availability == AVAILABLE
         reason = None
         next_reset = None
+        # Account-level headroom is judged on the windows that meter EVERY model
+        # (#2684). ``at_ceiling(usage, hard)`` with no model matches model-scoped
+        # windows too (an unknown model matches everything, on purpose, for a
+        # spawn), so a Fable-only weekly at 100% zeroed every Claude account and
+        # collapsed the runner's fleet. A model-scoped window that is out is
+        # reported on the row; the spawn-time selector, which knows the model,
+        # still skips the account for that model.
+        hard_hit = usage.windows_at_or_over(hard) if metered and usage is not None else ()
+        account_wide_at = [w for w in hard_hit if w.scope == SCOPE_ACCOUNT]
+        exhausted_models = sorted(
+            ({"model": m, "resetsAt": iso_utc(w.resets_at)}
+             for w in hard_hit if w.scope != SCOPE_ACCOUNT for m in w.applies_to_models),
+            key=lambda e: e["model"])
         if not metered:
             reason = "not_metered"
         elif not enabled:
             reason = "disabled"
-        elif at_ceiling(usage, hard):
+        elif account_wide_at:
             reason = "at_ceiling"
-            resets = [w.resets_at for w in usage.windows_at_or_over(hard) if w.resets_at]
+            resets = [w.resets_at for w in account_wide_at if w.resets_at]
             next_reset = iso_utc(min(resets)) if resets else None
         else:
             used = reserve_pct(usage)
@@ -339,7 +357,7 @@ async def account_headroom(orch, *, push_level: str,
             "name": name, "engine": _account_engine(name),
             "provider": acct.get("provider"), "enabled": enabled, "metered": metered,
             "available": reason is None, "reason": reason, "nextResetAt": next_reset,
-            "reservePct": reserve,
+            "reservePct": reserve, "exhaustedModels": exhausted_models,
             "windows": [{"key": w.key, "pct": w.used_pct, "resetsAt": iso_utc(w.resets_at)}
                         for w in (usage.windows if usage is not None else ())],
         })

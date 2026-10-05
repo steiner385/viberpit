@@ -249,3 +249,60 @@ def plan_capacity(inputs: CapacityInputs, *, push_level: str, sessions_per_accou
     return CapacityPlan(push_level=push_level, fleet_concurrency=fleet, per_product=per_product,
                         pending=pending, pending_streak=pending_streak, budget=budget,
                         reasons=reasons, limiting=limiting)
+
+
+#: The plan's `limiting` layer as a reader names it (#2684).
+_LIMITING_NAME = {"runner": "the runner ceiling", "account": "accounts", "host": "hosts",
+                  "global": "the global cap"}
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def fleet_reason(plan: dict | None) -> str | None:
+    """One sentence naming why a plan's ``fleetConcurrency`` is what it is — the
+    layer that bound it, that layer's own numbers, and the in-flight floor when
+    it lifted the number (#2684). Reads the plan's wire dict (``budget`` carries
+    ``limiting``, see ``plan_from_dict``), so the readout, admission's refusal
+    text and the panel all say the same thing. None for no/malformed plan."""
+    if not plan:
+        return None
+    try:
+        budget = plan.get("budget") or {}
+        fleet = int(plan["fleetConcurrency"])
+        limiting = str(budget.get("limiting") or "none")
+        if limiting == "account":
+            detail = (f"{budget['accountsAvailable']} of {budget['accountsTotal']} with headroom "
+                      f"× {budget['sessionsPerAccount']} = {budget['accountCap']}")
+        elif limiting == "host":
+            detail = f"{budget['hostFree']} free + {budget['runnerInFlight']} in flight"
+        elif limiting == "global":
+            detail = f"{budget['globalFree']} free + {budget['runnerInFlight']} in flight"
+        else:
+            detail = None
+        text = f"capacity plan: fleet {fleet}, limited by {_LIMITING_NAME.get(limiting, limiting)}"
+        if detail:
+            text += f" ({detail})"
+        if budget.get("floor") is not None:
+            text += (f"; floored at the runner's {_plural(int(budget['floor']), 'in-flight claim')} "
+                     f"(would have been {budget['rawFleet']})")
+        return text
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def product_cap_note(slug: str, policy: dict, plan: dict | None, *, overlaid: bool) -> str:
+    """Where a product's effective in-flight cap came from (#2684): the live
+    plan's split (``overlaid``), an operator pin, or the stored value of an
+    auto product no live plan is governing. ``policy`` is the EFFECTIVE policy."""
+    cap = policy["max_in_flight"]
+    if policy["dispatch"] == "off":
+        return "dispatch off"
+    if overlaid and plan:
+        limiting = str((plan.get("budget") or {}).get("limiting") or "none")
+        return (f"capacity plan gives {slug} {cap} of fleet {plan.get('fleetConcurrency')} "
+                f"(limited by {_LIMITING_NAME.get(limiting, limiting)})")
+    if policy["capacity_mode"] == "pinned":
+        return f"pinned at {cap}"
+    return f"stored {cap} (auto; no live capacity plan)"

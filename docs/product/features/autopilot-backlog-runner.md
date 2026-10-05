@@ -249,6 +249,17 @@ PR linkage, never on labels alone.
   itself lowered by the model-approval gate (see below), appends which tier needs approval, e.g.
   `"bounced at opus; fable needs approval"`.
 
+  **No quota for the gated tier (#2684).** Before that approval hand-off, the runner asks
+  `model_quota_out(tier)` (`SessionOrchestrator._backlog_model_quota_out`, which reads
+  `account_headroom` through `capacity_readout.model_quota_out`). If EVERY capacity-bearing account
+  (enabled, metered) is out on that tier's model-scoped window, an approval could not run anything.
+  So no owner hold is written. The row is parked like a give-up (no slot, not re-picked) with
+  `quota_wait: {model, until}` and the reason `"bounced at opus; no fable quota until <reset>"`, and
+  a `quota_wait` event is emitted. `_release_give_ups` re-asks at the reset. If the tier is still
+  out, it waits again (a reset that has already passed rechecks every 15 min). Once quota is back,
+  it hands off with the usual approval reason. A failed quota read falls back to the approval
+  hand-off.
+
   On the next spawn, `SessionOrchestrator._backlog_ladder_rung` reads whether the primary issue
   still carries a `stronger_model` hold and, if so, composes the SAME `next_rung` inputs the
   sweep used to write it, then raises that rung to the capability floor (D9) — but never past the

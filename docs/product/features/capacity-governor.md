@@ -65,7 +65,8 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   form as the product pins; the automations' Config tabs show them read-only (`ConfigField.surface =
   "capacity"`). A runner ceiling above the effective global cap is refused (422). The runner-layer
   admission code is `runner_ceiling_full` (was `global_capacity_full`); the readout's `accounts`
-  block carries `sessionsPerAccount` and `accountCap` so the Runner row can say when quota binds.
+  block carries `sessionsPerAccount` and `accountCap`; the Runner row's "why" comes from the
+  server (`runner.reason`, below).
   `PATCH /api/automations/{id}` merges a partial `config` over the stored row.
 - **One owner for product dials (PR 4)** — Since spec PR 4 (2026-09-20) a product's rank, cap mode
   (`capacity_mode`) and pin (`max_in_flight`) are edited on Delivery → Capacity only: both policy
@@ -127,6 +128,24 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   Capacity page) flips it to `act`. The Capacity page's runner row shows the enforced cap
   (`effective`) next to the stored ceiling, so a plan-derived cap is visibly distinct from what the
   operator set.
+- **The readout explains every reduction (#2684).** `runner.limiting` and `runner.reason`
+  (`capacity_plan.fleet_reason`) are set only when the live plan lowered the ceiling. The row reads
+  "stored 11 → effective 1 · capacity plan: fleet 1, limited by accounts (0 of 4 with headroom × 2 =
+  0); floored at the runner's 1 in-flight claim (would have been 0)". Each product row carries
+  `capSource` (`plan`/`pin`) and `capNote` (`capacity_plan.product_cap_note`). Admission appends the
+  same notes to `runner_ceiling_full`/`product_capacity_full`, so the runner status names its
+  binding constraint. The Accounts row counts only **capacity-bearing** accounts (enabled and
+  metered: `accounts.eligible`), lists what it left out (`accounts.excluded`), and lists
+  `accounts.exhaustedModels`.
+- **Model-scoped windows never zero an account (#2684).** `account_headroom` judges the hard
+  ceiling on account-scoped windows only. A Fable-only weekly at 100% lands in the row's
+  `exhaustedModels` instead of marking the account `at_ceiling`. The selector applies the
+  model-scoped window at spawn, where the model is known. Before this, one exhausted Fable window
+  zeroed `accountCap` across the fleet and collapsed the runner to its in-flight floor.
+- **An operator's 0 is a pause, a plan's 0 is load (#2684).** `ImplementationDecision.paused` is
+  set only when the operator's own cap is 0 (or the pipeline cap is 0). A manual dispatch refused
+  by a plan-derived 0 queues for a slot like any other full cap. A manual refusal that does not
+  queue returns `queued: false` and a `message` that says why.
 - **An occupied claim is never refused on capacity** (D8: "admission refuses new claims; it never
   kills a session"). `product_policy.decide_implementation`'s capacity check skips the ceiling
   entirely for a claim that already holds its slot (`existing_slot=True` with a matching ownership

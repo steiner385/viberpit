@@ -1238,6 +1238,7 @@ class SessionOrchestrator:
             session_resolution=self._backlog_session_resolution,
             release_investigation_hold=self._backlog_release_investigation_hold,
             held_targets=self._backlog_held_targets,
+            model_quota_out=self._backlog_model_quota_out,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
             session_terminal_attest=self._backlog_session_terminal_attest,
@@ -7804,6 +7805,17 @@ class SessionOrchestrator:
         from server.pm.holds import release_on_investigation
         async with db_session() as db:
             return await db.run_sync(lambda s: release_on_investigation(s, target))
+
+    async def _backlog_model_quota_out(self, tier: str) -> str | None:
+        """The runner's quota-wait seam (#2684): the earliest reset when no
+        capacity-bearing account has quota for *tier*, else None. The same
+        ``account_headroom`` read the capacity readout's Accounts row uses, judged
+        by the same ``model_quota_out`` rule, so the panel's "no fable quota" and
+        the runner's wait can never disagree. Asked only at an approval-gated
+        ladder top, so the per-account usage reads stay rare."""
+        from server.api.accounts import account_headroom
+        from server.automations.capacity_readout import model_quota_out
+        return model_quota_out(await account_headroom(self, push_level="steady"), tier)
 
     async def _backlog_held_targets(self) -> "dict[str, str]":
         from server.pm.holds import held_refs

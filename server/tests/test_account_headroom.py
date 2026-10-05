@@ -135,3 +135,46 @@ def test_headroom_engine_uses_canonical_registry_resolution(monkeypatch):
         assert by["codex-acct"]["engine"] == "codex"
         assert by["plain-acct"]["engine"] == "claude_code"
         assert by["unregistered"]["engine"] == "claude_code"
+
+
+def _fable_exhausted(weekly_pct: float = 70.0):
+    """An account mid-way through its account-wide weekly but OUT on the
+    Fable-only weekly window — the #2684 shape (four accounts at 63–76% weekly,
+    all at 100% Fable)."""
+    from dataclasses import replace
+    from viberpit.quota import SCOPE_MODEL
+    base = _snap(weekly_pct)
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                        resets_at=datetime(2026, 10, 8, 16, tzinfo=timezone.utc),
+                        duration_seconds=7 * 24 * 3600, scope=SCOPE_MODEL,
+                        applies_to_models=("fable",))
+    return replace(base, windows=(*base.windows, fable))
+
+
+def test_a_model_scoped_window_never_zeroes_the_account(monkeypatch):
+    """#2684: the governor read headroom with no model, and an unknown model
+    matches EVERY window — so a Fable-only window at 100% marked every Claude
+    account at_ceiling and the runner's fleet collapsed to its in-flight floor.
+    Account-level headroom is judged on account-scoped windows; the exhausted
+    model is reported on the row instead (the spawn-time selector is already
+    model-aware, so a Fable spawn still skips the account)."""
+    monkeypatch.setattr(accounts_api, "list_accounts",
+                        lambda: [{"name": "a", "enabled": True, "provider": "anthropic"}])
+
+    async def gather(orch, names, timeout):
+        return {"a": (_fable_exhausted(), None)}
+    monkeypatch.setattr(accounts_api, "_gather_usages", gather)
+    [row] = asyncio.run(accounts_api.account_headroom(object(), push_level="steady"))
+    assert row["available"] is True and row["reason"] is None
+    assert row["exhaustedModels"] == [{"model": "fable", "resetsAt": "2026-10-08T16:00:00+00:00"}]
+
+
+def test_an_account_wide_window_at_the_hard_ceiling_still_binds(monkeypatch):
+    monkeypatch.setattr(accounts_api, "list_accounts",
+                        lambda: [{"name": "a", "enabled": True, "provider": "anthropic"}])
+
+    async def gather(orch, names, timeout):
+        return {"a": (_fable_exhausted(weekly_pct=100.0), None)}
+    monkeypatch.setattr(accounts_api, "_gather_usages", gather)
+    [row] = asyncio.run(accounts_api.account_headroom(object(), push_level="steady"))
+    assert row["available"] is False and row["reason"] == "at_ceiling"

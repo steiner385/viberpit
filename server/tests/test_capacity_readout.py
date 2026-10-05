@@ -578,3 +578,80 @@ def test_readout_publishes_the_pipeline_count_cap_and_repo():
     assert row["primaryRepo"] == "o/r"
     inputs = readout_to_inputs(r)
     assert inputs.products[0].pipeline == 2 and inputs.products[0].pipeline_cap == 3
+
+
+# --- #2684: the readout explains every reduction it shows. ---
+
+def _row(name, *, enabled=True, metered=True, available=True, reason=None, exhausted=()):
+    return {"name": name, "engine": "claude_code" if metered else "codex",
+            "provider": "anthropic" if metered else "openai", "enabled": enabled,
+            "metered": metered, "available": available, "reason": reason, "nextResetAt": None,
+            "reservePct": 20, "windows": [],
+            "exhaustedModels": [{"model": m, "resetsAt": "2026-10-08T16:00:00+00:00"} for m in exhausted]}
+
+
+def test_accounts_block_counts_only_capacity_bearing_accounts():
+    """#2684: the Accounts row read 6/6 used because a disabled account and an
+    unmetered (Codex) one counted as 'used'. The block now names how many accounts
+    can carry runner capacity at all, and which were excluded and why."""
+    rows = [_row("a", exhausted=("fable",)), _row("b", exhausted=("fable",)),
+            _row("c", available=False, reason="over_reserve"),
+            _row("off", enabled=False, available=False, reason="disabled"),
+            _row("codex", metered=False, available=False, reason="not_metered")]
+
+    r = asyncio.run(build_readout(_make_sources(accounts=rows)))
+    acc = r["accounts"]
+    assert (acc["available"], acc["eligible"], acc["total"]) == (2, 3, 5)
+    assert acc["excluded"] == {"disabled": 1, "notMetered": 1}
+    # `of` is every capacity-bearing account: c is over its reserve but still has
+    # Fable quota, so Fable is out on 2 of 3, not everywhere.
+    assert acc["exhaustedModels"] == [{"model": "fable", "accounts": 2, "of": 3,
+                                       "resetsAt": "2026-10-08T16:00:00+00:00"}]
+
+
+def test_runner_row_names_why_the_plan_reduced_the_stored_ceiling():
+    """#2684: stored 11 → effective 1 with no explanation on the panel."""
+    now = datetime.now(timezone.utc)
+    plan = {"computedAt": now.isoformat(), "applied": True, "perProduct": {"viberpit": 0},
+            "fleetConcurrency": 1,
+            "budget": {"limiting": "account", "accountsAvailable": 0, "accountsTotal": 6,
+                       "sessionsPerAccount": 2, "accountCap": 0, "hostFree": 12,
+                       "globalFree": 11, "runnerCeiling": 11, "runnerInFlight": 1,
+                       "rawFleet": 0, "floor": 1}}
+
+    r = asyncio.run(build_readout(_make_sources(
+        runner_config=("on", {"max_concurrent": 11, "max_spawns_per_day": 500}), plan=plan,
+        products=_auto_product(), candidates=_VIBERPIT_CANDIDATES, decide=_decide_permitted)))
+    runner = r["runner"]
+    assert (runner["ceiling"], runner["effective"], runner["limiting"]) == (11, 1, "account")
+    assert runner["reason"] == (
+        "capacity plan: fleet 1, limited by accounts (0 of 6 with headroom × 2 = 0); "
+        "floored at the runner's 1 in-flight claim (would have been 0)")
+    row = r["products"][0]
+    assert row["effectiveCap"] == 0 and row["capSource"] == "plan"
+    assert row["capNote"] == "capacity plan gives viberpit 0 of fleet 1 (limited by accounts)"
+
+
+def test_runner_row_has_no_reason_when_nothing_reduced_it():
+    r = asyncio.run(build_readout(_make_sources()))
+    assert r["runner"]["reason"] is None and r["runner"]["limiting"] is None
+
+
+def test_product_cap_note_names_a_pin_when_no_plan_governs():
+    r = asyncio.run(build_readout(_make_sources(
+        products=_auto_product("pinned"), candidates=_VIBERPIT_CANDIDATES,
+        decide=_decide_permitted)))
+    row = r["products"][0]
+    assert row["capSource"] == "pin"
+    assert row["capNote"] == "pinned at 1"
+
+
+def test_model_quota_out_only_when_every_capacity_bearing_account_is_out():
+    from server.automations.capacity_readout import model_quota_out
+    rows = [_row("a", exhausted=("fable",)), _row("b", exhausted=("fable",)),
+            _row("off", enabled=False, available=False, reason="disabled"),
+            _row("codex", metered=False, available=False, reason="not_metered")]
+    assert model_quota_out(rows, "fable") == "2026-10-08T16:00:00+00:00"
+    assert model_quota_out(rows, "opus") is None
+    assert model_quota_out([*rows, _row("c")], "fable") is None   # c still has Fable
+    assert model_quota_out([], "fable") is None

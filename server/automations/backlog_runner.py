@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
@@ -542,6 +542,12 @@ NeedsHuman = Callable[[str, str], Awaitable[None]]
 # raising, so a raise here leaves the claim untouched for the next sweep to
 # retry the whole branch.
 Escalate = Callable[[str, str, str], Awaitable[None]]
+# QUOTA for a gated tier (#2684): ``model_quota_out(tier)`` -> the earliest reset
+# (ISO) when NO capacity-bearing account has quota left for *tier*, else None.
+# Asked only where the ladder stops at an approval-gated top: an owner approving a
+# climb no account can run is a hold nobody can act on, so the item waits for the
+# reset instead. Unwired (stub) = None = today's approval hand-off.
+ModelQuotaOut = Callable[[str], Awaitable["str | None"]]
 # INVESTIGATION settle (spec 2026-09-18 §5): ``investigation_state(target, session_id)``
 # -> ``{"issue_state": "open"|"closed"|None, "mirrored": bool, "hold_kind",
 # "hold_by", "no_pr_note"}``. An investigation opens no PR, so its exit is legible
@@ -630,6 +636,17 @@ async def _stub_select_batch(_config: dict) -> Batch | None:
 async def _stub_needs_human(_target: str, _reason: str) -> None:
     # GIVE-UP fallback: announce nothing; the durable row still carries the handoff.
     return None
+
+
+async def _stub_model_quota_out(_tier: str) -> str | None:
+    return None
+
+
+#: How soon a quota wait whose reported reset has already passed re-asks — a
+#: provider's usage lags its own reset, and re-reading every tick buys nothing.
+QUOTA_WAIT_RECHECK = timedelta(minutes=15)
+#: The keys a quota-waiting parked row carries on top of a give-up row's.
+_QUOTA_WAIT_KEYS = ("quota_wait", "hand_off_reason")
 
 
 async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
@@ -767,6 +784,7 @@ class BacklogRunnerLoop:
         session_terminal_attest: SessionEnded | None = None,
         session_absent: SessionEnded | None = None,
         held_targets: HeldTargets | None = None,
+        model_quota_out: ModelQuotaOut | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -791,6 +809,7 @@ class BacklogRunnerLoop:
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._escalate = escalate or _stub_escalate  # the model-ladder path
+        self._model_quota_out = model_quota_out or _stub_model_quota_out  # #2684
         # The investigation settle (spec §5): one read seam for the exit, one write
         # seam for the single exit that releases a hold.
         self._investigation_state = investigation_state or _stub_investigation_state
@@ -1040,7 +1059,9 @@ class BacklogRunnerLoop:
             # The RUNNER'S OWN give-ups, not every hold on the board: an item a
             # person or a session parked has no row here. (What the card calls this
             # count is items 3b/6's concern.)
-            counts["needs_human"] = sum(bool(s.get("gave_up")) for s in states.values())
+            # A quota wait (#2684) is the runner's own, waiting on a reset, not a person.
+            counts["needs_human"] = sum(bool(s.get("gave_up")) and not s.get("quota_wait")
+                                        for s in states.values())
         except Exception:
             errors.append("workload counts unavailable (the claim read failed)")
         per_product: dict | None = None
@@ -1462,13 +1483,14 @@ class BacklogRunnerLoop:
         # A person asked for THIS issue now: when the only refusals are "full right
         # now", the dispatch is claimed and its session queued behind the slot
         # (``runner_capacity``) rather than failed. The claim holds its place in
-        # line — it counts in-flight, so the automatic refill cannot jump it. A cap
-        # of 0 is a pause, not "full": that still refuses, or it would wait forever.
+        # line — it counts in-flight, so the automatic refill cannot jump it. An
+        # OPERATOR's cap of 0 is a pause, not "full": that still refuses, or it
+        # would wait forever. A 0 the capacity plan derived is load (#2684) — the
+        # next plan tick re-splits — so it queues like any other full cap.
         wait_for_slot = False
         if not decision.permitted and source == "manual":
             wait_codes = [item.code for item in decision.constraints if item.state != "permitted"]
-            paused = 0 in (policy.get("max_in_flight"), policy.get("max_pipeline_prs"))
-            wait_for_slot = (not paused and bool(wait_codes)
+            wait_for_slot = (not decision.paused and bool(wait_codes)
                              and set(wait_codes) <= CAPACITY_REFUSAL_CODES)
         if wait_for_slot:
             await self._ctx.emit(
@@ -1508,11 +1530,19 @@ class BacklogRunnerLoop:
                 # unrelated candidates too.
                 kind, status = "skipped_pr_doctor_priority", "capacity"
                 self._waiting_reason = "capacity"
+            refused_result = {**result(status), "reason_codes": codes}
+            if source == "manual":
+                # #2684: a person asked for this work. Say plainly that it was NOT
+                # queued and why, so a refusal never reads as "it will run later".
+                why = ("the product is paused (an operator cap of 0)" if decision.paused
+                       else "a refusal other than a full slot")
+                summary += f"; not queued: {why}"
+                refused_result.update(queued=False, message=summary)
             await self._ctx.emit(
                 "info", summary,
                 kind=kind, target=batch.primary,
                 detail={"reason_codes": codes, "product": decision.product_slug})
-            return {**result(status), "reason_codes": codes}
+            return refused_result
         batch = replace(batch, product=decision.product_slug)
         default_model = model or policy["default_model"]
         propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")
@@ -1781,6 +1811,10 @@ class BacklogRunnerLoop:
         for target, st in states.items():
             if not st.get("gave_up"):
                 continue
+            if st.get("quota_wait"):
+                # No hold backs a quota wait (#2684) — the reset does.
+                await self._settle_quota_wait(target, st)
+                continue
             refs = st.get("issues") or [target]
             backed = any(ref in held for ref in refs)
             if not st.get("held"):
@@ -2048,7 +2082,10 @@ class BacklogRunnerLoop:
         # a row that claimed a hold it does not have would be dropped by the next
         # sweep and the item re-dispatched with no handoff at all. ``held`` only ever
         # goes False → True, and ``_release_give_ups`` retries until it does.
-        parked = {**st, "claimed": False, "gave_up": True, "reason": reason, "held": False}
+        # A quota-waiting row (#2684) becomes an ordinary give-up here: its wait
+        # keys go, or `_release_give_ups` would keep treating it as a wait.
+        base = {k: v for k, v in st.items() if k not in _QUOTA_WAIT_KEYS}
+        parked = {**base, "claimed": False, "gave_up": True, "reason": reason, "held": False}
         if not await self._write_state(target, st, parked, outcome=outcome,
                                        action_completed=action_completed):
             return False
@@ -2064,6 +2101,67 @@ class BacklogRunnerLoop:
         # moved the row meanwhile) is left alone: the next tick's sweep retries.
         await self._write_state(target, parked, {**parked, "held": True})
         return True
+
+    async def _quota_out_until(self, tier: str) -> str | None:
+        """The seam, never raising: a failed quota read answers "has quota", so the
+        item falls back to the approval hand-off it always got."""
+        try:
+            return await self._model_quota_out(tier)
+        except Exception:
+            log.warning("backlog_runner.model_quota_read_failed tier=%s", tier, exc_info=True)
+            return None
+
+    def _quota_wait_until(self, reported: str) -> str:
+        """*reported* when it is still ahead, else a short recheck from now."""
+        now = self._wall_clock()
+        try:
+            at = datetime.fromisoformat(reported)
+            at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            at = now
+        return reported if at > now else (now + QUOTA_WAIT_RECHECK).isoformat()
+
+    async def _park_for_quota(self, target: str, st: dict, prefix: str, gated: str, *,
+                              outcome: dict | None) -> bool:
+        """Park a bounce at an approval-gated top WITHOUT an owner hold when no
+        account has quota for the gated tier (#2684). Returns False (the caller
+        hands off as before) when some account has quota or the read failed.
+
+        The row is a give-up row in every way the counters read one — no slot, no
+        pipeline, not re-picked — plus ``quota_wait``, which ``_release_give_ups``
+        re-asks at the reset instead of looking for a hold. ``hand_off_reason`` is
+        the approval reason it will hand off with once the quota is back."""
+        reported = await self._quota_out_until(gated)
+        if reported is None:
+            return False
+        until = self._quota_wait_until(reported)
+        reason = f"{prefix}; no {gated} quota until {until}"
+        parked = {**st, "claimed": False, "gave_up": True, "held": True, "reason": reason,
+                  "quota_wait": {"model": gated, "until": until},
+                  "hand_off_reason": prefix + needs_approval_suffix(gated)}
+        if await self._write_state(target, st, parked, outcome=outcome):
+            await self._ctx.emit("info", f"{target}: {reason} — the {gated} escalation is "
+                                 "asked again after the reset", kind="quota_wait", target=target,
+                                 detail={"model": gated, "until": until})
+        return True
+
+    async def _settle_quota_wait(self, target: str, st: dict) -> None:
+        """At (or past) a quota wait's reset: still out → wait again; quota back →
+        the approval hand-off the bounce would have made (#2684)."""
+        wait = st.get("quota_wait") or {}
+        model = str(wait.get("model") or "")
+        if self._quota_wait_until(str(wait.get("until") or "")) == wait.get("until"):
+            return  # the reset is still ahead
+        hand_off = str(st.get("hand_off_reason") or "")
+        reported = await self._quota_out_until(model) if model else None
+        if reported is None:
+            await self._give_up(target, st, hand_off or f"{model} needs approval")
+            return
+        until = self._quota_wait_until(reported)
+        prefix = hand_off.removesuffix(needs_approval_suffix(model)) if model else hand_off
+        await self._write_state(target, st, {
+            **st, "quota_wait": {"model": model, "until": until},
+            "reason": f"{prefix}; no {model} quota until {until}"})
 
     async def _release_legacy_claim(self, target: str, st: dict) -> None:
         """Discharge a pre-ownership claim (no ``ownership_token``, #1648) once its
@@ -2356,6 +2454,9 @@ class BacklogRunnerLoop:
                 # item 1) — owner_action hold + comment + the retried ``held``
                 # handoff, not the (now rung-only) escalate seam.
                 gated = gated_ladder_top(ladder_policy)
+                if gated and await self._park_for_quota(
+                        target, st, "PR Doctor gave up at the top", gated, outcome=pd_outcome):
+                    return
                 await self._give_up(target, st, "PR Doctor gave up at the top" + (
                     needs_approval_suffix(gated) if gated else ""), outcome=pd_outcome)
                 return
@@ -2449,6 +2550,9 @@ class BacklogRunnerLoop:
             # previous model can only reach this branch when the top IS the tier
             # ``next_rung`` would have climbed from, so the top names it.
             bounced_at = model_tier(previous) or top
+            if gated and await self._park_for_quota(
+                    target, st, f"bounced at {bounced_at}", gated, outcome=no_pr_outcome):
+                return
             reason = (f"bounced at {bounced_at}{needs_approval_suffix(gated)}" if gated else
                       f"bounced at {bounced_at}: "
                       f"no mergeable PR after {attempts} attempts")

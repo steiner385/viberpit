@@ -8,7 +8,8 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 
-from server.automations.capacity_apply import apply_product_plan
+from server.automations.capacity_apply import apply_product_plan, plan_overlays
+from server.automations.capacity_plan import fleet_reason, product_cap_note
 from server.automations.capacity_store import live_plan
 from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
@@ -213,6 +214,9 @@ class ImplementationSnapshot:
     #: the refs only name WHICH PRs reserve the product in the refusal text
     #: (#2202), so an entry mapped to () still gates.
     pr_doctor_pending: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The LIVE plan both overlays above were applied from (None = none governs),
+    #: kept so a capacity refusal can say the plan set the cap and why (#2684).
+    plan: dict | None = None
 
     def decide(
         self, repo: str, *, requested_product: str | None = None,
@@ -259,6 +263,15 @@ class ImplementationSnapshot:
         pr_doctor_slug = owner.owner.slug if owner and owner.owner else None
         pr_doctor_gated = bool(pr_doctor_slug and pr_doctor_slug in self.pr_doctor_pending)
         pr_doctor_refs = tuple(self.pr_doctor_pending.get(pr_doctor_slug) or ()) if pr_doctor_slug else ()
+        slug = owner.owner.slug if owner and owner.owner else None
+        runner_note = product_note = None
+        from_plan = bool(slug and plan_overlays(slug, raw, self.plan))
+        if self.plan:
+            limiting = (self.plan.get("budget") or {}).get("limiting")
+            if limiting not in (None, "none", "runner"):
+                runner_note = fleet_reason(self.plan)
+            if from_plan and slug:
+                product_note = product_cap_note(slug, policy, self.plan, overlaid=True)
         decision = decide_implementation(
             ownership=owner, requested_product_slug=requested_product, policy=raw,
             trigger=trigger, effect=resolved_effect, runner_mode=self.runner_mode,
@@ -271,6 +284,8 @@ class ImplementationSnapshot:
             pipeline_count=pipeline_count, pipeline_cap=policy["max_pipeline_prs"],
             pipeline_existing_slot=pipeline_occupied,
             pr_doctor_gated=pr_doctor_gated, pr_doctor_pending_refs=pr_doctor_refs,
+            runner_ceiling_note=runner_note, product_capacity_note=product_note,
+            capacity_from_plan=from_plan,
             remaining_checks=("target_readiness", "dependencies", "attempts", "human_holds",
                               "engine_policy", "security", "target_ownership"),
         )
@@ -310,7 +325,8 @@ async def gather_implementation_snapshot(
             pending = await pr_doctor_pending()
     except Exception:
         pending = {}
-    return ImplementationSnapshot(coverage, fold_global_mode(mode), config, states, accounting, pending)
+    return ImplementationSnapshot(coverage, fold_global_mode(mode), config, states, accounting, pending,
+                                  plan=plan)
 
 
 async def evaluate_implementation(
