@@ -106,26 +106,69 @@ def test_pool_cancelled_filter_passes_records_without_exc_info():
     assert f.filter(rec) is True
 
 
-def test_configure_logging_installs_pool_cancelled_filter(monkeypatch, tmp_path):
+def test_pool_cancelled_filter_ignores_other_loggers():
+    # It sits on root handlers, so it must not swallow app-level CancelledError.
+    f = _PoolCancelledFilter()
+    rec = _make_pool_record(asyncio.CancelledError)
+    rec.name = "server.sessions.orchestrator"
+    assert f.filter(rec) is True
+    rec.name = "sqlalchemy.poolside"
+    assert f.filter(rec) is True
+
+
+class _Capture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def test_configure_logging_suppresses_child_pool_cancelled_records(monkeypatch, tmp_path):
+    """#2678: SQLAlchemy logs from ``sqlalchemy.pool.impl.*``; a filter on the parent
+    ``sqlalchemy.pool`` logger never ran for those. Emit through the real child
+    logger and assert no root handler (incl. the error sink) receives it."""
     import server.obs.jsonlog as jl
+    from server.obs import errsink
     monkeypatch.setattr(jl, "_configured", False)
     monkeypatch.setenv("VIBERPIT_LOG_DIR", str(tmp_path))
     root = logging.getLogger()
-    pool_logger = logging.getLogger("sqlalchemy.pool")
     saved_handlers = root.handlers[:]
     saved_level = root.level
-    saved_pool_filters = pool_logger.filters[:]
+    saved_sink = errsink._sink
+    errsink._sink = None
+    capture = _Capture()
+    root.addHandler(capture)  # a pre-existing root handler gets the filter too
     try:
         jl.configure_logging()
-        assert any(isinstance(f, _PoolCancelledFilter) for f in pool_logger.filters)
+        sink = errsink.get_error_sink()
+        assert sink is not None
+        assert any(isinstance(f, _PoolCancelledFilter) for f in sink.filters)
+        seen: list[logging.LogRecord] = []
+        monkeypatch.setattr(sink, "emit", seen.append)
+
+        child = logging.getLogger("sqlalchemy.pool.impl.AsyncAdaptedQueuePool")
+        try:
+            raise asyncio.CancelledError()
+        except asyncio.CancelledError:
+            child.error("Exception closing connection", exc_info=True)
+        assert capture.records == [] and seen == []
+
+        try:
+            raise RuntimeError("real pool failure")
+        except RuntimeError:
+            child.error("Exception closing connection", exc_info=True)
+        assert len(capture.records) == 1 and len(seen) == 1
     finally:
         for h in root.handlers[:]:
             if h not in saved_handlers:
-                h.close()
+                if h is not capture:
+                    h.close()
                 root.removeHandler(h)
         root.handlers[:] = saved_handlers
         root.setLevel(saved_level)
-        pool_logger.filters[:] = saved_pool_filters
+        errsink._sink = saved_sink
 
 
 def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
