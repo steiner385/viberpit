@@ -39,3 +39,11 @@ in the backend CI job: the SPA fallback otherwise changes unmatched API requests
 from 404 to 405. Preserve the build for restoration instead of deleting it. In the
 automation oversight verification, all nine failures passed after these isolation
 corrections without product-code changes.
+
+A completion unit fixture can also reach the shared transcript tree through
+`_session_is_parked`, even when its question and repository-observation gates are
+mocked. Fixtures with no transcript or background work should make that absence
+explicit at the parked-session seam; parked-state cases can override it. In
+#2687, this preserved the existing two-second observation deadline and the
+new-turn concurrency assertion. The sibling audit found that the parked-session
+case already overrides that seam explicitly.

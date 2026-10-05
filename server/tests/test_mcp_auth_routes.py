@@ -34,6 +34,12 @@ class FakeMgr:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(library, "valid_mcp_name", lambda n: True)
+    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda: {"servers": [
+        {"name": "notion", "transport": "http"},
+        {"name": "events", "transport": "sse"},
+        {"name": "busy", "transport": "http"},
+        {"name": "local", "transport": "stdio"},
+    ]})
     app = FastAPI()
     app.include_router(library.router)
     app.state.mcp_auth = FakeMgr()
@@ -86,3 +92,32 @@ def test_redirect_submits(client: TestClient) -> None:
 
 def test_cancel(client: TestClient) -> None:
     assert client.post("/api/library/mcp/notion/auth/cancel").json()["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("name", ["notion", "events"])
+def test_remote_auth_supported(client: TestClient, name: str) -> None:
+    assert client.post(f"/api/library/mcp/{name}/auth").status_code == 202
+
+
+def test_stdio_auth_rejected_before_spawn(client: TestClient) -> None:
+    r = client.post("/api/library/mcp/local/auth")
+    assert r.status_code == 400
+    assert "HTTP or SSE" in r.json()["detail"]["message"]
+    assert isinstance(client.app, FastAPI)
+    assert client.app.state.mcp_auth.calls == []
+
+
+def test_unknown_auth_rejected_before_spawn(client: TestClient) -> None:
+    assert client.post("/api/library/mcp/missing/auth").status_code == 404
+    assert isinstance(client.app, FastAPI)
+    assert client.app.state.mcp_auth.calls == []
+
+
+def test_ambiguous_auth_rejected_before_spawn(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda: {"servers": [
+        {"name": "local", "transport": "http"},
+        {"name": "local", "transport": "stdio"},
+    ]})
+    assert client.post("/api/library/mcp/local/auth").status_code == 409
+    assert isinstance(client.app, FastAPI)
+    assert client.app.state.mcp_auth.calls == []
