@@ -20832,9 +20832,14 @@ class SessionOrchestrator:
         try:
             await driver.set_model(record.model)
         except Exception as exc:
-            log.warning("session id=%s set_model(%r) retry before the turn failed — the "
-                        "turn runs on the launch model", record.id, record.model,
-                        exc_info=True)
+            # A 429 is an out-of-quota account, not a defect (#2675): a rotation into a
+            # model-exhausted account fails this retry within ms of the re-apply, and a
+            # WARNING here files an issue per rotation. The error card still tells the user.
+            quota = "429" in str(exc) and "rate limit" in str(exc).lower()
+            (log.info if quota else log.warning)(
+                "session id=%s set_model(%r) retry before the turn failed — the "
+                "turn runs on the launch model", record.id, record.model,
+                exc_info=not quota)
             with contextlib.suppress(Exception):
                 await driver.emit_error(
                     "model_not_applied",
