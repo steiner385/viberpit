@@ -42,7 +42,8 @@ const MODELS_FIELD_KEYS = new Set([
   'auto_escalate_budget',
 ])
 const GATES_FIELD_KEYS = new Set([
-  'risk_tolerance', 'triage_auto_accept', 'give_up_after_bounces', 'max_initiatives_in_flight',
+  'risk_tolerance', 'triage_auto_accept', 'triage_auto_accept_dispatch_off',
+  'triage_dismiss_bot_artifacts', 'give_up_after_bounces', 'max_initiatives_in_flight',
 ])
 
 interface FieldGroups {

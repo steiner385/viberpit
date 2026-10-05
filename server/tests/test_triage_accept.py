@@ -150,3 +150,19 @@ def test_restore_overlay_converts_a_pre_ladder_needs_human_snapshot():
     assert wi.hold_by == "migration"
     assert wi.hold_reason == "restored pre-ladder needs_human"
     assert wi.hold_set_at is None and wi.hold_fingerprint is None
+
+
+def test_dispatch_off_accept_waives_only_the_confidence_bar():
+    assert _ok(tier="off", confidence_level="low", dispatch_off_accept=True)
+    assert not _ok(tier="off", confidence_level="low", dispatch_off_accept=True,
+                   proposed_feature_id=None)
+    assert not _ok(tier="off", dispatch_off_accept=True, feature_state="proposed")
+    assert not _ok(tier="off", dispatch_off_accept=True, auto_undone=True)
+
+
+def test_bot_artifact_titles():
+    from server.pm.triage_accept import is_bot_artifact
+    assert is_bot_artifact("UI Maintenance Cost & Architecture ROI Digest")
+    assert is_bot_artifact("docs(fix-patterns): regenerate index")
+    assert not is_bot_artifact("docs(fix-patterns): add a pattern")
+    assert not is_bot_artifact(None)

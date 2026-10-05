@@ -147,6 +147,17 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Accept this product's classification proposals at or above this "
                      "confidence without a human; medium includes high. Never a no-fit "
                      "proposal, never one whose capability doc is still proposed."),
+    # #2683: the two rules that keep the triage inbox for proposals that matter.
+    ConfigField(key="triage_auto_accept_dispatch_off", label="Auto-accept while Dispatch is off",
+                type="bool", default=False,
+                help="Accept this product's classification proposals whatever their confidence "
+                     "while Dispatch is off: nothing is dispatched, so a wrong accept costs "
+                     "nothing. Still never a no-fit or a proposed capability. Undoable."),
+    ConfigField(key="triage_dismiss_bot_artifacts", label="Dismiss bot artifacts", type="bool",
+                default=False,
+                help="Resolve proposals for recognised bot output (recurring digests, "
+                     "regenerated-index PRs) without parking the item under an owner hold. "
+                     "Undoable."),
     # Roadmap auto-execution (spec 2026-09-14 D2/D3): how bold the SDLC front chain
     # may be for this product. The gate registry (server/sdlc/gates.py) decides
     # which gates each level covers; `cautious` is today's behaviour.
