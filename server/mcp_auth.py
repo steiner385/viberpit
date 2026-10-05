@@ -22,7 +22,7 @@ from typing import Callable, Protocol
 
 from viberpit import accounts, configdir, paths
 from viberpit.config import load_config
-from viberpit.creds import write_json_secure
+from viberpit.creds import merge_shared_mcp, write_json_secure
 from server.aio import cancel_and_reap
 from server.library import scan
 from server.library.scan import read_json_safe
@@ -64,17 +64,18 @@ class McpAuthState:
         )
 
 
-def merge_mcp_oauth_from_cfg(cfg_dir: Path) -> int:
+def merge_mcp_oauth_from_cfg(cfg_dir: Path, *, server: str | None = None) -> int:
     """Merge <cfg_dir>/.credentials.json's mcpOAuth into the shared MCP store."""
     cred = read_json_safe(cfg_dir / ".credentials.json") or {}
     mcp = cred.get("mcpOAuth")
     if not isinstance(mcp, dict) or not mcp:
         return 0
-    shared_path = paths.shared_mcp_path()
-    existing = read_json_safe(shared_path) or {}
-    existing.update(mcp)
-    write_json_secure(shared_path, existing)
-    return len(existing)
+    authenticated_keys = {
+        key for key, value in mcp.items()
+        if isinstance(value, dict) and isinstance(value.get("serverName"), str)
+        and _bare(value["serverName"]) == server
+    } if server is not None else set()
+    return merge_shared_mcp(mcp, authenticated_keys=authenticated_keys)
 
 
 def _bare(key: str) -> str:
@@ -196,7 +197,7 @@ class McpAuthManager:
         assert session is not None
         try:
             await session.complete(redirect_url, self._complete_timeout)
-            n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir)
+            n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir, server=server)
             cleared = clear_needs_auth_cache(server)
             async with self._lock:
                 if self._state.server == server and self._state.state == "exchanging":

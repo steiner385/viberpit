@@ -22,7 +22,7 @@ class FakeSession:
 def make_manager(monkeypatch, tmp_path, *, fail=None, calls=None):
     cfg = tmp_path / "cfg-alice"; cfg.mkdir()
     sess = FakeSession("alice", cfg, fail=fail)
-    monkeypatch.setattr(mcp_auth, "merge_mcp_oauth_from_cfg", lambda d: (calls.append(("merge", d)) or 1) if calls is not None else 1)
+    monkeypatch.setattr(mcp_auth, "merge_mcp_oauth_from_cfg", lambda d, **kw: (calls.append(("merge", d)) or 1) if calls is not None else 1)
     monkeypatch.setattr(mcp_auth, "clear_needs_auth_cache", lambda s: (calls.append(("clear", s)) or ["alice"]) if calls is not None else ["alice"])
     mgr = McpAuthManager(
         session_factory=lambda server, acct, d: sess,

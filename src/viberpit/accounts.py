@@ -15,7 +15,7 @@ from typing import Callable
 from . import account_registry, brand, copilot, credential_envelope, fleet_role, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
-from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
+from .creds import merge_shared_mcp, merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .engines import AgentEngine
 from .quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
@@ -869,9 +869,9 @@ def sync_back(name: str) -> None:
     with _refresh_guard(name):
         existing = read_credentials(paths.slot_path(name)) if paths.slot_path(name).exists() else None
         write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
-    # MCP write is separate from the slot and uses its own atomic write primitive.
+    # Merge under the MCP store lock; this account may predate another server login.
     if mcp:
-        write_json_secure(paths.shared_mcp_path(), mcp)
+        merge_shared_mcp(mcp)
 
 
 def remove_account(name: str) -> None:
