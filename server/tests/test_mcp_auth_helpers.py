@@ -50,3 +50,20 @@ def test_clear_no_match_returns_empty(fake_root):
     a = cfg_root / "alice"; a.mkdir()
     (a / "mcp-needs-auth-cache.json").write_text(json.dumps({"linear": {"t": 2}}))
     assert mcp_auth.clear_needs_auth_cache("notion") == []
+
+
+@pytest.mark.parametrize("server_name", ["aws", "plugin:aws-core:aws"])
+def test_explicit_login_only_replaces_its_own_server(fake_root, server_name):
+    cfg_root, shared = fake_root
+    shared.parent.mkdir(parents=True)
+    fresh_other = {"serverName": "other", "accessToken": "fresh", "expiresAt": 500}
+    shared.write_text(json.dumps({"other": fresh_other, "aws": {"accessToken": "old", "expiresAt": 500}}))
+    acct = cfg_root / "alice"
+    acct.mkdir()
+    authorized = {"serverName": server_name, "accessToken": "authorized", "expiresAt": 100}
+    (acct / ".credentials.json").write_text(json.dumps({"mcpOAuth": {
+        "other": {"serverName": "other", "accessToken": "stale", "expiresAt": 100},
+        "aws": authorized,
+    }}))
+    mcp_auth.merge_mcp_oauth_from_cfg(acct, server="aws")
+    assert json.loads(shared.read_text()) == {"other": fresh_other, "aws": authorized}

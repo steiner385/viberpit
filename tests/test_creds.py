@@ -112,3 +112,98 @@ class TestCreds(unittest.TestCase):
             # No leftover temp files.
             leftover = [f.name for f in p.parent.iterdir() if f.name.endswith(".tmp")]
             self.assertEqual(leftover, [], f"leftover temp files: {leftover}")
+
+
+def test_shared_mcp_stale_account_cannot_erase_authenticated_server():
+    from viberpit import paths
+    from viberpit.creds import write_json_secure, read_json, merge_shared_mcp
+    with temp_env():
+        fresh = {"serverName": "aws", "accessToken": "fresh", "refreshToken": "refresh", "expiresAt": 200}
+        write_json_secure(paths.shared_mcp_path(), {"aws|url": fresh, "other": {"accessToken": "other"}})
+        merge_shared_mcp({"aws|url": {"serverName": "aws", "accessToken": "", "clientId": "stale"}})
+        assert read_json(paths.shared_mcp_path()) == {"aws|url": fresh, "other": {"accessToken": "other"}}
+        merge_shared_mcp({"aws|url": {"accessToken": "old", "expiresAt": 100}})
+        assert read_json(paths.shared_mcp_path())["aws|url"] == fresh
+
+
+def test_shared_mcp_refresh_and_explicit_login_replace_whole_blob():
+    from viberpit import paths
+    from viberpit.creds import write_json_secure, read_json, merge_shared_mcp
+    with temp_env():
+        write_json_secure(paths.shared_mcp_path(), {"aws": {"accessToken": "old", "expiresAt": 100, "clientId": "old-client"}})
+        fresh = {"serverName": "aws", "accessToken": "new", "expiresAt": 200}
+        merge_shared_mcp({"aws": fresh})
+        assert read_json(paths.shared_mcp_path())["aws"] == fresh
+        explicit = {"serverName": "aws", "accessToken": "reauthorized"}
+        merge_shared_mcp({"aws": explicit}, authenticated_keys={"aws"})
+        assert read_json(paths.shared_mcp_path())["aws"] == explicit
+        merge_shared_mcp({"aws": fresh}, authenticated_keys={"other"})
+        # A timed refresh can supersede a token without an expiry.
+        assert read_json(paths.shared_mcp_path())["aws"] == fresh
+
+
+def test_shared_mcp_concurrent_servers_are_not_lost():
+    from concurrent.futures import ThreadPoolExecutor
+    from viberpit import paths
+    from viberpit.creds import read_json, merge_shared_mcp
+    with temp_env():
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda i: merge_shared_mcp({str(i): {"accessToken": str(i)}}), range(30)))
+        assert len(read_json(paths.shared_mcp_path())) == 30
+
+
+def test_shared_mcp_ties_and_missing_expiry_preserve_existing_token():
+    from viberpit import paths
+    from viberpit.creds import read_json, merge_shared_mcp
+    with temp_env():
+        fresh = {"serverName": "aws", "accessToken": "fresh", "expiresAt": 200}
+        merge_shared_mcp({"aws": fresh})
+        for expiry in (200, None, "invalid"):
+            merge_shared_mcp({"aws": {"serverName": "aws", "accessToken": "old", "expiresAt": expiry}})
+            assert read_json(paths.shared_mcp_path())["aws"] == fresh
+        merge_shared_mcp({"aws": {"serverName": "aws", "accessToken": ""}}, authenticated_keys={"aws"})
+        assert read_json(paths.shared_mcp_path())["aws"] == fresh
+
+
+def test_shared_mcp_ignores_malformed_entries_and_keeps_store_private():
+    from viberpit import paths
+    from viberpit.creds import merge_shared_mcp, read_json
+    with temp_env():
+        assert merge_shared_mcp({"broken": None}) == 0
+        assert not paths.shared_mcp_path().exists()
+        assert merge_shared_mcp({"discovery": {"clientId": "client"}}) == 1
+        assert read_json(paths.shared_mcp_path()) == {"discovery": {"clientId": "client"}}
+        assert stat.S_IMODE(paths.shared_mcp_path().stat().st_mode) == 0o600
+        assert stat.S_IMODE(paths.shared_mcp_path().with_name("mcp.shared.json.lock").stat().st_mode) == 0o600
+
+
+def test_shared_mcp_corrupt_store_fails_without_overwriting():
+    import pytest
+    from viberpit import paths
+    from viberpit.creds import merge_shared_mcp
+    with temp_env():
+        p = paths.shared_mcp_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("not json")
+        with pytest.raises(ValueError):
+            merge_shared_mcp({"aws": {"accessToken": "token"}})
+        assert p.read_text() == "not json"
+
+
+def _merge_mcp_worker(index):
+    from viberpit.creds import merge_shared_mcp
+    for revision in range(10):
+        merge_shared_mcp({str(index): {"accessToken": str(index), "expiresAt": revision + 1}})
+
+
+def test_shared_mcp_concurrent_processes_preserve_each_server():
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+    from viberpit import paths
+    from viberpit.creds import read_json
+    with temp_env():
+        with ProcessPoolExecutor(max_workers=4, mp_context=get_context("fork")) as pool:
+            list(pool.map(_merge_mcp_worker, range(8)))
+        data = read_json(paths.shared_mcp_path())
+        assert len(data) == 8
+        assert all(value["expiresAt"] == 10 for value in data.values())

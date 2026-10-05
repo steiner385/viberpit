@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from . import configdir, paths
-from .creds import read_json, split_credentials, write_credentials, write_json_secure
+from .creds import merge_shared_mcp, read_json, split_credentials, write_credentials, write_json_secure
 
 log = logging.getLogger(__name__)
 
@@ -356,11 +356,7 @@ def capture_login(
             log.warning("account %s is not a Max subscription (got %r)", name, sub_type)
 
         if mcp:
-            existing = (
-                read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
-            )
-            existing.update(mcp)
-            write_json_secure(paths.shared_mcp_path(), existing)
+            merge_shared_mcp(mcp)
 
         # Capture per-account .claude.json (identity + caches)
         captured_claude_json = os.path.join(capture_dir, ".claude.json")

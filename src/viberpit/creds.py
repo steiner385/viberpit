@@ -1,11 +1,16 @@
 """Credential file I/O and the claudeAiOauth/mcpOAuth split."""
 import copy
+import fcntl
 import json
+import math
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 from . import paths
+
+_mcp_write_lock = threading.Lock()
 
 
 def read_json(path: Path) -> dict:
@@ -70,6 +75,50 @@ def merge_keep_later(existing: dict | None, incoming: dict) -> dict:
     if existing.get("expiresAt", 0) >= incoming.get("expiresAt", 0):
         return existing
     return incoming
+
+
+def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = None) -> int:
+    """Merge account MCP snapshots without rolling back another account's login.
+
+    Keep whole credential bundles together: token, issuer, client and refresh
+    metadata must come from the same observation. Empty/discovery-only snapshots
+    cannot revoke shared credentials. Explicit server login can replace a bundle
+    without a later expiry; background sync must prove its token is newer.
+
+    The lock serializes local threads/processes; flock is not a distributed lock
+    on SSHFS. Callers on separate hosts still rely on credential-authority policy.
+    """
+    def expiry(blob: dict) -> float:
+        value = blob.get("expiresAt")
+        return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else 0.0
+
+    with _mcp_write_lock:
+        path = paths.shared_mcp_path()
+        paths.ensure_root()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        fd = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            existing = read_json(path) if path.exists() else {}
+            merged = dict(existing)
+            for key, new in incoming.items():
+                if not isinstance(new, dict):
+                    continue
+                old = existing.get(key)
+                if isinstance(old, dict) and old.get("accessToken"):
+                    if not new.get("accessToken"):
+                        continue
+                    explicit = authenticated_keys is not None and key in authenticated_keys
+                    if not explicit and expiry(new) <= expiry(old):
+                        continue
+                merged[key] = new
+            if merged != existing:
+                write_json_secure(path, merged)
+            return len(merged)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 # ---------------------------------------------------------------------------

@@ -498,3 +498,18 @@ class TestRemoveAccount(unittest.TestCase):
             with ledger.locked_ledger() as led:
                 self.assertNotIn("doomed", led["accounts"])
                 self.assertEqual(led["accounts"]["kept"], {"status": "ok"})
+
+
+def test_sync_back_preserves_other_accounts_newer_mcp_login():
+    from viberpit import accounts, paths, configdir
+    from viberpit.creds import read_json, write_json_secure
+    with temp_env():
+        _seed_account("alpha")
+        cfg_dir = configdir.compose("alpha")
+        live = read_json(cfg_dir / ".credentials.json")
+        live["mcpOAuth"] = {"aws": {"accessToken": "", "clientId": "stale"}}
+        write_json_secure(cfg_dir / ".credentials.json", live)
+        fresh = {"accessToken": "fresh", "expiresAt": 200}
+        write_json_secure(paths.shared_mcp_path(), {"aws": fresh, "other": {"accessToken": "other"}})
+        accounts.sync_back("alpha")
+        assert read_json(paths.shared_mcp_path()) == {"aws": fresh, "other": {"accessToken": "other"}}
