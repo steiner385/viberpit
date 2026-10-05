@@ -88,10 +88,18 @@ KillMode=mixed
 # reaper is not firing, which is a bug to fix rather than headroom to buy.
 MemoryMax=12G
 # Soft limit below MemoryMax: at 10G the kernel applies reclaim pressure and throttles
-# the cgroup instead of hard-stopping it (OOMPolicy=stop) at 12G. Gives a restart-storm
-# of relaunched session+MCP fleets a chance to bleed off rather than killing the daemon
-# outright. The health watchdog (viberpit-health.timer) alerts before this is reached.
+# the cgroup instead of OOM-killing inside it at 12G. Gives a restart-storm of relaunched
+# session+MCP fleets a chance to bleed off. The health watchdog (viberpit-health.timer)
+# alerts before MemoryMax is reached. Hosts may raise both via a drop-in (dobby: 15G).
 MemoryHigh=10G
+# continue, NOT the default stop (#2673). With stop, systemd stops the WHOLE unit when the
+# kernel OOM-kills ANY process in its cgroup — at MemoryMax or on a host-wide OOM alike.
+# This daemon supervises every live session, so on 2026-10-04 one session's 5.9 GB `node`
+# build was killed in a global OOM and systemd then drained and SIGKILLed every other
+# session with it. By then the victim's memory is already freed, so stopping the siblings
+# recovers nothing. With continue only the victim dies (its session sees the tool fail);
+# if the victim is the daemon process itself it exits and Restart=always recovers it.
+OOMPolicy=continue
 # No pids ceiling: this daemon owns every live claude session, and each spawns a
 # Claude CLI + its MCP-server fleet + Xvfb + thread pools. TasksMax counts threads
 # too, so a low cap is hit fast (512 throttled ~900x in prod → fork/thread EAGAIN,
