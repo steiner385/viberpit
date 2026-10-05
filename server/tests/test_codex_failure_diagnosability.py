@@ -366,11 +366,11 @@ async def test_a_newly_seen_reason_reports_however_recent_the_last_one(
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
         await o._pause_session(rec, reason="crash_cap")
         await o._pause_session(rec, reason="crash_cap")
-        await o._pause_session(rec, reason="rotation_cap")
+        await o._pause_session(rec, reason="stall_cap")
 
     reasons = [r.fields["reason"] for r in caplog.records
                if r.levelno >= logging.WARNING]
-    assert reasons == ["crash_cap", "rotation_cap"], reasons
+    assert reasons == ["crash_cap", "stall_cap"], reasons
 
 
 # ---------------------------------------------------------------------------
