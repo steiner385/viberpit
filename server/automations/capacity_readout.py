@@ -11,9 +11,10 @@ from typing import Any, Awaitable, Callable
 from server.db.models import INACTIVE_SESSION_STATUSES
 
 from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
-from .capacity_apply import apply_product_plan, plan_is_live
+from .capacity_apply import apply_product_plan, plan_is_live, plan_overlays
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
-                            RESERVE_PCT, product_order, push_level_of)
+                            RESERVE_PCT, fleet_reason, product_cap_note, product_order,
+                            push_level_of)
 from .product_policy import effective_policy, is_on
 
 #: Session statuses under which a token-bearing claim can never be released by
@@ -173,7 +174,9 @@ async def build_readout(src: CapacitySources) -> dict:
         # second hand-rolled "auto + slug in perProduct" check that could
         # silently drift from the real one (e.g. the pinned-mode guard).
         overlaid_policy = apply_product_plan({slug: p.get("policy")}, plan if live else None)[slug]
-        effective_cap = effective_policy(overlaid_policy)["max_in_flight"]
+        effective = effective_policy(overlaid_policy)
+        effective_cap = effective["max_in_flight"]
+        overlaid = live and plan_overlays(slug, p.get("policy"), plan)
         products.append({
             "slug": slug, "name": p.get("name"), "rank": p.get("priorityRank"),
             "createdAt": p.get("createdAt"), "dispatch": policy["dispatch"],
@@ -183,6 +186,9 @@ async def build_readout(src: CapacitySources) -> dict:
             "waitingOn": waiting, "defect": slug in defect_products,
             "pipeline": pipeline_by.get(slug, 0), "pipelineCap": policy["max_pipeline_prs"],
             "primaryRepo": p.get("primaryRepo"),
+            # #2684: where effectiveCap came from, so a 0/0 row says why.
+            "capSource": "plan" if overlaid else "pin",
+            "capNote": product_cap_note(slug, effective, plan, overlaid=overlaid),
         })
     ordered = product_order([ProductCapacity(
         slug=r["slug"], rank=r["rank"], created_at=r["createdAt"] or "", dispatch=r["dispatch"],
@@ -240,6 +246,29 @@ async def build_readout(src: CapacitySources) -> dict:
         except (TypeError, ValueError):
             derived = None
     effective = ceiling if derived is None else min(ceiling, derived)
+    # #2684: the panel showed "stored ceiling 11" over an effective 1 with no
+    # why. `reason`/`limiting` are set only when the live plan is what lowered it.
+    reduced = derived is not None and derived < ceiling
+    runner_reason = fleet_reason(plan) if reduced else None
+    runner_limiting = (str((plan.get("budget") or {}).get("limiting") or "none")
+                       if reduced and plan else None)
+
+    # Capacity-bearing accounts (#2684): enabled AND metered. A disabled account
+    # or an unmetered engine (Codex/Copilot — governor spec D4) never carries
+    # runner capacity, so counting it as "used" made the row read 6/6 when only
+    # four accounts could ever have been free.
+    bearing = [r for r in account_rows if r.get("enabled", True) and r.get("metered")]
+    excluded = {"disabled": sum(1 for r in account_rows if not r.get("enabled", True)),
+                "notMetered": sum(1 for r in account_rows
+                                  if r.get("enabled", True) and not r.get("metered"))}
+    model_out: dict[str, list[str | None]] = {}
+    for r in bearing:
+        for e in r.get("exhaustedModels") or ():
+            model_out.setdefault(e["model"], []).append(e.get("resetsAt"))
+    exhausted_models = [
+        {"model": m, "accounts": len(at), "of": len(bearing),
+         "resetsAt": min((t for t in at if t), default=None)}
+        for m, at in sorted(model_out.items())]
 
     return {
         "computedAt": now.isoformat(), "pushLevel": push_level,
@@ -252,13 +281,14 @@ async def build_readout(src: CapacitySources) -> dict:
                    "attention": limits.get("attention") if limits else None,
                    "binding": limits.get("binding") if limits else None},
         "hosts": hosts,
-        "accounts": {"available": accounts_available,
+        "accounts": {"available": accounts_available, "eligible": len(bearing),
+                     "excluded": excluded, "exhaustedModels": exhausted_models,
                      "total": len(account_rows), "reservePct": reserve,
                      "sessionsPerAccount": sessions_per_account,
                      "accountCap": accounts_available * sessions_per_account,
                      "nextResetAt": resets[0] if resets else None, "rows": account_rows},
         "runner": {"ceiling": ceiling, "effective": effective, "inFlight": in_flight_total,
-                   "derived": derived},
+                   "derived": derived, "limiting": runner_limiting, "reason": runner_reason},
         "products": products, "binding": binding, "defects": defects, "plan": plan,
         "planLive": live,
     }

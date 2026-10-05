@@ -1462,13 +1462,14 @@ class BacklogRunnerLoop:
         # A person asked for THIS issue now: when the only refusals are "full right
         # now", the dispatch is claimed and its session queued behind the slot
         # (``runner_capacity``) rather than failed. The claim holds its place in
-        # line — it counts in-flight, so the automatic refill cannot jump it. A cap
-        # of 0 is a pause, not "full": that still refuses, or it would wait forever.
+        # line — it counts in-flight, so the automatic refill cannot jump it. An
+        # OPERATOR's cap of 0 is a pause, not "full": that still refuses, or it
+        # would wait forever. A 0 the capacity plan derived is load (#2684) — the
+        # next plan tick re-splits — so it queues like any other full cap.
         wait_for_slot = False
         if not decision.permitted and source == "manual":
             wait_codes = [item.code for item in decision.constraints if item.state != "permitted"]
-            paused = 0 in (policy.get("max_in_flight"), policy.get("max_pipeline_prs"))
-            wait_for_slot = (not paused and bool(wait_codes)
+            wait_for_slot = (not decision.paused and bool(wait_codes)
                              and set(wait_codes) <= CAPACITY_REFUSAL_CODES)
         if wait_for_slot:
             await self._ctx.emit(
@@ -1508,11 +1509,19 @@ class BacklogRunnerLoop:
                 # unrelated candidates too.
                 kind, status = "skipped_pr_doctor_priority", "capacity"
                 self._waiting_reason = "capacity"
+            refused_result = {**result(status), "reason_codes": codes}
+            if source == "manual":
+                # #2684: a person asked for this work. Say plainly that it was NOT
+                # queued and why, so a refusal never reads as "it will run later".
+                why = ("the product is paused (an operator cap of 0)" if decision.paused
+                       else "a refusal other than a full slot")
+                summary += f"; not queued: {why}"
+                refused_result.update(queued=False, message=summary)
             await self._ctx.emit(
                 "info", summary,
                 kind=kind, target=batch.primary,
                 detail={"reason_codes": codes, "product": decision.product_slug})
-            return {**result(status), "reason_codes": codes}
+            return refused_result
         batch = replace(batch, product=decision.product_slug)
         default_model = model or policy["default_model"]
         propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")

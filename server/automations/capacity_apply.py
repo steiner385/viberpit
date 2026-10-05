@@ -74,6 +74,20 @@ def plan_is_live(plan: dict | None, *, now: datetime, enabled: bool, max_age_s: 
     return age <= max_age_s
 
 
+def plan_overlays(slug: str, raw: Any, plan: Mapping | None) -> bool:
+    """Whether the governor's plan sets *slug*'s in-flight cap: an opted-in
+    (dict) policy in ``capacity_mode == "auto"`` with an entry in
+    ``plan["perProduct"]``. THE overlay rule — ``apply_product_plan`` applies it
+    and every reader that must say where a cap came from (#2684) asks it."""
+    if not plan or not isinstance(raw, dict):
+        return False
+    try:
+        per_product = plan.get("perProduct") or {}
+        return slug in per_product and effective_policy(raw).get("capacity_mode") == "auto"
+    except (AttributeError, TypeError):
+        return False
+
+
 def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -> dict[str, dict | None]:
     """Overlay the governor's per-product caps onto a slug -> policy mapping.
 
@@ -97,7 +111,7 @@ def apply_product_plan(policies: Mapping[str, dict | None], plan: dict | None) -
         return dict(policies)
     out: dict[str, dict | None] = {}
     for slug, raw in policies.items():
-        if isinstance(raw, dict) and slug in per_product and effective_policy(raw).get("capacity_mode") == "auto":
+        if plan_overlays(slug, raw, plan):
             try:
                 cap = int(per_product[slug])
             except (TypeError, ValueError):

@@ -33,10 +33,29 @@ export interface CapacityAccountRow {
   /** The effective reserve this row was judged by (override ?? push level). */
   reservePct: number
   windows: CapacityAccountWindow[]
+  /** Model-scoped windows at the hard ceiling (e.g. a Fable weekly). They rule the
+   *  account out for that model only, never account-wide (#2684). */
+  exhaustedModels?: { model: string; resetsAt: string | null }[]
+}
+
+/** One model whose model-scoped window is out on some capacity-bearing accounts. */
+export interface CapacityExhaustedModel {
+  model: string
+  /** How many capacity-bearing accounts are out on it … */
+  accounts: number
+  /** … of this many. `accounts === of` means no account can run that model. */
+  of: number
+  resetsAt: string | null
 }
 
 export interface CapacityAccounts {
   available: number
+  /** Accounts that can carry runner capacity at all: enabled AND metered (#2684).
+   *  Optional: absent on a readout from an older server. */
+  eligible?: number
+  /** Accounts left out of `eligible`, by why. */
+  excluded?: { disabled: number; notMetered: number }
+  exhaustedModels?: CapacityExhaustedModel[]
   total: number
   reservePct: number
   nextResetAt: string | null
@@ -58,6 +77,10 @@ export interface CapacityRunner {
   /** The live plan's own `fleetConcurrency`, or `null` when no plan is governing
    *  this tick (not live) — never shown as if a stale/disabled plan still governs. */
   derived: number | null
+  /** The plan layer that lowered `effective` below `ceiling`, and the server's one
+   *  sentence of why (#2684); null when nothing lowered it. */
+  limiting?: string | null
+  reason?: string | null
 }
 
 /** One row of the products table — already rank-ordered by the server. */
@@ -82,6 +105,9 @@ export interface CapacityProduct {
   pipelineCap: number | null
   /** For the Waiting-on link to the Pipeline page; null when no primary repo is registered. */
   primaryRepo: string | null
+  /** Where `effectiveCap` came from (#2684): the live capacity plan or the stored pin. */
+  capSource?: 'plan' | 'pin'
+  capNote?: string
 }
 
 export type CapacityBindingLayer =

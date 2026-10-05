@@ -96,7 +96,7 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
     const runner = buildCapacityStack(r).find((row) => row.key === 'runner')!
     expect(runner.cap).toBe(3)
     expect(runner.free).toBe(1)
-    expect(runner.secondary).toBe('stored ceiling 6')
+    expect(runner.secondary).toBe('stored 6 → effective 3')
   })
 
   it('falls back to the stored ceiling with no secondary note when not live', () => {
@@ -112,27 +112,50 @@ describe('buildCapacityStack — Runner row (fix round 2 / N1)', () => {
   it('links to the runner form on the same page', () => {
     expect(buildCapacityStack(readout()).find((row) => row.key === 'runner')!.href).toBe('#runner')
   })
-  it('says when account quota binds below the stored ceiling, alongside the stored-ceiling note', () => {
+  it('names the server\'s reason for the reduction after stored → effective (#2684)', () => {
     const r = readout({
-      runner: { ceiling: 6, effective: 3, inFlight: 2, derived: 4 },
-      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
+      runner: {
+        ceiling: 11, effective: 1, inFlight: 1, derived: 1, limiting: 'account',
+        reason: 'capacity plan: fleet 1, limited by accounts (0 of 4 with headroom × 2 = 0)',
+      },
     })
     expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary)
-      .toBe('stored ceiling 6 · quota binds: 2 accounts × 2 = 4')
+      .toBe('stored 11 → effective 1 · capacity plan: fleet 1, limited by accounts (0 of 4 with headroom × 2 = 0)')
   })
-  it('omits the quota clause when accounts can carry the ceiling', () => {
-    const r = readout({
-      runner: { ceiling: 4, effective: 4, inFlight: 2, derived: null },
-      accounts: { available: 3, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 6 },
-    })
+  it('has no secondary line when nothing lowered the ceiling', () => {
+    const r = readout({ runner: { ceiling: 4, effective: 4, inFlight: 2, derived: null, limiting: null, reason: null } })
     expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary).toBeUndefined()
   })
-  it('does not claim quota binds without a live plan, even when accounts could not carry the ceiling', () => {
+})
+
+describe('buildCapacityStack — Accounts row (#2684)', () => {
+  it('counts only capacity-bearing accounts and names the excluded ones', () => {
     const r = readout({
-      runner: { ceiling: 6, effective: 6, inFlight: 2, derived: null },
-      accounts: { available: 2, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 4 },
+      accounts: {
+        available: 4, eligible: 4, total: 6, excluded: { disabled: 1, notMetered: 1 }, exhaustedModels: [],
+        reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 8,
+      },
     })
-    expect(buildCapacityStack(r).find((row) => row.key === 'runner')!.secondary).toBeUndefined()
+    const accounts = buildCapacityStack(r).find((row) => row.key === 'accounts')!
+    expect([accounts.used, accounts.cap, accounts.free]).toEqual([0, 4, 4])
+    expect(accounts.secondary).toBe('1 disabled · 1 unmetered')
+  })
+  it('says a model has no quota anywhere when every capacity-bearing account is out on it', () => {
+    const r = readout({
+      accounts: {
+        available: 4, eligible: 4, total: 4, excluded: { disabled: 0, notMetered: 0 },
+        exhaustedModels: [{ model: 'fable', accounts: 4, of: 4, resetsAt: null }],
+        reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 8,
+      },
+    })
+    expect(buildCapacityStack(r).find((row) => row.key === 'accounts')!.secondary).toBe('no fable quota')
+  })
+  it('falls back to the total when an older server sends no eligible count', () => {
+    const r = readout({
+      accounts: { available: 1, total: 3, reservePct: 20, nextResetAt: null, rows: [], sessionsPerAccount: 2, accountCap: 2 },
+    })
+    const accounts = buildCapacityStack(r).find((row) => row.key === 'accounts')!
+    expect([accounts.used, accounts.cap]).toEqual([2, 3])
   })
 })
 

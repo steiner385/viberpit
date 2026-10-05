@@ -188,13 +188,14 @@ function CapacityProductRow({
           />
         </div>
       </td>
-      <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.effectiveCap}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink" title={product.capNote}>{product.effectiveCap}</td>
       <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.inFlight}</td>
       <td className="px-2 py-1.5 text-right tabular-nums text-sm text-ink">{product.eligible}</td>
       <td className="px-2 py-1.5 text-xs text-ink-muted">
         {product.constraint === 'product_pipeline_full' && product.primaryRepo && product.waitingOn
           ? <Link to={`${NAV_BY_ID.pipeline.path}?pipeline=${encodeURIComponent(product.primaryRepo)}`} className="text-accent hover:underline">{product.waitingOn}</Link>
-          : (product.waitingOn ?? '—')}
+          // A 0 cap with nothing refusing yet (no eligible work) still says why (#2684).
+          : (product.waitingOn ?? (product.effectiveCap === 0 && product.capNote ? product.capNote : '—'))}
       </td>
     </tr>
   )

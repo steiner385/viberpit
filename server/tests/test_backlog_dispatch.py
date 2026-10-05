@@ -592,8 +592,35 @@ async def test_manual_dispatch_zero_owner_cap_takes_no_claim(dispatch_orch):
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "capacity"
     assert "product_capacity_full" in result["reason_codes"]
+    # #2684: the caller is told outright that nothing was queued, and why.
+    assert result["queued"] is False
+    assert result["message"].endswith("not queued: the product is paused (an operator cap of 0)")
     assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
     dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_behind_a_plan_derived_zero_cap_queues(dispatch_orch, monkeypatch):
+    """#2684: the capacity plan split its one fleet slot elsewhere and overlaid this
+    auto product to max_in_flight 0. That 0 is load, not an operator pause — the
+    next plan tick re-splits — so "dispatch #2679 now" must queue, not vanish."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+    from server.automations import product_admission
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(
+            automation_policy={"dispatch": "off", "capacity_mode": "auto", "max_in_flight": 3}))
+    plan = {"computedAt": datetime.now(timezone.utc).isoformat(), "applied": True,
+            "fleetConcurrency": 1, "perProduct": {"test-product": 0},
+            "budget": {"limiting": "account"}}
+    monkeypatch.setattr(product_admission, "live_plan", AsyncMock(return_value=plan))
+    dispatch_orch._backlog_spawn.return_value = SimpleNamespace(
+        id="sess-43", name="backlog o/r#7", branch=None, model=None, status="queued")
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "spawned" and result["queued"] is True
+    assert await _wait_for_slot_intent(dispatch_orch._backlog_ctx, "o/r#7") is True
 
 
 @pytest.mark.asyncio

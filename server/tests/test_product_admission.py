@@ -305,3 +305,27 @@ async def test_repo_capacity_status_states_failure_answers_unknown_count(isolate
     context.list_target_states.side_effect = RuntimeError("db unavailable")
     slug, count, cap = await admission.repo_capacity_status("acme/widgets", context=context)
     assert slug == "acme" and count is None and cap == 1
+
+
+def test_a_capacity_refusal_names_the_plan_that_set_the_cap():
+    """#2684: the runner status read "The runner ceiling limit is reached (1/1);
+    The product capacity limit is reached (0/0)" with no hint that both numbers
+    were the capacity plan's, nor why the plan chose them."""
+    evidence = coverage()
+    evidence.policies["product"] = {"dispatch": "auto", "max_in_flight": 0}
+    plan = {"fleetConcurrency": 1, "perProduct": {"product": 0},
+            "budget": {"limiting": "account", "accountsAvailable": 0, "accountsTotal": 6,
+                       "sessionsPerAccount": 2, "accountCap": 0, "runnerInFlight": 1,
+                       "rawFleet": 0, "floor": 1}}
+    snapshot = admission.ImplementationSnapshot(
+        evidence, "on", {"max_concurrent": 1, "max_spawns_per_day": 500},
+        {"other/repo#9": {"product": "other", "ownership_token": "t", "claimed": True}}, {},
+        plan=plan)
+    decision, _ = snapshot.decide("org/repo", trigger="manual")
+    text = {c.code: c.text for c in decision.constraints}
+    assert text["runner_ceiling_full"] == (
+        "The runner ceiling limit is reached (1/1): capacity plan: fleet 1, limited by accounts "
+        "(0 of 6 with headroom × 2 = 0); floored at the runner's 1 in-flight claim (would have been 0).")
+    assert text["product_capacity_full"] == (
+        "The product capacity limit is reached (0/0): capacity plan gives product 0 of fleet 1 "
+        "(limited by accounts).")

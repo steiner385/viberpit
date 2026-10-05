@@ -371,6 +371,10 @@ class ImplementationDecision:
         "pass before dispatch. This preview is not a future authorization token; "
         "ownership, policy and capacity must be rechecked at execution."
     )
+    #: The OPERATOR paused this product (#2684): its stored in-flight cap or its
+    #: pipeline cap is 0. A 0 the capacity plan derived is load, not a pause — a
+    #: manual dispatch may queue behind it, since the next plan tick re-splits.
+    paused: bool = False
 
     @property
     def permitted(self) -> bool:
@@ -421,6 +425,9 @@ def decide_implementation(
     pipeline_existing_slot: bool = False,
     pr_doctor_gated: bool = False,
     pr_doctor_pending_refs: tuple[str, ...] = (),
+    runner_ceiling_note: str | None = None,
+    product_capacity_note: str | None = None,
+    capacity_from_plan: bool = False,
 ) -> ImplementationDecision:
     """Compose current implementation admission policy without I/O or claims.
 
@@ -432,6 +439,11 @@ def decide_implementation(
     their authoritative reader's text and links, sorted by code for stable output.
     ``pipeline_cap`` None means no pipeline cap: no constraint is emitted at all
     (D13, blank = unlimited).
+    ``runner_ceiling_note`` / ``product_capacity_note`` say where a cap came from
+    (the capacity plan, a pin) and are appended to that ceiling's ``_full`` text
+    only, so a refusal names its binding constraint (#2684). ``capacity_from_plan``
+    says the policy's ``max_in_flight`` is the capacity plan's, not the operator's,
+    so a 0 there does not set ``paused``.
     """
     effective = effective_policy(policy)
     dispatch = str(effective["dispatch"])
@@ -479,7 +491,7 @@ def decide_implementation(
         add("dispatch_allowed", "permitted", "The configured product mode permits this dispatch effect.")
 
     def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False,
-                 full_text: str | None = None) -> None:
+                 full_text: str | None = None, note: str | None = None) -> None:
         if type(count) is not int or type(cap) is not int or count < 0 or cap < 0:
             add(f"{name}_unknown", "unknown", f"The {name.replace('_', ' ')} capacity is unavailable.")
             return
@@ -493,15 +505,17 @@ def decide_implementation(
             add(f"{name}_held", "permitted",
                 f"This claim already holds a {name.replace('_', ' ')} slot ({count}/{cap}).")
         elif cap == 0 or count >= cap:
-            add(f"{name}_full", "refused", full_text or f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
+            text = full_text or f"The {name.replace('_', ' ')} limit is reached ({count}/{cap})."
+            add(f"{name}_full", "refused", f"{text[:-1]}: {note}." if note and text.endswith(".") else text)
         else:
             add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")
 
     # "runner_ceiling": decide()'s global_cap is the Backlog Runner's max_concurrent
     # (spec 2026-09-20 D8/C16), not AppSettings' global cap — that one is
     # global_cap_full in the readout.
-    capacity("runner_ceiling", global_count, global_cap, occupied=existing_slot)
-    capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot)
+    capacity("runner_ceiling", global_count, global_cap, occupied=existing_slot, note=runner_ceiling_note)
+    capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot,
+             note=product_capacity_note)
     # `occupied=existing_slot` here too (deferred-now 2, #2040): the caller's own
     # `existing_token in accounting` decrement only exempts a claim still inside
     # the rolling 24h window it was counted in — a claim re-validated after that
@@ -537,4 +551,6 @@ def decide_implementation(
         canonical_repo=canonical, approval_required=approval_required, observed_at=observed_at,
         policy_revision=hashlib.sha256(json.dumps(effective, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         remaining_checks=remaining_checks,
+        paused=((effective["max_in_flight"] == 0 and not capacity_from_plan)
+                or effective["max_pipeline_prs"] == 0),
     )
