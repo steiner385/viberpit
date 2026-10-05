@@ -48,7 +48,7 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
     ``classify_spawns=False`` makes the classify seam answer falsy — the shape of
     a dedupe hit / refusal that spawned nothing (#2235)."""
     rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
-           "auto_accepted": []}
+           "auto_accepted": [], "auto_dismissed": []}
     cfg = dict(config or {"drift_threshold": 5, "batch_size": 50,
                           "max_spawns_per_day": 8, "stale_days": 14})
 
@@ -102,6 +102,10 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
         return {"workItemId": f"w-{proposal_id}", "featureId": "f1",
                 "confidence": "high"}
 
+    async def auto_dismiss(proposal_id):
+        rec["auto_dismissed"].append(proposal_id)
+        return True
+
     wired = candidates is not None
     loop = PmTriageLoop(
         ctx, read_config=read_config,
@@ -111,16 +115,17 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
         clock=clock or (lambda: 1000.0),
         read_policies=read_policies if wired else None,
         list_auto_accept_candidates=list_candidates if wired else None,
-        auto_accept=auto_accept if wired else None)
+        auto_accept=auto_accept if wired else None,
+        auto_dismiss=auto_dismiss if wired else None)
     return loop, rec
 
 
 def _cand(pid, *, product="viberpit", level="high", feature="f1", state="live",
-          undone=None, number=1):
+          undone=None, number=1, title=None):
     return AutoAcceptCandidateView(
         proposal_id=pid, work_item_id=f"w-{pid}", product_slug=product, repo="o/r",
         number=number, confidence_level=level, proposed_feature_id=feature,
-        feature_state=state, auto_undone=undone)
+        feature_state=state, auto_undone=undone, title=title)
 
 
 def _policy(tier):
@@ -207,7 +212,7 @@ async def test_idle_tick_records_no_work():
     loop, rec = _loop(ctx, pending=[], state=st)
     await loop.tick()
     assert rec == {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
-                   "auto_accepted": []}
+                   "auto_accepted": [], "auto_dismissed": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -703,3 +708,41 @@ async def test_a_proposal_a_human_resolved_first_is_not_reported_as_accepted():
     assert rec["auto_accepted"] == []
     kinds = [e[2].get("kind") for e in ctx.events]
     assert "auto_accepted" not in kinds and "auto_accept_failed" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_dispatch_off_flag_accepts_low_confidence_only_while_dispatch_is_off():
+    """#2683: the flag waives the confidence bar for a product whose Dispatch is off."""
+    from server.automations.product_policy import effective_policy
+    flagged = {**effective_policy(None), "triage_auto_accept_dispatch_off": True}
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": flagged},
+                      candidates=[_cand("p1", level="low"),
+                                  _cand("p2", level="low", feature=None, number=2)])
+    await loop.tick()
+    assert rec["auto_accepted"] == ["p1"]          # a no-fit still waits for a human
+
+    ctx = Ctx()
+    live = {**flagged, "dispatch": "auto"}
+    loop, rec = _loop(ctx, policies={"viberpit": live}, candidates=[_cand("p1", level="low")])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+
+
+@pytest.mark.asyncio
+async def test_bot_artifacts_are_dismissed_only_when_the_product_opts_in():
+    from server.automations.product_policy import effective_policy
+    cands = [_cand("d1", title="UI Maintenance Cost & Architecture ROI Digest", level="low"),
+             _cand("d2", title="docs(fix-patterns): regenerate index", number=2),
+             _cand("real", title="Fix the login bug", level="low", number=3)]
+    on = {**effective_policy(None), "triage_dismiss_bot_artifacts": True}
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": on}, candidates=cands)
+    await loop.tick()
+    assert rec["auto_dismissed"] == ["d1", "d2"]
+    assert rec["auto_accepted"] == []
+
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": effective_policy(None)}, candidates=cands)
+    await loop.tick()
+    assert rec["auto_dismissed"] == []

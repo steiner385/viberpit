@@ -12,7 +12,8 @@ def test_schema_keys_and_defaults():
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
                     "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "skip_labels", "auto_escalate_match",
-                    "auto_escalate_budget", "triage_auto_accept", "risk_tolerance",
+                    "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
+                    "triage_dismiss_bot_artifacts", "risk_tolerance",
                     "max_initiatives_in_flight", "unattended_model_floor", "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
@@ -20,7 +21,8 @@ def test_schema_keys_and_defaults():
         "capacity_mode": "auto",
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
         "respect_dependencies": True, "skip_labels": [], "auto_escalate_match": [],
-        "auto_escalate_budget": 0, "triage_auto_accept": "off", "risk_tolerance": "cautious",
+        "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
+        "triage_dismiss_bot_artifacts": False, "risk_tolerance": "cautious",
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "artifact_layout": "docs_sdlc"}
 
 

@@ -1398,6 +1398,7 @@ class SessionOrchestrator:
             read_policies=self._pm_triage_load_policies,
             list_auto_accept_candidates=self._pm_triage_list_auto_accept_candidates,
             auto_accept=self._pm_triage_auto_accept,
+            auto_dismiss=self._pm_triage_auto_dismiss,
         )
         self._pm_triage_task: asyncio.Task | None = None
         # Per-repo label→feature route map cache for `_pm_triage_route_by_label`
@@ -10486,8 +10487,19 @@ class SessionOrchestrator:
                     proposed_feature_id=prop.proposed_feature_id,
                     feature_state=(states.get(prop.proposed_feature_id)
                                    if prop.proposed_feature_id else None),
-                    auto_undone=prop.auto_undone))
+                    auto_undone=prop.auto_undone, title=wi.title))
             return out
+
+    async def _pm_triage_auto_dismiss(self, proposal_id: str) -> bool:
+        """The loop's ``auto_dismiss`` seam (#2683): re-read under the same row
+        lock as accept, then dismiss through ``apply_auto_dismiss``."""
+        from server.pm.triage_accept import apply_auto_dismiss, pending_proposal_stmt
+        async with db_session() as db:
+            prop = (await db.execute(
+                pending_proposal_stmt(proposal_id))).scalar_one_or_none()
+            if prop is None or prop.status != "pending":
+                return False
+            return await apply_auto_dismiss(db, prop, audit_identity="pm-triage")
 
     async def _pm_triage_auto_accept(self, proposal_id: str) -> "dict | None":
         """The loop's ``auto_accept`` seam: ONE transaction — re-read the

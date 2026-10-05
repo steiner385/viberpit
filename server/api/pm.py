@@ -1864,7 +1864,7 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
-    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status == "accepted":
+    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status in ("accepted", "rejected"):
         # The decision being undone was the machine's: never let it re-decide.
         #
         # Read from the SNAPSHOT (`apply_accept` stamps `decidedBy` there), not

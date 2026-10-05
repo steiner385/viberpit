@@ -13,6 +13,7 @@ cycle. ``server/api/pm.py`` imports them back from here.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import Select, select
@@ -64,9 +65,21 @@ def pending_proposal_stmt(proposal_id: str) -> Select[tuple[TriageProposal]]:
             .with_for_update())
 
 
+# Titles of bot output that is never a product decision (#2683): recurring
+# digests and generated-index PRs. The ONE list — the loop's dismiss pass reads it.
+BOT_ARTIFACT_TITLE_PATTERNS = (
+    re.compile(r"\bcost\s*&\s*architecture\s+roi\s+digest\b", re.IGNORECASE),
+    re.compile(r"^docs\(fix-patterns\):\s*regenerate\s+index\b", re.IGNORECASE),
+)
+
+
+def is_bot_artifact(title: str | None) -> bool:
+    return title is not None and any(p.search(title) for p in BOT_ARTIFACT_TITLE_PATTERNS)
+
+
 def auto_accept_eligible(*, tier: str, confidence_level: str | None,
                          proposed_feature_id: str | None, feature_state: str | None,
-                         auto_undone: bool | None) -> bool:
+                         auto_undone: bool | None, dispatch_off_accept: bool = False) -> bool:
     """Whether the loop may accept this proposal under a product's
     ``triage_auto_accept`` *tier* (spec §8, §13).
 
@@ -75,12 +88,18 @@ def auto_accept_eligible(*, tier: str, confidence_level: str | None,
     is never accepted. Never a no-fit (creating a capability is a human call),
     never a target capability still ``proposed`` (its doc is unmerged), never a
     proposal a human already undid once (``auto_undone``).
+
+    *dispatch_off_accept* (#2683) waives the confidence bar only: the caller sets
+    it when the product's Dispatch is off, so nothing the accept touches is ever
+    dispatched. Every structural guard above still applies.
     """
-    if tier not in CONFIDENCE_LEVELS:            # "off" or garbage
-        return False
     if proposed_feature_id is None or auto_undone:
         return False
     if feature_state is None or feature_state == "proposed":
+        return False
+    if dispatch_off_accept:
+        return True
+    if tier not in CONFIDENCE_LEVELS:            # "off" or garbage
         return False
     level = confidence_level if confidence_level in CONFIDENCE_LEVELS else "low"
     return CONFIDENCE_LEVELS.index(level) >= CONFIDENCE_LEVELS.index(tier)
@@ -251,6 +270,26 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
     proposal.status = "accepted"
     proposal.resolved_at = now
     await db.flush()
+
+
+async def apply_auto_dismiss(db, proposal: TriageProposal, *, audit_identity: str) -> bool:
+    """Resolve a bot-artifact proposal as ``rejected`` WITHOUT the owner hold a
+    human reject sets (#2683) — the item was never the owner's to decide. The
+    snapshot (stamped ``decidedBy: auto``) makes it undoable for the same window.
+    Returns False when the work item is gone."""
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
+    if wi is None:
+        return False
+    snapshot = _overlay_snapshot(wi)
+    snapshot["decidedBy"] = DECIDED_BY_AUTO
+    proposal.undo_snapshot = snapshot
+    proposal.status = "rejected"
+    proposal.resolved_at = datetime.now(timezone.utc)
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.auto_dismiss", identity=audit_identity,
+                       detail={"proposalId": proposal.id, "workItemId": wi.id})
+    return True
 
 
 async def gather_accept_ownership(proposal_ids: list[str]) -> RepoOwnershipSnapshot:

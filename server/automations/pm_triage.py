@@ -52,7 +52,8 @@ from server.pm.engine import (
     next_triage_action,
     qualifying_clusters,
 )
-from server.pm.triage_accept import auto_accept_eligible
+from server.automations.product_policy import is_on
+from server.pm.triage_accept import auto_accept_eligible, is_bot_artifact
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
@@ -98,6 +99,7 @@ class AutoAcceptCandidateView:
     proposed_feature_id: str | None
     feature_state: str | None      # the target capability's lifecycle state (None if no row)
     auto_undone: bool | None
+    title: str | None = None       # the work item's title (bot-artifact recognition)
 
 
 class PmTriage:
@@ -154,6 +156,8 @@ ListAutoAcceptCandidates = Callable[[], Awaitable[list[AutoAcceptCandidateView]]
 # proposal_id -> audit detail ({"workItemId", "featureId", "confidence"}) or None
 # when the proposal was no longer pending (a human got there first).
 AutoAccept = Callable[[str], Awaitable["dict | None"]]
+# proposal_id -> True when dismissed, False when no longer pending (#2683).
+AutoDismiss = Callable[[str], Awaitable[bool]]
 
 
 class PmTriageLoop:
@@ -175,6 +179,7 @@ class PmTriageLoop:
         read_policies: ReadPolicies | None = None,
         list_auto_accept_candidates: ListAutoAcceptCandidates | None = None,
         auto_accept: AutoAccept | None = None,
+        auto_dismiss: AutoDismiss | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -191,6 +196,7 @@ class PmTriageLoop:
         self._read_policies = read_policies
         self._list_candidates = list_auto_accept_candidates
         self._auto_accept = auto_accept
+        self._auto_dismiss = auto_dismiss
         self._spawns_today: list[float] = []
         self._was_capped = False
 
@@ -364,7 +370,13 @@ class PmTriageLoop:
                                  kind="auto_accept_skipped")
             return
         tiers = {slug: (p.get("triage_auto_accept") or "off") for slug, p in policies.items()}
-        if all(t == "off" for t in tiers.values()):
+        # #2683: both rules are per-product opt-ins, like the tier.
+        dispatch_off = {slug: bool(p.get("triage_auto_accept_dispatch_off")) and not is_on(p)
+                        for slug, p in policies.items()}
+        dismiss = {slug for slug, p in policies.items()
+                   if p.get("triage_dismiss_bot_artifacts") and self._auto_dismiss is not None}
+        if all(t == "off" for t in tiers.values()) and not any(dispatch_off.values()) \
+                and not dismiss:
             return
         accepted_by_product: dict[str, int] = {}
         capped: set[str] = set()
@@ -388,15 +400,31 @@ class PmTriageLoop:
             if not slug:
                 continue
             tier = tiers.get(slug, "off")
+            target = f"{cand.repo}#{cand.number}"
+            if (self._auto_dismiss is not None and slug in dismiss and not cand.auto_undone and is_bot_artifact(cand.title)):
+                try:
+                    dismissed = await self._auto_dismiss(cand.proposal_id)
+                except Exception as exc:
+                    self._observation_degraded = True
+                    log.warning("pm_triage.auto_dismiss_failed", exc_info=True)
+                    await self._ctx.emit("warn", f"auto-dismiss failed for {target}: {exc}",
+                                         kind="auto_dismiss_failed", target=target)
+                    continue
+                if dismissed:
+                    await self._ctx.emit(
+                        "info", f"auto-dismissed bot artifact {target}",
+                        kind="auto_dismissed", target=target,
+                        detail={"proposalId": cand.proposal_id, "product": slug})
+                continue
             if not auto_accept_eligible(
                     tier=tier, confidence_level=cand.confidence_level,
                     proposed_feature_id=cand.proposed_feature_id,
-                    feature_state=cand.feature_state, auto_undone=cand.auto_undone):
+                    feature_state=cand.feature_state, auto_undone=cand.auto_undone,
+                    dispatch_off_accept=dispatch_off.get(slug, False)):
                 continue
             if accepted_by_product.get(slug, 0) >= MAX_AUTO_ACCEPTS_PER_TICK:
                 capped.add(slug)
                 continue
-            target = f"{cand.repo}#{cand.number}"
             try:
                 detail = await self._auto_accept(cand.proposal_id)
             except Exception as exc:
