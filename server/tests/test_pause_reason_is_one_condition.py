@@ -106,13 +106,13 @@ async def test_the_reason_still_rides_the_record_the_sink_files(caplog, tmp_path
     o = _pause_orch()
 
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
-        await o._pause_session(_rec(tmp_path), reason="rotation_cap")
+        await o._pause_session(_rec(tmp_path), reason="crash_cap")
 
     record = _warnings(caplog)[0]
     sig = signature_of(record, source="daemon", host="dobby")
-    assert record.fields["reason"] == "rotation_cap"
+    assert record.fields["reason"] == "crash_cap"
     assert record.fields["session_id"] == "331f7d98"
-    assert "rotation_cap" in sig.title, sig.title
+    assert "crash_cap" in sig.title, sig.title
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +135,20 @@ async def test_all_accounts_busy_is_journaled_below_warning(caplog, tmp_path):
     assert len(info) == 1 and info[0].levelno == logging.INFO
     assert info[0].fields["reason"] == "all_accounts_busy"
     assert [e["reason"] for e in o.events if e["type"] == "paused"] == ["all_accounts_busy"]
+
+
+@pytest.mark.asyncio
+async def test_rotation_cap_is_journaled_below_warning(caplog, tmp_path):
+    """#2676: a session that already rotated `max_rotations` times waits for the window
+    to clear, like `all_accounts_busy`; `crash_cap` (the session misbehaving) still warns."""
+    o = _pause_orch()
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        await o._pause_session(_rec(tmp_path), reason="rotation_cap")
+        await o._pause_session(_rec(tmp_path, sid="aaaaaaa1"), reason="crash_cap")
+
+    assert [r.fields["reason"] for r in _warnings(caplog)] == ["crash_cap"]
+    assert "rotation_cap" in [e["reason"] for e in o.events if e["type"] == "paused"]
 
 
 @pytest.mark.asyncio
@@ -205,8 +219,8 @@ async def test_a_second_session_is_not_silenced_by_the_first(caplog, tmp_path):
     o = _pause_orch()
 
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
-        await o._pause_session(_rec(tmp_path, sid="aaaaaaa1"), reason="rotation_cap")
-        await o._pause_session(_rec(tmp_path, sid="aaaaaaa2"), reason="rotation_cap")
+        await o._pause_session(_rec(tmp_path, sid="aaaaaaa1"), reason="crash_cap")
+        await o._pause_session(_rec(tmp_path, sid="aaaaaaa2"), reason="crash_cap")
 
     assert len(_warnings(caplog)) == 2
 

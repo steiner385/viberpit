@@ -498,11 +498,12 @@ PAUSE_REASONS: frozenset[str] = frozenset({
 })
 
 # Pause reasons that are an expected, self-healing capacity wait rather than an anomaly:
-# every account is at its limit and time passing clears it (the stuck-session sweep
-# retries). `_pause_session` journals these at INFO — the error sink files every
+# every account is at its limit (`all_accounts_busy`) or the session already rotated
+# `max_rotations` times in the window (`rotation_cap`), and time passing clears it (the
+# stuck-session sweep retries). `_pause_session` journals these at INFO — the error sink files every
 # WARNING as an issue, and a human has nothing to investigate (#2330). The state write
-# and the `paused` event, which the dashboard reads, are unaffected.
-_EXPECTED_PAUSE_REASONS: frozenset[str] = frozenset({"all_accounts_busy"})
+# and the `paused` event, which the dashboard reads, are unaffected (#2330, #2676).
+_EXPECTED_PAUSE_REASONS: frozenset[str] = frozenset({"all_accounts_busy", "rotation_cap"})
 
 # Pause reasons whose cause is already journaled by a dedicated record at the park
 # site: `reassign_failed` follows `reassign.error` (ERROR, with the traceback) and
