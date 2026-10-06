@@ -1,3 +1,4 @@
+import { vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { configure } from '@testing-library/dom'
 
@@ -59,3 +60,9 @@ if (HAS_DOM) {
     })
   }
 }
+
+// Standalone session components do not mount the application QueryClient. Tests of
+// the actual personal-query boundary explicitly unmock this module.
+vi.mock('@/api/quickReplies', () => ({
+  useQuickReplies: () => ({ replies: [], statusText: 'Learning from your replies across sessions.' }),
+}))

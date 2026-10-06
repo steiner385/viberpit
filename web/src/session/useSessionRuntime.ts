@@ -81,13 +81,13 @@ export interface SessionRuntime {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
-  onPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => void
+  onPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested') => void
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
   /** Stop the live turn and run this prompt next ("interrupt and post"). Returns
    *  whether the frame was written — false means keep the draft (socket closed). */
-  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds) => boolean
+  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested') => boolean
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
   commands: Command[]
@@ -351,7 +351,7 @@ export function useSessionRuntime(
   // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
   // (Chat replies go through the answer channel, which carries no attachments.)
   const onPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => {
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested') => {
       if (armedQuestionId) {
         // A chat reply is delivered through the answer channel — route it through the
         // same gated path as onAnswer so a closed socket REJECTS (visible error, card
@@ -364,7 +364,9 @@ export function useSessionRuntime(
       // (Omit the trailing arg entirely when there's no context, rather than passing an
       // explicit `undefined` — callers, and their test mocks, that assert the prompt was
       // sent with exactly 3 args must keep seeing exactly 3.)
-      const result = context
+      const result = replySource
+        ? prompt(sessionId, text, attachmentIds, context, replySource)
+        : context
         ? prompt(sessionId, text, attachmentIds, context)
         : prompt(sessionId, text, attachmentIds)
       // Track the sent prompt so a reconnect whose replayReset outruns the
@@ -394,9 +396,9 @@ export function useSessionRuntime(
   // chat reply) — disarm locally to match. Returns whether the frame left the browser
   // so the composer can keep the draft on a closed socket (#505 rule for controls).
   const onInterruptAndPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds): boolean => {
+    (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested'): boolean => {
       setArmedQuestionId(null)
-      const sent = interruptAndPrompt(sessionId, text, attachmentIds)
+      const sent = replySource ? interruptAndPrompt(sessionId, text, attachmentIds, replySource) : interruptAndPrompt(sessionId, text, attachmentIds)
       if (sent) dispatch({ type: '_trackSentPrompt', text })
       return sent
     },

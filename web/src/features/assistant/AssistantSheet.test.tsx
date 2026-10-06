@@ -182,7 +182,7 @@ describe('AssistantSheet', () => {
     // Starters are gone once the thread has content; the follow-ups take their place.
     expect(within(dlg).queryByText('What needs my attention?')).toBeNull()
     fireEvent.click(within(dlg).getByRole('button', { name: 'Which one is oldest?' }))
-    expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [])
+    expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [], undefined, 'suggested')
   })
 
   it('shows no follow-up chips while a turn is running', () => {

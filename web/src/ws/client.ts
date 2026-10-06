@@ -31,7 +31,7 @@ export interface WsCommandsMsg      { type: 'commands';      sessionId: string; 
 export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
 export interface WsUpdatePendingMsg   { type: 'updatePending' }
 export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
-export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string }
+export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string; replySource?: 'suggested' }
 /** Positive receipt for a prompt frame — the counterpart to promptRejected. See
  *  server/bridge/ws.py; `stage` is the PromptStage vocabulary (session/promptStage.ts). */
 export interface WsPromptAckMsg { type: 'promptAck'; sessionId: string; stage: PromptStage }
@@ -106,7 +106,7 @@ export class SessionSocket {
   private _queryClient: QueryClient | null = null
   private readonly url: string
   private _updatePending = false
-  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }[] = []
+  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested' }[] = []
   private static readonly MAX_PENDING = 50
   private _gap: GapState = createGapState()
   // revAt the transcript stream was last demonstrably synced to: whenever session
@@ -311,7 +311,7 @@ export class SessionSocket {
    * different things to be waiting on, and rendering them identically is what left a
    * held prompt indistinguishable from a slow one.
    */
-  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext): PromptSendResult {
+  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext, replySource?: 'suggested'): PromptSendResult {
     // Never silently drop input. Buffer whenever it can't be trusted to land — the
     // server is draining (updatePending) OR the socket isn't open — and flush on the
     // next reconnect (after re-attach). Otherwise send straight through.
@@ -321,13 +321,13 @@ export class SessionSocket {
     const row = this._cachedRow(sessionId)
     const baseline = row ? (row.updatedAt ?? null) : undefined
     if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
-      this._enqueuePrompt({ sessionId, text, attachmentIds, context })
+      this._enqueuePrompt({ sessionId, text, attachmentIds, context, replySource })
       noteSent(sessionId, 'buffered', baseline)
       return 'buffered'
     }
     this._send({ type: 'prompt', sessionId, text,
       ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}),
-      ...(context ? { context } : {}) })
+      ...(context ? { context } : {}), ...(replySource ? { replySource } : {}) })
     noteSent(sessionId, 'sent', baseline)
     return 'sent'
   }
@@ -339,9 +339,9 @@ export class SessionSocket {
   /** "Interrupt and post": stop the in-flight turn and run this prompt next, instead
    *  of queueing it behind the turn. A CONTROL frame (not a buffered prompt): replayed
    *  late it would cut short whatever turn is running by then — the interrupt rule. */
-  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[]): boolean {
+  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested'): boolean {
     return this._sendControl({ type: 'prompt', sessionId, text,
-      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), interrupt: true })
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), ...(replySource ? { replySource } : {}), interrupt: true })
   }
 
   permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always'): boolean {
@@ -399,7 +399,7 @@ export class SessionSocket {
     this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
   }
 
-  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }) {
+  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested' }) {
     if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
       const dropped = this._pendingPrompts.shift()
       // No silent caps — tell the user a held message was lost rather than dropping it quietly.
@@ -421,7 +421,7 @@ export class SessionSocket {
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
         ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}),
-        ...(p.context ? { context: p.context } : {}) })
+        ...(p.context ? { context: p.context } : {}), ...(p.replySource ? { replySource: p.replySource } : {}) })
     }
     this._emitUpdatePending()
   }
@@ -815,7 +815,7 @@ export class SessionSocket {
         // Server refused this prompt (deploy drain). Re-queue it so it flushes on
         // the next reconnect/cancel instead of being lost, and enter holding.
         this._updatePending = true
-        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds })
+        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds, replySource: msg.replySource })
         // Tell the transcript too: its bubble has been showing "Sending…" for a frame
         // that came back. Without this the re-queue is correct but invisible.
         noteHeld(msg.sessionId)
@@ -970,9 +970,9 @@ export function useSessionSocket(channel: SocketChannel = 'route') {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) => socket.prompt(sessionId, text, attachmentIds, context), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext, replySource?: 'suggested') => socket.prompt(sessionId, text, attachmentIds, context, replySource), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
-  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.interruptAndPrompt(sessionId, text, attachmentIds), [socket])
+  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested') => socket.interruptAndPrompt(sessionId, text, attachmentIds, replySource), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])

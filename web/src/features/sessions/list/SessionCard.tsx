@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor } from 'lucide-react'
 import { toast } from 'sonner'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'
-import { QUICK_REPLIES } from '@/lib/quickReplies'
+import { useQuickReplies } from '@/api/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { bindingWindow } from '@/lib/usageWindows'
@@ -72,7 +72,7 @@ interface SessionCardProps {
   /** Permanently delete the session (irreversible; confirmed by the caller). */
   onDelete: (id: string) => void
   /** Quick-resume: text present → fire that suggestion in place; undefined → caller opens the session. */
-  onQuickResume: (id: string, text?: string) => void
+  onQuickResume: (id: string, text?: string, replySource?: 'suggested') => void
   /** Sparkle (✨): generate a fresh next-prompt via the LLM. Resolves to the suggestion
    *  strings; the card sends the top one. Hard-coded replies stay in the menu only. */
   onGenerateSuggestion?: (id: string) => Promise<string[]>
@@ -105,6 +105,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
+  const { replies, statusText: repliesStatus } = useQuickReplies()
   const [expanded, setExpanded] = useState(false)
   const [generating, setGenerating] = useState(false)
 
@@ -151,10 +152,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const autopilotLive = guidedByAutopilot && isBusy
 
   // Sparkle (✨) tap ALWAYS asks the LLM for a fresh next-prompt, then sends the
-  // top result — never a cached value or a hard-coded fallback (those live only in
-  // the menu). The backend lazily resumes a detached session before delivering.
+  // top result. Cached suggestions and learned replies live in the menu. The backend lazily resumes a detached session before delivering.
   // When the model returns nothing we surface a hint instead of silently sending
-  // "continue"; the menu's canned replies are the manual escape hatch.
+  // "continue"; the menu's learned replies are the manual escape hatch.
   async function handleSparkle() {
     // `canResume` here too: the list-mode `c` shortcut reaches this directly.
     if (!onGenerateSuggestion || generating || !canResume) return
@@ -162,7 +162,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     try {
       const items = await onGenerateSuggestion(session.id)
       if (items.length > 0) {
-        onQuickResume(session.id, items[0])
+        onQuickResume(session.id, items[0], 'suggested')
       } else {
         toast.info('No suggestion right now — pick a quick reply from the menu.')
       }
@@ -209,7 +209,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // swipe transition — one subscription in useViewport, two readers.)
   const { reducedMotion: reduceMotion, coarsePointer } = useViewport()
 
-  // The reply rows: cached suggestions first, canned replies below. One
+  // The reply rows: cached suggestions first, learned replies below. One
   // definition for both shapes of the reply menu (the desktop chevron, the
   // touch ✦), so the two can never offer different sets.
   const replyRows = (close: () => void) => (
@@ -219,7 +219,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           key={`suggestion-${i}`}
           type="button"
           role="menuitem"
-          onClick={() => { close(); onQuickResume(session.id, s) }}
+          onClick={() => { close(); onQuickResume(session.id, s, 'suggested') }}
           className={cn(menuItem, 'text-ink')}
         >
           <span className="truncate">{s}</span>
@@ -228,12 +228,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       {suggestions.length > 0 && (
         <div role="separator" className="my-1 border-t border-edge" />
       )}
-      {QUICK_REPLIES.map((reply) => (
+      {repliesStatus && <p role="status" className="px-3 py-2 text-sm text-ink-muted">{repliesStatus}</p>}
+      {replies.map((reply) => (
         <button
           key={reply}
           type="button"
           role="menuitem"
-          onClick={() => { close(); onQuickResume(session.id, reply) }}
+          onClick={() => { close(); onQuickResume(session.id, reply, 'suggested') }}
           className={cn(menuItem, 'text-ink')}
         >
           {reply}
@@ -445,7 +446,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               or disappears on hover, so the card's right edge is static.
 
               Two menus on purpose (2026-09-29 critique, P1): the unified ⋯ held
-              one-tap SENDS (four cached suggestions, four canned replies) in the
+              one-tap SENDS (four cached suggestions, four learned replies) in the
               same 13-row list as Rename, Archive and Delete, at 36px a row. A
               reply is a send — the composer already keeps those behind ✦'s own
               chevron, so the card does the same, and ⋯ is management only. */}

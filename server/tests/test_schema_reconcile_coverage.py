@@ -22,6 +22,8 @@ from server.db.models import Base
 # so they don't need a reconcile-compatible default. Adding any NEW column here requires
 # a real Alembic migration.
 RECONCILE_EXEMPT: set[str] = {
+    # quick_reply_profiles needs no exemptions: identity is the PK and every
+    # remaining column has a synthesizable Python default.
     # New tables in 0045_automation_ownership; required provenance at first INSERT.
     "automation_operations.owner",
     "automation_operations.source",

@@ -20,7 +20,7 @@ function PromptChips({ prompts }: { prompts: readonly string[] }) {
         <button
           key={text}
           type="button"
-          onClick={() => rt.onPrompt(text, [])}
+          onClick={() => rt.onPrompt(text, [], undefined, 'suggested')}
           className="rounded-full border border-edge px-3 py-1.5 text-left text-sm text-ink hover:bg-surface-raised"
         >
           {text}

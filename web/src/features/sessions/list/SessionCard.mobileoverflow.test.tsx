@@ -11,6 +11,8 @@ import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
+vi.mock('@/api/quickReplies', () => ({ useQuickReplies: () => ({ replies: ['continue'], statusText: null }) }))
+
 const noop = () => {}
 
 const mkSession = (overrides: Partial<Session> = {}): Session =>

@@ -139,3 +139,13 @@ describe('useSessionRuntime — pending prompt feedback', () => {
     expect(pendingTurns(r)[0].pending).toBe('buffered')
   })
 })
+
+it('forwards suggestion provenance to the websocket without changing typed prompts', () => {
+  mockPrompt.mockClear()
+  mockPrompt.mockReturnValue('sent')
+  const { result } = render()
+  act(() => { result.current.onPrompt('continue', [], undefined, 'suggested') })
+  expect(mockPrompt).toHaveBeenLastCalledWith('s1', 'continue', [], undefined, 'suggested')
+  act(() => { result.current.onPrompt('my own reply', []) })
+  expect(mockPrompt).toHaveBeenLastCalledWith('s1', 'my own reply', [])
+})

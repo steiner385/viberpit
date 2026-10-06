@@ -35,7 +35,7 @@ describe('SessionCard — list-mode keys', () => {
     // 'c' now triggers the sparkle: generate a fresh suggestion, then resume with it.
     const onGenerateSuggestion = vi.fn().mockResolvedValue(['Keep going'])
     render(<SessionCard {...props({ onQuickResume, onRename, onClose, onDelete, onGenerateSuggestion })} />)
-    await press('c'); await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Keep going'))
+    await press('c'); await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Keep going', 'suggested'))
     await press('r'); expect(onRename).toHaveBeenCalledWith('s1')
     await press('a'); expect(onClose).toHaveBeenCalledWith('s1')
     await press('{Backspace}'); expect(onClose).toHaveBeenCalledTimes(2)

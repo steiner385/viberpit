@@ -39,7 +39,8 @@ export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideMo
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   const genSuggestions = useGenerateSuggestions()
   const onPrompt = useCallback(
-    (text: string, attachmentIds: string[]) => {
+    (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => {
+      if (replySource) { rt.onPrompt(text, attachmentIds, contextProvider?.() ?? context, replySource); return }
       if (contextProvider) { rt.onPrompt(text, attachmentIds, contextProvider()); return }
       rt.onPrompt(text, attachmentIds)
     },

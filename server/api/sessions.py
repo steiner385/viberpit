@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.auth.middleware import current_client_node, current_identity
+from server.quick_replies import observe_reply
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
 from server.sessions.types import (
@@ -138,6 +139,7 @@ class AdoptRequest(BaseModel):
 
 class SendPromptRequest(BaseModel):
     text: str
+    replySource: Literal["typed", "suggested"] = "typed"
     # "Interrupt and post" (same contract as the WS `prompt` frame, ws.py ~1080):
     # stop the in-flight turn and run this prompt next instead of queueing it.
     interrupt: bool = False
@@ -1554,7 +1556,16 @@ async def send_session_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resume_failed_detail(record),
         )
-    await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
+    delivery = await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
+    if delivery == "sent":
+        try:
+            await observe_reply(
+                identity, body.text, source=body.replySource,
+                via=getattr(request.state, "via", None), has_attachments=False,
+            )
+        except Exception:
+            # Learning is optional; never turn an accepted prompt into a failed send.
+            log.info("quick_reply observation failed")
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))

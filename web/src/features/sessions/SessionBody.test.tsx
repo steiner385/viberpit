@@ -118,6 +118,16 @@ describe('SessionBody', () => {
     vi.mocked(hooks.useEngineOffers).mockReturnValue([])
   })
 
+  it('marks the recovery request as suggested rather than user-authored', () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([
+      makeSession({ id: 's1', interruptedFromStatus: 'waiting_input' }),
+    ]))
+    const rt = makeRuntime([])
+    renderBody(<SessionBody rt={rt} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }))
+    expect(rt.onPrompt).toHaveBeenCalledWith(expect.stringContaining('Please re-request'), [], undefined, 'suggested')
+  })
+
   it('renders the pinned answer panel for a LIVE open question (desktop + mobile)', () => {
     renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.getByTestId('pending-question-panel')).toBeInTheDocument()
@@ -145,7 +155,7 @@ describe('SessionBody', () => {
     renderBody(<SessionBody rt={rt} />)
     expect(screen.getByTestId('your-turn-panel')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Run the tests' }))
-    expect(rt.onPrompt).toHaveBeenCalledWith('Run the tests', [])
+    expect(rt.onPrompt).toHaveBeenCalledWith('Run the tests', [], undefined, 'suggested')
   })
 
   it('pins the hand-back reason, the suggestions and Mark complete for a handed-back session', () => {
@@ -169,7 +179,7 @@ describe('SessionBody', () => {
     const region = screen.getByRole('region', { name: /handed back/i })
     expect(region).toHaveTextContent('Say go and I will start document')
     fireEvent.click(screen.getByRole('button', { name: 'Skip document for now' }))
-    expect(rt.onPrompt).toHaveBeenCalledWith('Skip document for now', [])
+    expect(rt.onPrompt).toHaveBeenCalledWith('Skip document for now', [], undefined, 'suggested')
     fireEvent.click(screen.getByRole('button', { name: /mark complete/i }))
     expect(mutate).toHaveBeenCalledWith({ id: 's1', decision: 'confirm' })
   })

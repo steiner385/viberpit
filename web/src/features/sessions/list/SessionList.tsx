@@ -26,7 +26,7 @@ interface SessionListProps {
   onRename: (id: string) => void
   onClose: (id: string) => void
   onDelete: (id: string) => void
-  onQuickResume: (id: string, text?: string) => void
+  onQuickResume: (id: string, text?: string, replySource?: 'suggested') => void
   /** Keys of groups currently collapsed. Omit for all-expanded. */
   collapsedKeys?: Set<string>
   /** Toggle a group's collapsed state by its key. */

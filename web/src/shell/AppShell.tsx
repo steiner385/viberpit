@@ -546,7 +546,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // Permanent delete is destructive, so it goes through a confirm dialog and
     // the mutation runs only on confirm — both old shells did the same.
     onDelete: (id) => setDeleteTarget({ id, name: nameOf(id) }),
-    onQuickResume: (id, text) => sendPrompt.mutate({ id, text: text || 'continue' }),
+    onQuickResume: (id, text, replySource) => sendPrompt.mutate({ id, text: text || 'continue', replySource: replySource ?? 'suggested' }),
     // Archived scope: opening a row is a READ, so it goes to the runtime-less
     // transcript route (its param is `archivedId`, which is what keeps
     // `PageHost` from mounting a session runtime over a dead session).

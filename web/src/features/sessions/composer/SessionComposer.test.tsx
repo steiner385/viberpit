@@ -85,3 +85,11 @@ describe('SessionComposer interrupt-and-send wiring', () => {
     expect(onInterruptAndPrompt).toHaveBeenCalledWith('now', [])
   })
 })
+
+it('forwards suggested provenance through the shared runtime adapter', () => {
+  const rt = fakeRuntime({ suggestions: ['Keep going'] })
+  renderComposer(rt)
+  fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Keep going' }))
+  expect(rt.onPrompt).toHaveBeenCalledWith('Keep going', [], undefined, 'suggested')
+})

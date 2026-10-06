@@ -495,8 +495,8 @@ export function useStopSubAgent() {
 
 export function useSendPrompt() {
   const qc = useQueryClient()
-  return useMutation<Session, ApiRequestError, { id: string; text: string }>({
-    mutationFn: ({ id, text }) => api.post<Session>(`/sessions/${id}/prompt`, { text }),
+  return useMutation<Session, ApiRequestError, { id: string; text: string; replySource?: 'suggested' }>({
+    mutationFn: ({ id, text, replySource }) => api.post<Session>(`/sessions/${id}/prompt`, { text, ...(replySource ? { replySource } : {}) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }

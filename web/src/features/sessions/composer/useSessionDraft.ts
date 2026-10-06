@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/storageKey'
 
 export interface DraftAttachment { id: string; mime: string; name: string }
-export interface SessionDraft { text: string; attachments: DraftAttachment[] }
+export interface SessionDraft { text: string; attachments: DraftAttachment[]; replySource?: 'suggested' }
 
 const EMPTY: SessionDraft = { text: '', attachments: [] }
 const keyFor = (sessionId: string) => storageKey(`draft.${sessionId}`)
@@ -18,6 +18,7 @@ function read(sessionId?: string): SessionDraft {
     if (!raw) return { ...EMPTY }
     const parsed = JSON.parse(raw)
     return {
+      ...(parsed.replySource === 'suggested' ? { replySource: 'suggested' as const } : {}),
       text: typeof parsed.text === 'string' ? parsed.text : '',
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
     }
