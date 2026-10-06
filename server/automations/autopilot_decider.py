@@ -11,7 +11,7 @@ from pathlib import Path
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, run_helper_call
+from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
 
 from .autopilot_policy import Decision, DecisionContext
 
@@ -148,7 +148,7 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
+                **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
         query_fn = _query_fn or _default_sdk_query_fn()
     except Exception as exc:  # bad/unimportable options
         log.warning("autopilot.decide failed: %s", exc)

@@ -117,16 +117,15 @@ async def _curate(samples: list[str]) -> str | None:
     from claude_agent_sdk import ClaudeAgentOptions, query
     from server.sessions.account_auth import helper_env
     from server.sessions.claude_bin import cli_path_kwargs
-    from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
+    from server.sessions.helper_call import (
+        helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options)
 
     config_dir = await asyncio.to_thread(pick_helper_config_dir)
     if config_dir is None:
         return None
     options = ClaudeAgentOptions(
         model='haiku', system_prompt=_SYSTEM_PROMPT, thinking={'type': 'disabled'},
-        cwd=helper_cwd(), env=helper_env(config_dir), tools=[], allowed_tools=[],
-        setting_sources=[], max_turns=1, strict_mcp_config=True, mcp_servers={},
-        extra_args={'no-session-persistence': None},
+        cwd=helper_cwd(), env=helper_env(config_dir), max_turns=1, **stateless_helper_options(),
         **(await asyncio.to_thread(cli_path_kwargs)),
     )
     outcome = await run_helper_call(

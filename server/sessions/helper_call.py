@@ -90,6 +90,34 @@ def helper_cwd() -> str:
     return str(path)
 
 
+def stateless_helper_options() -> dict:
+    """Isolation kwargs every stateless one-shot helper splats into ``ClaudeAgentOptions``.
+
+    Sibling of :func:`helper_cwd` (WHERE) and :func:`pick_helper_config_dir` (WHO): this is
+    WHAT the call may touch — nothing. ``allowed_tools=[]`` alone is not tool-free: it is
+    an auto-approve list, not the tool set, so the CLI still loads every built-in (Bash,
+    Write, …) and the account's MCP servers. Verified against CLI 2.1.291 (#2706): the old
+    ``allowed_tools=[]`` + ``setting_sources=[]`` shape initialised with 26 tools and wrote a
+    transcript per call; this shape initialises with none and writes nothing.
+
+    - ``tools=[]`` → ``--tools ""``: no built-ins.
+    - ``strict_mcp_config`` + empty ``mcp_servers`` → no account-configured MCP servers.
+    - ``setting_sources=[]`` → no user/project/local settings (hooks, permissions, model).
+    - ``--no-session-persistence`` → no native transcript under ``projects/``; these
+      prompts carry other sessions' text and must not accumulate on disk.
+
+    A fresh dict per call: the SDK keeps the lists, and a shared one could be mutated.
+    Coding-session overlays never use this — they intentionally have tools and persistence.
+    """
+    return {
+        "tools": [],
+        "setting_sources": [],
+        "strict_mcp_config": True,
+        "mcp_servers": {},
+        "extra_args": {"no-session-persistence": None},
+    }
+
+
 def _account_cfg_dir(name: str) -> str | None:
     """*name*'s config dir as a string, or None if it cannot be resolved.
 

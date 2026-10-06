@@ -5194,7 +5194,7 @@ class SessionOrchestrator:
         Flip the flag once verified end-to-end.
 
         The thread runs in ``mode="plan"`` (read-only sandbox, no network egress) —
-        the closest Codex equivalent of the Claude path's ``allowed_tools=[]`` — and
+        the closest Codex equivalent of the Claude path's ``stateless_helper_options()`` — and
         any approval it raises anyway is auto-denied so a wedged approval can never
         hang a helper call. Nothing is persisted: no DB row, no ``SessionRecord``, no
         WebSocket fan-out, matching the Claude path's contract that a helper call is
@@ -15150,7 +15150,7 @@ class SessionOrchestrator:
 
         Same working directory as every other borrowed-account helper call on
         this session (``rec.cwd``, the Codex session's own) — the query is
-        stateless and tool-free (``generate_title`` sets ``allowed_tools=[]``),
+        stateless and tool-free (``generate_title`` splats ``stateless_helper_options()``),
         so it never needs to belong to the account whose credentials answer it.
         ``None`` covers both "no Anthropic account available" and "the query
         ran but failed" — the caller treats them identically (fall back to the

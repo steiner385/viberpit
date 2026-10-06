@@ -48,7 +48,7 @@ import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs
-from .helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
+from .helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ async def completion_awaits_user(
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
+                **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)
         return True
