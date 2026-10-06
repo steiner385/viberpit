@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from server.automations.product_policy import is_on
+from server.automations.product_policy import is_on, skip_labels
 from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
@@ -217,7 +217,7 @@ def product_escalation(slug: str, rows: Iterable[QueueRow], proposals_by_ref: Ma
     rd = (respect_dependencies if respect_dependencies is not None
           else bool(policy["respect_dependencies"]))
     bounces = int(policy.get("give_up_after_bounces", 0))
-    labels = frozenset(str(lbl).strip().lower() for lbl in policy.get("skip_labels", []))
+    labels = skip_labels(policy)
     entries, skipped = rank(rows, min_status=ms, respect_dependencies=rd, now=now,
                             give_up_after_bounces=bounces, extra_skip_labels=labels)
     held = tuple(rank_held(held_items(

@@ -18,11 +18,17 @@ from .outcomes import bounced_out
 # Issues the runner must never treat as implementable work (#637). A backlog
 # session writes code and opens a PR — but bot/app accounts open automated
 # meta-tickets (Renovate's "Dependency Dashboard", Dependabot bumps) that have
-# nothing to implement, so a spawned session just burns a slot. GitHub suffixes
-# EVERY bot/app account login with ``[bot]`` (``renovate[bot]``,
-# ``dependabot[bot]``, ``github-actions[bot]``, …), so the suffix is the
-# canonical, future-proof author signal. Labels and title are defense-in-depth
-# for the rare human-authored (or login-less) mirror of the same meta-ticket.
+# nothing to implement, so a spawned session just burns a slot. GitHub's REST API
+# suffixes every bot/app login with ``[bot]`` (``renovate[bot]``,
+# ``dependabot[bot]``, ``github-actions[bot]``, …) and the author leg fires on
+# that suffix. The mirror, however, is synced over GraphQL (``github_sync``),
+# whose ``author { login }`` carries NO suffix (``github-actions`` —
+# ``alert_series.AUTOMATION_LOGINS``), so for mirrored rows the author leg is
+# inert and labels and title carry the filter. Deliberately so: a workflow that
+# files CI-verdict latches (``forced-deploy-audit``) files per-test failure
+# issues from the same login, and those ARE work. A product names the noise by
+# label (``skip_labels`` in its policy); the author leg stays for REST-shaped
+# callers.
 SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
@@ -127,12 +133,23 @@ class QueueEntry:
     hold_kind: str | None = None
 
 
+def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
+                 extra_skip_labels: frozenset[str] = frozenset()) -> bool:
+    """THE ``bot`` verdict: the built-in bot-noise filter plus a product's own
+    ``skip_labels`` (lowercased by the caller — ``product_policy.skip_labels``).
+    Exported because ``skip_reason`` is not its only consumer: the hold-hygiene
+    pass and the approve-escalation tap (``server/pm/policy_skip.py``) must judge
+    an issue by exactly this rule, not a copy that can drift (KinDash#16652)."""
+    if (author or "").endswith("[bot]"):
+        return True
+    if {str(lbl).strip().lower() for lbl in labels} & (SKIP_ISSUE_LABELS | extra_skip_labels):
+        return True
+    return (title or "").strip().lower() in SKIP_ISSUE_TITLES
+
+
 def _is_bot(row: QueueRow, extra_skip_labels: frozenset[str] = frozenset()) -> bool:
-    if row.author.endswith("[bot]"):
-        return True
-    if {lbl.strip().lower() for lbl in row.labels} & (SKIP_ISSUE_LABELS | extra_skip_labels):
-        return True
-    return row.title.strip().lower() in SKIP_ISSUE_TITLES
+    return is_bot_noise(author=row.author, labels=row.labels, title=row.title,
+                        extra_skip_labels=extra_skip_labels)
 
 
 def is_urgent(row: "QueueRow | QueueEntry") -> bool:

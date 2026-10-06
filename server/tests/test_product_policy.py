@@ -192,3 +192,15 @@ def test_sparse_policy_merge_rejects_corruption(current, patch):
     from server.automations.product_policy import merge_policy_patch
     with pytest.raises(ValueError):
         merge_policy_patch(current, patch)
+
+
+def test_skip_labels_normalises_the_policy_list_for_the_queue():
+    """ONE reading of ``skip_labels`` for every consumer (the runner's pool,
+    ``GET /api/pm/queue``, the escalation read model, hold hygiene): lowercased,
+    stripped, a set — a missing or absent policy reads as nothing to skip."""
+    from server.automations.product_policy import skip_labels
+    assert skip_labels({"skip_labels": [" Forced-Deploy-Audit ", "red-watchdog"]}) == frozenset(
+        {"forced-deploy-audit", "red-watchdog"})
+    assert skip_labels({}) == frozenset()
+    assert skip_labels(None) == frozenset()
+    assert skip_labels(effective_policy(None)) == frozenset()

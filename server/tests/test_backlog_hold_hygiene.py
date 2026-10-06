@@ -304,3 +304,59 @@ async def test_legacy_closeout_holds_close_when_nothing_is_left_else_say_what_is
                               "acceptance item(s) remain on the issue (first: 'QA retest on main')")
     assert got[3] == ("open", LEGACY_CLOSEOUT_HOLD_REASON)      # unknown: retried next pass
     assert [kw["kind"] for _, _, kw in orch._backlog_ctx.events] == ["closeout_closed"]
+
+
+@pytest.mark.asyncio
+async def test_policy_skipped_runner_holds_are_released_so_nothing_is_left_to_approve(db_env):
+    """cairnea/KinDash#16652: the runner handed the issue off ("bounced at opus;
+    fable needs approval") on 09-23; the product added ``forced-deploy-audit`` to
+    ``skip_labels`` on 10-03; the stale hand-off stayed in the Held inbox and its
+    approve tap on 10-06 dispatched an issue the policy says is not work. The pass
+    ends every hand-off the runner wrote on an issue the policy now skips — a
+    person's own park, and holds of other kinds, are left alone."""
+    from sqlalchemy import select
+
+    from server.db.models import AuditEvent, WorkItem
+    await init_db(db_env)
+    audit = ("ci-infrastructure", "forced-deploy-audit")
+    await _seed_escalations([1, 2], labels=audit)
+    await _seed_escalations([3], labels=("bug",))
+    async with db_session() as db:
+        db.add(WorkItem(id="wi4", repo="o/r", number=4, kind="issue", state="open", title="t",
+                        body="", labels=list(audit), hold_kind="owner_action",
+                        hold_reason="keep", hold_by="tony@example.com",
+                        hold_set_at=NOW.replace(tzinfo=None)))
+    rows = [_escalated(n, labels=audit, set_days_ago=n) for n in (1, 2)]
+    rows.append(_escalated(3, labels=("bug",)))
+    rows.append(_row(number=4, hold_kind="owner_action", hold_by="tony@example.com",
+                     hold_reason="keep", labels=audit, work_item_id="wi4"))
+    orch = _orch(rows, {"kindash": {**POLICY, "skip_labels": ["forced-deploy-audit"]}})
+
+    assert await orch._backlog_release_policy_skipped_holds() == ["o/r#1", "o/r#2"]
+
+    async with db_session() as db:
+        holds = dict((await db.execute(select(WorkItem.number, WorkItem.hold_kind))).all())
+        releases = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all()
+    assert holds == {1: None, 2: None, 3: "owner_action", 4: "owner_action"}
+    assert [(r.detail["signal"], r.detail["kind"], r.via) for r in releases] == [
+        ("policy_skip", "owner_action", "runner")] * 2
+    assert [(kw["kind"], kw["target"]) for _, _, kw in orch._backlog_ctx.events] == [
+        ("policy_skip_released", "o/r#1"), ("policy_skip_released", "o/r#2")]
+
+    # Converges: the released rows are unheld now, so a second pass finds nothing.
+    rows[:2] = [_row(number=n, labels=audit, work_item_id=f"wi{n}") for n in (1, 2)]
+    assert await orch._backlog_release_policy_skipped_holds() == []
+
+
+@pytest.mark.asyncio
+async def test_policy_skipped_holds_pass_logs_and_returns_nothing_when_the_read_fails(db_env):
+    await init_db(db_env)
+    orch = _orch([], {})
+
+    async def boom():
+        raise RuntimeError("db down")
+
+    orch._backlog_queue_inputs = boom
+    assert await orch._backlog_release_policy_skipped_holds() == []
+    assert orch._backlog_ctx.events == []

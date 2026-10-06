@@ -3238,3 +3238,52 @@ def test_approve_escalation_refuses_what_is_not_an_escalation(monkeypatch):
         missing = c.post("/api/pm/work-items/nope/hold/approve-escalation",
                          json={"model": "fable"}, headers=IDENTITY_HEADERS)
         assert missing.status_code == 404
+
+
+def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
+    """cairnea/KinDash#16652: a hand-off hold the runner wrote before the product
+    listed the issue's label in ``skip_labels`` is not an escalation anyone should
+    approve — the queue would skip the issue as ``bot`` the moment the hold ended,
+    so dispatching it is exactly what the policy forbids. Refused before anything
+    changes: the hold stays, nothing is dispatched."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        r = c.patch("/api/pm/projects/viberpit/policy",
+                    json={"policy": {"skip_labels": ["forced-deploy-audit"]}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import WorkItem
+
+        async def _label():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one()
+                w.labels = ["ci-infrastructure", "forced-deploy-audit"]
+                w.author = "github-actions"
+        c.portal.call(_label)
+        _hold_for_escalation(c, wid)
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock()
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "skipped_by_policy"
+        assert "forced-deploy-audit" in r.json()["detail"]["message"]
+        orch.backlog_runner_dispatch.assert_not_awaited()
+        detail = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()
+        assert detail["holdKind"] == "owner_action"
+        # Drop the label from the policy and the same tap goes through.
+        r = c.patch("/api/pm/projects/viberpit/policy",
+                    json={"policy": {"skip_labels": []}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "spawned", "session_id": "s-1", "session_name": None})
+        orch.resolve_model_approval = AsyncMock(return_value=None)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")

@@ -287,3 +287,22 @@ def test_ordinary_ranking_is_unchanged_by_the_urgency_leg():
             _row(ref="o/r#5", score=None, gh_created_at=None)]
     assert [r.ref for r in sorted(rows, key=rank_key)] == [
         "o/r#4", "o/r#3", "o/r#1", "o/r#2", "o/r#5"]
+
+
+def test_is_bot_noise_is_the_predicate_behind_the_bot_skip():
+    """The public predicate ``skip_reason`` applies for its ``bot`` verdict — exported
+    so the hold-hygiene pass and the approve-escalation tap judge an issue by the
+    SAME rule (cairnea/KinDash#16652), not a copy of it."""
+    from server.pm.queue import is_bot_noise
+    assert is_bot_noise(author="renovate[bot]", labels=(), title="t")
+    assert is_bot_noise(author="tony", labels=("Dependencies",), title="t")
+    assert is_bot_noise(author="tony", labels=(), title="Dependency Dashboard")
+    assert is_bot_noise(author="tony", labels=("On-Hold",), title="t",
+                        extra_skip_labels=frozenset({"on-hold"}))
+    assert not is_bot_noise(author="tony", labels=("on-hold",), title="t")
+    # A GraphQL-mirrored login carries no ``[bot]`` suffix (``github-actions``, not
+    # ``github-actions[bot]``), so the author leg deliberately does not fire on it:
+    # a per-test failure issue the same workflow files IS work. Labels decide.
+    assert not is_bot_noise(author="github-actions", labels=(), title="t")
+    assert is_bot_noise(author="github-actions", labels=("forced-deploy-audit",), title="t",
+                        extra_skip_labels=frozenset({"forced-deploy-audit"}))
