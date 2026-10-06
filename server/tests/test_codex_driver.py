@@ -366,6 +366,24 @@ async def test_start_resumes_an_existing_thread(harness):
 
 
 @pytest.mark.asyncio
+async def test_a_fresh_thread_has_no_history_until_its_first_turn(harness):
+    """What replay asks before reading the thread back: the pinned app-server
+    refuses to list the turns of a thread that never ran one (#2692)."""
+    driver = await harness.boot()
+    assert driver.thread_may_have_history is False
+
+    await driver.send_prompt("hello")
+    await harness.settle()
+    assert driver.thread_may_have_history is True
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_thread_may_have_history(harness):
+    driver = await harness.boot(resume=THREAD)
+    assert driver.thread_may_have_history is True
+
+
+@pytest.mark.asyncio
 async def test_start_fails_typed_when_the_runner_disappeared(harness):
     driver = await harness.boot(start=False)
     await harness.manager.stop(ACCOUNT)

@@ -587,6 +587,82 @@ async def test_engine_replay_is_none_before_turn_one(tmp_path: Path) -> None:
     assert await orch.transcript_events("s1") == []
 
 
+class _ThreadDriver:
+    """A live Codex driver reduced to what `_codex_replay` reads off it."""
+
+    def __init__(self, *, thread_may_have_history: bool) -> None:
+        self.engine_session_id = "thread-1"
+        self.account = "openai-main"
+        self.thread_may_have_history = thread_may_have_history
+
+
+class _RefusingThreadClient(_FakeThreadClient):
+    """The pinned app-server: `thread/read includeTurns` on a thread that never ran
+    a turn is refused (-32603 against a real account's state DB, #2692)."""
+
+    async def read_thread(self, params):
+        from server.codex.protocol import CodexRequestFailed
+        self.calls += 1
+        raise CodexRequestFailed(-32603, method=schema.METHOD_THREAD_READ)
+
+
+@pytest.mark.asyncio
+async def test_a_never_turned_thread_is_not_read_back(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Create persists `idle`, which sweeps sub-agents, which replays — so every
+    fresh Codex session asked the app-server for turns it could not have, and filed
+    the refusal as an auto-error (#2692). The driver knows; nothing is sent."""
+    import logging
+
+    import server.sessions.orchestrator as orch_mod
+    orch_mod._REPLAY_FAILURE_LOG.clear()
+    client = _RefusingThreadClient()
+    manager = _FakeCodexManager(client=client, live=False)
+    orch = _orch(tmp_path, codex=manager)
+    orch._records["s1"] = _record("s1", tmp_path)
+    orch._drivers["s1"] = _ThreadDriver(thread_may_have_history=False)  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        assert await orch.transcript_events("s1", max_turns=None) == []
+        assert await orch.transcript_window("s1") is None
+        assert await orch.engine_replay_window("s1") is None
+        assert await orch.has_transcript("s1") is False
+
+    assert client.calls == 0
+    # Nor is a runner started just to be told there is nothing to read.
+    assert manager.ensured == []
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_a_thread_that_has_run_a_turn_is_read_back(tmp_path: Path) -> None:
+    """The other side of the guard above: a first `turn/start`, or a driver built
+    with `resume=`, reads exactly as before."""
+    client = _FakeThreadClient([_turn("t1")])
+    orch = _orch(tmp_path, codex=_FakeCodexManager(client=client))
+    orch._records["s1"] = _record("s1", tmp_path)
+    orch._drivers["s1"] = _ThreadDriver(thread_may_have_history=True)  # type: ignore[assignment]
+
+    assert await orch.transcript_events("s1", max_turns=None) != []
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_driver_that_cannot_say_is_still_read_back(tmp_path: Path) -> None:
+    """Only an explicit "never had a turn" skips the read. A driver without the
+    property (another engine's, a test double) keeps today's path — skipping on
+    absence would blank a transcript that exists."""
+    client = _FakeThreadClient([_turn("t1")])
+    orch = _orch(tmp_path, codex=_FakeCodexManager(client=client))
+    orch._records["s1"] = _record("s1", tmp_path)
+    driver = _ThreadDriver(thread_may_have_history=True)
+    del driver.thread_may_have_history
+    orch._drivers["s1"] = driver  # type: ignore[assignment]
+
+    assert await orch.transcript_events("s1", max_turns=None) != []
+    assert client.calls == 1
+
+
 @pytest.mark.asyncio
 async def test_engine_replay_window_hands_the_live_turn_to_the_stream(
         tmp_path: Path) -> None:
