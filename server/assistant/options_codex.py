@@ -39,10 +39,14 @@ are encoded here rather than left to a caller:
   and ``baseInstructions`` does not suppress it — in the control arm the model quoted
   it *after* its shell read was declined. A ``cwd`` outside any repository returns
   ``instructionSources: []``.
-* **An assistant thread must never be resumed.** ``thread/resume`` has no
-  ``dynamicTools`` field (``v2/ThreadResumeParams.json``), so a resumed thread comes
-  back with the built-ins still declared and the ViberPit tools gone. See
-  :data:`ASSISTANT_CODEX_RESUME_UNSUPPORTED`.
+* **An assistant thread resumes only onto the surface it started with.**
+  ``thread/resume`` has no ``dynamicTools`` field, but needs none: the app-server
+  restores the instructions and tools a thread declared at start (2026-10-05
+  addendum to docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md). It
+  cannot CHANGE them, and this surface follows the operator tier, so the driver
+  resumes only when the start-time fingerprint still matches
+  (``server/codex/thread_surface.py``, #2714) and otherwise starts fresh — see
+  :data:`ASSISTANT_SURFACE_CHANGED` / :data:`ASSISTANT_RESUME_REFUSED`.
 """
 from __future__ import annotations
 
@@ -88,12 +92,17 @@ ASSISTANT_CODEX_APPROVAL_POLICY = ASSISTANT_PROFILE.approval_policy.value
 #: an error, so an overlay that gets it wrong looks secure and is merely broken.
 ASSISTANT_CODEX_DECLINE = "decline"
 
-#: Why an assistant thread is started fresh instead of resumed. Surfaced as a
-#: constant so the driver's refusal and this module's reasoning are one string.
-ASSISTANT_CODEX_RESUME_UNSUPPORTED = (
-    "thread/resume cannot re-declare dynamicTools on codex-cli 0.153.2, so a "
-    f"resumed assistant thread would keep the built-ins and lose every {brand.NAME} "
-    "tool; starting a new thread instead"
+#: Why an assistant thread with a resume handle was started fresh anyway — the
+#: ``reason`` of ``codex.driver.assistant_thread_restarted``. One string each, so the
+#: driver's choice and this module's reasoning cannot drift.
+ASSISTANT_SURFACE_CHANGED = (
+    "the assistant's instructions or tools differ from the ones this thread started "
+    "with (or were never recorded), and thread/resume cannot change them; starting a "
+    "new thread instead"
+)
+ASSISTANT_RESUME_REFUSED = (
+    "the app-server refused to resume this assistant thread; starting a new thread "
+    "instead"
 )
 
 #: Directory name under the ViberPit config root used as an assistant thread's

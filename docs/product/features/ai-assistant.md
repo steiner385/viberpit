@@ -128,8 +128,10 @@ assistant mutation does not make subsequent harness cleanup safe.
   every approval. Both route tool calls through the same `PermissionRegistry` under the same
   `mcp__viberpit__*` names, so the permission cards are identical. Two Codex-only consequences worth
   knowing: an assistant thread starts in a repository-free `cwd` (`thread/start` otherwise folds the
-  repo's `AGENTS.md` into thread context on its own), and it is never resumed (`thread/resume`
-  cannot re-declare `dynamicTools`, so a resume would return the built-ins and drop the tools).
+  repo's `AGENTS.md` into thread context on its own), and it resumes its thread only when the
+  instructions and tools it would declare today match the ones the thread started with — a thread
+  keeps its start-time surface and `thread/resume` cannot change it, so a flipped operator tier
+  starts a fresh thread instead (`server/codex/thread_surface.py`, #2714).
   Evidence: `docs/superpowers/spikes/2026-09-06-assistant-codex-findings.md` (#1321, #1290).
 - **Capability roadmap (v2)** — the as-built audit, the core/extended/ancillary use-case map and
   the nine capability packs that extend the tool surface (product & delivery, automations control,

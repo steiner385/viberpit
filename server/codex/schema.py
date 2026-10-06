@@ -2191,12 +2191,12 @@ class ThreadResumeParams:
 
     **`dynamicTools` is absent from this method's pinned params, and that is a
     vendor boundary, not an omission here** (`v2/ThreadResumeParams.json` on
-    codex-cli 0.153.2 declares `baseInstructions` but no tool field). A resumed
-    thread therefore cannot re-declare the host-executed tool surface a
-    `thread/start` mounted, so an assistant thread must never be resumed: it
-    would come back with the built-ins still declared and the ViberPit tools
-    gone — precisely inverting the drawer's security property. See
-    ``server/assistant/options_codex.py`` and ``CodexAgentDriver.start``.
+    codex-cli 0.153.2 declares `baseInstructions` but no tool field). None is
+    needed to KEEP a surface — the app-server restores the tools a thread declared
+    on `thread/start` — but none exists to CHANGE one, so a thread resumes onto
+    exactly the surface it started with. The assistant drawer therefore resumes
+    only when that surface is still today's (``server/codex/thread_surface.py``,
+    ``CodexAgentDriver._open_assistant_thread``).
     """
 
     thread_id: str

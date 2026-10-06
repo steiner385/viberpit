@@ -43,12 +43,19 @@ ITEM_TIMES_DIRNAME = "codex-item-times"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
-def item_times_path(root: Path, thread_id: str) -> Path | None:
-    """The sidecar for *thread_id* under *root*, or None for an id unsafe to name
-    a file with (never raises — an odd id means "no sidecar", not a failure)."""
+def thread_sidecar_path(root: Path, thread_id: str, suffix: str) -> Path | None:
+    """A per-thread sidecar ``<root>/<thread id><suffix>``, or None for an id unsafe
+    to name a file with (never raises — an odd id means "no sidecar", not a failure).
+    THE id rule for every ViberPit-owned per-thread file under the account's
+    sidecar root (this journal, ``thread_surface``)."""
     if not _SAFE_ID.match(thread_id):
         return None
-    return root / f"{thread_id}.jsonl"
+    return root / f"{thread_id}{suffix}"
+
+
+def item_times_path(root: Path, thread_id: str) -> Path | None:
+    """The item-times sidecar for *thread_id* under *root* (see ``thread_sidecar_path``)."""
+    return thread_sidecar_path(root, thread_id, ".jsonl")
 
 
 @dataclass(frozen=True, slots=True)

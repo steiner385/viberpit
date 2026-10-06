@@ -162,6 +162,7 @@ class Harness:
         assistant_overlay: Any = None,
         session_tools: Any = None,
         item_times: Any = None,
+        thread_surfaces: Any = None,
     ) -> CodexAgentDriver:
         self.manager = CodexRunnerManager(
             availability=CodexAvailability(available=True, binary_path="/usr/bin/codex"),
@@ -229,6 +230,7 @@ class Harness:
             assistant_overlay=assistant_overlay,
             session_tools=session_tools,
             item_times=item_times,
+            thread_surfaces=thread_surfaces,
         )
         self._collector = asyncio.create_task(self._collect())
         await asyncio.sleep(0)

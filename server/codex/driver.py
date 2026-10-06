@@ -63,7 +63,7 @@ from viberpit import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
-from server.assistant.options_codex import (ASSISTANT_CODEX_RESUME_UNSUPPORTED,
+from server.assistant.options_codex import (ASSISTANT_RESUME_REFUSED, ASSISTANT_SURFACE_CHANGED,
                                             CodexAssistantOverlay,
                                             assistant_approval_decision, tool_error)
 from server.codex import background, schema
@@ -77,6 +77,7 @@ from server.codex.manager import (
     TurnToken,
 )
 from server.codex.item_times import ItemTimesWriter
+from server.codex.thread_surface import ThreadSurfaceStore, surface_fingerprint
 from server.codex.permissions import (
     ASSISTANT_PROFILE,
     CodexPermissionProfile,
@@ -328,12 +329,14 @@ class CodexAgentDriver:
         assistant_overlay: CodexAssistantOverlay | None = None,
         session_tools: CodexSessionTools | None = None,
         item_times: ItemTimesWriter | None = None,
+        thread_surfaces: ThreadSurfaceStore | None = None,
     ) -> None:
         self.automation_execution_id = automation_execution_id
         # Journals each item's startedAtMs/completedAtMs for replay (item_times.py).
         # None (tests, a factory without a root) means the thread replays on the
         # coarser fallbacks; nothing else changes.
         self._item_times = item_times
+        self._thread_surfaces = thread_surfaces
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_terminal_observed = False
         self.session_id = session_id
@@ -359,7 +362,8 @@ class CodexAgentDriver:
         #: Set only for an assistant-kind session (server/assistant/options_codex.py).
         #: Its presence changes four things about this driver, all in the
         #: fail-closed direction: the thread is started with a host-executed tool
-        #: surface and a neutral cwd, it is never resumed, its permission mode is
+        #: surface and a neutral cwd, it resumes only onto an unchanged surface
+        #: (``_open_assistant_thread``, #2714), its permission mode is
         #: pinned, and every built-in approval is declined without a card.
         self._assistant = assistant_overlay
         #: Set for a CODING session when the session-tools flag is on
@@ -676,6 +680,52 @@ class CodexAgentDriver:
             ),
         )
 
+    async def _open_assistant_thread(
+        self, client: CodexAppServerClient, overlay: CodexAssistantOverlay
+    ) -> schema.ThreadResumeResponse | schema.ThreadStartResponse:
+        """Resume the drawer's thread when it still has today's surface, else start one.
+
+        A Codex thread keeps the instructions and `dynamicTools` it STARTED with —
+        `thread/resume` restores them and cannot change them — and the assistant's
+        surface follows the operator tier, which can flip between opens. So the
+        thread is resumed (keeping the model's context, as the Claude drawer does)
+        only when the fingerprint recorded at its start matches the surface built
+        now (``server/codex/thread_surface.py``, #2714). Anything else — no record,
+        a changed surface, a resume the app-server refuses — starts a fresh thread:
+        losing context is the recoverable half of that trade, since the ViberPit
+        transcript is stored by ViberPit, not replayed from the thread.
+        """
+        params = overlay.thread_start_params()
+        fingerprint = surface_fingerprint(params)
+        store = self._thread_surfaces
+        if self.resume:
+            if store is not None and store.matches(self.resume, fingerprint):
+                try:
+                    return await client.resume_thread(schema.ThreadResumeParams(
+                        thread_id=self.resume,
+                        cwd=params.cwd,
+                        model=params.model,
+                        sandbox=params.sandbox,
+                        approval_policy=params.approval_policy,
+                    ))
+                except CodexRequestFailed:
+                    # A definite answer (e.g. the rollout is gone), not a transport
+                    # failure — those propagate like any other start failure.
+                    reason = ASSISTANT_RESUME_REFUSED
+            else:
+                reason = ASSISTANT_SURFACE_CHANGED
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.driver.assistant_thread_restarted",
+                session=self.session_id,
+                reason=reason,
+            )
+        response = await client.start_thread(params)
+        if store is not None:
+            await asyncio.to_thread(store.record, response.thread.id, fingerprint)
+        return response
+
     async def start(self) -> None:
         """Open (or resume) this session's thread and subscribe to its streams."""
         await self._automation_fence.enter()
@@ -684,22 +734,7 @@ class CodexAgentDriver:
         overlay = self._assistant
         response: schema.ThreadResumeResponse | schema.ThreadStartResponse
         if overlay is not None:
-            # An assistant thread is ALWAYS started, never resumed, even when the
-            # row carries an engine_session_id: `thread/resume` has no
-            # `dynamicTools` field on the pinned contract, so resuming would hand
-            # the drawer back with the built-ins still declared and every ViberPit
-            # tool gone. Losing the model's context is the recoverable half of that
-            # trade; the ViberPit transcript is stored by ViberPit, not replayed
-            # from the thread.
-            if self.resume:
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "codex.driver.assistant_thread_restarted",
-                    session=self.session_id,
-                    reason=ASSISTANT_CODEX_RESUME_UNSUPPORTED,
-                )
-            response = await client.start_thread(overlay.thread_start_params())
+            response = await self._open_assistant_thread(client, overlay)
         elif self.resume:
             # Nothing is re-declared: `ThreadResumeParams` has no `dynamicTools`
             # field, and needs none — the app-server restores the tools this thread
@@ -2677,5 +2712,12 @@ class CodexAgentDriverFactory(AgentDriverFactory):
                 None
                 if self._item_times_root_for is None
                 else ItemTimesWriter(self._item_times_root_for(config.account))
+            ),
+            # Same per-account sidecar root as the item-times journal: both are
+            # ViberPit-owned, host-local, per-thread files (#2714).
+            thread_surfaces=(
+                None
+                if self._item_times_root_for is None or overlay is None
+                else ThreadSurfaceStore(self._item_times_root_for(config.account))
             ),
         )

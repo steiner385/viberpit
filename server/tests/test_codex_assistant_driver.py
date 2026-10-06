@@ -4,7 +4,7 @@ The overlay's own unit tests (`test_assistant_codex_overlay.py`) prove the shape
 these prove the driver actually *applies* it, through the real transport, because
 every property here is one the driver could quietly drop:
 
-* the thread is started, never resumed (a resume silently loses `dynamicTools`),
+* the thread resumes only onto the surface it started with (#2714), else starts fresh,
 * the tool surface and the neutral `cwd` reach `thread/start`,
 * a ViberPit tool call is gated by the SAME `PermissionRegistry` as its Claude
   twin — reads auto-allow, destructive tools raise a card,
@@ -23,6 +23,7 @@ import pytest_asyncio
 from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 from server.assistant import options_codex as oc
 from server.codex import schema
+from server.codex.thread_surface import ThreadSurfaceStore, surface_fingerprint
 from server.sessions import events as ev
 from server.tests.test_codex_driver import SESSION, THREAD, Harness
 
@@ -87,17 +88,71 @@ async def test_the_thread_starts_with_the_tool_surface_and_a_neutral_cwd(harness
 
 
 @pytest.mark.asyncio
-async def test_an_assistant_thread_is_started_even_when_the_row_says_resume(harness,
-                                                                            overlay):
-    # The vendor boundary: `thread/resume` has no `dynamicTools`, so resuming
-    # would hand the drawer back with the built-ins declared and every ViberPit
-    # tool gone. Starting fresh loses model context; resuming loses the boundary.
-    await harness.boot(assistant_overlay=overlay, resume="thread-from-yesterday")
+async def test_an_unrecorded_assistant_thread_is_started_fresh(harness, overlay, tmp_path):
+    """No fingerprint for the old thread (pre-#2714 history, or no store) means its
+    surface is unknown — and a thread cannot change the surface it started with."""
+    store = ThreadSurfaceStore(tmp_path / "sidecars")
+    await harness.boot(assistant_overlay=overlay, resume="thread-from-yesterday",
+                       thread_surfaces=store)
     assert harness.frames(schema.METHOD_THREAD_RESUME) == []
     assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
     assert harness.engine_ids == []
     await harness.driver.send_prompt("hello")
     assert harness.engine_ids == [(SESSION, THREAD)]
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_assistant_thread_records_its_surface(harness, overlay, tmp_path):
+    store = ThreadSurfaceStore(tmp_path / "sidecars")
+    await harness.boot(assistant_overlay=overlay, thread_surfaces=store)
+    assert store.matches(THREAD, surface_fingerprint(overlay.thread_start_params()))
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_assistant_surface_resumes_its_thread(harness, overlay, tmp_path):
+    """The Claude drawer keeps its context across reopens; so does Codex now, when
+    the surface it would declare is the one the thread already has."""
+    store = ThreadSurfaceStore(tmp_path / "sidecars")
+    store.record("thread-from-yesterday", surface_fingerprint(overlay.thread_start_params()))
+    await harness.boot(assistant_overlay=overlay, resume="thread-from-yesterday",
+                       thread_surfaces=store)
+    assert harness.frames(schema.METHOD_THREAD_START) == []
+    params = harness.params(schema.METHOD_THREAD_RESUME)
+    assert params["threadId"] == "thread-from-yesterday"
+    # The resume re-asserts the drawer's boundary, never the coding session's.
+    assert (params["cwd"], params["sandbox"], params["approvalPolicy"]) == (
+        overlay.cwd, "read-only", "untrusted")
+    assert "dynamicTools" not in params
+
+
+@pytest.mark.asyncio
+async def test_a_changed_assistant_surface_starts_fresh(harness, tmp_path, monkeypatch):
+    """The operator tier flipped between opens: the old thread would describe the
+    wrong tools, so it is not resumed, and the new thread's surface is recorded."""
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    before = oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol", operator=False)
+    after = oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol", operator=True)
+    store = ThreadSurfaceStore(tmp_path / "sidecars")
+    store.record("thread-from-yesterday", surface_fingerprint(before.thread_start_params()))
+    await harness.boot(assistant_overlay=after, resume="thread-from-yesterday",
+                       thread_surfaces=store)
+    assert harness.frames(schema.METHOD_THREAD_RESUME) == []
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
+    assert store.matches(THREAD, surface_fingerprint(after.thread_start_params()))
+
+
+@pytest.mark.asyncio
+async def test_a_refused_resume_falls_back_to_a_fresh_thread(harness, overlay, tmp_path):
+    store = ThreadSurfaceStore(tmp_path / "sidecars")
+    store.record("thread-gone", surface_fingerprint(overlay.thread_start_params()))
+    await harness.boot(assistant_overlay=overlay, resume="thread-gone",
+                       thread_surfaces=store, start=False)
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        error={"code": -32600, "message": "no rollout found"})
+    await harness.driver.start()
+    await harness.settle()
+    assert len(harness.frames(schema.METHOD_THREAD_RESUME)) == 1
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
 
 
 @pytest.mark.asyncio
@@ -249,7 +304,7 @@ async def test_a_mode_change_cannot_widen_an_assistant_thread(harness, overlay):
     before = len(harness.frames(schema.METHOD_THREAD_RESUME))
     await driver.set_permission_mode("bypassPermissions")
     await harness.settle()
-    # Applying a sandbox change means re-resuming, and a resume drops the tools.
+    # The drawer's sandbox is pinned: a mode change must not even re-resume.
     assert len(harness.frames(schema.METHOD_THREAD_RESUME)) == before
     assert driver._profile.sandbox_mode.value == "read-only"
 
