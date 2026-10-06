@@ -252,7 +252,12 @@ RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay
                                     # asked for; the item is dispatched at that tier now.
                                     "escalation",
                                     # A conversion-era hold outlived MIGRATION_HOLD_TTL.
-                                    "expired")
+                                    "expired",
+                                    # The runner's own hand-off on an issue the product's
+                                    # policy now skips (``skip_labels``): nothing is left
+                                    # for a person to approve, so the backlog tick ends it
+                                    # (``release_policy_skipped_holds``, KinDash#16652).
+                                    "policy_skip")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -461,6 +466,41 @@ def release_on_investigation(db: "Session", ref: str) -> bool:
                    actor=RUNNER_ACTOR, via="runner")
     db.flush()
     return True
+
+
+def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]") -> list[str]:
+    """End the RUNNER's ``owner_action`` hold on each of *refs* whose issue the
+    product's policy now skips (``server/pm/policy_skip.py`` picked them), audited
+    as ``policy_skip`` via the runner; answers the refs released
+    (cairnea/KinDash#16652).
+
+    Narrowed here AGAIN to ``hold_kind == "owner_action"`` and ``hold_by ==
+    RUNNER_ACTOR`` rather than trusting the caller's read: the pass reads the pool,
+    then writes in a second session, and a person who parked the item in between
+    must not have their hold ended by the runner's hygiene. The runner's fourth
+    release rule, beside ``release_on_dispatch`` / ``release_on_investigation`` —
+    same ``clear_hold`` + ``_audit_release(via="runner")`` shape, so "how can a hold
+    end?" keeps one answer per signal in one file. Idempotent and blind to a
+    malformed ref, like the other two. Sync — the orchestrator calls it under
+    ``db.run_sync``.
+    """
+    from sqlalchemy import select, tuple_
+
+    from server.pm.refs import split_ref
+    parts = [p for p in (split_ref(r) for r in refs) if p is not None]
+    if not parts:
+        return []
+    released: list[str] = []
+    for wi in db.scalars(select(WorkItem).where(
+            WorkItem.kind == "issue", WorkItem.hold_kind == "owner_action",
+            WorkItem.hold_by == RUNNER_ACTOR,
+            tuple_(WorkItem.repo, WorkItem.number).in_(parts))).all():
+        clear_hold(wi, actor=RUNNER_ACTOR)
+        _audit_release(db, wi, kind="owner_action", signal="policy_skip",
+                       actor=RUNNER_ACTOR, via="runner")
+        released.append(f"{wi.repo}#{wi.number}")
+    db.flush()
+    return released
 
 
 def clear_hold(wi: WorkItem, *, actor: str) -> None:

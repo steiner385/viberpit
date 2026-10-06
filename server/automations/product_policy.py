@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from server.pm.repo_project import RepoOwnership
 
 from sqlalchemy import select, update
@@ -305,6 +307,29 @@ def is_on(policy: "dict | None") -> bool:
     off.
     """
     return (policy or {}).get("dispatch", "off") != "off"
+
+
+def skip_labels(policy: "Mapping | None") -> frozenset[str]:
+    """THE queue-shaped reading of a policy's ``skip_labels``: lowercased, stripped,
+    a set — what ``queue.skip_reason`` takes as ``extra_skip_labels``. One function
+    for the runner's pool, ``GET /api/pm/queue``, the escalation read model and the
+    hold-hygiene pass, so no consumer can normalise differently and let a label
+    through that another skips. Tolerates a partial row and ``None`` like ``is_on``.
+    """
+    return frozenset(str(lbl).strip().lower() for lbl in (policy or {}).get("skip_labels") or ()
+                     if str(lbl).strip())
+
+
+async def policy_for_repo(db: AsyncSession, repo: str) -> dict | None:
+    """The effective policy of the ONE product that owns *repo*, or ``None`` when no
+    product uniquely does (``repo_project.owning_projects_by_repo``). For a caller
+    holding a mirrored issue but not the queue's product-grouped rows — the
+    approve-escalation tap — this is how it finds the policy that governs the issue."""
+    from server.pm.repo_project import owning_projects_by_repo
+    owner = (await owning_projects_by_repo(db, [repo])).get(repo)
+    if owner is None:
+        return None
+    return (await load_policies(db)).get(owner.slug)
 
 
 def policies_by_slug(db: Session) -> dict[str, dict]:

@@ -50,10 +50,28 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     from server.pm.outcomes import escalation_for
     from server.sessions import model_policy
     from server.sessions.model_catalog import TIER_ORDER
+    from server.automations.product_policy import policy_for_repo, skip_labels
+    from server.pm.policy_skip import skipped_by_policy
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
         raise EscalationApprovalError(
             "bad_hold", "this hold is not an approval-gated hand-off; use Retry")
+    # cairnea/KinDash#16652: the hold may predate the product's ``skip_labels``.
+    # ``backlog_runner_dispatch`` does not re-rank, so without this check the tap
+    # dispatches an issue the queue would skip as ``bot`` the moment the hold
+    # ended — the policy's "not work" is the one thing an approval must not
+    # override. The backlog tick ends such holds on its own (``policy_skip``);
+    # until it does, Retry (release without dispatch) is the honest tap.
+    policy = await policy_for_repo(db, wi.repo or "")
+    if skipped_by_policy(author=wi.author or "", labels=wi.labels or (), title=wi.title or "",
+                         policy=policy):
+        named = sorted({str(lbl).strip().lower() for lbl in (wi.labels or ())}
+                       & skip_labels(policy))
+        why = f"it carries {', '.join(named)}" if named else "it is bot noise"
+        raise EscalationApprovalError(
+            "skipped_by_policy",
+            f"{wi.repo}#{wi.number} is skipped by this product's policy ({why}); the runner "
+            "does not work it, so there is nothing to escalate — Retry releases the hold")
     model = model.strip().lower()
     if model not in TIER_ORDER:
         raise EscalationApprovalError("bad_model", f"unknown ladder tier: {model}")

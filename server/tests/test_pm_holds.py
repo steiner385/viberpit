@@ -301,10 +301,12 @@ def test_release_by_signals_board_edit_and_body_edit():
     assert evidence.hold_kind == "evidence"
     # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
-    # not one of them — except ``expired``, which ends only a migration hold (#2682).
+    # not one of them — except ``expired``, which ends only a migration hold (#2682);
+    # nor is a policy edit — except ``policy_skip``, which ends only a hold the
+    # RUNNER wrote on an issue the product's policy now skips (KinDash#16652).
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
                                     "implement", "dispatch", "investigation", "decision",
-                                    "escalation", "expired"}
+                                    "escalation", "expired", "policy_skip"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
@@ -425,3 +427,35 @@ async def test_release_via_api_still_refuses_a_decision_hold():
         await release_via_api(None, wi, actor="tony@example.com",
                               identity="tony@example.com", signal="retry")
     assert wi.hold_kind == "decision"
+
+
+def test_release_policy_skipped_holds_ends_only_the_runners_owner_action_holds():
+    """The hold-hygiene release (cairnea/KinDash#16652): among the refs it is handed
+    it ends the RUNNER's ``owner_action`` holds only — a person's park, an evidence
+    hold and an unlisted ref are untouched — audited as ``policy_skip`` via the
+    runner, and a second pass finds nothing."""
+    from server.db.models import AuditEvent
+    from server.pm.holds import RELEASE_SIGNALS, release_policy_skipped_holds, set_runner_hold
+    db = _sync_db()
+    runner = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="t", body="b")
+    set_runner_hold(runner, reason="bounced at opus; fable needs approval", now=NOW)
+    unlisted = WorkItem(repo="o/r", number=4, kind="issue", state="open", title="t", body="b")
+    set_runner_hold(unlisted, reason="bounced at opus; fable needs approval", now=NOW)
+    db.add_all([runner, unlisted])
+    person = _held(db, 2)
+    evidence = _held(db, 3, kind="evidence")
+    db.flush()
+
+    released = release_policy_skipped_holds(db, ["o/r#1", "o/r#2", "o/r#3", "o/r#9", "garbage"])
+    db.commit()
+    assert released == ["o/r#1"]
+    assert runner.hold_kind is None and runner.hold_fingerprint is None
+    assert person.hold_kind == "owner_action"
+    assert evidence.hold_kind == "evidence"
+    assert unlisted.hold_kind == "owner_action"
+    assert "policy_skip" in RELEASE_SIGNALS
+    rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
+    assert [(r.detail["signal"], r.detail["kind"], r.detail["actorClass"], r.via)
+            for r in rows] == [("policy_skip", "owner_action", "system", "runner")]
+    assert release_policy_skipped_holds(db, ["o/r#1"]) == []
+    assert release_policy_skipped_holds(db, []) == []

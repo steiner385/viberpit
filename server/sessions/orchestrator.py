@@ -7118,7 +7118,7 @@ class SessionOrchestrator:
 
         from sqlalchemy import select as sa_select
 
-        from server.automations.product_policy import is_on, policies_by_slug
+        from server.automations.product_policy import is_on, policies_by_slug, skip_labels
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
@@ -7182,8 +7182,7 @@ class SessionOrchestrator:
                 now=now,
                 # D8: THE bounce threshold, from this product's own policy.
                 give_up_after_bounces=int(policy["give_up_after_bounces"]),
-                extra_skip_labels=frozenset(
-                    lbl.strip().lower() for lbl in policy["skip_labels"]))
+                extra_skip_labels=skip_labels(policy))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -8779,11 +8778,14 @@ class SessionOrchestrator:
         if mode == "auto":
             # Hold hygiene, after the tick and outside the loop's lock (an approval
             # dispatches, and dispatch takes that lock): close superseded alerts
-            # (#2680), re-judge pre-#2681 close-out holds, then approve covered
-            # escalations within budget (#2679).
+            # (#2680), re-judge pre-#2681 close-out holds, end the runner's own
+            # holds on issues the policy now skips (KinDash#16652) — BEFORE the
+            # approval step, so a stale escalation is never auto-approved — then
+            # approve covered escalations within budget (#2679).
             # Each is best-effort and logs its own failure.
             await self._backlog_supersede_alerts()
             await self._backlog_settle_legacy_closeout_holds()
+            await self._backlog_release_policy_skipped_holds()
             await self._backlog_auto_approve_escalations()
 
     async def _backlog_queue_inputs(self):
@@ -8896,6 +8898,45 @@ class SessionOrchestrator:
         except Exception:
             log.warning("backlog_runner.settle_closeout_holds_failed", exc_info=True)
         return closed
+
+    async def _backlog_release_policy_skipped_holds(self) -> list[str]:
+        """End every ``owner_action`` hold the RUNNER wrote on an issue the owning
+        product's policy now skips (``server/pm/policy_skip.py``, cairnea/KinDash#16652).
+
+        A hand-off ("bounced at opus; fable needs approval", a close-out) is written
+        once; ``skip_labels`` can be edited after it. The stale hold then sits in the
+        Held inbox offering an approval that would dispatch an issue the queue
+        skips as ``bot`` — which is how seventeen ``forced-deploy-audit`` latches
+        were re-dispatched. Released, the item returns to the queue where the
+        ordinary ``bot`` skip holds it, and the board Status follows on the next
+        reconcile. No GitHub write: the issue is not told, because nothing about
+        it changed. A person's own park is never this pass's to end. Returns the
+        refs released; a failed read releases nothing and logs."""
+        from server.pm import holds
+        from server.pm.policy_skip import stale_runner_holds
+        released: list[str] = []
+        try:
+            rows, policies = await self._backlog_queue_inputs()
+            stale = stale_runner_holds(rows, policies)
+            if not stale:
+                return released
+            refs = [row.ref for row in stale]
+            async with db_session() as db:
+                released = await db.run_sync(
+                    lambda s: holds.release_policy_skipped_holds(s, refs))
+            for row in stale:
+                if row.ref not in released:
+                    continue
+                await self._backlog_ctx.emit(
+                    "info",
+                    f"{row.ref}: released the runner's hold — the product's policy "
+                    f"skips this issue, so there is nothing to approve",
+                    kind="policy_skip_released", target=row.ref,
+                    detail={"product": row.product, "labels": list(row.labels),
+                            "hold_reason": row.hold_reason})
+        except Exception:
+            log.warning("backlog_runner.release_policy_skipped_holds_failed", exc_info=True)
+        return released
 
     async def _backlog_auto_escalations(self) -> list:
         """The held rows the budget lets the runner approve right now
