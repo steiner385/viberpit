@@ -42,6 +42,29 @@ def test_apiretry_counts_as_progress():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("autonomous", [False, True])
+async def test_new_turn_resets_idle_progress_before_status(autonomous):
+    d = _make_driver()
+    await d.start()
+    now = d.last_progress_at + 900
+    d._clock = lambda: now
+    observed = []
+
+    async def on_status(*args):
+        observed.append(d.last_progress_at)
+
+    d._on_status = on_status
+    try:
+        if autonomous:
+            await d._open_autonomous_turn()
+        else:
+            await d.send_prompt("check current status")
+        assert observed and observed[0] == now
+    finally:
+        await d.aclose()
+
+
+@pytest.mark.asyncio
 async def test_drain_alive_tracks_pump_lifecycle():
     """drain_alive is the watchdog's 'interrupt didn't land' signal: it stays True
     while the turn's drain task runs, so a turn whose _turn_active was flipped False by

@@ -1046,6 +1046,8 @@ class CodexAgentDriver:
         self._thread_may_have_history = True
         self._turn_active = True
         self._turn_started_at = self._clock()
+        # Idle time belongs to the previous turn, not this turn's stall budget.
+        self._last_progress_at = self._turn_started_at
         self._pending_hand_back_reason = None
         # A new turn replaces the previous turn's replay buffer, so a late
         # subscriber sees the turn in progress rather than the last two. Cleared
@@ -1895,6 +1897,8 @@ class CodexAgentDriver:
         """Apply one translated event to the turn state machine, then fan it out."""
         self._note_progress(event)
         if isinstance(event, ev.TurnStart):
+            if not self._turn_active:
+                self._last_progress_at = self._clock()
             if self._turn_id is None:
                 self._turn_id = event.turn_id
             self._turn_active = True

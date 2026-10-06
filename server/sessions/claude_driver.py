@@ -1179,6 +1179,8 @@ class ClaudeAgentDriver:
         # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
         self._last_rate_limit_type = None
         self._turn_active = True
+        # Idle time belongs to the previous turn, not this turn's stall budget.
+        self._last_progress_at = self._clock()
         # Wall-clock start of this turn. The CLI's transcript write LAGS the live
         # stream (MCP fleet boot on resume), so a live attach can see a disk JSONL
         # whose last user entry is the PREVIOUS turn's. replay_window compares the
@@ -1636,6 +1638,7 @@ class ClaudeAgentDriver:
         # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
         self._last_rate_limit_type = None
         self._turn_active = True
+        self._last_progress_at = self._clock()
         self._turn_started_at = time.time()
         self._turn_first_delta_at = None
         self._last_turn_outcome = "success"

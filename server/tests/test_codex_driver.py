@@ -312,6 +312,34 @@ async def harness(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_start", [False, True])
+async def test_new_turn_after_idle_gets_a_full_stall_window(harness, native_start):
+    from server.sessions.orchestrator import SessionOrchestrator, STALL_TIMEOUT
+
+    driver = await harness.boot()
+    await harness.run_turn()
+    harness.notify_turn_completed()
+    await harness.settle()
+    now = driver.last_progress_at + STALL_TIMEOUT + 600
+    driver._clock = lambda: now
+    orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    orch._drivers[SESSION] = driver
+
+    if native_start:
+        harness.notify_turn_started("turn-2")
+        await harness.settle()
+    else:
+        await driver.send_prompt("check current status")
+    await orch._check_stalls(now + 1)
+    assert driver.turn_active
+    assert not harness.frames(schema.METHOD_TURN_INTERRUPT)
+
+    # A genuinely silent new turn must still time out.
+    await orch._check_stalls(now + STALL_TIMEOUT + 1)
+    assert harness.frames(schema.METHOD_TURN_INTERRUPT)
+
+
+@pytest.mark.asyncio
 async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
     """`AgentDriver` is @runtime_checkable, so a missing member is a failed
     isinstance rather than an AttributeError three weeks later in production."""
