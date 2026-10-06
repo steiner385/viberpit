@@ -412,6 +412,12 @@ class CodexAgentDriver:
         # that handed back, and the next turn clears it so the orchestrator can never
         # audit a stale reason against a later waiting_question.
         self._last_hand_back_reason: str | None = None
+        # The ask of a `hand_back` call read MID-TURN (#2647), exactly as on
+        # ClaudeAgentDriver: set from ev.HandBackRequested, read by
+        # `_persist_status` beside a busy status, handed over to
+        # `_last_hand_back_reason` by the TurnEnd that latches it, and cleared at
+        # turn start and on interrupt so it never outlives its turn.
+        self._pending_hand_back_reason: str | None = None
         # Sticky (set-only), like ClaudeAgentDriver's: a turn carrying no request leaves
         # the previous one alone. The orchestrator consumes each exactly once by turn id.
         self._last_model_request: dict | None = None
@@ -531,6 +537,31 @@ class CodexAgentDriver:
         ``None`` if that turn did not hand back. Read by ``_persist_status`` when it
         writes ``waiting_question``."""
         return self._last_hand_back_reason
+
+    @property
+    def pending_hand_back_reason(self) -> str | None:
+        """The reason of a ``hand_back`` call made in the turn that is STILL RUNNING
+        (#2647), or ``None``. Read by ``_persist_status`` beside a mid-turn status;
+        ``last_hand_back_reason`` takes over once the turn ends."""
+        return self._pending_hand_back_reason
+
+    async def signal_message_prose(self, stem: str, *, timeout: float = 2.0) -> str | None:
+        """The prose of the agent message that carried this turn's ``stem`` signal
+        call (``"hand_back"``), or None if the translator never reads one.
+
+        Called from the `item/tool/call` handler of that very call. The app-server
+        announces the `dynamicToolCall` item before it asks the host to run it, but
+        the item reaches the translator through this driver's own inbox pump — so
+        wait for the signal to be recorded, then read the latest message's text.
+        Never returns an earlier message's prose: without the signal the answer is
+        "unknown". The ClaudeAgentDriver contract, read off the Codex translator.
+        """
+        deadline = time.monotonic() + timeout
+        while not self._translator.has_signal(stem):
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.02)
+        return self._translator.message_prose()
 
     @property
     def last_model_request(self) -> dict | None:
@@ -982,6 +1013,7 @@ class CodexAgentDriver:
         self._thread_may_have_history = True
         self._turn_active = True
         self._turn_started_at = self._clock()
+        self._pending_hand_back_reason = None
         # A new turn replaces the previous turn's replay buffer, so a late
         # subscriber sees the turn in progress rather than the last two. Cleared
         # HERE (not on the `turn/started` event) because the user echo below is
@@ -1050,6 +1082,7 @@ class CodexAgentDriver:
         self._turn_started_at = None
         self._turn_id = None
         self._condensing = False
+        self._pending_hand_back_reason = None
         self._finish_turn()
         self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
@@ -1841,6 +1874,16 @@ class CodexAgentDriver:
         if isinstance(event, ev.TurnEnd):
             await self._end_turn(event)
             return
+        if isinstance(event, ev.HandBackRequested):
+            # Internal (#2647): park the ask and re-derive status NOW, so the
+            # orchestrator persists and pushes it beside `in_progress` instead of
+            # waiting for a turn end a still-working session may not reach soon.
+            # Never forwarded — the browser learns of it from the status frame.
+            # A late copy for a turn already over is dropped: nothing would clear it.
+            if self._turn_active and event.turn_id == self._turn_id:
+                self._pending_hand_back_reason = event.reason
+                await self._emit_status()
+            return
         if isinstance(event, ev.UserMessage):
             # The driver already echoed this prompt in `_start_turn`/`_steer`,
             # with the attachments and route chip the native `userMessage` item
@@ -1897,6 +1940,8 @@ class CodexAgentDriver:
             self._last_turn_outcome = "failed" if outcome == "error" else outcome
         self._last_hand_back_reason = (
             event.hand_back_reason if self._last_turn_outcome == "hand_back" else None)
+        # The latched reason takes over from the mid-turn slot (#2647).
+        self._pending_hand_back_reason = None
         if event.model_request is not None:
             self._last_model_request = {"turn_id": event.turn_id, **event.model_request}
         if event.pr_resolution is not None:
@@ -1962,6 +2007,7 @@ class CodexAgentDriver:
         self._turn_started_at = None
         self._turn_id = None
         self._condensing = False
+        self._pending_hand_back_reason = None
         self._turns_completed += 1
         self._last_turn_outcome = "failed"
         self._emit(ev.TurnEnd(turn_id, outcome="interrupted"))

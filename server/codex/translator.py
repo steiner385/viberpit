@@ -192,6 +192,10 @@ class _StreamState:
     #: scoped like the Claude translator's `_turn_signals`, and for the same reason:
     #: a session calls `mark_complete` and then writes a closing paragraph.
     turn_signals: dict[str, dict] = field(default_factory=dict)
+    #: The live turn's latest agent message: its item id and text so far. What a
+    #: `hand_back` result reports the user saw (`message_prose`).
+    message_item_id: str | None = None
+    message_text: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -446,12 +450,16 @@ class CodexEventTranslator:
         state.user_messages.clear()
         state.command_output.clear()
         state.turn_signals.clear()
+        state.message_item_id = None
+        state.message_text = ""
 
     def _end_turn(self) -> None:
         self._state.turn_id = None
         self._state.turn_text = ""
         self._state.usage_by_turn.clear()
         self._state.turn_signals.clear()
+        self._state.message_item_id = None
+        self._state.message_text = ""
 
     # -- deltas ------------------------------------------------------------
 
@@ -462,7 +470,7 @@ class CodexEventTranslator:
             return self._mismatch()
         self._note_delta(params.item_id)
         self._state.rendered_text.add(params.item_id)
-        self._accumulate(params.turn_id, params.delta)
+        self._accumulate(params.turn_id, params.delta, params.item_id)
         return [ev.TextDelta(params.turn_id, params.delta)]
 
     def _reasoning_summary_delta(
@@ -560,10 +568,18 @@ class CodexEventTranslator:
             # replayed item must not close the turn actually running. Sub-agent
             # threads need no guard here — the driver drops every notification
             # whose thread is not its own before it reaches this translator.
-            if turn_id == self._state.turn_id:
-                payload = parse_turn_signal(item.tool, _arguments_dict(item.arguments))
-                if payload is not None:
-                    self._state.turn_signals[item.tool] = payload
+            if turn_id != self._state.turn_id:
+                return []
+            payload = parse_turn_signal(item.tool, _arguments_dict(item.arguments))
+            # `item/started` and `item/completed` carry the same call: read it once.
+            if payload is None or self._state.turn_signals.get(item.tool) == payload:
+                return []
+            self._state.turn_signals[item.tool] = payload
+            if item.tool == "hand_back":
+                # Surfaced the moment it is read, as on Claude (#2647): the latch
+                # above only lands at `turn/completed`, and a session that keeps
+                # working after the call would otherwise hide the ask until then.
+                return [ev.HandBackRequested(turn_id, payload.get("reason"))]
             return []
 
         shape = _tool_shape(item)
@@ -594,18 +610,35 @@ class CodexEventTranslator:
             return []
         if thinking:
             return [ev.ThinkingDelta(turn_id, text)]
-        self._accumulate(turn_id, text)
+        self._accumulate(turn_id, text, item_id)
         return [ev.TextDelta(turn_id, text)]
 
-    def _accumulate(self, turn_id: str, text: str) -> None:
-        """Collect the in-flight turn's agent text for the completion-marker scan.
+    def _accumulate(self, turn_id: str, text: str, item_id: str) -> None:
+        """Collect the in-flight turn's agent text for the completion-marker scan,
+        and the LATEST agent message's text for :meth:`message_prose`.
 
         Scoped to the in-flight turn: a replayed item, or a notification for a
         turn other than the live one, must not contribute a marker that would
         then close the turn actually running.
         """
-        if turn_id == self._state.turn_id:
-            self._state.turn_text += text
+        state = self._state
+        if turn_id != state.turn_id:
+            return
+        state.turn_text += text
+        if item_id != state.message_item_id:
+            state.message_item_id = item_id
+            state.message_text = ""
+        state.message_text += text
+
+    def has_signal(self, stem: str) -> bool:
+        """Has the live turn made a usable ``stem`` signal call?"""
+        return stem in self._state.turn_signals
+
+    def message_prose(self) -> str:
+        """The text of the live turn's LATEST agent message, as the user sees it —
+        never reasoning. Read once :meth:`has_signal` answers True, so it is the
+        prose that preceded the signal call (the Claude translator's contract)."""
+        return self._state.message_text
 
     def _tool_result(self, item: schema.ThreadItem) -> ev.ToolResult:
         if isinstance(item, schema.CommandExecutionItem):
