@@ -1,6 +1,6 @@
-"""`EngineReplay` for a Codex thread — history read back over `thread/read`.
+"""`EngineReplay` for Codex — native history plus durable live-turn gap recovery.
 
-Codex sessions have no transcript file. Their history lives inside the
+Native history lives inside the
 app-server, and the plan forbids reading Codex private state (the rollout SQLite,
 the thread JSONL) to reconstruct it: those are internal formats with no
 compatibility promise, and parsing them would make ViberPit break on a Codex
@@ -12,6 +12,10 @@ That shared translator is the point. If replay had its own item→event mapping,
 the transcript a user sees after a reload could differ from the one they watched
 live, and the difference would appear only for item types nobody wrote a test
 for twice.
+
+Completed live turns also have ViberPit-owned sidecar snapshots. When native
+history omits a resumed turn, replay inserts its saved normalized events rather
+than silently rolling back the conversation. Native turns win once they catch up.
 
 Cursor semantics are inherited from `server/sessions/replay.py`, not reinvented:
 `before` and `limit` are ordinals in a turn space, `earliest_turn` is the ordinal
@@ -29,6 +33,7 @@ from typing import Protocol
 from server.codex import schema
 from server.codex.item_times import EMPTY_ITEM_TIMES, ItemTimes, load_item_times, uuid7_ms
 from server.codex.translator import CodexEventTranslator
+from server.codex.turn_history import RecordedTurn, TurnHistoryStore
 from server.sessions import events as ev
 from server.sessions.replay import ReplayWindow
 
@@ -109,7 +114,7 @@ class ThreadReader(Protocol):
 class CodexThreadReplay:
     """`EngineReplay` over one Codex thread's `thread/read` history."""
 
-    __slots__ = ("_client", "_thread_id", "_model", "_item_times_path")
+    __slots__ = ("_client", "_thread_id", "_model", "_item_times_path", "_turn_history")
 
     def __init__(
         self,
@@ -126,6 +131,8 @@ class CodexThreadReplay:
         # fresh on every window because it grows while the thread runs. None means
         # "no sidecar was ever configured" — the coarser fallbacks still apply.
         self._item_times_path = item_times_path
+        self._turn_history = (None if item_times_path is None
+                              else TurnHistoryStore(item_times_path.parent))
 
     @property
     def item_times_path(self) -> Path | None:
@@ -212,9 +219,13 @@ class CodexThreadReplay:
             if self._item_times_path is None
             else await asyncio.to_thread(load_item_times, self._item_times_path)
         )
-        turns = thread.turns
+        saved = ([] if self._turn_history is None else await asyncio.to_thread(
+            self._turn_history.load, self._thread_id,
+        ))
+        turns = _merge_saved_turns(thread.turns, saved)
         if drop_incomplete_turn:
-            while turns and turns[-1].status is schema.TurnStatus.IN_PROGRESS:
+            while (turns and isinstance(turns[-1], schema.Turn)
+                   and turns[-1].status is schema.TurnStatus.IN_PROGRESS):
                 turns = turns[:-1]
         # Leads every window, exactly as the Claude adapter prepends its
         # transcript's meta entry. The live `SessionMeta` is emitted once at
@@ -233,7 +244,13 @@ class CodexThreadReplay:
         start = 0 if limit is None else max(0, end - limit)
         out: list = [] if meta is None else [meta]
         for ordinal in range(start, end):
-            out.extend(self._events_for(turns[ordinal], ordinal, times))
+            turn = turns[ordinal]
+            if isinstance(turn, RecordedTurn):
+                out.extend(dataclasses.replace(e, turn_index=ordinal)
+                           if isinstance(e, ev.TurnStart) else e
+                           for e in turn.events if not isinstance(e, ev.SessionMeta))
+            else:
+                out.extend(self._events_for(turn, ordinal, times))
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
 
     async def user_prompts(self) -> list[str]:
@@ -250,17 +267,11 @@ class CodexThreadReplay:
         input honors.
         """
         try:
-            thread = await self._read()
+            window = await self.window(limit=None)
         except Exception:
             return []
-        return [
-            text
-            for turn in thread.turns
-            for item in turn.items
-            if isinstance(item, schema.UserMessageItem)
-            for text in (item.text.strip(),)
-            if text
-        ]
+        return [e.text.strip() for e in window.events
+                if isinstance(e, ev.UserMessage) and e.text.strip()]
 
     def _session_meta(self, thread: schema.Thread) -> ev.SessionMeta | None:
         model = thread.model or self._model
@@ -271,6 +282,47 @@ class CodexThreadReplay:
     async def events(self, *, max_turns: int | None = 20) -> list:
         window = await self.window(before=None, limit=max_turns)
         return window.events
+
+
+def _merge_saved_turns(
+    native: tuple[schema.Turn, ...], saved: list[RecordedTurn],
+) -> list[schema.Turn | RecordedTurn]:
+    """Keep native turns, filling holes from ordered live snapshots exactly once.
+
+    A later saved/native match anchors preceding missing turns. For a missing
+    tail, UUIDv7 start times place it before any newer native-only turns; opaque
+    non-UUID handles retain their existing order. A saved terminal can also
+    settle a native turn still reported in progress.
+    """
+    turns: list[schema.Turn | RecordedTurn] = list(native)
+
+    def insert_missing(turn: RecordedTurn, anchor: int) -> None:
+        started = uuid7_ms(turn.turn_id)
+        index = next((i for i, candidate in enumerate(turns)
+                      if isinstance(candidate, schema.Turn)
+                      and started is not None
+                      and (when := (uuid7_ms(candidate.id) or _turn_started_ms(candidate))) is not None
+                      and when > started), anchor)
+        turns.insert(index, turn)
+
+    pending: list[RecordedTurn] = []
+    for turn in saved:
+        index = next((i for i, candidate in enumerate(turns)
+                      if isinstance(candidate, schema.Turn) and candidate.id == turn.turn_id), None)
+        if index is None:
+            pending.append(turn)
+            continue
+        for missing in pending:
+            insert_missing(missing, index)
+            index += 1
+        pending = []
+        candidate = turns[index]
+        if isinstance(candidate, schema.Turn) and candidate.status is schema.TurnStatus.IN_PROGRESS:
+            turns[index] = turn
+    for turn in pending:
+        insert_missing(turn, len(turns))
+
+    return turns
 
 
 def _outcome_of(status: schema.TurnStatus) -> str:

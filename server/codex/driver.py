@@ -76,6 +76,7 @@ from server.codex.manager import (
     TurnOutcome,
     TurnToken,
 )
+from server.codex.turn_history import TRANSCRIPT_EVENT_TYPES, TurnHistoryStore
 from server.codex.item_times import ItemTimesWriter
 from server.codex.thread_surface import ThreadSurfaceStore, surface_fingerprint
 from server.codex.permissions import (
@@ -132,11 +133,7 @@ _ZIP_MIME: Final = "application/zip"
 #: in-progress-turn buffer and replayed to a late subscriber. Mirrors
 #: ``claude_driver._TURN_CONTENT``: control/ephemeral events are re-emitted from
 #: authoritative state by the WS attach path, so buffering them double-emits.
-_TURN_CONTENT: Final = (
-    ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
-    ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-    ev.TurnEnd, ev.ErrorEvent,
-)
+_TURN_CONTENT = TRANSCRIPT_EVENT_TYPES
 
 #: `codexErrorInfo` categories the orchestrator can actually recover from, and
 #: the ``server/sessions/failure.py`` kind each maps to. Anything else surfaces
@@ -336,6 +333,7 @@ class CodexAgentDriver:
         # None (tests, a factory without a root) means the thread replays on the
         # coarser fallbacks; nothing else changes.
         self._item_times = item_times
+        self._turn_history = None if item_times is None else TurnHistoryStore(item_times.root)
         self._thread_surfaces = thread_surfaces
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_terminal_observed = False
@@ -1111,6 +1109,8 @@ class CodexAgentDriver:
                     session=self.session_id,
                     error=scrub_exception(exc),
                 )
+        if turn_id is not None:
+            await self._save_turn(ev.TurnEnd(turn_id, outcome="interrupted"))
         # The app-server has acknowledged; a `turn/completed` for this turn may
         # still arrive and is forwarded, but the turn is over for the client.
         self._turn_active = False
@@ -1961,6 +1961,7 @@ class CodexAgentDriver:
             # turn's card, but never touch the live turn: an interrupt clears
             # `_turn_id` and may already have started the NEXT turn, and letting
             # the old turn's completion end that one would kill a running turn.
+            await self._save_turn(event)
             self._emit(event)
             return
         self._automation_terminal_observed = True
@@ -1984,14 +1985,31 @@ class CodexAgentDriver:
             self._last_pr_resolution = event.pr_resolution
             self._last_pr_resolution_source = event.pr_resolution_source
             self._last_pr_resolution_note = event.pr_resolution_note
+        terminal = dataclasses.replace(event, outcome=outcome)
+        await self._save_turn(terminal)
         self._turns_completed += 1
         self._turn_active = False
         self._turn_started_at = None
         self._turn_id = None
         self._condensing = False
-        self._emit(dataclasses.replace(event, outcome=outcome))
+        self._emit(terminal)
         await self._emit_status()
         await self._drain_queue()
+
+    async def _save_turn(self, terminal: ev.TurnEnd) -> None:
+        """Save the coalesced live transcript before terminal delivery/buffer reset.
+
+        Native history can lag completed resumed turns. The sidecar is the
+        missing-turn fallback, not a second translation of native items. Its
+        matching-start guard rejects a late terminal for a replaced buffer.
+        """
+        if self._turn_history is None or self._thread_id is None:
+            return
+        events = [e for e in self._turn_buffer if not isinstance(e, ev.TurnEnd)]
+        await asyncio.to_thread(
+            self._turn_history.record, self._thread_id, terminal.turn_id,
+            [*events, terminal],
+        )
 
     async def _handle_notice(self, notice: RunnerNotice) -> None:
         """React to one supervision verdict about this thread's app-server."""
@@ -2045,7 +2063,9 @@ class CodexAgentDriver:
         self._pending_hand_back_reason = None
         self._turns_completed += 1
         self._last_turn_outcome = "failed"
-        self._emit(ev.TurnEnd(turn_id, outcome="interrupted"))
+        terminal = ev.TurnEnd(turn_id, outcome="interrupted")
+        await self._save_turn(terminal)
+        self._emit(terminal)
         await self._emit_status()
 
     async def _resynchronize(self) -> None:

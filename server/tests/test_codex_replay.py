@@ -357,3 +357,96 @@ async def test_user_prompts_never_raises_on_a_read_failure():
 
     replay = CodexThreadReplay(_BoomClient(), "thread-1", model="gpt-5-codex")
     assert await replay.user_prompts() == []
+
+
+@pytest.mark.asyncio
+async def test_missing_completed_turns_survive_reload_and_share_cursor_space(tmp_path):
+    from server.codex.turn_history import TurnHistoryStore
+
+    root = tmp_path / 'sidecars'
+    store = TurnHistoryStore(root)
+    for tid in ('t2', 't3'):
+        store.record('thread-1', tid, [
+            ev.UserMessage(tid, f'prompt {tid}', ts=10), ev.TurnStart(tid),
+            ev.TextDelta(tid, f'recovered {tid}', ts=11), ev.TurnEnd(tid),
+        ])
+    client = _FakeClient([_turn('t1')])
+    # A fresh adapter has no live driver buffer, exactly like a navigation reload.
+    replay = CodexThreadReplay(client, 'thread-1', item_times_path=root / 'thread-1.jsonl')
+    tail = await replay.window(limit=1, drop_incomplete_turn=True)
+    assert (tail.earliest_turn, tail.total_turns) == (2, 3)
+    assert [(e.turn_id, e.turn_index) for e in tail.events if isinstance(e, ev.TurnStart)] == [('t3', 2)]
+    assert any(isinstance(e, ev.TextDelta) and e.text == 'recovered t3' for e in tail.events)
+    older = await replay.window(before=2, limit=1)
+    assert [(e.turn_id, e.turn_index) for e in older.events if isinstance(e, ev.TurnStart)] == [('t2', 1)]
+    assert await replay.user_prompts() == ['hi', 'prompt t2', 'prompt t3']
+    # Native history catching up must neither duplicate nor reorder the saved turns.
+    client.turns.extend([_turn('t2'), _turn('t3')])
+    caught_up = await replay.window(limit=None)
+    assert caught_up.total_turns == 3
+    assert [e.turn_id for e in caught_up.events if isinstance(e, ev.TurnStart)] == ['t1', 't2', 't3']
+
+
+@pytest.mark.asyncio
+async def test_history_hole_is_inserted_before_next_saved_native_anchor(tmp_path):
+    from server.codex.turn_history import TurnHistoryStore
+
+    for tid in ('t2', 't3'):
+        TurnHistoryStore(tmp_path).record('thread-1', tid, [
+            ev.UserMessage(tid, tid), ev.TurnStart(tid), ev.TextDelta(tid, tid), ev.TurnEnd(tid),
+        ])
+    replay = CodexThreadReplay(_FakeClient([_turn('t1'), _turn('t3')]), 'thread-1',
+                               item_times_path=tmp_path / 'thread-1.jsonl')
+    window = await replay.window(limit=None)
+    assert [e.turn_id for e in window.events if isinstance(e, ev.TurnStart)] == ['t1', 't2', 't3']
+
+
+@pytest.mark.asyncio
+async def test_partial_saved_history_keeps_native_chronology(tmp_path):
+    from server.codex.turn_history import TurnHistoryStore
+
+    ids = [f'01a11264-8aa{i}-7402-b738-2f5b7381c350' for i in range(4)]
+    for tid in (ids[1], ids[3]):
+        TurnHistoryStore(tmp_path).record('thread-1', tid, [
+            ev.UserMessage(tid, tid), ev.TurnStart(tid), ev.TextDelta(tid, tid), ev.TurnEnd(tid),
+        ])
+    replay = CodexThreadReplay(_FakeClient([_turn(ids[i]) for i in (0, 2, 3)]), 'thread-1',
+                               item_times_path=tmp_path / 'thread-1.jsonl')
+    window = await replay.window(limit=None)
+    assert [e.turn_id for e in window.events if isinstance(e, ev.TurnStart)] == ids
+
+
+@pytest.mark.asyncio
+async def test_saved_tail_precedes_active_native_turn_in_same_second(tmp_path):
+    from server.codex.turn_history import TurnHistoryStore
+    from server.codex.item_times import uuid7_ms
+
+    earlier = '01a11264-8aa0-7402-b738-2f5b7381c350'
+    later = '01a11264-8aa1-7402-b738-2f5b7381c350'
+    TurnHistoryStore(tmp_path).record('thread-1', earlier, [
+        ev.UserMessage(earlier, 'saved'), ev.TurnStart(earlier), ev.TurnEnd(earlier),
+    ])
+    active = _turn(later, status='inProgress')
+    active['startedAt'] = int(uuid7_ms(later) / 1000)
+    replay = CodexThreadReplay(_FakeClient([active]), 'thread-1',
+                               item_times_path=tmp_path / 'thread-1.jsonl')
+    window = await replay.window(limit=None, drop_incomplete_turn=True)
+    assert [e.turn_id for e in window.events if isinstance(e, ev.TurnStart)] == [earlier]
+    assert window.total_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_saved_terminal_settles_stale_native_in_progress_turn(tmp_path):
+    from server.codex.turn_history import TurnHistoryStore
+
+    TurnHistoryStore(tmp_path).record('thread-1', 't1', [
+        ev.UserMessage('temporary-prompt-id', 'saved prompt'), ev.TurnStart('t1'),
+        ev.TextDelta('t1', 'finished live'), ev.TurnEnd('t1'),
+    ])
+    replay = CodexThreadReplay(_FakeClient([_turn('t1', status='inProgress')]), 'thread-1',
+                               item_times_path=tmp_path / 'thread-1.jsonl')
+    window = await replay.window(drop_incomplete_turn=True)
+    assert window.total_turns == 1
+    assert any(isinstance(e, ev.TextDelta) and e.text == 'finished live' for e in window.events)
+    assert isinstance(window.events[-1], ev.TurnEnd)
+    assert window.events[-1].outcome == 'success'

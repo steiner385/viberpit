@@ -2112,3 +2112,49 @@ async def test_a_driver_without_a_journal_still_translates_items(harness):
     })
     await harness.settle()
     assert [e.tool_id for e in harness.of(ev.ToolCall)] == ["exec-1"]
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_is_durable_before_next_prompt_clears_buffer(harness, tmp_path):
+    from server.codex.item_times import ItemTimesWriter
+    from server.codex.turn_history import TurnHistoryStore
+
+    root = tmp_path / 'history'
+    await harness.boot(item_times=ItemTimesWriter(root))
+    await harness.driver.send_prompt('continue the work')
+    harness.notify_turn_started()
+    harness.notify_text('this progress must survive navigation')
+    harness.notify_turn_completed()
+    await harness.settle()
+    assert harness.of(ev.TurnEnd)
+    await harness.driver.send_prompt('next')
+    saved = TurnHistoryStore(root).load(THREAD)
+    assert [t.turn_id for t in saved] == ['turn-1']
+    assert any(isinstance(e, ev.TextDelta) and e.text == 'this progress must survive navigation'
+               for e in saved[0].events)
+    assert any(isinstance(e, ev.UserMessage) and e.text == 'continue the work'
+               for e in saved[0].events)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_saves_old_buffer_before_queued_turn_replaces_it(harness, tmp_path):
+    from server.codex.item_times import ItemTimesWriter
+    from server.codex.turn_history import TurnHistoryStore
+
+    root = tmp_path / 'history'
+    await harness.boot(item_times=ItemTimesWriter(root))
+    await harness.driver.send_prompt('first')
+    harness.notify_turn_started()
+    harness.notify_text('partial work')
+    await harness.settle()
+    await harness.driver.interrupt()
+    harness.server.rule(schema.METHOD_TURN_START, result={'turn': turn_payload('turn-2')})
+    await harness.driver.send_prompt('second')
+    harness.notify_turn_started('turn-2')
+    # A late terminal cannot save the new buffer under the old turn identity.
+    harness.notify_turn_completed('turn-1', 'interrupted')
+    await harness.settle()
+    saved = TurnHistoryStore(root).load(THREAD)
+    assert [t.turn_id for t in saved] == ['turn-1']
+    assert any(isinstance(e, ev.TextDelta) and e.text == 'partial work' for e in saved[0].events)
+    assert saved[0].events[-1].outcome == 'interrupted'
