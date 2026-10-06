@@ -593,8 +593,21 @@ Both daemon units set `OOMPolicy=continue` (#2673). systemd's default, `stop`, s
 whole unit whenever the kernel OOM-kills *any* process in its cgroup — including on a
 host-wide OOM — so one session's runaway build took every live session down with it
 (2026-10-04). With `continue` only the OOM victim dies; if that is the daemon process
-itself, `Restart=always` brings it back. Reinstall the unit, `daemon-reload`, and confirm
-with `systemctl show -p OOMPolicy viberpit-daemon.service` (expect `continue`).
+itself, `Restart=always` brings it back. Apply it with a drop-in on every daemon host
+(dobby's `viberpit-daemon.service`, and each remote runner's installed daemon unit) — a
+`daemon-reload` is enough, no restart:
+
+    sudo install -D -m644 /dev/stdin /etc/systemd/system/viberpit-daemon.service.d/oom-policy.conf <<<$'[Service]\nOOMPolicy=continue'
+    sudo systemctl daemon-reload
+    systemctl show -p OOMPolicy viberpit-daemon.service   # expect continue
+
+**Unit drift is reported, not fixed, by deploys** (#2702). After each runner deploys, it
+compares the safety directives in `DAEMON_UNIT_GUARDS` (`server/deploy/steps.py`:
+`KillMode`, `OOMPolicy`) between the committed unit (`viberpit-daemon.service` for the
+local daemon, `viberpit-daemon-remote.service` for remote runners) and the installed one
+(`systemctl show`, over ssh for remote hosts). A mismatch becomes a deploy warning naming
+the host, unit and directive. The deploy still succeeds, because the fix needs sudo on that
+host and retrying the deploy cannot supply it.
 
 ## Assistant nightly eval (`viberpit-assistant-eval.timer`)
 

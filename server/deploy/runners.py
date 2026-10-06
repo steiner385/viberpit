@@ -22,13 +22,14 @@ import asyncio
 import logging
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from server.deploy import drain as _drain
 from server.host_units import resolve_unit
 from server.deploy.steps import (
-    SSH_HOST_RE, SSH_REL_PATH_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
+    LOCAL_DAEMON_UNIT_FILE, REMOTE_DAEMON_UNIT_FILE, SSH_HOST_RE, SSH_REL_PATH_RE, SSH_REPO_RE,
+    _SHA_RE, check_daemon_unit_drift, short_sha_match,
 )
 
 log = logging.getLogger("server.deploy.runners")
@@ -68,6 +69,8 @@ class HostProgress:
     sha: str | None = None
     moved: bool = False           # checkout advanced — a rollback must rewind it
     restore: dict | None = None
+    # Non-fatal findings the controller lifts into the deploy's warnings (unit drift).
+    warnings: list[str] = field(default_factory=list)
 
     def to_wire(self) -> dict:
         return {"state": self.state, "step": self.step, "error": self.error, "sha": self.sha,
@@ -327,13 +330,17 @@ class RunnerDeploy:
             detail = (r.stderr or r.stdout or "").strip()[:500]
             raise RuntimeError(f"{step} failed (rc={r.returncode}): {detail}")
 
+    def _prefix(self, *, local: bool) -> list[str]:
+        """The argv that runs a command on this runner's host: none locally, ssh remotely."""
+        if local:
+            return []
+        host = self.target.ssh_host
+        if not host or not SSH_HOST_RE.match(host):
+            raise RuntimeError(f"ssh_host {host!r} is not a valid [user@]host")
+        return ["ssh", *SSH_OPTS, host]
+
     async def _restart(self, *, local: bool) -> None:
-        prefix: list[str] = []
-        if not local:
-            host = self.target.ssh_host
-            if not host or not SSH_HOST_RE.match(host):
-                raise RuntimeError(f"ssh_host {host!r} is not a valid [user@]host")
-            prefix = ["ssh", *SSH_OPTS, host]
+        prefix = self._prefix(local=local)
         unit = await asyncio.to_thread(resolve_unit, "daemon", run=self._run, prefix=prefix)
         if local:
             await self._local("restart", ["sudo", "systemctl", "restart", unit])
@@ -465,12 +472,29 @@ class RunnerDeploy:
                 except Exception:
                     log.warning("runner %s: restore_deploy failed", t.name, exc_info=True)
                     self.progress.restore = {"restored": [], "failed": [], "error": "restore call failed"}
+            self._mark(step="unit-drift")
+            self.progress.warnings = await self._unit_drift(local=local)
             self._mark("done")
             log.info("deploy.runner.done host=%s sha=%s restarted=%s", t.name, sha, daemon_changed)
         except Exception as exc:  # noqa: BLE001 — a runner failure is a REPORTED state
             self._mark("failed", step=self.progress.step, error=str(exc)[:500])
             log.warning("deploy.runner.failed host=%s step=%s: %s", t.name, self.progress.step, exc)
         return self.progress
+
+    async def _unit_drift(self, *, local: bool) -> list[str]:
+        """Safety directives the repo declares but this host's installed unit lacks (#2702).
+
+        Checked on every deploy, restart or not: the drift is a standing condition, and the
+        deploy is the one moment that already knows the committed unit changed. Never
+        fails the runner — the remedy is sudo on the host, not a retry.
+        """
+        unit_file = LOCAL_DAEMON_UNIT_FILE if local else REMOTE_DAEMON_UNIT_FILE
+        try:
+            return await asyncio.to_thread(check_daemon_unit_drift, unit_file,
+                                           prefix=self._prefix(local=local), run=self._run)
+        except Exception:
+            log.debug("runner %s: unit drift check failed", self.target.name, exc_info=True)
+            return []
 
     async def rewind(self, sha: str, *, daemon_changed: bool) -> None:
         """Rollback: put a moved remote runner back on *sha*. Never raises.

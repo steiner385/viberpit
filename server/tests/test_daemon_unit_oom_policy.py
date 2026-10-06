@@ -9,32 +9,14 @@ process's memory is already freed by then; stopping the siblings recovers nothin
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-DEPLOY = Path(__file__).resolve().parents[2] / "deploy"
-
-
-def _service_settings(unit: Path) -> dict[str, list[str]]:
-    settings: dict[str, list[str]] = {}
-    section = ""
-    for raw in unit.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.startswith("["):
-            section = line
-            continue
-        if section == "[Service]" and "=" in line:
-            key, _, value = line.partition("=")
-            settings.setdefault(key.strip(), []).append(value.strip())
-    return settings
+from server.deploy.steps import DEPLOY_DIR as DEPLOY, service_settings
 
 
 @pytest.mark.parametrize("unit", ["viberpit-daemon.service", "viberpit-daemon-remote.service"])
 def test_daemon_unit_survives_a_child_oom_kill(unit: str) -> None:
-    settings = _service_settings(DEPLOY / unit)
+    settings = service_settings((DEPLOY / unit).read_text())
     assert settings.get("OOMPolicy") == ["continue"], (
         f"{unit} must set OOMPolicy=continue: the default (stop) turns one session's "
         "OOM-killed tool into a fleet-wide outage (#2673)"
