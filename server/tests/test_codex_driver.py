@@ -251,6 +251,14 @@ class Harness:
                 await asyncio.sleep(0)
             await asyncio.sleep(0.005)
 
+    async def wait_until(self, predicate: Any, timeout: float = 5.0) -> None:
+        """Poll past work `settle()` cannot bound, e.g. an `asyncio.to_thread` disk write."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not predicate():
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f"condition not met within {timeout}s")
+            await asyncio.sleep(0.01)
+
     def of(self, kind: type) -> list[Any]:
         return [e for e in self.events if isinstance(e, kind)]
 
@@ -2153,8 +2161,8 @@ async def test_completed_turn_is_durable_before_next_prompt_clears_buffer(harnes
     harness.notify_turn_started()
     harness.notify_text('this progress must survive navigation')
     harness.notify_turn_completed()
-    await harness.settle()
-    assert harness.of(ev.TurnEnd)
+    # TurnEnd is emitted only after `_save_turn`'s threaded disk write returns.
+    await harness.wait_until(lambda: harness.of(ev.TurnEnd))
     await harness.driver.send_prompt('next')
     saved = TurnHistoryStore(root).load(THREAD)
     assert [t.turn_id for t in saved] == ['turn-1']
