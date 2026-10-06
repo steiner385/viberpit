@@ -48,7 +48,6 @@ from server.github import (
 )
 from server.automations import archive_audit
 from server.obs.error_signature import signature_of
-from server.sessions import dispatch
 
 from .test_population_eta_wired import (
     REPO as POP_REPO,
@@ -166,8 +165,6 @@ LOOPS: list[tuple[str, object]] = [
      lambda run: pr_poller._default_query([("steiner385/viberpit", "master")])),
     ("pr_poller(cairnea)",
      lambda run: pr_poller._default_query([("cairnea/KinDash", "main")])),
-    ("dispatch.fetch_open_issues",
-     lambda run: dispatch.fetch_open_issues("steiner385/viberpit", run_gh=run)),
     ("actions_api.repo_ci_meta",
      lambda run: actions_api.repo_ci_meta("steiner385/viberpit", run=run)),
     ("pr_population(population query)",
