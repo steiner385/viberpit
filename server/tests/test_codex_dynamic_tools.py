@@ -85,9 +85,9 @@ def test_base_and_developer_instructions_cannot_both_be_sent():
 
 
 def test_thread_resume_has_no_dynamic_tools_field():
-    # The vendor boundary the "assistant threads are never resumed" rule rests
-    # on. If a future codex-cli grows the field, this test fails and the rule can
-    # be revisited deliberately rather than by accident.
+    # The vendor boundary the assistant's resume-only-onto-an-unchanged-surface
+    # rule rests on (#2714): a resume keeps a thread's tools but cannot change
+    # them. If a future codex-cli grows the field, revisit that rule deliberately.
     assert "dynamicTools" not in schema.ThreadResumeParams(thread_id="t").to_wire()
     assert not any(f.name == "dynamic_tools"
                    for f in schema.ThreadResumeParams.__dataclass_fields__.values())
