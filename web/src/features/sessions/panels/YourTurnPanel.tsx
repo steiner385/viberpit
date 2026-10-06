@@ -1,3 +1,4 @@
+import type { PromptContext } from '@/session/events'
 import { HandHelping, MessageCircleReply } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -8,7 +9,7 @@ interface Props {
   statusState: string
   /** Next-prompt suggestions (rt.suggestions — live event, else the record cache). */
   suggestions: string[]
-  onPrompt: (text: string, attachmentIds: string[]) => void
+  onPrompt: (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => void
   /** The one sentence the session passed to `hand_back(reason)` (Session.handBackReason).
    *  Read while `statusState === 'handed_back'`, and beside a busy status (#2647: a
    *  mid-turn hand_back is written the moment it is read and cleared by the next
@@ -156,7 +157,7 @@ export function YourTurnPanel({
             <button
               key={`${i}-${s.slice(0, 24)}`}
               type="button"
-              onClick={() => onPrompt(s, [])}
+              onClick={() => onPrompt(s, [], undefined, 'suggested')}
               className={cn(
                 // min-h-target: the 44px house tap target (QuestionCard's option
                 // buttons use the same class) — these are one-tap sends on a phone.

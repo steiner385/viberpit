@@ -2378,3 +2378,15 @@ class WebVitalSample(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True,
         default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class QuickReplyProfile(Base):
+    """Bounded, newly observed personal replies and their last successful curation."""
+
+    __tablename__ = "quick_reply_profiles"
+
+    identity: Mapped[str] = mapped_column(String(320), primary_key=True)
+    samples: Mapped[list] = mapped_column(JSON, default=list)
+    replies: Mapped[list] = mapped_column(JSON, default=list)
+    attempted_at: Mapped[float] = mapped_column(Float, default=0.0)
+    curated_at: Mapped[float] = mapped_column(Float, default=0.0)

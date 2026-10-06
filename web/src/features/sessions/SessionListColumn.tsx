@@ -78,7 +78,7 @@ export interface SessionListColumnProps {
   onRename: (id: string) => void
   onClose: (id: string) => void
   onDelete: (id: string) => void
-  onQuickResume: (id: string, text?: string) => void
+  onQuickResume: (id: string, text?: string, replySource?: 'suggested') => void
   /** Open an archived session's read-only transcript (archived scope only). */
   onReviewSession: (id: string) => void
   /** Leave list-focus mode (returns focus to the prompt). */

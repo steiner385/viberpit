@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
-import { QUICK_REPLIES } from '@/lib/quickReplies'
+const repliesState = vi.hoisted(() => ({ replies: ['continue', 'proceed', 'try again'], statusText: null as string | null }))
+vi.mock('@/api/quickReplies', () => ({ useQuickReplies: () => repliesState }))
 
 // Composer looks up the session's engine (for attachment gating) via the
 // sessions list cache; no test here passes a sessionId that resolves, so an
@@ -116,7 +117,7 @@ describe('Composer sparkle button', () => {
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['stale cached'], onPrompt, onRequestSuggestions })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     await waitFor(() => expect(onRequestSuggestions).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('Generated next step', []))
+    await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('Generated next step', [], undefined, 'suggested'))
   })
 
   it('empty generation: sparkle sends nothing and never falls back to "continue"', async () => {
@@ -135,26 +136,26 @@ describe('Composer sparkle button', () => {
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'], onPrompt })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'First' }))
-    expect(onPrompt).toHaveBeenCalledWith('First', [])
+    expect(onPrompt).toHaveBeenCalledWith('First', [], undefined, 'suggested')
   })
 
   it('quick-replies dropdown is available with no backend suggestions', () => {
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: [] })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
-    for (const reply of QUICK_REPLIES) {
+    for (const reply of repliesState.replies) {
       expect(screen.getByRole('menuitem', { name: reply })).toBeInTheDocument()
     }
   })
 
-  it('clicking a canned quick reply sends its literal text immediately', () => {
+  it('clicking a learned quick reply sends its literal text immediately', () => {
     const onPrompt = vi.fn()
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'proceed' }))
-    expect(onPrompt).toHaveBeenCalledWith('proceed', [])
+    expect(onPrompt).toHaveBeenCalledWith('proceed', [], undefined, 'suggested')
   })
 
-  it('lists dynamic suggestions above the canned list, separated by a divider', () => {
+  it('lists dynamic suggestions above the learned list, separated by a divider', () => {
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'] })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     expect(screen.getByRole('menuitem', { name: 'First' })).toBeInTheDocument()
@@ -234,4 +235,63 @@ describe('Composer interrupt-and-send ("Send now")', () => {
     fireEvent.click(screen.getByRole('button', { name: /send now/i }))
     expect(onInterruptAndPrompt).not.toHaveBeenCalled()
   })
+})
+
+it.each(['Loading your replies…', 'Learning from your replies across sessions.', 'Quick replies unavailable. Try again later.'])('shows %s without canned fallback', (statusText) => {
+  const previous = repliesState.replies
+  repliesState.replies = []
+  repliesState.statusText = statusText
+  try {
+    renderComposer()
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    expect(screen.getByRole('status')).toHaveTextContent(statusText)
+    expect(screen.queryByRole('menuitem', { name: 'continue' })).toBeNull()
+  } finally {
+    repliesState.replies = previous
+    repliesState.statusText = null
+  }
+})
+
+it('accepted ghost suggestions retain provenance until the user edits them', () => {
+  const onPrompt = vi.fn()
+  renderComposer({ suggestions: ['Keep going'], onPrompt })
+  const textarea = screen.getByLabelText('Message')
+  fireEvent.keyDown(textarea, { key: 'Tab' })
+  fireEvent.keyDown(textarea, { key: 'Enter' })
+  expect(onPrompt).toHaveBeenLastCalledWith('Keep going', [], undefined, 'suggested')
+  fireEvent.keyDown(textarea, { key: 'Tab' })
+  fireEvent.change(textarea, { target: { value: 'Please try something else' } })
+  fireEvent.keyDown(textarea, { key: 'Enter' })
+  expect(onPrompt).toHaveBeenLastCalledWith('Please try something else', [])
+})
+
+it('keeps suggested provenance when restoring a draft after navigating away', () => {
+  const first = renderComposer({ sessionId: 'saved-suggestion', suggestions: ['Keep going'] })
+  fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Tab' })
+  first.unmount()
+  const onPrompt = vi.fn()
+  renderComposer({ sessionId: 'saved-suggestion', onPrompt })
+  fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Enter' })
+  expect(onPrompt).toHaveBeenCalledWith('Keep going', [], undefined, 'suggested')
+})
+
+it('keeps accepted suggestion provenance when sending now interrupts a turn', () => {
+  const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
+  const props = defaultProps({ suggestions: ['Keep going'], onInterruptAndPrompt })
+  const { rerender } = render(<Composer {...props} />)
+  fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Tab' })
+  rerender(<Composer {...props} status={{ state: 'in_progress', count: 0 }} />)
+  fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+  expect(onInterruptAndPrompt).toHaveBeenCalledWith('Keep going', [], 'suggested')
+})
+
+it('marks an unchanged external notice prefill as suggested, but an edited reply as typed', () => {
+  const onPrompt = vi.fn()
+  const { rerender } = renderComposer({ externalDraft: { text: 'What does this notice mean?' }, onPrompt })
+  fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Enter' })
+  expect(onPrompt).toHaveBeenLastCalledWith('What does this notice mean?', [], undefined, 'suggested')
+  rerender(<Composer {...defaultProps({ externalDraft: { text: 'What does this notice mean?' }, onPrompt })} />)
+  fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Explain the timeout in detail' } })
+  fireEvent.keyDown(screen.getByLabelText('Message'), { key: 'Enter' })
+  expect(onPrompt).toHaveBeenLastCalledWith('Explain the timeout in detail', [])
 })

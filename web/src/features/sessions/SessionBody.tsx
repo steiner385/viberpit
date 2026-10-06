@@ -205,7 +205,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 'The permission or plan approval you were waiting on was lost when the '
                 + 'daemon restarted — I never saw it. Please re-request whatever you need '
                 + 'approved, or tell me where things stand.',
-                [],
+                [], undefined, 'suggested',
               )}
             />
 

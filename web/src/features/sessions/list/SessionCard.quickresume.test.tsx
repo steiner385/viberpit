@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SessionCard } from './SessionCard'
-import { QUICK_REPLIES } from '@/lib/quickReplies'
+const repliesState = vi.hoisted(() => ({ replies: ['continue', 'proceed', 'try again'], statusText: null as string | null }))
+vi.mock('@/api/quickReplies', () => ({ useQuickReplies: () => repliesState }))
 import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
@@ -50,7 +51,7 @@ describe('SessionCard — quick-resume sparkle button', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['stale cached'] }), onQuickResume, onGenerateSuggestion })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     await waitFor(() => expect(onGenerateSuggestion).toHaveBeenCalledWith('s1'))
-    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step'))
+    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step', 'suggested'))
   })
 
   it('empty generation: sparkle resumes with nothing — never a hard-coded "continue"', async () => {
@@ -67,7 +68,7 @@ describe('SessionCard — quick-resume sparkle button', () => {
     const onGenerateSuggestion = vi.fn().mockResolvedValue(['Pick up where you left off'])
     renderCard({ session: mkSession({ status: 'idle', detached: true, latestSuggestions: [] }), onQuickResume, onGenerateSuggestion })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Pick up where you left off'))
+    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Pick up where you left off', 'suggested'))
   })
 
   it('actively-working session: no resume button', () => {
@@ -87,25 +88,25 @@ describe('SessionCard — quick-resume sparkle button', () => {
   // is a SEND, and the unified ⋯ menu had four of them one row above Delete.
   // Always available — even with zero backend suggestions — whenever the
   // session is resumable.
-  it('canned quick replies are available in the Quick-replies menu with no backend suggestions', () => {
+  it('learned quick replies are available in the Quick-replies menu with no backend suggestions', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
-    for (const reply of QUICK_REPLIES) {
+    for (const reply of repliesState.replies) {
       expect(screen.getByRole('menuitem', { name: reply })).toBeInTheDocument()
     }
     // The menu says what a row does before the row is tapped.
     expect(screen.getByRole('menu')).toHaveTextContent(/send a reply/i)
   })
 
-  it('clicking a canned quick reply sends its literal text', () => {
+  it('clicking a learned quick reply sends its literal text', () => {
     const onQuickResume = vi.fn()
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'try again' }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', 'try again')
+    expect(onQuickResume).toHaveBeenCalledWith('s1', 'try again', 'suggested')
   })
 
-  it('lists all cached dynamic suggestions above the canned list, sections divided', () => {
+  it('lists all cached dynamic suggestions above the learned list, sections divided', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step', 'Second step'] }), onQuickResume: noop })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     // The sparkle generates fresh, so the menu surfaces ALL cached suggestions.
@@ -113,7 +114,7 @@ describe('SessionCard — quick-resume sparkle button', () => {
     expect(screen.getByRole('menuitem', { name: 'Second step' })).toBeInTheDocument()
     // Canned list still present below.
     expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
-    // One divider: suggestions | canned replies.
+    // One divider: suggestions | learned replies.
     expect(screen.getAllByRole('separator')).toHaveLength(1)
   })
 
@@ -214,7 +215,7 @@ describe('SessionCard — quick-resume sparkle button', () => {
       expect(items).toContain('Cached one')
       expect(items).toContain('continue')
       fireEvent.click(screen.getByRole('menuitem', { name: /generate next step/i }))
-      await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step'))
+      await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step', 'suggested'))
     })
   })
 
@@ -235,4 +236,19 @@ describe('SessionCard — quick-resume sparkle button', () => {
     expect(menu.className).toMatch(/\bz-sticky\b/)
     expect(menu.className).not.toMatch(/\bz-raised\b/)
   })
+})
+
+it.each(['Loading your replies…', 'Learning from your replies across sessions.', 'Quick replies unavailable. Try again later.'])('shows %s without canned fallback', (statusText) => {
+  const previous = repliesState.replies
+  repliesState.replies = []
+  repliesState.statusText = statusText
+  try {
+    renderCard({ session: mkSession(), onQuickResume: noop })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    expect(screen.getByRole('status')).toHaveTextContent(statusText)
+    expect(screen.queryByRole('menuitem', { name: 'continue' })).toBeNull()
+  } finally {
+    repliesState.replies = previous
+    repliesState.statusText = null
+  }
 })

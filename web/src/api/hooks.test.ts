@@ -39,3 +39,10 @@ describe('useSendPrompt', () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith('/sessions/s1/prompt', { text: 'continue' }))
   })
 })
+
+it('marks suggested REST sends so they are not learned as typed replies', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({} as Session)
+  const { result } = renderHook(() => useSendPrompt(), { wrapper })
+  result.current.mutate({ id: 's1', text: 'continue', replySource: 'suggested' })
+  await waitFor(() => expect(post).toHaveBeenCalledWith('/sessions/s1/prompt', { text: 'continue', replySource: 'suggested' }))
+})

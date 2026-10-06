@@ -36,6 +36,7 @@ from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
+from server.api.quick_replies import router as quick_replies_router
 from server.api import models as api_models
 from server.api.deploy import router as deploy_router
 from server.api.client_logs import router as client_logs_router
@@ -952,6 +953,7 @@ def create_app(
     app.include_router(config_router)
     app.include_router(github_router)
     app.include_router(settings_router)
+    app.include_router(quick_replies_router)
     from server.api.fleet import router as fleet_router
     app.include_router(fleet_router)
     app.include_router(api_models.router)

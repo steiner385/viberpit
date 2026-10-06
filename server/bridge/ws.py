@@ -62,6 +62,7 @@ from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
+from server.quick_replies import observe_reply
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
 from server.db import db_session
@@ -1687,6 +1688,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         session_id, msg_type)
             if msg_type == "prompt":
                 await _send({"type": "promptRejected", "sessionId": session_id,
+                             **({"replySource": msg["replySource"]}
+                                if "replySource" in msg else {}),
                              "text": msg.get("text", ""),
                              "attachmentIds": msg.get("attachmentIds"),
                              "reason": "busy"})
@@ -1792,6 +1795,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 log.warning("ws.prompt rate_limited session=%s identity=%s",
                             session_id, identity)
                 await _send({"type": "promptRejected", "sessionId": session_id,
+                             **({"replySource": msg["replySource"]}
+                                if "replySource" in msg else {}),
                              "text": text, "attachmentIds": attachment_ids,
                              "reason": "RATE_LIMITED"})
                 return
@@ -1877,6 +1882,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # draining/no_driver answers get promptRejected below.
                 await _send({"type": "promptAck", "sessionId": session_id,
                              "stage": "delivered"})
+                source = msg.get("replySource", "typed")
+                if source in ("typed", "suggested"):
+                    try:
+                        await observe_reply(
+                            identity, text, source=source, via=via,
+                            has_attachments=bool(attachment_ids),
+                        )
+                    except Exception:
+                        # The driver already accepted this prompt; optional learning
+                        # must never interrupt delivery or its acknowledgement.
+                        log.info("quick_reply observation failed")
             if interrupt and status == "sent":
                 # Same trail a Stop leaves, tagged so the audit shows the
                 # turn was cut short to post a prompt, not abandoned.
@@ -1904,6 +1920,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 log.warning("ws.prompt rejected session=%s reason=%s",
                             session_id, status)
                 await _send({"type": "promptRejected", "sessionId": session_id,
+                             **({"replySource": msg["replySource"]}
+                                if "replySource" in msg else {}),
                              "text": text, "attachmentIds": attachment_ids,
                              "reason": status})
 

@@ -31,7 +31,7 @@ describe('YourTurnPanel', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Proceed with Phase B' }))
-    expect(onPrompt).toHaveBeenCalledWith('Proceed with Phase B', [])
+    expect(onPrompt).toHaveBeenCalledWith('Proceed with Phase B', [], undefined, 'suggested')
   })
 
   it('falls back to a review-and-reply hint when no suggestions are cached', () => {
@@ -81,7 +81,7 @@ describe('YourTurnPanel — handed back', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Keep it read-only' }))
-    expect(onPrompt).toHaveBeenCalledWith('Keep it read-only', [])
+    expect(onPrompt).toHaveBeenCalledWith('Keep it read-only', [], undefined, 'suggested')
   })
 
   it('surfaces the suspected-complete hint with the same two answers the card offers', () => {

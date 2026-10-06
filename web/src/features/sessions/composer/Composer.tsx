@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { QUICK_REPLIES } from '@/lib/quickReplies'
+import { useQuickReplies } from '@/api/quickReplies'
 import { useSessions } from '@/api/hooks'
 import { useImageAttachments } from './useImageAttachments'
 import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
@@ -18,11 +18,11 @@ import { mentionQueryAt } from '@/lib/mentionQuery'
 
 interface Props {
   status: { state: string; count: number }
-  onPrompt: (text: string, attachmentIds: string[], context?: PromptContext) => void
+  onPrompt: (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => void
   onInterrupt: () => void
   /** "Send now" while busy: stop the live turn and run this draft next instead of
    *  queueing it. Returns false when the frame could not be sent (draft is kept). */
-  onInterruptAndPrompt?: (text: string, attachmentIds: string[]) => boolean
+  onInterruptAndPrompt?: (text: string, attachmentIds: string[], replySource?: 'suggested') => boolean
   queued?: QueuedItem[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
@@ -38,7 +38,7 @@ interface Props {
   sessionId?: string
   /** Called while the user types — drives autopilot human-deference (throttled in the ws client). */
   onActivity?: () => void
-  /** Prefill the draft from outside (e.g. a NoticeCard's "Ask about it"). A fresh object
+  /** Prefill a suggested draft from outside (e.g. a NoticeCard's "Ask about it"). A fresh object
    *  each time — even identical text twice in a row — so the effect re-fires; the user
    *  can still edit or clear it before sending. */
   externalDraft?: { text: string } | null
@@ -49,10 +49,12 @@ interface Props {
 }
 
 export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource }: Props) {
+  const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const suggestedDraft = useRef<string | null>(draft.initial.replySource === 'suggested' ? draft.initial.text : null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
@@ -82,7 +84,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     const attachments: DraftAttachment[] = att.attachments
       .filter((a) => !a.error && a.id)
       .map((a) => ({ id: a.id as string, mime: a.mime, name: a.name }))
-    draft.save({ text, attachments })
+    draft.save({ text, attachments, ...(suggestedDraft.current === text ? { replySource: 'suggested' as const } : {}) })
   }, [text, att.attachments, draft])
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const slash = text.startsWith('/') && !text.includes('\n')
@@ -155,6 +157,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // `externalDraft` itself, not its text, is the dependency.
   useEffect(() => {
     if (!externalDraft) return
+    suggestedDraft.current = externalDraft.text
     // eslint-disable-next-line react-hooks/set-state-in-effect -- overwrite the draft the moment a new prefill arrives
     recallTo(0, externalDraft.text)
     textareaRef.current?.focus()
@@ -164,6 +167,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     if (histPosRef.current !== 0) histPosRef.current = 0
+    suggestedDraft.current = null
     const value = e.target.value
     const nextCaret = e.target.selectionStart ?? value.length
     setText(value)
@@ -205,6 +209,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   }, [commands, onCommand])
 
   const clearDraft = useCallback((clearAttachments: boolean) => {
+    suggestedDraft.current = null
     setText(''); if (clearAttachments) att.clear(); draft.clear()
     histPosRef.current = 0; draftRef.current = ''
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -217,7 +222,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     if (refs.length === 0 && runCommandFromText(trimmed)) {
       clearDraft(false); return
     }
-    onPrompt(trimmed, refs)
+    if (suggestedDraft.current === text) onPrompt(trimmed, refs, undefined, 'suggested')
+    else onPrompt(trimmed, refs)
     clearDraft(true)
   }, [text, onPrompt, att, runCommandFromText, clearDraft])
 
@@ -229,12 +235,15 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
-    if (!onInterruptAndPrompt(trimmed, refs)) return
+    const sent = suggestedDraft.current === text
+      ? onInterruptAndPrompt(trimmed, refs, 'suggested') : onInterruptAndPrompt(trimmed, refs)
+    if (!sent) return
     clearDraft(true)
   }, [text, onInterruptAndPrompt, att, clearDraft])
   const canSendNow = isWorking && !chatArmed && onInterruptAndPrompt !== undefined
 
   const prefill = useCallback((value: string) => {
+    suggestedDraft.current = value
     setText(value)
     const el = textareaRef.current
     if (el) {
@@ -248,8 +257,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
 
   const play = useCallback(async () => {
     // Sparkle (✨) ALWAYS asks the LLM for a fresh next-prompt and sends the top
-    // result — never a cached value or a hard-coded fallback (those live only in
-    // the dropdown). The backend generates from the live driver, or from the
+    // result. Cached suggestions and learned replies live in the dropdown.
+    // The backend generates from the live driver, or from the
     // transcript for a detached/idle session. When the model returns nothing we
     // hint at the dropdown rather than silently sending "continue".
     if (!onRequestSuggestions || generating) return
@@ -257,7 +266,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     try {
       const items = await onRequestSuggestions()
       if (items.length > 0) {
-        onPrompt(items[0], [])
+        onPrompt(items[0], [], undefined, 'suggested')
       } else {
         toast.info('No suggestion right now — pick a quick reply from the menu.')
       }
@@ -539,7 +548,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
                     key={`suggestion-${i}`}
                     type="button"
                     role="menuitem"
-                    onClick={() => { setMenuOpen(false); onPrompt(s, []) }}
+                    onClick={() => { setMenuOpen(false); onPrompt(s, [], undefined, 'suggested') }}
                     className={cn(
                       'block w-full truncate px-3 py-2 text-left text-sm',
                       'hover:bg-surface-raised',
@@ -551,13 +560,14 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
                 {(suggestions?.length ?? 0) > 0 && (
                   <div role="separator" className="my-1 border-t border-edge" />
                 )}
-                {/* Canned section: hard-coded one-tap replies, always available. */}
-                {QUICK_REPLIES.map((reply) => (
+                {/* Personal replies learned across sessions. */}
+                {repliesStatus && <p role="status" className="px-3 py-2 text-sm text-ink-muted">{repliesStatus}</p>}
+                {replies.map((reply) => (
                   <button
                     key={reply}
                     type="button"
                     role="menuitem"
-                    onClick={() => { setMenuOpen(false); onPrompt(reply, []) }}
+                    onClick={() => { setMenuOpen(false); onPrompt(reply, [], undefined, 'suggested') }}
                     className={cn(
                       'block w-full truncate px-3 py-2 text-left text-sm',
                       'hover:bg-surface-raised',

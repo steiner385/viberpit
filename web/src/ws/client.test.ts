@@ -403,6 +403,29 @@ describe('SessionSocket update-pending queue', () => {
     expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('queued one'))).toBe(true)
   })
 
+  it('preserves suggested provenance through a drain rejection and replay', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = MockWebSocket.instances.at(-1)!
+    ws.simulateOpen()
+    sock.prompt('s1', 'continue', [], undefined, 'suggested')
+    expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ replySource: 'suggested' })
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'continue', replySource: 'suggested' })
+    ws.simulateMessage({ type: 'updateCancelled' })
+    expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ type: 'prompt', replySource: 'suggested' })
+  })
+
+  it('preserves suggested provenance when buffered before sending', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = MockWebSocket.instances.at(-1)!
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'continue', [], undefined, 'suggested')
+    ws.simulateMessage({ type: 'updateCancelled' })
+    expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ type: 'prompt', replySource: 'suggested' })
+  })
+
   it('emits updatePendingChange with active flag and count', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()

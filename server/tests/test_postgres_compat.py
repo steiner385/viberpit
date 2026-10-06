@@ -201,6 +201,8 @@ async def test_ci_run_job_test_result_ids_survive_int64_on_postgres(pg_engine):
 # Values for NOT NULL columns that have neither a default nor are one of the
 # DateTime/FK columns handled generically below. Keyed by table name.
 _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
+    # quick_reply_profiles uses epoch floats, so it is covered by the dedicated
+    # JSON/epoch roundtrip below, not this DateTime sweep.
     "automation_operations": {"token": "dtcheck-operation", "owner": "dtcheck-host",
                               "source": "dtcheck-runner", "reason": "datetime sweep"},
     "sessions": {"name": "dtcheck", "account_name": "dtcheck", "cwd": "/tmp/dtcheck"},
@@ -970,3 +972,26 @@ async def test_reconcile_upgrades_fk_on_delete_on_postgres(pg_engine, pg_url):
     async with pg_engine.connect() as conn:
         assert (await conn.run_sync(_session_fk_ondelete, "dispatch_outcomes")) == "SET NULL", (
             "init_db must rewrite an FK whose ON DELETE rule drifted from the model")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_quick_reply_profile_roundtrip_on_postgres(pg_engine):
+    """Personal JSON samples/cache and epoch timestamps round-trip on both dialects."""
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import QuickReplyProfile
+
+    factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    identity = "quick-reply-pg@example.invalid"
+    async with factory() as db:
+        db.add(QuickReplyProfile(identity=identity, samples=[{"text": "continue", "at": 1.25}],
+                                 replies=["Continue"], attempted_at=1.5, curated_at=1.75))
+        await db.commit()
+    async with factory() as db:
+        row = (await db.scalars(select(QuickReplyProfile).where(
+            QuickReplyProfile.identity == identity))).one()
+        assert row.samples == [{"text": "continue", "at": 1.25}]
+        assert row.replies == ["Continue"]
+        assert (row.attempted_at, row.curated_at) == (1.5, 1.75)
+        await db.execute(delete(QuickReplyProfile).where(QuickReplyProfile.identity == identity))
+        await db.commit()
