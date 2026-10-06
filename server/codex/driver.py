@@ -463,6 +463,16 @@ class CodexAgentDriver:
         return self._thread_id
 
     @property
+    def thread_may_have_history(self) -> bool:
+        """Whether this thread can have turns to read back. False from a fresh
+        `thread/start` (or a thread replacement) until the first `turn/start`
+        is accepted; a driver built with `resume=` cannot rule history out.
+
+        Replay asks before `thread/read`: the pinned app-server refuses to list
+        the turns of a thread that never ran one (#2692)."""
+        return self._thread_may_have_history
+
+    @property
     def identity(self) -> str:
         return self._identity
 

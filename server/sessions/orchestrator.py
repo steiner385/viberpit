@@ -22281,7 +22281,7 @@ class SessionOrchestrator:
         churn a process that is already healthy.
 
         Returns None rather than raising for every failure mode — no manager, no thread
-        id yet (the session has not run turn one), an app-server that will not start.
+        id yet, a thread that has not run turn one, an app-server that will not start.
         The callers all treat None as "no history available", which is the truthful
         answer in each case, and none of them may fail a session over a read.
 
@@ -22310,6 +22310,14 @@ class SessionOrchestrator:
         model = (getattr(rec, "model", None)
                  or (ref.model if ref is not None else None))
         if not thread_id or not account:
+            return None
+        # A live driver that knows its thread never ran a turn has nothing to read,
+        # and the pinned app-server refuses `thread/read includeTurns` for such a
+        # thread — which create's own sub-agent sweep then filed as an auto-error
+        # for every new Codex session (#2692). Only an explicit False skips: a
+        # driver that cannot say keeps the read, as does a driverless (archived or
+        # detached) session, whose history the row cannot rule out.
+        if driver is not None and getattr(driver, "thread_may_have_history", True) is False:
             return None
         client = codex.client_for(account)
         if client is None:
