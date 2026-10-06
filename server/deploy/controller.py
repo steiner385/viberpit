@@ -254,6 +254,7 @@ class DeployController:
             self._runner_targets, self._runner_results = targets, results
             for name, p in results.items():
                 self.status.hosts[name] = p.to_wire()
+                self.status.warnings.extend(f"{name}: {w}" for w in p.warnings)
             runner_failures = [f"{n} failed at {p.step or '?'}: {p.error or p.state}"
                                for n, p in results.items() if p.state in self._runners.FAILED_STATES]
             self._set(Phase.RUNNERS, PhaseState.FAILED if runner_failures else PhaseState.DONE)

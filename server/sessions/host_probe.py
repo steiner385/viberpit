@@ -34,6 +34,16 @@ log = logging.getLogger(__name__)
 _PROBE_FAILURE_LOG = LogThrottle()
 _DEPLOY_STATE_LOG = LogThrottle()
 
+# A lone ``DaemonTimeout`` says the daemon is UP and its event loop was too starved to
+# answer /info inside the deadline — on a loaded host that is one stalled tick, and it
+# clears by the next probe. Filing an auto-error for it reports the host's load, not a
+# fault anyone can fix (#2701: six issues-worth of records from dobby at load 28). Only a
+# RUN of them is a condition: this many consecutive timeouts for one host (~90s at the
+# 30s probe interval) before the record is a WARNING. Anything else — a success, a fence,
+# a different failure class — ends the run.
+TIMEOUT_ESCALATE_AFTER = 3
+_CONSECUTIVE_TIMEOUTS: dict[str, int] = {}
+
 Fetch = Callable[[str], Awaitable[dict]]
 
 __all__ = ["probe_host", "probe_all", "probe_loop", "default_fetch",
@@ -75,6 +85,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     values: dict = {"last_probe_at": datetime.utcnow()}
     try:
         info = await fetch(endpoint)
+        _CONSECUTIVE_TIMEOUTS.pop(name, None)
         daemon_proto = info.get("protocol")
         # The engine advertisement is recorded on EVERY outcome below, including a
         # fenced one: it describes what the runner can run, not whether the edge may
@@ -122,12 +133,20 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
         # host (#2126). ``host`` now rides ``fields`` and the fingerprint is the dotted
         # event name.
         cause = type(exc).__name__
+        timeouts = _count_timeout(name, exc)
         from server.sessions import host_upgrade  # deferred: runners imports this module
         if await host_upgrade.restart_expected(name):
             log_event_throttled(
                 log, _PROBE_FAILURE_LOG, f"{name}:restart:{cause}", logging.INFO,
                 "fleet.probe_failed", host=name, endpoint=endpoint, error=str(exc),
                 restart="in_progress")
+        elif 0 < timeouts < TIMEOUT_ESCALATE_AFTER:
+            # Its own key, for the same reason the restart branch has one: sharing the
+            # host's would let this INFO gag the WARNING the run is about to earn.
+            log_event_throttled(
+                log, _PROBE_FAILURE_LOG, f"{name}:transient:{cause}", logging.INFO,
+                "fleet.probe_failed", host=name, endpoint=endpoint, error=str(exc),
+                consecutive=timeouts)
         else:
             log_event_throttled(
                 log, _PROBE_FAILURE_LOG, f"{name}:{cause}", logging.WARNING,
@@ -136,6 +155,17 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     async with db_session() as db:
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
     return values
+
+
+def _count_timeout(name: str, exc: Exception) -> int:
+    """Length of *name*'s current run of timeouts including *exc*; 0 if *exc* is not one."""
+    from server.ipc.client import DaemonTimeout  # deferred, as in default_fetch
+
+    if not isinstance(exc, DaemonTimeout):
+        _CONSECUTIVE_TIMEOUTS.pop(name, None)
+        return 0
+    _CONSECUTIVE_TIMEOUTS[name] = _CONSECUTIVE_TIMEOUTS.get(name, 0) + 1
+    return _CONSECUTIVE_TIMEOUTS[name]
 
 
 def _engines_snapshot(info: dict) -> dict | None:

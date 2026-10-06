@@ -7,9 +7,11 @@ import logging
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Callable
 
 from server.deploy.types import DeployError
+from viberpit import brand
 
 log = logging.getLogger(__name__)
 
@@ -298,6 +300,75 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
                         f"resolves to {resolved_venv}, outside checkout {root} — the venv "
                         "is owned by another developer checkout and breaks if that checkout "
                         "is renamed, rebuilt, or removed")
+    return problems
+
+
+# Daemon unit directives whose value decides whether ONE event takes every live session
+# down: KillMode (a restart kills the whole cgroup vs. lets sessions drain, #1164) and
+# OOMPolicy (one OOM-killed tool stops the unit, #2673). A deploy fast-forwards the unit
+# FILES but never installs them (deploy/README.md "Unit-file edits ... do NOT
+# auto-apply"), so a merged fix to either is inert until someone with sudo installs it —
+# #2690 sat merged while dobby kept OOMPolicy=stop and lost every session again (#2702).
+# Only these: other directives (MemoryMax, ExecStart, Environment) are legitimately
+# overridden per host by drop-ins, so comparing them would report drift by design.
+DAEMON_UNIT_GUARDS = ("KillMode", "OOMPolicy")
+DEPLOY_DIR = Path(__file__).resolve().parents[2] / "deploy"
+# The repo unit each daemon role is installed from: the edge host's local daemon, and a
+# remote session runner.
+LOCAL_DAEMON_UNIT_FILE = DEPLOY_DIR / f"{brand.SLUG}-daemon.service"
+REMOTE_DAEMON_UNIT_FILE = DEPLOY_DIR / f"{brand.SLUG}-daemon-remote.service"
+
+
+def service_settings(text: str) -> dict[str, list[str]]:
+    """``[Service]`` directives of a unit file's text, each key's values in order."""
+    settings: dict[str, list[str]] = {}
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            section = line
+        elif section == "[Service]" and "=" in line:
+            key, _, value = line.partition("=")
+            settings.setdefault(key.strip(), []).append(value.strip())
+    return settings
+
+
+def check_daemon_unit_drift(unit_file: Path, *, prefix: list[str] | None = None,
+                            run: Run = subprocess.run) -> list[str]:
+    """One problem per :data:`DAEMON_UNIT_GUARDS` directive whose INSTALLED value differs
+    from what *unit_file* declares. ``prefix`` is the validated SSH argv for a remote host.
+
+    Same evidence rule as :func:`check_unit_interpreters`: report only positive proof. An
+    unreadable unit file, a failing ``systemctl``, an undeclared directive or an empty
+    property is unverifiable and skipped — and the result is a deploy WARNING, never a
+    refusal: the fix needs sudo on the host, which no deploy retry can supply.
+    """
+    try:
+        declared = service_settings(unit_file.read_text())
+    except OSError:
+        return []
+    unit = resolve_unit("daemon", run=run, prefix=prefix)
+    try:
+        proc = run([*(prefix or []), "systemctl", "show",
+                    *(arg for p in DAEMON_UNIT_GUARDS for arg in ("-p", p)), unit],
+                   check=False, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return []
+    if getattr(proc, "returncode", 1) != 0:
+        return []
+    installed = dict(line.split("=", 1) for line in (proc.stdout or "").splitlines()
+                     if "=" in line)
+    problems: list[str] = []
+    for prop in DAEMON_UNIT_GUARDS:
+        want = (declared.get(prop) or [""])[-1]
+        have = installed.get(prop, "").strip()
+        if want and have and have != want:
+            problems.append(
+                f"{unit}: installed {prop}={have} but {unit_file.name} declares {prop}={want} "
+                f"— merged but never installed; add a drop-in ([Service] {prop}={want}) "
+                "with sudo, then daemon-reload (no restart needed; deploy/README.md)")
     return problems
 
 
