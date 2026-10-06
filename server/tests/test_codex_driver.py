@@ -251,6 +251,14 @@ class Harness:
                 await asyncio.sleep(0)
             await asyncio.sleep(0.005)
 
+    async def wait_until(self, predicate: Any, timeout: float = 5.0) -> None:
+        """Poll past work `settle()` cannot bound, e.g. an `asyncio.to_thread` disk write."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not predicate():
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f"condition not met within {timeout}s")
+            await asyncio.sleep(0.01)
+
     def of(self, kind: type) -> list[Any]:
         return [e for e in self.events if isinstance(e, kind)]
 
@@ -309,6 +317,34 @@ async def harness(tmp_path):
 # ---------------------------------------------------------------------------
 # Contract
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_start", [False, True])
+async def test_new_turn_after_idle_gets_a_full_stall_window(harness, native_start):
+    from server.sessions.orchestrator import SessionOrchestrator, STALL_TIMEOUT
+
+    driver = await harness.boot()
+    await harness.run_turn()
+    harness.notify_turn_completed()
+    await harness.settle()
+    now = driver.last_progress_at + STALL_TIMEOUT + 600
+    driver._clock = lambda: now
+    orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    orch._drivers[SESSION] = driver
+
+    if native_start:
+        harness.notify_turn_started("turn-2")
+        await harness.settle()
+    else:
+        await driver.send_prompt("check current status")
+    await orch._check_stalls(now + 1)
+    assert driver.turn_active
+    assert not harness.frames(schema.METHOD_TURN_INTERRUPT)
+
+    # A genuinely silent new turn must still time out.
+    await orch._check_stalls(now + STALL_TIMEOUT + 1)
+    assert harness.frames(schema.METHOD_TURN_INTERRUPT)
 
 
 @pytest.mark.asyncio
@@ -2125,8 +2161,8 @@ async def test_completed_turn_is_durable_before_next_prompt_clears_buffer(harnes
     harness.notify_turn_started()
     harness.notify_text('this progress must survive navigation')
     harness.notify_turn_completed()
-    await harness.settle()
-    assert harness.of(ev.TurnEnd)
+    # TurnEnd is emitted only after `_save_turn`'s threaded disk write returns.
+    await harness.wait_until(lambda: harness.of(ev.TurnEnd))
     await harness.driver.send_prompt('next')
     saved = TurnHistoryStore(root).load(THREAD)
     assert [t.turn_id for t in saved] == ['turn-1']
