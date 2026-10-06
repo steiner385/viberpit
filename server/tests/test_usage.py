@@ -190,8 +190,12 @@ async def test_start_stop_lifecycle():
     with patch("server.usage.poller.list_accounts", return_value=[{"name": "alpha"}]):
         poller = UsagePoller(poll_interval=0.05, usage_fn=counting_fn)
         await poller.start()
-        # Let it run at least one sweep
-        await asyncio.sleep(0.15)
+        # Wait for the first sweep rather than a fixed sleep: usage_fn runs on the
+        # poller's executor thread, which a loaded CI shard can starve past any
+        # short fixed window.
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while call_count < 1 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
         await poller.stop()
 
     assert call_count >= 1, "background loop should have polled at least once"
