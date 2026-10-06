@@ -213,7 +213,7 @@ It is SIGNAL (no permission card: an unattended session must be able to hand ove
 and deliberately NOT in `TURN_SIGNAL_NAMES`: the card is the whole feature, so both transcript
 builders render the call, live and on replay, and nothing new is persisted for the transcript —
 the CLI's own JSONL carries the call and its result, which is what makes the card survive a reload
-for free. Codex has no signalling tools and therefore no `share_artifact` (the engine split below).
+for free. On Codex the card is the `dynamicToolCall` item, rendered by its translator.
 
 ## Where the signal is read — the Translator, not the handler
 
@@ -343,18 +343,22 @@ Which contract a session gets is decided by `AgentCapabilities.durable_tool_surf
 
 | | Claude | Codex |
 |---|---|---|
-| `durable_tool_surface` | `True` | `False` |
-| Signalling tools (`mark_complete`, `mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact`, `request_model`) declared | yes | no |
-| Instruction taught | tool descriptions | HTML-comment markers |
-| `session_context` / `report_feedback` | yes | yes (fresh threads only) |
+| `durable_tool_surface` | `True` | `True` |
+| Signalling tools (`mark_complete`, `mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact`, `request_model`) declared | yes | yes (as `dynamicTools` on `thread/start`) |
+| Instruction taught | tool descriptions | tool descriptions |
+| `session_context` / `report_feedback` | yes | yes |
 
-Codex's `thread/resume` carries neither `developerInstructions` nor `dynamicTools` (verified
-against codex-cli 0.153.2 in
-`docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md`): a resumed Codex session keeps
-whatever instructions it started with and loses any tools it was told about, with nothing sendable
-to correct it. Telling a Codex session "call `mark_complete`" would leave it unable to signal
-completion at all after its first resume. So Codex keeps the marker contract permanently, and
-Claude — whose system-prompt append survives a resume — gets the tools. No session is ever told
+Both engines' declared surfaces survive a resume. Claude's system-prompt append rides every
+resume. Codex's `thread/resume` has no field to re-declare `dynamicTools`, and needs none:
+codex-cli 0.153.2 saves the tools a thread declared on `thread/start` with its session metadata and
+restores them on resume (`docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md`,
+2026-10-05 addendum). Codex was on the marker contract until 2026-10-05 because the original spike
+could only check the schema, not a resumed thread, and inferred the tools were dropped.
+
+A Codex thread keeps the set it **started** with, so a thread started before 2026-10-05 resumes
+with only `session_context`/`report_feedback` and its marker instructions — the permanent marker
+fallback below is what still lets it finish. The Codex driver reads the instruction flags off the
+tools it actually declares (`CodexAgentDriver._fresh_thread_params`), so no session is ever told
 about a surface it doesn't have.
 
 ## The permanent marker fallback
@@ -362,7 +366,8 @@ about a surface it doesn't have.
 The marker parsers (`server/sessions/completion.py`, `server/sessions/model_request.py`) are not
 scaffolding for this migration — they stay wired permanently, for three reasons:
 
-1. **Codex sessions emit markers by design** (the engine split above).
+1. **Codex threads started before 2026-10-05 emit markers** — they keep the instructions and tool
+   set they started with (the engine split above).
 2. **Stored transcripts are re-parsed on replay.** Every session that ran before this migration
    wrote markers, and replay must still recover them.
 3. **A Claude session resumed across a deploy** carries the system prompt it started with for its
@@ -376,7 +381,7 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
 **Notes** —
 - **Kill switch** — `VIBERPIT_SESSION_TOOLS_ENABLED` (default `true`); off drops the overlay at the
   next session build (no in-flight session is torn down) and, with it, the four signalling tools —
-  at which point every session falls back to marker instructions, exactly as a Codex session does.
+  at which point every session falls back to marker instructions.
   There is no separate kill switch for the signalling tools alone (spec §10): this migration is
   reversible today only by disabling the whole surface.
 - **Feedback row lifecycle (Phase 1)** — `record_feedback` (`server/sessions/feedback.py`) dedupes
@@ -384,11 +389,12 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
   `"capped"` against `session_feedback_cap`; the Phase 2 filer adds `"filed"`/`"merged"`/
   `"throttled"`/`"dismissed"` as it takes rows off `pending` (see the filing section above).
   `"capped"` rows are out of the tick's reach entirely — only **File now** can move one.
-- **Codex resume gap** — Codex declares `session_context`/`report_feedback` as `dynamicTools` on a
-  fresh `thread/start` only; `thread/resume` silently drops them (no schema field, no rejection), so
-  a resumed Codex thread has none until respawned. Confirmed against codex-cli 0.153.2 in
-  `docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md`. The same gap is why Codex never
-  gets the four signalling tools at all (the engine split above) rather than losing them on resume.
+- **Codex resume** — Codex declares its tools as `dynamicTools` on a fresh `thread/start` only;
+  `thread/resume` re-declares nothing and the app-server restores the started set. A Codex
+  signalling call is read off its `dynamicToolCall` item by `server/codex/translator.py` with the
+  Claude translator's precedence (tool first, marker fallback), through the shared
+  `completion.parse_turn_signal`. Not yet mirrored on Codex: the mid-turn hand-back surfacing
+  (#2647) — a Codex `hand_back` lands when its turn ends.
 - **`pr_resolution_source`** gained a fourth value, `"tool"`, alongside `"marker"`, `"classifier"`,
   `"queue-drain"` — a session's own no-PR claim is a claim regardless of which transport carried it.
   `automations.completion_bar.SELF_CERTIFIED_SOURCES` is `frozenset({"marker", "tool"})`, so a

@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from viberpit import brand
 from server.codex import schema, translator as tr
 from server.sessions import events as ev
 from server.sessions.completion import COMPLETION_MARKER, NO_PR_MARKER
@@ -370,8 +371,10 @@ ITEM_CASES: list[tuple[dict[str, Any], str, ev.ToolKind, dict[str, Any]]] = [
             "status": "inProgress",
             "arguments": {"x": 1},
         },
-        "custom_tool",
-        ev.ToolKind.UNKNOWN,
+        # Only ViberPit declares dynamic tools, so the call is one of ours and
+        # renders under the canonical name its Claude twin uses.
+        brand.MCP_TOOL_PREFIX + "custom_tool",
+        ev.tool_kind(brand.MCP_TOOL_PREFIX + "custom_tool"),
         {"x": 1},
     ),
     (

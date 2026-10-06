@@ -35,15 +35,15 @@ def test_capability_set_covers_every_declared_field():
     }
 
 
-def test_codex_does_not_and_therefore_keeps_the_markers():
-    """``thread/resume`` carries neither ``developerInstructions`` nor
-    ``dynamicTools`` (codex-cli 0.153.2), so a resumed Codex thread keeps its
-    original instructions and loses its tools — with nothing sendable to correct
-    it. Codex must therefore keep the marker contract rather than be told about
-    tools it will lose on the second turn."""
+def test_codex_declares_a_durable_tool_surface():
+    """codex-cli 0.153.2 restores a thread's ``dynamicTools`` from its saved
+    session metadata on ``thread/resume`` (verified on a live thread that called a
+    declared tool after two resumes — the 2026-09-06 spike's 2026-10-05 addendum),
+    so Codex gets the signalling tools — ``mark_complete`` and the rest — exactly
+    as Claude does."""
     from server.codex.driver import CodexAgentDriver
 
-    assert CodexAgentDriver.capabilities.durable_tool_surface is False
+    assert CodexAgentDriver.capabilities.durable_tool_surface is True
 
 
 def test_the_driver_binds_this_declaration_rather_than_restating_it():

@@ -118,3 +118,28 @@ Three readings:
   deliberately. The credential-gated arm (reading a resumed thread's *effective* tool
   list) is worth running during the next interactive Codex smoke
   (`scripts/smoke_codex_interactive.py`), which already has a real account.
+
+## Addendum 2026-10-05 — the credential-gated arm: resumed threads KEEP their tools
+
+The conclusion above was wrong. The arm it could not reach is the one that matters, and it was
+answered by live data rather than a probe.
+
+* **The binary persists declared tools.** codex-cli 0.153.2 writes `dynamic_tools` into the
+  rollout's first `session_meta` line and keeps a `thread_dynamic_tools` table in
+  `state_5.sqlite`. Every rocky-hosted thread checked on 2026-10-05 carried
+  `dynamic_tools: [session_context, report_feedback]` in its `session_meta`.
+* **A resumed thread can call them.** Session `5d3be633` (thread `01a10c98-…`) was resumed by the
+  daemon at 18:12:33Z and 18:22:03Z (`codex.driver.session_tools_unavailable_on_resume` in the
+  journal, same process epoch). At 18:59:38Z the model called `tools.report_feedback(…)` and the
+  host recorded feedback row `134b2734-…` (`{"recorded": …, "status": "pending"}` in the
+  rollout). That feedback was itself "No `mark_complete` tool is exposed" — the gap this
+  spike's conclusion created.
+* **Nothing needs sending on resume.** `ThreadResumeParams` still has no `dynamicTools` field
+  (`test_thread_resume_has_no_dynamic_tools_field` still holds); the app-server restores the
+  set the thread started with.
+
+Consequence: `CODEX_CAPABILITIES.durable_tool_surface` is now `True`, so fresh Codex threads
+declare the full session surface (signalling tools included), and `server/codex/translator.py`
+reads the turn-signal calls off `dynamicToolCall` items. A thread keeps the set it **started**
+with, so threads started before this change resume without the signalling tools and keep
+finishing through the permanent marker parsers.

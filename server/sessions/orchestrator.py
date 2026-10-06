@@ -8453,7 +8453,7 @@ class SessionOrchestrator:
         # and resolving one is a remote branch listing — the same reason the refusal
         # check runs first: an investigation must not pay for work it has no use for.
         initial_prompt = (
-            build_investigate_prompt(batch, engine=engine) if investigate
+            build_investigate_prompt(batch) if investigate
             else build_implement_prompt(
                 batch, await self._sdlc_default_branch(batch.repo), engine=engine))
         _mode, config = await self._backlog_read_config()

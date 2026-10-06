@@ -22,8 +22,7 @@ class SessionToolContext:
     #: it offers a tool whose result is silently dropped.
     self_model_switch: bool = False
     #: This engine gets the signalling tools rather than the marker contract
-    #: (``AgentCapabilities.durable_tool_surface``). False → Codex, which loses its
-    #: declared tools on `thread/resume` and keeps the markers instead.
+    #: (``AgentCapabilities.durable_tool_surface``). False → the markers instead.
     signalling_tools: bool = False
     #: Child sessions are enabled on this host (``VIBERPIT_CHILD_SESSIONS_ENABLED``) —
     #: with `signalling_tools`, the mount predicate for `dispatch_session`.

@@ -8,9 +8,9 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               TERMINAL_TASK_STATUSES)
 from viberpit import brand
 from . import events as ev
-from .completion import (has_completion_marker, parse_hand_back, parse_hand_back_marker,
-                         parse_mark_no_pr, resolution_from_text)
-from .model_request import parse_model_request, parse_request_model
+from .completion import (has_completion_marker, parse_hand_back_marker, parse_turn_signal,
+                         resolution_from_text)
+from .model_request import parse_model_request
 from .tools.registry import TURN_SIGNAL_NAMES
 
 log = logging.getLogger(__name__)
@@ -162,17 +162,9 @@ class Translator:
         Never raises: a malformed argument is dropped (the handler already returned an
         ``is_error`` to the model) rather than failing the turn it was trying to close.
         """
-        try:
-            if stem == "mark_complete":
-                self._turn_signals[stem] = {}
-            elif stem == "mark_no_pr":
-                self._turn_signals[stem] = parse_mark_no_pr(args or {})
-            elif stem == "hand_back":
-                self._turn_signals[stem] = parse_hand_back(args or {})
-            elif stem == "request_model":
-                self._turn_signals[stem] = parse_request_model(args or {})
-        except Exception:  # noqa: BLE001 - a bad argument must not fail the turn
-            pass
+        payload = parse_turn_signal(stem, args)
+        if payload is not None:
+            self._turn_signals[stem] = payload
 
     def has_signal(self, stem: str) -> bool:
         """Has the top-level agent made a usable ``stem`` signal call this turn?"""

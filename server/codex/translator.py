@@ -28,12 +28,13 @@ Two rules here are policy, not preference:
 * only the reasoning *summary* is ever forwarded. `item/reasoning/textDelta`
   (raw chain of thought) is deliberately absent from
   :data:`TRANSLATED_NOTIFICATIONS`, so a caller that hands it in gets `[]`;
-* `TurnEnd.model_request` is the turn's `<!-- viberpit:model=<tier> -->` marker,
-  scanned exactly as the Claude translator scans it. Codex keeps the marker
-  contract (`AgentCapabilities.durable_tool_surface=False`), and since #1273 it
-  is told about the marker (`self_model_switch=True`). The tier is a request in
-  the shared haiku/sonnet/opus/fable vocabulary; mapping it onto the live Codex
-  effort catalog is the orchestrator's job, not this pure module's.
+* a turn's outcome is read the Claude translator's way: a signalling
+  `dynamicToolCall` (`mark_complete`, `mark_no_pr`, `hand_back`,
+  `request_model` — `TURN_SIGNAL_NAMES`) wins, and the HTML-comment markers stay
+  the permanent fallback for threads started before those tools were declared.
+  A model request's tier is in the shared haiku/sonnet/opus/fable vocabulary;
+  mapping it onto the live Codex effort catalog is the orchestrator's job, not
+  this pure module's.
 """
 from __future__ import annotations
 
@@ -45,8 +46,10 @@ from server.codex import schema
 from server.sessions import events as ev
 from server.sessions.prompt_origin import strip_origin_header
 from server.sessions.completion import (has_completion_marker, note_from_marker_text,
-                                        parse_hand_back_marker, resolution_from_text)
+                                        parse_hand_back_marker, parse_turn_signal,
+                                        resolution_from_text)
 from server.sessions.model_request import parse_model_request
+from server.sessions.tools.registry import TURN_SIGNAL_NAMES
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
 #: payload. The payload rides the WebSocket to every attached client and then
@@ -185,6 +188,10 @@ class _StreamState:
     user_messages: set[str] = field(default_factory=set)
     #: item id → aggregated command output assembled from output deltas.
     command_output: dict[str, str] = field(default_factory=dict)
+    #: The live turn's signalling `dynamicToolCall`s: stem → parsed payload. Turn-
+    #: scoped like the Claude translator's `_turn_signals`, and for the same reason:
+    #: a session calls `mark_complete` and then writes a closing paragraph.
+    turn_signals: dict[str, dict] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -361,19 +368,29 @@ class CodexEventTranslator:
             return self._mismatch()
         turn = params.turn
         text = self._state.turn_text
-        pr_resolution = resolution_from_text(text)
-        # Codex has no `mark_no_pr` tool (module docstring), so the note can only
-        # ever arrive via the marker text — the last line the engine wrote before
-        # NO_PR_MARKER, per the prompt's own instruction (backlog_prompt's
-        # `_finish_not_needed` / `_finish_cancelled`). None when there is no
-        # resolution at all, so a dropped resolution (hand-back below) cannot
-        # leave an orphaned note latched on the driver.
-        pr_resolution_note = (note_from_marker_text(text)
-                              if pr_resolution is not None else None)
-        hand_back = parse_hand_back_marker(text)
+        signals = self._state.turn_signals
+        # Tool first, marker as the fallback — the Claude translator's precedence
+        # (spec §7). The marker path stays permanent: a thread started before its
+        # signalling tools were declared resumes without them, and still finishes.
+        no_pr = signals.get("mark_no_pr")
+        if no_pr is not None:
+            pr_resolution: str | None = no_pr["resolution"]
+            pr_resolution_source: str | None = "tool"
+            pr_resolution_note: str | None = no_pr.get("note")
+        else:
+            pr_resolution = resolution_from_text(text)
+            pr_resolution_source = "marker" if pr_resolution is not None else None
+            # The marker's note is the last line the engine wrote before
+            # NO_PR_MARKER. None when there is no resolution at all, so a dropped
+            # resolution (hand-back below) cannot leave an orphaned note latched.
+            pr_resolution_note = (note_from_marker_text(text)
+                                  if pr_resolution is not None else None)
+        hand_back = signals.get("hand_back") or parse_hand_back_marker(text)
+        model_request = signals.get("request_model") or parse_model_request(text)
         outcome = _OUTCOME_BY_STATUS[turn.status]
         if outcome == "success":
-            completed = has_completion_marker(text) or pr_resolution is not None
+            completed = ("mark_complete" in signals or has_completion_marker(text)
+                         or pr_resolution is not None)
             if hand_back is not None:
                 # Same precedence as the Claude translator (spec §5): a hand-back
                 # outranks a finishing marker in the same turn, and the dropped
@@ -383,6 +400,7 @@ class CodexEventTranslator:
                 # translator carries that log.
                 outcome = "hand_back"
                 pr_resolution = None
+                pr_resolution_source = None
                 pr_resolution_note = None
             elif completed:
                 outcome = "complete"
@@ -405,11 +423,9 @@ class CodexEventTranslator:
                 usage=self._state.usage_by_turn.get(turn.id),
                 outcome=outcome,
                 pr_resolution=pr_resolution,
-                # Codex has exactly one channel for a resolution — the marker —
-                # so this is never ambiguous the way a tool-vs-marker choice is.
-                pr_resolution_source="marker" if pr_resolution is not None else None,
+                pr_resolution_source=pr_resolution_source,
                 pr_resolution_note=pr_resolution_note,
-                model_request=parse_model_request(text),
+                model_request=model_request,
                 hand_back_reason=hand_back.get("reason") if hand_back else None,
             )
         )
@@ -429,11 +445,13 @@ class CodexEventTranslator:
         state.called.clear()
         state.user_messages.clear()
         state.command_output.clear()
+        state.turn_signals.clear()
 
     def _end_turn(self) -> None:
         self._state.turn_id = None
         self._state.turn_text = ""
         self._state.usage_by_turn.clear()
+        self._state.turn_signals.clear()
 
     # -- deltas ------------------------------------------------------------
 
@@ -533,6 +551,20 @@ class CodexEventTranslator:
             )
         if isinstance(item, schema.ContextCompactionItem):
             return [ev.Condensing(active=not completed)]
+        if (isinstance(item, schema.DynamicToolCallItem)
+                and item.tool in TURN_SIGNAL_NAMES):
+            # A turn-signalling call is recorded, never rendered — the Claude
+            # translator's rule, keyed on the SAME set, so a `mark_complete` card
+            # never sits on top of the status change it causes, live or replayed.
+            # Only a call in the LIVE turn counts (the `_accumulate` rule): a
+            # replayed item must not close the turn actually running. Sub-agent
+            # threads need no guard here — the driver drops every notification
+            # whose thread is not its own before it reaches this translator.
+            if turn_id == self._state.turn_id:
+                payload = parse_turn_signal(item.tool, _arguments_dict(item.arguments))
+                if payload is not None:
+                    self._state.turn_signals[item.tool] = payload
+            return []
 
         shape = _tool_shape(item)
         out: list[object] = []
@@ -584,7 +616,17 @@ class CodexEventTranslator:
             return ev.ToolResult(
                 item.id, item.status == _OK_STATUS, {"status": item.status}
             )
-        if isinstance(item, (schema.McpToolCallItem, schema.DynamicToolCallItem)):
+        if isinstance(item, schema.DynamicToolCallItem):
+            # The handler's answer rides `content` in the Claude ToolResultBlock
+            # shape, so a card that reads the result (the served URL of a shared
+            # image) reads it the same way on both engines.
+            payload: dict[str, Any] = {"status": item.status}
+            if item.content_texts:
+                payload["content"] = [{"type": "text", "text": t}
+                                      for t in item.content_texts]
+            ok = item.success if item.success is not None else item.status == _OK_STATUS
+            return ev.ToolResult(item.id, ok, payload)
+        if isinstance(item, schema.McpToolCallItem):
             return ev.ToolResult(
                 item.id, item.status == _OK_STATUS, {"status": item.status}
             )
@@ -705,12 +747,14 @@ def _tool_shape(item: schema.ThreadItem) -> _ToolShape:
             },
         )
     if isinstance(item, schema.DynamicToolCallItem):
-        # A dynamic tool's name is chosen by the Codex side and only looks like
-        # a ViberPit tool name by coincidence, so it is never kind-mapped: an
-        # accidental `Edit` must not render an edit card over a foreign payload.
-        return _ToolShape(
-            item.tool, ev.ToolKind.UNKNOWN, _arguments_dict(item.arguments)
-        )
+        # Only ViberPit declares `dynamicTools` on a thread (the coding session's
+        # surface or the assistant drawer's), so the call is one of OUR tools and
+        # takes the canonical `mcp__<brand>__*` name its Claude twin renders
+        # under — the name the permission layer already gates it by
+        # (`CodexSessionTools.mcp_name`) and the web keys its cards on
+        # (`share_artifact`'s, for one). `tool_kind` owns the prefix rule.
+        name = brand.MCP_TOOL_PREFIX + item.tool
+        return _ToolShape(name, ev.tool_kind(name), _arguments_dict(item.arguments))
     if isinstance(item, schema.FunctionCallOutputItem):
         return _ToolShape(item.name, ev.ToolKind.UNKNOWN, {})
     if isinstance(item, schema.ImageViewItem):
