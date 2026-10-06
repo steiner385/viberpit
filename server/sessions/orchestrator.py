@@ -5080,7 +5080,11 @@ class SessionOrchestrator:
             # Kick off turn one now — after the DB row + record exist, so status and
             # engine-session-id callbacks land on a persisted row. No attach required.
             if not defer_for_bridge and (initial_prompt or attachment_ids):
-                await self.send_prompt(session_id, initial_prompt or "", attachment_ids)
+                delivery = await self.send_prompt(
+                    session_id, initial_prompt or "", attachment_ids)
+                if delivery not in ("sent", "draining"):
+                    log.warning("session.create: initial prompt not delivered "
+                                "session=%s result=%s", session_id, delivery)
             return record
         except BaseException:
             # Before the row is durable, this method owns every resource allocated
@@ -18633,13 +18637,12 @@ class SessionOrchestrator:
             return "draining"
         d = self._drivers.get(session_id)
         if not d:
-            # A dropped prompt is never routine. This return value used to be a silent
-            # sentinel that several callers ignored, which is exactly how the discarded
-            # completion nudge (below) stayed invisible in production — the caller's own
-            # failure log never fired because nothing raised. Log it here, once, for
-            # every caller: the fix at a call site is an `ensure_driver` before the send.
-            log.warning("send_prompt: no live driver for session=%s — prompt dropped",
-                        session_id)
+            # INFO, not WARNING: the ws.prompt bridge retries this by design
+            # (rebuild driver, resend), so the first attempt is a recovered race.
+            # The caller owns the failure verdict — every caller must log its own
+            # WARNING when the result is not "sent" (#2697).
+            log.info("send_prompt: no live driver for session=%s — prompt not sent",
+                     session_id)
             return "no_driver"
         # `is True`, not truthiness: engines without the flag, and test doubles
         # (MagicMock auto-attributes are truthy), must read as alive.
