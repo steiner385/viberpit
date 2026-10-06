@@ -799,6 +799,16 @@ class DaemonClient:
         return q
 
     def subscribe(self, stream: str, since: int | None = None, maxsize: int | None = None):
+        return self.subscribe_with_release(stream, since, maxsize)[0]
+
+    def subscribe_with_release(self, stream: str, since: int | None = None,
+                               maxsize: int | None = None):
+        """``subscribe()`` plus an idempotent ``release()`` that deregisters the queue.
+
+        The queue is registered NOW, but ``_iter``'s ``finally`` only runs once the
+        generator has started — a never-iterated async generator skips it on both
+        ``aclose()`` and GC. A caller that registers early and may abort before
+        iterating (``RemoteDriver.join_live``) must release explicitly (#1975)."""
         if maxsize is None:
             # Auto-scale: one extra base-size bucket per four already-open streams so
             # the queue keeps up under concurrent-session automation load without the
@@ -823,7 +833,7 @@ class DaemonClient:
             # Reader already connected — register this new stream now. (On the first
             # subscribe, or after a reconnect, the reader subscribes all _desired itself.)
             asyncio.create_task(self._send_subscribe(stream))
-        return self._iter(stream, q)
+        return self._iter(stream, q), lambda: self._discard_subscriber(stream, q)
 
     def _since_for(self, stream: str) -> int | None:
         # Reconnect → resume after the last delivered seq; first subscribe → the baseline.
@@ -1044,13 +1054,17 @@ class DaemonClient:
                         q.put_nowait(ctrl_buf.pop(0))
                 yield event
         finally:
-            # Drop just THIS subscriber's queue; other subscribers on the stream keep
-            # receiving. (GeneratorExit/cancel of a consuming task lands here.)
-            subs = self._subscribers.get(stream)
-            if subs is not None:
-                subs.discard(q)
-            self._dropped.pop(q, None)
-            self._ctrl_buf.pop(q, None)
+            # GeneratorExit/cancel of a consuming task lands here.
+            self._discard_subscriber(stream, q)
+
+    def _discard_subscriber(self, stream: str, q: asyncio.Queue) -> None:
+        """Drop just THIS subscriber's queue; other subscribers on the stream keep
+        receiving. Idempotent — the single deregistration path (#1975)."""
+        subs = self._subscribers.get(stream)
+        if subs is not None:
+            subs.discard(q)
+        self._dropped.pop(q, None)
+        self._ctrl_buf.pop(q, None)
 
     def _deliver(self, stream: str, event: dict, seq: int | None = None) -> None:
         if seq is not None:

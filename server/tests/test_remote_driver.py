@@ -58,6 +58,9 @@ class _FakeClient:
     def subscribe(self, session_id, since=None):
         return self._gen()
 
+    def subscribe_with_release(self, session_id, since=None):
+        return self._gen(), lambda: None
+
 
 def test_remote_driver_covers_every_ws_reachable_driver_member():
     """Lock the daemon-mode driver surface to the in-process one (#164).
@@ -272,8 +275,7 @@ async def test_remote_driver_open_stream_shim():
     local DriverStream (turn_active / turn_started_at / events() / close()) so
     ws.py never hasattr-branches on the driver flavor. The flags come from the
     ensure_driver RPC snapshot; events() delegates to the subscribe-based
-    generator; close() is a best-effort no-op (async-generator teardown closes
-    the daemon subscription)."""
+    generator; close() releases the join_live() queue (a no-op when never joined)."""
     c = _FakeClient([{"type": "textDelta", "text": "hi"}])
     d = RemoteDriver(c, "s1", turn_active=True, turn_started_at=1751710123.5)
     stream = d.open_stream()
@@ -281,7 +283,8 @@ async def test_remote_driver_open_stream_shim():
     assert stream.turn_started_at == 1751710123.5
     got = [e.to_wire() async for e in stream.events()]
     assert got == [{"type": "textDelta", "text": "hi"}]
-    assert stream.close() is None   # nothing to release before events() is iterated
+    assert stream.close() is None   # never joined: nothing to release
+    stream.close()                  # idempotent
 
 
 def test_pin_catch_up_requires_join_live_first():
@@ -302,3 +305,28 @@ def test_pin_catch_up_after_join_live_pins():
     d.join_live()
     d.pin_catch_up([{"event": {"type": "textDelta"}, "seq": 1}], 1)
     assert d._catch_up_head == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_close_releases_join_live_queue(tmp_path):
+    """#1975: join_live() registers the subscriber queue before events() is iterated, and a
+    never-started async generator skips its finally — so an aborted attach's close() must
+    deregister the queue itself, or it fills and WARNs for the life of the edge process."""
+    from server.ipc.client import DaemonClient
+
+    client = DaemonClient(f"unix://{tmp_path}/none.sock")
+    sid = "cb26beba-ee75-410d-99ef-b75c377b9bc4"
+    drv = RemoteDriver(client, sid)
+    drv.join_live()
+    stream = drv.open_stream()
+    (q,) = client._subscribers[sid]
+    assert q in client._dropped and q in client._ctrl_buf
+
+    stream.close()
+    assert not client._subscribers[sid]
+    assert q not in client._dropped and q not in client._ctrl_buf
+
+    stream.close()  # idempotent
+    client._deliver(sid, {"type": "text", "text": "x"}, seq=1)  # no orphan to fill
+    if client._reader_task is not None:
+        client._reader_task.cancel()

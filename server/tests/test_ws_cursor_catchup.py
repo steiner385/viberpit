@@ -458,6 +458,9 @@ class _OverlapClient:
                 yield f
         return _gen()
 
+    def subscribe_with_release(self, session_id, since=None):
+        return self.subscribe(session_id, since), lambda: None
+
 
 @pytest.mark.asyncio
 async def test_catch_up_dedups_snapshot_and_live_overlap_exactly_once():

@@ -93,10 +93,10 @@ class RemoteDriverStream:
         return self._driver.events()
 
     def close(self) -> None:
-        # Best-effort no-op: the daemon subscription only starts when events()
-        # is first iterated, and async-generator teardown closes it — there is
-        # nothing to release before that point.
-        return None
+        # Leak guard for the WS attach error path, like DriverStream.close(). The
+        # join_live() queue is registered before events() is iterated, and a
+        # never-started async generator skips its finally — so release it here.
+        self._driver.release_live()
 
 
 class RemoteDriver:
@@ -136,6 +136,7 @@ class RemoteDriver:
         # reuses it on BOTH paths (catch-up replay, or a not-covered full-replay forward).
         # None everywhere ⇒ ordinary non-catch-up attach: events() subscribes for itself.
         self._live = None
+        self._release_live = None
         self._catch_up_snapshot: list[dict] | None = None
         self._catch_up_head: int | None = None
 
@@ -196,7 +197,15 @@ class RemoteDriver:
         a second call is a no-op. Per-attach and safe: ensure_driver mints a fresh
         RemoteDriver every attach, so a joined fan-out never leaks across attaches."""
         if self._live is None:
-            self._live = self._client.subscribe(self._session_id, since=self._resume_since)
+            self._live, self._release_live = self._client.subscribe_with_release(
+                self._session_id, since=self._resume_since)
+
+    def release_live(self) -> None:
+        """Deregister the join_live() subscriber queue. Idempotent; a no-op when never
+        joined. Safe after events() ran too (the generator's finally already did it)."""
+        release, self._release_live = self._release_live, None
+        if release is not None:
+            release()
 
     def pin_catch_up(self, snapshot: list[dict], head: int) -> None:
         """Pin the ring_tail snapshot (FINDING-1 atomic commitment step 2).
