@@ -1557,6 +1557,9 @@ async def send_session_prompt(
             detail=_resume_failed_detail(record),
         )
     delivery = await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
+    if delivery not in ("sent", "draining"):
+        log.warning("quick-resume prompt not delivered session=%s result=%s",
+                    session_id, delivery)
     if delivery == "sent":
         try:
             await observe_reply(
