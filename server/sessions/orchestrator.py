@@ -1995,18 +1995,21 @@ class SessionOrchestrator:
         return account_cfg_dir(account) / ITEM_TIMES_DIRNAME
 
     async def _delete_codex_item_times(self, row) -> None:
-        """Drop a Codex session's item-time sidecar on permanent delete.
+        """Drop a Codex session's timestamp and saved-turn sidecars on permanent delete.
 
-        Best-effort and never a reason to keep the row: the file is tiny and
-        host-local, so the worst outcome of a miss is one stray file, whereas
-        refusing the delete would strand the session.
+        Best-effort and never a reason to keep the row. Missing files are
+        harmless; other failures are logged so retained sidecars can be removed
+        without stranding the session row.
         """
         engine = parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
         thread_id = getattr(row, "engine_session_id", None)
         if engine is not AgentEngine.CODEX or not thread_id:
             return
         from server.codex.item_times import item_times_path
-        path = item_times_path(self._codex_item_times_root(row.account_name), thread_id)
+        from server.codex.turn_history import TurnHistoryStore
+        root = self._codex_item_times_root(row.account_name)
+        await asyncio.to_thread(TurnHistoryStore(root).delete, thread_id)
+        path = item_times_path(root, thread_id)
         if path is None:
             return
         try:

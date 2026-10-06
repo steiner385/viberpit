@@ -532,12 +532,15 @@ async def test_permanent_delete_removes_a_codex_sessions_sidecar(
     sidecar = tmp_path / "cfg" / "openai-main" / "codex-item-times" / "thread-1.jsonl"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text('{"i":"a","s":1}\n')
+    history = sidecar.with_suffix(".turns.jsonl")
+    history.write_text("saved conversation")
 
     class _Row:
         id = "s1"; engine = "codex"; engine_session_id = "thread-1"; account_name = "openai-main"
 
     await orch._delete_codex_item_times(_Row())
     assert not sidecar.exists()
+    assert not history.exists()
     # Idempotent, and never a reason to fail the delete.
     await orch._delete_codex_item_times(_Row())
 
@@ -702,7 +705,8 @@ async def test_engine_replay_window_falls_back_to_the_claude_reader(
 @pytest.mark.parametrize("preexisting_row", [False, True], ids=["fresh", "queued"])
 @pytest.mark.parametrize("prompt_state", ["command", "pending", "started"])
 async def test_codex_native_id_survives_restart_at_first_turn_boundary(
-        tmp_path: Path, isolated_db, preexisting_row: bool, prompt_state: str) -> None:
+        tmp_path: Path, isolated_db, monkeypatch: pytest.MonkeyPatch,
+        preexisting_row: bool, prompt_state: str) -> None:
     """Use the real driver/JSONL stack; only a native turn creates a resume handle."""
     import asyncio
 
@@ -711,6 +715,11 @@ async def test_codex_native_id_survives_restart_at_first_turn_boundary(
     from contextlib import nullcontext
 
     from server.tests.test_codex_driver import Harness, THREAD
+
+    # The real factory persists completed turns. Keep this fake account/thread
+    # private so later replay tests cannot inherit its durable history.
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "account_cfg_dir", lambda name: tmp_path / "cfg" / name)
 
     first_turn = prompt_state == "started"
     harness = Harness(tmp_path)
