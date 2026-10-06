@@ -393,8 +393,9 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
   `thread/resume` re-declares nothing and the app-server restores the started set. A Codex
   signalling call is read off its `dynamicToolCall` item by `server/codex/translator.py` with the
   Claude translator's precedence (tool first, marker fallback), through the shared
-  `completion.parse_turn_signal`. Not yet mirrored on Codex: the mid-turn hand-back surfacing
-  (#2647) — a Codex `hand_back` lands when its turn ends.
+  `completion.parse_turn_signal`. The mid-turn hand-back (#2647) is mirrored too (#2713): the
+  translator emits `HandBackRequested` on the item, `CodexAgentDriver` parks it as
+  `pending_hand_back_reason`, and its `signal_message_prose` gives `hand_back` its `userSees`.
 - **`pr_resolution_source`** gained a fourth value, `"tool"`, alongside `"marker"`, `"classifier"`,
   `"queue-drain"` — a session's own no-PR claim is a claim regardless of which transport carried it.
   `automations.completion_bar.SELF_CERTIFIED_SOURCES` is `frozenset({"marker", "tool"})`, so a
