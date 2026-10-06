@@ -29,7 +29,7 @@ from server.db.models import Session
 from server.pm.fenced_json import FencedJsonError, extract_fenced_json
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
+from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 from server.sessions.types import ASSISTANT_KIND
 
 log = logging.getLogger(__name__)
@@ -189,8 +189,7 @@ async def suggest_repo(
             system_prompt=_SYSTEM,
             cwd=cwd,
             env=helper_env(config_dir),
-            allowed_tools=[],
-            setting_sources=[],
+            **stateless_helper_options(),
             **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:

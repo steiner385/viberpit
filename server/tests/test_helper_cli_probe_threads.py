@@ -1,4 +1,5 @@
-"""Async one-shot helpers must keep canonical binary probes off the event loop."""
+"""Async one-shot helpers: canonical binary probes stay off the event loop, and the
+options they build are tool-free and transcript-free (#2706)."""
 import importlib
 import threading
 from types import SimpleNamespace
@@ -20,6 +21,8 @@ class _StopAfterOptions(Exception):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("module_name,function_name,args,kwargs", [
     ("sessions.title_generator", "generate_title", (["Fix login"],),
+     {"config_dir": "/test/config", "cwd": "/tmp"}),
+    ("sessions.goal_inference", "infer_goal", ("Fix login", []),
      {"config_dir": "/test/config", "cwd": "/tmp"}),
     ("sessions.prompt_refiner", "refine_prompt", ("Fix login",), {}),
     ("sessions.repo_match", "suggest_repo",
@@ -79,3 +82,16 @@ async def test_helper_option_probe_thread(monkeypatch, module_name, function_nam
     assert probe_threads and all(t != loop_thread for t in probe_threads)
     assert len(options_seen) == 1
     assert options_seen[0].cli_path == "/test/claude"
+    _assert_stateless(options_seen[0])
+
+
+def _assert_stateless(opts):
+    """No inherited built-ins, MCP servers or settings, and no native transcript (#2706).
+
+    ``allowed_tools=[]`` alone is NOT asserted: it is an auto-approve list, and the old
+    helper shape that relied on it initialised the real CLI with 26 built-in tools."""
+    assert opts.tools == []
+    assert opts.strict_mcp_config is True
+    assert opts.mcp_servers == {}
+    assert opts.setting_sources == []
+    assert opts.extra_args == {"no-session-persistence": None}

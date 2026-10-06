@@ -13,7 +13,7 @@ import os
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
+from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 
 log = logging.getLogger("ccswitch.dispatch")
 
@@ -88,8 +88,7 @@ async def refine_prompt(
             system_prompt=_REFINE_SYSTEM,
             cwd=cwd,
             env=helper_env(config_dir),
-            allowed_tools=[],
-            setting_sources=[],
+            **stateless_helper_options(),
             **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:

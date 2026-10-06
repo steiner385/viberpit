@@ -16,7 +16,7 @@ import re
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs
-from .helper_call import run_helper_call
+from .helper_call import run_helper_call, stateless_helper_options
 
 log = logging.getLogger(__name__)
 
@@ -115,8 +115,7 @@ async def generate_title(
             system_prompt=_SYSTEM_PROMPT,
             cwd=cwd,
             env=helper_env(config_dir),
-            allowed_tools=[],
-            setting_sources=[],
+            **stateless_helper_options(),
             **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:  # unimportable/unbuildable SDK options — degrade

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, run_helper_call
+from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
+                **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("pr_intent.classify failed: %s", exc)
         return _UNRESOLVED
