@@ -23,7 +23,7 @@ import pytest
 
 from server.obs.jsonlog import ContextFilter
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.recovery import CRASH_CAP, STALL_CAP
+from server.sessions.recovery import STALL_CAP, STALL_RECOMPOSE_CAP
 from server.usage import process_quota
 
 # The same ledger module object the sweep imports, reached through a server module that
@@ -145,8 +145,8 @@ async def test_a_spent_recompose_budget_pauses_at_warning(watchdog_logs, monkeyp
     monkeypatch.setattr(o, "_pause_session", _pause_session)
     for _ in range(STALL_CAP):
         o._recovery.record_stall(SID, now=10_000.0)
-    for _ in range(CRASH_CAP):
-        o._recovery.record_crash(SID, now=10_000.0)
+    for _ in range(STALL_RECOMPOSE_CAP):
+        o._recovery.record_stall_recompose(SID)
 
     await o._check_stalls(10_000.0)
 

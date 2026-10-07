@@ -299,9 +299,10 @@ def test_check_stalls_clears_streak_once_turn_resolves():
     assert not o._recovery.stall_cap_reached("s1", now=1001.0)
 
 
-def test_check_stalls_zombie_pauses_after_crash_cap():
-    """A turn that keeps wedging through repeated recomposes is bounded by crash_cap —
-    it ends at needs_attention (paused), not an endless recompose loop."""
+def test_check_stalls_zombie_pauses_after_recompose_cap():
+    """A turn that keeps wedging through repeated recomposes is bounded by its own
+    recompose streak — it ends at needs_attention (paused), not an endless recompose
+    loop."""
     o = _make_orch(); _rec(o)
     async def spy_reassign(record, new_account, *, reason):
         o.calls.append(("reassign", record.id, reason))
@@ -317,11 +318,92 @@ def test_check_stalls_zombie_pauses_after_crash_cap():
     o._drivers["s1"] = _Zombie()
     for _ in range(R.STALL_CAP):
         o._recovery.record_stall("s1", now=10_000.0)
-    for _ in range(R.CRASH_CAP):
-        o._recovery.record_crash("s1", now=10_000.0)
+    for _ in range(R.STALL_RECOMPOSE_CAP):
+        o._recovery.record_stall_recompose("s1")
     asyncio.run(o._check_stalls(now=10_000.0))
     assert ("pause", "s1", "stall_cap") in o.calls
     assert ("reassign", "s1", "stall_recompose") not in o.calls
+
+
+class _Wedged:
+    """A live turn whose progress never advances — it re-wedges every watchdog cycle."""
+    turn_active = True
+    drain_alive = False
+    in_api_backoff = False
+    awaiting_user_input = False
+    account = "kindash"
+    last_progress_at = 0.0
+
+    def __init__(self, interrupted):
+        self._interrupted = interrupted
+
+    async def interrupt(self, *, keep_queue=False):
+        self._interrupted.append(True)
+
+
+def _spy_recompose_with_fresh_driver(o, interrupted):
+    """_reassign spy that, like the real one, swaps in a REBUILT driver for the session
+    (whose turn is resent and so is immediately active again — never seen idle)."""
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, reason))
+        o._drivers[record.id] = _Wedged(interrupted)
+    o._reassign = spy_reassign
+
+
+def test_check_stalls_rebuilt_driver_gets_interrupt_steps_again():
+    """#2744: the recompose never reset the interrupt streak, so the rebuilt driver's
+    next stall (one STALL_TIMEOUT later) went straight to a second recompose. After a
+    recompose, the next stall must be the cheap interrupt, not another recompose."""
+    o = _make_orch(); _rec(o)
+    interrupted = []
+    _spy_recompose_with_fresh_driver(o, interrupted)
+    o._drivers["s1"] = _Wedged(interrupted)
+    for _ in range(R.STALL_CAP):
+        o._recovery.record_stall("s1", now=10_000.0)
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert o.calls == [("reassign", "s1", "stall_recompose")]
+    asyncio.run(o._check_stalls(now=10_000.0 + R.STALL_TIMEOUT + 1.0))
+    assert interrupted == [True]
+    assert o.calls == [("reassign", "s1", "stall_recompose")]
+
+
+def test_check_stalls_rewedging_turn_ends_paused():
+    """#2744: recomposes are >= STALL_TIMEOUT apart, far wider than CRASH_WINDOW, so the
+    old crash_cap bound could never trip and a turn that kept re-wedging recomposed every
+    ~5 min forever. Driven at the watchdog's own cadence it must end paused."""
+    o = _make_orch(); _rec(o)
+    interrupted = []
+    _spy_recompose_with_fresh_driver(o, interrupted)
+    o._drivers["s1"] = _Wedged(interrupted)
+    gap = R.STALL_TIMEOUT + 1.0
+    for i in range(1, 50):
+        asyncio.run(o._check_stalls(now=gap * i))
+        if ("pause", "s1", "stall_cap") in o.calls:
+            break
+    recomposes = [c for c in o.calls if c == ("reassign", "s1", "stall_recompose")]
+    assert len(recomposes) == R.STALL_RECOMPOSE_CAP
+    assert o.calls[-1] == ("pause", "s1", "stall_cap")
+    # Every rebuilt driver got the full interrupt ladder before escalating again.
+    assert len(interrupted) == R.STALL_CAP * (R.STALL_RECOMPOSE_CAP + 1)
+
+
+def test_check_stalls_clears_recompose_streak_once_turn_resolves():
+    o = _make_orch(); _rec(o)
+    for _ in range(R.STALL_RECOMPOSE_CAP):
+        o._recovery.record_stall_recompose("s1")
+
+    class _Resolved:
+        turn_active = False
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 1000.0
+        async def interrupt(self, *, keep_queue=False):
+            raise AssertionError("resolved turn must be left alone")
+    o._drivers["s1"] = _Resolved()
+    asyncio.run(o._check_stalls(now=1001.0))
+    assert not o._recovery.stall_recompose_cap_reached("s1")
 
 
 def test_check_stalls_leaves_resolved_turn_alone():

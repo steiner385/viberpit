@@ -19911,6 +19911,7 @@ class SessionOrchestrator:
                     # Turn genuinely resolved (not just quiet between resends) — a fresh
                     # wedge later starts its escalation streak over, not mid-cap.
                     self._recovery.clear_stalls(sid)
+                    self._recovery.clear_stall_recomposes(sid)
                     self._stall_diag_logged.pop(sid, None)
                     continue
                 # A turn whose silence is attributable to API throttling — the driver is
@@ -19944,10 +19945,17 @@ class SessionOrchestrator:
                 if self._recovery.stall_cap_reached(sid, now=now):
                     # Interrupts aren't landing (the cap of in-window attempts is spent and
                     # the turn is still wedged) — escalate to a recompose-in-place rather
-                    # than abandon it. Bounded by crash_cap (shared with process-crash
-                    # recovery; both rebuild the driver on the same account, resume, and
-                    # resend the last prompt) so a turn that keeps wedging ultimately pauses
-                    # to needs_attention instead of looping forever.
+                    # than abandon it. Bounded by its own consecutive recompose streak
+                    # (STALL_RECOMPOSE_CAP), so a turn that keeps wedging ultimately pauses
+                    # to needs_attention instead of looping forever. Not crash_cap: its
+                    # 120 s window is shorter than the >= STALL_TIMEOUT gap between stall
+                    # recomposes, so it never tripped and the turn recomposed every ~5 min
+                    # indefinitely (#2744).
+                    #
+                    # The recompose resets the INTERRUPT streak: the rebuilt driver's turn
+                    # is resent at once, so the watchdog never sees it idle to clear the
+                    # streak itself, and its first stall would otherwise skip straight to
+                    # another recompose.
                     #
                     # WARNING from here down, INFO for the plain interrupt below: these two
                     # rungs are the ones a human has to act on (a recompose loses the turn's
@@ -19956,11 +19964,12 @@ class SessionOrchestrator:
                     record = self._records.get(sid)
                     if record is None:
                         continue
-                    if self._recovery.crash_cap_reached(sid, now=now):
+                    if self._recovery.stall_recompose_cap_reached(sid):
                         log.warning("stall watchdog: recompose cap reached, pausing session=%s", sid)
                         await self._pause_session(record, reason="stall_cap")
                     else:
-                        self._recovery.record_crash(sid, now=now)
+                        self._recovery.record_stall_recompose(sid)
+                        self._recovery.clear_stalls(sid)
                         log.warning("stall watchdog: recomposing wedged turn session=%s", sid)
                         await self._reassign(record, record.account, reason="stall_recompose")
                     continue
