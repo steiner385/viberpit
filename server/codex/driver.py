@@ -1015,7 +1015,7 @@ class CodexAgentDriver:
             if not self._turn_active:
                 await self._drain_queue()
             return
-        self._emit_user_message(entry, turn_id)
+        self._emit_user_message(entry)
 
     async def _start_turn(
         self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]
@@ -1057,7 +1057,7 @@ class CodexAgentDriver:
         self._turn_token = self._manager.begin_turn(self.account, thread_id)
         # The echo carries the attachments and the route chip, which the native
         # `userMessage` item cannot express — see `_consume`.
-        self._emit_user_message(entry, self._turn_id or uuid.uuid4().hex)
+        self._emit_user_message(entry)
         await self._emit_status()
         try:
             response = await self._client().start_turn(
@@ -1161,16 +1161,18 @@ class CodexAgentDriver:
             return TurnOutcome.COMPLETED
         return self._manager.finish_turn(token)
 
-    def _emit_user_message(self, entry: _QueuedPrompt, turn_id: str) -> None:
+    def _emit_user_message(self, entry: _QueuedPrompt) -> None:
         wire_images = [
             {"url": im.get("url", ""), "mime": im.get("mime", ""),
              "name": im.get("name", "")}
             for im in entry.images
         ]
+        # A steering prompt shares the running native turn, but never the
+        # display identity of an earlier prompt.
         src = uuid.uuid4().hex
         self._emit(
             ev.UserMessage(
-                turn_id=turn_id,
+                turn_id=src,
                 text=entry.text,
                 src_uuid=src,
                 images=wire_images or None,

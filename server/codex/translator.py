@@ -545,7 +545,10 @@ class CodexEventTranslator:
             # without this a re-read thread would render the marker as part of the
             # user's own words and lose the provenance the live echo carried.
             body, origin = strip_origin_header(item.text)
-            return [ev.UserMessage(turn_id, body, origin=origin)]
+            # Several user items can belong to one native turn (steering).
+            # Each needs its own display identity or later prompts overwrite
+            # earlier ones when history is reduced in the browser.
+            return [ev.UserMessage(item.id, body, origin=origin)]
         if isinstance(item, (schema.AgentMessageItem, schema.ReasoningItem)):
             # An `item/started` for a text item announces an EMPTY item — the
             # content arrives as deltas or on the completion. Rendering (and so

@@ -635,6 +635,12 @@ async def test_a_second_prompt_steers_the_live_turn(harness):
     # Steering is not queueing: the prompt joined the running turn.
     assert driver.queued() == []
     assert len(harness.frames(schema.METHOD_TURN_START)) == 1
+    await driver.send_prompt("also check the tests")
+    await harness.settle()
+    users = harness.of(ev.UserMessage)
+    assert len(users) == 3
+    assert len({e.turn_id for e in users}) == 3
+    assert all(e.turn_id != "turn-1" for e in users)
 
 
 @pytest.mark.asyncio
