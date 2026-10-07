@@ -84,15 +84,21 @@ def _sources(*, session_status_value: str) -> CapacitySources:
     )
 
 
-def test_readout_binds_on_defect_before_product_constraint():
+def test_readout_surfaces_defect_but_never_counts_it_as_load():
+    """Phantom claims (2026-10-06): a claim whose holder is archived is surfaced as
+    a defect and flagged on its product, but counts toward NO in-flight gauge and
+    never binds — the same accounting every admission gate applies, so a product
+    the readout shows as 0 in flight is a product the gates let dispatch."""
     async def run():
         return await build_readout(_sources(session_status_value="archived"))
 
     r = asyncio.run(run())
     assert r["products"][0]["constraint"] == "product_capacity_full"
-    assert r["products"][0]["inFlight"] == 1
+    assert r["products"][0]["inFlight"] == 0
+    assert r["products"][0]["defect"] is True
+    assert r["runner"]["inFlight"] == 0
     assert r["defects"][0]["target"] == "o/r#1"
-    assert r["binding"]["layer"] == "defect"
+    assert r["binding"]["layer"] == "product"
     assert r["accounts"]["available"] == 1
     assert readout_to_inputs(r).products[0].eligible == 10
 
@@ -118,7 +124,7 @@ def test_defect_when_session_status_is_complete():
 
     r = asyncio.run(run())
     assert r["defects"][0]["sessionStatus"] == "complete"
-    assert r["binding"]["layer"] == "defect"
+    assert r["products"][0]["inFlight"] == 0
 
 
 def test_defect_when_session_row_is_gone():
@@ -129,7 +135,7 @@ def test_defect_when_session_row_is_gone():
 
     r = asyncio.run(run())
     assert r["defects"][0]["sessionStatus"] is None
-    assert r["binding"]["layer"] == "defect"
+    assert r["products"][0]["inFlight"] == 0
 
 
 def test_no_defect_when_session_is_idle():
