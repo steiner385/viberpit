@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from viberpit import brand
-from server.db import db_session
+from server.db import db_session, dialect_insert
 from server.db.models import (
     DISPATCH_KINDS,
     DISPATCH_OUTCOMES,
@@ -260,6 +260,35 @@ class AutomationContext:
                 AutomationTargetState.automation_id == self.automation_id,
                 AutomationTargetState.target == target))).scalar_one_or_none()
             return dict(row.state) if row else {}
+
+    async def reserve_autopilot_action(self, limit: int, now: float) -> bool:
+        """Charge one fleet-wide action before applying it, in a rolling 24 hours.
+
+        ``now`` is epoch seconds, never a process-local monotonic timestamp.
+        Reservations survive restarts and are not refunded on an ambiguous or
+        rejected external action. Database errors propagate: no reservation means
+        no permission to act. All owning hosts use the same autopilot context id.
+        """
+        if limit <= 0:
+            return False
+        # Session targets are UUIDs. This reserved key cannot alias their retry
+        # state, and no per-session cleanup can remove the shared budget.
+        target = ":global-action-budget"
+        async with db_session() as db:
+            # Like ownership._lock_targets: write BEFORE reading so SQLite also
+            # serializes contenders; Postgres additionally takes the row lock.
+            await db.execute(dialect_insert(AutomationTargetState).values(
+                automation_id=self.automation_id, target=target, state={}
+            ).on_conflict_do_nothing(index_elements=["automation_id", "target"]))
+            row = (await db.scalars(select(AutomationTargetState).where(
+                AutomationTargetState.automation_id == self.automation_id,
+                AutomationTargetState.target == target).with_for_update())).one()
+            recent = [t for t in row.state.get("action_times", []) if t > now - 86_400]
+            allowed = len(recent) < limit
+            if allowed:
+                recent.append(now)
+            row.state = {"action_times": recent}
+        return allowed
 
     async def set_target_state(self, target: str, state: dict) -> None:
         async with db_session() as db:
