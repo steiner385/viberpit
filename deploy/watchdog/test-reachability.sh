@@ -105,13 +105,18 @@ reachable() {
 # on 2026-10-07 an upgrade unpacked netplan, the NIC dropped, and this script rebooted
 # rocky mid-dpkg twice, then every ~30 min because each boot came up half-upgraded.
 package_manager_busy() {
-  local lock ino
+  local lock dev ino id
   # 1. A live apt/dpkg run: a POSIX lock on one of dpkg's lock files. apt holds
-  #    lock-frontend for its whole run; /proc/locks field 6 is MAJ:MIN:INODE.
+  #    lock-frontend for its whole run; /proc/locks field 6 is MAJ:MIN:INODE (hex
+  #    major/minor). Match the DEVICE too: inode numbers are only unique per
+  #    filesystem, so an inode-only match would let any user's lock on an unrelated
+  #    file elsewhere masquerade as "apt running" and suppress every reboot.
   for lock in "$DPKG_DIR/lock-frontend" "$DPKG_DIR/lock"; do
-    ino=$(stat -c %i "$lock" 2>/dev/null) || continue
-    if awk -v ino="$ino" '{ n = split($6, f, ":"); if (f[n] == ino) found = 1 } END { exit !found }' \
-         "$PROC_LOCKS" 2>/dev/null; then
+    read -r dev ino < <(stat -c '%d %i' "$lock" 2>/dev/null) || continue
+    # Decode st_dev the way glibc's major()/minor() do.
+    id=$(printf '%02x:%02x:%s' $(( ((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfff) )) \
+                               $(( (dev & 0xff) | ((dev >> 12) & ~0xff) )) "$ino")
+    if awk -v id="$id" '$6 == id { found = 1 } END { exit !found }' "$PROC_LOCKS" 2>/dev/null; then
       echo "dpkg lock held ($lock)"; return 0
     fi
   done

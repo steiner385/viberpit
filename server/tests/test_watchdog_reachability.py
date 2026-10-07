@@ -107,11 +107,18 @@ def _dpkg_dir(tmp_path: Path) -> Path:
 
 def _hold_dpkg_lock(tmp_path: Path) -> None:
     """Make /proc/locks show a POSIX write lock on the fake lock-frontend (apt running)."""
-    inode = (_dpkg_dir(tmp_path) / "lock-frontend").stat().st_ino
     (tmp_path / "proc-locks").write_text(
-        f"1: POSIX  ADVISORY  WRITE 4242 08:02:{inode} 0 EOF\n"
-        f"2: FLOCK  ADVISORY  WRITE 99 08:02:{inode + 1} 0 EOF\n"
+        f"1: POSIX  ADVISORY  WRITE 4242 {_lock_id(tmp_path)} 0 EOF\n"
     )
+
+
+def _lock_id(tmp_path: Path, *, other_device: bool = False) -> str:
+    """The MAJ:MIN:INODE triple /proc/locks prints for the fake lock-frontend."""
+    st = (_dpkg_dir(tmp_path) / "lock-frontend").stat()
+    major, minor = os.major(st.st_dev), os.minor(st.st_dev)
+    if other_device:
+        minor += 1
+    return f"{major:02x}:{minor:02x}:{st.st_ino}"
 
 
 def _first_failure(state_dir: Path) -> Path:
@@ -288,8 +295,9 @@ def test_unrelated_lock_and_settled_db_still_reboot(tmp_path: Path) -> None:
     # The guard must not neuter the watchdog: a lock on some OTHER inode and a settled
     # DB leave the normal sustained-outage reboot intact.
     sd = _sustained(tmp_path)
-    inode = (_dpkg_dir(tmp_path) / "lock-frontend").stat().st_ino
-    (tmp_path / "proc-locks").write_text(f"1: POSIX  ADVISORY  WRITE 1 08:02:{inode}9 0 EOF\n")
+    st = (_dpkg_dir(tmp_path) / "lock-frontend").stat()
+    dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}"
+    (tmp_path / "proc-locks").write_text(f"1: POSIX  ADVISORY  WRITE 1 {dev}:{st.st_ino}9 0 EOF\n")
     r = run(tmp_path, ping_ok="", now=1_000_000, state_dir=sd)
     assert r.returncode != 0, "settled package DB + sustained outage must still reboot"
 
@@ -299,3 +307,14 @@ def test_reachable_host_never_consults_the_package_manager(tmp_path: Path) -> No
     _hold_dpkg_lock(tmp_path)
     r = run(tmp_path, ping_ok="gw", now=1_000_000)
     assert r.returncode == 0 and "package manager" not in r.stderr.lower()
+
+
+def test_same_inode_on_another_filesystem_is_not_the_dpkg_lock(tmp_path: Path) -> None:
+    # Inode numbers repeat across filesystems. Any user can lock a file of their own
+    # whose inode happens to equal lock-frontend's on another mount; that must not
+    # read as "apt running", or an unprivileged lock could suppress every reboot.
+    sd = _sustained(tmp_path)
+    (tmp_path / "proc-locks").write_text(
+        f"1: POSIX  ADVISORY  WRITE 1000 {_lock_id(tmp_path, other_device=True)} 0 EOF\n")
+    r = run(tmp_path, ping_ok="", now=1_000_000, state_dir=sd)
+    assert r.returncode != 0, "a same-inode lock on a different device must not veto the reboot"
