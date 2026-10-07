@@ -458,6 +458,79 @@ async def test_terminal_attest_repairs_a_stuck_proof_so_release_actually_succeed
                           proof=ReleaseProof.WORK_STOPPED, reason="merged PR close-out")
 
 
+async def _seed_tree_with_child(state, *, root_status: str | None, child_status: str) -> str:
+    """The 2026-10-06/07 prod shape: the operation's tree holds the root (all of
+    its executions unattested) and a CHILD session (``parent_session_id`` = root,
+    a dispatch/report_feedback spawn) whose execution was never attested either.
+    ``root_status=None`` leaves the root row permanently deleted."""
+    from server.db.models import Session as DbSession
+
+    sid = state["session_id"]
+    child = f"{sid}-child"
+    async with owned(state["ownership_token"]) as tx:
+        tx.operation.execution_generation = 11
+        tx.operation.stopped_generation = None
+        tx.operation.execution_sessions = {
+            sid: {"current": "exec-root", "executions": {
+                "exec-root": {"generation": 3, "stopped": None}}},
+            child: {"current": "exec-child", "executions": {
+                "exec-child": {"generation": 11, "stopped": None}}}}
+        if root_status is not None:
+            tx.db.add(DbSession(id=sid, name="root", cwd="/tmp", account_name="a",
+                                origin="backlog-runner", origin_ref="o/r#1",
+                                status=root_status))
+        tx.db.add(DbSession(id=child, name="child", cwd="/tmp", account_name="a",
+                            origin="dispatch", parent_session_id=sid, status=child_status))
+    return child
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("root_status", ["archived", None])
+async def test_terminal_attest_covers_an_archived_child_in_the_tree(runner, root_status):
+    """Prod 2026-10-06/07 (cairnea/KinDash#16652, #17544): the root's own
+    executions were repaired, but an ARCHIVED child's execution in the same
+    operation tree stayed unattested, so the aggregate never converged and every
+    ``release(WORK_STOPPED)`` raised — 873 ticks. With the root terminal or gone,
+    every terminal session in the tree is attested too."""
+    from server.automations.ownership import attest_terminal_session_stopped
+
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    await _seed_tree_with_child(state, root_status=root_status, child_status="archived")
+
+    assert await attest_terminal_session_stopped(state["session_id"]) is True
+
+    async with owned(state["ownership_token"]) as tx:
+        assert tx.operation.stopped_generation == tx.operation.execution_generation
+        await tx.transfer(owner="backlog-runner", source="terminal-closeout",
+                          proof=ReleaseProof.WORK_STOPPED, reason="hold released")
+
+
+@pytest.mark.asyncio
+async def test_terminal_attest_never_attests_a_live_child_in_the_tree(runner):
+    """A child still running is real native work on the target: the root being
+    archived proves nothing about it, so the proof stays unset and the release
+    keeps refusing."""
+    from server.automations.ownership import attest_terminal_session_stopped
+
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    child = await _seed_tree_with_child(state, root_status="archived",
+                                        child_status="in_progress")
+
+    assert await attest_terminal_session_stopped(state["session_id"]) is False
+
+    async with owned(state["ownership_token"]) as tx:
+        assert tx.operation.stopped_generation is None
+        assert tx.operation.execution_sessions[child]["executions"]["exec-child"]["stopped"] is None
+    with pytest.raises(ValueError, match="stopped-work attestation"):
+        async with owned(state["ownership_token"]) as tx:
+            await tx.transfer(owner="backlog-runner", source="terminal-closeout",
+                              proof=ReleaseProof.WORK_STOPPED, reason="hold released")
+
+
 @pytest.mark.asyncio
 async def test_lost_closeout_response_recovers_only_all_verified_closed_targets(runner, monkeypatch):
     from server.sessions.orchestrator import SessionOrchestrator

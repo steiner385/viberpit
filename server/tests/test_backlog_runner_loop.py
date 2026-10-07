@@ -1338,6 +1338,85 @@ def test_release_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_p
     asyncio.run(run())
 
 
+def test_one_unreleasable_give_up_never_aborts_the_tick(tmp_path, caplog):
+    """Prod 2026-10-06/07: ONE released ``gave_up`` row whose release proof could
+    not be met (``ValueError: native session execution has no current stopped-work
+    attestation``) raised out of ``_release_give_ups`` 873 ticks in a row, so the
+    sweep never ran, no finished claim was ever settled, and a product sat at its
+    ``max_in_flight`` on archived sessions. One row is isolated: the next row is
+    still released and the sweep still runs."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'poison.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, _rec, ctx = build_loop(candidates=[], held=set(), config=make_config())
+        for ref in ("o/r#1", "o/r#2"):
+            await _set_owned_state(ctx, ref, {"repo": "o/r", "issues": [ref],
+                                              "gave_up": True, "held": True, "reason": "x"})
+        real_write = loop._write_state
+
+        async def write_state(target, st, state, **kw):
+            if target == "o/r#1" and state is None:
+                raise ValueError("native session execution has no current stopped-work "
+                                 "attestation (injected)")
+            return await real_write(target, st, state, **kw)
+
+        loop._write_state = write_state  # type: ignore[method-assign]
+        swept: list[bool] = []
+        real_sweep = loop._sweep
+
+        async def sweep():
+            swept.append(True)
+            await real_sweep()
+
+        loop._sweep = sweep  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING", logger="server.automations.backlog_runner"):
+            await loop.tick()
+
+        assert (await ctx.get_target_state("o/r#1")).get("gave_up") is True   # retried next tick
+        assert not await ctx.get_target_state("o/r#2")                        # still released
+        assert swept == [True]
+        assert "release_give_up_failed target=o/r#1" in caplog.text
+        assert "tick_failed" not in caplog.text
+
+    asyncio.run(run())
+
+
+def test_an_earlier_stage_raising_still_sweeps_and_still_reports_the_failure(tmp_path, caplog):
+    """The sweep (handoffs, settlements, give-ups) is what frees slots, so a raise
+    in any stage before it must not skip it — but the tick still records the
+    failure (``tick_failed`` + ``last_refresh_failed_at``)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'stage.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#9")], config=make_config())
+
+        async def boom():
+            raise RuntimeError("reconcile exploded (injected)")
+
+        loop._reconcile_dangling = boom  # type: ignore[method-assign]
+        swept: list[bool] = []
+
+        async def sweep():
+            swept.append(True)
+
+        loop._sweep = sweep  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING", logger="server.automations.backlog_runner"):
+            await loop.tick()
+
+        assert swept == [True]
+        assert rec.spawns == []              # refill sits behind the failed stage
+        assert "tick_failed" in caplog.text
+        assert getattr(ctx, "last_refresh_failed_at", None) is not None
+
+    asyncio.run(run())
+
+
 def test_restart_safety_counts_existing_rows(tmp_path):
     """A fresh loop counts existing origin='backlog-runner' rows via count_in_flight."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
