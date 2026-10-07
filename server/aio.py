@@ -12,13 +12,16 @@ for it, without swallowing MY OWN cancellation" (issue #1164).
 
 ``run_to_completion`` is the single implementation of the inverse: "finish this
 even if I am cancelled, THEN propagate my cancellation" (issue #2726).
+
+``caused_by_cancellation`` is the single implementation of "is this concrete
+exception really a driver-wrapped ``CancelledError``?" (issues #1950, #2751).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Coroutine, Iterable
+from collections.abc import Awaitable, Coroutine, Iterable, Iterator
 from typing import Any, TypeVar
 
 _T = TypeVar("_T")
@@ -240,6 +243,67 @@ async def cancel_and_reap(
         return False
     _consume(task, phase, level=logging.DEBUG)
     return True
+
+
+def iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield *exc* and everything reachable via ``__cause__``/``__context__``.
+
+    Each exception is yielded once, so a cyclic chain terminates.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        yield cur
+        for nxt in (cur.__context__, cur.__cause__):
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def caused_by_cancellation(exc: BaseException) -> bool:
+    """True if *exc* or anything in its ``__cause__``/``__context__`` chain is a
+    ``CancelledError``.
+
+    A bare ``CancelledError`` raised out of an ``await`` would already skip an
+    ``except Exception`` clause (it is a ``BaseException`` since Python 3.8), but
+    some drivers (asyncpg/uvloop mid-handshake) catch the cancellation and
+    re-raise a concrete exception type ``from`` it instead of propagating it
+    unchanged — that lands in ``except Exception`` looking like a real DB failure
+    even though it is just the task being cancelled (#1950, #2751, #2752).
+    """
+    return any(isinstance(e, asyncio.CancelledError) for e in iter_exception_chain(exc))
+
+
+def current_task_cancelling() -> bool:
+    """True if the running task has a pending ``cancel()`` request.
+
+    ``Task.cancelling()`` stays non-zero after ``task.cancel()`` even when a
+    driver swallowed the resulting ``CancelledError`` and raised something else
+    ``from`` it — the signal that a driver-wrapped cancellation is OURS to
+    propagate (cancel rule, #1164) rather than a cancellation internal to the
+    driver that we may degrade over.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+def ended_by_wrapped_cancellation(task: asyncio.Task[Any]) -> bool:
+    """True if a DONE *task* was ``cancel()``-ed and finished with a driver-wrapped
+    ``CancelledError`` rather than as cancelled.
+
+    For done-callbacks that log a task's failure: ``task.cancelled()`` is False in
+    that case, yet the task was stopped on purpose (daemon stop/redeploy) — not an
+    auto-error (#2751). ``cancelling()`` keeps its count after the task finishes,
+    so a cancellation internal to the driver, with no ``cancel()`` on this task,
+    still reports as the failure it is.
+    """
+    if task.cancelled():
+        return False
+    exc = task.exception()
+    return exc is not None and task.cancelling() > 0 and caused_by_cancellation(exc)
 
 
 def iter_task_frames(task: asyncio.Task[Any]) -> tuple[list[Any], Any]:

@@ -29,6 +29,7 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.aio import ended_by_wrapped_cancellation
 from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS, AppSettings, Host
 
 log = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ _DRAIN_TASKS: set[asyncio.Task[Any]] = set()
 
 def _drain_done(task: asyncio.Task[Any]) -> None:
     _DRAIN_TASKS.discard(task)
-    if task.cancelled():
+    if task.cancelled() or ended_by_wrapped_cancellation(task):
         return
     exc = task.exception()
     if exc is not None:
