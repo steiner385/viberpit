@@ -2119,12 +2119,7 @@ class BacklogRunnerLoop:
                     # answering True here while the write a moment later throws
                     # "native session execution has no current stopped-work
                     # attestation" every tick forever (#2202, #2232/#2233).
-                    if self._session_terminal_attest is not None:
-                        try:
-                            await self._session_terminal_attest(sid)
-                        except Exception:  # pragma: no cover — best-effort repair
-                            log.warning("backlog_runner.session_terminal_attest_failed sid=%s",
-                                        sid, exc_info=True)
+                    await self._repair_stopped_proof(sid)
                     return True
             except Exception:  # pragma: no cover — a probe failure must not stall the sweep
                 log.warning("backlog_runner.session_gone_probe_failed sid=%s", sid,
@@ -2132,9 +2127,27 @@ class BacklogRunnerLoop:
         if self._session_work_stopped is None:
             return False
         try:
-            return bool(await self._session_work_stopped(sid))
+            stopped = bool(await self._session_work_stopped(sid))
         except Exception:
             return False
+        if stopped:
+            # Same read/write disagreement as the ``_session_gone`` branch: the
+            # live probe vouching for the session does not move the DB generation
+            # proof ``_validate_release`` re-derives, so repair it here too
+            # (2026-10-06/07: ``tick_failed`` every minute for ~11 h, #2722).
+            await self._repair_stopped_proof(sid)
+        return stopped
+
+    async def _repair_stopped_proof(self, sid: str) -> None:
+        """Best-effort: attest *sid*'s retained executions so a WORK_STOPPED release
+        passes ``_validate_release``. Only call once *sid* is proven stopped."""
+        if self._session_terminal_attest is None:
+            return
+        try:
+            await self._session_terminal_attest(sid)
+        except Exception:  # pragma: no cover — best-effort repair
+            log.warning("backlog_runner.session_terminal_attest_failed sid=%s",
+                        sid, exc_info=True)
 
     async def _write_state(self, target: str, st: dict, state: dict | None, *,
                            outcome: dict | None = None, action_completed: bool = False) -> bool:
