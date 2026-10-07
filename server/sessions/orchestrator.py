@@ -13353,8 +13353,9 @@ class SessionOrchestrator:
 
     async def _autopilot_list_governed(self) -> list[str]:
         """Session ids autopilot may act on this tick: non-terminal, not opted-out,
-        in an actionable status, not mid turn-restart, and (if enabled_repos is set)
-        in one of those repos."""
+        in an actionable status, not mid turn-restart, (if enabled_repos is set)
+        in one of those repos, and not in a repo whose owning product turned
+        Session assistance off."""
         from server.automations.autopilot_policy import ACTIONABLE_STATUSES
         _mode, config = await self._autopilot_read_config()
         repos = set(config.get("enabled_repos") or [])
@@ -13389,7 +13390,21 @@ class SessionOrchestrator:
             if repos and rec.repo not in repos:
                 continue
             out.append(sid)
-        return out
+        # A product's own Session assistance dial (#1611) can withdraw its sessions
+        # from governance; it never adds any. An unreadable policy skips the tick
+        # rather than act on a product that may have said off.
+        repo_of = {sid: self._records[sid].repo for sid in out}
+        candidate_repos = {r for r in repo_of.values() if r}
+        if not candidate_repos:
+            return out
+        from server.automations.product_policy import assistance_withheld_repos
+        try:
+            async with db_session() as db:
+                withheld = await assistance_withheld_repos(db, candidate_repos)
+        except Exception:
+            log.warning("autopilot.product_policy_unreadable: skipping this tick", exc_info=True)
+            return []
+        return [sid for sid in out if repo_of[sid] not in withheld]
 
     async def _autopilot_get_context(self, session_id: str):
         """Assemble the pure DecisionContext for a governed session: its effective

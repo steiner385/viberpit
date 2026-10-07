@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
 
     from server.pm.repo_project import RepoOwnership
 
@@ -49,6 +49,7 @@ from server.sessions.model_request import MODEL_TIERS
 log = logging.getLogger(__name__)
 
 DISPATCH_MODES: tuple[str, ...] = ("off", "propose", "auto")
+SESSION_ASSISTANCE_MODES: tuple[str, ...] = ("on", "off")
 
 PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="dispatch", label="Dispatch", type="enum", default="off",
@@ -181,6 +182,18 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 default="none", choices=["none", *MODEL_TIERS],
                 help="Minimum model for a spec, plan or decompose session whose output will "
                      "be merged or accepted without a human read. Inert under cautious."),
+    # #1611 phase 3 (Session assistance): the product's own say over whether the
+    # Autopilot automation answers, approves and nudges its sessions. It can only
+    # RESTRICT: ``on`` (the default) leaves the global Autopilot mode, guardrails and
+    # Repositories scope in charge, exactly as before this key existed, and ``off``
+    # takes the product's sessions out of Autopilot's governance. It never grants
+    # assistance the global setting withholds.
+    ConfigField(key="session_assistance", label="Session assistance", type="enum",
+                default="on", choices=list(SESSION_ASSISTANCE_MODES),
+                help="on: Autopilot may answer, approve and nudge this product's sessions "
+                     "as its global mode and guardrails allow. off: Autopilot leaves this "
+                     "product's sessions alone; a person steers them. Never grants more "
+                     "than the global Autopilot setting."),
     # #2416: lets a product on spec-kit (or another convention) keep its specs
     # where its own tooling already expects them, instead of every synthesizer
     # spec/plan artifact being a manual `POST .../artifacts` adopt.
@@ -330,6 +343,25 @@ async def policy_for_repo(db: AsyncSession, repo: str) -> dict | None:
     if owner is None:
         return None
     return (await load_policies(db)).get(owner.slug)
+
+
+async def assistance_withheld_repos(db: AsyncSession, repos: "Collection[str]") -> frozenset[str]:
+    """The subset of *repos* whose ONE owning product set ``session_assistance`` off.
+
+    Restrict-only by construction: a repo no product uniquely owns (missing or
+    ambiguous ownership) is never withheld here, so the global Autopilot scope
+    keeps governing it exactly as it did before the product dial existed."""
+    from server.pm.repo_project import owning_projects_by_repo
+    wanted = {r for r in repos if r}
+    if not wanted:
+        return frozenset()
+    owners = await owning_projects_by_repo(db, wanted)
+    if not owners:
+        return frozenset()
+    policies = await load_policies(db)
+    return frozenset(
+        repo for repo, owner in owners.items()
+        if policy_for_product(policies, owner.slug).get("session_assistance", "on") == "off")
 
 
 def policies_by_slug(db: Session) -> dict[str, dict]:

@@ -19,6 +19,7 @@ const SCHEMA = [
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
   { key: 'skip_labels', label: 'Labels to skip', type: 'string-list', default: [], help: '', choices: null },
   { key: 'risk_tolerance', label: 'Risk tolerance', type: 'enum', default: 'cautious', help: '', choices: ['cautious', 'balanced', 'bold'] },
+  { key: 'session_assistance', label: 'Session assistance', type: 'enum', default: 'on', help: '', choices: ['on', 'off'] },
 ] as const
 
 const GATES = {
@@ -87,7 +88,7 @@ function renderCard(ui: Parameters<typeof render>[0]) {
   return render(<MemoryRouter>{ui}</MemoryRouter>)
 }
 
-/** Which of the three grouped `<fieldset>`s (by its `<legend>` text) an input
+/** Which of the four grouped `<fieldset>`s (by its `<legend>` text) an input
  *  lives in — the DOM-level proof that grouping, not just presence, worked. */
 function legendFor(input: HTMLElement): string | null {
   return input.closest('fieldset')?.querySelector('legend')?.textContent ?? null
@@ -201,12 +202,12 @@ describe('AutomationPolicyCard', () => {
   // dials among model and gate settings with no way back to the real capacity
   // page. Grouping is verified at the DOM level (which fieldset's legend an
   // input sits under), not just "the legend text exists somewhere".
-  it('groups fields into Dispatch / Models / Gates fieldsets, in that order', () => {
+  it('groups fields into Dispatch / Models / Gates / Assistance fieldsets, in that order', () => {
     const { container } = renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
-    // Only the three grouped inner fieldsets carry a `<legend>` — the outer
+    // Only the four grouped inner fieldsets carry a `<legend>` — the outer
     // disabled fieldset that gates every control at once does not.
     const legends = Array.from(container.querySelectorAll('legend')).map((el) => el.textContent)
-    expect(legends).toEqual(['Dispatch', 'Models', 'Gates'])
+    expect(legends).toEqual(['Dispatch', 'Models', 'Gates', 'Assistance'])
     expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Dispatch')
     expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Dispatch')
     expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Dispatch')
@@ -214,6 +215,7 @@ describe('AutomationPolicyCard', () => {
     expect(legendFor(screen.getByLabelText('Ladder top tier'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Session model'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
+    expect(legendFor(screen.getByLabelText('Session assistance'))).toBe('Assistance')
   })
 
   it('renders no control for a Capacity-owned field (spec 2026-09-20 D5)', () => {

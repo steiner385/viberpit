@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from server.automations.product_policy import (
-    DISPATCH_MODES, PRODUCT_POLICY_SCHEMA, effective_policy,
+    DISPATCH_MODES, PRODUCT_POLICY_SCHEMA, SESSION_ASSISTANCE_MODES, effective_policy,
 )
 
 
@@ -14,7 +14,8 @@ def test_schema_keys_and_defaults():
                     "respect_dependencies", "skip_labels", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
                     "triage_dismiss_bot_artifacts", "risk_tolerance",
-                    "max_initiatives_in_flight", "unattended_model_floor", "artifact_layout"]
+                    "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
+                    "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
@@ -23,7 +24,8 @@ def test_schema_keys_and_defaults():
         "respect_dependencies": True, "skip_labels": [], "auto_escalate_match": [],
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
         "triage_dismiss_bot_artifacts": False, "risk_tolerance": "cautious",
-        "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "artifact_layout": "docs_sdlc"}
+        "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
+        "artifact_layout": "docs_sdlc"}
 
 
 def test_skip_labels_is_additive_string_list_defaulting_empty():
@@ -204,3 +206,13 @@ def test_skip_labels_normalises_the_policy_list_for_the_queue():
     assert skip_labels({}) == frozenset()
     assert skip_labels(None) == frozenset()
     assert skip_labels(effective_policy(None)) == frozenset()
+
+
+def test_session_assistance_defaults_on_and_only_takes_on_or_off():
+    """#1611 phase 3: the default preserves today's global Autopilot behaviour; a
+    product can only turn it off, never widen it."""
+    assert SESSION_ASSISTANCE_MODES == ("on", "off")
+    assert effective_policy({"session_assistance": "off"})["session_assistance"] == "off"
+    with pytest.raises(ValueError):
+        from server.automations.product_policy import merge_policy_patch
+        merge_policy_patch(None, {"session_assistance": "auto"})

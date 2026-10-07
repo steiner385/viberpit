@@ -797,3 +797,59 @@ async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path
     await orch._autopilot_archive("s1")
     assert captured["context"]["reason"] == "autopilot: goal met"
     assert captured["context"].get("pr_resolution") is None
+
+
+async def _add_product(slug: str, repo: str, policy: dict | None) -> None:
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo
+    async with db_session() as db:
+        project = Project(slug=slug, name=slug, automation_policy=policy)
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
+
+
+def _waiting(sid: str, repo: str | None):
+    from server.sessions.types import SessionRecord
+    return SessionRecord(id=sid, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                         engine_session_id="", cols=80, rows=24, cwd="/tmp",
+                         status="waiting_input", repo=repo)
+
+
+def test_list_governed_honours_product_session_assistance_off(tmp_path):
+    """#1611 phase 3: a product that turned Session assistance off takes its sessions
+    out of Autopilot's governance. A product left at the default, a repo no product
+    owns and a session with no repo all stay governed: the dial only restricts."""
+    async def run():
+        await _init_db(tmp_path)
+        await _add_product("quiet", "o/quiet", {"session_assistance": "off"})
+        await _add_product("busy", "o/busy", {"dispatch": "auto"})
+        await _add_product("legacy", "o/legacy", None)
+        orch = _bare_orch()
+        orch._records = {
+            "quiet": _waiting("quiet", "o/quiet"),
+            "busy": _waiting("busy", "o/busy"),
+            "legacy": _waiting("legacy", "o/legacy"),
+            "unowned": _waiting("unowned", "o/nobody"),
+            "norepo": _waiting("norepo", None),
+        }
+        governed = set(await orch._autopilot_list_governed())
+        assert governed == {"busy", "legacy", "unowned", "norepo"}
+    asyncio.run(run())
+
+
+def test_list_governed_skips_the_tick_when_product_policy_is_unreadable(tmp_path, monkeypatch):
+    """An unreadable product policy must not be read as "on": a product that said off
+    would be acted on. The tick governs nothing instead; the next one retries."""
+    async def run():
+        await _init_db(tmp_path)
+
+        async def boom(db, repos):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(
+            "server.automations.product_policy.assistance_withheld_repos", boom)
+        orch = _bare_orch()
+        orch._records = {"s": _waiting("s", "o/r")}
+        assert await orch._autopilot_list_governed() == []
+    asyncio.run(run())
