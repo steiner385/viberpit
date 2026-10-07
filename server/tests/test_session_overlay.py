@@ -166,8 +166,8 @@ async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch
 
 def test_append_string_carries_the_instruction_when_enabled(monkeypatch):
     """Claude's `durable_tool_surface` is unconditionally True, so with the surface on
-    the append is the tools paragraph ALONE — no marker instruction survives alongside
-    it (task-8: exactly one way to signal)."""
+    the append includes tools and task policy — no marker instruction survives alongside
+    them (task-8: exactly one way to signal)."""
     from server.sessions.claude_sdk_factory import _build_append_string
     from server.sessions.completion import marker_instructions
     monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
@@ -176,4 +176,5 @@ def test_append_string_carries_the_instruction_when_enabled(monkeypatch):
     assert "session_context" in enabled and "mark_complete" in enabled
     assert "<!--" not in enabled
     monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
-    assert _build_append_string() == marker_instructions(self_model_switch=True)
+    assert marker_instructions(self_model_switch=True) in _build_append_string()
+    assert "Problem-solving follow-through" in _build_append_string()
