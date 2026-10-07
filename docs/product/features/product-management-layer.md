@@ -368,7 +368,13 @@ concurrent spec/plan artifact sessions, counted as LIVE design/plan artifact ses
 intake, a `blocked` initiative, a dead session and a PR awaiting a human merge each hold no slot;
 `0` PAUSES new artifact sessions without stopping materialization) and `unattended_model_floor`
 (`none` or a model tier, default `none` — the floor for a session whose output ships unread; stored
-in phase 1, applied in phase 2). The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
+in phase 1, applied in phase 2). `session_assistance` (`on | off`, default `on`, #1611) is the
+product's say over the Autopilot automation: `off` drops the product's sessions from
+`_autopilot_list_governed` (resolved through `assistance_withheld_repos`, the unique-owner
+lookup), so Autopilot neither answers, approves, nudges nor archives them. It only restricts:
+`on` leaves the global Autopilot mode, guardrails and Repositories scope in charge, and a repo
+no product uniquely owns stays under that global scope. An unreadable policy skips the tick
+rather than act on a product that may have said off. The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
 `bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
 same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,

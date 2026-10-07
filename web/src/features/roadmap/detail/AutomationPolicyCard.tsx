@@ -31,7 +31,7 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
 }
 
 // Findability (spec 2026-09-12 D9, reshaped by 2026-09-20 D5): the dials group
-// under three legends. *Dispatch* holds what this card OWNS (dispatch, reach,
+// under four legends. *Dispatch* holds what this card OWNS (dispatch, reach,
 // eligibility); rank, cap mode and pin are owned by Delivery → Capacity
 // (`surface: 'capacity'`) and appear here as one read-only line; a deprecated
 // field (D6) appears nowhere. A key this schema does not yet know about falls
@@ -45,19 +45,24 @@ const GATES_FIELD_KEYS = new Set([
   'risk_tolerance', 'triage_auto_accept', 'triage_auto_accept_dispatch_off',
   'triage_dismiss_bot_artifacts', 'give_up_after_bounces', 'max_initiatives_in_flight',
 ])
+// What may act on this product's sessions once they run (#1611): Autopilot's
+// answering, approving and nudging, restrictable per product.
+const ASSISTANCE_FIELD_KEYS = new Set(['session_assistance'])
 
 interface FieldGroups {
   dispatch: ConfigField[]
   models: ConfigField[]
   gates: ConfigField[]
+  assistance: ConfigField[]
 }
 
 function groupFields(fields: ConfigField[]): FieldGroups {
-  const groups: FieldGroups = { dispatch: [], models: [], gates: [] }
+  const groups: FieldGroups = { dispatch: [], models: [], gates: [], assistance: [] }
   for (const field of fields) {
     if (field.deprecated || field.surface === 'capacity') continue
     if (MODELS_FIELD_KEYS.has(field.key)) groups.models.push(field)
     else if (GATES_FIELD_KEYS.has(field.key)) groups.gates.push(field)
+    else if (ASSISTANCE_FIELD_KEYS.has(field.key)) groups.assistance.push(field)
     else groups.dispatch.push(field)
   }
   return groups
@@ -207,6 +212,12 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
           <legend className="text-sm font-medium">Gates</legend>
           {groups.gates.map(renderField)}
         </fieldset>
+        {groups.assistance.length > 0 && (
+          <fieldset className="flex flex-col gap-3">
+            <legend className="text-sm font-medium">Assistance</legend>
+            {groups.assistance.map(renderField)}
+          </fieldset>
+        )}
       </fieldset>
       {/* Informational, not a control: it stays enabled and visible even while
           the fieldset above it is disabled (spec 2026-09-20 D5). */}
