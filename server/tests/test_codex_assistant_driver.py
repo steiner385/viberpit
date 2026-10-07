@@ -282,15 +282,21 @@ async def test_an_undeclared_tool_never_raises_a_confirmation_card(harness, over
 
 
 @pytest.mark.asyncio
-async def test_a_call_for_another_thread_never_reaches_a_tool(harness, overlay):
+async def test_a_call_for_another_thread_never_reaches_a_tool(harness, overlay, caplog):
     # The manager refuses first — its per-thread sink map is what stops one
     # session's model running another session's tool table — so the app-server
     # gets a JSON-RPC error rather than a fabricated result.
     await harness.boot(assistant_overlay=overlay)
-    request_id = harness.server.request(TOOL_CALL, _call(thread_id="someone-elses"))
-    reply = await _await_reply(harness, request_id)
+    with caplog.at_level("INFO"):
+        request_id = harness.server.request(TOOL_CALL, _call(thread_id="someone-elses"))
+        reply = await _await_reply(harness, request_id)
     assert "result" not in reply
     assert harness.manager.unrouted_dynamic_tools == 1
+    assert any(
+        "codex.manager.unrouted_dynamic_tool" in record.message
+        and record.levelname == "INFO"
+        for record in caplog.records
+    )
 
 
 # ---------------------------------------------------------------------------

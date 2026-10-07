@@ -176,7 +176,7 @@ async def test_an_approval_reaches_the_thread_that_raised_it(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_unowned_approval_is_never_answered(tmp_path):
+async def test_an_unowned_approval_is_never_answered(tmp_path, caplog):
     """Raising is the point: the protocol turns it into a JSON-RPC error, and an
     error can never become an allow.
 
@@ -184,10 +184,16 @@ async def test_an_unowned_approval_is_never_answered(tmp_path):
     the dispatcher can tell a routing outcome from a handler that broke, and
     report this incident once instead of twice (#1485)."""
     manager = _manager(tmp_path)
-    with pytest.raises(CodexRequestUnrouted):
-        await manager._on_approval(
-            "acct", schema.METHOD_COMMAND_EXECUTION_APPROVAL, _approval("ghost"))
+    with caplog.at_level("INFO"):
+        with pytest.raises(CodexRequestUnrouted):
+            await manager._on_approval(
+                "acct", schema.METHOD_COMMAND_EXECUTION_APPROVAL, _approval("ghost"))
     assert manager.unrouted_approvals == 1
+    assert any(
+        "codex.manager.unrouted_approval" in record.message
+        and record.levelname == "INFO"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

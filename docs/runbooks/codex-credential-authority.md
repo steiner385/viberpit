@@ -347,10 +347,10 @@ Structured logs: `codex.doctor.report` (once per daemon boot),
 `unrouted_dynamic_tool` siblings) is the **only** report for a server request
 no live thread owns — `unregister_thread` drops a thread's sinks before its turn
 fence on purpose, so one landing during teardown fails closed by design. The
-protocol dispatcher logs `codex.protocol.<surface>_unrouted` at INFO and stops
-there; it used to add an ERROR whose whole content was `error=runtime_error`,
-which filed a second issue per incident (#1485 beside #1486, #1991 beside its
-own). A genuine handler fault still arrives as
+manager logs these at INFO, stopping there; the protocol dispatcher does not
+add a second report. Previously logged at WARNING to surface teardown races as
+auto-errors (#2730); downgraded after recognizing the race as expected and
+routing through metrics instead. A genuine handler fault still arrives as
 `codex.protocol.<surface>_failed` at ERROR.
 
 A runner ending has three records, one per condition, because they diagnose

@@ -640,14 +640,15 @@ def test_a_successful_restart_no_longer_mints_its_own_fingerprint(caplog):
 # ---------------------------------------------------------------------------
 #
 # ``error_signatures`` on dobby recorded the entire defect. ``codex.manager.
-# unrouted_approval`` (WARNING, 20 occurrences, 2026-09-09 09:36:39.945 →
-# 12:14:09.267, issue #1486) and ``codex.protocol.approval_failed`` (ERROR, 20
-# occurrences, 09:36:39.952 → 12:14:09.274, issue #1485) are the SAME twenty
-# events, seven milliseconds apart. The manager names the account and the
-# method; the dispatcher's catch-all can only reduce a ``CodexManagerError`` —
-# a ``RuntimeError`` subclass, so #1861's taxonomy never reached it — to
-# ``error=runtime_error``, and file a second, contentless issue for an incident
-# already reported. Closing #1486 muted one half; the other kept filing.
+# unrouted_approval`` (INFO, 20 occurrences, 2026-09-09 09:36:39.945 →
+# 12:14:09.267, filed as issue #1486 when it was WARNING) and
+# ``codex.protocol.approval_failed`` (ERROR, 20 occurrences, 09:36:39.952 →
+# 12:14:09.274, issue #1485) were the SAME twenty events, seven milliseconds
+# apart. The manager names the account and the method; the dispatcher's
+# catch-all can only reduce a ``CodexManagerError`` — a ``RuntimeError`` subclass,
+# so #1861's taxonomy never reached it — to ``error=runtime_error``, and file a
+# second, contentless issue for an incident already reported. Closing #1486 muted
+# one half; downgrading manager events to INFO removed the other (#2730).
 #
 # The incident is also a designed outcome rather than a fault:
 # ``unregister_thread`` drops a thread's sinks BEFORE its turn fence precisely
@@ -732,28 +733,38 @@ async def _dispatch_to_a_dead_thread(manager, surface: str) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", _UNROUTED_SURFACES)
 async def test_one_unrouted_request_files_one_issue_not_two(caplog, tmp_path, surface):
-    """The #1485 defect itself: two WARNING+ records for one incident.
+    """Unrouted requests no longer file auto-errors (#2730): both manager and
+    protocol log at INFO level, below the WARNING threshold for auto-error filing.
 
-    Counted across BOTH loggers, because the sink does not care which module a
-    record came from — two records above the capture threshold are two
-    fingerprints, and two fingerprints are two issues.
-    """
+    Historically, the #1485 defect was two records at WARNING+ levels filing two
+    separate issues for one incident. The fix downgraded the manager to INFO and
+    verifies only the protocol's ERROR-level exceptions file issues now."""
     manager = _unrouted_manager(tmp_path)
 
     with caplog.at_level(logging.DEBUG):
         await _dispatch_to_a_dead_thread(manager, surface)
 
+    # No WARNING+ records from manager or protocol for normal unrouted events
     reported = [
         r for r in caplog.records
         if r.levelno >= logging.WARNING
         and r.name in ("server.codex.manager", "server.codex.protocol")
     ]
-    assert len(reported) == 1, (
-        "one incident reported twice: "
+    assert len(reported) == 0, (
+        "unrouted events should not file auto-errors: "
         f"{[(r.name, getattr(r, 'event', None)) for r in reported]}"
     )
-    # The surviving report is the one that can name the account and the method.
-    assert reported[0].name == "server.codex.manager"
+    # Verify both sides logged at INFO level as designed
+    manager_records = [
+        r for r in caplog.records
+        if "unrouted" in getattr(r, "event", "") and r.name == "server.codex.manager"
+    ]
+    protocol_records = [
+        r for r in caplog.records
+        if "unrouted" in getattr(r, "event", "") and r.name == "server.codex.protocol"
+    ]
+    assert len(manager_records) == 1 and manager_records[0].levelno == logging.INFO
+    assert len(protocol_records) == 1 and protocol_records[0].levelno == logging.INFO
 
 
 @pytest.mark.asyncio
@@ -810,19 +821,24 @@ async def test_a_genuine_handler_fault_is_still_an_error(caplog, tmp_path, surfa
 
 
 def test_the_two_records_would_have_been_two_issues(caplog):
-    """Why 'report once' is the fix and not merely tidier: the sink fingerprints
-    on (source, level, logger, event, …), so the manager's WARNING and the
-    dispatcher's ERROR could never have been folded into one issue — which is
-    exactly how muting #1486 left #1485 filing."""
+    """Now that the manager logs at INFO (below the auto-error filing threshold),
+    only the protocol's ERROR-level record counts as an auto-error. This avoids
+    the double-filing that occurred when both were above WARNING (#2730).
+
+    Historically, the sink fingerprints on (source, level, logger, event, …),
+    so different levels would have produced different fingerprints anyway."""
     caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        log_event(_MGR_LOGGER, logging.WARNING, "codex.manager.unrouted_approval",
+    with caplog.at_level(logging.DEBUG):
+        log_event(_MGR_LOGGER, logging.INFO, "codex.manager.unrouted_approval",
                   account="chatgpt-tonystein85_gmail.com", method="x")
         log_event(logging.getLogger("server.codex.protocol"), logging.ERROR,
                   "codex.protocol.approval_failed", method="x", error="runtime_error")
 
-    fingerprints = {
-        signature_of(record, source="daemon", host="rocky").fingerprint
+    # Only ERROR-level and above are converted to error signatures; INFO is below the threshold
+    signatures = [
+        signature_of(record, source="daemon", host="rocky")
         for record in caplog.records
-    }
-    assert len(fingerprints) == 2
+    ]
+    # One signature is None (the INFO record), one is not (the ERROR record)
+    assert len([s for s in signatures if s is not None]) == 1
+    assert signatures[1] is not None  # The ERROR record at index 1

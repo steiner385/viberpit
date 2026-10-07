@@ -971,7 +971,7 @@ class CodexRunnerManager:
             codex_approval_ms.labels("unrouted").observe(0.0)
             log_event(
                 logger,
-                logging.WARNING,
+                logging.INFO,
                 "codex.manager.unrouted_approval",
                 account=account,
                 method=method,
@@ -1003,7 +1003,7 @@ class CodexRunnerManager:
             codex_user_input_ms.labels("unrouted").observe(0.0)
             log_event(
                 logger,
-                logging.WARNING,
+                logging.INFO,
                 "codex.manager.unrouted_user_input",
                 account=account,
             )
@@ -1036,7 +1036,7 @@ class CodexRunnerManager:
             codex_dynamic_tool_ms.labels("unrouted").observe(0.0)
             log_event(
                 logger,
-                logging.WARNING,
+                logging.INFO,
                 "codex.manager.unrouted_dynamic_tool",
                 account=account,
             )
