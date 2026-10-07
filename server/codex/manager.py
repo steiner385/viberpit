@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from viberpit import brand
-from server.aio import cancel_and_reap
+from server.aio import cancel_and_reap, run_to_completion
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.redaction import Redacted
@@ -669,18 +669,9 @@ class CodexRunnerManager:
         client: CodexAppServerClient | None,
     ) -> None:
         """Finish half-built-runner cleanup even if the caller is cancelled."""
-        cleanup = asyncio.create_task(
+        await run_to_completion(
             self._discard(process, client), name=f"codex-start-discard-{account}"
         )
-        cancelled_during_cleanup = False
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled_during_cleanup = True
-        await cleanup
-        if cancelled_during_cleanup:
-            raise asyncio.CancelledError
 
     # -- ref-counting ------------------------------------------------------
 

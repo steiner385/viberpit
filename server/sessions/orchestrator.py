@@ -68,7 +68,7 @@ from viberpit.fleet_role import daemon_role
 from viberpit.paths import account_cfg_dir, shared_base
 from viberpit.quota import QuotaSnapshot
 from viberpit.selector import at_ceiling, exhausted, usage_known
-from server.aio import bounded_wait
+from server.aio import bounded_wait, run_to_completion
 from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
     ASSISTANT_SUGGEST_LIMIT, ASSISTANT_SUGGEST_SYSTEM_PROMPT, build_assistant_suggest_prompt,
@@ -5222,16 +5222,7 @@ class SessionOrchestrator:
         flushing (driver.aclose(), a `git worktree remove`) must not strand the
         remaining state; shield until teardown completes, then re-raise.
         """
-        cleanup = asyncio.create_task(coro, name=name)
-        cancelled_during_cleanup = False
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled_during_cleanup = True
-        await cleanup
-        if cancelled_during_cleanup:
-            raise asyncio.CancelledError
+        await run_to_completion(coro, name=name)
 
     async def _release_prespawn_resources(
         self, session_id: str, worktree_info: worktrees.WorktreeInfo | None,

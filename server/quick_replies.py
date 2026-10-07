@@ -13,6 +13,7 @@ import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.aio import run_to_completion
 from server.audit import redact_text
 from server.auth.identity import OPEN_LAN_IDENTITY
 from server.db import db_session, dialect_insert
@@ -72,6 +73,13 @@ async def observe_reply(identity: str, text: str, *, source: str = 'typed',
     if (not _personal(identity) or source != 'typed' or via is not None
             or has_attachments or not _candidate(text)):
         return
+    # Called from the WS prompt chain, which socket teardown cancels: a cancel
+    # landing mid-INSERT stranded this write transaction's lock (#2726).
+    await run_to_completion(_record_sample(identity, text),
+                            name='quick_replies.observe_reply')
+
+
+async def _record_sample(identity: str, text: str) -> None:
     try:
         now = time.time()
         async with db_session() as db:
