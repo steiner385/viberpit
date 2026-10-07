@@ -8,13 +8,13 @@ import type { Session } from '@/api/types'
 
 vi.mock('@/api/assistant', () => ({
   useAssistantStatus: vi.fn(),
-  useAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null })),
-  useResetAssistant: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useAssistantSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
+  useResetAssistant: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetAssistantModel: vi.fn(() => ({
-    mutateAsync: vi.fn(), isPending: false, isError: false, error: null,
+    mutate: vi.fn(), isPending: false, isError: false, error: null,
   })),
   useAssistantHistory: vi.fn(() => ({ data: [], isLoading: false })),
-  useResumeAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
+  useResumeAssistantSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false })),
   useAssistantFeedback: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
 }))
 
@@ -233,7 +233,7 @@ describe('AssistantSheet', () => {
       { data: { enabled: true, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
     )
     vi.mocked(useAssistantSession).mockReturnValue({
-      mutateAsync: vi.fn(), isPending: false, isError: true,
+      mutate: vi.fn(), isPending: false, isError: true,
       error: new ApiRequestError(409, {
         error: { code: 'no_host_available', message: 'no enabled, healthy host with capacity' },
       }),
