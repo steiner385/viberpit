@@ -369,3 +369,63 @@ def test_a_refused_session_fix_records_the_marker_the_gate_reads(monkeypatch, tm
         assert await orch._pr_doctor_pending_products() == {}
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# #2732: PR Doctor's OWN sessionless operation stuck in ``uncertain``
+# ---------------------------------------------------------------------------
+
+def _op(*, age_s, phase="uncertain", session_id=None, owner="pr-doctor"):
+    from types import SimpleNamespace
+    from datetime import timedelta
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return SimpleNamespace(owner=owner, phase=phase, session_id=session_id,
+                           reserved_session_id=None,
+                           updated_at=now - timedelta(seconds=age_s))
+
+
+def test_mechanical_stuck_needs_age_phase_and_no_session():
+    from server.sessions import orchestrator as o
+    stuck = o.SessionOrchestrator._pr_doctor_mechanical_stuck
+    old = o._PR_DOCTOR_MECHANICAL_DEADLINE_S + 60
+    assert stuck(_op(age_s=old))
+    assert not stuck(_op(age_s=10))
+    assert not stuck(_op(age_s=old, phase="claimed"))
+    assert not stuck(_op(age_s=old, session_id="s1"))
+    assert not stuck(_op(age_s=old, owner="backlog-runner"))
+    assert not stuck(None)
+
+
+def _own_stuck_state():
+    return {"ownership_token": "tok-1", "mechanical_attempts": 1,
+            "last_failure": "stuck_enqueue", "last_action_sha": _HEAD}
+
+
+def test_own_operation_stuck_past_the_deadline_stops_gating(monkeypatch, tmp_path):
+    async def run():
+        from server.sessions import orchestrator as o
+        orch = await _gated_orch(monkeypatch, tmp_path, state=_own_stuck_state())
+        await _record_refusal(orch, "o/r#7", _HEAD, "prior PR execution has not stopped")
+
+        async def op(_token):
+            return _op(age_s=o._PR_DOCTOR_MECHANICAL_DEADLINE_S + 60)
+        monkeypatch.setattr(orch, "_pr_doctor_claim_operation", op)
+
+        assert await orch._pr_doctor_pending_products() == {}
+
+    asyncio.run(run())
+
+
+def test_own_operation_within_the_deadline_keeps_gating(monkeypatch, tmp_path):
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path, state=_own_stuck_state())
+        await _record_refusal(orch, "o/r#7", _HEAD, "prior PR execution has not stopped")
+
+        async def op(_token):
+            return _op(age_s=10)
+        monkeypatch.setattr(orch, "_pr_doctor_claim_operation", op)
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())

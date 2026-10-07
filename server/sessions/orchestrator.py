@@ -165,6 +165,9 @@ AUTOMATION_ACTIONABLE_CACHE_S = 30.0
 # One linked-issues GitHub resolution per PR per sweep tick, not per read of
 # the actionable list (#2203) — matches AUTOMATION_ACTIONABLE_CACHE_S's window.
 _PR_DOCTOR_FOREIGN_HOLDER_CACHE_S = 30.0
+# How long a sessionless PR Doctor operation may sit in ``uncertain`` before the
+# attempt is treated as failed (#2732).
+_PR_DOCTOR_MECHANICAL_DEADLINE_S = 1800.0
 
 _DRIVER_CONTROL_TIMEOUT_S = 5.0
 
@@ -14234,6 +14237,10 @@ class SessionOrchestrator:
             operation = await self._pr_doctor_claim_operation(token)
             sid = (operation.session_id or operation.reserved_session_id) if operation else None
             stopped = bool(sid and await self._automation_session_work_stopped(sid))
+            # A mechanical attempt has no session, so ``stopped`` can never turn
+            # true; past its deadline an unobserved outcome is a failed attempt
+            # (already counted in ``mechanical_attempts``), not live work (#2732).
+            stopped = stopped or self._pr_doctor_mechanical_stuck(operation)
             async with owned(token) as tx:
                 row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
                 if row is None or row.state != expected:
@@ -16251,7 +16258,24 @@ class SessionOrchestrator:
         return refusals
 
     @staticmethod
-    def _pr_doctor_claim_unclaimable(state: dict, refused_at_sha: str | None, info) -> bool:
+    def _pr_doctor_mechanical_stuck(operation) -> bool:
+        """A sessionless PR Doctor operation parked in ``uncertain`` past
+        ``_PR_DOCTOR_MECHANICAL_DEADLINE_S``: the GitHub branch update's
+        outcome was never observed (a conflicted PR's head never moves), and
+        nothing else will ever settle it (#2732)."""
+        from datetime import datetime, timedelta, timezone
+        if (operation is None or operation.owner != "pr-doctor"
+                or operation.phase != "uncertain"
+                or operation.session_id or operation.reserved_session_id):
+            return False
+        # Columns are naive UTC (see ``server/db/clock.py``).
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return now - operation.updated_at > timedelta(
+            seconds=_PR_DOCTOR_MECHANICAL_DEADLINE_S)
+
+    @staticmethod
+    def _pr_doctor_claim_unclaimable(state: dict, refused_at_sha: str | None, info,
+                                     *, own_op_stuck: bool = False) -> bool:
         """Whether PR Doctor provably cannot CLAIM this PR, so reserving
         Backlog Runner capacity for it would gate a product on a repair that
         cannot start (#2202: a product sat behind eight PRs whose every claim
@@ -16269,7 +16293,8 @@ class SessionOrchestrator:
           stop — its own recovery lifecycle, which clears itself and does
           legitimately reserve capacity. Only a FOREIGN owner (the ``acquire``
           conflict: a live foreign owner, a legacy conflict, a partial batch)
-          deadlocks the gate.
+          deadlocks the gate — or its own operation stuck past the mechanical
+          deadline (``own_op_stuck``, #2732), which never clears itself.
         * PR Doctor has not acted at this head since. A recorded
           ``last_action_sha`` means a claim succeeded after that refusal and a
           repair really is running.
@@ -16277,7 +16302,8 @@ class SessionOrchestrator:
         if not refused_at_sha or not info.head_sha or refused_at_sha != info.head_sha:
             return False
         if state.get("ownership_token"):
-            return False
+            # The attempt's own ``last_action_sha`` is this head by construction.
+            return own_op_stuck
         return state.get("last_action_sha") != info.head_sha
 
     async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
@@ -16335,8 +16361,12 @@ class SessionOrchestrator:
                         and engine.acted_at_head(engine.apply_rearm(state, info), action,
                                                  info.head_sha)):
                     continue
+                own_op_stuck = False
+                if state.get("ownership_token") and refusals.get(target) == info.head_sha:
+                    own_op_stuck = self._pr_doctor_mechanical_stuck(
+                        await self._pr_doctor_claim_operation(state["ownership_token"]))
                 bucket = (unclaimable if self._pr_doctor_claim_unclaimable(
-                    state, refusals.get(target), info) else gating)
+                    state, refusals.get(target), info, own_op_stuck=own_op_stuck) else gating)
                 bucket.setdefault(repo, []).append(target)
             if not gating and not unclaimable:
                 return {}
