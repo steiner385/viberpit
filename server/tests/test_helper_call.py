@@ -145,6 +145,21 @@ def test_half_open_trial_after_cooldown_closes_on_success():
     assert out.skipped is False and out.error is None
 
 
+def test_cli_not_logged_in_opens_the_lane_immediately():
+    # #2758: a helper's fresh CLI with no usable credential classifies auth_stale;
+    # every further call on that account would fail the same way.
+    clock = Clock()
+    _, sleep = _sleeps_recorded()
+    fail = _stream_factory(raise_exc=RuntimeError(
+        "Claude Code returned an error result: success detail="
+        "'authentication_failed | Not logged in · Please run /login'"))
+    out = asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/acct1",
+                                      _now=clock, _sleep=sleep))
+    assert out.failure_kind == "auth_stale"
+    assert asyncio.run(run_helper_call(fail, subsystem="test", account_key="/cfg/acct1",
+                                       _now=clock, _sleep=sleep)).skipped is True
+
+
 def test_lanes_are_isolated_per_account_and_subsystem():
     clock = Clock()
     _, sleep = _sleeps_recorded()

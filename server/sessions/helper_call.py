@@ -249,8 +249,9 @@ _TRANSIENT_KINDS = frozenset({"overloaded", "process_crash", "network", "cli_sta
 _KIND_MAX_RETRIES = {"cli_startup_timeout": 1}
 # Failure kinds that open the breaker on the FIRST occurrence, without waiting
 # for _FAIL_THRESHOLD: the account is throttled, de-authed or org-denied, so
-# every further call is certain to fail until it recovers.
-_OPEN_IMMEDIATELY_KINDS = frozenset({"rate_limit", "auth_401", "auth_forbidden"})
+# every further call is certain to fail until it recovers. ``auth_stale`` is a
+# helper's fresh CLI finding no usable credential on the host (#2758).
+_OPEN_IMMEDIATELY_KINDS = frozenset({"rate_limit", "auth_401", "auth_forbidden", "auth_stale"})
 
 # How long an account that answered with a durable authorization denial (403
 # org block — see failure._FORBIDDEN_MARKERS) is kept out of helper duty. A

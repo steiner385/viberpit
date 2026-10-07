@@ -204,7 +204,7 @@ def test_cli_not_logged_in_is_auth_stale():
     """#2758: the CLI's no-credential result carries no HTTP status."""
     msg = "authentication_failed | Not logged in · Please run /login"
     assert classify("driver_error", msg).kind == "auth_stale"
-    assert classify(None, "Not logged in").kind == "auth_stale"
+    assert classify(None, msg).kind == "auth_stale"
 
 
 # 2026-10-07 (session 1c1a0dfb): a long-lived CLI kept a stale OAuth token in memory
