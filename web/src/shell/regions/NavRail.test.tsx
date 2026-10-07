@@ -84,14 +84,12 @@ describe('NavRail', () => {
     expect(screen.queryByRole('link', { name: /pending deploy/ })).toBeNull()
     unmount()
 
-    deployState.mockReturnValue({ behind: true, count: 3 })
+    deployState.mockReturnValue({ behind: true, count: 3, partial: true, deployableCount: 1, canDeploy: true, tipCi: 'pending' })
     renderRail()
-    const chip = screen.getByRole('link', { name: '3 changes pending deploy' })
+    const chip = screen.getByRole('link', { name: /Deploy: 3 changes pending deploy. 1 deployable now. Latest CI pending/ })
     expect(chip).toHaveAttribute('href', '/settings/deploy')
     expect(chip).not.toHaveAttribute('aria-current')
-    // No count pill: the rail's one badge rule is an amber needs-you count or
-    // nothing, and inventory is neither — the item's presence is the signal.
-    expect(chip.querySelector('span.rounded-pill')).toBeNull()
+    expect(within(chip).getByText('1/3')).toBeVisible()
     expect(chip.className).toMatch(/\bmin-h-target\b/)
   })
 

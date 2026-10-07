@@ -50,6 +50,10 @@ interface NavItemBase {
   /** Sets `aria-current="page"`. Exactly one item in a region may be active. */
   active?: boolean
   className?: string
+  /** Custom visual presentation; `label` still supplies the complete accessible name. */
+  visualContent?: React.ReactNode
+  /** Show the complete label on hover or focus (Escape dismisses it). */
+  summaryTooltip?: boolean
 }
 
 export type NavItemProps =
@@ -68,36 +72,65 @@ const ITEM_CLASS =
 export function NavItem(props: NavItemProps) {
   const { icon: Icon, label, count, attention, showLabel = false, active = false, className } = props
   const name = badgedName({ label, count, attention })
+  const [hovered, setHovered] = React.useState(false)
+  const [focused, setFocused] = React.useState(false)
+  const [dismissed, setDismissed] = React.useState(false)
+  const tooltipOpen = (hovered || focused) && !dismissed
+  React.useEffect(() => {
+    if (!props.summaryTooltip || !tooltipOpen) return
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDismissed(true)
+    }
+    document.addEventListener('keydown', dismiss)
+    return () => document.removeEventListener('keydown', dismiss)
+  }, [props.summaryTooltip, tooltipOpen])
+  const tooltipEvents = props.summaryTooltip ? {
+    onMouseEnter: () => { setHovered(true); setDismissed(false) },
+    onMouseLeave: () => setHovered(false),
+    onFocus: () => { setFocused(true); setDismissed(false) },
+    onBlur: () => setFocused(false),
+  } : {}
   // An open drawer survives a section change (sub-spec B §4.2). Applied here
   // because this is where a nav target becomes an href — see `useDrawerPreservingTo`.
   const withOpenDrawer = useDrawerPreservingTo()
 
   const body = (
     <>
-      <Icon size={20} aria-hidden="true" className="shrink-0" />
-      {showLabel && <span aria-hidden="true" className="truncate">{label}</span>}
+      {props.visualContent !== undefined ? (
+        <span aria-hidden="true" className="flex min-w-0 flex-1 items-center justify-center">{props.visualContent}</span>
+      ) : (<>
+        <Icon size={20} aria-hidden="true" className="shrink-0" />
+        {showLabel && <span aria-hidden="true" className="truncate">{label}</span>}
+        {showLabel ? (
+          <>
+            {attention && <Badge tone="warning" dot />}
+            {count ? <Badge tone="neutral" count={count} aria-hidden="true" className="ml-auto" /> : null}
+          </>
+        ) : count ? (
+          // Label-less: the badge overlays the icon's top-right corner, and when
+          // the item also needs attention it carries the attention tone rather
+          // than sharing that corner with a dot.
+          // `font-bold`: at 11px this is DESIGN.md's Micro counter, which is 700
+          // — the Badge primitive's 500 is for 12px labels (2026-10-01 shell
+          // critique, minor).
+          <Badge
+            tone={attention ? 'warning' : 'neutral'}
+            count={count}
+            aria-hidden="true"
+            className="absolute top-0.5 right-0.5 px-1 text-2xs font-bold"
+          />
+        ) : attention ? (
+          <Badge tone="warning" dot className="absolute top-1 right-1" />
+        ) : null}
+      </>)}
       <span className="sr-only">{name}</span>
-      {showLabel ? (
-        <>
-          {attention && <Badge tone="warning" dot />}
-          {count ? <Badge tone="neutral" count={count} aria-hidden="true" className="ml-auto" /> : null}
-        </>
-      ) : count ? (
-        // Label-less: the badge overlays the icon's top-right corner, and when
-        // the item also needs attention it carries the attention tone rather
-        // than sharing that corner with a dot.
-        // `font-bold`: at 11px this is DESIGN.md's Micro counter, which is 700
-        // — the Badge primitive's 500 is for 12px labels (2026-10-01 shell
-        // critique, minor).
-        <Badge
-          tone={attention ? 'warning' : 'neutral'}
-          count={count}
-          aria-hidden="true"
-          className="absolute top-0.5 right-0.5 px-1 text-2xs font-bold"
-        />
-      ) : attention ? (
-        <Badge tone="warning" dot className="absolute top-1 right-1" />
-      ) : null}
+      {props.summaryTooltip && tooltipOpen && (
+        <span role="tooltip" aria-hidden="true" className="absolute bottom-0 left-full z-popover pl-2">
+          <span className="block w-64 rounded-md border border-edge bg-surface-raised p-3 text-sm font-normal text-ink shadow-md">
+            {name}
+          </span>
+        </span>
+      )}
     </>
   )
 
@@ -110,14 +143,14 @@ export function NavItem(props: NavItemProps) {
 
   if (props.to !== undefined) {
     return (
-      <Link to={withOpenDrawer(props.to)} aria-current={active ? 'page' : undefined} className={classes}>
+      <Link {...tooltipEvents} to={withOpenDrawer(props.to)} aria-current={active ? 'page' : undefined} className={classes}>
         {body}
       </Link>
     )
   }
   const { onClick, buttonRef } = props
   return (
-    <button ref={buttonRef} type="button" onClick={onClick} className={classes}>
+    <button {...tooltipEvents} ref={buttonRef} type="button" onClick={onClick} className={classes}>
       {body}
     </button>
   )

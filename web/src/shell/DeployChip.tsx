@@ -1,40 +1,60 @@
-import { Rocket } from 'lucide-react'
+import { LoaderCircle, Rocket, TriangleAlert } from 'lucide-react'
 import { useDeployState } from '@/lib/deployState'
+import { ciLabel } from '@/lib/ciVerdict'
+import { cn } from '@/lib/utils'
 import { settingsSectionPath } from '@/shell/navDefs'
 import { NavItem } from './regions/NavItem'
 
-/**
- * "N changes pending deploy", at the foot of the rail.
- *
- * This is where the pending-deploy banner went (2026-10-01 shell critique,
- * P2). As a banner it was 124px of information-with-a-button at the top of
- * every desktop page, above the needs-you states the operator came for, and
- * the first two Tab stops on every non-Sessions route. Pending commits are
- * inventory: master advances all day, and a notice that is always there is
- * not a signal. So it is a quiet rail item — present only while something is
- * pending, gone when the server is current — that opens Settings › Deploy,
- * the full surface (CI verdict, green-frontier target, the commit list and
- * Deploy now, behind its confirm). Failure stays a banner (`DeployPanel`).
- *
- * A `NavItem`, so it is the rail's 44px row with the rail's focus ring, and
- * its accessible name carries the count whether or not the label is shown.
- * No count pill: the rail's one badge rule (`useNavBadges`) is "an amber
- * needs-you count or nothing", and this is neither — its presence is the
- * signal, its label the number. It is not `active`: Settings is the section,
- * and the one `aria-current` on the rail is the Settings item's.
- *
- * Rail only. The phone hides the banner already and points at Settings ›
- * Deploy with the Settings badge; the kiosk has no rail.
- */
+/** Rail summary of Settings › Deploy's shared readiness state; never starts a deploy. */
 export function DeployChip({ showLabel }: { showLabel: boolean }) {
   const s = useDeployState()
-  if (!s.behind) return null
+  if (!s.behind && !s.running && !s.hasFailure) return null
+
+  // The same full-tip / green-frontier distinction displayed by the deploy page.
+  // A green tip covers every change, including older API responses without a count.
+  const ready = s.partial ? s.deployableCount : s.ci === 'green' ? s.count : 0
+  const fraction = `${ready}/${s.count}`
+  const warning = s.hasFailure || s.tipCi === 'red'
+  const status = s.running ? 'Deploying…' : s.hasFailure ? 'Needs attention' : `CI ${ciLabel(s.tipCi)}`
+  const summary = [
+    'Deploy:',
+    `${s.count} change${s.count === 1 ? '' : 's'} pending deploy.`,
+    s.running ? 'Deployment in progress.' : `${ready} deployable now.`,
+    `Latest CI ${ciLabel(s.tipCi)}.`,
+    s.hasFailure ? 'Needs attention.' : '',
+  ].filter(Boolean).join(' ')
+  const Icon = s.running ? LoaderCircle : Rocket
+
   return (
     <NavItem
       to={settingsSectionPath('deploy')}
-      icon={Rocket}
-      label={`${s.count} change${s.count === 1 ? '' : 's'} pending deploy`}
+      icon={Icon}
+      label={summary}
       showLabel={showLabel}
+      summaryTooltip
+      className={cn(
+        'py-1',
+        s.canDeploy && 'bg-accent-wash text-accent hover:bg-accent-wash hover:text-accent',
+      )}
+      visualContent={
+        <span className={cn('flex min-w-0 items-center', showLabel ? 'w-full gap-2' : 'flex-col gap-0.5')}>
+          <span className="relative shrink-0">
+            <Icon size={20} className={s.running ? 'motion-safe:animate-spin' : undefined} />
+            {warning && !showLabel && <TriangleAlert size={12} className="absolute -right-2 -top-1 bg-surface text-warning" />}
+          </span>
+          {showLabel ? (
+            <span className="min-w-0 text-left">
+              <span className="block truncate tabular-nums">{s.count > 0 ? `Deploy · ${fraction} ready` : 'Deploy'}</span>
+              <span className={cn('flex items-center gap-1 text-xs', warning && 'text-warning')}>
+                {warning && <TriangleAlert size={12} className="shrink-0" />}
+                {status}
+              </span>
+            </span>
+          ) : s.count > 0 ? (
+            <span className="max-w-full break-all text-center text-2xs font-bold leading-tight tabular-nums">{fraction}</span>
+          ) : null}
+        </span>
+      }
     />
   )
 }
