@@ -16263,14 +16263,16 @@ class SessionOrchestrator:
         ``_PR_DOCTOR_MECHANICAL_DEADLINE_S``: the GitHub branch update's
         outcome was never observed (a conflicted PR's head never moves), and
         nothing else will ever settle it (#2732)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta
+
+        from server.db.clock import naive_utc_now
         if (operation is None or operation.owner != "pr-doctor"
                 or operation.phase != "uncertain"
                 or operation.session_id or operation.reserved_session_id):
             return False
-        # Columns are naive UTC (see ``server/db/clock.py``).
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        return now - operation.updated_at > timedelta(
+        # ``updated_at`` is ``DateTime(timezone=True)``: naive on SQLite but
+        # aware on Postgres, so normalize before comparing.
+        return naive_utc_now() - _naive_utc(operation.updated_at) > timedelta(
             seconds=_PR_DOCTOR_MECHANICAL_DEADLINE_S)
 
     @staticmethod
