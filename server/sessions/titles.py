@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 _CUSTOM_KEYS = ("customTitle",)
 _AUTO_KEYS = ("ai-title", "aiTitle", "summary")
+_TITLE_KEYS = _CUSTOM_KEYS + _AUTO_KEYS
 
 
 def _scan_text(text: str) -> tuple[str | None, str | None]:
@@ -24,7 +25,10 @@ def _scan_text(text: str) -> tuple[str | None, str | None]:
     auto: str | None = None
     for line in text.splitlines():
         line = line.strip()
-        if not line:
+        # Most lines are multi-MB tool results that name no title key. json.loads
+        # holds the GIL, so parsing them from a worker thread still starves the
+        # event loop (#2144 stall dumps); a substring test is C-speed and exact.
+        if not line or not any(k in line for k in _TITLE_KEYS):
             continue
         try:
             obj = json.loads(line)
