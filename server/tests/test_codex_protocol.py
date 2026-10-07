@@ -487,6 +487,25 @@ async def test_a_frame_carrying_both_result_and_error_is_malformed() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_a_request_timeout_raises_without_a_warning_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The caller owns the log level; a WARNING here would double-file an auto-error."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, request_timeout_s=0.05)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="server.codex.protocol"):
+                with pytest.raises(protocol.CodexRequestTimeout):
+                    await client.list_models()
+            timeouts = [
+                r for r in caplog.records
+                if "codex.protocol.request_timeout" in r.getMessage()
+            ]
+            assert timeouts and all(r.levelno < logging.WARNING for r in timeouts)
+        finally:
+            await client.aclose()
+
+
 async def test_a_late_reply_to_a_timed_out_request_cannot_disturb_a_live_one() -> None:
     """The abandoned id — not some other already-completed id — must be discarded."""
     async with FakeCodexAppServer() as fake:

@@ -785,9 +785,12 @@ class CodexAppServerClient:
                 _send_and_await(), timeout or self._request_timeout_s
             )
         except TimeoutError as exc:
+            # INFO, not WARNING: the raise below hands the failure to a caller that
+            # owns the log decision (quota's deduped degrade warning, the driver's
+            # resync ERROR). A WARNING here would auto-file a context-free duplicate.
             log_event(
                 logger,
-                logging.WARNING,
+                logging.INFO,
                 "codex.protocol.request_timeout",
                 method=method,
             )
