@@ -195,11 +195,219 @@ def role_outputs(role_dir: Path) -> tuple[str, str, str]:
 
 
 def tree_hash(path: Path) -> str:
+    return framework_tree_hash(path)
+
+
+def framework_path(root: Path, value: str) -> Path:
+    """Resolve a portable repository path without permitting alias/escape paths."""
+    if not isinstance(value, str) or not value or '\\' in value:
+        raise ContractError(f"unsafe path: {value!r}")
+    relative = Path(value)
+    if relative.is_absolute() or any(p in {'', '.', '..'} for p in value.split('/')):
+        raise ContractError(f"unsafe path: {value}")
+    path = root / relative
+    if any((root / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts) + 1)):
+        raise ContractError(f"unsafe path: symlink in {value}")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ContractError(f"unsafe path: {value}")
+    return path
+
+
+def framework_tree_hash(path: Path, runtime_paths: list[Path] | None = None) -> str:
+    """Use the contract's tree digest, excluding explicitly declared runtime data."""
     digest = hashlib.sha256()
-    for item in sorted(p for p in path.rglob("*") if p.is_file()):
+    excluded = runtime_paths or []
+    for item in sorted(p for p in path.rglob('*') if p.is_file()):
+        if any(item == base or item.is_relative_to(base) for base in excluded):
+            continue
         digest.update(str(item.relative_to(path)).encode())
         digest.update(item.read_bytes())
     return digest.hexdigest()
+
+
+def load_framework_lock(root: Path, contract: dict) -> dict | None:
+    if 'frameworks' not in contract:
+        return None
+    if not isinstance(contract['frameworks'], dict):
+        raise ContractError('frameworks must be an object')
+    path = framework_path(root, contract['frameworks']['lock'])
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data, dict) or type(data.get('schema_version')) is not int or data['schema_version'] != 1 or not isinstance(data.get('frameworks'), list):
+        raise ContractError('unsupported framework lock schema')
+    return data
+
+
+def framework_digest(root: Path, contract: dict) -> str | None:
+    """Digest the resolved declaration, not an authenticated runtime attestation."""
+    data = load_framework_lock(root, contract)
+    if data is None:
+        return None
+    data = dict(data, frameworks=sorted(data['frameworks'], key=lambda item: item['id']))
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def markdown_targets(text: str) -> list[str]:
+    """Local Markdown link targets; code examples and anchors are not references."""
+    from urllib.parse import unquote, urlsplit
+    text = re.sub(r'(?ms)^\s*(`{3,}|~{3,}).*?^\s*\1\s*$', '', text)
+    text = re.sub(r'`+[^`]*`+', '', text)
+    targets = re.findall(r'\]\(\s*(<[^>]+>|[^\s)]+)', text)
+    targets += re.findall(r'(?m)^\s*\[[^\]]+\]:\s*(<[^>]+>|\S+)', text)
+    result = []
+    for target in targets:
+        parsed = urlsplit(target.strip('<>'))
+        if not parsed.scheme and not parsed.netloc and parsed.path:
+            result.append(unquote(parsed.path))
+    return result
+
+
+def validate_framework_lock(root: Path, contract: dict) -> list[str]:
+    """Check repository inventory only. Never installs, executes, or grants admission."""
+    errors: list[str] = []
+    try:
+        data = load_framework_lock(root, contract)
+        if data is None:
+            return []
+        identifiers: set[str] = set()
+        concerns: dict[str, str] = {}
+        for entry in data['frameworks']:
+            if not isinstance(entry, dict):
+                raise ContractError('framework entry must be an object')
+            name = entry['id']
+            if not isinstance(name, str) or not name.strip() or name != name.strip() or name in identifiers:
+                raise ContractError('missing or duplicate framework id')
+            identifiers.add(name)
+            state = entry['state']
+            if state not in {'candidate', 'sandbox', 'pilot', 'approved', 'rejected', 'revoked'}:
+                raise ContractError(f'{name}: invalid admission state')
+            promoted = state in {'pilot', 'approved'}
+            for key in ('roots', 'runtime_paths', 'concerns', 'compatibility'):
+                if not isinstance(entry[key], list) or any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in entry[key]):
+                    raise ContractError(f'{name}: {key} must be a list of nonempty strings')
+                if len(entry[key]) != len(set(entry[key])):
+                    raise ContractError(f'{name}: duplicate {key}')
+            if not isinstance(entry['owner'], str) or not entry['owner'].strip() or entry['owner'] != entry['owner'].strip():
+                raise ContractError(f'{name}: missing owner or compatibility inventory')
+            for concern in entry['concerns']:
+                if concern in concerns:
+                    errors.append(f'{name}: duplicate concern ownership {concern} ({concerns[concern]})')
+                concerns[concern] = name
+            upstream = entry['upstream']
+            if not isinstance(upstream, dict):
+                raise ContractError(f'{name}: upstream must be an object')
+            if not isinstance(upstream.get('repository'), str) or not upstream['repository'].strip():
+                errors.append(f'{name}: missing upstream repository')
+            if promoted and not re.fullmatch(r'[0-9a-f]{40}', upstream.get('commit') or ''):
+                errors.append(f'{name}: admission requires immutable upstream commit')
+            if upstream.get('commit') is None:
+                if not isinstance(upstream.get('reason'), str) or not upstream['reason'].strip():
+                    errors.append(f'{name}: unknown upstream commit requires reason')
+            elif not isinstance(upstream['commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', upstream['commit']):
+                errors.append(f'{name}: upstream commit must be an immutable SHA or null')
+            admission = entry.get('admission') or {}
+            if promoted:
+                if any(not isinstance(admission.get(k), str) or not admission[k].strip() or admission[k] != admission[k].strip() for k in ('author', 'reviewer')) or admission.get('author') == admission.get('reviewer'):
+                    errors.append(f'{name}: independent admission review required')
+                report = admission.get('report')
+                if not report or not framework_path(root, report).is_file():
+                    errors.append(f'{name}: missing admission report')
+            roots = [framework_path(root, p) for p in entry['roots']]
+            runtime = [framework_path(root, p) for p in entry['runtime_paths']]
+            additional = entry.get('additional_files', [])
+            if not isinstance(additional, list):
+                raise ContractError(f'{name}: additional_files must be a list')
+            additional_paths = {framework_path(root, p) for p in additional}
+            if not roots or any(not p.is_dir() for p in roots):
+                errors.append(f'{name}: missing inventory root')
+            for path in runtime:
+                if not any(path != base and path.is_relative_to(base) for base in roots):
+                    errors.append(f'{name}: runtime path must be below an inventory root')
+            files = entry['files']
+            if not isinstance(files, dict) or not files:
+                raise ContractError(f'{name}: missing file inventory')
+            inventory: set[Path] = set()
+            for relative, expected in files.items():
+                path = framework_path(root, relative)
+                inventory.add(path)
+                if path.is_symlink():
+                    errors.append(f'{name}: symlink cannot be inventoried: {relative}')
+                if path not in additional_paths and not any(path.is_relative_to(base) for base in roots):
+                    errors.append(f'{name}: locked file outside inventory roots: {relative}')
+                if any(path == base or path.is_relative_to(base) for base in runtime):
+                    errors.append(f'{name}: locked file also declared runtime: {relative}')
+                if not re.fullmatch(r'[0-9a-f]{64}', expected):
+                    errors.append(f'{name}: invalid file hash: {relative}')
+                elif not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                    errors.append(f'{name}: hash mismatch: {relative}')
+            if not additional_paths.issubset(inventory):
+                errors.append(f'{name}: additional files missing from inventory')
+            for base in roots:
+                for path in base.rglob('*'):
+                    framework_path(root, str(path.relative_to(root)))
+                    if path.is_symlink():
+                        errors.append(f'{name}: symlink cannot be inventoried: {path.relative_to(root)}')
+                    if any(path == p or path.is_relative_to(p) for p in runtime):
+                        if promoted and path.is_file():
+                            errors.append(f'{name}: runtime contents cannot be admitted without a locked inventory: {path.relative_to(root)}')
+                        continue
+                    if path.is_symlink() and path.is_dir():
+                        errors.append(f'{name}: directory symlink cannot be inventoried: {path.relative_to(root)}')
+                    if path.is_file() and path not in inventory:
+                        errors.append(f'{name}: unlisted file: {path.relative_to(root)}')
+            unresolved = entry.get('unresolved_references', {})
+            if not isinstance(unresolved, dict) or any(not isinstance(v, str) or not v.strip() for v in unresolved.values()):
+                raise ContractError(f'{name}: unresolved references require reasons')
+            if promoted and unresolved:
+                errors.append(f'{name}: unresolved references prevent admission')
+            for path in inventory:
+                if not path.is_file() or path.suffix.lower() != '.md':
+                    continue
+                for target in markdown_targets(path.read_text(encoding='utf-8')):
+                    dest = path.parent / target
+                    if not dest.resolve().is_relative_to(root.resolve()):
+                        errors.append(f'{name}: unsafe path in reference: {target}')
+                        continue
+                    # References may legitimately use ../ within the repository.
+                    dest = Path(os.path.abspath(dest))
+                    if dest not in inventory or not dest.is_file():
+                        key = f'{path.relative_to(root)}:{target}'
+                        if not (isinstance(unresolved.get(key), str) and unresolved[key].strip()):
+                            errors.append(f'{name}: missing locked reference: {key}')
+            projections = entry['provider_projections']
+            if not isinstance(projections, dict) or not projections:
+                errors.append(f'{name}: missing provider projections')
+            for provider, projection in projections.items():
+                if not isinstance(provider, str) or not provider.strip() or provider != provider.strip():
+                    raise ContractError(f'{name}: invalid provider identifier')
+                base = framework_path(root, projection['root'])
+                if base not in roots or framework_tree_hash(base, runtime) != projection['sha256']:
+                    errors.append(f'{name}: projection hash mismatch: {provider}')
+            dependencies = entry['dependencies']
+            if not isinstance(dependencies, list):
+                raise ContractError(f'{name}: dependencies must be a list')
+            declared_paths: set[str] = set()
+            dependency_ids: set[str] = set()
+            for dep in dependencies:
+                if not isinstance(dep, dict) or any(not isinstance(dep.get(k), str) or not dep[k].strip() or dep[k] != dep[k].strip() for k in ('id', 'kind')):
+                    raise ContractError(f'{name}: dependency requires id and kind')
+                if dep['id'] in dependency_ids:
+                    errors.append(f'{name}: duplicate dependency id')
+                dependency_ids.add(dep['id'])
+                if dep.get('path'):
+                    path = framework_path(root, dep['path'])
+                    declared_paths.add(dep['path'])
+                    if path not in inventory or dep.get('sha256') != files.get(dep['path']):
+                        errors.append(f'{name}: executable dependency not locked: {dep["path"]}')
+                if promoted and (not dep.get('id') or not dep.get('kind') or not isinstance(dep.get('pin'), str) or not dep['pin'].strip() or dep['pin'] != dep['pin'].strip() or dep['pin'].lower() in {'latest', 'main', 'master', '*'} or dep.get('reviewed') is not True or not re.fullmatch(r'[0-9a-f]{64}', dep.get('sha256') or '')):
+                    errors.append(f'{name}: unapproved or unpinned dependency')
+            if promoted:
+                for path in inventory:
+                    if path.is_file() and (path.stat().st_mode & 0o111 or path.suffix.lower() in {'.sh', '.py', '.js', '.mjs', '.cjs', '.exe', '.wasm', '.cmd', '.bat'} or path.read_bytes().startswith(b'#!')):
+                        if str(path.relative_to(root)) not in declared_paths:
+                            errors.append(f'{name}: undeclared executable dependency: {path.relative_to(root)}')
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
+        errors.append(f'framework lock: {exc}')
+    return errors
 
 
 def sync_skill_links(root: Path, contract: dict, *, fix: bool) -> list[str]:
@@ -286,6 +494,7 @@ def check(root: Path) -> list[str]:
         return [str(exc)]
     if contract.get("standard_version") != VERSION:
         errors.append(f"contract standard_version must be {VERSION}")
+    errors.extend(validate_framework_lock(root, contract))
     expected_agents, expected_claude = instruction_output(root, contract)
     if read_text(root / "AGENTS.md") != expected_agents:
         errors.append("AGENTS.md is stale; run agentctl render")
