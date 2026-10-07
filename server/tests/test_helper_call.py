@@ -557,3 +557,44 @@ def test_cli_startup_timeout_is_retried_once_and_logs_below_warning():
     assert counter["n"] == 2          # initial + exactly 1 retry
     assert delays == [1.0]
     assert out.log_level == logging.INFO
+
+
+def _healthy_for_envelope(monkeypatch):
+    import contextlib
+
+    @contextlib.contextmanager
+    def _led():
+        yield {}
+    monkeypatch.setattr(helper_call, "_account_cfg_dir", lambda name: f"/cfg/{name}")
+    monkeypatch.setattr(_ledger, "locked_ledger", _led)
+    monkeypatch.setattr(_ledger, "is_account_enabled", lambda led, name: True)
+    monkeypatch.setattr(_ledger, "get_status", lambda led, name: "ok")
+
+
+def test_envelope_account_with_lapsed_lease_is_not_helper_ready(monkeypatch):
+    """#2758: post-restart worker, lease lapsed -> oauth_env_for() == {} -> not ready."""
+    from viberpit import accounts
+    from server.sessions import account_auth
+    _healthy_for_envelope(monkeypatch)
+    monkeypatch.setattr(accounts, "runner_uses_envelope", lambda name: True)
+    monkeypatch.setattr(account_auth, "oauth_env_for", lambda name: {})
+    assert helper_call.is_account_helper_ready("rocky-acct") is False
+
+
+def test_envelope_account_with_valid_lease_is_helper_ready(monkeypatch):
+    from viberpit import accounts
+    from server.sessions import account_auth
+    _healthy_for_envelope(monkeypatch)
+    monkeypatch.setattr(accounts, "runner_uses_envelope", lambda name: True)
+    monkeypatch.setattr(account_auth, "oauth_env_for",
+                        lambda name: {"CLAUDE_CODE_OAUTH_TOKEN": "t"})
+    assert helper_call.is_account_helper_ready("rocky-acct") is True
+
+
+def test_non_envelope_account_ignores_empty_token_env(monkeypatch):
+    from viberpit import accounts
+    from server.sessions import account_auth
+    _healthy_for_envelope(monkeypatch)
+    monkeypatch.setattr(accounts, "runner_uses_envelope", lambda name: False)
+    monkeypatch.setattr(account_auth, "oauth_env_for", lambda name: {})
+    assert helper_call.is_account_helper_ready("browser-oauth") is True

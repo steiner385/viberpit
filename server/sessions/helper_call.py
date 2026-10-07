@@ -159,10 +159,31 @@ def is_account_helper_ready(name: str) -> bool:
         return False
     try:
         with _ledger.locked_ledger() as led:
-            return (_ledger.is_account_enabled(led, name)
-                    and _ledger.get_status(led, name) not in ("needs-reauth", "org-denied"))
+            if not (_ledger.is_account_enabled(led, name)
+                    and _ledger.get_status(led, name) not in ("needs-reauth", "org-denied")):
+                return False
+        return _envelope_launchable(name)
     except Exception:
         return False
+
+
+def _envelope_launchable(name: str) -> bool:
+    """False while a broker-runner account has no launchable credential (#2758).
+
+    An envelope-held account (``runner_uses_envelope``) authenticates ONLY via the
+    primary's leased envelope. After a worker-daemon restart the cached lease is
+    already lapsed until the edge's first ``creds_sync``, so ``oauth_env_for``
+    yields ``{}`` and the CLI answers "Not logged in". Routing through
+    ``oauth_env_for`` keeps one definition of "can launch"; the caller degrades
+    quietly and the next tick retries once the lease is refreshed. Accounts that
+    don't use the envelope are unaffected (their auth may be browser-OAuth with no
+    setup-token, so an empty token env is not a failure for them).
+    """
+    from viberpit import accounts as _accts
+    if not _accts.runner_uses_envelope(name):
+        return True
+    from .account_auth import oauth_env_for
+    return bool(oauth_env_for(name))
 
 
 def _pick_enabled_account(provider: str) -> str | None:

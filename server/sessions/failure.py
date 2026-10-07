@@ -47,6 +47,8 @@ _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 # message's ``error`` field ``oauth_org_not_allowed``, and the sentence shown to
 # the user. A bare "403" in prose is NOT a marker — an unrelated number must
 # never cost an account its helper duty.
+_NOT_LOGGED_IN_MARKERS = ("authentication_failed", "not logged in")
+
 _FORBIDDEN_MARKERS = (
     "oauth_not_allowed_for_organization",
     "oauth_org_not_allowed",
@@ -164,6 +166,11 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
     # at all (the SDK's ProcessError replacement carries only the result subtype).
     if any(m in low for m in _FORBIDDEN_MARKERS):
         return TurnFailure(kind="auth_forbidden")
+
+    # The CLI had no credential at all (#2758): its result subtype is
+    # "authentication_failed" / "Not logged in" with no HTTP status to match.
+    if any(m in low for m in _NOT_LOGGED_IN_MARKERS):
+        return TurnFailure(kind="auth_401")
 
     # A turn that dropped before the model committed any continuation — the CLI tags it
     # "[ede_diagnostic] ... stop_reason=null". Distinct from the orphaned-tool_use variant
