@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Offline acceptance fixture</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: sans-serif; }
+main { padding: 20px; width: 100%; }
+label, input { display: block; }
+input { width: 100%; min-height: 44px; margin-bottom: 16px; }
+button { width: 30px; height: 24px; padding: 0; border: 0; }
+#activity { animation: pulse 1s infinite; }
+@keyframes pulse { from { opacity: .5; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #activity { animation: none; } }
+</style></head><body><main>
+<h1>Save a note</h1><form novalidate>
+<label for="note">Note</label><input id="note" name="note">
+<button id="save" type="submit">Save</button>
+<p id="error" role="alert"></p><p id="result" role="status"></p>
+</form><span id="activity" aria-hidden="true">Ready</span>
+</main><script>
+document.querySelector('form').addEventListener('submit', event => {
+  event.preventDefault();
+  const value = document.querySelector('#note').value.trim();
+  document.querySelector('#error').textContent = value ? '' : 'Enter a note';
+  document.querySelector('#result').textContent = value ? 'Saved: ' + value : '';
+});
+</script></body></html>

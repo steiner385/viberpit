@@ -14,6 +14,9 @@ on:
       - ".codex/**"
       - ".agents/**"
       - "evals/**"
+      - "web/evals/**"
+      - "web/package.json"
+      - "web/package-lock.json"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"
       # The control-band policy (#804) is agent configuration: it declares what an
@@ -30,6 +33,9 @@ on:
       - ".codex/**"
       - ".agents/**"
       - "evals/**"
+      - "web/evals/**"
+      - "web/package.json"
+      - "web/package-lock.json"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"
       # The control-band policy (#804) is agent configuration: it declares what an
@@ -61,3 +67,42 @@ jobs:
         run: pip install -e ".[server]"
       - name: Run eval suite (static gate, threshold 1.0)
         run: python scripts/run_evals.py --threshold 1.0
+
+
+  # Calibration is repeatable CI evidence, not a required branch-protection check
+  # or framework admission. No agent credentials or native skill hooks are used.
+  browser-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Python deps
+        run: pip install -e ".[server]"
+      - name: Install browser test deps
+        working-directory: web
+        run: npm ci
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install chromium --with-deps
+      - name: Run browser acceptance calibration
+        run: python scripts/run_evals.py --kind browser --report test-results/framework-ui-calibration.json
+      - name: Preserve calibration observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-ui-calibration
+          path: test-results/framework-ui-calibration.json
+          retention-days: 14
+          if-no-files-found: warn

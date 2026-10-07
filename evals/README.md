@@ -17,9 +17,9 @@ incident-derived cases):
 ```yaml
 id: agent-context-documents-four-step-gate  # unique, kebab-case
 description: The canonical agent context documents the four-step lint-and-test gate.
-kind: static                                # "static" | "agent"
+kind: static                                # "static" | "agent" | "browser"
 tags: [agent-config, ci-gate]
-check: grep -q "ruff check src/ server/" CLAUDE.md   # static only; exit 0 == pass
+check: grep -q "ruff check src/ server/" CLAUDE.md   # trusted repository command
 ```
 
 - **`static`** — the acceptance check is a shell command (run from the repo root)
@@ -27,7 +27,8 @@ check: grep -q "ruff check src/ server/" CLAUDE.md   # static only; exit 0 == pa
   gate.
 - **`agent`** — the case is a real ViberPit task an agent must complete; the
   acceptance check is run against its result. These need a live Claude session and
-  API access, so they run **out-of-band** (`--kind agent`), not in the PR gate.
+  API access, so execution is **out-of-band**, not in the PR gate.
+  `--kind agent` is **LIST ONLY**; it never executes an agent or writes an execution report.
   One example is included to show the shape.
 
 ## Running locally
@@ -35,11 +36,43 @@ check: grep -q "ruff check src/ server/" CLAUDE.md   # static only; exit 0 == pa
 ```bash
 python scripts/run_evals.py                 # static gate, threshold 1.0 (CI default)
 python scripts/run_evals.py --threshold 0.95
-python scripts/run_evals.py --kind agent    # list/execute agent-mode cases
+python scripts/run_evals.py --kind agent    # LIST ONLY; does not execute agents
 ```
 
 Exit code is non-zero when the pass-rate is below the threshold, so it doubles as
 a CI gate.
+
+## Browser acceptance calibration
+
+`python scripts/run_evals.py --kind browser --timeout 120 --report /tmp/ui-calibration.json`
+executes trusted repository browser `check` commands from the repository root.
+The existing Evals workflow also runs a separate `browser-evals` job on relevant
+configuration, fixture, and web dependency changes, and uploads the JSON report
+on success or failure when produced. This job does not change branch protection
+or constitute framework admission. Browser
+cases are opt-in and do not change the default static gate. Provision browser tools
+separately; the runner never installs dependencies or launches paid agent sessions.
+The timeout is per case, positive and at most 3600 seconds. On POSIX a timeout kills
+the command's process group, including Chromium descendants.
+
+Commands must exit zero and emit one JSON object on stdout (send diagnostics to stderr):
+
+```json
+{"schema_version":1,"report_kind":"ui-acceptance-calibration","executed":true,
+ "passed":true,"browser":{"name":"chromium","version":"observed version"},
+ "fixtures":[{"id":"clean","sha256":"<64 lowercase hexadecimal characters>",
+ "expected_failures":[],"observed_failures":[],"passed":true}]}
+```
+
+Each fixture passes only when its observed failure identifiers equal its expected
+identifiers; seeded broken fixtures therefore test detector sensitivity. The runner
+rejects empty or malformed reports, duplicate fixture identifiers, invalid hashes,
+contradictory statuses, timeouts, and unavailable tools. Empty corpora fail the gate.
+The optional report contains executed case results, durations, Git revision, YAML
+hashes, and validated browser output. These are **runner observations**, not
+authenticated admission evidence, native-agent compatibility results, or proof that
+Impeccable improves an agent's work. The Git revision alone does not attest a clean
+checkout. No engine identity, credentials, or token/cost measurements are invented.
 
 ## Regression convention (design §7, §11)
 

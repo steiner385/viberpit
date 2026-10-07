@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "revision": "1",
+  "findings": [
+    "keyboard-order",
+    "functional-behavior",
+    "accessible-name",
+    "mobile-overflow",
+    "touch-target",
+    "reduced-motion"
+  ],
+  "fixtures": [
+    {
+      "id": "clean",
+      "file": "fixtures/clean.html",
+      "expected_failures": []
+    },
+    {
+      "id": "keyboard-order",
+      "file": "fixtures/keyboard-order.html",
+      "expected_failures": [
+        "keyboard-order"
+      ]
+    },
+    {
+      "id": "functional-behavior",
+      "file": "fixtures/functional-behavior.html",
+      "expected_failures": [
+        "functional-behavior"
+      ]
+    },
+    {
+      "id": "accessible-name",
+      "file": "fixtures/accessible-name.html",
+      "expected_failures": [
+        "accessible-name"
+      ]
+    },
+    {
+      "id": "mobile-overflow",
+      "file": "fixtures/mobile-overflow.html",
+      "expected_failures": [
+        "mobile-overflow"
+      ]
+    },
+    {
+      "id": "touch-target",
+      "file": "fixtures/touch-target.html",
+      "expected_failures": [
+        "touch-target"
+      ]
+    },
+    {
+      "id": "reduced-motion",
+      "file": "fixtures/reduced-motion.html",
+      "expected_failures": [
+        "reduced-motion"
+      ]
+    },
+    {
+      "id": "combined",
+      "file": "fixtures/combined.html",
+      "expected_failures": [
+        "keyboard-order",
+        "functional-behavior",
+        "accessible-name",
+        "mobile-overflow",
+        "touch-target",
+        "reduced-motion"
+      ]
+    }
+  ]
+}

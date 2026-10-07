@@ -8,6 +8,15 @@ corresponding spec. `.agents/frameworks.lock.json` remains the canonical selecti
 and hash inventory. The [installed-surface review](impeccable-surface-review.md)
 records instruction and tooling findings. These results do not approve execution.
 
+## Existing use and scope of this admission
+
+Impeccable has already been used in KinDash, FridgeSheet and ViberPit. The
+[historical pilot evidence](impeccable-pilot-evidence.md) records merged adoption,
+critique/refinement outcomes, browser checks and prior local hook activation.
+Candidate status here describes admission to the new managed standard, not a
+claim that those projects still need an initial trial. The provenance work did
+not run a new live evaluation; earlier pilots remain valid observational evidence.
+
 ## Selection and resolved identity
 
 The original inventory baseline was ViberPit commit
@@ -102,14 +111,14 @@ alone does not close finding IS-01 or authorize a live pilot.
 | Maintenance/security history | Release/source relationships are established. A full maintenance/advisory assessment of the selected source and engine dependency closure remains outstanding. |
 | Executable closure | Five observed payload hashes are pinned with `reviewed: false`. Engine source/dependencies, build provenance, platform behavior, telemetry and updates still need review. A checksum is not execution approval. |
 | Installer and launcher behavior | Verified npm shim resolves override, optional platform package, cache or download, then executes a subprocess. Download fallback checks a sidecar; other paths do not enforce the new lock. Installed skill launchers also allow sibling, home and PATH binaries. |
-| Hooks | Tracked `.impeccable/config.json` sets `hook.enabled: true`, but no tracked native Impeccable hook registration was found. Local/account settings were not inspected. No hooks are enabled or disabled by this work. |
+| Hooks | Tracked `.impeccable/config.json` sets `hook.enabled: true`, but no tracked native Impeccable hook registration was found. PR #2577 records prior local hook enablement and its consent limitations; see the pilot evidence. Current local/account settings were not inspected. No hooks are enabled or disabled by this work. |
 | Browser/privacy/network | Helpers handle tokens, source paths, screenshots, browser storage and page-derived requests. Review engine-side origin/auth/path controls, retention and egress before live mode. Use synthetic pages without authenticated user data. |
 | Compatibility and value | No actual Claude/Codex invocation, resume, rotation, remote runner or paired UI evaluation has run in this slice. Listing an agent eval is not running it. |
 | Ownership/admission | `steiner385` is the nominated maintainer, pending acceptance. Independent admission approval, an approved execution matrix, and an admitted rollback package are absent. Review of this verifier cannot supply those approvals. |
 
-## Recommended pilot boundary
+## Recommended controlled evaluation boundary
 
-The next trial should use selected read-only `operate`, `clarify`, and `harden`
+The next controlled guidance trial, building on the existing pilots, should use selected read-only `operate`, `clarify`, and `harden`
 guidance as data, as described in the surface review. Do not invoke the complete
 skill entry point: it requests engine context and can dispatch further commands.
 Enforce tool/path/network limits outside the prompt, exclude exported roles and
