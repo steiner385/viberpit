@@ -45,7 +45,7 @@ class Autopilot:
         ConfigField(key="recovery_max_attempts", label="Max recovery attempts", type="int",
                     default=2, help="Recovery nudges before handing a failed session to a human."),
         ConfigField(key="loop_repeat_limit", label="Loop repeat limit", type="int", default=3,
-                    help="Identical stuck states before escalating to a human."),
+                    help="Repeated assistance attempts before escalating to a human."),
         ConfigField(key="human_defer_seconds", label="Human deference (seconds)", type="int",
                     default=120, help="Skip a session a human touched this recently."),
         ConfigField(key="extra_deny_patterns", label="Extra deny patterns", type="string",
@@ -150,6 +150,8 @@ class AutopilotLoop:
         # are not yet persisted. Merge with stored taking precedence over pre-loaded,
         # so we never silently discard a freshly persisted key.
         ctx.ledger = {**(ctx.ledger or {}), **ledger}
+        await self._reconcile_accounting(sid, ctx)
+        ledger = ctx.ledger
 
         # Global daily cap.
         if len(self._day_actions) >= config["max_actions_per_day"]:
@@ -166,13 +168,8 @@ class AutopilotLoop:
         if decision.action == "nudge":
             decision = await self._verify_nudge_facts(sid, ctx, decision, now)
         if decision.action == "skip":
-            # A human-steering skip means the human has seen (and acted on) this
-            # session: a later escalation for the same stuck state — e.g. a session
-            # that hands back again with the same reason — is new information to
-            # them, so the de-spam flag is released here.
-            await self._record_fingerprint(
-                sid, ledger, ctx,
-                human_seen=decision.reason.startswith("human steering"))
+            # Observing a wait is not an assistance attempt. In particular, neither
+            # deference nor an exhausted hourly budget consumes the loop allowance.
             return False, False
         if decision.action == "complete":
             decline_ledger = ctx.ledger if ctx.ledger is not None else ledger
@@ -273,14 +270,36 @@ class AutopilotLoop:
                     "suppressed": suppressed})
         return False, False
 
-    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext,
-                                  *, human_seen: bool = False) -> None:
+    async def _reconcile_accounting(self, sid: str, ctx: DecisionContext) -> None:
+        """Recover legacy observation counters once; human input starts a new episode.
+
+        Legacy ledgers cannot distinguish skips from attempts. Reset only their
+        repetition count once, retaining action budgets, recovery caps, recent
+        nudges and notification deduplication. Persisting the version makes this
+        bounded recovery survive restarts without reopening the allowance again.
+        """
+        ledger = ctx.ledger
+        new = dict(ledger)
+        human_at = ctx.last_human_interaction_at
+        if new.get("accounting_version", 0) < 1:
+            new.update(accounting_version=1, repeat_count=0)
+            # The first observation establishes a baseline; old human activity
+            # must not erase an already-exhausted recovery allowance on upgrade.
+            if human_at is not None:
+                new["last_human_interaction_at"] = human_at
+        if human_at is not None and human_at > new.get("last_human_interaction_at", ""):
+            new.update(last_human_interaction_at=human_at, repeat_count=0,
+                       recovery_attempts=0, escalated=False)
+        if new != ledger:
+            await self._ctx.set_target_state(sid, new)
+            ctx.ledger = new
+
+    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
         fp = fingerprint(ctx)
         repeat = ledger.get("repeat_count", 0) + 1 if ledger.get("last_fingerprint") == fp else 1
         new = dict(ledger)
         new.update(last_fingerprint=fp, repeat_count=repeat)
-        if human_seen and new.get("escalated"):
-            new["escalated"] = False
+        ctx.ledger = new
         await self._ctx.set_target_state(sid, new)
 
     async def _charge(self, sid: str, ledger: dict, ctx: DecisionContext,
@@ -345,6 +364,7 @@ class AutopilotLoop:
         if self._compose is None:
             if (decision.prompt or "").strip():
                 return decision
+            await self._record_futile(sid, ctx.ledger or {}, ctx)
             return Decision(action="escalate", reason="nudge needs composition — no composer")
         text = await self._compose(ctx, decision)
         if not (text or "").strip():

@@ -13463,6 +13463,7 @@ class SessionOrchestrator:
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
             seconds_since_human=_secs_since_human,
+            last_human_interaction_at=_last.isoformat() if _last is not None else None,
             fleet_context=await self._autopilot_fleet_context(session_id),
             pr_resolution=pr_resolution,
             instructions=getattr(rec, "initial_prompt", None),

@@ -372,6 +372,7 @@ async def test_escalation_reemits_after_a_human_has_steered():
 
     async def human_steering(sid):
         dc = _dc(sid)
+        dc.last_human_interaction_at = "2026-10-07T12:00:00"
         dc.seconds_since_human = 5.0        # pre_decide → skip "human steering"
         return dc
     loop._get_context = human_steering
@@ -740,3 +741,162 @@ async def test_escalation_observation_preserves_activity_and_clears():
     assert status.counts["advancing"] == 2
     publish_observation(ctx, "autopilot_counts", {"advancing": 2, "escalated": 0})
     assert Autopilot().status(ctx).waiting_reason is None
+
+
+@pytest.mark.asyncio
+async def test_human_deference_ticks_never_consume_repetition_budget():
+    ctx = FakeCtx()
+    loop = _loop(ctx)
+    elapsed = 10.0
+
+    async def get_context(sid):
+        dc = _dc(sid)
+        dc.seconds_since_human = elapsed
+        return dc
+
+    loop._get_context = get_context
+    for elapsed in (10.0, 30.0, 50.0):
+        await loop.tick()
+        assert ctx.states.get("s1", {}).get("repeat_count", 0) == 0
+    elapsed = 130.0
+    await loop.tick()
+    assert loop._applied == [("s1", "approve")]
+    assert not any(kind == "escalated" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_hourly_budget_skips_do_not_poison_next_hour():
+    ctx = FakeCtx()
+    ctx.states["s1"] = {"hour_actions": [999.0] * 12}
+    loop = _loop(ctx)
+    for _ in range(10):
+        await loop.tick()
+    assert ctx.states["s1"].get("repeat_count", 0) == 0
+    loop._clock = lambda: 4600.0
+    await loop.tick()
+    assert loop._applied == [("s1", "approve")]
+
+
+@pytest.mark.asyncio
+async def test_human_interaction_resets_once_even_after_deference_expired():
+    from server.automations.autopilot_policy import fingerprint
+    ctx = FakeCtx()
+    ctx.states["s1"] = {
+        "accounting_version": 1, "last_fingerprint": fingerprint(_dc()),
+        "repeat_count": 3, "recovery_attempts": 2, "escalated": True,
+        "hour_actions": [900.0], "last_human_interaction_at": "2026-10-07T12:00:00",
+    }
+    loop = _loop(ctx)
+
+    async def get_context(sid):
+        dc = _dc(sid)
+        dc.last_human_interaction_at = "2026-10-07T12:05:00"
+        dc.seconds_since_human = 130.0
+        return dc
+
+    loop._get_context = get_context
+    for _ in range(5):
+        await loop.tick()
+    assert len(loop._applied) == 3
+    state = ctx.states["s1"]
+    assert state["repeat_count"] == 3
+    assert state["recovery_attempts"] == 0
+    assert state["hour_actions"] == [900.0, 1000.0, 1000.0, 1000.0]
+    assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_repetition_reconciles_only_once_across_restart():
+    from server.automations.autopilot_policy import fingerprint
+    ctx = FakeCtx()
+    ctx.states["s1"] = {
+        "last_fingerprint": fingerprint(_dc()), "repeat_count": 90,
+        "hour_actions": [900.0], "recovery_attempts": 1,
+        "recent_nudges": [{"ts": 900.0, "text": "previous nudge"}],
+        "escalated": True, "last_facts_refresh": 800.0,
+    }
+    loop = _loop(ctx)
+    await loop.tick()
+    assert len(loop._applied) == 1
+    state = ctx.states["s1"]
+    assert state["accounting_version"] == 1
+    assert state["repeat_count"] == 1
+    assert state["recovery_attempts"] == 1
+    assert state["hour_actions"] == [900.0, 1000.0]
+    assert state["recent_nudges"] == [{"ts": 900.0, "text": "previous nudge"}]
+    assert state["last_facts_refresh"] == 800.0
+    for _ in range(5):
+        restarted = _loop(ctx)
+        await restarted.tick()
+    assert ctx.states["s1"]["repeat_count"] == 3
+    assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_skip_does_not_count_as_attempt():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="skip", reason="waiting"))
+    for _ in range(10):
+        await loop.tick()
+    assert ctx.states.get("s1", {}).get("repeat_count", 0) == 0
+    assert loop._applied == []
+    assert not ctx.emits
+
+
+@pytest.mark.asyncio
+async def test_rejected_actions_remain_bounded_and_uncharged():
+    ctx = FakeCtx()
+    loop = _loop(ctx)
+    attempts = []
+
+    async def reject(sid, decision, dc):
+        attempts.append(sid)
+        return False
+
+    loop._apply = reject
+    for _ in range(10):
+        await loop.tick()
+    assert attempts == ["s1"] * 3
+    assert ctx.states["s1"]["repeat_count"] == 3
+    assert ctx.states["s1"].get("hour_actions", []) == []
+    assert loop._day_actions == []
+    assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_reconciliation_preserves_hand_back_and_recovery_cap():
+    for kind in ("handed_back", "needs_attention"):
+        ctx = FakeCtx()
+        ctx.states["s1"] = {"repeat_count": 90, "recovery_attempts": 2}
+        loop = _loop(ctx)
+
+        async def get_context(sid):
+            dc = _dc(sid)
+            dc.stuck = {"kind": kind}
+            dc.last_human_interaction_at = "2026-10-07T12:00:00"
+            dc.seconds_since_human = 500.0
+            return dc
+
+        loop._get_context = get_context
+        await loop.tick()
+        assert loop._applied == []
+        assert ctx.states["s1"]["recovery_attempts"] == 2
+        assert ctx.states["s1"]["escalated"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_composer_attempts_are_bounded():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="nudge", needs_composition=True))
+    decisions = []
+
+    async def decide(dc):
+        decisions.append(dc.session_id)
+        return Decision(action="nudge", needs_composition=True)
+
+    loop._decide_fn = decide
+    for _ in range(8):
+        await loop.tick()
+    assert decisions == ["s1"] * 3
+    assert ctx.states["s1"]["repeat_count"] == 3
+    assert loop._applied == []

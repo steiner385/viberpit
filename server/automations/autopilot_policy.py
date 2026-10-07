@@ -54,6 +54,9 @@ class DecisionContext:
     # Precomputed by _autopilot_get_context (autopilot's clock is monotonic, so a raw timestamp
     # cannot be compared against pre_decide's `now`). None = the human never touched it.
     seconds_since_human: float | None = None
+    # Canonical naive-UTC ISO timestamp of the explicit human interaction. Unlike
+    # its elapsed age, this identifies one reset boundary across ticks/restarts.
+    last_human_interaction_at: str | None = None
     # Compact view of the REST of the fleet (same-repo siblings, other actives,
     # recently archived + outcomes) from fleet_context.build_fleet_view. Advisory
     # input to the LLM decider ONLY — no guardrail reads it. None = nothing to report.

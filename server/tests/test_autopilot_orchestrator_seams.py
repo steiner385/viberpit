@@ -437,6 +437,7 @@ def test_get_context_reports_seconds_since_human(tmp_path):
         ctx = await orch._autopilot_get_context("s1")
         assert ctx is not None
         assert 4.0 <= ctx.seconds_since_human <= 30.0
+        assert ctx.last_human_interaction_at == orch._records["s1"].last_user_interaction_at.isoformat()
 
     asyncio.run(run())
 
