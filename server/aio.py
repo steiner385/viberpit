@@ -9,14 +9,19 @@ bare ``await`` — an unbounded await in teardown wedged CI's TestClient exits f
 
 ``cancel_and_reap`` is the single implementation of "cancel this child and wait
 for it, without swallowing MY OWN cancellation" (issue #1164).
+
+``run_to_completion`` is the single implementation of the inverse: "finish this
+even if I am cancelled, THEN propagate my cancellation" (issue #2726).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Iterable
-from typing import Any
+from collections.abc import Awaitable, Coroutine, Iterable
+from typing import Any, TypeVar
+
+_T = TypeVar("_T")
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +146,39 @@ def _cancel_requested(task: asyncio.Future[Any]) -> bool:
     """
     cancelling = getattr(task, "cancelling", None)
     return bool(cancelling()) if callable(cancelling) else False
+
+
+async def run_to_completion(coro: Coroutine[Any, Any, _T], *, name: str) -> _T:
+    """Run *coro* to completion even if the caller is cancelled, then re-raise.
+
+    For work whose interruption is worse than its delay: a half-finished cleanup,
+    or a SQLite write. Cancelling a coroutine while its aiosqlite statement is in
+    flight makes SQLAlchemy invalidate the connection mid-transaction. The
+    abandoned handle keeps the database's single write lock until GC finalises
+    it, so every other writer waits out the 30 s busy timeout and fails with
+    "database is locked" (issue #2726).
+
+    The shield is re-entered after every cancellation, so a repeated cancel
+    cannot strand the work either. The caller's cancellation is NOT swallowed
+    (issue #1164): it is re-raised once the work has finished. The work's own
+    result or exception is returned or raised when the caller was not cancelled.
+    """
+    task = asyncio.create_task(coro, name=name)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                break  # the work itself was cancelled (loop teardown), not us
+            cancelled = True
+    if cancelled:
+        # Retrieve the outcome so a failure is not reported as never-retrieved;
+        # the caller's cancellation outranks it.
+        if not task.cancelled():
+            task.exception()
+        raise asyncio.CancelledError
+    return task.result()
 
 
 async def cancel_and_reap(

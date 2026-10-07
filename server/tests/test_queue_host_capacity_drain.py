@@ -35,8 +35,6 @@ async def _add_hosts(orch, *rows: Host) -> None:
     async with db_session() as db:
         for r in rows:
             db.add(r)
-    # The ownership snapshot is cached for a minute; the rows above must be seen now.
-    orch._ownership_hosts_cache = None
 
 
 def _host(name: str, *, max_sessions: int | None, active: int = 0,
@@ -54,6 +52,18 @@ async def _row(sid: str) -> DbSession | None:
 async def _restamp(sid: str, host: str | None) -> None:
     async with db_session() as db:
         await db.execute(sa_update(DbSession).where(DbSession.id == sid).values(host=host))
+
+
+@pytest.fixture(autouse=True)
+def _uncached_ownership_hosts(monkeypatch):
+    """Every ownership check reads the registry rows these tests just wrote.
+
+    Clearing ``orch._ownership_hosts_cache`` by hand was racy: a background loop's
+    registry read that began before the Host rows committed could store its stale
+    snapshot (without them) AFTER the clear, so a down host's entry read as an
+    orphan this daemon already owned (#2726 surfaced it under load)."""
+    from server.sessions import orchestrator
+    monkeypatch.setattr(orchestrator, "_OWNERSHIP_HOSTS_TTL_S", 0.0)
 
 
 @pytest.fixture

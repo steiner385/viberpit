@@ -388,7 +388,7 @@ def test_worker_drain_skips_entries_it_does_not_own(tmp_path):
     asyncio.run(run())
 
 
-def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path):
+def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path, monkeypatch):
     """Mirror image: the primary's _records holds EVERY row (fleet dashboard), so a
     worker-stamped queued entry looks perfectly drainable to it. It must skip that
     entry while the worker is enabled in the registry, and adopt it only once the
@@ -414,8 +414,11 @@ def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path):
             await _set_cap(2)
 
             # The registry snapshot is cached for _OWNERSHIP_HOSTS_TTL_S; start()
-            # may have taken one before the Host row above existed.
-            orch._ownership_hosts_cache = None
+            # may have taken one before the Host row above existed. Disable the
+            # cache rather than clearing it: a background read in flight across a
+            # clear can store its stale snapshot back afterwards (#2726).
+            from server.sessions import orchestrator
+            monkeypatch.setattr(orchestrator, "_OWNERSHIP_HOSTS_TTL_S", 0.0)
             with patch.dict(os.environ, {"VIBERPIT_HOST_NAME": "primary-a"}):
                 started = await orch._maybe_start_queued()
                 assert started == 0
@@ -427,7 +430,6 @@ def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path):
                 async with db_session() as db:
                     await db.execute(sa_update(Host).where(Host.name == "worker-b")
                                      .values(enabled=False))
-                orch._ownership_hosts_cache = None
                 started = await orch._maybe_start_queued()
                 assert started == 1
                 assert (await sq.positions()) == {}

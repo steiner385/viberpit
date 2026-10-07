@@ -16,6 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from server.aio import run_to_completion
 from server.config import get_settings
 from server.db.models import Automation, Base
 from server.sessions.engine import AgentEngine
@@ -398,6 +399,17 @@ async def dispose_db() -> None:
     _session_factory = None
 
 
+async def _commit(session: AsyncSession) -> None:
+    """Commit, finishing even if the caller is cancelled mid-flush.
+
+    ORM writes (``db.add(...)``) reach SQLite only here. A cancel landing while
+    that INSERT/UPDATE is in flight invalidates the connection mid-transaction,
+    and the abandoned handle keeps SQLite's one write lock until GC, so every
+    other writer fails "database is locked" after the 30 s busy timeout (#2726).
+    """
+    await run_to_completion(session.commit(), name="db.commit")
+
+
 @asynccontextmanager
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Async context manager that yields a DB session and commits/rolls back."""
@@ -406,7 +418,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     async with _session_factory() as session:
         try:
             yield session
-            await session.commit()
+            await _commit(session)
         except Exception:
             await session.rollback()
             raise
@@ -419,7 +431,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with _session_factory() as session:
         try:
             yield session
-            await session.commit()
+            await _commit(session)
         except Exception:
             await session.rollback()
             raise
