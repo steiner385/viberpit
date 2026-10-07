@@ -88,6 +88,13 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     return by_id_blocked, by_id_session, by_id_blockers, by_id_board_status, by_id_bounces
 
 
+def needs_home_stmt(repos: list[str]):
+    """The roadmap's unassigned owner-held items, shared with session triage."""
+    return select(WorkItem).where(
+        WorkItem.repo.in_(repos), WorkItem.state == "open",
+        WorkItem.hold_kind == "owner_action", WorkItem.feature_id.is_(None))
+
+
 @router.get("/map")
 async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     projects = (await db.execute(select(Project).order_by(Project.created_at))).scalars().all()
@@ -184,9 +191,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             TriageProposal.status == "pending"))).all()
         for (repo,) in pending:
             pending_by_repo[repo] = pending_by_repo.get(repo, 0) + 1
-        needs_home = (await db.execute(select(WorkItem.repo).where(
-            WorkItem.repo.in_(all_repos), WorkItem.state == "open",
-            WorkItem.hold_kind == "owner_action", WorkItem.feature_id.is_(None)))).all()
+        needs_home = (await db.execute(needs_home_stmt(all_repos).with_only_columns(WorkItem.repo))).all()
         for (repo,) in needs_home:
             needs_home_by_repo[repo] = needs_home_by_repo.get(repo, 0) + 1
         incidents = (await db.execute(select(TriageItem.repo, TriageItem.status).where(

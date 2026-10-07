@@ -52,12 +52,15 @@ def test_session_tool_specs_declares_all_nine_unconditionally():
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback",
                                        "mark_complete", "mark_no_pr", "hand_back",
                                        "set_hold", "propose_decision", "request_model",
-                                       "dispatch_session", "share_artifact"}
+                                       "dispatch_session", "share_artifact",
+                                       "roadmap_needs_you", "roadmap_item", "roadmap_resolve",
+                                       "roadmap_hold", "roadmap_advance"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():
     names = {t.name for t in build_session_tools(_ctx(signalling_tools=False))}
-    assert names == {"session_context", "report_feedback"}
+    assert names == {"session_context", "report_feedback",
+                     "roadmap_needs_you", "roadmap_item"}
 
 
 def test_request_model_is_declared_only_when_the_engine_can_honour_it():
