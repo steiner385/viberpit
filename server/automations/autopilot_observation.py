@@ -45,11 +45,11 @@ def merge_autopilot_statuses(observations: dict[str, dict | None], *, now: float
             waiting_reason = reason
         stamp = part.get("observedAt")
         observed = parse_iso_utc(stamp) if isinstance(stamp, str) else None
-        if observed is not None:
+        if observed is not None and isinstance(stamp, str):
             observed_times.append((observed.timestamp(), stamp))
         failed_stamp = part.get("lastRefreshFailedAt")
         failed = parse_iso_utc(failed_stamp) if isinstance(failed_stamp, str) else None
-        if failed is not None:
+        if failed is not None and isinstance(failed_stamp, str):
             failed_times.append((failed.timestamp(), failed_stamp))
         host_counts = part.get("counts")
         if (observed is None or now - observed.timestamp() > AUTOPILOT_OBSERVATION_STALE_S
