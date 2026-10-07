@@ -198,3 +198,10 @@ def test_initialize_control_timeout_is_cli_startup_timeout():
 def test_interrupt_control_timeout_is_not_a_startup_timeout():
     # A wedged interrupt is a separate defect pattern and keeps surfacing.
     assert classify(None, "Control request timeout: interrupt").kind == "other"
+
+
+def test_cli_not_logged_in_is_auth_401():
+    """#2758: the CLI's no-credential result carries no HTTP status."""
+    msg = "authentication_failed | Not logged in · Please run /login"
+    assert classify("driver_error", msg).kind == "auth_401"
+    assert classify(None, "Not logged in").kind == "auth_401"
