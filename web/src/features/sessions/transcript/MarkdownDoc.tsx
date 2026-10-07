@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react'
+import { createContext, useContext, useId, useMemo, type ComponentProps } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -11,8 +11,16 @@ import { MermaidDiagram } from './MermaidDiagram'
 import 'highlight.js/styles/github-dark.css'
 import { isFilePathRef } from './filePathRef'
 import { CopyablePath } from './CopyablePath'
+import { ResultImage } from './ResultImages'
 
 interface Props { children: string; streaming?: boolean }
+
+const ImageLinkContext = createContext(false)
+
+function MarkdownImage({ src, alt }: ComponentProps<'img'>) {
+  const linked = useContext(ImageLinkContext)
+  return <ResultImage url={typeof src === 'string' ? src : ''} name={alt || ''} linked={linked} />
+}
 
 // Shared markdown renderer for assistant transcript content (prose and insight
 // callouts). Centralizes the plugin set, the safe-link policy, and clickable
@@ -42,9 +50,12 @@ export function MarkdownDoc({ children, streaming = false }: Props) {
     a: ({ node, ...props }) => {
       void node // hast node — drop it rather than forward to the DOM
       const local = props.href?.startsWith('#')
-      return <a {...props} href={local ? `#${idPrefix}${props.href!.slice(1)}` : props.href}
-        target={local ? undefined : '_blank'} rel="noopener noreferrer" />
+      return <ImageLinkContext.Provider value={true}>
+        <a {...props} href={local ? `#${idPrefix}${props.href!.slice(1)}` : props.href}
+          target={local ? undefined : '_blank'} rel="noopener noreferrer" />
+      </ImageLinkContext.Provider>
     },
+    img: MarkdownImage,
     pre: ({ node, children, ...props }) => {
       const code = node?.children[0]
       if (!streaming && code?.type === 'element' && code.tagName === 'code'

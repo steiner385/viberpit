@@ -88,6 +88,34 @@ def write_content(data: bytes, media_type: str, *, sha256: str | None = None) ->
     return sha, path
 
 
+async def store_attachment(db, data: bytes, media_type: str, *, session_id: str,
+                           identity: str, filename: str,
+                           attachment_id: str | None = None) -> Attachment:
+    """Persist session-owned bytes using the canonical store; optional stable id
+    makes repeated native-history materialization idempotent, including races.
+    """
+    import asyncio
+    from sqlalchemy.exc import IntegrityError
+
+    sha, _ = await asyncio.to_thread(write_content, data, media_type)
+    row = Attachment(session_id=session_id, media_type=media_type, filename=filename,
+                     byte_size=len(data), sha256=sha, uploaded_by=identity)
+    if attachment_id is not None:
+        row.id = attachment_id
+    try:
+        async with db.begin_nested():
+            db.add(row)
+            await db.flush()
+    except IntegrityError:
+        if attachment_id is None:
+            raise
+        existing = await db.get(Attachment, attachment_id)
+        if existing is None:
+            raise
+        return existing
+    return row
+
+
 def image_block(media_type: str, data_b64: str) -> dict:
     """Anthropic image content block."""
     return {"type": "image",

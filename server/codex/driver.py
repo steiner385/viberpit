@@ -1845,7 +1845,11 @@ class CodexAgentDriver:
             await self._handle_untranslated(item)
             return
         await self._journal_item_time(item)
+        from server.codex.images import materialize_images
         for event in self._translator.translate(item.method, item.params):
+            event = await materialize_images(event, session_id=self.session_id,
+                                             thread_id=self._thread_id or "",
+                                             identity=self._identity)
             await self._consume(event)
 
     async def _journal_item_time(self, item: _Notification) -> None:

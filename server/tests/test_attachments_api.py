@@ -174,3 +174,33 @@ def test_upload_writes_audit_row(tmp_path, monkeypatch):
     assert rows[0].detail["type"] == "image/png"
     # Audit detail must never carry the raw bytes.
     assert "data" not in rows[0].detail
+
+
+def test_image_access_requires_authorized_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "testuser@example.com")
+    from functools import partial
+
+    from server.codex.images import materialize_images
+    from server.codex.schema import ImageViewItem
+    from server.codex.translator import CodexEventTranslator
+
+    source = tmp_path / "screen.png"
+    source.write_bytes(PNG)
+    pending = CodexEventTranslator().translate_item(
+        ImageViewItem("screenshot", str(source)), turn_id="t", completed=True)[-1]
+    with _client(tmp_path, monkeypatch) as client:
+        materialize = partial(materialize_images, pending, session_id="s", thread_id="native")
+        result = client.portal.call(materialize)
+        url = result.payload["content"][0]["source"]["url"]
+        source.unlink()
+        replay = client.portal.call(materialize)
+        assert replay.payload == result.payload
+        client.cookies.clear()
+        assert client.get(url).status_code == 401
+        assert client.get(url, headers={"Tailscale-User-Login": "outsider@example.com"}).status_code == 401
+        served = client.get(url, headers=IDENT)
+        assert served.status_code == 200
+        assert served.content == PNG
+        assert served.headers["cache-control"] == "private"
+        assert served.headers["content-disposition"] == "inline"
+        assert client.get("/api/attachments/not-a-file-path", headers=IDENT).status_code == 404

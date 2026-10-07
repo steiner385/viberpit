@@ -216,7 +216,10 @@ def read_image(value: str) -> tuple[bytes, str]:
         raise ToolArgError(f"not a regular file: {value}")
     if st.st_size > MAX_BYTES:
         raise ToolArgError(f"{value} is {st.st_size} bytes; the image cap is {MAX_BYTES} bytes")
-    data = p.read_bytes()
+    with p.open("rb") as stream:
+        data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ToolArgError("image exceeds attachment size limit")
     media_type = sniff_media_type(data[:12])
     if media_type not in IMAGE_MEDIA_TYPES:
         raise ToolArgError(f"{value} is not an image by content (png, jpeg, gif or webp)")

@@ -60,7 +60,8 @@ def test_a_non_turn_signal_tool_renders_its_card_under_the_canonical_name() -> N
     assert call.kind == ev.tool_kind(call.name)  # type: ignore[attr-defined]
 
 
-def test_a_dynamic_tool_result_carries_the_handlers_text_and_verdict() -> None:
+@pytest.mark.asyncio
+async def test_a_dynamic_tool_result_carries_the_handlers_text_and_verdict(isolated_db) -> None:
     """A shared image's served URL lives in the handler's answer; the result
     carries it in the Claude `content` shape so one card reads both engines."""
     translator, _ = _fresh()
@@ -69,11 +70,15 @@ def test_a_dynamic_tool_result_carries_the_handlers_text_and_verdict() -> None:
             "success": False,
             "contentItems": [{"type": "inputText", "text": '{"error": "nope"}'},
                              {"type": "inputImage", "imageUrl": "data:,"}]}
-    result = _item_completed(translator, done)[-1]
+    from server.codex.images import materialize_images
+
+    pending = _item_completed(translator, done)[-1]
+    result = await materialize_images(pending, session_id="session", thread_id=THREAD)
     assert isinstance(result, ev.ToolResult)
     assert result.ok is False
     assert result.payload == {"status": "completed",
-                              "content": [{"type": "text", "text": '{"error": "nope"}'}]}
+                              "content": [{"type": "text", "text": '{"error": "nope"}'},
+                                          {"type": "image"}]}
 
 
 def test_mark_complete_completes_the_turn_without_any_marker() -> None:

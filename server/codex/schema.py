@@ -1623,6 +1623,7 @@ class McpToolCallItem:
     tool: str
     status: str
     arguments: Any = None
+    image_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -1632,8 +1633,9 @@ class DynamicToolCallItem:
     status: str
     arguments: Any = None
     #: The `inputText` parts of the host's answer (`contentItems`), in order —
-    #: the text the handler returned. Image/audio parts are not read.
+    #: the text the handler returned.
     content_texts: tuple[str, ...] = ()
+    image_urls: tuple[str, ...] = ()
     #: The host's own verdict on the call; None until it answered.
     success: bool | None = None
 
@@ -1772,6 +1774,17 @@ def _parse_collab_agents_states(
     return states
 
 
+def _mcp_image_urls(result: Any) -> tuple[str, ...]:
+    """Only MCP image content enters the image adapter, never arbitrary results."""
+    if not isinstance(result, Mapping) or not isinstance(result.get("content"), list):
+        return ()
+    return tuple(f"data:{part['mimeType']};base64,{part['data']}"
+                 for part in result["content"]
+                 if isinstance(part, Mapping) and part.get("type") == "image"
+                 and isinstance(part.get("mimeType"), str)
+                 and isinstance(part.get("data"), str))
+
+
 def parse_thread_item(payload: Any) -> ThreadItem:
     """Parse one `ThreadItem` union member.
 
@@ -1835,6 +1848,7 @@ def parse_thread_item(payload: Any) -> ThreadItem:
             tool=_require_str(body, "tool", what),
             status=_require_str(body, "status", what),
             arguments=body["arguments"],
+            image_urls=_mcp_image_urls(body.get("result")),
         )
     if variant == "dynamicToolCall":
         if "arguments" not in body:
@@ -1851,6 +1865,11 @@ def parse_thread_item(payload: Any) -> ThreadItem:
                 part["text"] for part in raw_items
                 if isinstance(part, Mapping) and part.get("type") == "inputText"
                 and isinstance(part.get("text"), str)
+            ) if isinstance(raw_items, list) else (),
+            image_urls=tuple(
+                part["imageUrl"] for part in raw_items
+                if isinstance(part, Mapping) and part.get("type") == "inputImage"
+                and isinstance(part.get("imageUrl"), str)
             ) if isinstance(raw_items, list) else (),
             success=_optional_bool(body, "success", what),
         )

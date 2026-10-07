@@ -1,6 +1,7 @@
 import { FileText, Image as ImageIcon, Link2 } from 'lucide-react'
 import { artifactFromBlock, type Artifact, type ToolBlock } from '@/session/artifacts'
 import { CopyablePath } from './CopyablePath'
+import { ResultImage } from './ResultImages'
 
 interface Props {
   block: ToolBlock
@@ -68,9 +69,8 @@ function Body({ a }: { a: Artifact }) {
       }
       return (
         <div>
-          <img src={a.url} alt={a.label} className="max-h-64 rounded border border-edge md:max-h-96" />
+          <ResultImage url={a.url} name={a.label} />
           <div className="mt-1 flex items-center gap-3 text-xs">
-            <a href={a.url} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:underline">Open full size</a>
             <CopyablePath text={a.value} />
           </div>
         </div>

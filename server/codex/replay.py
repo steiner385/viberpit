@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Protocol
 
 from server.codex import schema
+from server.codex.images import PendingToolImages, materialize_images
 from server.codex.item_times import EMPTY_ITEM_TIMES, ItemTimes, load_item_times, uuid7_ms
 from server.codex.translator import CodexEventTranslator
 from server.codex.turn_history import RecordedTurn, TurnHistoryStore
@@ -80,7 +81,7 @@ def _stamp_for(
 ) -> float | None:
     """A ToolResult is when the item FINISHED, so it takes the journalled
     `item/completed` time when there is one; every other block is the item's start."""
-    if isinstance(event, ev.ToolResult):
+    if isinstance(event, (ev.ToolResult, PendingToolImages)):
         completed = times.completed.get(item.id)
         if completed is not None:
             return float(completed)
@@ -90,6 +91,8 @@ def _stamp_for(
 def _restamp(event: object, ts: float | None) -> object:
     """Return *event* with its `ts` set to *ts*, or the event itself when it has no
     `ts` field (TurnStart/TurnEnd/Condensing carry none on the wire)."""
+    if isinstance(event, PendingToolImages):
+        return dataclasses.replace(event, result=dataclasses.replace(event.result, ts=ts))
     if not dataclasses.is_dataclass(event) or isinstance(event, type):
         return event
     if not any(f.name == "ts" for f in dataclasses.fields(event)):
@@ -114,7 +117,7 @@ class ThreadReader(Protocol):
 class CodexThreadReplay:
     """`EngineReplay` over one Codex thread's `thread/read` history."""
 
-    __slots__ = ("_client", "_thread_id", "_model", "_item_times_path", "_turn_history")
+    __slots__ = ("_client", "_thread_id", "_model", "_item_times_path", "_turn_history", "_session_id")
 
     def __init__(
         self,
@@ -122,8 +125,10 @@ class CodexThreadReplay:
         thread_id: str,
         *,
         model: str | None = None,
+        session_id: str | None = None,
         item_times_path: Path | None = None,
     ) -> None:
+        self._session_id = session_id
         self._client = client
         self._thread_id = thread_id
         self._model = model
@@ -251,6 +256,8 @@ class CodexThreadReplay:
                            for e in turn.events if not isinstance(e, ev.SessionMeta))
             else:
                 out.extend(self._events_for(turn, ordinal, times))
+        out = [await materialize_images(e, session_id=self._session_id,
+                                        thread_id=self._thread_id) for e in out]
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
 
     async def user_prompts(self) -> list[str]:

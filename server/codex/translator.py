@@ -643,7 +643,10 @@ class CodexEventTranslator:
         prose that preceded the signal call (the Claude translator's contract)."""
         return self._state.message_text
 
-    def _tool_result(self, item: schema.ThreadItem) -> ev.ToolResult:
+    def _tool_result(self, item: schema.ThreadItem) -> object:
+        from server.codex.images import PendingToolImages
+        if isinstance(item, schema.ImageViewItem):
+            return PendingToolImages(ev.ToolResult(item.id, True, {}), (("path", item.path),))
         if isinstance(item, schema.CommandExecutionItem):
             return ev.ToolResult(
                 item.id, self._command_ok(item), self._command_payload(item)
@@ -661,11 +664,15 @@ class CodexEventTranslator:
                 payload["content"] = [{"type": "text", "text": t}
                                       for t in item.content_texts]
             ok = item.success if item.success is not None else item.status == _OK_STATUS
-            return ev.ToolResult(item.id, ok, payload)
+            result = ev.ToolResult(item.id, ok, payload)
+            return (PendingToolImages(result, tuple(("data", url) for url in item.image_urls))
+                    if item.image_urls else result)
         if isinstance(item, schema.McpToolCallItem):
-            return ev.ToolResult(
+            result = ev.ToolResult(
                 item.id, item.status == _OK_STATUS, {"status": item.status}
             )
+            return (PendingToolImages(result, tuple(("data", url) for url in item.image_urls))
+                    if item.image_urls else result)
         if isinstance(item, schema.CollabAgentToolCallItem):
             # `agentsStates` was unread before #1274; it is real per-collaborator
             # progress (`CollabAgentState.status`/`.message`), but its keys are
@@ -685,7 +692,7 @@ class CodexEventTranslator:
             return ev.ToolResult(
                 item.id, item.kind != "interrupted", {"kind": item.kind}
             )
-        # webSearch / plan / functionCallOutput / imageView carry no status: the
+        # webSearch / plan / functionCallOutput carry no status: the
         # item exists only once the work is done.
         return ev.ToolResult(item.id, True, {})
 
