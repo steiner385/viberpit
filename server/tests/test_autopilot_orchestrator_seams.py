@@ -14,6 +14,7 @@ import pytest
 
 from server.automations.autopilot_policy import Decision, DecisionContext
 from server.sessions.engine import AgentEngine
+from server.tests.autopilot_authority import decision_context, seed_authority
 
 
 def make_decision_context(**kw):
@@ -93,6 +94,7 @@ def test_list_governed_excludes_all_complete(tmp_path):
     still governs goal-met INFERENCE for sessions that never emitted the marker (`done`)."""
     async def run():
         from server.sessions.engine import AgentEngine
+
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
         orch = _bare_orch()
@@ -123,6 +125,7 @@ def test_list_governed_includes_codex_sessions(tmp_path):
     ceiling does not, and must not, apply here)."""
     async def run():
         from server.sessions.engine import AgentEngine
+
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
         orch = _bare_orch()
@@ -257,6 +260,9 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
         orch._records["s1"] = SessionRecord(
             id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_input"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
         calls: list = []
 
         async def _ensure(sid, ident=None):
@@ -290,7 +296,7 @@ def _question_ctx(question_id, options):
         transcript_tail=[], ledger={})
 
 
-def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
+def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver(tmp_path):
     """A driver's identity only ever upgrades from the unowned sentinel to a real
     user (never downgrades), so once someone has attached, PermissionRegistry /
     QuestionRegistry.resolve refuse SYSTEM_IDENTITY on every subsequent attempt —
@@ -308,6 +314,9 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
         orch._records["s1"] = SessionRecord(
             id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_input"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
         calls: list = []
 
         async def _ensure(sid, ident=None):
@@ -324,6 +333,8 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
 
         assert await orch._autopilot_apply(
             "s1", Decision(action="approve"), _perm_ctx("P1", "pytest")) is False
+        orch._records["s1"].status = "waiting_question"
+        await seed_authority(orch)
         assert await orch._autopilot_apply(
             "s1", Decision(action="answer", answer_index=0),
             _question_ctx("Q1", ["Option A"])) is False
@@ -606,7 +617,10 @@ async def test_autopilot_archive_context_records_resolution(tmp_path):
         captured["context"] = context
 
     orch.archive_session = _spy
-    ok = await orch._autopilot_archive("s1")
+    orch._records["s1"].status = "idle"
+    await _init_db(tmp_path)
+    await seed_authority(orch)
+    ok = await orch._autopilot_archive("s1", decision_context(orch._records["s1"]))
     assert ok is True
     assert captured["by"] == "autopilot"
     assert "cancelled" in captured["context"]["reason"]
@@ -800,7 +814,10 @@ async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path
         captured["context"] = context
 
     orch.archive_session = _spy
-    await orch._autopilot_archive("s1")
+    orch._records["s1"].status = "idle"
+    await _init_db(tmp_path)
+    await seed_authority(orch)
+    await orch._autopilot_archive("s1", decision_context(orch._records["s1"]))
     assert captured["context"]["reason"] == "autopilot: goal met"
     assert captured["context"].get("pr_resolution") is None
 

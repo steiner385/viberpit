@@ -182,6 +182,7 @@ def test_worker_start_skips_fleet_global_loops(tmp_path, monkeypatch):
         await orch.start()
         still_running = {a for a in _PRIMARY_ONLY_LOOP_ATTRS
                          if getattr(orch, a, None) is not None}
+        assert orch._autopilot_task is not None
         await orch.stop()
         assert not still_running, f"worker started fleet-global loops: {sorted(still_running)}"
         # Per-host local loops still run (the janitor owns this host's worktrees).

@@ -10,6 +10,17 @@ class FakeCtx:
     def __init__(self):
         self.states = {}
         self.emits = []
+        self.reservations = []
+
+    async def reserve_autopilot_action(self, limit, now):
+        self.reservations = [t for t in self.reservations if t > now - 86400]
+        if len(self.reservations) >= limit:
+            return False
+        self.reservations.append(now)
+        return True
+
+    async def autopilot_action_available(self, limit, now):
+        return len([t for t in self.reservations if t > now - 86400]) < limit
 
     async def emit(self, level, summary, **kw):
         self.emits.append((level, summary, kw.get("kind")))
@@ -191,7 +202,7 @@ async def test_complete_auto_archives_and_clears_ledger():
     ctx.states["s1"] = {"repeat_count": 2}          # pre-existing ledger to clear
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -209,7 +220,7 @@ async def test_complete_in_propose_mode_only_proposes_archive():
     ctx = FakeCtx()
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -222,16 +233,17 @@ async def test_complete_in_propose_mode_only_proposes_archive():
 
 @pytest.mark.asyncio
 async def test_complete_archive_failure_is_best_effort():
-    """An archive failure must not crash the tick; the complete marker still lands."""
+    """An archive failure must not crash or publish a false completion."""
     ctx = FakeCtx()
 
-    async def archive_boom(sid):
+    async def archive_boom(sid, dc=None):
         raise RuntimeError("archive failed")
 
     loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
     loop._archive = archive_boom
     await loop.tick()                                # must not raise
-    assert any(kind == "complete" for _, _, kind in ctx.emits)
+    assert not any(kind == "complete" for _, _, kind in ctx.emits)
+    assert "s1" in ctx.states
 
 
 @pytest.mark.asyncio
@@ -241,7 +253,7 @@ async def test_complete_does_not_archive_when_opted_out():
     ctx = FakeCtx()
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -260,7 +272,7 @@ async def test_opted_out_complete_is_deduped_across_ticks():
     every tick — mirrors the escalate de-spam so the feed isn't buried."""
     ctx = FakeCtx()
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         return True
 
     loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
@@ -280,7 +292,7 @@ async def test_complete_does_not_archive_when_auto_archive_disabled():
     ctx = FakeCtx()
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -304,7 +316,7 @@ async def test_complete_archives_when_origin_matches_scope():
     ctx = FakeCtx()
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -328,7 +340,7 @@ async def test_complete_does_not_archive_when_origin_outside_scope():
     ctx = FakeCtx()
     archived: list = []
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -457,7 +469,7 @@ async def test_stale_complete_verifies_and_archives():
     async def refresh_facts(sid):
         return _armed_facts()
 
-    async def archive(sid):
+    async def archive(sid, dc=None):
         archived.append(sid)
         return True
 
@@ -693,7 +705,7 @@ async def test_decline_archive_preserves_last_facts_refresh():
     async def refresh_facts(sid: str):
         return _armed_facts()
 
-    async def archive(sid: str):
+    async def archive(sid: str, dc=None):
         archived.append(sid)
         return True
 
@@ -801,7 +813,7 @@ async def test_human_interaction_resets_once_even_after_deference_expired():
     state = ctx.states["s1"]
     assert state["repeat_count"] == 3
     assert state["recovery_attempts"] == 0
-    assert state["hour_actions"] == [900.0, 1000.0, 1000.0, 1000.0]
+    assert state["hour_actions"] == [1000.0] * 4
     assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
 
 
@@ -822,9 +834,9 @@ async def test_legacy_repetition_reconciles_only_once_across_restart():
     assert state["accounting_version"] == 1
     assert state["repeat_count"] == 1
     assert state["recovery_attempts"] == 1
-    assert state["hour_actions"] == [900.0, 1000.0]
-    assert state["recent_nudges"] == [{"ts": 900.0, "text": "previous nudge"}]
-    assert state["last_facts_refresh"] == 800.0
+    assert state["hour_actions"] == [1000.0, 1000.0]
+    assert state["recent_nudges"] == [{"ts": 1000.0, "text": "previous nudge"}]
+    assert "last_facts_refresh" not in state
     for _ in range(5):
         restarted = _loop(ctx)
         await restarted.tick()
@@ -840,11 +852,11 @@ async def test_model_skip_does_not_count_as_attempt():
         await loop.tick()
     assert ctx.states.get("s1", {}).get("repeat_count", 0) == 0
     assert loop._applied == []
-    assert not ctx.emits
+    assert len([e for e in ctx.emits if e[2] == "waiting"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_rejected_actions_remain_bounded_and_uncharged():
+async def test_rejected_actions_remain_bounded_and_charged():
     ctx = FakeCtx()
     loop = _loop(ctx)
     attempts = []
@@ -859,7 +871,7 @@ async def test_rejected_actions_remain_bounded_and_uncharged():
     assert attempts == ["s1"] * 3
     assert ctx.states["s1"]["repeat_count"] == 3
     assert ctx.states["s1"].get("hour_actions", []) == []
-    assert loop._day_actions == []
+    assert ctx.reservations == [1000.0] * 3
     assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
 
 
@@ -943,7 +955,7 @@ async def test_failed_facts_refresh_defers_without_model_or_action():
     assert loop._applied == []
     assert calls == ["s1"]
     assert ctx.states["s1"].get("repeat_count", 0) == 0
-    assert not ctx.emits
+    assert len([e for e in ctx.emits if e[2] == "waiting"]) == 1
 
 
 @pytest.mark.asyncio
@@ -965,3 +977,175 @@ async def test_hand_back_prevents_contradiction_refresh_and_model_call():
     assert calls == []
     assert loop._applied == []
     assert ctx.states["s1"]["escalated"]
+
+@pytest.mark.asyncio
+async def test_durable_budget_refusal_does_not_apply_or_increment_repetition():
+    from unittest.mock import AsyncMock
+    ctx = FakeCtx()
+    ctx.reserve_autopilot_action = AsyncMock(return_value=False)
+    loop = _loop(ctx)
+    await loop.tick()
+    assert loop._applied == []
+    assert ctx.states['s1']['repeat_count'] == 0
+    assert ctx.autopilot_counts['budget_blocked'] == 1
+    assert ctx.autopilot_counts['waiting'] == 1
+
+
+@pytest.mark.asyncio
+async def test_epoch_migration_is_conservative_and_only_once():
+    ctx = FakeCtx()
+    ctx.states['s1'] = {'accounting_version': 1, 'hour_actions': [12.0, 13.0],
+                        'recent_nudges': [{'ts': 12.0, 'text': 'old'}],
+                        'last_facts_refresh': 15.0, 'recovery_attempts': 2}
+    loop = _loop(ctx, decision=Decision(action='skip', reason='waiting'))
+    epoch = 1_800_000_000.0
+    loop._clock = lambda: epoch
+    await loop.tick()
+    state = ctx.states['s1']
+    assert state['clock_version'] == 1
+    assert state['hour_actions'] == [epoch, epoch]
+    assert state['recent_nudges'] == [{'ts': epoch, 'text': 'old'}]
+    assert 'last_facts_refresh' not in state
+    assert state['recovery_attempts'] == 2
+    epoch += 100
+    await loop.tick()
+    assert ctx.states['s1']['hour_actions'] == [epoch - 100, epoch - 100]
+
+
+@pytest.mark.asyncio
+async def test_archive_refusal_retains_state_and_context():
+    from unittest.mock import AsyncMock
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action='complete', reason='done'))
+    loop._archive = AsyncMock(return_value=False)
+    await loop.tick()
+    assert 's1' in ctx.states
+    assert loop._archive.await_args.args[1].session_id == 's1'
+
+
+@pytest.mark.asyncio
+async def test_final_authority_refusal_never_reserves_or_applies():
+    from unittest.mock import AsyncMock
+    ctx = FakeCtx()
+    loop = _loop(ctx)
+    loop._may_act = AsyncMock(return_value=False)
+    await loop.tick()
+    assert loop._applied == []
+    assert ctx.reservations == []
+
+
+@pytest.mark.asyncio
+async def test_waiting_reason_transition_emits_once_without_warning():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action='skip', reason='waiting'))
+    for _ in range(3):
+        await loop.tick()
+    waiting = [e for e in ctx.emits if e[2] == 'waiting']
+    assert len(waiting) == 1
+    assert waiting[0][0] == 'info'
+    assert ctx.states['s1']['observation']['reason'] == 'waiting'
+    assert ctx.autopilot_counts['waiting'] == 1
+
+
+@pytest.mark.asyncio
+async def test_hourly_wait_deadline_ignores_expired_history():
+    ctx = FakeCtx()
+    ctx.states['s1'] = {'clock_version': 1, 'accounting_version': 1,
+                        'hour_actions': [1.0] + [9000.0] * 12}
+    loop = _loop(ctx)
+    loop._clock = lambda: 10_000.0
+    await loop.tick()
+    assert ctx.states['s1']['observation']['deadline'] == 12_600.0
+    assert loop._applied == []
+
+
+@pytest.mark.asyncio
+async def test_paused_sessions_contribute_waiting_reasons_once():
+    ctx = FakeCtx()
+    ctx.autopilot_withheld = {'manual': 'paused', 'policy': 'policy_paused'}
+    loop = _loop(ctx, governed=())
+    await loop.tick()
+    await loop.tick()
+    assert ctx.autopilot_counts['waiting'] == 2
+    assert ctx.autopilot_counts['paused'] == 1
+    assert ctx.autopilot_counts['policy_paused'] == 1
+    assert len(ctx.emits) == 2
+    assert all(level == 'info' and kind == 'waiting' for level, _, kind in ctx.emits)
+
+
+def test_hand_back_wait_count_retains_human_priority():
+    from server.automations.autopilot_observation import autopilot_status
+    assert autopilot_status({'waiting': 1, 'handed_back': 1}).waiting_reason == 'human'
+
+
+@pytest.mark.asyncio
+async def test_depleted_durable_budget_skips_model_and_composer_without_loop_charge():
+    from unittest.mock import AsyncMock
+    ctx = FakeCtx()
+    ctx.reservations = [1000.0] * 300
+    composer = AsyncMock(return_value=None)
+    loop = _loop(ctx, decision=Decision(action='nudge', prompt='continue'), compose=composer)
+    loop._decide_fn = AsyncMock(return_value=Decision(action='nudge', prompt='continue'))
+    for _ in range(5):
+        await loop.tick()
+    loop._decide_fn.assert_not_awaited()
+    composer.assert_not_awaited()
+    assert ctx.states['s1']['repeat_count'] == 0
+    assert not any(kind == 'escalated' for _, _, kind in ctx.emits)
+    assert ctx.autopilot_counts['budget_blocked'] == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_final_authority_never_overwrites_new_owner_ledger():
+    ctx = FakeCtx()
+    loop = _loop(ctx)
+    replacement = {'clock_version': 1, 'accounting_version': 1, 'hour_actions': [777.0],
+                   'repeat_count': 8, 'owner': 'new owner'}
+
+    async def handoff(sid, dc):
+        ctx.states[sid] = dict(replacement)
+        return False
+
+    loop._may_act = handoff
+    await loop.tick()
+    assert ctx.states['s1'] == replacement
+    assert loop._applied == []
+    assert ctx.reservations == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('decision', [Decision(action='escalate', reason='stale'),
+                                      Decision(action='nudge', prompt='continue')])
+async def test_owner_change_during_model_never_rewrites_ledger(decision):
+    ctx = FakeCtx()
+    loop = _loop(ctx)
+    current = True
+    replacement = {'clock_version': 1, 'accounting_version': 1,
+                   'hour_actions': [888.0], 'repeat_count': 7}
+
+    async def still_current(sid, dc):
+        return current
+
+    async def decide(dc):
+        nonlocal current
+        current = False
+        ctx.states[dc.session_id] = dict(replacement)
+        return decision
+
+    loop._is_current = still_current
+    loop._decide_fn = decide
+    await loop.tick()
+    assert ctx.states['s1'] == replacement
+    assert loop._applied == []
+    assert not ctx.emits
+
+
+@pytest.mark.asyncio
+async def test_lowered_hourly_cap_deadline_waits_for_enough_expirations():
+    ctx = FakeCtx()
+    ctx.states['s1'] = {'clock_version': 1, 'accounting_version': 1,
+                        'hour_actions': [9000.0 + i for i in range(14)]}
+    loop = _loop(ctx)
+    loop._clock = lambda: 10_000.0
+    await loop.tick()
+    assert ctx.states['s1']['observation']['deadline'] == 12_602.0

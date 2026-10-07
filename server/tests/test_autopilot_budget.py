@@ -110,3 +110,17 @@ async def test_database_unavailable_does_not_authorize_action(monkeypatch):
     monkeypatch.setattr(database, "_session_factory", None)
     with pytest.raises(RuntimeError, match="Database not initialised"):
         await AutomationContext("autopilot").reserve_autopilot_action(1, 1_800_000_000.0)
+
+
+@pytest.mark.asyncio
+async def test_availability_is_noncharging_and_uses_same_rolling_budget(budget_db):
+    first, second = AutomationContext('autopilot'), AutomationContext('autopilot')
+    now = 1_800_000_000.0
+    assert await first.autopilot_action_available(1, now)
+    assert await second.autopilot_action_available(1, now)
+    assert await first.reserve_autopilot_action(1, now)
+    assert not await second.autopilot_action_available(1, now)
+    assert not await second.reserve_autopilot_action(1, now)
+    assert await second.autopilot_action_available(1, now + 86_400)
+    assert await second.reserve_autopilot_action(1, now + 86_400)
+    assert not await first.autopilot_action_available(0, now + 86_401)

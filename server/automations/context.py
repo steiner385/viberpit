@@ -269,6 +269,14 @@ class AutomationContext:
         rejected external action. Database errors propagate: no reservation means
         no permission to act. All owning hosts use the same autopilot context id.
         """
+        return await self._autopilot_action_budget(limit, now, reserve=True)
+
+    async def autopilot_action_available(self, limit: int, now: float) -> bool:
+        """Cheap non-charging guard before model work; reservation still fences races."""
+        return await self._autopilot_action_budget(limit, now, reserve=False)
+
+    async def _autopilot_action_budget(self, limit: int, now: float, *, reserve: bool) -> bool:
+        """One durable rolling-window implementation for peeking and reserving."""
         if limit <= 0:
             return False
         # Session targets are UUIDs. This reserved key cannot alias their retry
@@ -285,7 +293,7 @@ class AutomationContext:
                 AutomationTargetState.target == target).with_for_update())).one()
             recent = [t for t in row.state.get("action_times", []) if t > now - 86_400]
             allowed = len(recent) < limit
-            if allowed:
+            if allowed and reserve:
                 recent.append(now)
             row.state = {"action_times": recent}
         return allowed

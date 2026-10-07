@@ -23,7 +23,7 @@ def autopilot_status(counts: dict | None) -> AutomationStatus:
         text += f", {waiting} waiting"
     return AutomationStatus(
         text, level="active" if advancing else ("warn" if escalated else "idle"),
-        counts=counts, waiting_reason="human" if escalated else None)
+        counts=counts, waiting_reason="human" if escalated or counts.get("handed_back") else None)
 
 
 def merge_autopilot_statuses(observations: dict[str, dict | None], *, now: float) -> dict:
