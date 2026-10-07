@@ -368,6 +368,8 @@ class GhCredentialHealth:
         """
         if returncode == 0:
             self._record_success()
+            for hook in tuple(_SUCCESS_HOOKS):
+                hook()
             return
         if classify_gh_failure(stderr or "") != UNAUTHENTICATED:
             return  # another condition, or an unrelated failure: no latch change
@@ -433,6 +435,16 @@ class GhCredentialHealth:
 
 
 _HOST_HEALTH = GhCredentialHealth()
+
+#: Callbacks run on every successful ambient gh call, so a consumer that tracks
+#: "how long has this host been failing" can see the host recover. Registered at
+#: import by the one consumer (server/github/host_failures.py); not a general bus.
+_SUCCESS_HOOKS: list[Callable[[], None]] = []
+
+
+def on_success(hook: Callable[[], None]) -> None:
+    """Run *hook* whenever :meth:`GhCredentialHealth.record` sees a success."""
+    _SUCCESS_HOOKS.append(hook)
 
 
 def host_health() -> GhCredentialHealth:

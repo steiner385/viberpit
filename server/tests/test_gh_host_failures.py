@@ -462,3 +462,61 @@ def test_archive_audit_target_failure_still_names_the_target(caplog, monkeypatch
     warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("repo=a/b head=x" in m for m in warned)
     assert any("repo=c/d number=2" in m for m in warned)
+
+
+# --------------------------------------------------------------------------
+# #2742: a sub-N-minute unreachable blip is INFO, not an auto-error WARNING
+# --------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture
+def blip_gate(monkeypatch):
+    monkeypatch.setenv("VIBERPIT_GH_UNREACHABLE_WARN_AFTER_S", "300")
+    clock = _Clock()
+    monkeypatch.setattr(host_failures, "_clock", clock)
+    return clock
+
+
+def _unreachable_levels(caplog) -> list[str]:
+    return [r.levelname for r in caplog.records if r.name == host_failures.log.name]
+
+
+def _fail():
+    host_failures.log_gh_failure(logging.getLogger("t"), STDERR_UNREACHABLE, "x")
+
+
+def test_a_blip_followed_by_success_logs_info_only(blip_gate, caplog):
+    from viberpit import gh_credential
+    with caplog.at_level(logging.DEBUG, logger=host_failures.log.name):
+        _fail()
+        gh_credential.GhCredentialHealth().record(0, "")
+    assert _unreachable_levels(caplog) == ["INFO"]
+
+
+def test_an_outage_that_outlasts_the_window_warns_once(blip_gate, caplog):
+    with caplog.at_level(logging.DEBUG, logger=host_failures.log.name):
+        _fail()
+        blip_gate.t += 299
+        _fail()
+        blip_gate.t += 2
+        _fail()
+        _fail()
+    assert _unreachable_levels(caplog) == ["INFO", "INFO", "WARNING", "DEBUG"]
+
+
+def test_a_success_between_two_blips_resets_the_timer(blip_gate, caplog):
+    from viberpit import gh_credential
+    with caplog.at_level(logging.DEBUG, logger=host_failures.log.name):
+        _fail()
+        blip_gate.t += 200
+        gh_credential.GhCredentialHealth().record(0, "")
+        blip_gate.t += 200
+        _fail()
+    assert _unreachable_levels(caplog) == ["INFO", "INFO"]
