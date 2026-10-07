@@ -267,6 +267,40 @@ def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
     )
 
 
+
+def verified_created_worktree_branch(cwd: str, path: str, branch: str,
+                                    started_ms: float | None,
+                                    finished_ms: float | None) -> str | None:
+    """Verify explicit worktree-add evidence against Git's repository and reflog.
+
+    A compound shell's success alone cannot establish that worktree creation ran.
+    Require the actual new branch's creation to fall within the tool's timestamped
+    interval; a pre-existing sibling worktree must never become this session's work.
+    """
+    if (started_ms is None or finished_ms is None or finished_ms < started_ms
+            or not os.path.isabs(path) or branch.startswith("-")):
+        return None
+    common = []
+    for location in (cwd, path):
+        result = _run(["git", "-C", location, "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        if result.returncode != 0:
+            return None
+        common.append(os.path.realpath(result.stdout.strip()))
+    if common[0] != common[1] or current_branch(path) != branch:
+        return None
+    result = _run(["git", "-C", path, "reflog", "show", "--date=unix",
+                   "--format=%gD%x09%gs", "refs/heads/" + branch])
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.splitlines()
+    if not lines:
+        return None
+    created = re.search(r"@\{(\d+)\}\tbranch: Created from ", lines[-1])
+    # Reflog timestamps have whole-second precision; include that same second.
+    if created and int(started_ms // 1000) <= int(created.group(1)) <= int(finished_ms // 1000):
+        return branch
+    return None
+
 def commits_ahead_of_default(cwd: str) -> int | None:
     """Commits on ``cwd``'s HEAD that origin's default branch does not have, or None
     when that cannot be told (not a git dir, no recorded ``origin/HEAD``). Local refs

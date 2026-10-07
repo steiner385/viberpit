@@ -46,6 +46,10 @@ it; if you ever do, `escalate`. Never `nudge` it onward or tell it no reply is c
 - Match the PR evidence to the latest human request and effective goal. An older
   merged PR may cover an earlier task only; it does not prove later requested work
   is finished. A missing newly claimed PR requires verification, never assumption.
+  `unlinked_pr_claims` are mentions with no verified session association: do not
+  count them as this session's delivery. When `pr_facts_verified` is true, a
+  review/research request can legitimately finish without owning the PR it reviewed;
+  code work still needs evidence covering the current goal.
 - An **armed** PR = `state:"open"`, `is_draft:false`, `auto_merge_enabled:true`. A **merged** PR means code landed.
 - `complete` ONLY when `pr_facts` shows an armed or merged PR, OR the goal is clearly
   non-code (research / diagnosis / Q&A) and `has_repo` work isn't expected.

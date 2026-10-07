@@ -99,31 +99,25 @@ def created_pr_refs(events) -> set[tuple[str, int]]:
     from server.sessions.events import ToolCall, ToolResult
 
     def creates_pr(command: str) -> bool:
-        # Here-doc bodies are data, even when they contain command examples.
-        lines = command.splitlines(keepends=True)
-        script: list[str] = []
-        terminator = None
-        for line in lines:
-            if terminator is not None:
-                if line.strip() == terminator:
-                    terminator = None
-                continue
-            script.append(line)
-            match = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z_0-9]*)['\"]?", line)
-            if match:
-                terminator = match.group(1)
+        # Overall shell success proves create success only when create is the
+        # terminal command, optionally after a successful directory change. Never
+        # infer output provenance through pipelines, capture/echo or fallbacks.
+        if "$(" in command or "`" in command or "<<" in command:
+            return False
         try:
-            lexer = shlex.shlex("".join(script), posix=True, punctuation_chars=";&|()\n")
+            lexer = shlex.shlex(command.strip(), posix=True, punctuation_chars=";&|()\n")
             lexer.whitespace = " \t\r"
             lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError:
             return False
-        return any(tokens[i:i + 3] == ["gh", "pr", "create"]
-                   and (i == 0 or tokens[i - 1] in (";", "&&", "||", "|", "(", "\n"))
-                   for i in range(len(tokens)))
+        if len(tokens) >= 3 and tokens[0] == "cd" and tokens[2] == "&&":
+            tokens = tokens[3:]
+        return (tokens[:3] == ["gh", "pr", "create"]
+                and not any(t in (";", "&&", "||", "|", "(", ")", "\n", "&")
+                            for t in tokens[3:]))
 
-    calls: set[tuple[str | None, str]] = set()
+    calls: dict[tuple[str | None, str], bool] = {}
     refs: set[tuple[str, int]] = set()
     for event in events:
         key = (getattr(event, "parent_tool_use_id", None), getattr(event, "tool_id", ""))
@@ -133,16 +127,20 @@ def created_pr_refs(events) -> set[tuple[str, int]]:
                 commands = [event.input.get("command") or event.input.get("cmd") or ""]
             elif event.name == "functions.exec":
                 code = event.input.get("code") or event.input.get("input") or ""
-                # Only literal shell arguments to exec_command; never evaluate JS.
-                for match in re.finditer(r'exec_command\(\s*\{\s*["\']?cmd["\']?\s*:\s*("(?:[^"\\]|\\.)*")', code):
+                # One literal command/result wrapper only: unrelated JS output
+                # must not masquerade as the command's PR creation result.
+                wrapper = re.fullmatch(
+                    r"\s*text\(await tools\.exec_command\((\{.*\})\)\);?\s*", code, re.S)
+                if wrapper:
                     try:
-                        commands.append(json.loads(match.group(1)))
-                    except ValueError:
-                        continue
-            if any(isinstance(cmd, str) and creates_pr(cmd) for cmd in commands):
-                calls.add(key)
+                        args = json.loads(wrapper.group(1))
+                        commands = [args.get("cmd", "")]
+                    except (ValueError, AttributeError):
+                        pass
+            if len(commands) == 1 and isinstance(commands[0], str) and creates_pr(commands[0]):
+                calls[key] = event.name == "functions.exec"
         elif isinstance(event, ToolResult) and key in calls:
-            calls.remove(key)
+            requires_exit_code = calls.pop(key)
             if not event.ok:
                 continue
             payload = event.payload
@@ -152,10 +150,54 @@ def created_pr_refs(events) -> set[tuple[str, int]]:
             text = json.dumps(payload, ensure_ascii=False)
             if re.search(r'\\?"exit_code\\?"\s*:\s*(?:null|[1-9][0-9]*|-)', text):
                 continue
+            if requires_exit_code and not re.search(r'\\?"exit_code\\?"\s*:\s*0\b', text):
+                continue
             found = github_pr_refs(text)
             if len(found) == 1:
                 refs.update(found)
     return refs
+
+
+def created_worktree_candidates(events) -> list[tuple[str, str, float, float]]:
+    """Explicit new-worktree commands to corroborate with Git, never proof alone."""
+    import shlex
+    from server.sessions.events import ToolCall, ToolResult
+    calls: dict[tuple[str | None, str], tuple[str, str, float]] = {}
+    out = []
+    for event in events:
+        key = (getattr(event, "parent_tool_use_id", None), getattr(event, "tool_id", ""))
+        if isinstance(event, ToolCall) and event.name == "Bash" and event.ts is not None:
+            command = event.input.get("command", "")
+            try:
+                lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+                lexer.whitespace_split = True
+                tokens = list(lexer)
+            except (TypeError, ValueError):
+                continue
+            for i in range(len(tokens)):
+                if tokens[i:i + 3] != ["git", "worktree", "add"]:
+                    continue
+                if i and tokens[i - 1] not in ("&&", ";"):
+                    continue
+                args = tokens[i + 3:]
+                branch = path = None
+                while args and args[0] not in ("&&", ";", "||", "|"):
+                    arg = args.pop(0)
+                    if arg in ("-q", "--quiet"):
+                        continue
+                    if arg == "-b" and args:
+                        branch = args.pop(0)
+                    elif arg.startswith("-"):
+                        break
+                    elif path is None:
+                        path = arg
+                if branch and path and os.path.isabs(path):
+                    calls[key] = (path, branch, event.ts)
+        elif isinstance(event, ToolResult) and key in calls:
+            path, branch, start = calls.pop(key)
+            if event.ok and event.ts is not None:
+                out.append((path, branch, start, event.ts))
+    return out
 
 def read_image(value: str) -> tuple[bytes, str]:
     """Read an image the session named, on this host. Returns ``(bytes, media_type)``.

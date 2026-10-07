@@ -183,7 +183,14 @@ def missing_claimed_prs(ctx: DecisionContext) -> set[tuple[str, int]]:
         text = entry.get("text", "") or ""
         claims.update(github_pr_refs(text))
         if ctx.repo:
-            claims.update((ctx.repo.lower(), n) for n in claimed_pr_numbers([entry]))
+            # A Markdown label belongs to its explicit URL, not an additional
+            # implicit PR in this session's repository. Keep other bare mentions.
+            qualified = [m.span() for m in re.finditer(
+                r"\[[^\]]*\]\((https?://[^\s)]+)\)", text)
+                if github_pr_ref(m.group(1)) is not None]
+            claims.update((ctx.repo.lower(), int(m.group(1)))
+                          for m in _PR_NUM_RE.finditer(text)
+                          if not any(start <= m.start() < end for start, end in qualified))
     known = set()
     for pr in ctx.pr_facts.prs if ctx.pr_facts is not None else ():
         ref = github_pr_ref(pr.url)
@@ -300,7 +307,8 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # 7866e6a5 was archived over a live hand-back question this way (#1756).
         return Decision(action="escalate",
                         reason=f"open {stuck['kind']} pending — cannot archive")
-    if decision.action == "complete" and missing_claimed_prs(ctx):
+    if (decision.action == "complete" and not ctx.facts_verified
+            and missing_claimed_prs(ctx)):
         return Decision(action="skip", reason="PR facts unavailable — claimed PR not linked to session")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR

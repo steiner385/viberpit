@@ -693,3 +693,19 @@ class CommitsAheadOfDefaultTests(unittest.TestCase):
 
     def test_a_non_git_dir_is_unknown(self) -> None:
         self.assertIsNone(worktrees.commits_ahead_of_default(str(self.root)))
+
+
+def test_verified_created_worktree_requires_repository_branch_and_creation_time(tmp_path):
+    import time
+    repo, other, extra = tmp_path / "repo", tmp_path / "other", tmp_path / "extra"
+    _make_repo(repo)
+    _make_repo(other)
+    start = time.time() * 1000
+    _git("worktree", "add", "-b", "fix/extra", str(extra), cwd=str(repo))
+    end = time.time() * 1000
+    assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/extra", start, end) == "fix/extra"
+    assert worktrees.verified_created_worktree_branch(str(other), str(extra), "fix/extra", start, end) is None
+    assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/wrong", start, end) is None
+    assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/extra", start + 60000, end + 60000) is None
+    assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/extra", None, end) is None
+    assert worktrees.verified_created_worktree_branch(str(repo), str(tmp_path / "missing"), "fix/extra", start, end) is None

@@ -939,7 +939,9 @@ async def test_foreign_artifact_audit_restores_links_after_restart(tmp_path, mon
 
     orch.transcript_window = missing
     monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/foreign")
-    assert await orch._recover_session_pr_links("s1")
+    # Old artifacts remain useful links but cannot certify a missing transcript's
+    # newer creation evidence; callers must still defer the facts judgment.
+    assert not await orch._recover_session_pr_links("s1")
     assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/foreign")]
 
 

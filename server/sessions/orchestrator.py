@@ -1883,13 +1883,7 @@ class SessionOrchestrator:
         if not branch:
             return False
         if repo.lower() == (rec.repo or "").lower():
-            if branch not in (rec.authored_branches or []):
-                from sqlalchemy import update as sa_update
-                merged = sorted(set(rec.authored_branches or []) | {branch})
-                async with db_session() as db:
-                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
-                                     .values(authored_branches=merged))
-                rec.authored_branches = merged
+            await self._note_authored_branch(session_id, branch)
         elif (repo, branch) not in rec.foreign_pr_refs:
             rec.foreign_pr_refs.append((repo, branch))
         linked[key] = branch
@@ -1898,6 +1892,18 @@ class SessionOrchestrator:
         if refresh and poller is not None and not poller.in_cooldown:
             await poller.refresh_once([(repo, branch)])
         return True
+
+    async def _note_authored_branch(self, session_id: str, branch: str) -> None:
+        """Persist independently verified authored-branch evidence in its one ledger."""
+        rec = self._records.get(session_id)
+        if rec is None or branch in (rec.authored_branches or []):
+            return
+        from sqlalchemy import update as sa_update
+        merged = sorted(set(rec.authored_branches or []) | {branch})
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                             .values(authored_branches=merged))
+        rec.authored_branches = merged
 
     async def _recover_session_pr_links(self, session_id: str) -> bool:
         """Recover only explicit artifacts and successful creates from normalized replay.
@@ -1909,7 +1915,7 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select
         from server.db.models import AuditEvent
-        from server.sessions.artifacts import created_pr_refs, github_pr_ref
+        from server.sessions.artifacts import created_pr_refs, created_worktree_candidates, github_pr_ref
         cursors = getattr(self, "_pr_linkage_cursors", {})
         previous = cursors.get(session_id)
         # Establish the baseline in one full replay; then probe the tail and
@@ -1929,6 +1935,14 @@ class SessionOrchestrator:
             if window is None:
                 return False
             refs.update(created_pr_refs(window.events))
+            rec = self._records.get(session_id)
+            if rec is not None and rec.cwd:
+                for path, branch, started, finished in created_worktree_candidates(window.events):
+                    verified = await asyncio.to_thread(
+                        worktrees.verified_created_worktree_branch,
+                        rec.cwd, path, branch, started, finished)
+                    if verified:
+                        await self._note_authored_branch(session_id, verified)
         async with db_session() as db:
             details = (await db.execute(select(AuditEvent.detail).where(
                 AuditEvent.type == "session.artifact",
@@ -1944,7 +1958,7 @@ class SessionOrchestrator:
         if total is not None:
             cursors[session_id] = total
             self._pr_linkage_cursors = cursors
-        return window is not None or bool(refs)
+        return window is not None
 
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
