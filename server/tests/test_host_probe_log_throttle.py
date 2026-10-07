@@ -44,11 +44,11 @@ def _fresh_throttles():
 
     host_probe._PROBE_FAILURE_LOG.clear()
     host_probe._DEPLOY_STATE_LOG.clear()
-    host_probe._CONSECUTIVE_TIMEOUTS.clear()
+    host_probe._CONSECUTIVE_UNREACHABLE.clear()
     yield
     host_probe._PROBE_FAILURE_LOG.clear()
     host_probe._DEPLOY_STATE_LOG.clear()
-    host_probe._CONSECUTIVE_TIMEOUTS.clear()
+    host_probe._CONSECUTIVE_UNREACHABLE.clear()
 
 
 def _probe_records(caplog):
@@ -88,7 +88,7 @@ def test_a_different_failure_class_on_the_same_host_reports_immediately(
     """
     from server.db.models import Host
     from server.ipc.client import DaemonTimeout, DaemonUnavailable
-    from server.sessions.host_probe import TIMEOUT_ESCALATE_AFTER, probe_all
+    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER, probe_all
 
     failures = iter([DaemonTimeout("/info timed out: "),
                      DaemonUnavailable("All connection attempts failed")])
@@ -100,7 +100,7 @@ def test_a_different_failure_class_on_the_same_host_reports_immediately(
     async def run():
         await _seed(tmp_path, "t2.db",
                     Host(name="rocky", endpoint="https://rocky:9443"))()
-        for _ in range(TIMEOUT_ESCALATE_AFTER):
+        for _ in range(UNREACHABLE_ESCALATE_AFTER):
             await probe_all(fetch=failing_fetch)
         pending[0] = next(failures)
         await probe_all(fetch=failing_fetch)
