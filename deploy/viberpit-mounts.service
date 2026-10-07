@@ -9,7 +9,10 @@ Description=ViberPit remote mounts from dobby (account store, shared .claude, ar
 After=network-online.target tailscaled.service
 Wants=network-online.target
 # The mounts ride the tailnet, so tailscaled must be up first.
-Requires=tailscaled.service
+# Wants=, NOT Requires=: dpkg restarts tailscaled on every package upgrade as a STOP
+# then a START, and Requires= propagates the stop but never the start, so the unit
+# stayed down after a routine tailscale update (rocky, 2026-10-07). After= keeps order.
+Wants=tailscaled.service
 
 [Service]
 Type=oneshot
