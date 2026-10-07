@@ -68,7 +68,10 @@ from viberpit.fleet_role import daemon_role
 from viberpit.paths import account_cfg_dir, shared_base
 from viberpit.quota import QuotaSnapshot
 from viberpit.selector import at_ceiling, exhausted, usage_known
-from server.aio import bounded_wait, run_to_completion
+from server.aio import (
+    bounded_wait, caused_by_cancellation, current_task_cancelling,
+    ended_by_wrapped_cancellation, run_to_completion,
+)
 from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
     ASSISTANT_SUGGEST_LIMIT, ASSISTANT_SUGGEST_SYSTEM_PROMPT, build_assistant_suggest_prompt,
@@ -76,6 +79,7 @@ from server.assistant.suggest_prompt import (
 from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
 from server.db import db_session
+from server.db.transient import is_transient_db_failure
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.sessions import adopt as _adopt
@@ -285,8 +289,16 @@ def _log_bg_exception(task: asyncio.Task) -> None:
     if task.cancelled():
         return
     exc = task.exception()
-    if exc is not None:
-        log.error("background task %r raised unhandled exception", task.get_name(), exc_info=exc)
+    if exc is None:
+        return
+    if ended_by_wrapped_cancellation(task):
+        # Cancelled (daemon stop/redeploy) mid-await, and a driver — asyncpg/uvloop
+        # mid TLS handshake — re-raised the CancelledError as a concrete exception,
+        # so task.cancelled() is False. Not an auto-error (#2751, as #1950).
+        log.debug("background task %r ended by a driver-wrapped cancellation",
+                  task.get_name(), exc_info=exc)
+        return
+    log.error("background task %r raised unhandled exception", task.get_name(), exc_info=exc)
 
 
 # TTL for cached PR review proposals (seconds).
@@ -20066,8 +20078,19 @@ class SessionOrchestrator:
             async with db_session() as db:
                 names = frozenset((await db.execute(
                     sa_select(Host.name).where(Host.enabled.is_(True)))).scalars().all())
-        except Exception:
-            log.warning("ownership: enabled-hosts registry read failed", exc_info=True)
+        except Exception as exc:
+            if caused_by_cancellation(exc) and current_task_cancelling():
+                # Our own cancellation, wrapped by asyncpg mid-handshake: propagate
+                # it rather than degrade and run on (cancel rule, #1164).
+                raise asyncio.CancelledError() from exc
+            if is_transient_db_failure(exc):
+                # A connect-level blip; the degraded return below is the designed
+                # handling, so this is not an auto-error (#2752).
+                log.info("ownership: enabled-hosts registry read failed transiently "
+                         "(%s); using %s", type(exc).__name__,
+                         "cached snapshot" if cached is not None else "unknown")
+            else:
+                log.warning("ownership: enabled-hosts registry read failed", exc_info=True)
             return cached[1] if cached is not None else None
         self._ownership_hosts_cache = (now, names)
         return names

@@ -20,7 +20,6 @@ from server.db.models import MergedPr, RepoDeployConfig
 from server.pipeline import timeline
 from server.pipeline.deploy_watch import (
     DeployWatcher,
-    _caused_by_cancellation,
     _DEPLOY_INTERVAL_S,
 )
 
@@ -471,42 +470,6 @@ def test_compare_status_passes_app_token():
 # --------------------------------------------------------------------------- #
 # run() — a driver-wrapped cancellation is not an auto-error (#1950)          #
 # --------------------------------------------------------------------------- #
-
-def test_caused_by_cancellation_detects_bare():
-    assert _caused_by_cancellation(asyncio.CancelledError()) is True
-
-
-def test_caused_by_cancellation_detects_chained_cause():
-    """asyncpg/uvloop pattern: ``raise ConcreteError(...) from cancelled_error``."""
-    try:
-        try:
-            raise asyncio.CancelledError()
-        except asyncio.CancelledError as cancelled:
-            raise ConnectionResetError("connection lost") from cancelled
-    except ConnectionResetError as exc:
-        assert _caused_by_cancellation(exc) is True
-
-
-def test_caused_by_cancellation_detects_implicit_context():
-    try:
-        try:
-            raise asyncio.CancelledError()
-        except asyncio.CancelledError:
-            raise ConnectionResetError("connection lost")  # noqa: B904 (intentional)
-    except ConnectionResetError as exc:
-        assert _caused_by_cancellation(exc) is True
-
-
-def test_caused_by_cancellation_false_for_unrelated_error():
-    assert _caused_by_cancellation(ValueError("nope")) is False
-
-
-def test_caused_by_cancellation_self_referential_chain_terminates():
-    """A cycle in __context__ must not recurse forever."""
-    exc = ValueError("cycle")
-    exc.__context__ = exc
-    assert _caused_by_cancellation(exc) is False
-
 
 def test_run_does_not_file_auto_error_for_driver_wrapped_cancellation(caplog):
     """poll_once() raising an exception whose cause is our own task's

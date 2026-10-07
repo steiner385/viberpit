@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from server.aio import cancel_and_reap
+from server.aio import cancel_and_reap, caused_by_cancellation
 from server.db import db_session
 from server.db.models import RepoDeployConfig
 from server.github.deploy_envs import classify_env
@@ -45,29 +45,6 @@ _HTTP_TIMEOUT_S = 5.0
 
 HttpGet = Callable[[str], Awaitable[object]]
 GhRun = Callable[..., object]
-
-
-def _caused_by_cancellation(exc: BaseException, *, _seen: set[int] | None = None) -> bool:
-    """True if *exc* or anything in its ``__cause__``/``__context__`` chain is a
-    ``CancelledError``.
-
-    A bare ``CancelledError`` raised out of an ``await`` would already skip our
-    ``except Exception`` clause (it is a ``BaseException`` since Python 3.8), but
-    some drivers (asyncpg/uvloop mid-handshake) catch the cancellation and
-    re-raise a concrete exception type ``from`` it instead of propagating it
-    unchanged — that lands here looking like a real DB failure even though it is
-    just this task being cancelled (#1950).
-    """
-    seen = _seen if _seen is not None else set()
-    if id(exc) in seen:
-        return False
-    seen.add(id(exc))
-    if isinstance(exc, asyncio.CancelledError):
-        return True
-    for nxt in (exc.__cause__, exc.__context__):
-        if nxt is not None and _caused_by_cancellation(nxt, _seen=seen):
-            return True
-    return False
 
 
 def _url_allowed(url: str) -> bool:
@@ -316,7 +293,7 @@ class DeployWatcher:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # defense in depth; poll_once already swallows
-                if _caused_by_cancellation(exc):
+                if caused_by_cancellation(exc):
                     # This task is being stopped (daemon shutdown/restart) while
                     # poll_once() was mid-await on the DB; asyncpg/uvloop wraps the
                     # resulting CancelledError in a concrete exception instead of

@@ -55,3 +55,30 @@ async def test_finished_task_reference_is_released():
     await t
     await asyncio.sleep(0)  # done-callbacks run on the next loop pass
     assert t not in mod._live
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [True, False])
+async def test_driver_wrapped_cancellation_is_teardown_only_when_cancelled(caplog, cancel):
+    """#2751: a cancel() a driver re-raised as a concrete exception is teardown;
+    the same exception with no cancel() on the task is a real failure."""
+    started = asyncio.Event()
+
+    async def victim() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(10 if cancel else 0)
+            raise asyncio.CancelledError()  # driver-internal cancellation
+        except asyncio.CancelledError as cancelled:
+            raise ConnectionResetError("handshake aborted") from cancelled
+
+    failures: list[BaseException] = []
+    t = supervise(asyncio.create_task(victim()), name="victim", on_failure=failures.append)
+    await started.wait()
+    if cancel:
+        t.cancel()
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait({t})
+        await asyncio.sleep(0)  # done-callbacks run on the next loop pass
+    assert bool(failures) is not cancel
+    assert ("supervised task victim failed" in caplog.text) is not cancel

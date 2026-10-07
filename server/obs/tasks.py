@@ -23,6 +23,8 @@ import asyncio
 import logging
 from collections.abc import Callable
 
+from server.aio import ended_by_wrapped_cancellation
+
 log = logging.getLogger(__name__)
 
 #: Strong references to every supervised task still running (see module docstring).
@@ -37,7 +39,8 @@ def supervise(
 ) -> asyncio.Task:
     """Observe *task*'s outcome via a done-callback; return *task* for chaining.
 
-    - Cancelled  → nothing (deliberate teardown).
+    - Cancelled  → nothing (deliberate teardown) — including a ``cancel()`` a
+      driver re-raised as a concrete exception (#2751).
     - Clean exit → nothing (exception is None).
     - Failed     → ``log.error(..., exc_info=exc)`` naming *name*, then
       ``on_failure(exc)`` if given. A raise inside ``on_failure`` is itself logged
@@ -45,7 +48,7 @@ def supervise(
     """
     def _done(t: asyncio.Task) -> None:
         _live.discard(t)
-        if t.cancelled():
+        if t.cancelled() or ended_by_wrapped_cancellation(t):
             return
         exc = t.exception()
         if exc is None:
