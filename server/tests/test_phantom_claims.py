@@ -151,7 +151,9 @@ def test_settle_session_claims_settles_only_that_sessions_claim(tmp_path):
 
 def test_settle_runs_even_when_the_tick_itself_is_broken(tmp_path):
     """The incident: ``_release_give_ups`` raised on one poison row every tick, so
-    the sweep never ran. The terminal settle must not depend on the tick."""
+    the sweep never ran. The tick now sweeps past that failure (#2731), so the
+    wedge is modelled as the sweep stage itself failing: whatever breaks the
+    tick, the terminal settle must not depend on it."""
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'broken.db'}")
         await _seed_row()
@@ -159,8 +161,8 @@ def test_settle_runs_even_when_the_tick_itself_is_broken(tmp_path):
         await _set_owned_state(ctx, "o/r#1", {"repo": "o/r", "claimed": True, "attempts": 0,
                                               "issues": ["o/r#1"], "session_id": "s1",
                                               "_ended": True})
-        loop._release_give_ups = AsyncMock(side_effect=ValueError(  # type: ignore[method-assign]
-            "native session execution has no current stopped-work attestation"))
+        loop._sweep = AsyncMock(side_effect=RuntimeError(  # type: ignore[method-assign]
+            "sweep stage is broken"))
         await loop.tick()                                   # the tick is wedged…
         assert (await ctx.get_target_state("o/r#1")).get("ownership_token")
         assert await loop.settle_session_claims("s1") == {"o/r#1": "settled"}  # …the settle is not
