@@ -1,0 +1,6 @@
+id: framework-impeccable-projection-integrity
+description: Both installed Impeccable provider builds and referenced assets match their candidate inventory without implying admission.
+kind: static
+tags: [agent-config, frameworks, impeccable]
+check: >-
+  python -c "import importlib.util, pathlib; p = pathlib.Path('.agents/agentctl.py'); s = importlib.util.spec_from_file_location('agentctl', p); a = importlib.util.module_from_spec(s); s.loader.exec_module(a); r = pathlib.Path.cwd(); c = a.load_contract(r); d = a.load_framework_lock(r, c); assert d is not None; entries = [e for e in d['frameworks'] if e['id'] == 'impeccable']; assert len(entries) == 1; assert {'claude', 'codex'} <= entries[0]['provider_projections'].keys(); errors = a.validate_framework_lock(r, c); assert not errors, errors"

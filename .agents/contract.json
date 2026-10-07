@@ -17,5 +17,8 @@
     "canonical": ".agents/roles",
     "claude_projection": ".claude/agents",
     "codex_projection": ".codex/agents"
+  },
+  "frameworks": {
+    "lock": ".agents/frameworks.lock.json"
   }
 }

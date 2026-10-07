@@ -1,0 +1,5 @@
+id: framework-lock-integrity
+description: Portable framework inventory rejects tampering, malformed metadata, unsafe paths, missing references, and unreviewed promotion while preserving legacy contracts.
+kind: static
+tags: [agent-config, skills, framework-lock]
+check: 'python3 -m unittest discover -s .agents/tests -v && python3 .agents/agentctl.py check .'
