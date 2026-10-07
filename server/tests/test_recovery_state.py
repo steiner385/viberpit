@@ -1,4 +1,5 @@
 """Unit tests for server.sessions.recovery.RecoveryState (quarantine + cap)."""
+from server.sessions import recovery as R
 from server.sessions.recovery import RecoveryState
 
 
@@ -106,6 +107,19 @@ def test_stall_and_crash_caps_are_independent():
         s.record_stall("sess", now=1000.0)
     assert s.stall_cap_reached("sess", now=1000.0)
     assert not s.crash_cap_reached("sess", now=1000.0)   # stalls don't debit crash budget
+
+
+def test_stall_recompose_streak_survives_clear_stalls():
+    """#2744: a recompose resets the interrupt streak, so the recompose streak must not
+    share that reset — otherwise nothing bounds a turn that keeps re-wedging."""
+    s = RecoveryState()
+    for _ in range(R.STALL_RECOMPOSE_CAP):
+        s.record_stall_recompose("sess")
+    s.clear_stalls("sess")
+    assert s.stall_recompose_cap_reached("sess")
+    s.clear_stall_recomposes("sess")
+    assert not s.stall_recompose_cap_reached("sess")
+    assert s.stall_recompose_streak("sess") == 0
 
 
 def test_resend_cap_reached_after_max_within_window():

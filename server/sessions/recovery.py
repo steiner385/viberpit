@@ -34,6 +34,11 @@ ROTATION_WINDOW: float = 300.0
 CRASH_CAP: int = 3                # crashes per session allowed within CRASH_WINDOW
 CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashes
 STALL_CAP: int = 3                # consecutive stall-watchdog interrupts per session before escalating
+# Consecutive stall recomposes per session before the watchdog gives up and pauses to
+# needs_attention. Its own streak, NOT crash_cap: crash_cap is a 120 s window, but stall
+# recomposes are at least STALL_TIMEOUT (300 s) apart, so a windowed count never reached
+# its cap and a turn that kept re-wedging recomposed every ~5 min forever (#2744).
+STALL_RECOMPOSE_CAP: int = 2
 STALL_TIMEOUT: float = float(os.environ.get("VIBERPIT_STALL_TIMEOUT_SEC", "300"))
 # Extended stall timeout for a turn whose silence is attributable to API throttling
 # (the driver is backing off, or its account is in recovery quarantine). The SDK can
@@ -63,6 +68,8 @@ class RecoveryState:
         self._crash_window = CRASH_WINDOW
         self._stalls: dict[str, int] = defaultdict(int)  # session_id -> consecutive stall count
         self._stall_cap = STALL_CAP
+        self._stall_recomposes: dict[str, int] = defaultdict(int)  # session_id -> consecutive recomposes
+        self._stall_recompose_cap = STALL_RECOMPOSE_CAP
         self._resends: dict[str, list[float]] = defaultdict(list)  # session_id -> resend timestamps
         self._resend_cap = RESEND_CAP
         self._resend_window = RESEND_WINDOW
@@ -110,7 +117,8 @@ class RecoveryState:
     # instead of escalating (observed: session 808f63fc, 2026-09-22, 3.5h/2 account
     # rotations). The streak accumulates across repeated stalls regardless of spacing
     # and only resets via clear_stalls(), which the watchdog calls once it observes
-    # the turn genuinely resolve (no longer active or draining).
+    # the turn genuinely resolve (no longer active or draining) or when it escalates to
+    # a recompose (the rebuilt driver starts the interrupt ladder over, #2744).
     def record_stall(self, session_id: str, *, now: float) -> None:
         self._stalls[session_id] += 1
 
@@ -130,6 +138,27 @@ class RecoveryState:
     def clear_stalls(self, session_id: str) -> None:
         """Reset the consecutive-stall streak once a turn is seen to genuinely resolve."""
         self._stalls.pop(session_id, None)
+
+    # --- per-session stall-recompose cap --------------------------------------
+    # The rung above the interrupt streak. A recompose resets the interrupt streak (the
+    # rebuilt driver deserves the cheap interrupt steps again), so this separate streak
+    # is what bounds a turn that keeps re-wedging: it is NOT reset by clear_stalls() and
+    # only clears once the watchdog sees the turn genuinely resolve (#2744).
+    def record_stall_recompose(self, session_id: str) -> None:
+        self._stall_recomposes[session_id] += 1
+
+    def stall_recompose_streak(self, session_id: str) -> int:
+        """Consecutive stall recomposes recorded for *session_id*."""
+        return self._stall_recomposes.get(session_id, 0)
+
+    def stall_recompose_cap_reached(self, session_id: str) -> bool:
+        """True if *session_id* has already been stall-recomposed ``stall_recompose_cap``
+        times without the turn resolving in between."""
+        return self.stall_recompose_streak(session_id) >= self._stall_recompose_cap
+
+    def clear_stall_recomposes(self, session_id: str) -> None:
+        """Reset the recompose streak once a turn is seen to genuinely resolve."""
+        self._stall_recomposes.pop(session_id, None)
 
     # --- per-session dropped-turn resend cap ----------------------------------
     def record_resend(self, session_id: str, *, now: float) -> None:
