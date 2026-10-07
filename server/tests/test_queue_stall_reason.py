@@ -244,3 +244,91 @@ def test_response_is_backward_compatible():
         assert "queueStallReason" in s
     finally:
         os.unlink(tf.name)
+
+
+# ---------------------------------------------------------------------------
+# Per-session reasons: a queued session that has WAITED with free fleet capacity
+# always says why (incident 2026-10-06: ten sessions queued 14 h behind a product
+# cap, hosts and accounts free, queueStallReason null on every one).
+# ---------------------------------------------------------------------------
+
+
+def _list_with_queue(queued_records, *, entries, seed=None):
+    """GET /api/sessions with real ``session_queue`` rows for *entries*
+    (``{sid: (age_seconds, params)}``) and an optional async *seed(db)*."""
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from server.db import db_session
+    from server.db.models import Session as DbSession, SessionQueue
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _FakeOrch(records=queued_records,
+                         positions={r.id: i + 1 for i, r in enumerate(queued_records)})
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            async def _seed():
+                now = datetime.now(timezone.utc)
+                async with db_session() as db:
+                    for sid, (age, params) in entries.items():
+                        db.add(DbSession(id=sid, name=sid, account_name="a", cwd="/tmp",
+                                         status="queued"))
+                        db.add(SessionQueue(session_id=sid, priority=1, params=params,
+                                            enqueued_at=now - timedelta(seconds=age)))
+                    if seed is not None:
+                        await seed(db)
+            client.portal.call(_seed) if getattr(client, "portal", None) else asyncio.run(_seed())
+            resp = client.get("/api/sessions", headers=_H)
+        assert resp.status_code == 200, resp.text
+        return {s["id"]: s["queueStallReason"] for s in resp.json()}
+    finally:
+        os.unlink(tf.name)
+
+
+async def _seed_full_product(db):
+    from server.db.models import Automation, AutomationTargetState, Project, ProjectRepo
+    if await db.get(Automation, "backlog-runner") is None:
+        db.add(Automation(id="backlog-runner"))
+    db.add(Project(id="proj-k", slug="kindash",
+                   automation_policy={"dispatch": "auto", "max_in_flight": 1}))
+    db.add(ProjectRepo(project_id="proj-k", repo="cairnea/KinDash"))
+    db.add(AutomationTargetState(automation_id="backlog-runner", target="cairnea/KinDash#1",
+                                 state={"product": "kindash", "claimed": True}))
+
+
+def test_a_session_queued_behind_a_full_product_names_the_product_and_numbers():
+    params = {"queue_reason": "product_capacity", "repo": "cairnea/KinDash"}
+    reasons = _list_with_queue([_make_record("q1", status="queued")],
+                               entries={"q1": (600, params)}, seed=_seed_full_product)
+    reason = reasons["q1"]
+    assert reason["code"] == "product_capacity_full"
+    assert (reason["product"], reason["inFlight"], reason["cap"]) == ("kindash", 1, 1)
+    assert "kindash" in reason["message"] and "1/1" in reason["message"]
+    assert reason["waitedSeconds"] >= 600
+
+
+def test_a_session_that_waited_with_everything_free_still_carries_a_reason():
+    params = {"queue_reason": "product_capacity", "repo": "org/unregistered"}
+    reasons = _list_with_queue([_make_record("q1", status="queued")],
+                               entries={"q1": (600, params)})
+    assert reasons["q1"]["code"] == "waiting_for_drain"
+
+
+def test_a_freshly_queued_session_is_not_yet_a_stall():
+    params = {"queue_reason": "product_capacity", "repo": "cairnea/KinDash"}
+    reasons = _list_with_queue([_make_record("q1", status="queued")],
+                               entries={"q1": (5, params)}, seed=_seed_full_product)
+    assert reasons["q1"] is None
+
+
+def test_a_queued_session_with_no_queue_entry_says_it_is_orphaned():
+    """2026-10-06: ec4c174f read ``queued`` with ``queuePosition: null`` for 14 h —
+    a row nothing would ever start, and no field said so."""
+    from datetime import datetime, timedelta
+
+    rec = _make_record("ghost", status="queued")
+    rec.created_at = datetime.utcnow() - timedelta(hours=2)
+    reasons = _list_with_queue([rec], entries={})
+    assert reasons["ghost"]["code"] == "no_queue_entry"

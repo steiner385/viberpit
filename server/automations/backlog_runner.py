@@ -938,7 +938,26 @@ class BacklogRunnerLoop:
 
     async def _refill_and_sweep_body(self) -> dict:
         """The tick proper; returns the config it ran under so the ``finally``
-        above can stash counts against it."""
+        above can stash counts against it.
+
+        The sweep ALWAYS runs, even when a stage before it raised: it is what
+        settles finished claims and frees slots, so skipping it on an unrelated
+        failure wedges every product at its ``max_in_flight`` (2026-10-06/07: one
+        unreleasable give-up raised out of ``_release_give_ups`` for 873 ticks).
+        The stages after the failed one are skipped (refill must not run on a
+        half-reconciled store) and the failure is re-raised once the sweep is
+        done, so ``tick()`` still records it."""
+        config: dict = {}
+        try:
+            config = await self._pre_sweep()
+        except Exception:
+            await self._sweep()
+            raise
+        await self._sweep()
+        return config
+
+    async def _pre_sweep(self) -> dict:
+        """Every stage of the tick before the sweep; returns the config."""
         await self._maybe_seed_policies()
         mode, config = await self._read_config()
         # Every per-product decision below (dispatch, attempt cap, model) reads
@@ -1000,10 +1019,9 @@ class BacklogRunnerLoop:
                     self._circuit_open_emitted = True
                     await self._ctx.emit("warn", "daily spawn cap reached — pausing",
                                          kind="circuit_open")
-        # handoff + terminal-watch runs every tick, regardless of mode. The live
-        # counts ``BacklogRunner.status(ctx)`` renders are stashed by the caller's
-        # ``finally`` once this returns (or raises).
-        await self._sweep()
+        # handoff + terminal-watch (``_sweep``) runs next, every tick, regardless
+        # of mode or of a raise above. The live counts ``BacklogRunner.status(ctx)``
+        # renders are stashed by ``_refill_and_sweep``'s ``finally``.
         return config
 
     async def _check_credentials(self) -> None:
@@ -1812,54 +1830,67 @@ class BacklogRunnerLoop:
         for target, st in states.items():
             if not st.get("gave_up"):
                 continue
-            if st.get("quota_wait"):
-                # No hold backs a quota wait (#2684) — the reset does.
-                await self._settle_quota_wait(target, st)
-                continue
-            refs = st.get("issues") or [target]
-            backed = any(ref in held for ref in refs)
-            if not st.get("held"):
-                # No recorded handoff. If the item IS parked, the hold is there
-                # (this row predates the flag, or the CAS after the write was lost)
-                # and the row just adopts it — re-announcing would re-stamp
-                # ``hold_set_at``/``hold_fingerprint``, losing a pending body-edit
-                # release, and comment the issue again. Otherwise retry the seam and
-                # keep the row whatever happens.
-                #
-                # EXCEPT for a pre-ownership row (#1648, no ``ownership_token``):
-                # ``compare_target_state`` refuses to touch one, so ``held`` could
-                # never be recorded and the retry would fire forever — every tick
-                # after a human released the hold would comment again and write a
-                # fresh hold, undoing that release. Leave it exactly as inert as it
-                # was before this path existed; ``reconcile_legacy_targets`` owns it.
-                if not backed and not st.get("ownership_token"):
-                    log.warning("backlog_runner.needs_human_retry_skipped_legacy_row "
-                                "target=%s", target)
-                    continue
-                if not backed:
-                    try:
-                        await self._needs_human(target, st.get("reason") or "")
-                    except Exception:
-                        log.warning("backlog_runner.needs_human_retry_failed target=%s",
-                                    target, exc_info=True)
-                        continue
-                await self._write_state(target, st, {**st, "held": True})
-                continue
-            # The ROW is released as a unit — it is one give-up, keyed by one
-            # primary — but its members are not: a hold is per issue and any
-            # release signal (a person's Retry, a bot rewriting its own issue
-            # body) frees one member alone. Such a member is queue-eligible again
-            # while the bundle's operation still owns its target, so every claim
-            # bounced forever (2026-09-30 audit, D1: cairnea/KinDash#16774). Split
-            # it off: release just its target and shrink the row, so the pool and
-            # the store agree again; the still-held siblings stay parked.
-            if backed:
-                await self._split_parked_bundle(target, st, refs, held)
-                continue
-            if not await self._write_state(target, st, None):
-                continue
-            await self._ctx.emit("info", f"{target}: hold released — back in the pool",
-                                 kind="hold_released", target=target)
+            # Per-row isolation, like ``_sweep``'s per-target guard: one row whose
+            # release cannot be proven (2026-10-06/07: an unattested execution in
+            # its session tree raised from ``_validate_release`` every tick) must
+            # not stop the other rows — nor, before this guard, the whole tick.
+            try:
+                await self._release_give_up(target, st, held)
+            except Exception:
+                log.warning("backlog_runner.release_give_up_failed target=%s", target,
+                            exc_info=True)
+
+    async def _release_give_up(self, target: str, st: dict,
+                               held: "Mapping[str, str]") -> None:
+        """``_release_give_ups`` for one ``gave_up`` row."""
+        if st.get("quota_wait"):
+            # No hold backs a quota wait (#2684) — the reset does.
+            await self._settle_quota_wait(target, st)
+            return
+        refs = st.get("issues") or [target]
+        backed = any(ref in held for ref in refs)
+        if not st.get("held"):
+            # No recorded handoff. If the item IS parked, the hold is there
+            # (this row predates the flag, or the CAS after the write was lost)
+            # and the row just adopts it — re-announcing would re-stamp
+            # ``hold_set_at``/``hold_fingerprint``, losing a pending body-edit
+            # release, and comment the issue again. Otherwise retry the seam and
+            # keep the row whatever happens.
+            #
+            # EXCEPT for a pre-ownership row (#1648, no ``ownership_token``):
+            # ``compare_target_state`` refuses to touch one, so ``held`` could
+            # never be recorded and the retry would fire forever — every tick
+            # after a human released the hold would comment again and write a
+            # fresh hold, undoing that release. Leave it exactly as inert as it
+            # was before this path existed; ``reconcile_legacy_targets`` owns it.
+            if not backed and not st.get("ownership_token"):
+                log.warning("backlog_runner.needs_human_retry_skipped_legacy_row "
+                            "target=%s", target)
+                return
+            if not backed:
+                try:
+                    await self._needs_human(target, st.get("reason") or "")
+                except Exception:
+                    log.warning("backlog_runner.needs_human_retry_failed target=%s",
+                                target, exc_info=True)
+                    return
+            await self._write_state(target, st, {**st, "held": True})
+            return
+        # The ROW is released as a unit — it is one give-up, keyed by one
+        # primary — but its members are not: a hold is per issue and any
+        # release signal (a person's Retry, a bot rewriting its own issue
+        # body) frees one member alone. Such a member is queue-eligible again
+        # while the bundle's operation still owns its target, so every claim
+        # bounced forever (2026-09-30 audit, D1: cairnea/KinDash#16774). Split
+        # it off: release just its target and shrink the row, so the pool and
+        # the store agree again; the still-held siblings stay parked.
+        if backed:
+            await self._split_parked_bundle(target, st, refs, held)
+            return
+        if not await self._write_state(target, st, None):
+            return
+        await self._ctx.emit("info", f"{target}: hold released — back in the pool",
+                             kind="hold_released", target=target)
 
     async def _split_parked_bundle(self, target: str, st: dict, refs: list,
                                    held: "Mapping[str, str]") -> None:

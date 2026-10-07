@@ -189,7 +189,8 @@ def _record_to_dict(
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
 
     ``queue_stall_reason`` is set (only on queued records) when the queue is
-    non-empty and cannot drain — see :func:`_compute_queue_stall_reason`.
+    non-empty and cannot drain, or the session has waited past
+    ``QUEUE_WAIT_GRACE_S`` — see :func:`_queue_stall_reasons`.
     ``None`` for every non-queued record and for a queued record whose queue
     is not actually stalled. Purely additive: a client that has never heard of
     this field sees nothing new to worry about.
@@ -555,6 +556,98 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
     }
 
 
+#: How long a queued session may sit with free fleet capacity before the list
+#: endpoint owes the operator an explanation. A drain normally starts an entry
+#: within seconds; under this, "queued" is just "about to start".
+QUEUE_WAIT_GRACE_S = 60.0
+
+
+async def _queue_stall_reasons(records: list) -> dict[str, dict[str, Any]]:
+    """``{session id: why it is still queued}`` for every queued record that has
+    waited — never None for one of those (incident 2026-10-06: ten sessions sat
+    queued for 14 h with free hosts and accounts and ``queueStallReason: null``,
+    because the only cause this endpoint could name was the GLOBAL cap).
+
+    The global cause wins and is shared by every queued session, as before.
+    Otherwise the reason is per session, read from the ONE place the dispatcher
+    recorded it — the ``session_queue`` entry's ``queue_reason`` — and re-checked
+    against the same gate the drain re-checks (``repo_capacity_status`` /
+    ``queued_claim_slot_free``), so the message says what is binding NOW.
+    Best-effort: any read failure degrades to no per-session reason, never a 500.
+    """
+    queued = [r for r in records if r.status == "queued"]
+    if not queued:
+        return {}
+    shared = await _compute_queue_stall_reason(records)
+    if shared is not None:
+        return {r.id: shared for r in queued}
+    try:
+        return await _per_session_stall_reasons(queued)
+    except Exception:
+        log.warning("list_sessions: per-session queue stall reasons failed", exc_info=True)
+        return {}
+
+
+async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
+    from datetime import timezone
+    from sqlalchemy import select
+    from server.automations.context import AutomationContext
+    from server.automations.product_admission import queued_claim_slot_free, repo_capacity_status
+    from server.db.models import SessionQueue
+
+    def _aware(value: datetime | None) -> datetime | None:
+        return value if value is None or value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        entries = {row.session_id: row for row in (await db.scalars(
+            select(SessionQueue).where(SessionQueue.session_id.in_([r.id for r in queued])))).all()}
+    context = AutomationContext("backlog-runner")
+    product_status: dict[str, tuple[str | None, int | None, int | None]] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for record in queued:
+        entry = entries.get(record.id)
+        since = _aware(entry.enqueued_at if entry is not None
+                       else getattr(record, "created_at", None))
+        if since is None or (now - since).total_seconds() < QUEUE_WAIT_GRACE_S:
+            continue
+        waited = int((now - since).total_seconds())
+        if entry is None:
+            out[record.id] = {
+                "code": "no_queue_entry", "waitedSeconds": waited,
+                "message": "This session is marked queued but has no queue entry, so "
+                           "nothing will start it. Archive it to clear it."}
+            continue
+        params = dict(entry.params or {})
+        kind, repo = params.get("queue_reason", "global_cap"), params.get("repo")
+        if kind == "product_capacity" and repo:
+            if repo not in product_status:
+                product_status[repo] = await repo_capacity_status(repo, context=context)
+            slug, count, cap = product_status[repo]
+            if slug is not None and count is not None and cap is not None and count >= cap:
+                out[record.id] = {
+                    "code": "product_capacity_full", "waitedSeconds": waited,
+                    "product": slug, "inFlight": count, "cap": cap,
+                    "message": (f"Product {slug} is at its in-flight cap ({count}/{cap}), so "
+                                "this session waits for a slot there. Raise the product's "
+                                "cap on the Capacity page or wait for a run to finish.")}
+                continue
+        elif kind == "runner_capacity" and repo:
+            if not await queued_claim_slot_free(repo, session_id=record.id, context=context):
+                out[record.id] = {
+                    "code": "runner_capacity_full", "waitedSeconds": waited,
+                    "message": "Backlog Runner capacity (the runner ceiling, the product's "
+                               "in-flight or pipeline cap) is full, so this dispatch waits "
+                               "for a slot."}
+                continue
+        out[record.id] = {
+            "code": "waiting_for_drain", "waitedSeconds": waited,
+            "message": "Capacity is free, but no host has started this session yet: its "
+                       "owning host may be full or unreachable, or the queue has not been "
+                       "drained since the slot freed."}
+    return out
+
+
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
@@ -600,7 +693,7 @@ async def list_sessions(
             positions = _pos_res or {}
         except Exception:
             log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
-    stall_reason = await _compute_queue_stall_reason(records)
+    stall_reasons = await _queue_stall_reasons(records)
     heartbeats: Any = _SNAPSHOT_FAILED
     hb_now: datetime | None = None
     try:
@@ -613,7 +706,7 @@ async def list_sessions(
         _record_to_dict(
             r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
             defer_seconds=defer_seconds, queue_position=positions.get(r.id),
-            queue_stall_reason=stall_reason if r.status == "queued" else None,
+            queue_stall_reason=stall_reasons.get(r.id),
             heartbeats=heartbeats, heartbeats_now=hb_now)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]

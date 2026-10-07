@@ -34,7 +34,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import db_session, dialect_insert
-from server.db.models import AutomationOperation, AutomationOwnedTarget, Session as DbSession
+from server.db.models import (INACTIVE_SESSION_STATUSES, AutomationOperation,
+                              AutomationOwnedTarget, Session as DbSession)
 
 
 @dataclass(frozen=True)
@@ -520,8 +521,9 @@ async def attest_terminal_session_stopped(session_id: str) -> bool:
     when ``mark_complete`` released the driver, or a resumed driver whose
     predecessor died under a drain cap and so can never prove itself. One CAS per
     execution, through the same path a live close uses, so a concurrent restart of
-    the session still rejects it. Returns True iff the whole managed tree is
-    stopped afterwards.
+    the session still rejects it. Covers every terminal-or-gone session in the
+    operation's tree, never a live one. Returns True iff the whole managed tree
+    is stopped afterwards.
     """
     snapshot = await execution_snapshot(session_id)
     if snapshot is None:
@@ -529,12 +531,22 @@ async def attest_terminal_session_stopped(session_id: str) -> bool:
     async with db_session() as db:
         operation = await db.get(AutomationOperation, snapshot.token)
         states = (operation.execution_sessions or {}) if operation is not None else {}
-    executions = dict(states.get(session_id, {}).get("executions", {}))
-    for execution_id, state in executions.items():
-        generation = state.get("generation")
-        if generation is None or state.get("stopped") is not None:
-            continue
-        await attest_session_stopped(snapshot.token, generation, session_id=session_id,
-                                     execution_id=execution_id)
+        # Every OTHER session retained in the tree whose own row is terminal or gone
+        # is torn down by exactly the same evidence (2026-10-06: an ARCHIVED child a
+        # runner session had dispatched kept one unattested generation, the
+        # aggregate never converged, and ``release(WORK_STOPPED)`` raised on every
+        # tick for 14 h). A session still live keeps blocking the proof: its row is
+        # neither terminal nor gone, so it is never attested here.
+        others = [sid for sid in states if sid != session_id]
+        live = set((await db.scalars(select(DbSession.id).where(
+            DbSession.id.in_(others),
+            DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).all()) if others else set()
+    for sid in [session_id, *(other for other in others if other not in live)]:
+        for execution_id, state in dict(states.get(sid, {}).get("executions", {})).items():
+            generation = state.get("generation")
+            if generation is None or state.get("stopped") is not None:
+                continue
+            await attest_session_stopped(snapshot.token, generation, session_id=sid,
+                                         execution_id=execution_id)
     association = await session_execution(session_id)
     return bool(association and association[1] is not None and association[1] == association[2])
