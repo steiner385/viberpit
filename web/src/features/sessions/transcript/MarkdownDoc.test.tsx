@@ -54,3 +54,26 @@ describe('Markdown', () => {
     expect(screen.getByText('bad')).not.toHaveAttribute('href', expect.stringContaining('javascript:'))
   })
 })
+
+describe('workspace screenshots', () => {
+  it.each(['/home/user/worktree/screenshot.png', './docs/screenshot.png', 'file:///tmp/screenshot.png'])('does not fetch workspace image %s as a browser URL', (path) => {
+    render(<Markdown>{`![Settings screenshot](${path})`}</Markdown>)
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText(/share_artifact/)).toHaveTextContent('Image unavailable')
+    expect(screen.getByText(/Settings screenshot/)).toBeVisible()
+  })
+
+  it('renders canonical attachment images', () => {
+    render(<Markdown>{'![Screenshot](/api/attachments/abc)'}</Markdown>)
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/api/attachments/abc')
+  })
+})
+
+describe('linked screenshots', () => {
+  it('preserves an image link destination without nesting anchors', () => {
+    const { container } = render(<Markdown>{'[![Screenshot](/api/attachments/abc)](https://example.com/report)'}</Markdown>)
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/report')
+    expect(container.querySelector('a a')).toBeNull()
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/api/attachments/abc')
+  })
+})

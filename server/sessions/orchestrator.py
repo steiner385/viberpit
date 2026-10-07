@@ -22832,7 +22832,7 @@ class SessionOrchestrator:
             return None
         from server.codex.item_times import item_times_path
         return CodexThreadReplay(
-            client, thread_id, model=model,
+            client, thread_id, model=model, session_id=session_id,
             item_times_path=item_times_path(self._codex_item_times_root(account), thread_id),
         )
 

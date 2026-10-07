@@ -52,11 +52,11 @@ describe('splitImages', () => {
     expect(images).toEqual([{ url: 'https://x/y.png', mime: '', name: '' }])
   })
 
-  it('leaves an elided image block (empty data) in rest so the [image] label survives', () => {
+  it('retains an elided image as an unavailable image reference', () => {
     const elided = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }
     const { images, rest } = splitImages([elided])
-    expect(images).toEqual([])
-    expect(rest).toEqual([elided])
+    expect(images).toEqual([{ url: '', mime: '', name: '' }])
+    expect(rest).toEqual([])
   })
 
   it('passes non-array content through untouched', () => {

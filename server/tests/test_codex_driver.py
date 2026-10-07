@@ -2200,3 +2200,29 @@ async def test_interrupt_saves_old_buffer_before_queued_turn_replaces_it(harness
     assert [t.turn_id for t in saved] == ['turn-1']
     assert any(isinstance(e, ev.TextDelta) and e.text == 'partial work' for e in saved[0].events)
     assert saved[0].events[-1].outcome == 'interrupted'
+
+
+@pytest.mark.asyncio
+async def test_native_image_is_materialized_before_live_and_durable_emission(harness, isolated_db, tmp_path):
+    from server.codex.item_times import ItemTimesWriter
+    from server.codex.turn_history import TurnHistoryStore
+    from server.tests.test_codex_images import PNG
+
+    root = tmp_path / 'history'
+    source = tmp_path / 'shot.png'
+    source.write_bytes(PNG)
+    await harness.boot(item_times=ItemTimesWriter(root))
+    await harness.run_turn()
+    harness.server.notify(schema.METHOD_ITEM_COMPLETED, {
+        'threadId': THREAD, 'turnId': 'turn-1', 'completedAtMs': 2400,
+        'item': {'type': 'imageView', 'id': 'shot', 'path': str(source)},
+    })
+    harness.notify_turn_completed()
+    await harness.wait_until(lambda: harness.of(ev.TurnEnd))
+    result = harness.of(ev.ToolResult)[0]
+    assert result.payload['content'][0]['source']['url'].startswith('/api/attachments/')
+    assert str(source) not in str(result.payload)
+    source.unlink()
+    saved = TurnHistoryStore(root).load(THREAD)
+    persisted = next(e for e in saved[0].events if isinstance(e, ev.ToolResult))
+    assert persisted.payload == result.payload

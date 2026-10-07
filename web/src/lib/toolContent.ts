@@ -45,23 +45,22 @@ export interface ImageRef {
 function imageRef(b: ContentBlock): ImageRef | null {
   if (b?.type !== 'image') return null
   const src = b.source
-  if (!src) return null
-  if (src.type === 'url' && src.url) return { url: src.url, mime: '', name: '' }
-  // Skip blocks whose base64 payload was elided/truncated in the transcript —
-  // an empty `data:` URL is structurally invalid and the browser rejects it
-  // (mirrors the guard replay.py applies to user-message images).
-  if (src.type === 'base64' && src.data) {
+  if (!src) return { url: '', mime: '', name: '' }
+  if (src.type === 'url' && typeof src.url === 'string' && src.url) return { url: src.url, mime: '', name: '' }
+  // Empty/elided data cannot form a usable data URL; retain the image below
+  // as an unavailable placeholder instead of silently dropping it.
+  if (src.type === 'base64' && typeof src.data === 'string' && src.data) {
     return { url: `data:${src.media_type || 'image/png'};base64,${src.data}`, mime: src.media_type || 'image/png', name: '' }
   }
-  return null
+  return { url: '', mime: '', name: '' }
 }
 
 /**
  * Split renderable image blocks out of a tool_result `content` value. Returns
  * the extracted images (as data/https URLs) and `rest` — the content with those
  * blocks removed, ready for coerceText/extractText so rendered images don't
- * also appear as `[image]` labels. Elided image blocks (no payload) stay in
- * `rest` and keep their label.
+ * also appear as `[image]` labels. Elided image blocks use an empty URL so
+ * the image renderer can explain that the image is unavailable.
  */
 export function splitImages(content: unknown): { images: ImageRef[]; rest: unknown } {
   if (!Array.isArray(content)) return { images: [], rest: content }

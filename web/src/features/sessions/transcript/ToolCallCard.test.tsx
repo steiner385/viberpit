@@ -313,3 +313,32 @@ describe('ToolCallCard', () => {
     })
   })
 })
+
+describe('tool screenshots', () => {
+  it('shows an image when a live result arrives without opening tool details', () => {
+    const { rerender } = render(<ToolCallCard block={bashBlock} density="line" />)
+    expect(screen.queryByRole('img')).toBeNull()
+    rerender(<ToolCallCard density="line" block={{ ...bashBlock, result: { ok: true, payload: { content: [
+      { type: 'image', source: { type: 'url', url: '/api/attachments/live' } },
+    ] } } }} />)
+    expect(screen.getByRole('button', { name: /Toggle tool details/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('img')).toBeVisible()
+  })
+
+  it.each(['card', 'line'] as const)('keeps %s screenshots visible when details are collapsed', async (density) => {
+    const user = userEvent.setup()
+    const block: ToolBlock = { ...bashBlock, toolKind: 'mcp', name: 'functions.exec', result: { ok: true, payload: { content: [
+      { type: 'text', text: 'Screenshot metadata' },
+      { type: 'image', source: { type: 'url', url: '/api/attachments/screenshot' } },
+    ] } } }
+    const { unmount } = render(<ToolCallCard block={block} density={density} toolDetailMode="all-closed" />)
+    expect(screen.getByRole('img')).toBeVisible()
+    expect(screen.getByText('Screenshot metadata')).not.toBeVisible()
+    await user.click(screen.getByRole('button', { name: density === 'line' ? /Toggle tool details/ : /Toggle result/ }))
+    expect(screen.getAllByRole('img')).toHaveLength(1)
+    expect(screen.getByText('Screenshot metadata')).toBeVisible()
+    unmount()
+    render(<ToolCallCard block={block} density={density} />)
+    expect(screen.getByRole('img')).toHaveAttribute('src', '/api/attachments/screenshot')
+  })
+})

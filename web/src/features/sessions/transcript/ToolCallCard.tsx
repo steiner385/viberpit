@@ -6,7 +6,8 @@ import type { ToolKind } from '@/session/events'
 import { appActionTitle } from '@/session/appActions'
 import { ToolResult } from './ToolResult'
 import { StructuredView } from './StructuredView'
-import { sizeHint } from '@/lib/toolContent'
+import { ResultImages } from './ResultImages'
+import { sizeHint, splitImages } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 import { Turn } from './Turn'
 import { modelName } from '@/session/modelName'
@@ -88,6 +89,10 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
   const displayName = toolDisplayName(block.toolKind, block.name)
   // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
   const complete = block.result !== undefined
+  const { images, rest } = splitImages(block.result?.payload.content)
+  const detailPayload = block.result && images.length > 0
+    ? { ...block.result.payload, content: rest }
+    : block.result?.payload ?? {}
 
   if (density === 'line') {
     const ok = block.result?.ok ?? true
@@ -153,9 +158,10 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
             </div>
           )}
           {block.result && (
-            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
+            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={detailPayload} name={block.name} />
           )}
         </div>
+        {images.length > 0 && <div className="px-3 pb-2"><ResultImages images={images} /></div>}
       </div>
     )
   }
@@ -284,11 +290,12 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
             {/* Result panel */}
             <div id={resultRegionId} hidden={!resultOpen} className="border-t border-edge px-3 py-2">
-              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
+              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={detailPayload} name={block.name} />
             </div>
           </>
         )
       })()}
+      {images.length > 0 && <div className="px-3 pb-2"><ResultImages images={images} /></div>}
     </div>
   )
 }

@@ -429,8 +429,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     async def share_artifact(args: dict[str, Any]) -> Any:
         from server.audit import record_audit
         from server.db import db_session
-        from server.db.models import Attachment
-        from server.sessions.attachments import write_content
+        from server.sessions.attachments import store_attachment
         parsed = parse_share_artifact(args)
         detail: dict[str, Any] = {**parsed, "session_id": ctx.session_id}
         if parsed["kind"] == "image":
@@ -438,14 +437,12 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             # it into the content-addressed store (host-shared) under a row bound to
             # THIS session, so the card can render the edge URL and
             # `delete_for_session` reclaims it with the session's other attachments.
-            data, media_type = read_image(parsed["value"])
-            sha, _ = write_content(data, media_type)
+            import asyncio
+            data, media_type = await asyncio.to_thread(read_image, parsed["value"])
             async with db_session() as db:
-                row = Attachment(session_id=ctx.session_id, media_type=media_type,
-                                 filename=Path(parsed["value"]).name[:255],
-                                 byte_size=len(data), sha256=sha, uploaded_by=ctx.identity)
-                db.add(row)
-                await db.flush()
+                row = await store_attachment(
+                    db, data, media_type, session_id=ctx.session_id,
+                    filename=Path(parsed["value"]).name[:255], identity=ctx.identity)
                 parsed["url"] = f"/api/attachments/{row.id}"
                 detail.update(url=parsed["url"], attachmentId=row.id, bytes=len(data))
                 await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
