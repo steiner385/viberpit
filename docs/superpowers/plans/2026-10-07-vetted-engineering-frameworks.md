@@ -10,6 +10,21 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-07-vetted-engineering-frameworks.md`
 
+## Existing adoption and execution status (2026-10-07)
+
+Impeccable already has practical pilots in **KinDash, FridgeSheet and ViberPit**.
+See [historical pilot evidence](../../engineering/frameworks/impeccable-pilot-evidence.md)
+for merged PRs, measured outcomes, limitations and prior hook activation. Reuse
+this evidence and incumbent design context; do not repeat first-use onboarding.
+PRs #2770, #2807 and #2808 delivered the initial lock, source verification and
+offline dependency verification. They did not complete every admission item.
+
+Task 4 next adds repeatable browser acceptance calibration, then controlled
+native-agent comparisons where historical evidence leaves a relevant gap. Task 6
+assesses these existing deployments for standard enforcement; the backend-only
+and no-contract onboarding negative cases still need proof. Checklist items below
+remain incomplete unless their full exit criteria are demonstrated.
+
 ## Global Constraints
 
 - Do not install an entire marketplace or update global account configuration as a shortcut. Approval applies to an immutable selected dependency closure.
@@ -110,7 +125,7 @@
 - Modify: pilot projects through separate adoption PRs
 
 - [ ] Write `test_framework_profile_backend_excludes_ui`, `test_framework_onboarding_preserves_local_instructions`, and `test_framework_policy_change_cannot_waive_itself`.
-- [ ] Pilot on ViberPit, one other React project, and one backend-only project; include onboarding a repository without the contract. Confirm adoption is idempotent and preserves existing design context and local instructions.
+- [ ] Build the enforcement pilot on existing ViberPit and KinDash adoption, retain FridgeSheet as the server-rendered UI case, and add a backend-only case plus onboarding a repository without the contract. Confirm adoption is idempotent and preserves existing design context and local instructions.
 - [ ] Introduce observe, evidence-required, and enforced modes per obligation. Resolve project defaults plus stack/risk overlays into a single effective snapshot.
 - [ ] Configure a required merge check evaluated from trusted policy; confirm a direct/manual PR without required evidence cannot merge. Report partial enforcement if repository permissions prevent branch protection configuration.
 - [ ] Show effective selection, applicability, evidence status, exceptions, and rollback through existing surfaces. Add `framework-cross-project-routing` and `framework-pilot-isolation` static evals.

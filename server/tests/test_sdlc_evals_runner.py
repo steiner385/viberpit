@@ -40,3 +40,4 @@ def test_agent_kind_lists_without_running_gate():
     proc = _run("--kind", "agent")
     assert proc.returncode == 0
     assert "agent-mode cases" in proc.stdout
+    assert "LIST ONLY" in proc.stdout

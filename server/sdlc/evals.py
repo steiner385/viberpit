@@ -28,8 +28,9 @@ DEFAULT_THRESHOLD = 1.0
 class EvalCase:
     """One eval task loaded from ``evals/``. ``kind`` is ``"static"`` (a
     deterministic acceptance check runnable in CI without an LLM) or ``"agent"``
-    (requires a live Claude session; run out-of-band). ``check`` is the shell
-    acceptance command for static cases."""
+    (requires a live session; listed only by the runner), or ``"browser"``
+    (opt-in browser acceptance calibration). ``check`` is the trusted repository
+    shell acceptance command for static and browser cases."""
     id: str
     description: str
     kind: str = "static"

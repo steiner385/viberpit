@@ -1,0 +1,5 @@
+id: framework-impeccable-ui-calibration
+description: Real offline Chromium calibration detects each seeded UI defect and accepts the clean synthetic fixture; this does not measure Impeccable efficacy.
+kind: browser
+tags: [skills, impeccable, calibration, ui, browser]
+check: node web/evals/impeccable/run.mjs
