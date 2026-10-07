@@ -232,7 +232,7 @@ async def test_a_handler_answering_an_unrenderable_item_is_refused_before_the_wi
 
 
 @pytest.mark.asyncio
-async def test_a_call_reaches_only_the_thread_that_declared_the_tool(tmp_path):
+async def test_a_call_reaches_only_the_thread_that_declared_the_tool(tmp_path, caplog):
     from server.tests.test_codex_driver import ACCOUNT, Harness
 
     harness = Harness(tmp_path)
@@ -251,10 +251,16 @@ async def test_a_call_reaches_only_the_thread_that_declared_the_tool(tmp_path):
 
     # A different thread of the SAME account has no sink: an account-wide handler
     # would let one session's model run another session's tool table.
-    with pytest.raises(Exception):
-        await manager._on_dynamic_tool(
-            ACCOUNT, schema.parse_dynamic_tool_call_params(_params(threadId="thread-b")))
+    with caplog.at_level("INFO"):
+        with pytest.raises(Exception):
+            await manager._on_dynamic_tool(
+                ACCOUNT, schema.parse_dynamic_tool_call_params(_params(threadId="thread-b")))
     assert manager.unrouted_dynamic_tools == 1
+    assert any(
+        "codex.manager.unrouted_dynamic_tool" in record.message
+        and record.levelname == "INFO"
+        for record in caplog.records
+    )
     await manager.stop_all()
 
 
