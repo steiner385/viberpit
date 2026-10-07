@@ -419,6 +419,26 @@ async def test_work_stopped_repairs_the_generation_proof_when_session_gone(runne
 
 
 @pytest.mark.asyncio
+async def test_work_stopped_repairs_the_proof_when_the_live_probe_vouches(runner):
+    """#2722: ``_session_work_stopped`` answering True (the session is not
+    ``_session_gone``) must repair the generation proof too, or the release that
+    follows raises ``_validate_release``'s ValueError every tick."""
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    loop._session_gone = AsyncMock(return_value=False)
+    loop._session_work_stopped = AsyncMock(return_value=True)
+    loop._session_terminal_attest = AsyncMock(return_value=True)
+    assert await loop._work_stopped(state)
+    loop._session_terminal_attest.assert_awaited_once_with(state["session_id"])
+
+    loop._session_terminal_attest.reset_mock()
+    loop._session_work_stopped = AsyncMock(return_value=False)
+    assert not await loop._work_stopped(state)
+    loop._session_terminal_attest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_terminal_attest_repairs_a_stuck_proof_so_release_actually_succeeds(runner):
     """End-to-end reproduction of production's exact failure and its fix: a
     session whose one turn started (generation bumped to 1) but whose close was
