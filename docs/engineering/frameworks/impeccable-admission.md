@@ -60,6 +60,39 @@ provider projections; they do not redownload upstream on every CI run. Re-run th
 real source comparison when the selection changes. Historical integrity results
 from PR #2770 remain inventory evidence, not proof for a later manifest digest.
 
+## Reproducing native payload integrity
+
+After obtaining a release payload separately, compare it against its exact
+platform dependency in the lock:
+
+```bash
+python3 .agents/agentctl.py verify-dependency . --framework impeccable --dependency impeccable-engine-linux-x64 --artifact /path/to/impeccable-linux-x64
+```
+
+Repeat for `impeccable-engine-linux-arm64`, `impeccable-engine-darwin-x64`,
+`impeccable-engine-darwin-arm64`, and `impeccable-engine-windows-x64` with their
+respective payloads. The Windows release filename ends in `.exe`. Dependency IDs,
+expected sizes and hashes come from the canonical lock, not filenames or PATH.
+
+This command checks the current inventory and compares a supplied regular file
+with the dependency's SHA-256 and declared byte count. It rejects missing or
+malformed verification metadata, links, special files, oversized files, and
+mismatched content. The schema documentation records its limits. It does not
+execute the file, test native compatibility, authenticate the publisher, or
+approve an unreviewed dependency. A caller must obtain the lock from a trusted
+revision; changing the lock and payload together is not evidence of trust.
+
+On 2026-10-07, this command passed against all five cached engine 0.1.5
+release payloads, matching each declared hash and byte count. No payload was
+executed. The offline static eval uses synthetic fixtures and does not claim
+to redownload or reverify these release artifacts during ordinary CI.
+
+This is an operator verification command, not launch-time enforcement. Vendor
+launchers still have their existing override, cache and PATH behavior. A later
+admitted execution path must bind the bytes it actually runs to independently
+reviewed pins and enforce its permission and hook policy. Passing this check
+alone does not close finding IS-01 or authorize a live pilot.
+
 ## Vetting status
 
 | Area | Evidence and remaining work |

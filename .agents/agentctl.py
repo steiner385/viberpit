@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -510,6 +511,72 @@ def verify_framework_source(root: Path, contract: dict, framework: str, archive_
     return len(seen)
 
 
+DEPENDENCY_MAX_BYTES = 128 * 1024 * 1024
+
+
+def verify_framework_dependency(root: Path, contract: dict, framework: str, dependency: str, artifact_path: Path) -> int:
+    """Observe locked artifact bytes offline, without admission or execution."""
+    errors = validate_framework_lock(root, contract)
+    if errors:
+        raise ContractError('; '.join(errors))
+    if any(not isinstance(value, str) or not value or value != value.strip() for value in (framework, dependency)):
+        raise ContractError('invalid framework or dependency identifier')
+    lock = load_framework_lock(root, contract)
+    entry = next((item for item in (lock or {}).get('frameworks', []) if item['id'] == framework), None)
+    if entry is None:
+        raise ContractError(f'framework not selected: {framework}')
+    dep = next((item for item in entry['dependencies'] if item['id'] == dependency), None)
+    if dep is None:
+        raise ContractError(f'dependency not selected: {dependency}')
+    expected = dep.get('sha256')
+    if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
+        raise ContractError('dependency requires a lowercase SHA-256')
+    pin = dep.get('pin')
+    # Exact release labels are descriptive; SHA-256 is the immutable content pin.
+    # Vendored content is already bound to its local inventory by lock validation.
+    exact_pin = isinstance(pin, str) and bool(re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64}|(?:[A-Za-z][A-Za-z0-9_-]*-)?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)', pin))
+    if not exact_pin and not (pin == 'vendored-content' and dep.get('path')):
+        raise ContractError('dependency pin must be an exact version, commit, or inventoried vendored-content')
+    size = dep.get('bytes')
+    if 'bytes' in dep and (type(size) is not int or size <= 0):
+        raise ContractError('dependency bytes must be a positive integer')
+    try:
+        # Inspect before opening so special files cannot block or trigger device I/O.
+        # Do not resolve first: that would conceal symlink inputs.
+        path = artifact_path.absolute()
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise ContractError('dependency artifact cannot contain a symlink')
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ContractError('dependency artifact must be a regular file')
+        if before.st_size > DEPENDENCY_MAX_BYTES:
+            raise ContractError('dependency artifact size limit exceeded')
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+        with os.fdopen(os.open(path, flags), 'rb') as source:
+            opened = os.fstat(source.fileno())
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise ContractError('dependency artifact changed or is not a regular file')
+            digest = hashlib.sha256()
+            total = 0
+            while chunk := source.read(min(65536, DEPENDENCY_MAX_BYTES - total + 1)):
+                total += len(chunk)
+                if total > DEPENDENCY_MAX_BYTES:
+                    raise ContractError('dependency artifact size limit exceeded')
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+            def identity(info):
+                return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if identity(before) != identity(opened) or identity(opened) != identity(after) or total != after.st_size:
+                raise ContractError('dependency artifact changed during verification')
+    except OSError as exc:
+        raise ContractError(f'invalid dependency artifact: {exc}') from exc
+    if size is not None and total != size:
+        raise ContractError('dependency artifact declared size mismatch')
+    if digest.hexdigest() != expected:
+        raise ContractError('dependency artifact SHA-256 mismatch')
+    return total
+
+
 def sync_skill_links(root: Path, contract: dict, *, fix: bool) -> list[str]:
     errors: list[str] = []
     canonical = root / contract["skills"]["canonical"]
@@ -872,6 +939,11 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument('root', nargs='?', default='.')
     verify.add_argument('--framework', required=True)
     verify.add_argument('--archive', required=True)
+    dependency = sub.add_parser('verify-dependency')
+    dependency.add_argument('root', nargs='?', default='.')
+    dependency.add_argument('--framework', required=True)
+    dependency.add_argument('--dependency', required=True)
+    dependency.add_argument('--artifact', required=True)
     args = parser.parse_args(argv)
     try:
         root = Path(getattr(args, "root", ".")).resolve()
@@ -880,6 +952,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == 'verify-source':
             count = verify_framework_source(root, load_contract(root), args.framework, Path(args.archive))
             print(f'Source bytes verified: {args.framework}, {count} locked files; no admission granted')
+        elif args.command == 'verify-dependency':
+            count = verify_framework_dependency(root, load_contract(root), args.framework, args.dependency, Path(args.artifact))
+            print(f'Dependency bytes verified: {args.framework}/{args.dependency}, {count} bytes; no admission granted')
         elif args.command == "check":
             errors = check(root)
             if errors:

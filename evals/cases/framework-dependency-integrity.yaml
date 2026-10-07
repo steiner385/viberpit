@@ -1,0 +1,7 @@
+id: framework-dependency-integrity
+description: Offline dependency comparison rejects tampering, unpinned content, unsafe files, and oversized artifacts without execution or admission.
+kind: static
+tags: [agent-config, skills, framework-lock, provenance]
+check: >-
+  python3 -m unittest discover -s .agents/tests -p test_framework_dependencies.py -v
+  && python3 .agents/agentctl.py check .

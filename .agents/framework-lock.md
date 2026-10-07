@@ -113,3 +113,35 @@ the static fixtures alone do not establish provenance of installed Impeccable.
   The sibling search found `server/library/snapshots.py` uses a separate tar
   reader without this diagnostic boundary; snapshot error handling is outside
   this framework admission change and was not changed.
+
+## Offline executable dependency comparison
+
+After obtaining an artifact separately, compare it to an existing dependency:
+
+```sh
+python3 .agents/agentctl.py verify-dependency . --framework impeccable \
+  --dependency impeccable-engine-linux-x64 --artifact /path/impeccable-linux-x64
+```
+
+The command validates the current framework lock and local inventory first, then
+selects the exact framework/dependency IDs. It requires a lowercase SHA-256 and an
+exact version (optionally prefixed, for example `engine-v0.1.5`), 40/64-character
+lowercase hexadecimal revision, or `vendored-content` with an inventoried `path`.
+Version labels are descriptive and can be retagged upstream; the SHA-256 provides
+the content pin. Floating ranges, branch names, and unknown hashes cannot be
+verified. Normal `check` continues to allow explicitly unverified candidates.
+An optional dependency `bytes` field must be a positive integer (not a Boolean)
+and match the artifact exactly.
+
+Artifacts must be regular files with no symlink components. The verifier inspects
+before opening, uses nonblocking/no-follow flags where supported, and hashes a
+single opened descriptor in bounded chunks. The maximum artifact size is 128 MiB;
+metadata checks reject observed replacement or modification during reading.
+These checks are best-effort race detection, not a filesystem snapshot or a
+runtime launcher policy. Verification never downloads, executes, installs,
+extracts, probes PATH, or edits the artifact or declaration. Candidate and
+`reviewed: false` dependencies can be compared; success explicitly grants no
+admission, safety approval, publisher authentication, or source-to-binary proof.
+The lock must itself be trusted: replacing both its hash and artifact defeats
+any claim of upstream identity. `framework-dependency-integrity` exercises these
+boundaries using disposable offline fixtures through the existing eval runner.
