@@ -7,8 +7,12 @@
       "owner": "steiner385",
       "upstream": {
         "repository": "https://github.com/pbakaus/impeccable",
-        "commit": null,
-        "reason": "The installed provider builds and local vendoring commit do not establish an exact upstream source SHA; provenance must be verified before admission."
+        "commit": "cd12f8660e2dde57b9615c8a6b8ea674101f9cfc",
+        "archive": {
+          "url": "https://codeload.github.com/pbakaus/impeccable/tar.gz/cd12f8660e2dde57b9615c8a6b8ea674101f9cfc",
+          "sha256": "6833f7a1d6380218c0af12adf74bdd2db303e96c6a73b9a1126800c26ce0672e",
+          "prefix": "impeccable-cd12f8660e2dde57b9615c8a6b8ea674101f9cfc/"
+        }
       },
       "observed_versions": {
         "installer_documented": "4.1.0",
@@ -153,11 +157,64 @@
       },
       "dependencies": [
         {
-          "id": "impeccable-engine",
+          "id": "impeccable-engine-linux-x64",
           "kind": "native-binary",
           "pin": "engine-v0.1.5",
-          "sha256": null,
-          "reviewed": false
+          "sha256": "cf5231a4b1ae66996c85b033800b1dad0797e590eae2f21ef2579430af187f19",
+          "reviewed": false,
+          "platform": "linux-x64",
+          "url": "https://github.com/pbakaus/impeccable/releases/download/engine-v0.1.5/impeccable-linux-x64",
+          "bytes": 16089424,
+          "verification": "Downloaded bytes match publisher sidecar on 2026-10-07; not executed or approved.",
+          "release_tag_commit": "112703d5bf2469574758e0ddc5baf8e03c958f58"
+        },
+        {
+          "id": "impeccable-engine-linux-arm64",
+          "kind": "native-binary",
+          "pin": "engine-v0.1.5",
+          "sha256": "bc4fa28bc8ccbb018795a99a4ece95ada898a6f1885f14281389d0e6ef2a2f98",
+          "reviewed": false,
+          "platform": "linux-arm64",
+          "url": "https://github.com/pbakaus/impeccable/releases/download/engine-v0.1.5/impeccable-linux-arm64",
+          "bytes": 13356720,
+          "verification": "Downloaded bytes match publisher sidecar on 2026-10-07; not executed or approved.",
+          "release_tag_commit": "112703d5bf2469574758e0ddc5baf8e03c958f58"
+        },
+        {
+          "id": "impeccable-engine-darwin-x64",
+          "kind": "native-binary",
+          "pin": "engine-v0.1.5",
+          "sha256": "153971b0c00719dff9ebac13370cb7dbbbe12838b696fbaf3f7ab0b1b3726b52",
+          "reviewed": false,
+          "platform": "darwin-x64",
+          "url": "https://github.com/pbakaus/impeccable/releases/download/engine-v0.1.5/impeccable-darwin-x64",
+          "bytes": 14400568,
+          "verification": "Downloaded bytes match publisher sidecar on 2026-10-07; not executed or approved.",
+          "release_tag_commit": "112703d5bf2469574758e0ddc5baf8e03c958f58"
+        },
+        {
+          "id": "impeccable-engine-darwin-arm64",
+          "kind": "native-binary",
+          "pin": "engine-v0.1.5",
+          "sha256": "0d48b6e16aa97664fdbe607d5da9ae320e389a1843e0ff1328f8c2530530320d",
+          "reviewed": false,
+          "platform": "darwin-arm64",
+          "url": "https://github.com/pbakaus/impeccable/releases/download/engine-v0.1.5/impeccable-darwin-arm64",
+          "bytes": 12762240,
+          "verification": "Downloaded bytes match publisher sidecar on 2026-10-07; not executed or approved.",
+          "release_tag_commit": "112703d5bf2469574758e0ddc5baf8e03c958f58"
+        },
+        {
+          "id": "impeccable-engine-windows-x64",
+          "kind": "native-binary",
+          "pin": "engine-v0.1.5",
+          "sha256": "477e544fc8880a5e82e427490cb9a5f5adab480c0e02966d33fd50772b531c71",
+          "reviewed": false,
+          "platform": "windows-x64",
+          "url": "https://github.com/pbakaus/impeccable/releases/download/engine-v0.1.5/impeccable-windows-x64.exe",
+          "bytes": 14720392,
+          "verification": "Downloaded bytes match publisher sidecar on 2026-10-07; not executed or approved.",
+          "release_tag_commit": "112703d5bf2469574758e0ddc5baf8e03c958f58"
         },
         {
           "id": ".agents/skills/impeccable/scripts/impeccable",
@@ -284,7 +341,45 @@
         ".claude/agents/impeccable-documenter.md",
         ".claude/agents/impeccable-finish-reviewer.md",
         ".claude/agents/impeccable-manual-edit-applier.md"
-      ]
+      ],
+      "provenance": {
+        "verified_on": "2026-10-07",
+        "source_comparison": {
+          "files_matched": 111,
+          "files_missing": 0,
+          "files_different": 0,
+          "command": "python3 .agents/agentctl.py verify-source . --framework impeccable --archive <downloaded-source.tar.gz>"
+        },
+        "installer": {
+          "package": "impeccable",
+          "version": "4.1.0",
+          "metadata_url": "https://registry.npmjs.org/impeccable/4.1.0",
+          "git_commit": "73a6f51a540bc3938a2c40677d074c70b81fa5a0",
+          "tarball_url": "https://registry.npmjs.org/impeccable/-/impeccable-4.1.0.tgz",
+          "integrity": "sha512-hnfdoUK/Xg3qPtL0/5xzh92qKOtmREOZloCmFgnC1nYh3M81ihwCQEL2QWKntYl8qg1OG+jQ7wubR634PgTDIw==",
+          "sha256": "32cd058c6d57da9294335ea668228fd8aaef7f949149df60b422aa845be21b16",
+          "source_files_matched": [
+            "LICENSE",
+            "cli/bin/cli.js",
+            "package.json"
+          ],
+          "executed": false
+        },
+        "linux_npm_cross_check": {
+          "metadata_url": "https://registry.npmjs.org/@impeccable/cli-linux-x64/0.1.5",
+          "name": "@impeccable/cli-linux-x64",
+          "version": "0.1.5",
+          "tarball_url": "https://registry.npmjs.org/@impeccable/cli-linux-x64/-/cli-linux-x64-0.1.5.tgz",
+          "integrity": "sha512-JZU7kd7s4DOz9w2gwbbpI1u3YLhrcAUNZg/awjZcQFHJwpizv/MhPVUjHKYuChrPn+Oxlpw7KU8adKY1YrSq8g==",
+          "tarball_sha256": "94137560b7ab7c69a44aa236d3cf51d94b62d0832ed9e070d465f8f6ae1973d5",
+          "binary_sha256": "cf5231a4b1ae66996c85b033800b1dad0797e590eae2f21ef2579430af187f19",
+          "binary_bytes": 16089424,
+          "scripts": {},
+          "dependencies": {},
+          "executed": false
+        },
+        "scope": "Observed content identity and publisher-channel agreement; no signature or reproducible-build verification, executable approval, or native compatibility claim."
+      }
     }
   ]
 }

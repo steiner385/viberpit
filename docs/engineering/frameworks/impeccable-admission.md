@@ -1,139 +1,104 @@
-# Impeccable admission inventory
+# Impeccable admission evidence
 
-Date: 2026-10-07. Status: **candidate / unverified; not admitted for the standard channel**.
+Updated: 2026-10-07. Status: **candidate; source content verified, execution not approved**.
 
-This report records the existing installation for PR 1, Task 2 of
-`docs/superpowers/plans/2026-10-07-vetted-engineering-frameworks.md`. Requirements come from
-`docs/superpowers/specs/2026-10-07-vetted-engineering-frameworks.md`. Recording hashes makes
-the inventory reproducible; it does not approve executing the inventoried content.
+This continues PR 1, Task 2 of
+`docs/superpowers/plans/2026-10-07-vetted-engineering-frameworks.md` under the
+corresponding spec. `.agents/frameworks.lock.json` remains the canonical selection
+and hash inventory. The [installed-surface review](impeccable-surface-review.md)
+records instruction and tooling findings. These results do not approve execution.
 
-## Identity and scope
+## Selection and resolved identity
 
-The inventory baseline is ViberPit commit `f8ae589ae6f42e5c8bf589e50b4d3fd2700de18b`;
-the installation was recorded in commit `2c093aa7da3a3a057388edefc5f8c277562d2e57`.
-These are **ViberPit commits**, not verified upstream Impeccable commits.
+The original inventory baseline was ViberPit commit
+`f8ae589ae6f42e5c8bf589e50b4d3fd2700de18b`; vendoring occurred in
+`2c093aa7da3a3a057388edefc5f8c277562d2e57`. These identify the local installation.
 
-`.claude/README.md` records `pbakaus/impeccable` and installation using
-`impeccable@4.1.0` with `--project --no-hooks --providers=claude,codex`.
-The installed skill frontmatter identifies version **4.3.1**, and the launcher
-`scripts/VERSION` identifies engine **0.1.5**. These are distinct version fields;
-none establishes an immutable upstream source revision. That revision remains unknown.
+The 111 selected files comprise both real provider builds under
+`.agents/skills/impeccable/` and `.claude/skills/impeccable/`, plus four exported
+Claude agents under `.claude/agents/impeccable-*.md`. Preserve the contract's
+`provider_built` distinction. Project-owned design/context files are not vendor assets.
 
-The selection includes both real provider builds, `.agents/skills/impeccable/` and
-`.claude/skills/impeccable/`, including their references, metadata, launchers, browser
-scripts, data, and provider agent definitions. The four exported Claude agents are
-`.claude/agents/impeccable-{asset-producer,documenter,finish-reviewer,manual-edit-applier}.md`.
-Preserve the `provider_built` distinction in `.agents/contract.json`; the builds are
-not interchangeable symlinks. The framework lock referenced by that contract is the
-canonical per-file hash inventory, rather than a second hash list in this report.
-The current inventory scan selected **111 vendor files** and found **zero unresolved
-local Markdown link targets**. Static hashes and resolved Markdown links do not prove
-that dependencies referenced dynamically by executable output are complete or vetted.
+| Component | Verified observation | Limit |
+|---|---|---|
+| Skill 4.3.1 | `skill-v4.3.1` resolves to `cd12f8660e2dde57b9615c8a6b8ea674101f9cfc`. All 111 selected installed files match that commit's source archive byte-for-byte; none are missing or different. | Establishes selected content identity, not instruction safety, dynamic dependency completeness, or compatibility. |
+| Installer 4.1.0 | npm metadata names commit `73a6f51a540bc3938a2c40677d074c70b81fa5a0`. Downloaded package matches registry SHA-512 integrity. Its `LICENSE`, `cli/bin/cli.js`, and `package.json` match that source commit exactly. | That commit contains skill 4.3.0 and matches only 105 of the installed files. It is not the installed skill's source pin. Registry signatures were not independently verified. |
+| Engine 0.1.5 | The release tag resolves to `112703d5bf2469574758e0ddc5baf8e03c958f58`. Downloaded Linux x64/arm64, macOS x64/arm64, and Windows x64 payloads each match their publisher SHA-256 sidecar. Per-platform URLs, sizes, and observed hashes are in the lock. | A tag target and checksum do not prove a signed or reproducible source-to-binary build. No engine was executed or approved. |
+| Linux npm platform package | `@impeccable/cli-linux-x64@0.1.5` matches registry SHA-512 integrity; its binary matches the GitHub Linux x64 payload. Its metadata declares no scripts or dependencies. | Publisher-channel agreement is not independent authentication or a full dependency audit. Other npm platform packages were not compared. |
 
-## Vetting checklist
+Primary sources observed on 2026-10-07:
 
-| Requirement | Evidence and disposition |
+- [Pinned skill source](https://github.com/pbakaus/impeccable/tree/cd12f8660e2dde57b9615c8a6b8ea674101f9cfc) and [source archive](https://codeload.github.com/pbakaus/impeccable/tar.gz/cd12f8660e2dde57b9615c8a6b8ea674101f9cfc).
+- [Installer metadata](https://registry.npmjs.org/impeccable/4.1.0) and [pinned installer implementation](https://github.com/pbakaus/impeccable/blob/73a6f51a540bc3938a2c40677d074c70b81fa5a0/cli/bin/cli.js).
+- [Engine release](https://github.com/pbakaus/impeccable/releases/tag/engine-v0.1.5) and [Linux npm metadata](https://registry.npmjs.org/@impeccable/cli-linux-x64/0.1.5).
+
+The lock retains exact archive digests and package integrity values. Release/tag
+URLs are discovery references; immutable commits and hashes are comparison inputs.
+A changed download hash requires investigation and a reviewed lock update, even
+when a mutable tag or the archive service changed. No package-manager command,
+installer, engine, hook, or vendor script was executed to obtain this evidence.
+
+## Reproducing the comparison
+
+Download `upstream.archive.url` from the lock through the operator's normal
+download mechanism, then run:
+
+```bash
+python3 .agents/agentctl.py verify-source . --framework impeccable --archive /path/to/downloaded-source.tar.gz
+```
+
+The command validates the current inventory, verifies the entire archive hash,
+and compares selected files inside the declared prefix. It rejects missing,
+different, duplicate, linked or sparse selected members and bounds compressed
+size, expanded scan, member size and count. It performs no downloads, extraction,
+execution, or admission changes. The observed archive was 21,433,569 bytes; the
+real comparison matched all 111 files.
+
+The regular contract check stays offline and needs no cached archive. Static evals
+exercise disposable adversarial archives and preserve checks for both actual
+provider projections; they do not redownload upstream on every CI run. Re-run the
+real source comparison when the selection changes. Historical integrity results
+from PR #2770 remain inventory evidence, not proof for a later manifest digest.
+
+## Vetting status
+
+| Area | Evidence and remaining work |
 |---|---|
-| Identity and immutable provenance | Installed versions and local commits recorded above. Upstream SHA, release-to-source correspondence, and installer dependency closure are **unverified**. Do not infer them from version strings. |
-| License and attribution | The installation README identifies Apache-2.0. The complete selected dependency closure, bundled browser library notices, and redistribution obligations still require independent verification. This is not a license clearance. |
-| Maintainer activity and security history | No upstream maintenance/security assessment was performed for this inventory. Record dated primary-source evidence before admission. |
-| Instruction supply chain | Skill setup directs execution of `scripts/impeccable context`; references expose hooks, doctor/repair, pinning, and live browser workflows. Descriptions, prompts, nested references, agent definitions, and generated output must all be reviewed for injection, credential requests, authority claims, destructive defaults, and policy conflicts. Targeted inventory is not a completed line-by-line instruction audit. |
-| Executables, hooks, updates, downloads | Shell and Windows launchers, browser JavaScript, helper agents, and an external engine are present. Engine binaries are gitignored and have no independently approved artifact SHA in this admission. Automatic first-run resolution/download is not an approved executable pin; see below. Installer, engine internals, update behavior, telemetry, and transitive dependencies remain unverified. |
-| Dependency completeness | Inventory both provider trees and exported agents, not just `SKILL.md`. Static integrity checks must cover packaged references and detect missing or altered files. Dynamic dependencies printed by the engine, optional browser tools, and external assets still need a complete reviewed allowlist. |
-| Permissions and isolation | No new execution permissions are approved. Later sandbox trials must use disposable fixtures, isolated account/runtime homes, no production credentials, bounded subprocesses, and explicitly approved network destinations. Loading guidance does not authorize hook installation, shared-home mutation, downloads, or browser injection. |
-| Native compatibility | Fresh launch, discovery/invocation, resume, account rotation, and remote runner behavior have **not been tested** against real Claude or Codex binaries in this work. Windows launcher and each engine/platform combination remain unverified. |
-| Policy fit | ViberPit owns lifecycle gates, review categories, approval, completion, and canonical instructions. Impeccable can supply UI guidance, but its finish reviewer cannot replace independent repository review. Test conflicts between design directives, incumbent design context, project accessibility obligations, and completion workflow before promotion. |
-| Measured value | No paired behavioral evaluation or cost measurement has run. Existing user-reported value is motivation for the pilot, not admission evidence. Apply the spec's ratified task rubric and budgets before claiming improvement. |
-| Approval and maintenance | The manifest nominates repository owner `steiner385` as maintenance owner; acceptance of that responsibility is not confirmed. A separate admission approver has not been recorded. No approved execution matrix, admission decision, or known-good approved rollback package exists. Inventory authorship is not independent approval. |
+| Instruction supply chain | The surface review screens both entry points, all 39 references, exported agents, metadata, launchers and selected browser data flows. It documents concrete permission, mutation and governance conflicts. It is not a line-by-line audit of every dependency. |
+| License and attribution | Verified installer contains Apache-2.0 license text. Pinned source includes [LICENSE](https://github.com/pbakaus/impeccable/blob/cd12f8660e2dde57b9615c8a6b8ea674101f9cfc/LICENSE) and [NOTICE.md](https://github.com/pbakaus/impeccable/blob/cd12f8660e2dde57b9615c8a6b8ea674101f9cfc/NOTICE.md); the notice identifies MIT-derived platform references. Complete attribution, fonts, and the minified screenshot library's origin/notices remain unresolved. No blanket clearance is claimed. |
+| Maintenance/security history | Release/source relationships are established. A full maintenance/advisory assessment of the selected source and engine dependency closure remains outstanding. |
+| Executable closure | Five observed payload hashes are pinned with `reviewed: false`. Engine source/dependencies, build provenance, platform behavior, telemetry and updates still need review. A checksum is not execution approval. |
+| Installer and launcher behavior | Verified npm shim resolves override, optional platform package, cache or download, then executes a subprocess. Download fallback checks a sidecar; other paths do not enforce the new lock. Installed skill launchers also allow sibling, home and PATH binaries. |
+| Hooks | Tracked `.impeccable/config.json` sets `hook.enabled: true`, but no tracked native Impeccable hook registration was found. Local/account settings were not inspected. No hooks are enabled or disabled by this work. |
+| Browser/privacy/network | Helpers handle tokens, source paths, screenshots, browser storage and page-derived requests. Review engine-side origin/auth/path controls, retention and egress before live mode. Use synthetic pages without authenticated user data. |
+| Compatibility and value | No actual Claude/Codex invocation, resume, rotation, remote runner or paired UI evaluation has run in this slice. Listing an agent eval is not running it. |
+| Ownership/admission | `steiner385` is the nominated maintainer, pending acceptance. Independent admission approval, an approved execution matrix, and an admitted rollback package are absent. Review of this verifier cannot supply those approvals. |
 
-## Executable and hook boundary
+## Recommended pilot boundary
 
-The inspected shell launcher resolves `IMPECCABLE_BIN`, a sibling platform binary,
-an unversioned home binary, a versioned cache, a PATH executable, and finally a
-GitHub release download. The unversioned home and PATH candidates undergo an
-engine-probe handshake; that proves neither source identity nor an approved hash.
-Override, sibling, and cached binaries can execute without a content-hash check.
-The download path verifies a `.sha256` sidecar from the release channel before
-execution, but a checksum fetched alongside an artifact is not an independently
-approved artifact pin. `IMPECCABLE_DOWNLOAD_BASE` can also change the source.
-An inventory lock must not be described as preventing these runtime resolution paths.
+The next trial should use selected read-only `operate`, `clarify`, and `harden`
+guidance as data, as described in the surface review. Do not invoke the complete
+skill entry point: it requests engine context and can dispatch further commands.
+Enforce tool/path/network limits outside the prompt, exclude exported roles and
+downstream dispatch, and use disposable synthetic fixtures. Exclude executable
+probes/downloads, live browser injection, hooks, automatic doctor repair, detector
+suppression, and framework-defined shipping gates. Keep aesthetic advice advisory.
 
-The launcher can use `curl` or `wget`, write to the engine cache, change executable
-permissions, and spawn the engine. The installation command uses `npx`; installation
-also needs its own package/dependency review. No installer, launcher, downloaded
-binary, or engine probe was executed to prepare this report.
+This trial is proposed, not enabled. Its future policy fixtures must detect
+forbidden tool attempts and treat correctly denied actions as boundary success.
+Before an executable pilot, establish the reviewed dependency/permission boundary,
+verify real engine/harness behavior, and close the relevant surface findings.
+Then obtain a separate admission decision backed by versioned evidence.
 
-Tracked `.impeccable/config.json` has `hook.enabled: true`. This setting alone does
-not establish native hook registration. No tracked native Impeccable hook registration
-was found in the inventory, and there is no tracked `.codex/hooks.json`. Untracked
-local or account settings were not inspected, so this report cannot claim hooks are
-disabled on every host. The README's `--no-hooks` installation recipe is evidence of
-the recorded recipe, not proof of current runtime state.
+## Current decision and rollback
 
-Browser assets include `live-browser*.js` and `modern-screenshot.umd.js`. Before
-allowing live mode, review DOM/screenshot data capture, scripts injected into a page,
-network destinations, server/background-process lifetime, CSP consent, and output
-retention/redaction. Browser sessions may contain authenticated or private data;
-tests must use synthetic fixtures. No claim of absent telemetry or secret access is
-made without auditing the executable and complete dependency closure.
+**Retain candidate state.** Source identity and observed payload integrity are
+established. Executable trust, license completeness, policy compatibility, runtime
+isolation, measured value, and admission authority remain unresolved. Existing
+installations behave as before; no runtime deny or new SDLC gate is installed.
 
-Project context includes `PRODUCT.md`, `DESIGN.md`, and `.impeccable/design.json`.
-The README's statement that document generation has not run is partly stale relative
-to the tracked design artifacts. Preserve these project-owned records; do not treat
-them as immutable vendor files or overwrite them during inventory. Their presence
-does not prove the workflow or native engine passed compatibility testing.
-
-## Required evidence before promotion
-
-1. Resolve the upstream SHA and installer provenance; independently review the complete
-   selected instructions, license/notice obligations, executable artifacts, and permissions.
-2. Pin each allowed executable by reviewed artifact hash and platform. Prove that
-   unapproved overrides, PATH/home binaries, downloads, and hook registration cannot
-   expand the approved execution boundary. Keep unknown dependencies blocked.
-3. Run `framework-impeccable-projection-integrity` and `framework-lock-integrity`
-   through `scripts/run_evals.py`, plus `python .agents/agentctl.py check .`, in clean
-   disposable checkouts. Attach exact command results and lock digest; this report
-   does not assert those runs passed. Tamper and missing-reference fixtures must fail.
-4. Execute `framework-native-engine-smoke` and the paired
-   `framework-impeccable-ui-regression` pilot with recorded engines, models, budgets,
-   tasks, accessibility/functionality results, and human rubric judgments. Proposed
-   future cases are not executed evidence; `--kind agent` listing is not a live pass.
-5. Record a separate admission review, owner, date, approved permissions, supported
-   compatibility cells, and rollback target. Re-vet changed hashes, references,
-   executables, or permissions before any standard-channel upgrade.
-
-The three-tier policy remains unchanged: objective integrity checks are deterministic;
-fresh, independently reviewed evidence is required for promotion; aesthetic usefulness
-is advisory unless the project defines a testable requirement. This inventory enables
-none of the proposed new gates in `server/sdlc/gates.py`.
-
-## Inventory verification performed
-
-On 2026-10-07, `python3 .agents/agentctl.py check .` passed, and the static
-`scripts/run_evals.py` suite passed all 20 cases, including the two framework cases.
-The acceptance fixtures exercise malformed metadata, missing provenance, changed
-content, missing references, unsafe paths, duplicate ownership, and incomplete
-promotion declarations. These are inventory tests, not behavioral skill evaluations.
-
-A separate disposable directory containing the actual 111 selected vendor files
-and their lock passed validation. Appending content to the Claude `audit.md`
-reference failed both file and projection hashes; restoring it passed; deleting
-it failed the reference-closure check. No vendor code was executed by this probe.
-The verified declaration digest was
-`5c7515298258646ae46771ceb3d77c3d13faa7a74b4d7712dc0cd86688c6fe4a`.
-Future manifest edits must rerun validation and record the new digest; these
-results do not supply the missing upstream, executable, or live-engine evidence.
-
-## Rollback and current decision
-
-**Retain candidate/unverified status.** No upstream SHA, independently approved binary,
-live compatibility report, or independent admission approval is available. PR 1 can
-record and check existing files without declaring Impeccable sandbox-, pilot-, or
-standard-ready. This report does not disable existing installations or enforce a
-runtime execution deny; that requires the later policy/integration work.
-
-There is no approved rollback pin yet. A ViberPit baseline commit is a reconstruction
-reference only. Before promotion, choose and test a known-good approved package, or
-document a reviewed withdrawal path when no earlier approved version exists. Preserve
-project design records and historical evidence; change selection/lock through a
-reviewed PR and verify hooks and runtime artifacts separately on affected hosts.
+There is no approved rollback package yet. Immutable source and observed artifacts
+provide reconstruction inputs, not an approved execution fallback. Before promotion,
+test a reviewed withdrawal or rollback procedure preserving project-owned context
+and historical evidence, with separate handling of host hooks, cached binaries and
+browser artifacts.
