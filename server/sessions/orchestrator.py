@@ -20663,8 +20663,9 @@ class SessionOrchestrator:
         Bounded: at most AUTH_STALE_CAP relaunches per AUTH_STALE_WINDOW, each after
         the next AUTH_STALE_BACKOFF step. Escalation joins the existing flows — dead
         stored credentials → needs-reauth + quarantine + rotate (the auth_401
-        terminal step); a spent cap on credentials that still validate → quarantine
-        + rotate without needs-reauth, since re-logging in is not the fix. Rotation
+        terminal step); a spent cap on credentials that still validate → rotate
+        this session only (no quarantine, no needs-reauth: the account is fine for
+        its other sessions, and re-logging in is not the fix). Rotation
         parks the session (``all_accounts_busy``) when nothing else can take it.
         Journaled as ``session.auth_recovery`` with the ``action`` taken.
         """
@@ -20684,9 +20685,13 @@ class SessionOrchestrator:
                 log_event(log, logging.WARNING, "session.auth_recovery",
                           session_id=record.id, account=record.account,
                           action="escalate", reason=reason, attempts=attempt)
-                self._recovery.quarantine(record.account, until=now + QUARANTINE_401)
                 if not valid:
+                    # Dead for every session on the account: take it out of rotation.
+                    self._recovery.quarantine(record.account, until=now + QUARANTINE_401)
                     self._mark_needs_reauth(record.account)
+                # A spent cap on credentials that still validate quarantines nothing:
+                # the account serves its other sessions fine, and _rotate_away already
+                # hard-excludes it for this one.
                 await self._rotate_away(record, reason=reason)
                 return
             delay = AUTH_STALE_BACKOFF[min(attempt, len(AUTH_STALE_BACKOFF) - 1)]

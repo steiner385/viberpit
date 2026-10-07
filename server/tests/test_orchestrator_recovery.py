@@ -937,8 +937,10 @@ def test_auth_stale_backs_off_then_escalates_at_cap(monkeypatch):
     asyncio.run(o._recover_session(rec, "auth_stale", None))   # cap spent
     assert len([c for c in o.calls if c[0] == "reassign"]) == R.AUTH_STALE_CAP
     assert ("rotate", "s1", "auth_stale_retry_cap") in o.calls
-    assert "kindash" in o._recovery.quarantined(now=1000.0)
-    # Stored creds still validate — re-logging in is not the fix, so no needs-reauth.
+    # Stored creds still validate: the account is fine for every OTHER session, so it
+    # is neither quarantined (that would starve them) nor flagged needs-reauth.
+    # _rotate_away already hard-excludes it for THIS session.
+    assert o._recovery.quarantined(now=1000.0) == frozenset()
     assert ("needs_reauth", "kindash") not in o.calls
 
 

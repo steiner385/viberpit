@@ -62,16 +62,25 @@ _FORBIDDEN_MARKERS = (
     "ask your admin to enable access",
 )
 
-# ``auth_stale`` markers are the CLI's own spellings (CLI 2.1.292, reproduced with an
-# empty CLAUDE_CONFIG_DIR): the result text "Not logged in · Please run /login" (or
-# "Invalid API key · Please run /login"), and the synthetic assistant message's
-# ``error`` field ``authentication_failed``. The ResultMessage carries no
-# api_error_status, so the translator reports it as a plain ``agent_error``.
-_AUTH_STALE_MARKERS = (
-    "not logged in",
-    "please run /login",
-    "authentication_failed",
-)
+# ``auth_stale`` is matched on the CLI's own SENTENCE only (CLI 2.1.292, reproduced
+# with an empty CLAUDE_CONFIG_DIR): "Not logged in · Please run /login", or
+# "Invalid API key · Please run /login". Never on a fragment: every auth_stale
+# costs relaunches and a spent cap rotates the session, so a loose "please run
+# /login" or "authentication_failed" in arbitrary error text must not qualify. A
+# session's own error result (``agent_error`` — the ResultMessage has no
+# api_error_status) must BE the sentence; the helper and drain-fallback shapes
+# wrap it ("... detail='authentication_failed | Not logged in · Please run
+# /login'"), so for an uncoded or ``driver_error`` failure it may be embedded.
+_AUTH_STALE_SENTENCE = re.compile(
+    r"(?:not logged in|invalid api key) \u00b7 please run /login", re.IGNORECASE)
+_AUTH_STALE_EMBEDDED_CODES = frozenset({"", "driver_error"})
+
+
+def _is_auth_stale(code: str, text: str) -> bool:
+    if code == "agent_error":
+        return _AUTH_STALE_SENTENCE.fullmatch(text.strip()) is not None
+    return code in _AUTH_STALE_EMBEDDED_CODES and _AUTH_STALE_SENTENCE.search(text) is not None
+
 
 # ``network`` — the host could not reach the API at all: a dead resolver or an
 # unreachable endpoint. Not recoverable by rotation (every account shares the
@@ -188,7 +197,7 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return TurnFailure(kind="auth_forbidden")
 
     # The CLI refused locally — no request was made, so nothing below applies.
-    if any(m in low for m in _AUTH_STALE_MARKERS):
+    if _is_auth_stale(code, text):
         return TurnFailure(kind="auth_stale")
 
     # The CLI had no credential at all (#2758): its result subtype is

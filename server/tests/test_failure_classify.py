@@ -216,12 +216,34 @@ def test_cli_not_logged_in_is_auth_stale():
 @pytest.mark.parametrize("message", [
     "Not logged in · Please run /login",
     "Invalid API key · Please run /login",
-    "authentication_failed",
+    "  not logged in · please run /login\n",
 ])
 def test_cli_local_auth_failure_is_auth_stale(message):
     f = classify("agent_error", message)
     assert f.kind == "auth_stale"
     assert f.is_recoverable
+
+
+def test_helper_wrapped_cli_sentence_is_auth_stale():
+    # The helper path joins the exception and its detail (#2758's exact line).
+    msg = ("Claude Code returned an error result: success detail="
+           "'authentication_failed | Not logged in · Please run /login'")
+    assert classify(None, msg).kind == "auth_stale"
+
+
+@pytest.mark.parametrize("code,message", [
+    # Each auth_stale costs relaunches, and a spent cap rotates the session — so a
+    # loose mention in arbitrary error text must never qualify (security review of
+    # #2771): only the CLI's own sentence does, and a session's error result must
+    # BE that sentence, not merely contain it.
+    ("agent_error", "authentication_failed"),
+    ("agent_error", "the docs say: Please run /login first"),
+    ("agent_error", "Build failed. Not logged in · Please run /login was printed by npm"),
+    ("execution_error", "Not logged in · Please run /login"),
+    ("driver_error", "user is not logged in to the registry"),
+])
+def test_loose_login_text_is_not_auth_stale(code, message):
+    assert classify(code, message).kind != "auth_stale"
 
 
 def test_auth_stale_is_not_a_401_or_org_denial():
