@@ -1,3 +1,4 @@
+import pytest
 from server.automations.autopilot_policy import (
     DecisionContext, Decision, pre_decide, post_validate, fingerprint,
 )
@@ -375,3 +376,57 @@ def test_hand_back_fingerprint_keys_on_the_reason():
                   stuck={"kind": "handed_back", "hand_back_reason": "second ask"})
     assert fingerprint(first) != fingerprint(second)
     assert fingerprint(first) == fingerprint(first)
+
+
+def test_missing_new_pr_contradicts_even_with_old_merged_pr():
+    from server.automations.autopilot_policy import facts_contradicted
+    from server.automations.completion_bar import PrFact, PrFacts
+    ctx = _ctx()
+    ctx.repo = "o/r"
+    ctx.pr_facts = PrFacts(has_repo=True, prs=(PrFact(
+        number=1, state="merged", is_draft=False, auto_merge_enabled=False,
+        url="https://github.com/o/r/pull/1"),))
+    ctx.transcript_tail = [{"text": "PR #2 is now ready"}]
+    assert facts_contradicted(ctx)
+
+
+def test_pr_claim_identity_includes_repository():
+    from server.automations.autopilot_policy import facts_contradicted, post_validate
+    from server.automations.completion_bar import PrFact, PrFacts
+    ctx = _ctx()
+    ctx.repo = "o/r"
+    ctx.stuck = {"kind": "idle"}
+    ctx.pr_facts = PrFacts(has_repo=True, prs=(PrFact(
+        number=7, state="merged", is_draft=False, auto_merge_enabled=False,
+        url="https://github.com/o/r/pull/7"),))
+    ctx.transcript_tail = [{"text": "Opened https://github.com/o/other/pull/7"}]
+    assert facts_contradicted(ctx)
+    assert post_validate(Decision(action="complete"), ctx, {}).action == "skip"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Opened [PR #42](https://github.com/o/other/pull/42)", set()),
+    ("PR #42 remains local; [PR #42](https://github.com/o/other/pull/42) is foreign",
+     {("o/r", 42)}),
+])
+def test_qualified_markdown_pr_label_does_not_create_local_claim(text, expected):
+    from server.automations.autopilot_policy import missing_claimed_prs
+    from server.automations.completion_bar import PrFact, PrFacts
+    ctx = _ctx(stuck={"kind": "idle"})
+    ctx.repo = "o/r"
+    ctx.pr_facts = PrFacts(has_repo=True, prs=(PrFact(
+        number=42, state="merged", is_draft=False, auto_merge_enabled=False,
+        url="https://github.com/o/other/pull/42"),))
+    ctx.transcript_tail = [{"text": text}]
+    assert missing_claimed_prs(ctx) == expected
+
+
+def test_verified_unowned_pr_mention_does_not_block_research_completion():
+    from server.automations.completion_bar import PrFacts
+    ctx = _ctx(stuck={"kind": "idle"})
+    ctx.repo = "o/r"
+    ctx.effective_goal = "review PR #42"
+    ctx.pr_facts = PrFacts(has_repo=True)
+    ctx.transcript_tail = [{"text": "Reviewed PR #42"}]
+    ctx.facts_verified = True
+    assert post_validate(Decision(action="complete"), ctx, {}).action == "complete"

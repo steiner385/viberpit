@@ -13,7 +13,7 @@ from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
 
-from .autopilot_policy import Decision, DecisionContext
+from .autopilot_policy import Decision, DecisionContext, missing_claimed_prs
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +76,8 @@ def _build_prompt(ctx: DecisionContext) -> str:
         "goal_source": ctx.goal_source,
         "stuck": ctx.stuck,
         "pr_facts": ctx.pr_facts.to_prompt() if ctx.pr_facts is not None else None,
+        "pr_facts_verified": ctx.facts_verified,
+        "unlinked_pr_claims": sorted(missing_claimed_prs(ctx)),
         "reversal_hint": ctx.reversal_hint,
         "fleet": ctx.fleet_context,
         "transcript_tail": ctx.transcript_tail[-12:],

@@ -14,6 +14,7 @@ import pytest
 
 from server.automations.autopilot_policy import Decision, DecisionContext
 from server.sessions.engine import AgentEngine
+from server.tests.autopilot_authority import decision_context, seed_authority
 
 
 def make_decision_context(**kw):
@@ -93,6 +94,7 @@ def test_list_governed_excludes_all_complete(tmp_path):
     still governs goal-met INFERENCE for sessions that never emitted the marker (`done`)."""
     async def run():
         from server.sessions.engine import AgentEngine
+
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
         orch = _bare_orch()
@@ -123,6 +125,7 @@ def test_list_governed_includes_codex_sessions(tmp_path):
     ceiling does not, and must not, apply here)."""
     async def run():
         from server.sessions.engine import AgentEngine
+
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
         orch = _bare_orch()
@@ -257,6 +260,9 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
         orch._records["s1"] = SessionRecord(
             id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_input"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
         calls: list = []
 
         async def _ensure(sid, ident=None):
@@ -290,7 +296,7 @@ def _question_ctx(question_id, options):
         transcript_tail=[], ledger={})
 
 
-def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
+def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver(tmp_path):
     """A driver's identity only ever upgrades from the unowned sentinel to a real
     user (never downgrades), so once someone has attached, PermissionRegistry /
     QuestionRegistry.resolve refuse SYSTEM_IDENTITY on every subsequent attempt —
@@ -308,6 +314,9 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
         orch._records["s1"] = SessionRecord(
             id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_input"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
         calls: list = []
 
         async def _ensure(sid, ident=None):
@@ -324,6 +333,8 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver():
 
         assert await orch._autopilot_apply(
             "s1", Decision(action="approve"), _perm_ctx("P1", "pytest")) is False
+        orch._records["s1"].status = "waiting_question"
+        await seed_authority(orch)
         assert await orch._autopilot_apply(
             "s1", Decision(action="answer", answer_index=0),
             _question_ctx("Q1", ["Option A"])) is False
@@ -437,6 +448,7 @@ def test_get_context_reports_seconds_since_human(tmp_path):
         ctx = await orch._autopilot_get_context("s1")
         assert ctx is not None
         assert 4.0 <= ctx.seconds_since_human <= 30.0
+        assert ctx.last_human_interaction_at == orch._records["s1"].last_user_interaction_at.isoformat()
 
     asyncio.run(run())
 
@@ -605,7 +617,10 @@ async def test_autopilot_archive_context_records_resolution(tmp_path):
         captured["context"] = context
 
     orch.archive_session = _spy
-    ok = await orch._autopilot_archive("s1")
+    orch._records["s1"].status = "idle"
+    await _init_db(tmp_path)
+    await seed_authority(orch)
+    ok = await orch._autopilot_archive("s1", decision_context(orch._records["s1"]))
     assert ok is True
     assert captured["by"] == "autopilot"
     assert "cancelled" in captured["context"]["reason"]
@@ -660,6 +675,9 @@ def _make_orch_with_session(repo="o/r", branch="feat/x"):
     async def _noop_refresh():
         pass
     orch.refresh_authored_branches = _noop_refresh
+    async def _recovered(session_id):
+        return True
+    orch._recover_session_pr_links = _recovered
     return orch
 
 
@@ -740,13 +758,15 @@ def test_pr_facts_counts_a_pr_shared_in_another_repo(orch):
 
 
 @pytest.mark.asyncio
-async def test_note_shared_pr_records_the_head_branch_once(orch, monkeypatch):
+async def test_note_shared_pr_records_the_head_branch_once(orch, monkeypatch, tmp_path):
+    await _init_db(tmp_path)
     monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/x")
     orch._pr_poller = SimpleNamespace(in_cooldown=True)
     await orch._note_shared_pr("s1", "o/other", 2662)
     await orch._note_shared_pr("s1", "o/other", 2662)
     assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/x")]
-    await orch._note_shared_pr("s1", orch._records["s1"].repo, 1)  # own repo: ignored
+    await orch._note_shared_pr("s1", orch._records["s1"].repo, 1)
+    assert "fix/x" in orch._records["s1"].authored_branches
     assert len(orch._records["s1"].foreign_pr_refs) == 1
 
 
@@ -794,7 +814,10 @@ async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path
         captured["context"] = context
 
     orch.archive_session = _spy
-    await orch._autopilot_archive("s1")
+    orch._records["s1"].status = "idle"
+    await _init_db(tmp_path)
+    await seed_authority(orch)
+    await orch._autopilot_archive("s1", decision_context(orch._records["s1"]))
     assert captured["context"]["reason"] == "autopilot: goal met"
     assert captured["context"].get("pr_resolution") is None
 
@@ -853,3 +876,105 @@ def test_list_governed_skips_the_tick_when_product_policy_is_unreadable(tmp_path
         orch._records = {"s": _waiting("s", "o/r")}
         assert await orch._autopilot_list_governed() == []
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_recover_successful_extra_worktree_pr_and_persist_branch(tmp_path, monkeypatch):
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    from server.sessions.events import ToolCall, ToolKind, ToolResult
+    from server.sessions.replay import ReplayWindow
+    await _init_db(tmp_path)
+    async with db_session() as db:
+        db.add(DbSession(id="s1", name="extra worktree", account_name="a", cwd="/tmp",
+                         status="idle", repo="o/r", authored_branches=[]))
+    orch = _make_orch_with_session()
+    del orch._recover_session_pr_links
+    calls = []
+    events = [ToolCall("t", "c", "Bash", ToolKind.BASH,
+                       {"command": "cd /tmp/extra && gh pr create --head fix/extra"}),
+              ToolResult("c", True, {"content": "https://github.com/o/r/pull/42"})]
+
+    async def replay(sid, **kw):
+        calls.append(kw)
+        return ReplayWindow(events=events, earliest_turn=0, total_turns=5)
+
+    orch.transcript_window = replay
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/extra")
+    assert await orch._recover_session_pr_links("s1")
+    assert "fix/extra" in orch._records["s1"].authored_branches
+    async with db_session() as db:
+        assert "fix/extra" in (await db.get(DbSession, "s1")).authored_branches
+    assert orch._pr_poller.refreshed == []  # refresh is batched by the caller
+    assert calls[-1]["limit"] is None
+    assert len(calls) == 1
+    calls.clear()
+    assert await orch._recover_session_pr_links("s1")
+    assert [c["limit"] for c in calls] == [1]
+
+
+@pytest.mark.asyncio
+async def test_recovery_missing_replay_and_unresolved_head_retry(tmp_path, monkeypatch):
+    from server.sessions.events import ToolCall, ToolKind, ToolResult
+    from server.sessions.replay import ReplayWindow
+    await _init_db(tmp_path)
+    orch = _make_orch_with_session()
+    del orch._recover_session_pr_links
+
+    async def missing(sid, **kw):
+        return None
+
+    orch.transcript_window = missing
+    assert not await orch._recover_session_pr_links("s1")
+    assert not getattr(orch, "_pr_linkage_cursors", {})
+
+    async def replay(sid, **kw):
+        return ReplayWindow(events=[
+            ToolCall("t", "c", "Bash", ToolKind.BASH, {"command": "gh pr create"}),
+            ToolResult("c", True, {"content": "https://github.com/o/r/pull/42"})],
+            total_turns=1)
+
+    orch.transcript_window = replay
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: None)
+    assert not await orch._recover_session_pr_links("s1")
+    assert not getattr(orch, "_pr_linkage_cursors", {})
+
+
+@pytest.mark.asyncio
+async def test_foreign_artifact_audit_restores_links_after_restart(tmp_path, monkeypatch):
+    from server.db import db_session
+    from server.db.models import AuditEvent
+    await _init_db(tmp_path)
+    async with db_session() as db:
+        db.add(AuditEvent(type="session.artifact", identity="owner", detail={
+            "session_id": "s1", "kind": "url", "value": "https://github.com/o/other/pull/42"}))
+    orch = _make_orch_with_session()
+    del orch._recover_session_pr_links
+
+    async def missing(sid, **kw):
+        return None
+
+    orch.transcript_window = missing
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/foreign")
+    # Old artifacts remain useful links but cannot certify a missing transcript's
+    # newer creation evidence; callers must still defer the facts judgment.
+    assert not await orch._recover_session_pr_links("s1")
+    assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/foreign")]
+
+
+def test_pr_facts_preserve_same_number_in_different_repositories(orch):
+    from server.github.pr_status import PullRequestInfo
+    orch._records["s1"].foreign_pr_refs = [("o/other", "fix/foreign")]
+    orch.pr_for = lambda repo, branch: PullRequestInfo(
+        number=42, url=f"https://github.com/{repo}/pull/42", state="merged", checks="passing", title="fix")
+    facts = orch._autopilot_pr_facts(orch._records["s1"])
+    assert {p.url for p in facts.prs} == {
+        "https://github.com/o/r/pull/42", "https://github.com/o/other/pull/42"}
+
+
+@pytest.mark.asyncio
+async def test_refresh_failed_poller_is_not_verified_absence(orch):
+    async def failed(pairs):
+        return False
+    orch._pr_poller.refresh_once = failed
+    assert await orch._autopilot_refresh_pr_facts("s1") is None

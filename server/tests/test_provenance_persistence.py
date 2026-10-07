@@ -106,10 +106,9 @@ def test_autopilot_apply_marks_session_assisted(tmp_path):
             return "sent"
         orch.send_prompt = _send
 
-        from server.automations.autopilot_policy import DecisionContext
-        ctx = DecisionContext(session_id="s1", status="done", account="a", repo=None,
-                              branch=None, effective_goal="g", goal_source="explicit",
-                              stuck={"kind": "done"}, transcript_tail=[], ledger={})
+        from server.tests.autopilot_authority import decision_context, seed_authority
+        await seed_authority(orch)
+        ctx = decision_context(orch._records["s1"])
         ok = await orch._autopilot_apply("s1", Decision(action="nudge", prompt="go"), ctx)
         assert ok is True
         assert orch._records["s1"].assisted_by == "autopilot"

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from server.tests.test_completion_releases_driver import _build_orch, _drain, _FakeDriver
+from server.tests.autopilot_authority import decision_context, seed_authority
 
 
 async def _map_orch(tmp_path):
@@ -230,12 +231,18 @@ async def test_classifier_map_disposition_survives_cleanup_and_respects_dispatch
         row.created_at = dispatch
         row.pr_resolution = "not-needed"
         row.pr_resolution_source = "classifier"
+    await seed_authority(orch)
+    ctx = decision_context(rec)
     if archive_via == "autopilot-without-record":
         orch._records.pop("s1")
+        assert not await orch._autopilot_archive("s1", ctx)
+        # A vanished decision target is not authorized; normal completion cleanup
+        # still preserves the classifier disposition when its record is restored.
+        orch._records["s1"] = rec
     if archive_via == "completion":
         await orch._auto_archive_completed("s1")
     else:
-        assert await orch._autopilot_archive("s1")
+        assert await orch._autopilot_archive("s1", ctx)
     await _drain(orch)
     assert await orch.permanent_delete("s1")
     async with db_session() as db:
@@ -276,11 +283,12 @@ async def test_failed_classifier_disposition_write_keeps_session(tmp_path, archi
     rec.pr_resolution_source = "classifier"
     rec.status = "complete"
     orch._pm_onboard_observe_map_diff_not_needed.side_effect = RuntimeError("DB unavailable")
+    await seed_authority(orch)
     if archive_via == "completion":
         await orch._auto_archive_completed("s1")
     else:
         with pytest.raises(RuntimeError, match="DB unavailable"):
-            await orch._autopilot_archive("s1")
+            await orch._autopilot_archive("s1", decision_context(rec))
     assert orch.record("s1") is rec
     assert not orch._drivers["s1"].closed
     orch._pm_onboard_observe_map_diff_not_needed.assert_awaited_once_with(

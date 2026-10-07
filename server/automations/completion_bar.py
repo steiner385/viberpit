@@ -108,7 +108,7 @@ class PrFacts:
     def to_prompt(self) -> dict:
         return {
             "has_repo": self.has_repo,
-            "prs": [{"number": p.number, "state": p.state, "is_draft": p.is_draft,
+            "prs": [{"number": p.number, "url": p.url, "state": p.state, "is_draft": p.is_draft,
                      "auto_merge_enabled": p.auto_merge_enabled,
                      "in_merge_queue": p.in_merge_queue, "checks": p.checks,
                      "is_docs_only": p.is_docs_only}

@@ -17,7 +17,9 @@ from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
-_DAY = 24 * 3600.0
+
+class _StaleDecision(Exception):
+    """The session changed owners or turns; leave its durable ledger untouched."""
 
 
 class Autopilot:
@@ -45,7 +47,7 @@ class Autopilot:
         ConfigField(key="recovery_max_attempts", label="Max recovery attempts", type="int",
                     default=2, help="Recovery nudges before handing a failed session to a human."),
         ConfigField(key="loop_repeat_limit", label="Loop repeat limit", type="int", default=3,
-                    help="Identical stuck states before escalating to a human."),
+                    help="Repeated assistance attempts before escalating to a human."),
         ConfigField(key="human_defer_seconds", label="Human deference (seconds)", type="int",
                     default=120, help="Skip a session a human touched this recently."),
         ConfigField(key="extra_deny_patterns", label="Extra deny patterns", type="string",
@@ -64,15 +66,9 @@ class Autopilot:
     ]
 
     def status(self, ctx) -> AutomationStatus:
+        from .autopilot_observation import autopilot_status
         counts = getattr(ctx, "autopilot_counts", None) if ctx is not None else None
-        if not counts:
-            return AutomationStatus(text="idle", level="idle")
-        advancing = counts.get("advancing", 0)
-        escalated = counts.get("escalated", 0)
-        return AutomationStatus(
-            text=f"{advancing} advancing" + (f", {escalated} escalated" if escalated else ""),
-            level="active" if advancing else ("warn" if escalated else "idle"),
-            counts=counts, waiting_reason="human" if escalated else None)
+        return autopilot_status(counts)
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
@@ -92,7 +88,9 @@ class AutopilotLoop:
                  apply: Callable[[str, Decision, "DecisionContext | None"], Awaitable[bool]],
                  decide_fn: Callable[[DecisionContext], Awaitable[Decision]],
                  clock: Callable[[], float],
-                 archive: Callable[[str], Awaitable[bool]] | None = None,
+                 archive: Callable[[str, DecisionContext], Awaitable[bool]] | None = None,
+                 may_act: Callable[[str, DecisionContext], Awaitable[bool]] | None = None,
+                 is_current: Callable[[str, DecisionContext], Awaitable[bool]] | None = None,
                  compose: "Callable[[DecisionContext, Decision], Awaitable[str | None]] | None" = None,
                  refresh_facts: "Callable[[str], Awaitable[object | None]] | None" = None) -> None:
         self._ctx = ctx
@@ -106,8 +104,8 @@ class AutopilotLoop:
         self._compose = compose          # Sonnet nudge composer (None = legacy pass-through)
         self._refresh_facts = refresh_facts  # on-demand PR ground-truth refresh
         self._lock = asyncio.Lock()
-        self._day_actions: list[float] = []
-        self._circuit_emitted = False
+        self._may_act = may_act
+        self._is_current = is_current
 
     async def tick(self) -> None:
         async with self._lock:
@@ -117,26 +115,43 @@ class AutopilotLoop:
                 observation_failed(self._ctx)
                 log.warning("autopilot.tick_failed", exc_info=True)
 
-    def _prune_day(self, now: float) -> None:
-        self._day_actions = [t for t in self._day_actions if t > now - _DAY]
-
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
             return
-        now = self._clock()
-        self._prune_day(now)
         advancing = escalated = 0
         degraded = False
-        for sid in await self._list_governed():
+        governed = await self._list_governed()
+        counts = {"waiting": 0, "deferring": 0, "budget_blocked": 0,
+                  "paused": 0, "handed_back": 0, "pr_facts_unavailable": 0, "policy_paused": 0}
+        for sid, reason in getattr(self._ctx, "autopilot_withheld", {}).items():
             try:
-                acted, esc = await self._advance_one(sid, mode, config, now)
+                context = await self._get_context(sid)
+                if context is None:
+                    continue
+                ledger = await self._ctx.get_target_state(sid)
+                await self._observe(sid, ledger, reason, ctx=context)
+            except _StaleDecision:
+                continue
+            counts["waiting"] += 1
+            counts[reason] = counts.get(reason, 0) + 1
+        for sid in governed:
+            try:
+                acted, esc = await self._advance_one(sid, mode, config, self._clock())
                 advancing += int(acted)
                 escalated += int(esc)
+                state = await self._ctx.get_target_state(sid)
+                reason = state.get("observation", {}).get("reason")
+                if reason and reason not in ("advancing", "escalated"):
+                    counts["waiting"] += 1
+                    if reason in counts and reason != "waiting":
+                        counts[reason] += 1
+            except _StaleDecision:
+                continue
             except Exception:  # one session must never stall the tick
                 degraded = True
                 log.warning("autopilot.session_failed sid=%s", sid, exc_info=True)
-        publish_observation(self._ctx, "autopilot_counts", {"advancing": advancing, "escalated": escalated},
+        publish_observation(self._ctx, "autopilot_counts", {**counts, "advancing": advancing, "escalated": escalated},
                             degraded=degraded)
 
     async def _advance_one(self, sid: str, mode: str, config: dict, now: float) -> tuple[bool, bool]:
@@ -144,35 +159,40 @@ class AutopilotLoop:
         if ctx is None:
             return False, False
         ledger = await self._ctx.get_target_state(sid)
+        await self._assert_current(sid, ctx)
         # Merge stored ledger with whatever get_context already loaded: stored state
         # is authoritative for persisted keys, but get_context may carry in-memory
         # keys (e.g. recent_nudges injected by a test or a warm-path shortcut) that
         # are not yet persisted. Merge with stored taking precedence over pre-loaded,
         # so we never silently discard a freshly persisted key.
         ctx.ledger = {**(ctx.ledger or {}), **ledger}
-
-        # Global daily cap.
-        if len(self._day_actions) >= config["max_actions_per_day"]:
-            if not self._circuit_emitted:
-                self._circuit_emitted = True
-                await self._ctx.emit("warn", "daily action cap reached — pausing",
-                                     kind="circuit_open")
+        await self._reconcile_accounting(sid, ctx, now)
+        ledger = ctx.ledger
+        if not await self._ctx.autopilot_action_available(config["max_actions_per_day"], self._clock()):
+            await self._observe(sid, ledger, "budget_blocked", ctx=ctx)
             return False, False
-        self._circuit_emitted = False
 
         decision = pre_decide(ctx, config, now)
         if decision is None:
-            decision = post_validate(await self._decide_fn(ctx), ctx, config)
-        if decision.action == "nudge":
-            decision = await self._verify_nudge_facts(sid, ctx, decision, now)
+            decision = await self._verify_facts(sid, ctx, now)
+            if decision is None:
+                await self._assert_current(sid, ctx)
+                decision = post_validate(await self._decide_fn(ctx), ctx, config)
+        await self._assert_current(sid, ctx)
+        ledger = ctx.ledger
         if decision.action == "skip":
-            # A human-steering skip means the human has seen (and acted on) this
-            # session: a later escalation for the same stuck state — e.g. a session
-            # that hands back again with the same reason — is new information to
-            # them, so the de-spam flag is released here.
-            await self._record_fingerprint(
-                sid, ledger, ctx,
-                human_seen=decision.reason.startswith("human steering"))
+            # Observing a wait is not an assistance attempt. In particular, neither
+            # deference nor an exhausted hourly budget consumes the loop allowance.
+            reason = decision.waiting_reason or "waiting"
+            deadline = None
+            if reason == "deferring" and ctx.seconds_since_human is not None:
+                deadline = now - ctx.seconds_since_human + config.get("human_defer_seconds", 120)
+            elif reason == "budget_blocked" and ledger.get("hour_actions"):
+                active = [stamp for stamp in ledger["hour_actions"] if stamp > now - 3600]
+                limit = config["max_actions_per_session_per_hour"]
+                if limit > 0 and len(active) >= limit:
+                    deadline = sorted(active)[len(active) - limit] + 3600
+            await self._observe(sid, ledger, reason, ctx=ctx, deadline=deadline)
             return False, False
         if decision.action == "complete":
             decline_ledger = ctx.ledger if ctx.ledger is not None else ledger
@@ -199,35 +219,45 @@ class AutopilotLoop:
             # which stays reserved for validated in-session actions. In propose mode
             # only surface the proposal. Either way the loop stops advancing it.
             if mode == "propose":
+                await self._observe(sid, ctx.ledger, "proposed", ctx=ctx)
                 await self._ctx.emit(
                     "info", f"{sid}: propose archive — goal met: {decision.reason}",
                     kind="proposed", session_id=sid,
                     detail={"action": "complete", "reason": decision.reason})
                 return False, False
-            await self._ctx.emit("info", f"{sid}: goal met — {decision.reason}",
-                                 kind="complete", session_id=sid)
             if self._archive is not None:
                 try:
-                    await self._archive(sid)
+                    if not await self._reserve(sid, ctx, config):
+                        return False, False
+                    if not await self._archive(sid, ctx):
+                        return False, False
                     # Terminal rest: drop the ledger row so the table stays bounded
                     # (mirrors the backlog runner deleting target-state on merge).
                     await self._ctx.delete_target_state(sid)
                 except Exception:  # best-effort — a failed archive must not crash the tick
                     log.warning("autopilot.archive_failed sid=%s", sid, exc_info=True)
+                    return False, False
+            await self._ctx.emit("info", f"{sid}: goal met — {decision.reason}",
+                                 kind="complete", session_id=sid)
             return False, False
         if decision.action == "escalate":
             await self._escalate(sid, ledger, ctx, decision)
             return False, True
 
         if mode == "propose":
+            await self._observe(sid, ctx.ledger, "proposed", ctx=ctx)
             await self._ctx.emit("info", f"{sid}: propose {decision.action} — {decision.reason}",
                                  kind="proposed", session_id=sid,
                                  detail={"action": decision.action, "reason": decision.reason})
             return False, False
 
         if decision.action == "nudge":
+            if not await self._ctx.autopilot_action_available(config["max_actions_per_day"], self._clock()):
+                await self._observe(sid, ctx.ledger, "budget_blocked", ctx=ctx)
+                return False, False
             decision = await self._compose_nudge_decision(sid, ctx, decision, now)
             if decision.action == "suppressed":
+                await self._observe(sid, ctx.ledger, "waiting", ctx=ctx)
                 return False, False
             if decision.action == "escalate":
                 await self._escalate(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx, decision)
@@ -237,10 +267,14 @@ class AutopilotLoop:
         # permission/question that pre_decide + post_validate just validated — never
         # a freshly re-read one (which could be a new, un-vetted pending permission
         # the session surfaced during the decider's await window).
+        if not await self._reserve(sid, ctx, config):
+            return False, False
+        now = self._clock()
         acted = await self._apply(sid, decision, ctx)
         if acted:
-            self._day_actions.append(now)
+            ctx.action_applied = True
             await self._charge(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx, decision, now)
+            await self._observe(sid, ctx.ledger, "advancing", ctx=ctx)
             await self._ctx.emit("info", f"{sid}: {decision.action} — {decision.reason}",
                                  kind="acted", session_id=sid,
                                  detail={"action": decision.action})
@@ -249,7 +283,52 @@ class AutopilotLoop:
             # accumulate the stuck-state fingerprint so loop detection can escalate
             # a session that would otherwise be nudged forever without progress.
             await self._record_fingerprint(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx)
+            await self._observe(sid, ctx.ledger, "waiting", ctx=ctx)
         return acted, False
+
+    async def _reserve(self, sid: str, ctx: DecisionContext, config: dict) -> bool:
+        if self._may_act is not None and not await self._may_act(sid, ctx):
+            # That callback can discover a new owner or turn. Its ledger is now
+            # theirs: even recording why we stopped would overwrite their work.
+            return False
+        if not await self._ctx.reserve_autopilot_action(config["max_actions_per_day"], self._clock()):
+            await self._observe(sid, ctx.ledger, "budget_blocked", ctx=ctx)
+            return False
+        ctx.ledger = {**ctx.ledger, "last_attempt_at": self._clock()}
+        await self._store(sid, ctx.ledger, ctx)
+        return True
+
+    async def _store(self, sid: str, state: dict, ctx: DecisionContext) -> None:
+        """Recheck ownership after awaited model/PR work, before writing its ledger."""
+        await self._assert_current(sid, ctx)
+        await self._ctx.set_target_state(sid, state)
+        ctx.ledger = state
+
+    async def _assert_current(self, sid: str, ctx: DecisionContext) -> None:
+        if self._is_current is not None and not await self._is_current(sid, ctx):
+            raise _StaleDecision()
+
+    async def _observe(self, sid: str, ledger: dict, reason: str, *,
+                       ctx: DecisionContext, deadline: float | None = None) -> None:
+        """Publish a wait once per reason/episode, preserving retry and budget state."""
+        labels = {"deferring": "waiting for human steering to settle",
+                  "budget_blocked": "waiting for the action budget",
+                  "paused": "session assistance is paused",
+                  "policy_paused": "session assistance is paused by product policy",
+                  "handed_back": "waiting for your response",
+                  "pr_facts_unavailable": "waiting for verified PR facts",
+                  "proposed": "assistance proposed for review",
+                  "archive_paused": "automatic archive is paused",
+                  "escalated": "waiting for human review", "waiting": "waiting"}
+        episode = ctx.last_human_interaction_at
+        previous = ledger.get("observation", {})
+        observation = {"reason": reason, "deadline": deadline,
+                       "lastAttempt": ledger.get("last_attempt_at"), "episode": episode}
+        new = {**ledger, "observation": observation}
+        await self._store(sid, new, ctx)
+        if reason != "advancing" and (previous.get("reason"), previous.get("episode")) != (reason, episode):
+            await self._ctx.emit("info", f"{sid}: {labels.get(reason, 'waiting')}",
+                                 kind="waiting", session_id=sid, detail=observation)
 
     async def _decline_archive(self, sid: str, ledger: dict, ctx: DecisionContext,
                                decision: Decision, *, suppressed: str,
@@ -260,12 +339,14 @@ class AutopilotLoop:
         fingerprint, mirroring the escalate de-spam) and stop advancing it, without
         ever archiving. *suppressed* is the machine-readable reason for the detail
         payload; *note* is the human-readable parenthetical."""
+        await self._observe(sid, ledger, "archive_paused", ctx=ctx)
+        ledger = ctx.ledger
         fp = fingerprint(ctx)
         if ledger.get("archive_declined") and ledger.get("last_fingerprint") == fp:
             return False, False
         new = dict(ledger)
         new.update(archive_declined=True, last_fingerprint=fp)
-        await self._ctx.set_target_state(sid, new)
+        await self._store(sid, new, ctx)
         await self._ctx.emit(
             "info", f"{sid}: goal met — not auto-archiving ({note})",
             kind="proposed", session_id=sid,
@@ -273,15 +354,44 @@ class AutopilotLoop:
                     "suppressed": suppressed})
         return False, False
 
-    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext,
-                                  *, human_seen: bool = False) -> None:
+    async def _reconcile_accounting(self, sid: str, ctx: DecisionContext, now: float) -> None:
+        """Recover legacy observation counters once; human input starts a new episode.
+
+        Legacy ledgers cannot distinguish skips from attempts. Reset only their
+        repetition count once, retaining action budgets, recovery caps, recent
+        nudges and notification deduplication. Persisting the version makes this
+        bounded recovery survive restarts without reopening the allowance again.
+        """
+        ledger = ctx.ledger
+        new = dict(ledger)
+        if new.get("clock_version", 0) < 1:
+            # Legacy monotonic values have no cross-host/restart meaning. Retain
+            # every charge for one conservative window from migration, once only.
+            new["hour_actions"] = [now for _ in new.get("hour_actions", [])]
+            new["recent_nudges"] = [{**item, "ts": now} for item in new.get("recent_nudges", [])]
+            new.pop("last_facts_refresh", None)
+            new["clock_version"] = 1
+        human_at = ctx.last_human_interaction_at
+        if new.get("accounting_version", 0) < 1:
+            new.update(accounting_version=1, repeat_count=0)
+            # The first observation establishes a baseline; old human activity
+            # must not erase an already-exhausted recovery allowance on upgrade.
+            if human_at is not None:
+                new["last_human_interaction_at"] = human_at
+        if human_at is not None and human_at > new.get("last_human_interaction_at", ""):
+            new.update(last_human_interaction_at=human_at, repeat_count=0,
+                       recovery_attempts=0, escalated=False)
+        if new != ledger:
+            await self._store(sid, new, ctx)
+            ctx.ledger = new
+
+    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
         fp = fingerprint(ctx)
         repeat = ledger.get("repeat_count", 0) + 1 if ledger.get("last_fingerprint") == fp else 1
         new = dict(ledger)
         new.update(last_fingerprint=fp, repeat_count=repeat)
-        if human_seen and new.get("escalated"):
-            new["escalated"] = False
-        await self._ctx.set_target_state(sid, new)
+        ctx.ledger = new
+        await self._store(sid, new, ctx)
 
     async def _charge(self, sid: str, ledger: dict, ctx: DecisionContext,
                       decision: Decision, now: float) -> None:
@@ -303,38 +413,40 @@ class AutopilotLoop:
                    # it is no longer "handed to a human", so a later escalation
                    # (even for the same stuck state) is fresh information.
                    escalated=False)
-        await self._ctx.set_target_state(sid, new)
+        ctx.ledger = new
+        await self._store(sid, new, ctx)
 
-    async def _verify_nudge_facts(self, sid: str, ctx: DecisionContext,
-                                  decision: Decision, now: float) -> Decision:
-        """Verify-before-directing (spec §2): when the cached PR facts contradict
-        the session's claims (or a self-declared complete), refresh ground truth
-        once per FACTS_REFRESH_MIN_INTERVAL_S and re-judge. A goal verified met
-        restores the original `complete` — the nudge never happens."""
+    async def _verify_facts(self, sid: str, ctx: DecisionContext,
+                            now: float) -> Decision | None:
+        """Refresh contradictory evidence before any model judgment, once per cooldown.
+
+        An unavailable refresh is a wait, never proof that the claimed work is
+        absent. Hard guardrails have already run, including explicit hand-backs.
+        """
         from .autopilot_policy import FACTS_REFRESH_MIN_INTERVAL_S, facts_contradicted
         if self._refresh_facts is None or not facts_contradicted(ctx):
-            return decision
-        ledger = ctx.ledger or {}
-        if now - float(ledger.get("last_facts_refresh", 0.0)) < FACTS_REFRESH_MIN_INTERVAL_S:
-            return decision
+            return None
+        ledger = ctx.ledger
+        if ("last_facts_refresh" in ledger
+                and now - float(ledger["last_facts_refresh"]) < FACTS_REFRESH_MIN_INTERVAL_S):
+            return Decision(action="skip", reason="PR facts unavailable — refresh cooldown",
+                            waiting_reason="pr_facts_unavailable")
         new = dict(ledger)
         new["last_facts_refresh"] = now
-        await self._ctx.set_target_state(sid, new)
+        await self._store(sid, new, ctx)
         ctx.ledger = new
-        fresh_obj = await self._refresh_facts(sid)
+        try:
+            fresh_obj = await self._refresh_facts(sid)
+        except Exception:
+            log.warning("autopilot.facts_refresh_failed sid=%s", sid, exc_info=True)
+            fresh_obj = None
         if fresh_obj is None:
-            return decision          # cooldown/failure: compose against stale facts
+            return Decision(action="skip", reason="PR facts unavailable — refresh deferred",
+                            waiting_reason="pr_facts_unavailable")
         from .completion_bar import PrFacts
-        fresh = cast(PrFacts, fresh_obj)
-        ctx.pr_facts = fresh
+        ctx.pr_facts = cast(PrFacts, fresh_obj)
         ctx.facts_verified = True
-        if decision.downgraded_from == "complete":
-            from .completion_bar import met_bar
-            verdict = met_bar(ctx.effective_goal, ctx.goal_source, fresh,
-                              ctx.pr_resolution, instructions=ctx.instructions)
-            if verdict.met:
-                return Decision(action="complete", reason=f"verified: {verdict.reason}")
-        return decision
+        return None
 
     async def _compose_nudge_decision(self, sid: str, ctx: DecisionContext,
                                       decision: Decision, now: float) -> Decision:
@@ -345,6 +457,7 @@ class AutopilotLoop:
         if self._compose is None:
             if (decision.prompt or "").strip():
                 return decision
+            await self._record_futile(sid, ctx.ledger or {}, ctx)
             return Decision(action="escalate", reason="nudge needs composition — no composer")
         text = await self._compose(ctx, decision)
         if not (text or "").strip():
@@ -373,7 +486,7 @@ class AutopilotLoop:
         new.update(last_fingerprint=fingerprint(ctx),
                    repeat_count=ledger.get("repeat_count", 0) + 1)
         ctx.ledger = new
-        await self._ctx.set_target_state(sid, new)
+        await self._store(sid, new, ctx)
 
     async def _escalate(self, sid: str, ledger: dict, ctx: DecisionContext,
                         decision: Decision) -> None:
@@ -381,10 +494,12 @@ class AutopilotLoop:
         # escalated silently — re-emitting "needs human" every tick buries the feed.
         # A changed fingerprint is new information and emits again.
         fp = fingerprint(ctx)
+        await self._observe(sid, ledger, "handed_back" if ctx.status == "handed_back" else "escalated", ctx=ctx)
+        ledger = ctx.ledger
         if ledger.get("escalated") and ledger.get("last_fingerprint") == fp:
             return
         new = dict(ledger)
         new.update(escalated=True, last_fingerprint=fp)
-        await self._ctx.set_target_state(sid, new)
+        await self._store(sid, new, ctx)
         await self._ctx.emit("warn", f"{sid}: needs human — {decision.reason}",
                              kind="escalated", session_id=sid)

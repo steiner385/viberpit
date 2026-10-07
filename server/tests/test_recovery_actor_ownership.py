@@ -1,5 +1,4 @@
 """Fleet mirrors must not become local recovery or autopilot actors (#1738)."""
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -10,6 +9,7 @@ from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SYSTEM_IDENTITY
 from server.tests.test_host_partitioned_ownership import _record
+from server.tests.autopilot_authority import decision_context, seed_authority
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def actor(monkeypatch):
     orch._drivers = {}
     orch._turn_restart_at = {}
     orch._enabled_host_names = AsyncMock(return_value=frozenset({"dobby", "rocky"}))
-    orch._autopilot_read_config = AsyncMock(return_value=("autonomous", {}))
+    orch._autopilot_read_config = AsyncMock(return_value=("auto", {}))
     orch._autopilot_mark_assisted = AsyncMock()
     orch.ensure_driver = AsyncMock(return_value=object())
     orch.send_prompt = AsyncMock(return_value="sent")
@@ -47,23 +47,30 @@ async def test_autopilot_does_not_select_foreign_mirrors(actor, enabled):
     (None, None, True),
     ("gone", frozenset({"rocky"}), True),
 ])
-async def test_autopilot_rechecks_actor_before_nudge(actor, host, enabled, expected):
+async def test_autopilot_rechecks_actor_before_nudge(actor, host, enabled, expected, tmp_path):
     actor._records["s1"] = _record("s1", host, "waiting_input")
     actor._enabled_host_names.return_value = enabled
-    assert await actor._autopilot_apply("s1", Decision(action="nudge", prompt="continue")) is expected
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'authority.db'}")
+    await seed_authority(actor)
+    assert await actor._autopilot_apply(
+        "s1", Decision(action="nudge", prompt="continue"),
+        decision_context(actor._records["s1"])) is expected
     assert actor.ensure_driver.await_count == int(expected)
     assert actor.send_prompt.await_count == int(expected)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["nudge", "approve", "deny", "answer"])
-async def test_autopilot_does_not_send_after_lease_refusal(actor, action):
+async def test_autopilot_does_not_send_after_lease_refusal(actor, action, tmp_path):
     actor._records["s1"] = _record("s1", "dobby", "waiting_input")
     actor.ensure_driver.return_value = None
     actor.resolve_permission = Mock()
     actor.answer_question = AsyncMock()
-    ctx = SimpleNamespace(stuck={"perm_id": "p1", "tool_name": "Bash",
-                                "tool_input": {"command": "pytest"}, "question_id": "q1"})
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'authority.db'}")
+    await seed_authority(actor)
+    ctx = decision_context(actor._records["s1"], stuck={
+        "perm_id": "p1", "tool_name": "Bash",
+        "tool_input": {"command": "pytest"}, "question_id": "q1"})
     assert await actor._autopilot_apply(
         "s1", Decision(action=action, prompt="continue"), ctx) is False
     actor.send_prompt.assert_not_awaited()
@@ -106,11 +113,18 @@ async def test_startup_rearm_leaves_foreign_snapshot_for_owner(actor, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_autopilot_keeps_adopted_live_driver(actor):
+async def test_autopilot_keeps_adopted_live_driver(actor, tmp_path):
     actor._records["s1"] = _record("s1", "rocky", "waiting_input")
     actor._drivers["s1"] = object()
     assert await actor._autopilot_list_governed() == ["s1"]
-    assert await actor._autopilot_apply("s1", Decision(action="nudge", prompt="continue"))
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'authority.db'}")
+    await seed_authority(actor)
+    # The live record can lag adoption; the database stamp is authoritative.
+    async with db_session() as db:
+        (await db.get(DbSession, "s1")).host = "dobby"
+    assert await actor._autopilot_apply(
+        "s1", Decision(action="nudge", prompt="continue"),
+        decision_context(actor._records["s1"]))
 
 
 @pytest.mark.asyncio

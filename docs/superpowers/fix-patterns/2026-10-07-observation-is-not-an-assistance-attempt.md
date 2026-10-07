@@ -1,0 +1,6 @@
+# Observation is not an assistance attempt
+
+- **Symptom:** a session exhausts its stuck-loop allowance while waiting for human deference or an action budget to expire, despite receiving no assistance.
+- **Anti-pattern:** recording the failure fingerprint on every skipped observation conflates polling frequency with repeated failed work. Conversely, a failed composition path that records nothing can make unbounded helper calls.
+- **Fix shape:** count actual or futile assistance attempts, never waits; identify new human input using a stable persisted interaction timestamp rather than a changing elapsed age. Version legacy ledgers once, reset only ambiguous repetition state, and retain budgets and recovery limits. Keep status changes out of the no-card fingerprint.
+- **Where to look:** `server/automations/autopilot.py` skip, apply-false, composer-failure and duplicate-suppression paths. The sibling audit also inspected `pr_doctor_engine.record_attempt` (explicitly after real action success) and backlog runner bounce accounting (after session termination, not per skipped poll); neither needs this correction. The no-composer failure path did omit futile accounting and is fixed with a bounded-attempt regression.

@@ -555,6 +555,7 @@ def test_every_remote_method_is_classified():
                 # report EVERY host's outcome rather than skip an unreachable one,
                 # so it cannot use the merge-all helper.
                 "codex_account_status", "codex_invalidate_credentials",
+                "automation_statuses", "automation_overview",
                 # Per-host credential-envelope push (#2629): only push_credentials
                 # calls it, addressing each runner by name through the router.
                 "creds_sync"}
@@ -565,7 +566,7 @@ def test_every_remote_method_is_classified():
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
         "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
         "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
-        "automation_statuses", "automation_overview", "capacity_readout", "automation_actionable", "automation_trigger",
+        "capacity_readout", "automation_actionable", "automation_trigger",
         "pr_doctor_job", "resume_recovery_status", "consolidation_candidates",
         "automation_consolidate", "backlog_candidates", "backlog_runner_dispatch",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
@@ -777,7 +778,7 @@ def test_api_orchestrator_reads_are_all_classified():
         "list_archived", "all_prs", "pr_detail", "all_merge_trains", "all_repos_stage_models",
         "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
         "deploy_config_put", "deploy_status", "git_credential_alerts",
-        "dismiss_git_credential_alert", "automation_statuses", "automation_overview", "capacity_readout", "automation_actionable",
+        "dismiss_git_credential_alert", "capacity_readout", "automation_actionable",
         "automation_trigger", "automation_consolidate", "consolidation_candidates",
         "backlog_candidates", "backlog_runner_dispatch", "list_adoptable_candidates",
         "adopt_session", "migrate_archive_home", "cloned_repos", "usage",
@@ -805,7 +806,8 @@ def test_api_orchestrator_reads_are_all_classified():
         "refine_prompt_codex",
     }
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
-                "codex_invalidate_credentials"}  # fleet-wide on FleetOrchestrator
+                "codex_invalidate_credentials", "automation_statuses",
+                "automation_overview"}  # fleet-wide on FleetOrchestrator
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 
@@ -1185,12 +1187,16 @@ async def test_a_recovered_host_reports_its_next_outage_promptly(caplog):
 
 
 @pytest.mark.asyncio
-async def test_automation_overview_asks_primary_once_without_polling_workers():
+async def test_automation_overview_asks_primary_once_without_worker_actionable_counts():
     primary, worker = _FakeOrch("dobby"), _FakeOrch("rocky")
     expected = {"statuses": {}, "actionableCounts": {"pr-doctor": None}}
     primary.automation_overview = mock.AsyncMock(return_value=expected)
     worker.automation_overview = mock.AsyncMock(side_effect=AssertionError("must not fan out"))
+    worker.automation_statuses = mock.AsyncMock(return_value={})
     fleet = FleetOrchestrator(_FakeRouter({"dobby": primary, "rocky": worker}), primary="dobby")
-    assert await fleet.automation_overview() == expected
+    result = await fleet.automation_overview()
+    assert result["actionableCounts"] == expected["actionableCounts"]
+    assert result["statuses"]["autopilot"]["level"] == "unknown"
     primary.automation_overview.assert_awaited_once()
     worker.automation_overview.assert_not_awaited()
+    worker.automation_statuses.assert_awaited_once()

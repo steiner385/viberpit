@@ -51,9 +51,11 @@ class DecisionContext:
     # fed to the decider so the auto-archive judgement learns from prior reversals. None = none.
     reversal_hint: str | None = None
     # Elapsed wall-seconds since the user last steered this session (prompt/answer/permission/typing).
-    # Precomputed by _autopilot_get_context (autopilot's clock is monotonic, so a raw timestamp
-    # cannot be compared against pre_decide's `now`). None = the human never touched it.
+    # Precomputed by _autopilot_get_context. None = the human never touched it.
     seconds_since_human: float | None = None
+    # Canonical naive-UTC ISO timestamp of the explicit human interaction. Unlike
+    # its elapsed age, this identifies one reset boundary across ticks/restarts.
+    last_human_interaction_at: str | None = None
     # Compact view of the REST of the fleet (same-repo siblings, other actives,
     # recently archived + outcomes) from fleet_context.build_fleet_view. Advisory
     # input to the LLM decider ONLY — no guardrail reads it. None = nothing to report.
@@ -72,6 +74,11 @@ class DecisionContext:
     # Read only by the loop's auto-archive origin scope (`auto_archive_origins`); no
     # guardrail depends on it.
     origin: str | None = None
+    # Bookkeeping after our own successful send may observe its new running
+    # status. This never relaxes the action gate, ownership, or human revision.
+    action_applied: bool = False
+    # Bind a decision to the live driver generation that supplied its context.
+    session_fence: int | None = None
 
 
 @dataclass
@@ -80,6 +87,7 @@ class Decision:
     answer_index: int | None = None
     prompt: str | None = None
     reason: str = ""
+    waiting_reason: str | None = None
     # Composition metadata (spec §1): a gate downgrade carries the bar verdict as
     # structured context; the nudge text is ALWAYS written by the composer.
     needs_composition: bool = False
@@ -161,18 +169,41 @@ def claimed_pr_numbers(transcript_tail: list[dict]) -> set[int]:
 
 def facts_contradicted(ctx: DecisionContext) -> bool:
     """True when the cached pr_facts look stale enough to verify before directing:
-    the session claims a PR the cache doesn't know, or it self-declared complete,
-    while the cache shows no armed/merged PR. No facts / no repo -> nothing to
+    the session claims a PR the cache doesn't know (even alongside older merged
+    work), or it self-declared complete without armed/merged facts. No facts / no repo -> nothing to
     verify (never triggers a refresh)."""
     facts = ctx.pr_facts
     if facts is None or not facts.has_repo:
         return False
-    if facts.merged_pr is not None or facts.armed_pr is not None:
-        return False
-    known = {p.number for p in facts.prs}
-    if claimed_pr_numbers(ctx.transcript_tail) - known:
+    if missing_claimed_prs(ctx):
         return True
-    return ctx.status == "complete"
+    return ctx.status == "complete" and facts.merged_pr is None and facts.armed_pr is None
+
+
+def missing_claimed_prs(ctx: DecisionContext) -> set[tuple[str, int]]:
+    """Claims trigger verification only; they never establish session ownership."""
+    from server.sessions.artifacts import github_pr_ref, github_pr_refs
+    claims: set[tuple[str, int]] = set()
+    for entry in ctx.transcript_tail or []:
+        text = entry.get("text", "") or ""
+        claims.update(github_pr_refs(text))
+        if ctx.repo:
+            # A Markdown label belongs to its explicit URL, not an additional
+            # implicit PR in this session's repository. Keep other bare mentions.
+            qualified = [m.span() for m in re.finditer(
+                r"\[[^\]]*\]\((https?://[^\s)]+)\)", text)
+                if github_pr_ref(m.group(1)) is not None]
+            claims.update((ctx.repo.lower(), int(m.group(1)))
+                          for m in _PR_NUM_RE.finditer(text)
+                          if not any(start <= m.start() < end for start, end in qualified))
+    known = set()
+    for pr in ctx.pr_facts.prs if ctx.pr_facts is not None else ():
+        ref = github_pr_ref(pr.url)
+        if ref is not None:
+            known.add((ref[0].lower(), ref[1]))
+        elif ctx.repo:
+            known.add((ctx.repo.lower(), pr.number))
+    return claims - known
 
 
 def _token_set(text: str) -> set[str]:
@@ -209,7 +240,7 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
 
     # 1. Human deference — stand down while the human is actively steering this session.
     if ctx.seconds_since_human is not None and ctx.seconds_since_human < int(config.get("human_defer_seconds", 120)):
-        return Decision(action="skip", reason="human steering — deferring")
+        return Decision(action="skip", reason="human steering — deferring", waiting_reason="deferring")
 
     # 1b. Handed back — the session's own `hand_back` (or a closing question for the
     # user; status.py). That turn belongs to the human: surface it, never nudge it
@@ -223,7 +254,7 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
     # AskUserQuestion cards shared one status; `handed_back` says it outright, and a
     # session that has BOTH is re-keyed to kind="question" upstream
     # (_autopilot_get_context), so the absence guard is no longer load-bearing.
-    if stuck.get("kind") == "handed_back":
+    if ctx.status == "handed_back" or stuck.get("kind") == "handed_back":
         reason = (stuck.get("hand_back_reason") or "").strip()
         text = "handed back to the user" + (f": {reason[:200]}" if reason else "")
         # The suspected-complete overlay rides the escalation so the notification
@@ -242,7 +273,7 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
 
     # 5. Per-session hourly budget.
     if _hourly_count(ledger, now) >= config["max_actions_per_session_per_hour"]:
-        return Decision(action="skip", reason="hourly budget exhausted")
+        return Decision(action="skip", reason="hourly budget exhausted", waiting_reason="budget_blocked")
 
     # 7. Loop detection.
     if (ledger.get("last_fingerprint") == fingerprint(ctx)
@@ -281,6 +312,10 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # 7866e6a5 was archived over a live hand-back question this way (#1756).
         return Decision(action="escalate",
                         reason=f"open {stuck['kind']} pending — cannot archive")
+    if (decision.action == "complete" and not ctx.facts_verified
+            and missing_claimed_prs(ctx)):
+        return Decision(action="skip", reason="PR facts unavailable — claimed PR not linked to session",
+                        waiting_reason="pr_facts_unavailable")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally

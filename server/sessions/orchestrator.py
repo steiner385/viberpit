@@ -751,7 +751,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_pm_triage_task",
     "_gh_reconcile_task",
     "_sdlc_synth_task", "_control_band_task",
-    "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+    "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
@@ -1508,8 +1508,10 @@ class SessionOrchestrator:
             get_context=self._autopilot_get_context,
             apply=self._autopilot_apply,
             decide_fn=self._autopilot_decide,
-            clock=time.monotonic,
+            clock=time.time,
             archive=self._autopilot_archive,
+            may_act=self._autopilot_may_act,
+            is_current=self._autopilot_context_current,
             compose=self._autopilot_compose,
             refresh_facts=self._autopilot_refresh_pr_facts,
         )
@@ -1866,21 +1868,99 @@ class SessionOrchestrator:
         self.register_overlay(
             session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
 
-    async def _note_shared_pr(self, session_id: str, repo: str, number: int) -> None:
-        """Track a PR the session shared in a repo other than its own, so the
-        completion bar counts it (#2663). Resolves the head branch once, records the
-        ``(repo, branch)`` pair, and primes the poller cache for it."""
+    async def _note_shared_pr(self, session_id: str, repo: str, number: int, *,
+                              refresh: bool = True) -> bool:
+        """Associate a session's explicit artifact or successful PR creation result.
+
+        Resolve GitHub's head branch and route own-repo evidence through the
+        canonical persisted authored_branches; foreign links use artifact replay.
+        """
         from server.github.pr_poller import pr_head_ref
         rec = self._records.get(session_id)
-        if rec is None or repo == rec.repo:
-            return
-        branch = await asyncio.to_thread(pr_head_ref, repo, number)
-        if not branch or (repo, branch) in rec.foreign_pr_refs:
-            return
-        rec.foreign_pr_refs.append((repo, branch))
+        if rec is None:
+            return False
+        linked = getattr(self, "_session_pr_links", {})
+        key = (session_id, repo.lower(), number)
+        branch = linked.get(key) or await asyncio.to_thread(pr_head_ref, repo, number)
+        if not branch:
+            return False
+        if repo.lower() == (rec.repo or "").lower():
+            await self._note_authored_branch(session_id, branch)
+        elif (repo, branch) not in rec.foreign_pr_refs:
+            rec.foreign_pr_refs.append((repo, branch))
+        linked[key] = branch
+        self._session_pr_links = linked
         poller = getattr(self, "_pr_poller", None)
-        if poller is not None and not poller.in_cooldown:
+        if refresh and poller is not None and not poller.in_cooldown:
             await poller.refresh_once([(repo, branch)])
+        return True
+
+    async def _note_authored_branch(self, session_id: str, branch: str) -> None:
+        """Persist independently verified authored-branch evidence in its one ledger."""
+        rec = self._records.get(session_id)
+        if rec is None or branch in (rec.authored_branches or []):
+            return
+        from sqlalchemy import update as sa_update
+        merged = sorted(set(rec.authored_branches or []) | {branch})
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                             .values(authored_branches=merged))
+        rec.authored_branches = merged
+
+    async def _recover_session_pr_links(self, session_id: str) -> bool:
+        """Recover only explicit artifacts and successful creates from normalized replay.
+
+        First recovery reads the bounded-time full replay (including extra-worktree
+        creation); later recoveries use a turn cursor. A failed replay is retried,
+        never treated as verified absence. Durable artifacts restore foreign refs
+        after restart without inventing another persisted PR registry.
+        """
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+        from server.sessions.artifacts import created_pr_refs, created_worktree_candidates, github_pr_ref
+        cursors = getattr(self, "_pr_linkage_cursors", {})
+        previous = cursors.get(session_id)
+        # Establish the baseline in one full replay; then probe the tail and
+        # request only the unprocessed suffix when additional turns appeared.
+        window = await self.transcript_window(
+            session_id, limit=None if previous is None else 1, background=True,
+            timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
+        refs: set[tuple[str, int]] = set()
+        total = None
+        if window is not None:
+            total = window.total_turns
+            needed = 1 if previous is None else max(0, total - previous + 1)
+            if needed > 1:
+                window = await self.transcript_window(
+                    session_id, limit=needed, background=True,
+                    timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
+            if window is None:
+                return False
+            refs.update(created_pr_refs(window.events))
+            rec = self._records.get(session_id)
+            if rec is not None and rec.cwd:
+                for path, branch, started, finished in created_worktree_candidates(window.events):
+                    verified = await asyncio.to_thread(
+                        worktrees.verified_created_worktree_branch,
+                        rec.cwd, path, branch, started, finished)
+                    if verified:
+                        await self._note_authored_branch(session_id, verified)
+        async with db_session() as db:
+            details = (await db.execute(select(AuditEvent.detail).where(
+                AuditEvent.type == "session.artifact",
+                AuditEvent.detail["session_id"].as_string() == session_id))).scalars().all()
+        for detail in details:
+            if detail.get("kind") == "url":
+                ref = github_pr_ref(detail.get("value", ""))
+                if ref is not None:
+                    refs.add(ref)
+        for repo, number in sorted(refs):
+            if not await self._note_shared_pr(session_id, repo, number, refresh=False):
+                return False
+        if total is not None:
+            cursors[session_id] = total
+            self._pr_linkage_cursors = cursors
+        return window is not None
 
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
@@ -2476,6 +2556,11 @@ class SessionOrchestrator:
         self._assistant_reap_task = asyncio.create_task(
             self._assistant_reap_loop(interval=60.0), name="assistant-reap-loop"
         )
+        # Assistance and resume recovery act only on this host's sessions. Workers
+        # need periodic retries even when a deference skip emits no status event.
+        self._autopilot_task = asyncio.create_task(
+            self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
+        )
         # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
         # A worker serves dispatched sessions only (#840); a worker that also drove
         # these loops would double-drive the one shared DB (duplicate proposals/PRs,
@@ -2534,10 +2619,6 @@ class SessionOrchestrator:
             # computes and shows (monitor); a disabled/off row is a cheap no-op tick.
             self._capacity_governor_task = asyncio.create_task(
                 self._capacity_governor_tick_loop(interval=60.0), name="capacity-governor-loop"
-            )
-            # Autopilot control loop: one tick per interval plus status-change nudges.
-            self._autopilot_task = asyncio.create_task(
-                self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
             )
             # Fleet-mirror reconcile: its OWN task, deliberately not folded into the
             # autopilot loop — a slow (LLM-bound) tick there used to stretch eviction
@@ -6135,7 +6216,12 @@ class SessionOrchestrator:
         ``completion.autoarchive_giveup`` never gets re-checked: the session sits on
         the dashboard forever, and the only remaining signal is a human opening it and
         hitting the StaleOwnership "changed hands" dead end in ``ws.py``."""
+        if getattr(self, "_draining", False) or getattr(self, "_hb_fenced", False):
+            return
+        enabled_hosts = await self._enabled_host_names()
         for session_id, rec in list(self._records.items()):
+            if not self._owns_record(rec, enabled_hosts):
+                continue
             if rec.status != "complete":
                 continue
             if session_id in self._auto_archiving:
@@ -13361,6 +13447,7 @@ class SessionOrchestrator:
         repos = set(config.get("enabled_repos") or [])
         enabled_hosts = await self._enabled_host_names()
         out: list[str] = []
+        withheld_reasons: dict[str, str] = {}
         for sid, rec in list(self._records.items()):
             if not self._owns_record(rec, enabled_hosts):
                 continue  # local context/actions cannot govern a fleet mirror
@@ -13386,6 +13473,7 @@ class SessionOrchestrator:
             if rec.status == "complete":
                 continue
             if getattr(rec, "autopilot_paused", False):
+                withheld_reasons[sid] = "paused"
                 continue
             if repos and rec.repo not in repos:
                 continue
@@ -13396,6 +13484,8 @@ class SessionOrchestrator:
         repo_of = {sid: self._records[sid].repo for sid in out}
         candidate_repos = {r for r in repo_of.values() if r}
         if not candidate_repos:
+            if getattr(self, "_autopilot_ctx", None) is not None:
+                setattr(self._autopilot_ctx, "autopilot_withheld", withheld_reasons)
             return out
         from server.automations.product_policy import assistance_withheld_repos
         try:
@@ -13403,7 +13493,13 @@ class SessionOrchestrator:
                 withheld = await assistance_withheld_repos(db, candidate_repos)
         except Exception:
             log.warning("autopilot.product_policy_unreadable: skipping this tick", exc_info=True)
+            if getattr(self, "_autopilot_ctx", None) is not None:
+                setattr(self._autopilot_ctx, "autopilot_withheld", {
+                    **withheld_reasons, **{sid: "policy_paused" for sid in out}})
             return []
+        withheld_reasons.update({sid: "policy_paused" for sid in out if repo_of[sid] in withheld})
+        if getattr(self, "_autopilot_ctx", None) is not None:
+            setattr(self._autopilot_ctx, "autopilot_withheld", withheld_reasons)
         return [sid for sid in out if repo_of[sid] not in withheld]
 
     async def _autopilot_get_context(self, session_id: str):
@@ -13414,6 +13510,8 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is None:
             return None
+        decision_status = rec.status
+        decision_fence = self._lease_fences().get(session_id)
         goal_text, goal_source = effective_goal(rec)
         stuck: dict = {"kind": rec.status}
         reg = getattr(self, "_registry", None)
@@ -13455,7 +13553,7 @@ class SessionOrchestrator:
         pr_resolution = await self._autopilot_resolve_pr_intent(
             rec, goal_text, goal_source, pr_facts, transcript_tail)
         return DecisionContext(
-            session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
+            session_id=session_id, status=decision_status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck,
             transcript_tail=transcript_tail, ledger={},
@@ -13463,6 +13561,8 @@ class SessionOrchestrator:
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
             seconds_since_human=_secs_since_human,
+            last_human_interaction_at=_last.isoformat() if _last is not None else None,
+            session_fence=decision_fence,
             fleet_context=await self._autopilot_fleet_context(session_id),
             pr_resolution=pr_resolution,
             instructions=getattr(rec, "initial_prompt", None),
@@ -13596,7 +13696,7 @@ class SessionOrchestrator:
         is still seen — the same merge _autopilot_refresh_pr_facts does, but here on
         the cheap per-tick path that feeds met_bar and the fleet snapshot."""
         from server.automations.completion_bar import PrFact, PrFacts
-        seen: dict[int, PrFact] = {}
+        seen: dict[tuple[str, int], PrFact] = {}
         pairs = [(rec.repo, br) for br in self._session_pr_branches(rec) if rec.repo]
         pairs += getattr(rec, "foreign_pr_refs", None) or []
         for pr_repo, br in pairs:
@@ -13609,8 +13709,8 @@ class SessionOrchestrator:
             # would trigger the population-cache-aware refresh.
             if info is None and getattr(self, "_pr_population", None) is not None:
                 info = self._pr_population_pr(pr_repo, br)
-            if info is not None and info.number not in seen:
-                seen[info.number] = PrFact(
+            if info is not None and (pr_repo.lower(), info.number) not in seen:
+                seen[(pr_repo.lower(), info.number)] = PrFact(
                     number=info.number, state=info.state, is_draft=info.is_draft,
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url,
@@ -13716,6 +13816,81 @@ class SessionOrchestrator:
                 entry["text"] = elide_middle(entry["text"], max_chars)
         return tail[-max_entries:]
 
+    async def _autopilot_context_current(self, session_id: str, ctx) -> bool:
+        """Read/propose ledgers still require ownership, including human hand-backs."""
+        return await self._autopilot_may_act(session_id, ctx, observing=True)
+
+    async def _autopilot_may_act(self, session_id: str, ctx, decision=None, *, observing=False) -> bool:
+        """Revalidate the decision against current policy and authoritative ownership.
+
+        This is deliberately fail-closed, unlike diagnostic lease reads or driver
+        recovery. A delayed model answer never authorizes acting on a new turn.
+        """
+        from server.sessions import primary_lease, session_lease
+        from server.automations.autopilot_policy import ACTIONABLE_STATUSES, post_validate
+        from server.automations.product_policy import assistance_withheld_repos
+
+        def local_valid() -> bool:
+            rec = self._records.get(session_id)
+            last = getattr(rec, "last_user_interaction_at", None)
+            applied = observing and getattr(ctx, "action_applied", False)
+            return bool(ctx is not None and rec is not None
+                        and not getattr(self, "_draining", False)
+                        and not getattr(self, "_hb_fenced", False)
+                        and not self._turn_restart_in_flight(session_id)
+                        and (rec.status in ACTIONABLE_STATUSES or applied)
+                        and rec.status not in INACTIVE_SESSION_STATUSES
+                        and (observing or rec.status != "handed_back")
+                        and (applied or rec.status == ctx.status)
+                        and (observing or not getattr(rec, "autopilot_paused", False))
+                        and rec.paused_reason not in _TERMINAL_PAUSE_REASONS
+                        and (last.isoformat() if last is not None else None)
+                        == ctx.last_human_interaction_at)
+
+        if not local_valid():
+            return False
+        try:
+            mode, config = await self._autopilot_read_config()
+            if mode not in (("auto", "propose") if observing else ("auto",)):
+                return False
+            if decision is not None and post_validate(decision, ctx, config).action != decision.action:
+                return False
+            enabled_hosts = await self._enabled_host_names()
+            async with db_session() as db:
+                row = await db.get(DbSession, session_id)
+                if (row is None or not self._owns_record_by_stamp(row.host, enabled_hosts)
+                        or row.status in INACTIVE_SESSION_STATUSES
+                        or (row.status != ctx.status and not (observing and ctx.action_applied))
+                        or (row.autopilot_paused and not observing)):
+                    return False
+                repos = config.get("enabled_repos") or []
+                if repos and row.repo not in repos:
+                    return False
+                if not observing and row.repo and await assistance_withheld_repos(db, {row.repo}):
+                    return False
+            me = self_host_name()
+            if daemon_role() == "primary":
+                lease = await primary_lease.current()
+                if (lease is None or lease.holder != me
+                        or lease.fence != getattr(self, "_lease_fence", None)
+                        or lease.age_s >= PRIMARY_LEASE_TTL_S):
+                    return False
+            held = await session_lease.current(session_id)
+            if ctx.session_fence is not None and (
+                    held is None or held.holder != me or held.fence != ctx.session_fence):
+                return False
+            if session_id in getattr(self, "_drivers", {}):
+                if (held is None or held.holder != me
+                        or held.fence != self._lease_fences().get(session_id)
+                        or held.age_s >= SESSION_LEASE_TTL_S):
+                    return False
+            elif held is not None and held.holder != me and held.age_s < SESSION_LEASE_TTL_S:
+                return False
+        except Exception:
+            log.debug("autopilot.authority_unavailable sid=%s", session_id, exc_info=True)
+            return False
+        return local_valid()
+
     async def _autopilot_apply(self, session_id: str, decision, ctx=None) -> bool:
         """Perform an autopilot Decision through the existing session seams under the
         system identity. Returns True only when a mutation actually happened.
@@ -13739,6 +13914,8 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is None or not self._owns_record(rec, enabled_hosts):
             return False  # ownership may have changed while the decider awaited
+        if not await self._autopilot_may_act(session_id, ctx, decision):
+            return False
         stuck = ctx.stuck if ctx is not None else {}
         ok = False
         try:
@@ -13751,6 +13928,10 @@ class SessionOrchestrator:
                     return False
                 driver = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
                 if driver is None:
+                    return False
+                if ctx.session_fence is None:
+                    ctx.session_fence = self._lease_fences().get(session_id)
+                if not await self._autopilot_may_act(session_id, ctx, decision):
                     return False
                 if getattr(driver, "identity", SYSTEM_IDENTITY) not in _UNOWNED_IDENTITIES:
                     # A real human has attached to this driver (identity upgrades are
@@ -13766,6 +13947,10 @@ class SessionOrchestrator:
                 driver = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
                 if driver is None:
                     return False
+                if ctx.session_fence is None:
+                    ctx.session_fence = self._lease_fences().get(session_id)
+                if not await self._autopilot_may_act(session_id, ctx, decision):
+                    return False
                 if getattr(driver, "identity", SYSTEM_IDENTITY) not in _UNOWNED_IDENTITIES:
                     # Same guard as the approve/deny branch above: QuestionRegistry.resolve
                     # refuses SYSTEM_IDENTITY against a question a real user owns (#2225).
@@ -13777,6 +13962,10 @@ class SessionOrchestrator:
                     session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
             elif act == "nudge" and decision.prompt:
                 if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                    return False
+                if ctx.session_fence is None:
+                    ctx.session_fence = self._lease_fences().get(session_id)
+                if not await self._autopilot_may_act(session_id, ctx, decision):
                     return False
                 ok = (await self.send_prompt(
                     session_id, decision.prompt,
@@ -13857,7 +14046,6 @@ class SessionOrchestrator:
         merging population-cache PRs the per-branch cache missed. Returns None on
         no-repo, poller cooldown, or failure — the caller composes against stale
         facts and says so. Rate limiting lives in the loop (ledger clock)."""
-        from server.automations.completion_bar import PrFact, PrFacts
         rec = self._records.get(session_id)
         if rec is None or not rec.repo:
             return None
@@ -13865,28 +14053,17 @@ class SessionOrchestrator:
         if poller is None or poller.in_cooldown:
             return None
         try:
+            if not await self._recover_session_pr_links(session_id):
+                return None
             await self.refresh_authored_branches()
             pairs = [(rec.repo, br) for br in self._session_pr_branches(rec)]
             pairs += getattr(rec, "foreign_pr_refs", None) or []
-            await poller.refresh_once(pairs)
+            if not await poller.refresh_once(pairs):
+                return None
         except Exception:
             log.warning("autopilot.refresh_pr_facts failed sid=%s", session_id, exc_info=True)
             return None
-        facts = self._autopilot_pr_facts(rec)
-        known = {p.number for p in facts.prs}
-        extra = []
-        for br in self._session_pr_branches(rec):
-            info = self._pr_population_pr(rec.repo, br)
-            if info is not None and info.number not in known:
-                known.add(info.number)
-                extra.append(PrFact(
-                    number=info.number, state=info.state, is_draft=info.is_draft,
-                    auto_merge_enabled=info.auto_merge_enabled,
-                    in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks, is_docs_only=info.docs_only))
-        if extra:
-            facts = PrFacts(has_repo=facts.has_repo, prs=facts.prs + tuple(extra))
-        return facts
+        return self._autopilot_pr_facts(rec)
 
     async def _autopilot_compose(self, ctx, decision):
         """Compose the actual nudge text (spec §3): rich transcript window + the
@@ -13904,15 +14081,25 @@ class SessionOrchestrator:
             facts_verified=getattr(ctx, "facts_verified", False),
             _config_dir=cfg_dir)
 
-    async def _autopilot_archive(self, session_id: str) -> bool:
+    async def _autopilot_archive(self, session_id: str, ctx=None) -> bool:
         """Archive a goal-met session (the loop's terminal-rest seam). Reversible —
         the session moves to the Archived tab and can be unarchived.
 
         Snapshots the decision features (goal, repo, PR state) so that if a human later
         unarchives it, `unarchive` can record a reversal heuristic the auto-archive
         algorithm learns from. Stamps provenance archived_by='autopilot'."""
+        if not await self._autopilot_may_act(session_id, ctx):
+            return False
+        _mode, config = await self._autopilot_read_config()
+        if (not config.get("auto_archive_completed", True)
+                or (config.get("auto_archive_origins") and ctx.origin not in config["auto_archive_origins"])):
+            return False
+        if not await self._autopilot_may_act(session_id, ctx):
+            return False
         context = None
         rec = self._records.get(session_id)
+        if rec is None or getattr(rec, "auto_archive_opt_out_reason", None):
+            return False
         if rec is not None:
             from server.sessions.goals import effective_goal
             goal_text, goal_source = effective_goal(rec)
@@ -13931,6 +14118,9 @@ class SessionOrchestrator:
     async def _autopilot_tick_loop(self, interval: float) -> None:
         """Periodic driver for the autopilot control loop (also nudged on status change)."""
         while True:
+            if getattr(self, "_draining", False) or getattr(self, "_hb_fenced", False):
+                await asyncio.sleep(interval)
+                continue
             try:
                 # Deploy-resume recovery runs here in the always-on LOOP — before the
                 # mode-gated tick() — so dropped sessions recover even when autopilot
@@ -13943,7 +14133,8 @@ class SessionOrchestrator:
                 # no other trigger back to the completion gate (`_autopilot_list_governed`
                 # excludes `complete` from the mode-gated tick below), so this must not be
                 # gated by autopilot's mode either.
-                await self._recheck_stuck_complete_sessions_once()
+                if daemon_role() == "primary":
+                    await self._recheck_stuck_complete_sessions_once()
             except Exception:  # pragma: no cover — recheck must never stall the loop
                 log.warning("completion.recheck_loop_error", exc_info=True)
             try:
