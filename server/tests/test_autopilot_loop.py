@@ -574,7 +574,7 @@ async def test_composer_failure_preserves_last_facts_refresh():
 
     async def refresh_facts(sid: str):
         refresh_calls.append(sid)
-        return None   # refresh fires but returns no new facts; nudge decision survives
+        return PrFacts(has_repo=True)  # successful refresh confirms no linked PR
 
     async def compose(dc, decision):
         return None   # composer fails → escalation path
@@ -608,7 +608,7 @@ async def test_apply_false_preserves_last_facts_refresh():
 
     async def refresh_facts(sid: str):
         refresh_calls.append(sid)
-        return None   # refresh fires; nudge decision survives
+        return PrFacts(has_repo=True)  # successful refresh confirms no linked PR
 
     async def compose(dc, decision):
         return "Do the thing with file.py to fix the tests."
@@ -683,7 +683,7 @@ async def test_composer_decline_increments_repeat_count_and_short_circuits():
 
 @pytest.mark.asyncio
 async def test_decline_archive_preserves_last_facts_refresh():
-    """I1 regression: no_auto_archive + goal-met where _verify_nudge_facts just stamped
+    """I1 regression: no_auto_archive + goal-met where _verify_facts just stamped
     last_facts_refresh into ctx.ledger.  _decline_archive must use ctx.ledger (not the
     raw pre-verify snapshot) so last_facts_refresh survives the write-back."""
     ctx = FakeCtx()
@@ -703,7 +703,7 @@ async def test_decline_archive_preserves_last_facts_refresh():
         st = await ctx.get_target_state(sid)
         dc = _repo_ctx(sid, status="complete")
         dc.no_auto_archive = True
-        # The downgraded_from="complete" nudge triggers _verify_nudge_facts which stamps
+        # The downgraded_from="complete" nudge triggers _verify_facts which stamps
         # last_facts_refresh.  Carry any persisted ledger so rate-limit doesn't block.
         dc.ledger = {**dc.ledger, **st}
         return dc
@@ -712,13 +712,13 @@ async def test_decline_archive_preserves_last_facts_refresh():
     # the PR bar isn't met); but refresh_facts returns armed facts → restores complete.
     # With no_auto_archive=True, the loop calls _decline_archive.
     loop = _loop(ctx,
-                 decision=Decision(action="nudge", prompt="hint", downgraded_from="complete"),
+                 decision=Decision(action="complete", reason="goal met"),
                  refresh_facts=refresh_facts)
     loop._get_context = get_context
     loop._archive = archive
     await loop.tick()
 
-    # _verify_nudge_facts must have stamped last_facts_refresh
+    # _verify_facts must have stamped last_facts_refresh
     st = ctx.states.get("s1", {})
     assert "last_facts_refresh" in st, (
         "last_facts_refresh must survive the _decline_archive write-back")
@@ -900,3 +900,68 @@ async def test_missing_composer_attempts_are_bounded():
     assert decisions == ["s1"] * 3
     assert ctx.states["s1"]["repeat_count"] == 3
     assert loop._applied == []
+
+
+@pytest.mark.asyncio
+async def test_contradicted_facts_refresh_before_escalation_judgment():
+    ctx = FakeCtx()
+    seen = []
+
+    async def get_context(sid):
+        return _repo_ctx(sid, status="idle", tail=[{"text": "PR #7 is armed"}])
+
+    async def refresh(sid):
+        return _armed_facts()
+
+    async def decide(dc):
+        seen.append(dc.pr_facts)
+        return Decision(action="escalate", reason="test")
+
+    loop = _loop(ctx, refresh_facts=refresh)
+    loop._get_context = get_context
+    loop._decide_fn = decide
+    await loop.tick()
+    assert seen == [_armed_facts()]
+
+
+@pytest.mark.asyncio
+async def test_failed_facts_refresh_defers_without_model_or_action():
+    ctx = FakeCtx()
+    calls = []
+
+    async def get_context(sid):
+        return _repo_ctx(sid, tail=[{"text": "PR #7 is armed"}])
+
+    async def refresh(sid):
+        calls.append(sid)
+        return None
+
+    loop = _loop(ctx, refresh_facts=refresh)
+    loop._get_context = get_context
+    for _ in range(5):
+        await loop.tick()
+    assert loop._applied == []
+    assert calls == ["s1"]
+    assert ctx.states["s1"].get("repeat_count", 0) == 0
+    assert not ctx.emits
+
+
+@pytest.mark.asyncio
+async def test_hand_back_prevents_contradiction_refresh_and_model_call():
+    ctx = FakeCtx()
+    calls = []
+
+    async def refresh(sid):
+        calls.append(sid)
+        return _armed_facts()
+
+    async def get_context(sid):
+        dc = _repo_ctx(sid, status="handed_back", tail=[{"text": "PR #7 is armed"}])
+        return dc
+
+    loop = _loop(ctx, refresh_facts=refresh)
+    loop._get_context = get_context
+    await loop.tick()
+    assert calls == []
+    assert loop._applied == []
+    assert ctx.states["s1"]["escalated"]

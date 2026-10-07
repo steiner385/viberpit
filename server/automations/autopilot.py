@@ -164,9 +164,10 @@ class AutopilotLoop:
 
         decision = pre_decide(ctx, config, now)
         if decision is None:
-            decision = post_validate(await self._decide_fn(ctx), ctx, config)
-        if decision.action == "nudge":
-            decision = await self._verify_nudge_facts(sid, ctx, decision, now)
+            decision = await self._verify_facts(sid, ctx, now)
+            if decision is None:
+                decision = post_validate(await self._decide_fn(ctx), ctx, config)
+        ledger = ctx.ledger
         if decision.action == "skip":
             # Observing a wait is not an assistance attempt. In particular, neither
             # deference nor an exhausted hourly budget consumes the loop allowance.
@@ -324,36 +325,35 @@ class AutopilotLoop:
                    escalated=False)
         await self._ctx.set_target_state(sid, new)
 
-    async def _verify_nudge_facts(self, sid: str, ctx: DecisionContext,
-                                  decision: Decision, now: float) -> Decision:
-        """Verify-before-directing (spec §2): when the cached PR facts contradict
-        the session's claims (or a self-declared complete), refresh ground truth
-        once per FACTS_REFRESH_MIN_INTERVAL_S and re-judge. A goal verified met
-        restores the original `complete` — the nudge never happens."""
+    async def _verify_facts(self, sid: str, ctx: DecisionContext,
+                            now: float) -> Decision | None:
+        """Refresh contradictory evidence before any model judgment, once per cooldown.
+
+        An unavailable refresh is a wait, never proof that the claimed work is
+        absent. Hard guardrails have already run, including explicit hand-backs.
+        """
         from .autopilot_policy import FACTS_REFRESH_MIN_INTERVAL_S, facts_contradicted
         if self._refresh_facts is None or not facts_contradicted(ctx):
-            return decision
-        ledger = ctx.ledger or {}
-        if now - float(ledger.get("last_facts_refresh", 0.0)) < FACTS_REFRESH_MIN_INTERVAL_S:
-            return decision
+            return None
+        ledger = ctx.ledger
+        if ("last_facts_refresh" in ledger
+                and now - float(ledger["last_facts_refresh"]) < FACTS_REFRESH_MIN_INTERVAL_S):
+            return Decision(action="skip", reason="PR facts unavailable — refresh cooldown")
         new = dict(ledger)
         new["last_facts_refresh"] = now
         await self._ctx.set_target_state(sid, new)
         ctx.ledger = new
-        fresh_obj = await self._refresh_facts(sid)
+        try:
+            fresh_obj = await self._refresh_facts(sid)
+        except Exception:
+            log.warning("autopilot.facts_refresh_failed sid=%s", sid, exc_info=True)
+            fresh_obj = None
         if fresh_obj is None:
-            return decision          # cooldown/failure: compose against stale facts
+            return Decision(action="skip", reason="PR facts unavailable — refresh deferred")
         from .completion_bar import PrFacts
-        fresh = cast(PrFacts, fresh_obj)
-        ctx.pr_facts = fresh
+        ctx.pr_facts = cast(PrFacts, fresh_obj)
         ctx.facts_verified = True
-        if decision.downgraded_from == "complete":
-            from .completion_bar import met_bar
-            verdict = met_bar(ctx.effective_goal, ctx.goal_source, fresh,
-                              ctx.pr_resolution, instructions=ctx.instructions)
-            if verdict.met:
-                return Decision(action="complete", reason=f"verified: {verdict.reason}")
-        return decision
+        return None
 
     async def _compose_nudge_decision(self, sid: str, ctx: DecisionContext,
                                       decision: Decision, now: float) -> Decision:

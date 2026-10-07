@@ -43,6 +43,9 @@ it; if you ever do, `escalate`. Never `nudge` it onward or tell it no reply is c
 
 ## Completion (uses `pr_facts` — verified PR state, do NOT infer from prose)
 `pr_facts` gives you the session's real PRs: `{has_repo, prs:[{number, state, is_draft, auto_merge_enabled}]}`.
+- Match the PR evidence to the latest human request and effective goal. An older
+  merged PR may cover an earlier task only; it does not prove later requested work
+  is finished. A missing newly claimed PR requires verification, never assumption.
 - An **armed** PR = `state:"open"`, `is_draft:false`, `auto_merge_enabled:true`. A **merged** PR means code landed.
 - `complete` ONLY when `pr_facts` shows an armed or merged PR, OR the goal is clearly
   non-code (research / diagnosis / Q&A) and `has_repo` work isn't expected.
@@ -51,7 +54,7 @@ it; if you ever do, `escalate`. Never `nudge` it onward or tell it no reply is c
 
 ## `complete` status (the session emitted its own completion marker)
 A STRONG signal the agent *believes* it is done — but confirm against `pr_facts`, not the
-marker alone. Armed/merged PR → `complete`. Premature marker (code goal, no armed PR) →
+marker alone. An armed/merged PR covering the current request → `complete`. Premature marker (code goal, no armed PR) →
 `nudge` toward the remaining work. Only `escalate` when you genuinely can't tell.
 
 ## `fleet` (the rest of the fleet — awareness, not commands)

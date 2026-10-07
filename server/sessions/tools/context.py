@@ -39,9 +39,9 @@ class SessionToolContext:
     #: is invisible, and a session cannot tell otherwise.
     signal_prose: Callable[[str], Awaitable[str | None]] | None = None
     #: ``note_shared_pr(repo, number)``: bound by the orchestrator so a PR the session
-    #: shares via `share_artifact` in another repo counts as a PR fact for the
+    #: shares via `share_artifact` counts as a PR fact for the
     #: completion bar (#2663). None when unwired (tests, Codex).
-    note_shared_pr: Callable[[str, int], Awaitable[None]] | None = None
+    note_shared_pr: Callable[[str, int], Awaitable[bool | None]] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:

@@ -77,6 +77,86 @@ def github_pr_ref(url: str) -> tuple[str, int] | None:
     return (m.group(1), int(m.group(2))) if m else None
 
 
+
+def github_pr_refs(text: str) -> set[tuple[str, int]]:
+    """Repository-qualified PR links in text; association must be verified separately."""
+    refs = set()
+    for url in re.findall(r"https?://(?:www\.)?github\.com/[^\s<>\\\"')]+", text):
+        ref = github_pr_ref(url.rstrip(".,;"))
+        if ref is not None:
+            refs.add((ref[0].lower(), ref[1]))
+    return refs
+
+
+def created_pr_refs(events) -> set[tuple[str, int]]:
+    """Recover ownership from paired successful shell `gh pr create` results.
+
+    Reads provider-neutral replay events only. Prose, failed tools, view/list
+    output and unpaired results cannot associate a PR with the session.
+    """
+    import json
+    import shlex
+    from server.sessions.events import ToolCall, ToolResult
+
+    def creates_pr(command: str) -> bool:
+        # Here-doc bodies are data, even when they contain command examples.
+        lines = command.splitlines(keepends=True)
+        script: list[str] = []
+        terminator = None
+        for line in lines:
+            if terminator is not None:
+                if line.strip() == terminator:
+                    terminator = None
+                continue
+            script.append(line)
+            match = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z_0-9]*)['\"]?", line)
+            if match:
+                terminator = match.group(1)
+        try:
+            lexer = shlex.shlex("".join(script), posix=True, punctuation_chars=";&|()\n")
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return False
+        return any(tokens[i:i + 3] == ["gh", "pr", "create"]
+                   and (i == 0 or tokens[i - 1] in (";", "&&", "||", "|", "(", "\n"))
+                   for i in range(len(tokens)))
+
+    calls: set[tuple[str | None, str]] = set()
+    refs: set[tuple[str, int]] = set()
+    for event in events:
+        key = (getattr(event, "parent_tool_use_id", None), getattr(event, "tool_id", ""))
+        if isinstance(event, ToolCall):
+            commands = []
+            if event.name in ("Bash", "exec_command", "functions.exec_command"):
+                commands = [event.input.get("command") or event.input.get("cmd") or ""]
+            elif event.name == "functions.exec":
+                code = event.input.get("code") or event.input.get("input") or ""
+                # Only literal shell arguments to exec_command; never evaluate JS.
+                for match in re.finditer(r'exec_command\(\s*\{\s*["\']?cmd["\']?\s*:\s*("(?:[^"\\]|\\.)*")', code):
+                    try:
+                        commands.append(json.loads(match.group(1)))
+                    except ValueError:
+                        continue
+            if any(isinstance(cmd, str) and creates_pr(cmd) for cmd in commands):
+                calls.add(key)
+        elif isinstance(event, ToolResult) and key in calls:
+            calls.remove(key)
+            if not event.ok:
+                continue
+            payload = event.payload
+            if any(k in payload and payload[k] != 0 for k in ("exitCode", "exit_code")):
+                continue
+            # Nested exec output carries its shell exit code inside text JSON.
+            text = json.dumps(payload, ensure_ascii=False)
+            if re.search(r'\\?"exit_code\\?"\s*:\s*(?:null|[1-9][0-9]*|-)', text):
+                continue
+            found = github_pr_refs(text)
+            if len(found) == 1:
+                refs.update(found)
+    return refs
+
 def read_image(value: str) -> tuple[bytes, str]:
     """Read an image the session named, on this host. Returns ``(bytes, media_type)``.
 

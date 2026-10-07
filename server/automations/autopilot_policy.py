@@ -164,18 +164,34 @@ def claimed_pr_numbers(transcript_tail: list[dict]) -> set[int]:
 
 def facts_contradicted(ctx: DecisionContext) -> bool:
     """True when the cached pr_facts look stale enough to verify before directing:
-    the session claims a PR the cache doesn't know, or it self-declared complete,
-    while the cache shows no armed/merged PR. No facts / no repo -> nothing to
+    the session claims a PR the cache doesn't know (even alongside older merged
+    work), or it self-declared complete without armed/merged facts. No facts / no repo -> nothing to
     verify (never triggers a refresh)."""
     facts = ctx.pr_facts
     if facts is None or not facts.has_repo:
         return False
-    if facts.merged_pr is not None or facts.armed_pr is not None:
-        return False
-    known = {p.number for p in facts.prs}
-    if claimed_pr_numbers(ctx.transcript_tail) - known:
+    if missing_claimed_prs(ctx):
         return True
-    return ctx.status == "complete"
+    return ctx.status == "complete" and facts.merged_pr is None and facts.armed_pr is None
+
+
+def missing_claimed_prs(ctx: DecisionContext) -> set[tuple[str, int]]:
+    """Claims trigger verification only; they never establish session ownership."""
+    from server.sessions.artifacts import github_pr_ref, github_pr_refs
+    claims: set[tuple[str, int]] = set()
+    for entry in ctx.transcript_tail or []:
+        text = entry.get("text", "") or ""
+        claims.update(github_pr_refs(text))
+        if ctx.repo:
+            claims.update((ctx.repo.lower(), n) for n in claimed_pr_numbers([entry]))
+    known = set()
+    for pr in ctx.pr_facts.prs if ctx.pr_facts is not None else ():
+        ref = github_pr_ref(pr.url)
+        if ref is not None:
+            known.add((ref[0].lower(), ref[1]))
+        elif ctx.repo:
+            known.add((ctx.repo.lower(), pr.number))
+    return claims - known
 
 
 def _token_set(text: str) -> set[str]:
@@ -284,6 +300,8 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # 7866e6a5 was archived over a live hand-back question this way (#1756).
         return Decision(action="escalate",
                         reason=f"open {stuck['kind']} pending — cannot archive")
+    if decision.action == "complete" and missing_claimed_prs(ctx):
+        return Decision(action="skip", reason="PR facts unavailable — claimed PR not linked to session")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally

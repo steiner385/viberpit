@@ -1866,21 +1866,85 @@ class SessionOrchestrator:
         self.register_overlay(
             session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
 
-    async def _note_shared_pr(self, session_id: str, repo: str, number: int) -> None:
-        """Track a PR the session shared in a repo other than its own, so the
-        completion bar counts it (#2663). Resolves the head branch once, records the
-        ``(repo, branch)`` pair, and primes the poller cache for it."""
+    async def _note_shared_pr(self, session_id: str, repo: str, number: int, *,
+                              refresh: bool = True) -> bool:
+        """Associate a session's explicit artifact or successful PR creation result.
+
+        Resolve GitHub's head branch and route own-repo evidence through the
+        canonical persisted authored_branches; foreign links use artifact replay.
+        """
         from server.github.pr_poller import pr_head_ref
         rec = self._records.get(session_id)
-        if rec is None or repo == rec.repo:
-            return
-        branch = await asyncio.to_thread(pr_head_ref, repo, number)
-        if not branch or (repo, branch) in rec.foreign_pr_refs:
-            return
-        rec.foreign_pr_refs.append((repo, branch))
+        if rec is None:
+            return False
+        linked = getattr(self, "_session_pr_links", {})
+        key = (session_id, repo.lower(), number)
+        branch = linked.get(key) or await asyncio.to_thread(pr_head_ref, repo, number)
+        if not branch:
+            return False
+        if repo.lower() == (rec.repo or "").lower():
+            if branch not in (rec.authored_branches or []):
+                from sqlalchemy import update as sa_update
+                merged = sorted(set(rec.authored_branches or []) | {branch})
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                     .values(authored_branches=merged))
+                rec.authored_branches = merged
+        elif (repo, branch) not in rec.foreign_pr_refs:
+            rec.foreign_pr_refs.append((repo, branch))
+        linked[key] = branch
+        self._session_pr_links = linked
         poller = getattr(self, "_pr_poller", None)
-        if poller is not None and not poller.in_cooldown:
+        if refresh and poller is not None and not poller.in_cooldown:
             await poller.refresh_once([(repo, branch)])
+        return True
+
+    async def _recover_session_pr_links(self, session_id: str) -> bool:
+        """Recover only explicit artifacts and successful creates from normalized replay.
+
+        First recovery reads the bounded-time full replay (including extra-worktree
+        creation); later recoveries use a turn cursor. A failed replay is retried,
+        never treated as verified absence. Durable artifacts restore foreign refs
+        after restart without inventing another persisted PR registry.
+        """
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+        from server.sessions.artifacts import created_pr_refs, github_pr_ref
+        cursors = getattr(self, "_pr_linkage_cursors", {})
+        previous = cursors.get(session_id)
+        # Establish the baseline in one full replay; then probe the tail and
+        # request only the unprocessed suffix when additional turns appeared.
+        window = await self.transcript_window(
+            session_id, limit=None if previous is None else 1, background=True,
+            timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
+        refs: set[tuple[str, int]] = set()
+        total = None
+        if window is not None:
+            total = window.total_turns
+            needed = 1 if previous is None else max(0, total - previous + 1)
+            if needed > 1:
+                window = await self.transcript_window(
+                    session_id, limit=needed, background=True,
+                    timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
+            if window is None:
+                return False
+            refs.update(created_pr_refs(window.events))
+        async with db_session() as db:
+            details = (await db.execute(select(AuditEvent.detail).where(
+                AuditEvent.type == "session.artifact",
+                AuditEvent.detail["session_id"].as_string() == session_id))).scalars().all()
+        for detail in details:
+            if detail.get("kind") == "url":
+                ref = github_pr_ref(detail.get("value", ""))
+                if ref is not None:
+                    refs.add(ref)
+        for repo, number in sorted(refs):
+            if not await self._note_shared_pr(session_id, repo, number, refresh=False):
+                return False
+        if total is not None:
+            cursors[session_id] = total
+            self._pr_linkage_cursors = cursors
+        return window is not None or bool(refs)
 
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
@@ -13597,7 +13661,7 @@ class SessionOrchestrator:
         is still seen — the same merge _autopilot_refresh_pr_facts does, but here on
         the cheap per-tick path that feeds met_bar and the fleet snapshot."""
         from server.automations.completion_bar import PrFact, PrFacts
-        seen: dict[int, PrFact] = {}
+        seen: dict[tuple[str, int], PrFact] = {}
         pairs = [(rec.repo, br) for br in self._session_pr_branches(rec) if rec.repo]
         pairs += getattr(rec, "foreign_pr_refs", None) or []
         for pr_repo, br in pairs:
@@ -13610,8 +13674,8 @@ class SessionOrchestrator:
             # would trigger the population-cache-aware refresh.
             if info is None and getattr(self, "_pr_population", None) is not None:
                 info = self._pr_population_pr(pr_repo, br)
-            if info is not None and info.number not in seen:
-                seen[info.number] = PrFact(
+            if info is not None and (pr_repo.lower(), info.number) not in seen:
+                seen[(pr_repo.lower(), info.number)] = PrFact(
                     number=info.number, state=info.state, is_draft=info.is_draft,
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url,
@@ -13858,7 +13922,6 @@ class SessionOrchestrator:
         merging population-cache PRs the per-branch cache missed. Returns None on
         no-repo, poller cooldown, or failure — the caller composes against stale
         facts and says so. Rate limiting lives in the loop (ledger clock)."""
-        from server.automations.completion_bar import PrFact, PrFacts
         rec = self._records.get(session_id)
         if rec is None or not rec.repo:
             return None
@@ -13866,28 +13929,17 @@ class SessionOrchestrator:
         if poller is None or poller.in_cooldown:
             return None
         try:
+            if not await self._recover_session_pr_links(session_id):
+                return None
             await self.refresh_authored_branches()
             pairs = [(rec.repo, br) for br in self._session_pr_branches(rec)]
             pairs += getattr(rec, "foreign_pr_refs", None) or []
-            await poller.refresh_once(pairs)
+            if not await poller.refresh_once(pairs):
+                return None
         except Exception:
             log.warning("autopilot.refresh_pr_facts failed sid=%s", session_id, exc_info=True)
             return None
-        facts = self._autopilot_pr_facts(rec)
-        known = {p.number for p in facts.prs}
-        extra = []
-        for br in self._session_pr_branches(rec):
-            info = self._pr_population_pr(rec.repo, br)
-            if info is not None and info.number not in known:
-                known.add(info.number)
-                extra.append(PrFact(
-                    number=info.number, state=info.state, is_draft=info.is_draft,
-                    auto_merge_enabled=info.auto_merge_enabled,
-                    in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks, is_docs_only=info.docs_only))
-        if extra:
-            facts = PrFacts(has_repo=facts.has_repo, prs=facts.prs + tuple(extra))
-        return facts
+        return self._autopilot_pr_facts(rec)
 
     async def _autopilot_compose(self, ctx, decision):
         """Compose the actual nudge text (spec §3): rich transcript window + the

@@ -1,0 +1,6 @@
+# Refresh before judging missing PR evidence
+
+- **Symptom:** autopilot asks the user to reconcile a missing PR that was already created or merged, especially from an additional worktree.
+- **Anti-pattern:** refreshing only after a model chooses a nudge lets stale-fact escalations escape verification. Stopping contradiction checks at any older merged PR hides newer missing work. Original-worktree reflogs do not enumerate additional worktrees created by the session.
+- **Fix shape:** apply hard guardrails first, verify contradicted evidence before model judgment, and treat unavailable refreshes as waits. Recover association from paired successful creation tool results or explicit audited artifacts, resolve the actual head ref through GitHub, and persist same-repository branches in the existing authored_branches source. Use repository-qualified PR identities. Old merged work cannot establish that later requests are complete.
+- **Where to look:** autopilot decision/refresh seams, `_note_shared_pr`, normalized transcript replay, `_autopilot_pr_facts`. The population-cache fallback is already canonical in `_autopilot_pr_facts`; remove redundant refresh-side merging rather than maintain a second number-only deduplication path.
