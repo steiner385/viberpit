@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import gzip
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import zlib
 import tomllib
 from pathlib import Path
 
@@ -304,6 +308,8 @@ def validate_framework_lock(root: Path, contract: dict) -> list[str]:
                     errors.append(f'{name}: unknown upstream commit requires reason')
             elif not isinstance(upstream['commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', upstream['commit']):
                 errors.append(f'{name}: upstream commit must be an immutable SHA or null')
+            if 'archive' in upstream:
+                source_archive_metadata(root, upstream)
             admission = entry.get('admission') or {}
             if promoted:
                 if any(not isinstance(admission.get(k), str) or not admission[k].strip() or admission[k] != admission[k].strip() for k in ('author', 'reviewer')) or admission.get('author') == admission.get('reviewer'):
@@ -408,6 +414,100 @@ def validate_framework_lock(root: Path, contract: dict) -> list[str]:
     except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
         errors.append(f'framework lock: {exc}')
     return errors
+
+
+SOURCE_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
+SOURCE_SCAN_MAX_BYTES = 256 * 1024 * 1024
+SOURCE_MEMBER_MAX_BYTES = 32 * 1024 * 1024
+SOURCE_MAX_MEMBERS = 10000
+
+
+def source_archive_metadata(root: Path, upstream: dict) -> dict:
+    """Validate optional GitHub source coordinates; never fetch their URL."""
+    archive = upstream.get('archive')
+    if not isinstance(archive, dict) or set(archive) != {'url', 'sha256', 'prefix'}:
+        raise ContractError('source archive metadata requires url, sha256, prefix')
+    repository = upstream.get('repository', '')
+    commit = upstream.get('commit')
+    if not isinstance(repository, str) or not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ContractError('source archive requires GitHub repository and immutable commit')
+    expected_url = repository.replace('https://github.com/', 'https://codeload.github.com/') + '/tar.gz/' + commit
+    if archive['url'] != expected_url:
+        raise ContractError('source archive URL must identify the pinned repository commit')
+    if not isinstance(archive['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', archive['sha256']):
+        raise ContractError('source archive SHA-256 must be lowercase hex')
+    prefix = archive['prefix']
+    if not isinstance(prefix, str) or not prefix.endswith('/'):
+        raise ContractError('source archive prefix must end with /')
+    framework_path(root, prefix[:-1])
+    return archive
+
+
+class _BoundedSourceReader:
+    """Bound decompressed bytes, including ignored files and tar metadata."""
+    def __init__(self, stream):
+        self.stream = stream
+        self.total = 0
+
+    def read(self, size=-1):
+        remaining = SOURCE_SCAN_MAX_BYTES - self.total
+        data = self.stream.read(min(size, remaining + 1) if size >= 0 else remaining + 1)
+        self.total += len(data)
+        if self.total > SOURCE_SCAN_MAX_BYTES:
+            raise ContractError('source archive expanded scan limit exceeded')
+        return data
+
+
+def verify_framework_source(root: Path, contract: dict, framework: str, archive_path: Path) -> int:
+    """Compare selected locked files to bounded archive bytes without extraction."""
+    errors = validate_framework_lock(root, contract)
+    if errors:
+        raise ContractError('; '.join(errors))
+    lock = load_framework_lock(root, contract)
+    entry = next((item for item in (lock or {}).get('frameworks', []) if item['id'] == framework), None)
+    if entry is None:
+        raise ContractError(f'framework not selected: {framework}')
+    metadata = source_archive_metadata(root, entry['upstream'])
+    # Hash exactly the bytes subsequently parsed; no mutable-path race between reads.
+    with archive_path.open('rb') as source:
+        compressed = source.read(SOURCE_ARCHIVE_MAX_BYTES + 1)
+    if len(compressed) > SOURCE_ARCHIVE_MAX_BYTES:
+        raise ContractError('source archive compressed size limit exceeded')
+    if hashlib.sha256(compressed).hexdigest() != metadata['sha256']:
+        raise ContractError('source archive SHA-256 mismatch')
+    expected = {metadata['prefix'] + path: digest for path, digest in entry['files'].items()}
+    seen: set[str] = set()
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as expanded:
+            reader = _BoundedSourceReader(expanded)
+            with tarfile.open(fileobj=reader, mode='r|') as archive:
+                for count, member in enumerate(archive, 1):
+                    if count > SOURCE_MAX_MEMBERS or member.size > SOURCE_MEMBER_MAX_BYTES:
+                        raise ContractError('source archive member limit exceeded')
+                    if member.size < 0:
+                        raise ContractError('source archive negative member size')
+                    if member.name not in expected:
+                        continue
+                    if member.name in seen:
+                        raise ContractError(f'duplicate selected source member: {member.name}')
+                    if not member.isfile() or member.issparse():
+                        raise ContractError(f'source member must be a regular non-sparse file: {member.name}')
+                    seen.add(member.name)
+                    digest = hashlib.sha256()
+                    with archive.extractfile(member) as content:
+                        for chunk in iter(lambda: content.read(65536), b''):
+                            digest.update(chunk)
+                    if digest.hexdigest() != expected[member.name]:
+                        raise ContractError(f'source file hash mismatch: {member.name}')
+            # Check gzip integrity and bound trailing data after tar's end marker too.
+            while reader.read(65536):
+                pass
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
+        raise ContractError(f'invalid source archive: {exc}') from exc
+    missing = expected.keys() - seen
+    if missing:
+        raise ContractError('source archive missing locked files: ' + ', '.join(sorted(missing)))
+    return len(seen)
 
 
 def sync_skill_links(root: Path, contract: dict, *, fix: bool) -> list[str]:
@@ -768,11 +868,18 @@ def main(argv: list[str] | None = None) -> int:
     migrate_command.add_argument("--claude-commands-dir")
     install = sub.add_parser("install-global")
     install.add_argument("source_root", nargs="?", default=".")
+    verify = sub.add_parser('verify-source')
+    verify.add_argument('root', nargs='?', default='.')
+    verify.add_argument('--framework', required=True)
+    verify.add_argument('--archive', required=True)
     args = parser.parse_args(argv)
     try:
         root = Path(getattr(args, "root", ".")).resolve()
         if args.command == "render":
             render(root)
+        elif args.command == 'verify-source':
+            count = verify_framework_source(root, load_contract(root), args.framework, Path(args.archive))
+            print(f'Source bytes verified: {args.framework}, {count} locked files; no admission granted')
         elif args.command == "check":
             errors = check(root)
             if errors:

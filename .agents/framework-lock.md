@@ -64,3 +64,52 @@ actual contract check through the existing static eval runner. Evals CI includes
   errors. Keep free-form explanatory prose distinct from identity fields.
 - **Where to look:** framework, owner, concern, provider, dependency, admission
   identity fields, and paths entering `framework_path` or Markdown resolution.
+
+## Offline upstream source comparison
+
+An optional `upstream.archive` object contains exactly `url`, `sha256`, and
+`prefix`. For this initial GitHub adapter, `repository` must identify a GitHub
+owner/repository and `commit` must be a full lowercase SHA. The archive URL must
+be `https://codeload.github.com/<owner>/<repository>/tar.gz/<commit>`. It is an
+informational coordinate, never fetched by the validator. `sha256` hashes the
+whole compressed archive; `prefix` is a canonical relative directory ending in
+`/` (for example `impeccable-<commit>/`). Projects without archive metadata retain
+their existing `check` behavior.
+
+After obtaining the archive separately, run:
+
+```sh
+python3 .agents/agentctl.py verify-source . --framework impeccable --archive /path/source.tgz
+```
+
+This validates the current lock and local inventory first, hashes the archive
+before parsing, then compares every selected locked file at `prefix + path`.
+Missing, changed, duplicate selected members, links, and sparse selected files
+fail. The command never extracts, installs, executes, fetches, or edits files.
+Unselected members are ignored for content comparison; their sizes still count
+against resource limits. This is not a complete transitive dependency audit or
+an authenticated publisher signature, and does not change admission state.
+
+Limits are 64 MiB compressed, 256 MiB decompressed scan (including ignored content
+and trailing data), 32 MiB per tar member, and 10,000 members. Raising these limits
+requires a reviewed validator change. Tar metadata and gzip integrity are checked
+within the bounded scan. The caller must supply a trusted lock declaration:
+changing both an archive and its declared digest is not evidence of upstream trust.
+
+`evals/cases/framework-impeccable-projection-integrity.yaml` exercises disposable
+source fixtures offline and requires exactly one installed Impeccable selection
+with both Claude and Codex projections. A real downloaded archive comparison is separate evidence;
+the static fixtures alone do not establish provenance of installed Impeccable.
+
+### Archive diagnostic fix pattern
+
+- **Symptom:** malformed compressed data produces a traceback instead of a contract
+  diagnostic, including a malformed gzip member concatenated after a valid tar.
+- **Anti-pattern:** catching only tar, filesystem, and EOF errors while a gzip
+  reader can also raise `zlib.error` during parsing or trailing-data validation.
+- **Fix shape:** normalize decompressor errors at the same boundary as archive
+  errors, and test both initial corruption and corruption after valid content.
+- **Where to look:** compressed archive readers and their final drain loops.
+  The sibling search found `server/library/snapshots.py` uses a separate tar
+  reader without this diagnostic boundary; snapshot error handling is outside
+  this framework admission change and was not changed.
