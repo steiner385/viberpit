@@ -55,6 +55,13 @@ STALL_DIAG_THRESHOLD_S: float = float(
     os.environ.get("VIBERPIT_STALL_DIAG_THRESHOLD_SEC", "60"))
 RESEND_CAP: int = 3              # auto-resends of a dropped turn per session within RESEND_WINDOW
 RESEND_WINDOW: float = 120.0     # window (seconds) for tracking dropped-turn resends
+# auth_stale ("Not logged in" from a CLI holding a stale in-memory token): same-account
+# relaunches per session within AUTH_STALE_WINDOW, each delayed by the next backoff
+# step. The first is immediate — the relaunch alone re-reads the current credentials;
+# the later waits give a mid-flight refresh on the primary time to land.
+AUTH_STALE_CAP: int = 3
+AUTH_STALE_WINDOW: float = 900.0
+AUTH_STALE_BACKOFF: tuple[float, ...] = (0.0, 15.0, 60.0)
 
 
 class RecoveryState:
@@ -73,6 +80,7 @@ class RecoveryState:
         self._resends: dict[str, list[float]] = defaultdict(list)  # session_id -> resend timestamps
         self._resend_cap = RESEND_CAP
         self._resend_window = RESEND_WINDOW
+        self._auth_stale: dict[str, list[float]] = defaultdict(list)  # session_id -> relaunch timestamps
 
     # --- quarantine -----------------------------------------------------------
     def quarantine(self, account: str, *, until: float) -> None:
@@ -176,3 +184,15 @@ class RecoveryState:
         """True if *session_id* has already auto-resent ``resend_cap`` dropped turns
         within the window."""
         return self.resend_count(session_id, now=now) >= self._resend_cap
+
+    # --- per-session auth_stale relaunch cap ----------------------------------
+    def record_auth_stale(self, session_id: str, *, now: float) -> None:
+        self._auth_stale[session_id].append(now)
+
+    def auth_stale_count(self, session_id: str, *, now: float) -> int:
+        """auth_stale relaunches recorded for *session_id* within AUTH_STALE_WINDOW
+        (expired entries are pruned). Also the index of the next backoff step."""
+        cutoff = now - AUTH_STALE_WINDOW
+        recent = [t for t in self._auth_stale.get(session_id, ()) if t > cutoff]
+        self._auth_stale[session_id] = recent
+        return len(recent)

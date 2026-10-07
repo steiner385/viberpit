@@ -200,8 +200,64 @@ def test_interrupt_control_timeout_is_not_a_startup_timeout():
     assert classify(None, "Control request timeout: interrupt").kind == "other"
 
 
-def test_cli_not_logged_in_is_auth_401():
+def test_cli_not_logged_in_is_auth_stale():
     """#2758: the CLI's no-credential result carries no HTTP status."""
     msg = "authentication_failed | Not logged in · Please run /login"
-    assert classify("driver_error", msg).kind == "auth_401"
-    assert classify(None, "Not logged in").kind == "auth_401"
+    assert classify("driver_error", msg).kind == "auth_stale"
+    assert classify(None, msg).kind == "auth_stale"
+
+
+# 2026-10-07 (session 1c1a0dfb): a long-lived CLI kept a stale OAuth token in memory
+# after the slot was refreshed on disk, and answered every prompt itself with a
+# `<synthetic>` "Not logged in · Please run /login" — never reaching the API. The
+# ResultMessage shape below is the real CLI 2.1.292 output (subtype "success",
+# is_error true, api_error_status null), which the translator surfaces as an
+# `agent_error`. It classified as "other", so nothing tried to recover the session.
+@pytest.mark.parametrize("message", [
+    "Not logged in · Please run /login",
+    "Invalid API key · Please run /login",
+    "  not logged in · please run /login\n",
+])
+def test_cli_local_auth_failure_is_auth_stale(message):
+    f = classify("agent_error", message)
+    assert f.kind == "auth_stale"
+    assert f.is_recoverable
+
+
+def test_helper_wrapped_cli_sentence_is_auth_stale():
+    # The helper path joins the exception and its detail (#2758's exact line).
+    msg = ("Claude Code returned an error result: success detail="
+           "'authentication_failed | Not logged in · Please run /login'")
+    assert classify(None, msg).kind == "auth_stale"
+
+
+@pytest.mark.parametrize("code,message", [
+    # Each auth_stale costs relaunches, and a spent cap rotates the session — so a
+    # loose mention in arbitrary error text must never qualify (security review of
+    # #2771): only the CLI's own sentence does, and a session's error result must
+    # BE that sentence, not merely contain it.
+    ("agent_error", "authentication_failed"),
+    ("agent_error", "the docs say: Please run /login first"),
+    ("agent_error", "Build failed. Not logged in · Please run /login was printed by npm"),
+    ("execution_error", "Not logged in · Please run /login"),
+    ("driver_error", "user is not logged in to the registry"),
+])
+def test_loose_login_text_is_not_auth_stale(code, message):
+    assert classify(code, message).kind != "auth_stale"
+
+
+def test_auth_stale_is_not_a_401_or_org_denial():
+    # A real 401 from the API keeps its own recompose ladder, and an org denial its
+    # rotate-only one — the CLI-local marker must not shadow either.
+    assert classify("api_401", "Not logged in · Please run /login").kind == "auth_401"
+    assert classify(None, "oauth_org_not_allowed · Please run /login").kind == "auth_forbidden"
+
+
+def test_auth_stale_stays_a_warning_for_helpers():
+    import logging
+
+    from server.sessions.failure import log_level
+
+    # Only helpers read log_level. A helper spawns a fresh CLI, so "Not logged in"
+    # there means the host's slot is unusable — a filed issue, not noise (#2758).
+    assert log_level("auth_stale") == logging.WARNING

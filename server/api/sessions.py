@@ -1870,6 +1870,7 @@ async def fix_session_pr(
 async def reload_session(
     session_id: str,
     request: Request,
+    response: Response,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1881,7 +1882,10 @@ async def reload_session(
     and crash recovery use — with the caller's identity threaded onto the new
     driver. 404 for an unknown session; 409 (code = the orchestrator's reason)
     when the session is parked somewhere a rebuild makes no sense (archived,
-    queued, awaiting approval) or the rebuild left it driverless."""
+    queued, awaiting approval) or the rebuild left it driverless. 202 when the
+    rebuild is still running past the daemon's answer window ("reloading"): it
+    finishes in the background, and a prompt sent meanwhile waits for the new
+    driver."""
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
@@ -1890,7 +1894,9 @@ async def reload_session(
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
     result = await orch.reload_session(session_id, identity)
-    if result != "reloaded":
+    if result == "reloading":
+        response.status_code = status.HTTP_202_ACCEPTED
+    elif result != "reloaded":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": result, "message": f"Session could not be reloaded: {result}"},

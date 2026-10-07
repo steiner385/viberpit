@@ -887,3 +887,134 @@ def test_send_prompt_refuses_a_driver_whose_stream_died():
     o._drivers["s1"] = _Dead()
     assert asyncio.run(o.send_prompt("s1", "continue")) == "recovering"
     assert "s1" not in o._last_prompt
+
+
+# ── auth_stale: the CLI answered "Not logged in" from a stale in-memory token ──────
+# 2026-10-07 (session 1c1a0dfb): the account was healthy, other sessions on it kept
+# working, and only a manual reload fixed this one. The ladder: relaunch on the
+# SAME account (re-reads the current credentials, replays the failed prompt) with a
+# growing backoff, at most AUTH_STALE_CAP times per window; dead stored credentials
+# skip straight to the existing needs-reauth + rotate flow.
+
+def _auth_stale_orch(monkeypatch, *, creds_valid=True):
+    o = _make_orch()
+    o.delays = []
+
+    async def spy_reassign(record, new_account, *, reason, replay_last_prompt=True):
+        o.calls.append(("reassign", record.id, new_account, reason, replay_last_prompt))
+        return "rotated"
+    o._reassign = spy_reassign
+
+    async def fake_sleep(delay):
+        o.delays.append(delay)
+    monkeypatch.setattr(orch_mod, "_auth_stale_sleep", fake_sleep)
+
+    async def creds(record):
+        return creds_valid
+    o._stored_credentials_valid = creds
+    return o
+
+
+def test_auth_stale_relaunches_same_account_and_replays(monkeypatch):
+    o = _auth_stale_orch(monkeypatch); rec = _rec(o)
+    asyncio.run(o._recover_session(rec, "auth_stale", None))
+    assert o.calls == [("reassign", "s1", "kindash", "auth_stale", True)]
+    assert o.delays == [R.AUTH_STALE_BACKOFF[0]]
+    # A healthy account is never quarantined or flagged by a stale CLI.
+    assert o._recovery.quarantined(now=1000.0) == frozenset()
+    assert ("needs_reauth", "kindash") not in o.calls
+
+
+def test_auth_stale_backs_off_then_escalates_at_cap(monkeypatch):
+    o = _auth_stale_orch(monkeypatch); rec = _rec(o)
+    for _ in range(R.AUTH_STALE_CAP):
+        asyncio.run(o._recover_session(rec, "auth_stale", None))
+    assert o.delays == list(R.AUTH_STALE_BACKOFF[:R.AUTH_STALE_CAP])
+    assert o.delays == sorted(o.delays) and o.delays[-1] > o.delays[0]
+    relaunches = [c for c in o.calls if c[0] == "reassign"]
+    assert len(relaunches) == R.AUTH_STALE_CAP
+
+    asyncio.run(o._recover_session(rec, "auth_stale", None))   # cap spent
+    assert len([c for c in o.calls if c[0] == "reassign"]) == R.AUTH_STALE_CAP
+    assert ("rotate", "s1", "auth_stale_retry_cap") in o.calls
+    # Stored creds still validate: the account is fine for every OTHER session, so it
+    # is neither quarantined (that would starve them) nor flagged needs-reauth.
+    # _rotate_away already hard-excludes it for THIS session.
+    assert o._recovery.quarantined(now=1000.0) == frozenset()
+    assert ("needs_reauth", "kindash") not in o.calls
+
+
+def test_auth_stale_window_expiry_resets_the_ladder(monkeypatch):
+    o = _auth_stale_orch(monkeypatch); rec = _rec(o)
+    for _ in range(R.AUTH_STALE_CAP):
+        asyncio.run(o._recover_session(rec, "auth_stale", None))
+    o._clock = lambda: 1000.0 + R.AUTH_STALE_WINDOW + 1
+    asyncio.run(o._recover_session(rec, "auth_stale", None))
+    assert o.delays[-1] == R.AUTH_STALE_BACKOFF[0]
+    assert not [c for c in o.calls if c[0] == "rotate"]
+
+
+def test_auth_stale_with_dead_stored_credentials_escalates_to_reauth(monkeypatch):
+    o = _auth_stale_orch(monkeypatch, creds_valid=False); rec = _rec(o)
+    asyncio.run(o._recover_session(rec, "auth_stale", None))
+    assert ("needs_reauth", "kindash") in o.calls
+    assert ("rotate", "s1", "auth_stale_invalid_credentials") in o.calls
+    assert "kindash" in o._recovery.quarantined(now=1000.0)
+    assert not [c for c in o.calls if c[0] == "reassign"]
+
+
+def test_auth_stale_signal_during_an_inflight_recovery_is_ignored(monkeypatch):
+    """Prompts sent while the relaunch is backing off hit the same stale CLI and
+    signal again; they must not start a second, concurrent relaunch."""
+    o = _auth_stale_orch(monkeypatch); rec = _rec(o)
+    gate = asyncio.Event()
+
+    async def slow_sleep(delay):
+        o.delays.append(delay)
+        await gate.wait()
+    monkeypatch.setattr(orch_mod, "_auth_stale_sleep", slow_sleep)
+
+    async def go():
+        first = asyncio.create_task(o._recover_session(rec, "auth_stale", None))
+        await asyncio.sleep(0)
+        await o._recover_session(rec, "auth_stale", None)
+        gate.set()
+        await first
+    asyncio.run(go())
+    assert len([c for c in o.calls if c[0] == "reassign"]) == 1
+
+
+def test_auth_stale_recovery_is_journaled(monkeypatch, caplog):
+    import logging
+    o = _auth_stale_orch(monkeypatch); rec = _rec(o)
+    with caplog.at_level(logging.INFO, logger=orch_mod.log.name):
+        asyncio.run(o._recover_session(rec, "auth_stale", None))
+    actions = [r.fields["action"] for r in caplog.records
+               if getattr(r, "event", None) == "session.auth_recovery"]
+    assert actions == ["relaunch", "relaunched"]
+
+
+@pytest.mark.parametrize("raised,expected", [
+    ("auth", False),        # dead refresh grant → genuinely invalid
+    ("deferred", True),     # a worker defers the refresh to the primary → not proof of death
+    ("boom", True),         # unknown failure → fail open, let the relaunch decide
+    (None, True),
+])
+def test_stored_credentials_valid(monkeypatch, raised, expected):
+    from viberpit.oauth import AuthError
+    from viberpit.accounts import RefreshDeferred
+    o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    o._session_uses_setup_token = lambda rec: False
+    rec = SessionRecord(id="s1", name="n", account="kindash", engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp/x")
+    exc = {"auth": AuthError("invalid_grant"), "deferred": RefreshDeferred("kindash"),
+           "boom": RuntimeError("boom"), None: None}[raised]
+    seen = []
+
+    async def refresh(account):
+        seen.append(account)
+        if exc is not None:
+            raise exc
+    o._refresh_stored_token = refresh
+    assert asyncio.run(o._stored_credentials_valid(rec)) is expected
+    assert seen == ["kindash"]

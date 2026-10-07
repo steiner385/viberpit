@@ -30,8 +30,14 @@ _RETRY_AFTER_CAP = 120.0
 # recompose or retry, but there IS a recovery — rotate to another account, the same
 # way a 401 that survives recompose does. Only the "try again on this account"
 # step is skipped (see orchestrator._recover_session).
-_RECOVERABLE = frozenset({"rate_limit", "auth_401", "auth_forbidden", "process_crash",
-                          "turn_dropped", "stream_lost"})
+#
+# ``auth_stale`` — the CLI answered the prompt ITSELF with a ``<synthetic>``
+# "Not logged in · Please run /login" and never reached the API. Seen 2026-10-07
+# (session 1c1a0dfb): a long-lived CLI kept a stale OAuth token in memory after the
+# slot was refreshed on disk, while every other session on the account worked. A
+# relaunch re-reads the current credentials; see orchestrator._recover_auth_stale.
+_RECOVERABLE = frozenset({"rate_limit", "auth_401", "auth_forbidden", "auth_stale",
+                          "process_crash", "turn_dropped", "stream_lost"})
 
 _OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
 _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
@@ -47,14 +53,32 @@ _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 # message's ``error`` field ``oauth_org_not_allowed``, and the sentence shown to
 # the user. A bare "403" in prose is NOT a marker — an unrelated number must
 # never cost an account its helper duty.
-_NOT_LOGGED_IN_MARKERS = ("authentication_failed", "not logged in")
-
 _FORBIDDEN_MARKERS = (
     "oauth_not_allowed_for_organization",
     "oauth_org_not_allowed",
     "organization has disabled claude",
     "ask your admin to enable access",
 )
+
+# ``auth_stale`` is matched on the CLI's own SENTENCE only (CLI 2.1.292, reproduced
+# with an empty CLAUDE_CONFIG_DIR): "Not logged in · Please run /login", or
+# "Invalid API key · Please run /login". Never on a fragment: every auth_stale
+# costs relaunches and a spent cap rotates the session, so a loose "please run
+# /login" or "authentication_failed" in arbitrary error text must not qualify. A
+# session's own error result (``agent_error`` — the ResultMessage has no
+# api_error_status) must BE the sentence; the helper and drain-fallback shapes
+# wrap it ("... detail='authentication_failed | Not logged in · Please run
+# /login'"), so for an uncoded or ``driver_error`` failure it may be embedded.
+_AUTH_STALE_SENTENCE = re.compile(
+    r"(?:not logged in|invalid api key) \u00b7 please run /login", re.IGNORECASE)
+_AUTH_STALE_EMBEDDED_CODES = frozenset({"", "driver_error"})
+
+
+def _is_auth_stale(code: str, text: str) -> bool:
+    if code == "agent_error":
+        return _AUTH_STALE_SENTENCE.fullmatch(text.strip()) is not None
+    return code in _AUTH_STALE_EMBEDDED_CODES and _AUTH_STALE_SENTENCE.search(text) is not None
+
 
 # ``network`` — the host could not reach the API at all: a dead resolver or an
 # unreachable endpoint. Not recoverable by rotation (every account shares the
@@ -80,13 +104,16 @@ _STARTUP_TIMEOUT_MARKERS = ("control request timeout: initialize",)
 # Kinds that are an external condition, never a defect of ours: logged below
 # WARNING, because WARNING is the auto-error filing decision and filing an issue
 # per throttle (#1688, #1837), DNS outage (#2623) or slow CLI start (#2664) files
-# noise.
+# noise. ``auth_stale`` is deliberately NOT here: a helper spawns a fresh CLI, so
+# for a helper "Not logged in" means the host's slot really is unusable (#2758 —
+# the same 2026-10-07 incident, seen by goal inference first) and stays a filed
+# WARNING. Live sessions do not read this; they journal their own recovery.
 EXTERNAL_CONDITION_KINDS = frozenset({"rate_limit", "network", "cli_startup_timeout"})
 
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "network" | "cli_startup_timeout" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "auth_forbidden" | "auth_stale" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "network" | "cli_startup_timeout" | "other"
     retry_after: float | None = None
 
     @property
@@ -167,10 +194,9 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
     if any(m in low for m in _FORBIDDEN_MARKERS):
         return TurnFailure(kind="auth_forbidden")
 
-    # The CLI had no credential at all (#2758): its result subtype is
-    # "authentication_failed" / "Not logged in" with no HTTP status to match.
-    if any(m in low for m in _NOT_LOGGED_IN_MARKERS):
-        return TurnFailure(kind="auth_401")
+    # The CLI refused locally — no request was made, so nothing below applies.
+    if _is_auth_stale(code, text):
+        return TurnFailure(kind="auth_stale")
 
     # A turn that dropped before the model committed any continuation — the CLI tags it
     # "[ede_diagnostic] ... stop_reason=null". Distinct from the orphaned-tool_use variant
