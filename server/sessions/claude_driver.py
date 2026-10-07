@@ -122,6 +122,11 @@ def _scan_transcript_tail(path: str, needle: str, *, last_size: int) -> tuple[bo
 
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
+# auth_stale: the CLI answered "Not logged in" from a stale in-memory token. The
+# orchestrator relaunches it on the current credentials and re-sends the prompt.
+_RECOVERING_AUTH_MSG = ("Claude Code lost its login — restarting the session with "
+                        "fresh credentials and re-sending your message…")
+_SOFT_RECOVERY_MSGS = {"turn_dropped": _RECOVERING_MSG, "auth_stale": _RECOVERING_AUTH_MSG}
 
 # Prefix on the deny message a prompt sends to a permission it unparks (see
 # send_prompt). It has to say two things the model would otherwise get wrong: the tool
@@ -1486,14 +1491,15 @@ class ClaudeAgentDriver:
             elif isinstance(e, ev.ErrorEvent):
                 failure = await self._maybe_signal_recovery(
                     e.code, e.raw_message or e.message)
-                if failure.kind == "turn_dropped":
-                    # Self-healing auto-resend is in flight (signalled above).
-                    # Show a soft "recovering" notice instead of the alarming
-                    # red error; the orchestrator pauses with a red surface only
-                    # if the resend cap is hit.
+                soft = _SOFT_RECOVERY_MSGS.get(failure.kind)
+                if soft is not None:
+                    # Self-healing recovery is in flight (signalled above): an
+                    # auto-resend for a dropped turn, a relaunch on fresh
+                    # credentials for auth_stale. Show a soft "recovering" notice
+                    # instead of the alarming red error; the orchestrator pauses
+                    # with a red surface only if its retry cap is hit.
                     self._note_progress(e)
-                    self._emit(ev.Recovering(
-                        turn_id=e.turn_id, message=_RECOVERING_MSG))
+                    self._emit(ev.Recovering(turn_id=e.turn_id, message=soft))
                     continue
             if isinstance(e, (ev.SubAgentStarted, ev.SubAgentEnded)):
                 if isinstance(e, ev.SubAgentStarted):

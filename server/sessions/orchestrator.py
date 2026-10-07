@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 from viberpit import accounts as ccswitch_accounts
 from viberpit import brand
 from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
+from viberpit import oauth as _oauth
 from viberpit.accounts import (
     RefreshDeferred,
     eligible_enabled_accounts as _eligible_enabled_accounts,
@@ -131,6 +132,7 @@ from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_FORBIDDEN,
     QUARANTINE_MAX, STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED, STALL_DIAG_THRESHOLD_S,
+    AUTH_STALE_BACKOFF, AUTH_STALE_CAP,
 )
 from server.sessions.selection import (  # noqa: F401
     AllAccountsBusy, Picked, has_alternative_account, select_account,
@@ -191,6 +193,23 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "conden
 # rehydrate()'s interrupted_by_restart flag (#434) covers those instead. "working"
 # is the legacy pre-crash spelling of an active turn (see rehydrate()).
 _REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
+
+# The auth_stale backoff wait (_recover_auth_stale). A module seam so tests observe the
+# delays without sleeping them.
+_auth_stale_sleep = asyncio.sleep
+
+# How long send_prompt holds a prompt that arrives mid driver swap (_reassign) before
+# handing it back as "recovering". Must stay under the edge→daemon RPC read timeout
+# (ipc.client._TIMEOUT.read, 30 s): a hold the edge gives up on surfaces as
+# "unavailable", the browser re-queues, and the daemon delivers it anyway — twice.
+_SWAP_PROMPT_HOLD_S = 20.0
+
+# How long reload_session waits for its swap before answering "reloading" and letting
+# the rebuild finish in the background. A rebuild (bounded interrupt, close + transcript
+# flush, CLI cold start) can run past the callers' HTTP budgets — the assistant client's
+# 20 s and the edge RPC's 30 s — which reported a ReadTimeout for a reload that went on
+# to succeed (2026-10-07). Prompts sent meanwhile wait the swap out (send_prompt).
+_RELOAD_RESPONSE_WAIT_S = 10.0
 
 # rotate_to_best replays the last prompt for these. The two parked shapes are the
 # whole point of the action — a stalled session's last prompt is the one that failed.
@@ -1008,6 +1027,9 @@ class SessionOrchestrator:
         self._stall_diag_logged: dict[str, float] = {}
         self._recompose_attempts: dict[str, float] = {}  # session_id → last recompose ts
         self._recompose_ttl: float = 60.0
+        # Sessions with an auth_stale relaunch in flight (backing off or rebuilding):
+        # prompts sent meanwhile hit the same stale CLI and signal again.
+        self._auth_stale_inflight: set[str] = set()
         # Initial prompts parked for the WS bridge's first live attach. Only TWO
         # shapes live here (see _initial_prompt_waits_for_attach): a bare slash
         # command typed as the initial prompt, which must run through the bridge's
@@ -17972,22 +17994,41 @@ class SessionOrchestrator:
         * The rebuilt driver is re-threaded to *identity* so the caller owns
           whatever it asks next (see ``_rethread_identity``).
 
-        Returns "reloaded" | "skipped:<reason>" | "no_driver".
+        The rebuild can outlast the caller's HTTP budget, so this answers within
+        ``_RELOAD_RESPONSE_WAIT_S``: "reloading" means the swap is still running and
+        finishes in the background (prompts sent meanwhile wait for the new driver —
+        see send_prompt), rather than a ReadTimeout for a reload that succeeds.
+
+        Returns "reloaded" | "reloading" | "skipped:<reason>" | "no_driver".
         """
         record = self._records.get(session_id)
         if record is None:
             return "skipped:not-found"
         if record.status in _NOT_RELOADABLE_STATUSES:
             return f"skipped:{record.status}"
+        replayed = record.status in _REPLAY_STATUSES
+        swap = self._spawn(self._reload_swap(record, identity, replayed=replayed),
+                           name=f"reload-{session_id}")
+        done, _ = await asyncio.wait({swap}, timeout=_RELOAD_RESPONSE_WAIT_S)
+        if not done:
+            log_event(log, logging.INFO, "session.reload_pending", session_id=session_id,
+                      identity=identity, waited_s=_RELOAD_RESPONSE_WAIT_S)
+            return "reloading"
+        return swap.result()
+
+    async def _reload_swap(self, record: SessionRecord, identity: str, *,
+                           replayed: bool) -> str:
+        """reload_session's rebuild, run as its own task so the caller's answer is
+        not tied to how long the CLI takes to come back."""
         await self._reassign(record, record.account, reason="reload",
-                             replay_last_prompt=record.status in _REPLAY_STATUSES)
-        driver = self._drivers.get(session_id)
+                             replay_last_prompt=replayed)
+        driver = self._drivers.get(record.id)
         if driver is None:
             # _reassign never raises: a failed rebuild paused the session and logged.
             return "no_driver"
         _rethread_identity(driver, identity)
-        log_event(log, logging.INFO, "session.reload", session_id=session_id,
-                  identity=identity, replayed=record.status in _REPLAY_STATUSES)
+        log_event(log, logging.INFO, "session.reload", session_id=record.id,
+                  identity=identity, replayed=replayed)
         return "reloaded"
 
     async def rotate_to_best(self, session_id: str,
@@ -18913,6 +18954,23 @@ class SessionOrchestrator:
             log.info("send_prompt rejected: drain in progress session=%s", session_id)
             self._publish_event({"type": "updatePending"})
             return "draining"
+        # getattr: some harnesses build the orchestrator via __new__ (see line ~3094).
+        swap = getattr(self, "_swapping", {}).get(session_id)
+        if swap is not None:
+            # A driver swap is in flight (reload, rotation, recompose, crash
+            # recovery). The installed driver is the one being closed: its aclose()
+            # clears the queue and a fresh turn dies with its client, so a prompt
+            # handed to it is "sent" and never delivered — the first message after a
+            # reload, 2026-10-07. _reassign carried the old queue over before the
+            # close; a prompt arriving after that waits for the new driver instead.
+            log.info("send_prompt: driver swap in flight — holding the prompt for the "
+                     "new driver session=%s", session_id)
+            done, _ = await asyncio.wait({swap}, timeout=_SWAP_PROMPT_HOLD_S)
+            if not done:
+                log.warning("send_prompt: driver swap still in flight after %.0fs — "
+                            "prompt refused for a re-send session=%s",
+                            _SWAP_PROMPT_HOLD_S, session_id)
+                return "recovering"
         d = self._drivers.get(session_id)
         if not d:
             # INFO, not WARNING: the ws.prompt bridge retries this by design
@@ -20516,6 +20574,11 @@ class SessionOrchestrator:
             self._recovery.record_resend(record.id, now=now)
             await self._replay_same_account(record, 0.0, precompact=precompact)
             return
+        if kind == "auth_stale":
+            # A same-account relaunch, not a rotation: it has its own cap below, and
+            # only its escalation rotates (which the rotation cap then governs).
+            await self._recover_auth_stale(record)
+            return
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
@@ -20588,6 +20651,85 @@ class SessionOrchestrator:
             await self._rotate_away(record, reason="auth_forbidden")
             return
 
+    async def _recover_auth_stale(self, record: SessionRecord) -> None:
+        """Heal a CLI that answers "Not logged in" from a stale in-memory token.
+
+        2026-10-07 (session 1c1a0dfb): the slot's OAuth token was rotated on disk
+        while a long-lived CLI kept the old one; every prompt got a ``<synthetic>``
+        "Not logged in · Please run /login" while every other session on the same
+        account worked. A relaunch on the SAME account re-reads the current
+        credentials, and ``_reassign`` replays the prompt that failed.
+
+        Bounded: at most AUTH_STALE_CAP relaunches per AUTH_STALE_WINDOW, each after
+        the next AUTH_STALE_BACKOFF step. Escalation joins the existing flows — dead
+        stored credentials → needs-reauth + quarantine + rotate (the auth_401
+        terminal step); a spent cap on credentials that still validate → quarantine
+        + rotate without needs-reauth, since re-logging in is not the fix. Rotation
+        parks the session (``all_accounts_busy``) when nothing else can take it.
+        Journaled as ``session.auth_recovery`` with the ``action`` taken.
+        """
+        inflight = self._auth_stale_inflight
+        if record.id in inflight:
+            log_event(log, logging.INFO, "session.auth_recovery", session_id=record.id,
+                      account=record.account, action="already_recovering")
+            return
+        inflight.add(record.id)
+        try:
+            now = self._clock()
+            attempt = self._recovery.auth_stale_count(record.id, now=now)
+            valid = await self._stored_credentials_valid(record)
+            if not valid or attempt >= AUTH_STALE_CAP:
+                reason = ("auth_stale_invalid_credentials" if not valid
+                          else "auth_stale_retry_cap")
+                log_event(log, logging.WARNING, "session.auth_recovery",
+                          session_id=record.id, account=record.account,
+                          action="escalate", reason=reason, attempts=attempt)
+                self._recovery.quarantine(record.account, until=now + QUARANTINE_401)
+                if not valid:
+                    self._mark_needs_reauth(record.account)
+                await self._rotate_away(record, reason=reason)
+                return
+            delay = AUTH_STALE_BACKOFF[min(attempt, len(AUTH_STALE_BACKOFF) - 1)]
+            self._recovery.record_auth_stale(record.id, now=now)
+            log_event(log, logging.INFO, "session.auth_recovery", session_id=record.id,
+                      account=record.account, action="relaunch", attempt=attempt + 1,
+                      delay_s=delay)
+            await _auth_stale_sleep(delay)
+            if self._records.get(record.id) is not record:
+                return  # archived/closed while backing off
+            result = await self._reassign(record, record.account, reason="auth_stale")
+            log_event(log, logging.INFO, "session.auth_recovery", session_id=record.id,
+                      account=record.account, action="relaunched", result=result,
+                      attempt=attempt + 1)
+        finally:
+            inflight.discard(record.id)
+
+    @staticmethod
+    async def _refresh_stored_token(account: str) -> None:
+        """Validate (refreshing if near expiry) *account*'s stored OAuth token, off
+        the loop. Raises what ``ensure_valid_token`` raises — ``AuthError`` for a
+        dead grant, ``RefreshDeferred`` on a worker."""
+        await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, account)
+
+    async def _stored_credentials_valid(self, record: SessionRecord) -> bool:
+        """False only when the account's STORED credentials are known dead — the
+        refresh grant was rejected (``AuthError``). A worker that must defer the
+        refresh to the primary (``RefreshDeferred``), a setup-token account (no
+        refresh grant to test), or any other failure is not proof of death: True,
+        and the bounded relaunch ladder decides."""
+        if self._session_uses_setup_token(record):
+            return True
+        try:
+            await self._refresh_stored_token(record.account)
+        except _oauth.AuthError:
+            return False
+        except RefreshDeferred:
+            return True
+        except Exception:
+            log.info("auth_recovery: credential check failed account=%s — assuming valid",
+                     record.account, exc_info=True)
+        return True
+
     def _recently_recomposed(self, session_id: str, now: float) -> bool:
         ts = self._recompose_attempts.get(session_id)
         return ts is not None and (now - ts) <= self._recompose_ttl
@@ -20622,7 +20764,7 @@ class SessionOrchestrator:
         composes the slot as the primary last left it, and a token that is still
         stale is the relaunched CLI's own to rotate."""
         try:
-            await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, record.account)
+            await self._refresh_stored_token(record.account)
         except RefreshDeferred as exc:
             log.info("recompose: relaunching without a refresh — %s", exc)
         except Exception:

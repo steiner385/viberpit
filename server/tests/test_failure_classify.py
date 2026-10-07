@@ -200,8 +200,42 @@ def test_interrupt_control_timeout_is_not_a_startup_timeout():
     assert classify(None, "Control request timeout: interrupt").kind == "other"
 
 
-def test_cli_not_logged_in_is_auth_401():
+def test_cli_not_logged_in_is_auth_stale():
     """#2758: the CLI's no-credential result carries no HTTP status."""
     msg = "authentication_failed | Not logged in · Please run /login"
-    assert classify("driver_error", msg).kind == "auth_401"
-    assert classify(None, "Not logged in").kind == "auth_401"
+    assert classify("driver_error", msg).kind == "auth_stale"
+    assert classify(None, "Not logged in").kind == "auth_stale"
+
+
+# 2026-10-07 (session 1c1a0dfb): a long-lived CLI kept a stale OAuth token in memory
+# after the slot was refreshed on disk, and answered every prompt itself with a
+# `<synthetic>` "Not logged in · Please run /login" — never reaching the API. The
+# ResultMessage shape below is the real CLI 2.1.292 output (subtype "success",
+# is_error true, api_error_status null), which the translator surfaces as an
+# `agent_error`. It classified as "other", so nothing tried to recover the session.
+@pytest.mark.parametrize("message", [
+    "Not logged in · Please run /login",
+    "Invalid API key · Please run /login",
+    "authentication_failed",
+])
+def test_cli_local_auth_failure_is_auth_stale(message):
+    f = classify("agent_error", message)
+    assert f.kind == "auth_stale"
+    assert f.is_recoverable
+
+
+def test_auth_stale_is_not_a_401_or_org_denial():
+    # A real 401 from the API keeps its own recompose ladder, and an org denial its
+    # rotate-only one — the CLI-local marker must not shadow either.
+    assert classify("api_401", "Not logged in · Please run /login").kind == "auth_401"
+    assert classify(None, "oauth_org_not_allowed · Please run /login").kind == "auth_forbidden"
+
+
+def test_auth_stale_stays_a_warning_for_helpers():
+    import logging
+
+    from server.sessions.failure import log_level
+
+    # Only helpers read log_level. A helper spawns a fresh CLI, so "Not logged in"
+    # there means the host's slot is unusable — a filed issue, not noise (#2758).
+    assert log_level("auth_stale") == logging.WARNING

@@ -89,3 +89,15 @@ def test_reload_declined_returns_409_with_reason():
             r = client.post("/api/sessions/s1/reload", headers=_H)
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["code"] == reason
+
+
+def test_reload_still_running_returns_202_not_a_conflict():
+    """A rebuild that outlasts the daemon's answer window ("reloading") was accepted
+    and is finishing in the background — 2026-10-07's caller saw a ReadTimeout for
+    exactly such a reload. It is a success, audited like one, never a 409."""
+    client, fake = _make_client(_rec(), result="reloading")
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/sessions/s1/reload", headers=_H)
+    assert r.status_code == 202, r.text
+    assert r.json()["id"] == "s1"
+    assert fake.calls == [("s1", "testuser@example.com")]

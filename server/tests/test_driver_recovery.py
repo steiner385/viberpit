@@ -204,3 +204,21 @@ def test_subprocess_crash_signals_process_crash():
         await d.aclose()
     asyncio.run(go())
     assert ("s1", "process_crash", None) in calls
+
+
+def test_not_logged_in_result_signals_auth_stale_with_a_soft_notice():
+    """2026-10-07 (session 1c1a0dfb): a CLI holding a stale in-memory OAuth token
+    answers every prompt itself with "Not logged in · Please run /login". The
+    ResultMessage is CLI 2.1.292's real shape (subtype "success", is_error true, no
+    api_error_status). It must reach the orchestrator as a recoverable auth_stale —
+    which relaunches the driver — and render as a soft "recovering" notice, not a
+    red "Turn failed" for a condition the daemon is about to heal."""
+    msgs = [f.sys_init("sess-1"), f.stream_start(uuid="t1"),
+            f.result(session_id="sess-1", uuid="t1", is_error=True,
+                     result="Not logged in · Please run /login")]
+    seen, calls = _run(msgs)
+    assert calls and calls[0][0] == "s1" and calls[0][1] == "auth_stale"
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert tf and tf[0].kind == "auth_stale" and tf[0].account == "kindash"
+    assert [e for e in seen if isinstance(e, ev.Recovering)]
+    assert not [e for e in seen if isinstance(e, ev.ErrorEvent)]
