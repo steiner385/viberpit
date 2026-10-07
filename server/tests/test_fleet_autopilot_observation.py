@@ -180,3 +180,22 @@ def test_shared_summary_renders_explicit_waiting_total_only():
                                "waiting": 2, "deferring": 2})
     assert status.text == "0 advancing, 2 waiting"
     assert autopilot_status({"advancing": 0, "escalated": 1}).waiting_reason == "human"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advancing", [0, 2])
+async def test_partial_producer_warning_survives_fleet_aggregation(monkeypatch, advancing):
+    from server.automations.context import observed_status
+    from server.automations.autopilot_observation import autopilot_status
+
+    producer = SimpleNamespace(
+        observed_at=observed(age=10)["observedAt"], observation_degraded=True)
+    partial = observed_status(producer, autopilot_status({
+        "advancing": advancing, "escalated": 0, "waiting": 0})).to_dict()
+    fleet, _, _, _ = fleet_for(monkeypatch, observed(), partial)
+    status = (await fleet.automation_statuses())["autopilot"]
+    assert status["level"] == "warn"
+    assert "observations need attention" in status["text"]
+    assert "worker" in status["text"]
+    assert status["observedAt"] == producer.observed_at
+    assert status["counts"]["advancing"] == advancing

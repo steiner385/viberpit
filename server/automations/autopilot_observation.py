@@ -35,6 +35,7 @@ def merge_autopilot_statuses(observations: dict[str, dict | None], *, now: float
     """
     counts: dict[str, int | float] = {}
     unavailable = []
+    warnings: dict[str, str] = {}
     observed_times: list[tuple[float, str]] = []
     failed_times: list[tuple[float, str]] = []
     waiting_reason = None
@@ -60,12 +61,20 @@ def merge_autopilot_statuses(observations: dict[str, dict | None], *, now: float
         for key, value in host_counts.items():
             if type(value) in (int, float) and isfinite(value):
                 counts[key] = counts.get(key, 0) + value
+        if part.get("level") in ("warn", "error"):
+            # observed_status marks partial producer observations as warn without
+            # discarding the measured subset. Reconstructing level from counters
+            # alone would turn that partial zero into a healthy idle fleet.
+            warnings[host] = part["level"]
     status = autopilot_status(counts or None)
     status.waiting_reason = waiting_reason or status.waiting_reason
     if observed_times:
         status.observed_at = min(observed_times)[1]
     if failed_times:
         status.last_refresh_failed_at = max(failed_times)[1]
+    if warnings:
+        status.level = "error" if "error" in warnings.values() else "warn"
+        status.text += "; host observations need attention: " + ", ".join(sorted(warnings))
     if unavailable:
         status.counts = {**counts, "hosts_unavailable": len(unavailable)}
         status.level = "unknown"
