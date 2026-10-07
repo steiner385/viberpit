@@ -6,6 +6,7 @@ async behaviour and the @rpc_deadline marker are preserved for free.
 """
 import asyncio
 import logging
+import math
 import time
 
 from viberpit.quota import QuotaSnapshot
@@ -26,6 +27,11 @@ log = logging.getLogger(__name__)
 # Credential broker cadence (#2629): the probe interval, and a lease of four missed pushes.
 CREDS_PUSH_INTERVAL_S = 30.0
 CREDS_LEASE_S = 120.0
+# One missed push costs nothing: the runner still holds a lease and the next tick refreshes it.
+# A daemon restart window (~10-20 s, nothing listening) is one such miss (#2757). The lease is
+# only at risk one tick before it lapses, so a run of refused/timed-out pushes is INFO until
+# then and WARNING from then on. Derived, so the threshold and the cadence cannot drift apart.
+CREDS_UNREACHABLE_ESCALATE_AFTER = math.ceil(CREDS_LEASE_S / CREDS_PUSH_INTERVAL_S) - 1
 
 # Queue-drain nudge cadence: the fleet probe refreshes every host's
 # ``active_sessions`` on this interval, so this is how often "a host freed a slot"
@@ -241,6 +247,8 @@ class FleetOrchestrator:
         # (a lifespan restart, a test) deserves a fresh window rather than the last
         # one's. Keyed by host name, so cardinality is the registry's size.
         self._unreachable_log = LogThrottle()
+        # host -> consecutive creds_sync pushes it failed to answer (#2757).
+        self._creds_unreachable: dict[str, int] = {}
 
     def _primary_orch(self):
         return self._router.get(self._primary)
@@ -793,13 +801,33 @@ class FleetOrchestrator:
         targets = [n for n in await self._fanout_names() if n != self._primary]
         for name, acks, exc in await asyncio.gather(*(_one(n) for n in targets)):
             if exc is not None:
-                log.warning("fleet.creds_sync host=%s unreachable: %s", name, exc)
+                await self._log_creds_push_failure(name, exc)
                 continue
+            self._creds_unreachable.pop(name, None)
             out[name] = acks
             behind = sorted(a for a, g in want.items() if acks.get(a, -1) < g)
             if behind:
                 log.warning("fleet.creds_sync host=%s behind on accounts=%s", name, behind)
         return out
+
+    async def _log_creds_push_failure(self, name: str, exc: BaseException) -> None:
+        """Log a failed push at the level its lease risk earns (#2757).
+
+        ``DaemonUnavailable`` (and its ``DaemonTimeout`` subclass) extends the host's run of
+        misses: INFO below ``CREDS_UNREACHABLE_ESCALATE_AFTER`` or while a deploy restart is
+        expected, WARNING from then on. Any other error comes from a daemon that answered, so
+        it ends the run and is a WARNING at once.
+        """
+        if not isinstance(exc, DaemonUnavailable):
+            self._creds_unreachable.pop(name, None)
+            log.warning("fleet.creds_sync host=%s failed: %s", name, exc)
+            return
+        run = self._creds_unreachable.get(name, 0) + 1
+        self._creds_unreachable[name] = run
+        quiet = (run < CREDS_UNREACHABLE_ESCALATE_AFTER
+                 or await host_upgrade.restart_expected(name))
+        log.log(logging.INFO if quiet else logging.WARNING,
+                "fleet.creds_sync host=%s unreachable (consecutive=%d): %s", name, run, exc)
 
     async def creds_push_loop(self, interval_s: float = CREDS_PUSH_INTERVAL_S) -> None:
         """Push envelopes forever on the fleet probe cadence; a raising tick is swallowed."""
