@@ -36,7 +36,7 @@ still require human dependency-closure review.
 
 Pilot/approved additionally requires an immutable upstream SHA, no unresolved
 references, and pinned/reviewed dependencies with SHA-256. Executable files
-(execute permission, shebang, or recognized script/binary extensions including
+(execute permission, shebang, or case-insensitive script/binary extensions including
 `.cmd`/`.bat`) need dependency declarations. A local hash alone does not establish
 upstream origin or executable safety. Candidate dependencies may record unverified
 pins and missing hashes explicitly; validation success does not approve them.

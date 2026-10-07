@@ -77,6 +77,16 @@ class FrameworkLockTests(unittest.TestCase):
         self.entry['upstream']['commit'] = 'a' * 40
         self.assertTrue(self.check())
 
+    def test_uppercase_windows_script_requires_dependency(self):
+        self.entry.update(state='approved', admission={'author':'a','reviewer':'b','report':'report.md'})
+        self.entry['upstream']['commit'] = 'a' * 40
+        script = self.root / 'skill/RUN.CMD'
+        script.write_text('@echo hello')
+        script.chmod(0o644)
+        self.entry['files']['skill/RUN.CMD'] = hashlib.sha256(script.read_bytes()).hexdigest()
+        self.entry['provider_projections']['codex']['sha256'] = agentctl.tree_hash(self.root / 'skill')
+        self.assertTrue(any('undeclared executable' in e for e in self.check()))
+
     def test_symlink_loop_returns_diagnostic(self):
         (self.root / 'skill/loop').symlink_to('loop')
         self.assertTrue(any('unsafe path' in e for e in self.check()))

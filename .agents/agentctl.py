@@ -402,7 +402,7 @@ def validate_framework_lock(root: Path, contract: dict) -> list[str]:
                     errors.append(f'{name}: unapproved or unpinned dependency')
             if promoted:
                 for path in inventory:
-                    if path.is_file() and (path.stat().st_mode & 0o111 or path.suffix in {'.sh', '.py', '.js', '.mjs', '.cjs', '.exe', '.wasm', '.cmd', '.bat'} or path.read_bytes().startswith(b'#!')):
+                    if path.is_file() and (path.stat().st_mode & 0o111 or path.suffix.lower() in {'.sh', '.py', '.js', '.mjs', '.cjs', '.exe', '.wasm', '.cmd', '.bat'} or path.read_bytes().startswith(b'#!')):
                         if str(path.relative_to(root)) not in declared_paths:
                             errors.append(f'{name}: undeclared executable dependency: {path.relative_to(root)}')
     except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
