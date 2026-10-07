@@ -77,6 +77,7 @@ from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
+from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.sessions import adopt as _adopt
 from server.sessions.helper_call import helper_cwd
 from server.sessions.account_auth import oauth_env_for
@@ -1205,6 +1206,7 @@ class SessionOrchestrator:
         # (clone-resolve + de-duped session), plus
         # in-flight/account/PR-status/config/session-ended probes.
         from server.automations.backlog_runner import BacklogRunnerLoop
+        from server.automations.claim_liveness import mark_dead_claims
         self._backlog_ctx = AutomationContext(
             "backlog-runner", create_session=self._automation_create_session)
         self._backlog_loop = BacklogRunnerLoop(
@@ -1247,6 +1249,7 @@ class SessionOrchestrator:
             # loop holding a stale one.
             verify_ready=lambda batch: self._backlog_verify_ready(batch),
             queue_tail=self._backlog_queue_tail,
+            mark_dead_claims=mark_dead_claims,
         )
         self._backlog_task: asyncio.Task | None = None
         # The last ranked candidate pool ``_backlog_query_queue`` produced, kept so
@@ -1484,6 +1487,9 @@ class SessionOrchestrator:
             # captured at construction — flipping the env and restarting the
             # daemon is the whole procedure.
             kill_switch=lambda: get_settings().capacity_governor_enabled,
+            # Phantom claims (2026-10-06): a defect is settled through the
+            # runner's own per-claim sweep decision, not only reported.
+            heal_defects=lambda targets: self._backlog_loop.settle_session_claims(targets=targets),
         )
         self._capacity_governor_task: asyncio.Task | None = None
         self._recurring_task: asyncio.Task | None = None
@@ -5501,6 +5507,8 @@ class SessionOrchestrator:
             except Exception:  # pragma: no cover — scheduling must never break close
                 log.debug("backlog_runner.nudge_failed", exc_info=True)
 
+        self._settle_claims_on_terminal(session_id)
+
         # Drain the session queue: a closed session frees a slot so the next queued
         # session can start. Tracked via _spawn so stop() can cancel it before it
         # writes into a later test's DB.
@@ -5983,6 +5991,8 @@ class SessionOrchestrator:
         # than relying on an invariant elsewhere.
         # Tracked via _spawn so stop() can cancel it; never awaited inline
         # (WS-attach-reentrant).
+        if status in DEAD_CLAIM_STATUSES:
+            self._settle_claims_on_terminal(session_id)
         if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
         return status
@@ -6767,6 +6777,28 @@ class SessionOrchestrator:
             log.debug("backlog_runner.raw_config.load_failed", exc_info=True)
             return False, None, {}
 
+    def _settle_claims_on_terminal(self, session_id: str) -> None:
+        """Schedule the settle of any Backlog Runner claim *session_id* holds,
+        now that it has reached a terminal status (archived/ended/complete) or
+        been deleted — the claim gives its slot back in this transition rather
+        than waiting on the next tick that happens to succeed (phantom claims,
+        2026-10-06). Capacity accounting already stops counting the claim the
+        moment the row turns terminal (``claim_liveness``); this is what removes
+        the row itself, through the runner's own ``_sweep_one`` decision.
+
+        Primary only, like every fleet-global automation (#919/#2106): a worker
+        must not drive the runner against the shared DB. A worker-hosted
+        session's claim is settled by the primary's Capacity Governor heal or the
+        next sweep. Never awaited inline — the terminal transitions that call it
+        must not wait on a GitHub read."""
+        if not drives_fleet_automations():
+            return
+        try:
+            self._spawn(self._backlog_loop.settle_session_claims(session_id),
+                        name=f"backlog-settle-on-terminal-{session_id}")
+        except Exception:  # pragma: no cover — scheduling must never break the transition
+            log.debug("backlog_runner.settle_on_terminal_schedule_failed", exc_info=True)
+
     async def _backlog_count_in_flight(self) -> int:
         """Restart-safe in-flight count: active (not-given-up) durable target
         states this automation holds, read fresh from the DB every tick.
@@ -6788,9 +6820,11 @@ class SessionOrchestrator:
         Which rows hold a slot is ``backlog_runner.is_in_flight`` — the SAME
         predicate the per-product ``max_in_flight`` ledger buckets by product, so
         the fleet-wide count and the card's per-product counts can never disagree
-        about a row."""
+        about a row — including a phantom claim whose holder session is already
+        archived/ended/complete/gone (``claim_liveness``), which neither counts."""
         from server.automations.backlog_runner import is_in_flight
-        states = await self._backlog_ctx.list_target_states()
+        from server.automations.claim_liveness import mark_dead_claims
+        states = await mark_dead_claims(await self._backlog_ctx.list_target_states())
         return sum(1 for st in states.values() if is_in_flight(st))
 
     async def _backlog_healthy_account(
@@ -21489,6 +21523,8 @@ class SessionOrchestrator:
         # archive that triggered it. _spawn logs any failure.
         self._spawn(self._enforce_archive_limit(), name="archive-limit-on-archive")
 
+        self._settle_claims_on_terminal(session_id)
+
         # Drain the session queue: an archived session frees a slot so the next queued
         # session can start. Tracked via _spawn — mirrors close_session.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-archive")
@@ -22082,6 +22118,7 @@ class SessionOrchestrator:
             log.info("session.permanent_delete id=%s removed %d attachment(s)",
                      session_id, n_att)
         log.info("session.permanent_delete id=%s db row removed", session_id)
+        self._settle_claims_on_terminal(session_id)
         return True
 
     async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path,

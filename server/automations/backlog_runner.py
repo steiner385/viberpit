@@ -19,6 +19,7 @@ from server.github.pr_status import PullRequestInfo
 from .backlog_github import closeout_hold_reason, escalation_detail
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
+from .claim_liveness import DEAD_HOLDER_KEY
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
@@ -243,8 +244,13 @@ def is_in_flight(state: dict) -> bool:
     row: the row EXISTING is the claim (Phase D), so an extra ``claimed`` test
     would only restate that while quietly dropping any row a future write path
     forgets the flag on — under-counting a ceiling, i.e. over-spawning.
+
+    A row ``claim_liveness.mark_dead_claims`` stamped (its holder session is
+    archived/ended/complete/gone) holds no slot either: a phantom claim must
+    never count toward a cap while it waits for the sweep to settle it.
     """
-    return not state.get("gave_up") and not state.get("handed_off")
+    return (not state.get("gave_up") and not state.get("handed_off")
+            and not state.get(DEAD_HOLDER_KEY))
 
 
 def _by_product(states: dict, predicate: Callable[[dict], bool]) -> dict[str, int]:
@@ -786,6 +792,7 @@ class BacklogRunnerLoop:
         session_absent: SessionEnded | None = None,
         held_targets: HeldTargets | None = None,
         model_quota_out: ModelQuotaOut | None = None,
+        mark_dead_claims: Callable[[dict], Awaitable[dict]] | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -836,6 +843,9 @@ class BacklogRunnerLoop:
         # terminal). The evidence bar for releasing a token-holding claim whose
         # session was permanently deleted (``_release_orphaned_claim``).
         self._session_absent = session_absent
+        # (states) -> states with phantom claims stamped (``claim_liveness``); the
+        # card's in-flight counts then match the admission gates. None = unwired.
+        self._mark_dead_claims = mark_dead_claims
         self._closeout_completed = closeout_completed
         self._handoff = handoff
         self._session_work_stopped = session_work_stopped
@@ -1073,8 +1083,16 @@ class BacklogRunnerLoop:
         errors: list[str] = []
         states = None
         try:
-            states = await self._ctx.list_target_states()
-            counts["in_flight"] = sum(is_in_flight(s) for s in states.values())
+            read = await self._ctx.list_target_states()
+            mark = getattr(self, "_mark_dead_claims", None)
+            if mark is not None:
+                # Display-only copy: a phantom claim reads as the free slot the
+                # admission gates already treat it as.
+                read = await mark(read)
+            counts["in_flight"] = sum(is_in_flight(s) for s in read.values())
+            # Assigned only once the counts exist: everything below reads
+            # ``states is not None`` as "the in-flight count was measured".
+            states = read
             # The RUNNER'S OWN give-ups, not every hold on the board: an item a
             # person or a session parked has no row here. (What the card calls this
             # count is items 3b/6's concern.)
@@ -1955,6 +1973,51 @@ class BacklogRunnerLoop:
             f" (still parked: {', '.join(kept)})",
             kind="bundle_split", target=new_target,
             detail={"released": free, "kept": kept, "row": new_target})
+
+    async def settle_session_claims(self, session_id: str | None = None, *,
+                                    targets: "set[str] | None" = None) -> dict[str, str]:
+        """Settle, NOW, the claims held by *session_id* (or the named *targets*).
+
+        The same ``_sweep_one`` decision the periodic sweep makes — merged →
+        close-out, open PR → hand off to PR Doctor, no PR → the bounce/ladder,
+        deleted session → orphan release — run for just these rows, so a session
+        that reaches a terminal status gives its slot back in that transition
+        instead of on whichever later tick happens to succeed (2026-10-06: the
+        tick raised for 14 h and every finished run's claim stayed counted). A
+        blanket release would be wrong: a dead holder can still have an open PR
+        (cairnea/KinDash#16033 did), which must go to PR Doctor, not the pool.
+
+        Independent of the tick by design: ``_release_give_ups``/refill never run
+        here, so a failure elsewhere in the tick cannot block it. Serialised with
+        the tick by the loop lock. Returns ``{target: outcome}`` where outcome is
+        ``settled`` (row gone or no longer holding a slot), ``held`` (still
+        holding — e.g. its work has not provably stopped) or ``error: …``."""
+        out: dict[str, str] = {}
+        async with self._lock:
+            states = await self._ctx.list_target_states()
+            wanted = {t: st for t, st in states.items()
+                      if not st.get("gave_up") and not st.get("proposed")
+                      and ((targets is not None and t in targets)
+                           or (session_id is not None and st.get("session_id") == session_id))}
+            if not wanted:
+                return out
+            gave_up_targets = await self._pr_doctor_gave_up_targets()
+            for target, st in wanted.items():
+                try:
+                    await self._sweep_one(target, st, gave_up_targets)
+                except Exception as exc:  # one row must not stop the others
+                    log.warning("backlog_runner.settle_claim_failed target=%s", target,
+                                exc_info=True)
+                    out[target] = f"error: {exc}"
+            after = await self._ctx.list_target_states()
+            for target in wanted:
+                if target in out:
+                    continue
+                now = after.get(target)
+                out[target] = ("settled" if now is None or not is_in_flight(now)
+                               or now.get("session_id") != wanted[target].get("session_id")
+                               else "held")
+        return out
 
     async def _sweep(self) -> None:
         states = await self._ctx.list_target_states()

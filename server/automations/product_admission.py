@@ -15,6 +15,7 @@ from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
 from server.pm.repo_project import RepoOwnership, gather_repo_identities, resolve_repo_ownership
 
+from .claim_liveness import mark_dead_claims
 from .context import AutomationContext
 from .product_policy import ImplementationConstraint, ImplementationDecision, decide_implementation, effective_policy
 from .target_identity import valid_repo_name
@@ -109,7 +110,7 @@ async def repo_capacity_status(
     cap = policy["max_in_flight"]
     try:
         from .backlog_runner import in_flight_by_product
-        states = await context.list_target_states()
+        states = await mark_dead_claims(await context.list_target_states())
     except Exception:
         return slug, None, cap
     return slug, in_flight_by_product(states).get(slug, 0), cap
@@ -152,7 +153,7 @@ async def queued_claim_slot_free(
     from . import runner_config
     from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
     try:
-        states = await context.list_target_states()
+        states = await mark_dead_claims(await context.list_target_states())
     except Exception:
         return True
     others = {k: s for k, s in states.items() if s.get("session_id") != session_id}
@@ -312,7 +313,10 @@ async def gather_implementation_snapshot(
     from . import runner_config
     mode, config = await runner_config.read_runner_config(plan=plan)
     try:
-        states = await (context or AutomationContext(BacklogRunner.id)).list_target_states()
+        # Accounting only (``decide`` never writes a row back): a phantom claim —
+        # holder archived/ended/complete/gone — holds no slot here either.
+        states = await mark_dead_claims(
+            await (context or AutomationContext(BacklogRunner.id)).list_target_states())
     except Exception:
         states = None
     try:

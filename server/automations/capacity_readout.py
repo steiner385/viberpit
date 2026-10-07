@@ -8,21 +8,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from server.db.models import INACTIVE_SESSION_STATUSES
-
 from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
 from .capacity_apply import apply_product_plan, plan_is_live, plan_overlays
+from .claim_liveness import DEAD_CLAIM_STATUSES, DEAD_HOLDER_KEY, holder_session_id, is_dead_status
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, fleet_reason, product_cap_note, product_order,
                             push_level_of)
 from .product_policy import effective_policy, is_on
 
-#: Session statuses under which a token-bearing claim can never be released by
-#: the runner's sweep (D7): the terminal rows plus `complete`, which releases its
-#: driver at once and was the #2009 shape. Deliberately narrower than
-#: CAPACITY_EXEMPT_STATUSES — `queued` and `pending_approval` hold no runtime slot
-#: yet but will start, so their claims are pending, not dead.
-DEAD_CLAIM_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"complete"}
+__all__ = ["DEAD_CLAIM_STATUSES", "build_readout", "readout_to_inputs"]
 
 log = logging.getLogger(__name__)
 
@@ -141,16 +135,13 @@ async def build_readout(src: CapacitySources) -> dict:
     resets = sorted(r["nextResetAt"] for r in account_rows if r.get("nextResetAt"))
     _runner_mode, runner_cfg = await src.runner_config()
     states = await src.target_states()
-    in_flight_total = sum(1 for s in states.values() if is_in_flight(s))
-    by_product = in_flight_by_product(states)
-    pipeline_by = pipeline_by_product(states)
     _eligible, _blocked, _untriaged, per_product = await src.candidates()
     per_product = per_product or {}
 
     defects: list[dict] = []
     for target, st in states.items():
-        sid = st.get("session_id")
-        if not is_in_flight(st) or not st.get("ownership_token") or not sid:
+        sid = holder_session_id(st)
+        if sid is None:
             continue
         status = await src.session_status(sid)
         # A terminal session (or one whose row is simply GONE — None) still holds
@@ -160,14 +151,22 @@ async def build_readout(src: CapacitySources) -> dict:
         # CAPACITY_EXEMPT_STATUSES set: `queued` / `pending_approval` sessions hold
         # no runtime slot yet but WILL start — a legitimate pending claim, not a
         # dead one (the first live tick flagged a queued runner session).
-        if status is None or status in DEAD_CLAIM_STATUSES:
+        if is_dead_status(status):
             defects.append({"product": st.get("product"), "target": target, "sessionId": sid,
                             "sessionStatus": status,
                             "text": f"{target}: claim held by {status or 'a missing'} session "
                                     f"{sid[:8]} — a defect, not load"})
-    # A defect's "product" is None for a pre-flip claim (in_flight_by_product skips
-    # those too) — it can never match a real product slug below, so it never binds;
-    # it still surfaces in `defects` for the card.
+    # A defect is NOT load (phantom claims, 2026-10-06): the same stamp every
+    # admission gate applies (``claim_liveness.mark_dead_claims``) so the gauges
+    # here count exactly what the gates count. The Capacity Governor settles the
+    # row itself; until it does, the defect is surfaced, never charged.
+    dead = {d["target"] for d in defects}
+    counted = {t: ({**st, DEAD_HOLDER_KEY: True} if t in dead else st) for t, st in states.items()}
+    in_flight_total = sum(1 for s in counted.values() if is_in_flight(s))
+    by_product = in_flight_by_product(counted)
+    pipeline_by = pipeline_by_product(states)
+    # A defect's "product" is None for a pre-flip claim; it still surfaces in
+    # `defects` for the card.
     defect_products = {d["product"] for d in defects}
 
     now = datetime.now(timezone.utc)
@@ -236,10 +235,6 @@ async def build_readout(src: CapacitySources) -> dict:
     for r in products:
         if r["dispatch"] == "off" or r["eligible"] == 0:
             continue
-        if r["defect"]:
-            d = next(d for d in defects if d["product"] == r["slug"])
-            binding = {"layer": "defect", "code": "capacity_defect", "text": d["text"]}
-            break
         if r["constraint"]:
             binding = {"layer": _layer_for(r["constraint"]),
                        "code": r["constraint"], "text": f"{r['slug']}: {r['waitingOn']}"}

@@ -58,12 +58,17 @@ ReadConfig = Callable[[], Awaitable[tuple[str, dict]]]
 ReadReadout = Callable[[], Awaitable[dict]]
 ReadPlan = Callable[[], Awaitable[dict | None]]
 WritePlan = Callable[[dict], Awaitable[None]]
+#: (targets) -> {target: "settled" | "held" | "error: …"} — the runner's own
+#: per-claim settle (``BacklogRunnerLoop.settle_session_claims``).
+HealDefects = Callable[[set[str]], Awaitable[dict[str, str]]]
 
 
 class CapacityGovernorLoop:
     def __init__(self, ctx: Any, *, read_config: ReadConfig, read_readout: ReadReadout,
-                 read_plan: ReadPlan, write_plan: WritePlan, kill_switch: Callable[[], bool]) -> None:
+                 read_plan: ReadPlan, write_plan: WritePlan, kill_switch: Callable[[], bool],
+                 heal_defects: HealDefects | None = None) -> None:
         self._ctx = ctx
+        self._heal_defects = heal_defects
         self._read_config = read_config
         self._read_readout = read_readout
         self._read_plan = read_plan
@@ -78,6 +83,36 @@ class CapacityGovernorLoop:
         except Exception:  # pragma: no cover — mirrors the mold
             observation_failed(self._ctx)
             log.warning("capacity_governor.tick_error", exc_info=True)
+
+    async def _heal(self, defects: list[dict]) -> set[str]:
+        """Auto-heal phantom claims (2026-10-06): settle each defect's claim
+        through the runner's own sweep decision instead of only warning about it.
+        Returns the targets that no longer hold a slot; each gets one
+        ``capacity_defect_healed`` event. A claim that stays held (its work has
+        not provably stopped, or the settle raised) keeps its ``capacity_defect``
+        warning, with the heal outcome in the detail so the card says why."""
+        if not defects or self._heal_defects is None:
+            return set()
+        try:
+            outcomes = await self._heal_defects({d["target"] for d in defects})
+        except Exception:  # noqa: BLE001 — a failed heal must not cost the plan write
+            log.warning("capacity_governor.heal_failed", exc_info=True)
+            return set()
+        healed: set[str] = set()
+        for d in defects:
+            outcome = outcomes.get(d["target"])
+            if outcome == "settled":
+                healed.add(d["target"])
+                await self._ctx.emit(
+                    "info", f"{d['target']}: released claim held by "
+                            f"{d.get('sessionStatus') or 'a missing'} session "
+                            f"{(d.get('sessionId') or '')[:8]} — capacity freed",
+                    kind="capacity_defect_healed", target=d["target"],
+                    detail={"sessionId": d.get("sessionId"), "product": d.get("product"),
+                            "sessionStatus": d.get("sessionStatus")})
+            elif outcome is not None:
+                d["heal"] = outcome
+        return healed
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
@@ -145,11 +180,15 @@ class CapacityGovernorLoop:
             await self._ctx.emit(
                 "info", f"{slug} in-flight cap {change} ({mode_text}{suffix})",
                 kind="cap_changed", target=slug)
-        current = {d["target"] for d in readout.get("defects", [])}
-        for d in readout.get("defects", []):
+        defects = list(readout.get("defects", []))
+        healed = await self._heal(defects)
+        defects = [d for d in defects if d["target"] not in healed]
+        current = {d["target"] for d in defects}
+        for d in defects:
             if d["target"] not in self._defects_emitted:
                 await self._ctx.emit("warn", d["text"], kind="capacity_defect", target=d["target"],
-                                     detail={"sessionId": d.get("sessionId"), "product": d.get("product")})
+                                     detail={"sessionId": d.get("sessionId"), "product": d.get("product"),
+                                             "heal": d.get("heal")})
         self._defects_emitted = current
         binding = readout.get("binding") or {}
         publish_observation(self._ctx, "capacity_counts", {
