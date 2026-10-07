@@ -68,7 +68,9 @@ export type Block =
 // nudge, the assistant drawer (see EvUser.origin). Its absence is what entitles a
 // turn to the right-aligned "you" bubble, so it rides through every user-turn path
 // alongside `ownerPrefix` rather than being read off the raw event at render time.
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean }
+// Continuations after steering share engineTurnId but have distinct display ids.
+// Only the original segment owns the history ordinal.
+export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean }
 
 export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
 /** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
@@ -297,7 +299,11 @@ const ROLE_TURN_SUFFIX = { user: '#user', assistant: '#agent' } as const
 /** Index of the turn carrying `role`'s half of engine turn `id`, or -1. */
 function findRoleTurnIdx(turns: Turn[], id: string, role: Turn['role']): number {
   const yielded = id + ROLE_TURN_SUFFIX[role]
-  return turns.findIndex((t) => t.role === role && (t.id === id || t.id === yielded))
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i]
+    if (t.role === role && (t.engineTurnId === id || t.id === id || t.id === yielded)) return i
+  }
+  return -1
 }
 
 /** The id to create `role`'s turn for engine turn `id` under — the bare id unless
@@ -585,9 +591,25 @@ function restoreQuestionInPlace(state: TranscriptState, questionId: string): Tra
  * is NOT the agent's turn, and adopting it would file agent output under the human's
  * name. Returns [nextTurns, idx].
  */
-function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
+function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string, blockId?: string): [Turn[], number] {
+  // Re-supplied tools/questions/permissions belong to their existing segment.
+  if (blockId !== undefined) {
+    const existing = turns.findIndex((t) => t.role === 'assistant' && t.blocks.some((b) => b.id === blockId))
+    if (existing !== -1) return [turns, existing]
+  }
   const idx = findRoleTurnIdx(turns, turnId, 'assistant')
-  if (idx !== -1) return [turns, idx]
+  if (idx !== -1) {
+    // A native turn can keep running after a steering prompt. Give its new
+    // output a display segment below that prompt instead of growing the old
+    // assistant bubble above it. Unacknowledged/queued prompts aren't boundaries.
+    const boundary = turns.slice(idx + 1).findLast((t) =>
+      t.role === 'user' && !isPendingTurn(t) && t.id !== OPTIMISTIC_USER_ID)
+    if (!boundary) return [turns, idx]
+    const previous = turns[idx]
+    const id = `${turnId}#after:${boundary.id}`
+    return [[...turns, { id, engineTurnId: turnId, role: 'assistant',
+      blocks: [], model: previous.model }], turns.length]
+  }
   clientLogger.info(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
   const id = newRoleTurnId(turns, turnId, 'assistant')
   return [[...turns, { id, role: 'assistant', blocks: [], fabricated: true }], turns.length]
@@ -648,7 +670,10 @@ const BLOCK_EVENT_TYPES: ReadonlySet<string> = new Set([
 function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
   switch (ev.type) {
     case 'user': {
-      const { turnId, text } = ev
+      const { text } = ev
+      // Older Codex live/saved events reused the native turn id for steering;
+      // their source UUID still identifies the individual prompt.
+      const turnId = ev.srcUuid ?? ev.turnId
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
       const idx = findRoleTurnIdx(thread.turns, turnId, 'user')
       const turns =
@@ -686,7 +711,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
         }))
         return { turns: nextTurns, openBlockId: thread.openBlockId }
       }
-      const blockId = `${turnId}:t${turn.blocks.length}`
+      const blockId = `${turn.id}:t${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text, ts: ev.ts }],
       }))
@@ -708,7 +733,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
         }))
         return { turns: nextTurns, openBlockId: thread.openBlockId }
       }
-      const blockId = `${turnId}:th${turn.blocks.length}`
+      const blockId = `${turn.id}:th${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text, ts: ev.ts }],
       }))
@@ -717,7 +742,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type, toolId)
       const turn = turns[idx]
       if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
         // Idempotent replay of a tool we already have. Return the *same* thread
@@ -795,7 +820,10 @@ export function transcriptReducer(
   switch (ev.type) {
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
-      const { turnId, text } = ev
+      const { text } = ev
+      // Older Codex live/saved events reused the native turn id for steering;
+      // their source UUID still identifies the individual prompt.
+      const turnId = ev.srcUuid ?? ev.turnId
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
       // A disk replay (replaying=true) re-emitting this prompt proves it is durably
@@ -917,7 +945,7 @@ export function transcriptReducer(
         return { ...state, turns: nextTurns }
       } else {
         // Open a new text block
-        const blockId = `${turnId}:t${turn.blocks.length}`
+        const blockId = `${turn.id}:t${turn.blocks.length}`
         const newBlock: Block = { kind: 'text', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
@@ -951,7 +979,7 @@ export function transcriptReducer(
         return { ...state, turns: nextTurns }
       } else {
         // Open a new thinking block (closes any open text block)
-        const blockId = `${turnId}:th${turn.blocks.length}`
+        const blockId = `${turn.id}:th${turn.blocks.length}`
         const newBlock: Block = { kind: 'thinking', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
@@ -964,7 +992,7 @@ export function transcriptReducer(
     // ── toolCall ─────────────────────────────────────────────────────────────
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type, toolId)
       const turn = turns[idx]
 
       // Idempotent by toolId. If turn already has this tool and openBlockId is already null, return state unchanged.
@@ -1018,7 +1046,7 @@ export function transcriptReducer(
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
       const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed, items } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type, permId)
       const turn = turns[idx]
 
       // Idempotent by permId
@@ -1051,7 +1079,7 @@ export function transcriptReducer(
     // ── question ─────────────────────────────────────────────────────────────
     case 'question': {
       const { questionId, turnId, header, question, options, multiSelect, orphaned } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type, questionId)
       const turn = turns[idx]
 
       // Idempotent by questionId — but the server re-emits a still-pending

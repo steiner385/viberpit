@@ -295,7 +295,7 @@ async def test_each_turn_is_stamped_with_its_own_start_time():
     first["startedAt"], second["startedAt"] = 100, 200
     window = await _replay([first, second]).window()
     by_turn = {e.turn_id: e.ts for e in window.events if isinstance(e, ev.UserMessage)}
-    assert by_turn == {"t1": 100_000.0, "t2": 200_000.0}
+    assert by_turn == {"t1-u": 100_000.0, "t2-u": 200_000.0}
 
 
 @pytest.mark.asyncio
@@ -450,3 +450,21 @@ async def test_saved_terminal_settles_stale_native_in_progress_turn(tmp_path):
     assert any(isinstance(e, ev.TextDelta) and e.text == 'finished live' for e in window.events)
     assert isinstance(window.events[-1], ev.TurnEnd)
     assert window.events[-1].outcome == 'success'
+
+
+@pytest.mark.asyncio
+async def test_steered_prompts_have_distinct_replay_ids_even_with_identical_text():
+    turn = _turn("t1", text="continue")
+    turn["items"].extend([
+        {"type": "userMessage", "id": "steer-1",
+         "content": [{"type": "text", "text": "continue"}]},
+        {"type": "agentMessage", "id": "reply-2", "text": "second reply"},
+        {"type": "userMessage", "id": "steer-2",
+         "content": [{"type": "text", "text": "continue"}]},
+        {"type": "agentMessage", "id": "reply-3", "text": "third reply"},
+    ])
+    window = await _replay([turn]).window()
+    users = [e for e in window.events if isinstance(e, ev.UserMessage)]
+    assert [e.turn_id for e in users] == ["t1-u", "steer-1", "steer-2"]
+    assert [e.text for e in users] == ["continue"] * 3
+    assert [e.turn_id for e in window.events if isinstance(e, ev.TextDelta)] == ["t1"] * 3

@@ -595,7 +595,7 @@ def test_user_message_replays_once_as_a_user_event() -> None:
     )
     assert [type(e) for e in out] == [ev.UserMessage]
     assert out[0].text == "do the thing"  # type: ignore[attr-defined]
-    assert out[0].turn_id == TURN  # type: ignore[attr-defined]
+    assert out[0].turn_id == "it_u"  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
