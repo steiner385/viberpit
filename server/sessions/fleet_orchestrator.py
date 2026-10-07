@@ -6,6 +6,7 @@ async behaviour and the @rpc_deadline marker are preserved for free.
 """
 import asyncio
 import logging
+import time
 
 from viberpit.quota import QuotaSnapshot
 from server.ipc.client import DaemonUnavailable
@@ -30,6 +31,10 @@ CREDS_LEASE_S = 120.0
 # ``active_sessions`` on this interval, so this is how often "a host freed a slot"
 # can become visible to the edge at all.
 QUEUE_DRAIN_INTERVAL_S = 30.0
+
+# Worker status is an in-memory read, not an actionable-provider refresh. Bound
+# its fan-out independently so an unavailable daemon cannot stall the overview.
+AUTOPILOT_STATUS_TIMEOUT_S = 2.0
 
 # --------------------------------------------------------------------------- #
 # "A worker is unreachable, skip it" — ONE record family for every fan-out site.
@@ -560,6 +565,41 @@ class FleetOrchestrator:
             log.warning("fleet: reachable_names failed — fanning out to every host",
                         exc_info=True)
             return self._router.names()
+
+    async def _autopilot_fleet_status(self, primary_status: dict | None) -> dict:
+        from server.automations.autopilot_observation import merge_autopilot_statuses
+
+        observations: dict[str, dict | None] = dict.fromkeys(self._router.names())
+        observations[self._primary] = primary_status
+
+        async def read_worker(host: str) -> None:
+            try:
+                async with asyncio.timeout(AUTOPILOT_STATUS_TIMEOUT_S):
+                    statuses = await self._router.get(host).automation_statuses()
+            except Exception as exc:
+                await self._log_unreachable(host, exc, "automation_statuses")
+                return
+            self._note_reachable(host)
+            observations[host] = statuses.get("autopilot") if isinstance(statuses, dict) else None
+
+        await asyncio.gather(*(read_worker(host) for host in await self._fanout_names()
+                               if host != self._primary))
+        return merge_autopilot_statuses(observations, now=time.time())
+
+    async def automation_statuses(self) -> dict[str, dict]:
+        """Only host-owned autopilot observations need fleet aggregation."""
+        statuses = await self._primary_orch().automation_statuses()
+        self._note_reachable(self._primary)
+        return {**statuses, "autopilot": await self._autopilot_fleet_status(
+            statuses.get("autopilot"))}
+
+    async def automation_overview(self) -> dict:
+        """Keep all actionable counts primary-owned; add worker autopilot evidence."""
+        overview = await self._primary_orch().automation_overview()
+        self._note_reachable(self._primary)
+        statuses = overview.get("statuses", {})
+        return {**overview, "statuses": {
+            **statuses, "autopilot": await self._autopilot_fleet_status(statuses.get("autopilot"))}}
 
     def _make_fanout(self, name: str):
         async def _call(session_ids, *a, **k):
