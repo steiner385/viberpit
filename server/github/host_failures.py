@@ -55,9 +55,13 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from typing import Any
 
 from viberpit import gh_credential
+from server.config import env_float
+from server.obs.context import emit_event
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 #: Not ``__name__``: the record is about the host, so it must read as the host's
@@ -96,6 +100,42 @@ _EVENTS: dict[str, tuple[str, dict[str, Any]]] = {
 #: cannot happen. Every key reports at WARNING, so the "never share a key across
 #: two levels" trap does not apply.
 _HOST_THROTTLE = LogThrottle()
+
+#: How long the host must keep failing to reach GitHub before the record is a
+#: WARNING (= an auto-error issue). A blip of seconds recovers on its own and is
+#: not actionable; only an outage that outlasts this is (#2742).
+_UNREACHABLE_WARN_AFTER_ENV = "VIBERPIT_GH_UNREACHABLE_WARN_AFTER_S"
+_UNREACHABLE_WARN_AFTER_DEFAULT_S = 300.0
+
+#: Injectable for tests.
+_clock = time.monotonic
+
+_unreachable_lock = threading.Lock()
+_unreachable_since: float | None = None
+
+
+def _unreachable_outlasted_blip() -> bool:
+    """Note one UNREACHABLE failure; True once the episode has lasted long enough
+    to be worth a WARNING. The episode starts at the first failure after a
+    success (see :func:`_note_reachable`)."""
+    global _unreachable_since
+    now = _clock()
+    with _unreachable_lock:
+        if _unreachable_since is None:
+            _unreachable_since = now
+        since = _unreachable_since
+    return now - since >= env_float(
+        _UNREACHABLE_WARN_AFTER_ENV, _UNREACHABLE_WARN_AFTER_DEFAULT_S, minimum=0.0
+    )
+
+
+def _note_reachable() -> None:
+    global _unreachable_since
+    with _unreachable_lock:
+        _unreachable_since = None
+
+
+gh_credential.on_success(_note_reachable)
 
 #: gh's wording when GitHub itself failed a request that DID reach it — a
 #: 502/503/504. Deliberately NOT one of the conditions above: those three are
@@ -187,6 +227,11 @@ def log_gh_failure(
         return
     event, fields = entry
     caller_log.debug(msg, *args, exc_info=exc_info)
+    if condition == gh_credential.UNREACHABLE and not _unreachable_outlasted_blip():
+        # Same event, logger and frame — only the level differs, so the
+        # fingerprint is unchanged once the outage does outlast the blip window.
+        emit_event(log, logging.INFO, event, fields)
+        return
     log_event_throttled(
         log, _HOST_THROTTLE, condition, logging.WARNING, event, **fields,
     )

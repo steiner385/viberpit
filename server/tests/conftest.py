@@ -368,6 +368,18 @@ def _reset_untrusted_identity_header_throttle():
 
 
 @pytest.fixture(autouse=True)
+def _gh_unreachable_blip_gate_off(monkeypatch):
+    # host_failures demotes a sub-N-minute "unreachable" blip to INFO (#2742). Tests
+    # that assert the collapsed WARNING want first-sighting behaviour, so the window
+    # is 0 by default; the gate's own tests set it back.
+    from server.github import host_failures
+    monkeypatch.setenv("VIBERPIT_GH_UNREACHABLE_WARN_AFTER_S", "0")
+    host_failures._note_reachable()
+    yield
+    host_failures._note_reachable()
+
+
+@pytest.fixture(autouse=True)
 def _reset_github_app_auth_singletons():
     # Fifth instance of the same hazard: server.github.app_auth keeps a
     # module-level signer/registry/token-source cache (#1023). A test that drives
