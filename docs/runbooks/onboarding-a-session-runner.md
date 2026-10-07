@@ -71,15 +71,20 @@ Placeholders: `<host>` = the new runner's short hostname (e.g. `rocky`), `<cap>`
 
 > **Read the CA reuse warning at the top before running any command here.**
 
-The fleet runs on **two CAs** since the 2026-08-30 onboarding (issue #841 — the original CA key was
-believed lost mid-onboarding, so a second durable CA was minted and bridged in via a bundle):
+The fleet runs on **one CA, `viberpit-fleet-ca-3`**, since 2026-10-07. Both earlier CAs (the original
+fleet CA and ca2, issue #841) lacked a `keyUsage` extension. Python 3.13+ verifies
+with `VERIFY_X509_STRICT` and rejects such a CA, so the Ubuntu 26.04 upgrade (Python 3.14) cut the edge
+off from every daemon, and the fleet was re-keyed onto ca3:
 
 | Material | Location | Role |
 |---|---|---|
-| `ca2.pem` + `ca2.key` | `/etc/viberpit/tls/` on dobby (key 0600, root) | **The signing CA for all new server certs — use this one.** |
-| `ca-bundle.pem` | `/etc/viberpit/tls/` on dobby | `ca.pem` + `ca2.pem` concatenated; what the edge verifies daemon server certs against (`VIBERPIT_SESSIOND_CLIENT_CA`). |
-| `ca.pem` (original CA cert) | `/etc/viberpit/tls/` on dobby and every runner | Verifies the edge's client cert (`client.pem` is original-CA-signed); still backs rocky's server cert via the bundle. |
-| `ca.key` (original CA key) | `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby — **root-only directory** | Kept offline. Not used for new mints — sign with ca2. |
+| `ca3.pem` + `ca3.key` | `/etc/viberpit/tls/` on dobby (key 0600, root); backup in 1Password (Private vault, "ViberPit fleet CA 3") | **The signing CA for all new certs, server and client.** |
+| `ca.pem` | `/etc/viberpit/tls/` on dobby and every runner | A copy of `ca3.pem`. Daemons verify the edge's client cert against it (`VIBERPIT_SESSIOND_TLS_CA`). |
+| `ca-bundle.pem` | `/etc/viberpit/tls/` on dobby | Also just `ca3.pem` now. The edge verifies daemon server certs against it (`VIBERPIT_SESSIOND_CLIENT_CA`). |
+| `ca.key`, `ca2.*` (retired CAs) | `/mnt/hdd-storage/ccswitch-ca/ca.key` (**root-only directory**) and `/etc/viberpit/tls/ca2.*` on dobby | Retired; nothing chains to them. Do not sign with them. |
+
+Any CA you mint MUST carry `keyUsage=critical,keyCertSign,cRLSign`. Check with
+`openssl x509 -in <ca>.pem -noout -ext keyUsage` before trusting it anywhere.
 
 > The root-only directory matters: searching for `ca.key` as a non-root user reports permission
 > denied / nothing, which reads exactly like the key being gone — that is how it was mis-declared
@@ -95,7 +100,7 @@ the top documented footgun and will produce a TLS handshake failure.
 #### Option A — mint with openssl directly (preferred for additional hosts)
 
 ```bash
-# On dobby (has ca2.pem + ca2.key; run the signing step with sudo — ca2.key is root-only)
+# On dobby (has ca3.pem + ca3.key; run the signing step with sudo — ca3.key is root-only)
 OUTDIR=/tmp/mtls-<host>
 mkdir -p "$OUTDIR"
 
@@ -108,18 +113,21 @@ openssl req -new \
   -subj "/CN=sessiond" \
   -out "$OUTDIR/server.csr"
 
-# 3. Sign with the EXISTING signing CA — ca2, NOT a fresh one and NOT the original ca.pem
+# 3. Sign with the EXISTING signing CA — ca3, NOT a fresh one and NOT a retired one.
+#    `openssl x509` takes extensions only via -extfile (it has no -addext option).
+printf 'subjectAltName=DNS:<host>.tail0dd570.ts.net,IP:<tailnet-ip>\nextendedKeyUsage=serverAuth\n' \
+  > "$OUTDIR/server.ext"
 sudo openssl x509 -req \
   -in "$OUTDIR/server.csr" \
-  -CA /etc/viberpit/tls/ca2.pem \
-  -CAkey /etc/viberpit/tls/ca2.key \
-  -CAcreateserial \
+  -CA /etc/viberpit/tls/ca3.pem \
+  -CAkey /etc/viberpit/tls/ca3.key \
+  -CAserial /etc/viberpit/tls/ca3.srl \
   -days 825 \
-  -addext "subjectAltName=DNS:<host>.tail0dd570.ts.net,IP:<tailnet-ip>" \
+  -extfile "$OUTDIR/server.ext" \
   -out "$OUTDIR/server.pem"
 
-# Verify against what the edge actually trusts (the bundle)
-openssl verify -CAfile /etc/viberpit/tls/ca-bundle.pem "$OUTDIR/server.pem"
+# Verify against what the edge actually trusts, with the same strict rules Python 3.13+ applies
+openssl verify -x509_strict -CAfile /etc/viberpit/tls/ca-bundle.pem "$OUTDIR/server.pem"
 openssl x509 -in "$OUTDIR/server.pem" -noout -text | grep -A2 "Subject Alternative"
 ```
 
@@ -142,19 +150,21 @@ sudo mkdir -p /etc/viberpit/tls
 # Copy from where you minted them:
 sudo install -m 640 server.pem /etc/viberpit/tls/server.pem
 sudo install -m 600 server.key /etc/viberpit/tls/server.key
-# Copy the ORIGINAL fleet CA cert (not ca2): the daemon uses it to verify the edge's
-# client cert, and client.pem is original-CA-signed.
-scp dobby:/etc/viberpit/tls/ca.pem /tmp/ca.pem && sudo install -m 644 /tmp/ca.pem /etc/viberpit/tls/ca.pem
+# Copy the fleet CA cert (dobby's ca.pem is ca3): the daemon uses it to verify the edge's
+# client cert, which ca3 signed.
+scp dobby:/etc/viberpit/tls/ca3.pem /tmp/ca.pem && sudo install -m 644 /tmp/ca.pem /etc/viberpit/tls/ca.pem
 ```
 
 - [ ] `server.pem` and `server.key` installed at `/etc/viberpit/tls/` on `<host>`.
-- [ ] `ca.pem` (the ORIGINAL fleet CA cert) installed at `/etc/viberpit/tls/ca.pem` on `<host>`.
-- [ ] Verify the server cert against the SIGNING CA: `openssl verify -CAfile <(cat /etc/viberpit/tls/ca.pem <path-to>/ca2.pem) /etc/viberpit/tls/server.pem` exits 0 (a ca2-signed cert will NOT verify against `ca.pem` alone — that is expected).
+- [ ] `ca.pem` (a copy of `ca3.pem`) installed at `/etc/viberpit/tls/ca.pem` on `<host>`.
+- [ ] Verify the server cert the way Python 3.13+ will: `openssl verify -x509_strict -CAfile /etc/viberpit/tls/ca.pem /etc/viberpit/tls/server.pem` exits 0.
 
 #### Lost or rotated CA — the bundle pattern
 
 If the signing CA key is ever genuinely unavailable, do NOT re-key existing hosts. Bridge in a new
-CA instead (this is exactly how ca2 was introduced on 2026-08-30):
+CA instead (this is exactly how ca2 was introduced on 2026-08-30). The bridge only holds while EVERY
+CA in the bundle carries `keyUsage`. A strict verifier rejects a chain through a CA without it, which
+is why 2026-10-07 needed a full re-key onto ca3 rather than a bridge.
 
 1. Mint a new durable CA on dobby: `caN.pem` + `caN.key` (0600) in `/etc/viberpit/tls/`.
 2. Sign all NEW hosts' server certs with `caN`. Existing hosts keep their certs untouched.
@@ -162,7 +172,7 @@ CA instead (this is exactly how ca2 was introduced on 2026-08-30):
    and point `VIBERPIT_SESSIOND_CLIENT_CA` at the bundle in the edge's `viberpit.env`, then restart
    the edge.
 4. Leave each daemon's `VIBERPIT_SESSIOND_TLS_CA` pointing at the CA that signed the edge's
-   *client* cert (the original `ca.pem` today) — daemons verify the edge, not each other, so they
+   *client* cert (ca3 today) — daemons verify the edge, not each other, so they
    only need the client cert's CA.
 
 ---
@@ -193,8 +203,8 @@ VIBERPIT_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443
 # mTLS — server identity
 VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
 VIBERPIT_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
-# TLS_CA verifies the EDGE'S CLIENT CERT — keep it on the ORIGINAL ca.pem (which signed
-# client.pem), even though the server cert above is ca2-signed. See Step 3's CA table.
+# TLS_CA verifies the EDGE'S CLIENT CERT — the fleet CA (ca3) that signed client.pem.
+# See Step 3's CA table.
 VIBERPIT_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
 
 # Only the edge (CN=edge) may connect
@@ -541,9 +551,9 @@ collision must be avoided:
 
 ### What is missing on dobby
 
-**Server cert** — *done 2026-08-30*: dobby's `/etc/viberpit/tls/server.pem` + `server.key` exist
-and are **ca2-signed**. For renewal, mint with Option A above (sign with `ca2.key`, verify against
-`ca-bundle.pem`), then:
+**Server cert** — *re-keyed 2026-10-07*: dobby's `/etc/viberpit/tls/server.pem` + `server.key` exist
+and are **ca3-signed**. For renewal, mint with Option A above (sign with `ca3.key`, verify with
+`-x509_strict` against `ca-bundle.pem`), then:
 
 ```bash
 sudo install -m 640 "$OUTDIR/server.pem" /etc/viberpit/tls/server.pem

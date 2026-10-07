@@ -61,9 +61,9 @@ mTLS. This section covers certificate generation and configuration.
 Use this OpenSSL recipe to generate a CA and certificates for your deployment:
 
 ```bash
-# CA (valid 10 years)
+# CA (valid 10 years). keyUsage is required: Python 3.13+ rejects a CA without it.
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
-  -subj "/CN=ccswitch-ca" -days 3650
+  -subj "/CN=ccswitch-ca" -days 3650 -addext "keyUsage=critical,keyCertSign,cRLSign"
 
 # Server cert (SAN MUST match how the edge reaches the daemon)
 openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=sessiond"
