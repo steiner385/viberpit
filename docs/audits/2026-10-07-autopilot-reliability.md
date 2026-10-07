@@ -51,13 +51,16 @@ authority changes, and unavailable/degraded fleet observations. Budget concurren
 was exercised against both SQLite and a dedicated PostgreSQL test database.
 
 A live transport smoke used the changed control loop and public session API with
-real Claude and Codex turns on Rocky. Three accelerated deference checks sent
-nothing; after simulated expiry, exactly one continuation completed on each
-native engine. Requested primary placement was redirected to Rocky by capacity
-policy, so this is not evidence of a primary-host live smoke. Test sessions were
-left complete with assistance paused and auto-archive disabled; no archive or
-retention setting was changed. Full gate and rollout results are recorded in the
-fixing PR.
+real Claude and Codex turns on both Rocky (worker) and Dobby (primary). Three
+accelerated deference checks sent nothing; after simulated expiry, exactly one
+continuation completed for each engine on each host. Initial primary placement
+was unavailable due capacity; after capacity freed, the primary smoke passed
+with placement corroborated by the session lease. An unrelated deployment
+drain rejected one Codex attempt; its retry passed after the runner restored.
+Test sessions were left complete with assistance paused and auto-archive
+disabled; no archive or retention setting was changed. The real periodic retry
+is covered separately by the orchestrator integration test. Full gate and
+rollout results are recorded in the fixing PR.
 
 ## Sibling audit
 
