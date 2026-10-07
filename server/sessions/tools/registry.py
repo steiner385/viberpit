@@ -7,6 +7,11 @@ from server.mcp_spec import ToolClass, ToolSpec, register_surface
 # row + audit + counter, exactly the assistant's `report_gap` precedent, so it raises
 # no permission card in any mode (spec §3.2, §12).
 SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
+    ToolSpec("roadmap_needs_you", ToolClass.READ, "Read roadmap items needing attention"),
+    ToolSpec("roadmap_item", ToolClass.READ, "Read roadmap item detail"),
+    ToolSpec("roadmap_resolve", ToolClass.MUTATION, "Resolve a roadmap proposal", idempotent=False),
+    ToolSpec("roadmap_hold", ToolClass.MUTATION, "Hold or release a roadmap item"),
+    ToolSpec("roadmap_advance", ToolClass.MUTATION, "Approve an initiative stage", idempotent=False),
     ToolSpec("session_context", ToolClass.READ, "Read this session's context"),
     ToolSpec("report_feedback", ToolClass.READ, f"Report a problem with {brand.NAME}"),
     # SIGNAL, not READ: each moves something the user sees (a status badge, a
@@ -127,6 +132,8 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
         signalling_tools=signalling_tools, self_model_switch=self_model_switch)
     # `dispatch_session` rides only on a durable surface — there is no marker for a
     # dispatch — and only while the kill switch (``child_sessions``) is on.
+    if signalling_tools:
+        names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance")
     if signalling_tools and child_sessions:
         names = names + ("dispatch_session",)
     return names

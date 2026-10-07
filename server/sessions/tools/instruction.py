@@ -25,6 +25,11 @@ from .registry import mounted_names
 #: entry here — `test_session_tools_instruction.py` asserts coverage so a fourth
 #: `ToolSpec` without one fails a test rather than crashing every Claude spawn.
 _BLURBS: dict[str, str] = {
+    "roadmap_needs_you": "list a product's roadmap items needing human attention.",
+    "roadmap_item": "read the detail needed to discuss a roadmap item.",
+    "roadmap_resolve": "record the user's chosen proposal resolution with tool approval.",
+    "roadmap_hold": "hold or release a roadmap item on the user's behalf.",
+    "roadmap_advance": "approve the initiative stage the user has reviewed.",
     "session_context": "how you were dispatched (repo, branch, origin, goal).",
     "report_feedback": f"a problem with {brand.NAME} itself, never the project.",
     "mark_complete": "you have fully accomplished this session's objective.",

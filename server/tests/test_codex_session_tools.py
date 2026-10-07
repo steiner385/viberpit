@@ -49,7 +49,8 @@ def test_build_declares_both_tools_with_object_schemas():
     from server.sessions.tools.codex import CodexSessionTools
 
     st = CodexSessionTools.build(_ctx())
-    assert {s.name for s in st.dynamic_tools} == {"session_context", "report_feedback"}
+    assert {s.name for s in st.dynamic_tools} == {"session_context", "report_feedback",
+                     "roadmap_needs_you", "roadmap_item"}
     for spec in st.dynamic_tools:
         assert spec.input_schema["type"] == "object"
     assert st.declares("report_feedback") and not st.declares("Bash")
@@ -65,8 +66,8 @@ def test_the_declaration_can_ride_thread_start_unchanged():
 
     st = CodexSessionTools.build(_ctx())
     wire = schema.ThreadStartParams(cwd="/w", dynamic_tools=st.dynamic_tools).to_wire()
-    assert {t["name"] for t in wire["dynamicTools"]} == {"session_context",
-                                                         "report_feedback"}
+    assert {t["name"] for t in wire["dynamicTools"]} == {"session_context", "report_feedback",
+                     "roadmap_needs_you", "roadmap_item"}
     assert all(t["type"] == "function" for t in wire["dynamicTools"])
 
 
@@ -138,8 +139,8 @@ def session_tools(isolated_db):
 async def test_a_fresh_coding_thread_declares_the_surface(harness, session_tools):
     await harness.boot(session_tools=session_tools)
     params = harness.params(schema.METHOD_THREAD_START)
-    assert {t["name"] for t in params["dynamicTools"]} == {"session_context",
-                                                            "report_feedback"}
+    assert {t["name"] for t in params["dynamicTools"]} == {"session_context", "report_feedback",
+                     "roadmap_needs_you", "roadmap_item"}
 
 
 @pytest.mark.asyncio

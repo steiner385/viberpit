@@ -468,4 +468,6 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
                "propose_decision": propose_decision, "dispatch_session": dispatch_session,
                "share_artifact": share_artifact}
+    from .roadmap import build_roadmap_tools
+    by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))
     return [by_name[name] for name in mounted_tool_names(ctx)]
