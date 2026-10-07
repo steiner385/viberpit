@@ -2,8 +2,9 @@
 point where a session's system prompt learns how to signal completion, no-PR, and a model
 request, either through markers or through the signalling tools, never both.
 
-Detail lives in the tool descriptions, which the model reads at call time; the paragraph
-here is an index naming what is mounted, not a spec.
+Tool detail lives in the tool descriptions, which the model reads at call time; the
+tools paragraph here is an index naming what is mounted, not a spec. Shared task
+follow-through policy is appended independently of the signal transport.
 
 Both the product name and the MCP server name come from ``viberpit.brand``: this
 paragraph tells the model which server to look under, so a hand-typed name would
@@ -14,6 +15,29 @@ from viberpit import brand
 
 from ..completion import marker_instructions
 from .registry import mounted_names
+
+# Shared task policy, independent of the engine and completion signal transport.
+# Keep tool-specific mechanics in the tool descriptions / marker contracts below.
+FOLLOW_THROUGH_INSTRUCTION = """Problem-solving follow-through
+Treat a report of malfunction, a question about why something is broken, or a request
+to investigate an issue as a request to help resolve that problem. Establish the
+cause, then carry a clear, in-scope remedy through implementation, verification,
+and the repository's pull request workflow. Do not stop at a diagnosis, a proposed
+fix, or an offer to continue when the next action is already authorized.
+Respect explicit limits: investigate only, explain only, review only, planning,
+read-only work, and requests to pause or stop. Pure informational questions do not
+authorize changes. Follow task-specific handoff requirements and permission boundaries;
+this default does not authorize deployment, destructive actions, or unrelated work.
+Follow directly related causes and regressions needed to resolve the original
+problem; do not expand into an unbounded cleanup or the entire repository backlog.
+When a required decision, approval, access, or evidence cannot be obtained yourself,
+finish independent authorized work, explain the concrete blocker and recommended
+next step, and use the available hand-back or decision mechanism. Do not label an
+unresolved problem complete or no-change-needed merely because investigation ended.
+Before finishing, check the original objective against what was actually changed
+and verified. Continue if actionable in-scope work remains; otherwise report the
+outcome and any limitations and use the appropriate completion signal.
+"""
 
 #: One clause per tool, deliberately thin: this paragraph is an index, not a spec (see
 #: the module docstring). The tool's OWN description — sent with the tool schema, so it
@@ -95,8 +119,9 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
       emitted at all — the tools cover what the markers used to.
     - otherwise → ``marker_instructions(...)`` exactly as before, plus the session-tools
       paragraph (naming only the two always-on READ tools) when ``session_tools``.
-    - neither flag → ``marker_instructions(...)`` alone, byte-identical to today's output
-      with the surface off entirely.
+    - neither flag → ``marker_instructions(...)`` with the surface off entirely.
+
+    Every path also receives the same problem-solving policy, even with tools off.
 
     Every argument is the caller's already-resolved answer, not a re-read of a flag: the
     Claude path knows them from ``session_tools_enabled`` / ``self_model_switch_enabled``
@@ -105,11 +130,11 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
     with what was actually mounted.
     """
     if not session_tools:
-        return marker_instructions(self_model_switch=self_model_switch)
-
-    tools_paragraph = _session_tools_instruction(
-        signalling_tools=signalling_tools, self_model_switch=self_model_switch,
-        child_sessions=child_sessions)
-    if signalling_tools:
-        return tools_paragraph
-    return f"{marker_instructions(self_model_switch=self_model_switch)}\n\n{tools_paragraph}"
+        instructions = marker_instructions(self_model_switch=self_model_switch)
+    else:
+        tools_paragraph = _session_tools_instruction(
+            signalling_tools=signalling_tools, self_model_switch=self_model_switch,
+            child_sessions=child_sessions)
+        instructions = tools_paragraph if signalling_tools else (
+            f"{marker_instructions(self_model_switch=self_model_switch)}\n\n{tools_paragraph}")
+    return f"{instructions}\n\n{FOLLOW_THROUGH_INSTRUCTION}"

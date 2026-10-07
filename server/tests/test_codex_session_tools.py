@@ -164,7 +164,8 @@ async def test_a_fresh_thread_without_tools_is_not_told_about_them(harness):
     await harness.boot()
     instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
     assert "session_context" not in instructions
-    assert instructions == marker_instructions(self_model_switch=True)
+    assert marker_instructions(self_model_switch=True) in instructions
+    assert "Problem-solving follow-through" in instructions
 
 
 @pytest.mark.asyncio
@@ -183,6 +184,7 @@ async def test_a_signalling_surface_is_declared_and_replaces_the_markers(harness
             "propose_decision", "share_artifact"} <= declared
     instructions = params["developerInstructions"]
     assert "mark_complete" in instructions and "request_model" in instructions
+    assert "Problem-solving follow-through" in instructions
     assert marker_instructions(self_model_switch=True) not in instructions
 
 
@@ -223,7 +225,7 @@ def test_both_engines_compose_the_instruction_through_one_helper(monkeypatch):
 
     base = marker_instructions(self_model_switch=False)
     assert session_instructions(session_tools=False, signalling_tools=False,
-                                self_model_switch=False) == base
+                                self_model_switch=False).startswith(base)
     with_read_tools = session_instructions(session_tools=True, signalling_tools=False,
                                            self_model_switch=False)
     assert with_read_tools.startswith(f"{base}\n\n")
@@ -231,8 +233,9 @@ def test_both_engines_compose_the_instruction_through_one_helper(monkeypatch):
     monkeypatch.delenv("VIBERPIT_SESSION_TOOLS_ENABLED", raising=False)
     monkeypatch.delenv("VIBERPIT_SELF_MODEL_SWITCH_ENABLED", raising=False)
     # Claude's `durable_tool_surface` is True, so its append is the tools paragraph
-    # ALONE — no marker survives alongside the tools that replace it.
+    # plus shared task policy — no marker survives alongside its replacement tools.
     assert "mark_complete" in _build_append_string()
+    assert "Problem-solving follow-through" in _build_append_string()
 
 
 @pytest.mark.asyncio

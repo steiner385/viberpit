@@ -75,6 +75,20 @@ API/UI/assistant view of `session_feedback`, and `session_url` in the context sn
 edge's public URL, which nothing on the server derives today; the filer names the session and host
 instead of linking to it).
 
+## Problem-solving follow-through
+
+Claude and Codex coding sessions receive one shared task policy from
+`server/sessions/tools/instruction.py`, including when session tools are disabled.
+An ordinary malfunction report or troubleshooting question defaults to resolving the
+problem through a verified fix and the repository's PR workflow. Explicit
+investigation-only, explanation, review, planning and read-only scopes remain binding,
+as do permission boundaries and task-specific automation handoffs. A real blocker
+requires a concrete next step and the appropriate hand-back or decision signal.
+
+This is prompting guidance, not enforced proof of completion. New sessions receive
+it after deployment; existing Codex threads retain their original instructions on
+resume. Behavioral cases are in `docs/superpowers/evals/session-tools/cases.jsonl`.
+
 ## Filing: the `session-feedback` automation (Phase 2, #1434)
 
 `SessionFeedbackFiler` (`server/automations/session_feedback.py`, id `session-feedback`, modes

@@ -4,7 +4,7 @@ way to signal — never both, never neither."""
 from __future__ import annotations
 
 from server.sessions.completion import COMPLETION_MARKER, marker_instructions
-from server.sessions.tools.instruction import session_instructions
+from server.sessions.tools.instruction import FOLLOW_THROUGH_INSTRUCTION, session_instructions
 from server.sessions.tools.registry import READ_TOOL_NAMES, SIGNAL_TOOL_NAMES, mounted_names
 
 
@@ -26,9 +26,9 @@ def test_request_model_is_only_named_when_the_engine_can_honour_it():
     assert "request_model" in on and "request_model" not in off
 
 
-def test_the_surface_off_entirely_is_exactly_the_marker_contract():
+def test_the_surface_off_keeps_the_marker_contract_and_shared_policy():
     s = session_instructions(session_tools=False, signalling_tools=False, self_model_switch=True)
-    assert s == marker_instructions(self_model_switch=True)
+    assert s == marker_instructions(self_model_switch=True) + "\n\n" + FOLLOW_THROUGH_INSTRUCTION
 
 
 def test_the_paragraph_never_hardcodes_a_tool_count():
@@ -67,10 +67,10 @@ def test_session_tools_off_ignores_signalling_tools_regardless_of_its_value():
     about tools it does not have declared at all."""
     assert session_instructions(session_tools=False, signalling_tools=True,
                                 self_model_switch=False) == marker_instructions(
-        self_model_switch=False)
+        self_model_switch=False) + "\n\n" + FOLLOW_THROUGH_INSTRUCTION
     assert session_instructions(session_tools=False, signalling_tools=True,
                                 self_model_switch=True) == marker_instructions(
-        self_model_switch=True)
+        self_model_switch=True) + "\n\n" + FOLLOW_THROUGH_INSTRUCTION
 
 
 def test_no_marker_session_still_gets_the_read_tools_paragraph():
@@ -110,3 +110,18 @@ def test_the_three_ways_line_appears_only_with_signalling_tools():
     assert "ending a turn is not completion" in on.lower()
     assert "ending a turn is not completion" not in off.lower()
     assert "hand_back" not in off
+
+
+def test_follow_through_guidance_is_present_on_every_instruction_surface():
+    """Troubleshooting must not become diagnosis-only when tools are disabled."""
+    for session_tools in (False, True):
+        for signalling_tools in (False, True):
+            for self_model_switch in (False, True):
+                text = session_instructions(
+                    session_tools=session_tools, signalling_tools=signalling_tools,
+                    self_model_switch=self_model_switch)
+                assert text.count("Problem-solving follow-through") == 1
+                assert "why something is broken" in text
+                assert "investigate only" in text
+                assert "pull request" in text
+                assert "permission boundaries" in text
