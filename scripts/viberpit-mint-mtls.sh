@@ -47,8 +47,13 @@ fi
 
 mkdir -p "$OUT"; cd "$OUT"; umask 077
 
+# keyUsage is NOT optional: Python 3.13+ verifies with VERIFY_X509_STRICT, which rejects a
+# CA lacking it ("CA cert does not include key usage extension"). Both earlier fleet CAs
+# omitted it and the 3.14 host upgrade cut the edge off from every daemon (2026-10-07).
+# OpenSSL 3 `req -x509` already adds the SKI/AKI and critical basicConstraints strict wants.
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
-  -subj "/CN=ccswitch-ca" -days 3650 2>/dev/null
+  -subj "/CN=ccswitch-ca" -days 3650 \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
 
 openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr \
   -subj "/CN=sessiond" 2>/dev/null

@@ -86,14 +86,18 @@ cd /etc/viberpit/codex-auth-ca
 sudo umask 077
 
 # 1. The authority's own CA (signs the SERVER cert runners verify).
+#    keyUsage is required on BOTH CAs: Python 3.13+ verifies with VERIFY_X509_STRICT,
+#    which rejects a CA without it ("CA cert does not include key usage extension").
 sudo openssl req -x509 -newkey rsa:2048 -nodes -keyout server-ca.key -out server-ca.pem \
-     -subj "/CN=ccswitch-codex-auth-ca" -days 3650
+     -subj "/CN=ccswitch-codex-auth-ca" -days 3650 \
+     -addext "keyUsage=critical,keyCertSign,cRLSign"
 
 # 2. A second CA that signs CLIENT certs. Separate from the server CA so that
 #    possession of the cert runners trust does not let anyone mint a client
 #    identity the authority accepts.
 sudo openssl req -x509 -newkey rsa:2048 -nodes -keyout client-ca.key -out client-ca.pem \
-     -subj "/CN=ccswitch-codex-auth-client-ca" -days 3650
+     -subj "/CN=ccswitch-codex-auth-client-ca" -days 3650 \
+     -addext "keyUsage=critical,keyCertSign,cRLSign"
 
 # 3. The listener's server cert. The SAN must match how callers REACH it
 #    (VIBERPIT_CODEX_AUTHORITY_ENDPOINT) — use the tailnet name, never a LAN name.

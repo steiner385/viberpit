@@ -28,6 +28,12 @@ def make_ca():
         .serial_number(x509.random_serial_number())
         .not_valid_before(_NOT_BEFORE).not_valid_after(_NOT_AFTER)
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        # keyUsage + SKI are what VERIFY_X509_STRICT (default on Python 3.13+) demands of a CA.
+        .add_extension(x509.KeyUsage(
+            digital_signature=False, content_commitment=False, key_encipherment=False,
+            data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True,
+            encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
     return key, cert
@@ -42,8 +48,11 @@ def make_leaf(ca_key, ca_cert, common_name, *, san_dns=None, san_ip=None):
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(_NOT_BEFORE).not_valid_after(_NOT_AFTER)
+        # Strict X.509 rejects a CA-issued cert with no AKI pointing back at its issuer.
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+                       critical=False)
     )
-    san = [x509.DNSName(d) for d in (san_dns or [])]
+    san =[x509.DNSName(d) for d in (san_dns or [])]
     san += [x509.IPAddress(ipaddress.ip_address(ip)) for ip in (san_ip or [])]
     if san:
         builder = builder.add_extension(x509.SubjectAlternativeName(san), critical=False)

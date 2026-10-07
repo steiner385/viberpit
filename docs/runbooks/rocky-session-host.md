@@ -324,16 +324,16 @@ cert must stay the tailnet identity, never `rocky.lan`.
 issue #841 refuses to run when a fleet CA already exists). Renew by signing a fresh cert with the
 existing signing CA per the onboarding runbook, Step 3 Option A
 (`docs/runbooks/onboarding-a-session-runner.md`) — that runbook's CA table is the source of truth.
-Summary of the fleet CA state (since 2026-08-30, issue #841):
+Summary of the fleet CA state (since 2026-10-07, when the Python 3.14 upgrade forced a re-key
+because neither earlier CA carried `keyUsage`):
 
-- **Server-cert renewals** (rocky, dobby, any runner): sign with `ca2.key`
-  (`/etc/viberpit/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
-  `ca-bundle.pem` (original `ca.pem` + `ca2.pem`), so old and new certs coexist.
-- **Client-cert renewal** (`CN=edge`): every daemon verifies it against its
-  `VIBERPIT_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
-  key, which is intact at `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby (a **root-only**
-  directory: a non-root search reports permission denied/nothing — it is NOT lost), or first point
-  every daemon's `VIBERPIT_SESSIOND_TLS_CA` at a ca.pem+ca2.pem bundle and sign with ca2.
+- **All renewals, server and client** (rocky, dobby, any runner, `CN=edge`): sign with `ca3.key`
+  (`/etc/viberpit/tls/ca3.key` on dobby, root-only; backed up in 1Password). `ca.pem` and
+  `ca-bundle.pem` on every host are both just ca3, so no bundle juggling is needed.
+- Verify every new cert with `openssl verify -x509_strict`. That's the check Python 3.13+ applies,
+  and plain `openssl verify` passes certs that the daemons will reject.
+- The retired CAs (`ca.key` at `/mnt/hdd-storage/ccswitch-ca/`, a **root-only** directory, and
+  `ca2.*`) still exist but nothing chains to them. Do not sign with them.
 
 Distribute renewed material and clean up:
 
