@@ -11,10 +11,10 @@ const state = {
 
 vi.mock('@/api/assistant', () => ({
   useAssistantStatus: () => ({ data: state.status }),
-  useResetAssistant: () => ({ mutateAsync: vi.fn() }),
-  useSetAssistantModel: () => ({ mutateAsync: setModel, ...state.setModel }),
+  useResetAssistant: () => ({ mutate: vi.fn() }),
+  useSetAssistantModel: () => ({ mutate: setModel, ...state.setModel }),
   useAssistantHistory: () => ({ data: [], isLoading: false }),
-  useResumeAssistantSession: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false }),
+  useResumeAssistantSession: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }))
 vi.mock('@/api/hooks', () => ({
   useModels: () => ({ data: [{ id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' }] }),

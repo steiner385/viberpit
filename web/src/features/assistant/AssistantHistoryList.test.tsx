@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AssistantHistoryList } from './AssistantHistoryList'
 
-const mutateAsync = vi.fn()
+const mutate = vi.fn()
 const state = {
   history: { data: [] as Array<{ id: string; snippet: string | null; archivedAt: string | null }>, isLoading: false },
   resume: { isPending: false, isError: false },
@@ -10,12 +10,13 @@ const state = {
 
 vi.mock('@/api/assistant', () => ({
   useAssistantHistory: (enabled: boolean) => ({ ...state.history, enabled }),
-  useResumeAssistantSession: () => ({ mutateAsync, ...state.resume }),
+  useResumeAssistantSession: () => ({ mutate, ...state.resume }),
 }))
 
 beforeEach(() => {
-  mutateAsync.mockReset()
-  mutateAsync.mockResolvedValue({ id: 'h1', model: 'sonnet', engine: 'claude_code', state: 'resumed' })
+  mutate.mockReset()
+  mutate.mockImplementation((_id: string, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+  
   state.history = { data: [], isLoading: false }
   state.resume = { isPending: false, isError: false }
 })
@@ -59,7 +60,7 @@ describe('AssistantHistoryList', () => {
     }
     render(<AssistantHistoryList open onClose={onClose} />)
     fireEvent.click(screen.getByText('fix the flaky test'))
-    expect(mutateAsync).toHaveBeenCalledWith('h1')
+    expect(mutate).toHaveBeenCalledWith('h1', expect.objectContaining({ onSuccess: expect.any(Function) }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 

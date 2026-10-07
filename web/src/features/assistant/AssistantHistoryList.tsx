@@ -36,7 +36,7 @@ export function AssistantHistoryList({ open, onClose }: AssistantHistoryListProp
   const now = useNow(60_000)
 
   function handleResume(id: string) {
-    void resume.mutateAsync(id).then(() => onClose())
+    resume.mutate(id, { onSuccess: () => onClose() })
   }
 
   return (

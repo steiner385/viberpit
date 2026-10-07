@@ -47,7 +47,7 @@ export function AssistantSheet() {
   // page's sessions, which the user explicitly starts from a prompt.
   useEffect(() => {
     if (status.data?.enabled && !status.data.sessionId && !create.isPending) {
-      void create.mutateAsync({})
+      create.mutate({})
     }
     // Deliberately NOT depending on `create` (mutateAsync/isPending are a fresh
     // identity every render) — only re-fire when the facts that gate the create
@@ -60,7 +60,7 @@ export function AssistantSheet() {
 
   if (!status.data.sessionId) {
     return create.isError
-      ? <AssistantCreateError error={create.error} onRetry={() => { void create.mutateAsync({}) }} />
+      ? <AssistantCreateError error={create.error} onRetry={() => { create.mutate({}) }} />
       : <AssistantSkeleton />
   }
 

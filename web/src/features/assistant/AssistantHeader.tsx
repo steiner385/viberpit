@@ -48,7 +48,7 @@ export function AssistantHeader() {
             value={modelId ?? ''}
             disabled={setModel.isPending}
             onChange={(e) => {
-              void setModel.mutateAsync({ sessionId, model: e.target.value })
+              setModel.mutate({ sessionId, model: e.target.value })
             }}
           >
             {(models ?? []).map((m) => (
@@ -94,7 +94,7 @@ export function AssistantHeader() {
               type="button"
               variant="primary"
               size="lg"
-              onClick={() => { void reset.mutateAsync({}).then(() => setConfirming(false)) }}
+              onClick={() => { reset.mutate({}, { onSuccess: () => setConfirming(false) }) }}
             >
               Start new chat
             </Button>
