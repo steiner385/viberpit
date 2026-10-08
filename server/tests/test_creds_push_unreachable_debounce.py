@@ -96,3 +96,18 @@ def test_an_expected_restart_keeps_the_run_quiet(push, monkeypatch, caplog):
         for _ in range(4):
             tick()
     assert _levels(caplog) == [logging.INFO] * 4
+
+
+def test_log_names_the_exception_type_when_its_message_is_empty(push, caplog):
+    try:
+        try:
+            raise TimeoutError()
+        except TimeoutError as inner:
+            raise DaemonTimeout("") from inner
+    except DaemonTimeout as exc:
+        err = exc
+    tick = push(_Runner(err))
+    with caplog.at_level(logging.INFO, logger=fo.log.name):
+        tick()
+    msg = [r.getMessage() for r in caplog.records if "fleet.creds_sync" in r.getMessage()][0]
+    assert "DaemonTimeout (caused by TimeoutError)" in msg

@@ -238,6 +238,13 @@ async def build_fleet_router(primary_name: str, primary_orch) -> FleetRouter:
     return router
 
 
+def _describe_push_error(exc: BaseException) -> str:
+    """``Type: message`` (plus the cause's type) -- ``httpx.ReadTimeout`` stringifies to ``""``."""
+    text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    cause = exc.__cause__ or exc.__context__
+    return f"{text} (caused by {type(cause).__name__})" if cause is not None else text
+
+
 class FleetOrchestrator:
     def __init__(self, router: FleetRouter, primary: str) -> None:
         self._router = router
@@ -827,14 +834,15 @@ class FleetOrchestrator:
         """
         if not isinstance(exc, DaemonUnavailable):
             self._creds_unreachable.pop(name, None)
-            log.warning("fleet.creds_sync host=%s failed: %s", name, exc)
+            log.warning("fleet.creds_sync host=%s failed: %s", name, _describe_push_error(exc))
             return
         run = self._creds_unreachable.get(name, 0) + 1
         self._creds_unreachable[name] = run
         quiet = (run < CREDS_UNREACHABLE_ESCALATE_AFTER
                  or await host_upgrade.restart_expected(name))
         log.log(logging.INFO if quiet else logging.WARNING,
-                "fleet.creds_sync host=%s unreachable (consecutive=%d): %s", name, run, exc)
+                "fleet.creds_sync host=%s unreachable (consecutive=%d): %s",
+                name, run, _describe_push_error(exc))
 
     async def creds_push_loop(self, interval_s: float = CREDS_PUSH_INTERVAL_S) -> None:
         """Push envelopes forever on the fleet probe cadence; a raising tick is swallowed."""
