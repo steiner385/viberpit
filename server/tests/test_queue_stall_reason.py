@@ -95,6 +95,15 @@ def _build_client(fake_orch: _FakeOrch, db_url: str) -> TestClient:
         real_orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(), poll_interval=9999.0, usage_fn=lambda n: None
         )
+        # The real orchestrator's background drains (rehydrate/status/close) would
+        # otherwise race the seeded queue rows: with nothing occupying the cap they
+        # try to spawn the entry, fail on its bare params, and delete it before the
+        # GET reads it — a load-dependent CI-only red. These tests read the stall
+        # reason; they never want a drain.
+        async def _no_drain() -> int:
+            return 0
+
+        real_orch._maybe_start_queued = _no_drain  # type: ignore[method-assign]
         app = create_app(orchestrator=real_orch)
     app.state.sessions = fake_orch
     return TestClient(app, raise_server_exceptions=False)

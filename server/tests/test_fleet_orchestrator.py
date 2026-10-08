@@ -1256,6 +1256,23 @@ async def test_daemon_timeout_warns_once_probe_run_escalates(caplog):
 
 
 @pytest.mark.asyncio
+async def test_lone_local_deadline_timeout_logs_info(caplog):
+    # automation_statuses wraps its worker read in asyncio.timeout(), which raises
+    # the builtin TimeoutError, not DaemonTimeout — same condition, same policy (#2846).
+    import logging
+    levels = await _unreachable_levels(caplog, TimeoutError(), 0)
+    assert levels == [logging.INFO]
+
+
+@pytest.mark.asyncio
+async def test_local_deadline_timeout_warns_once_probe_run_escalates(caplog):
+    import logging
+    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
+    levels = await _unreachable_levels(caplog, TimeoutError(), UNREACHABLE_ESCALATE_AFTER)
+    assert levels == [logging.WARNING]
+
+
+@pytest.mark.asyncio
 async def test_non_daemon_error_warns_despite_empty_run(caplog):
     import logging
     levels = await _unreachable_levels(caplog, RuntimeError("boom"), 0)
