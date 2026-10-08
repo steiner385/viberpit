@@ -3607,17 +3607,43 @@ class SessionOrchestrator:
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason=queue_reason or "global_cap")
-            return await self._spawn_session(
-                session_id, name=name, account=account, initial_prompt=initial_prompt,
-                cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
-                identity=identity, permission_mode=permission_mode,
-                attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-                origin=origin, origin_ref=origin_ref, model=model,
-                reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display, parent_session_id=parent_session_id,
-                autopilot_paused=autopilot_paused,
-                auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+            try:
+                return await self._spawn_session(
+                    session_id, name=name, account=account, initial_prompt=initial_prompt,
+                    cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
+                    identity=identity, permission_mode=permission_mode,
+                    attachment_ids=attachment_ids, name_is_auto=name_is_auto,
+                    origin=origin, origin_ref=origin_ref, model=model,
+                    reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+            except AllAccountsBusy as busy:
+                # Wait for quota rather than refuse — for people AND automations
+                # (2026-10-08). Re-auth is not a wait (it never clears on its own), and
+                # the assistant never queues (it is exempt from every cap). The refused
+                # spawn raised before its driver/record/row existed and already gave
+                # back its worktree + display (_release_prespawn_resources), so the
+                # queued row starts clean. A claimed launch (ownership_token) needs
+                # nothing extra: like a wait_for_slot -> runner_capacity queue, the
+                # returned queued record is bound to the reservation below.
+                if busy.kind != "at_ceiling" or is_assistant_kind(kind):
+                    raise
+                log.info("session.create id=%s every account at its ceiling — queueing "
+                         "(account_limited, earliest_reset=%s)", session_id, busy.earliest_reset)
+                return await self._enqueue_session(
+                    session_id, name=name, account=account,
+                    initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
+                    branch=branch, repo=repo, identity=identity,
+                    permission_mode=permission_mode, attachment_ids=attachment_ids,
+                    name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
+                    model=model, reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                    queue_reason="account_limited")
 
         if ownership_token is None:
             return await launch()
@@ -4282,6 +4308,20 @@ class SessionOrchestrator:
             log.exception("session.model_approval_hold_restore_failed id=%s",
                           session_id)
 
+    async def _account_headroom_or_raise(self, params: dict) -> None:
+        """Raise AllAccountsBusy while no account could take this queued entry.
+
+        A read-only probe (reserve=False): an availability check must never burn a
+        reservation window. An entry pinned to an account skips the probe, since
+        select_account is not what spawns it."""
+        if params.get("account"):
+            return
+        engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+        await asyncio.to_thread(
+            select_account, reserve=False,
+            exclude=self._recovery.quarantined(now=self._clock()),
+            engine=engine, model=quota_model(params.get("model"), engine=engine))
+
     async def _maybe_start_queued(self) -> int:
         """Start queued sessions while capacity allows. Serialised by a lock so
         concurrent teardown paths can't double-start one entry. Returns count
@@ -4413,6 +4453,19 @@ class SessionOrchestrator:
                         capacity_full.add(sid)
                         log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
                         continue
+                if queue_reason == "account_limited":
+                    try:
+                        await self._account_headroom_or_raise(params)
+                    except AllAccountsBusy:
+                        capacity_full.add(sid)
+                        log.debug("session_queue.account_limited id=%s — left queued", sid)
+                        continue
+                    except Exception:
+                        # A probe that cannot answer is not a "no": fall through to
+                        # the spawn, whose own select_account is authoritative —
+                        # never let one failed read abort the whole drain.
+                        log.warning("session_queue.account_probe_failed id=%s", sid,
+                                    exc_info=True)
                 self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:
                 # the spawn overwrites it with its pre-seeded active record (and

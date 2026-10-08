@@ -34,6 +34,14 @@ async def next_entry(exclude: Collection[str] = ()) -> SessionQueue | None:
         return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def entry_for(session_id: str) -> SessionQueue | None:
+    """The queue entry for *session_id*, or None when it is not queued."""
+    async with db_session() as db:
+        return (await db.execute(
+            select(SessionQueue).where(SessionQueue.session_id == session_id)
+        )).scalar_one_or_none()
+
+
 async def remove(session_id: str) -> bool:
     async with db_session() as db:
         r = await db.execute(
