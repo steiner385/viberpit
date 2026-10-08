@@ -1069,3 +1069,52 @@ class TestFetchCloneSerialization:
         link = tmp_path / "link"
         link.symlink_to(tmp_path)
         assert gitrepos.clone_lock(tmp_path) is gitrepos.clone_lock(link)
+
+
+class TestStaleRefLocks:
+    """#2856: a killed `fetch --prune` left old zero-byte ref locks forever."""
+
+    @staticmethod
+    def _err(lock):
+        return ("error: could not delete references: cannot lock ref 'refs/remotes/origin/x': "
+                f"Unable to create '{lock}': File exists.")
+
+    def _clone(self, tmp_path):
+        lock = tmp_path / ".git" / "refs" / "remotes" / "origin" / "x.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("")
+        return lock
+
+    def _fetch(self, tmp_path, lock):
+        import subprocess
+
+        def fake(args, owner=None):
+            if lock.exists():
+                return subprocess.CompletedProcess(args, 1, "", self._err(lock))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(gitrepos, "_run_git", side_effect=fake), \
+                mock.patch.object(gitrepos.time, "sleep"):
+            return gitrepos.fetch_clone(tmp_path)
+
+    def test_old_lock_removed_and_fetch_succeeds(self, tmp_path):
+        import os
+        lock = self._clone(tmp_path)
+        old = lock.stat().st_mtime - 3600
+        os.utime(lock, (old, old))
+        assert self._fetch(tmp_path, lock).returncode == 0
+        assert not lock.exists()
+
+    def test_young_lock_left_alone(self, tmp_path):
+        lock = self._clone(tmp_path)
+        assert self._fetch(tmp_path, lock).returncode == 1
+        assert lock.exists()
+
+    def test_lock_outside_git_dir_never_removed(self, tmp_path):
+        import os
+        (tmp_path / ".git").mkdir()
+        outside = tmp_path / "keep.lock"
+        outside.write_text("")
+        os.utime(outside, (1, 1))
+        assert gitrepos.remove_stale_locks(tmp_path, self._err(outside)) == []
+        assert outside.exists()
