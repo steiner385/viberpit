@@ -12,7 +12,7 @@
 # THE HAZARD (read before touching the thresholds): a naive ping-then-reboot
 # reboot-LOOPS the whole fleet. If the *network* is down rather than this host —
 # a router reboot, an upstream blip, a peer rebooting — every host running this
-# test reboots, repeatedly, into the same dead network. Four guards prevent that,
+# test reboots, repeatedly, into the same dead network. Five guards prevent that,
 # and none of them are optional:
 #
 #   1. MULTIPLE INDEPENDENT TARGETS, all must fail. One dead peer (e.g. dobby
@@ -25,6 +25,10 @@
 #   4. BOOT GRACE. For WDR_BOOT_GRACE (default 10 min) after boot the test is a
 #      no-op, so a host that just came up can't immediately re-reboot before its
 #      network stack (Tailscale, routes, DHCP) has settled.
+#   5. PACKAGE MANAGER. Never while apt/dpkg holds its lock or the package DB is
+#      mid-transaction (WDR_DPKG_DIR, WDR_PROC_LOCKS). An upgrade can drop the NIC
+#      itself (netplan unpacked, not yet configured); a reboot then interrupts dpkg
+#      and every later boot comes up half-upgraded and offline — a loop (2026-10-07).
 #
 # And the safest default of all: with NO targets configured the script is a
 # no-op. A misconfigured host does nothing rather than reboot-loop.
@@ -60,6 +64,8 @@ PING="${WDR_PING:-ping}"
 PING_COUNT="${WDR_PING_COUNT:-2}"
 PING_TIMEOUT="${WDR_PING_TIMEOUT:-2}"        # per-target deadline (ping -w), seconds
 
+DPKG_DIR="${WDR_DPKG_DIR:-/var/lib/dpkg}"
+PROC_LOCKS="${WDR_PROC_LOCKS:-/proc/locks}"
 FIRST_FAILURE="$STATE_DIR/first-failure"     # epoch of the start of the current outage
 MARKER="$STATE_DIR/last-reboot"              # epoch of the last committed reboot (cooldown anchor)
 
@@ -94,6 +100,38 @@ reachable() {
   return 1
 }
 
+# package_manager_busy: true (0) while apt/dpkg holds its lock OR the package DB is
+# mid-transaction. Either way a reboot cannot help and can only interrupt dpkg again:
+# on 2026-10-07 an upgrade unpacked netplan, the NIC dropped, and this script rebooted
+# rocky mid-dpkg twice, then every ~30 min because each boot came up half-upgraded.
+package_manager_busy() {
+  local lock dev ino id
+  # 1. A live apt/dpkg run: a POSIX lock on one of dpkg's lock files. apt holds
+  #    lock-frontend for its whole run; /proc/locks field 6 is MAJ:MIN:INODE (hex
+  #    major/minor). Match the DEVICE too: inode numbers are only unique per
+  #    filesystem, so an inode-only match would let any user's lock on an unrelated
+  #    file elsewhere masquerade as "apt running" and suppress every reboot.
+  for lock in "$DPKG_DIR/lock-frontend" "$DPKG_DIR/lock"; do
+    read -r dev ino < <(stat -c '%d %i' "$lock" 2>/dev/null) || continue
+    # Decode st_dev the way glibc's major()/minor() do.
+    id=$(printf '%02x:%02x:%s' $(( ((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfff) )) \
+                               $(( (dev & 0xff) | ((dev >> 12) & ~0xff) )) "$ino")
+    if awk -v id="$id" '$6 == id { found = 1 } END { exit !found }' "$PROC_LOCKS" 2>/dev/null; then
+      echo "dpkg lock held ($lock)"; return 0
+    fi
+  done
+  # 2. An interrupted run (nothing running, e.g. right after a reboot): dpkg's journal
+  #    has entries, or a package sits in a not-installed-yet state.
+  if [ -n "$(ls -A "$DPKG_DIR/updates" 2>/dev/null)" ]; then
+    echo "dpkg journal pending (dpkg --configure -a needed)"; return 0
+  fi
+  if grep -qE '^Status: .* (unpacked|half-configured|half-installed|triggers-pending|triggers-awaited)$' \
+       "$DPKG_DIR/status" 2>/dev/null; then
+    echo "packages left unconfigured (dpkg --configure -a needed)"; return 0
+  fi
+  return 1
+}
+
 # reboot cooldown gate — true (0) while a prior reboot is still within cooldown.
 in_cooldown() {
   local t last=0
@@ -118,6 +156,15 @@ if reachable; then
 fi
 
 # --- unreachable from here down -------------------------------------------------
+
+# Guard 5: never reboot under the package manager — vetoes both `test` and `repair`.
+# Reset the window so the network gets a fresh FAIL_WINDOW once dpkg is done, and
+# never touch the cooldown marker: a vetoed reboot did not happen.
+if why=$(package_manager_busy); then
+  log "all targets unreachable, but package manager busy: ${why} — NOT rebooting (a reset would interrupt it)"
+  rm -f "$FIRST_FAILURE" 2>/dev/null || true
+  exit 0
+fi
 
 if [ "$ARG" = "repair" ]; then
   # We only get here after a failed `test`, and the network is still down. This is
