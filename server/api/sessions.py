@@ -574,6 +574,18 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
 QUEUE_WAIT_GRACE_S = 60.0
 
 
+_JUST_QUEUED_MESSAGES = {
+    "global_cap": ("Every active-session slot is in use; this session starts when one "
+                   "frees. Use Start now to override."),
+    "host_capacity": ("Every host is at its session cap; this session starts when one "
+                      "has room. Use Start now to override."),
+    "product_capacity": ("This product is at its in-flight cap; this session starts when "
+                         "a slot frees. Use Start now to override."),
+    "runner_capacity": ("Backlog Runner capacity is full; this session starts when a slot "
+                        "frees. Use Start now to override."),
+}
+
+
 async def _queue_stall_reasons(
     records: list, *, grace_s: float = QUEUE_WAIT_GRACE_S,
 ) -> dict[str, dict[str, Any]]:
@@ -659,28 +671,45 @@ async def _per_session_stall_reasons(
                                "for a slot."}
                 continue
         elif kind == "account_limited" and not params.get("account"):
-            engine = parse_agent_engine(params.get("engine"), legacy_default=True)
-            model = quota_model(params.get("model"), engine=engine)
-            if (engine, model) not in account_probe:
-                try:
-                    # Read-only probe, as SessionOrchestrator._account_headroom_or_raise;
-                    # no `exclude`: the edge holds no quarantine state.
-                    await asyncio.to_thread(
-                        select_account, reserve=False, engine=engine, model=model)
-                    account_probe[(engine, model)] = None
-                except AllAccountsBusy as busy:
-                    account_probe[(engine, model)] = busy
-            limit = account_probe[(engine, model)]
+            limit: AllAccountsBusy | None = None
+            try:
+                engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+                model = quota_model(params.get("model"), engine=engine)
+                if (engine, model) not in account_probe:
+                    try:
+                        # Read-only probe, as SessionOrchestrator._account_headroom_or_raise;
+                        # no `exclude`: the edge holds no quarantine state.
+                        await asyncio.to_thread(
+                            select_account, reserve=False, engine=engine, model=model)
+                        account_probe[(engine, model)] = None
+                    except AllAccountsBusy as busy:
+                        account_probe[(engine, model)] = busy
+                limit = account_probe[(engine, model)]
+            except Exception:
+                # Degrade only this entry: its reason falls through, the rest stay.
+                log.warning("queue stall reason: account probe failed for %s",
+                            record.id, exc_info=True)
             if limit is not None:
                 reset = iso_utc(limit.earliest_reset)
+                if limit.kind == "no_usable_accounts":
+                    why = ("No account that can run this model is usable (accounts need "
+                           "re-authentication), so this session waits")
+                else:
+                    why = ("Every account that can run this model is at its usage "
+                           "ceiling, so this session waits for quota")
                 out[record.id] = {
                     "code": "account_limited", "waitedSeconds": waited, "earliestReset": reset,
-                    "message": ("Every account that can run this model is at its usage "
-                                "ceiling, so this session waits for quota"
-                                + (f" (earliest reset {reset})" if reset else "")
+                    "message": (why + (f" (earliest reset {reset})" if reset else "")
                                 + ". It starts automatically; Start now cannot override "
                                   "an account limit.")}
                 continue
+        if grace_s <= 0:
+            # Just queued: it was queued BECAUSE something is full, so never claim
+            # "capacity is free". Say which gate held it.
+            out[record.id] = {
+                "code": "queued", "waitedSeconds": waited,
+                "message": _JUST_QUEUED_MESSAGES.get(kind, _JUST_QUEUED_MESSAGES["global_cap"])}
+            continue
         out[record.id] = {
             "code": "waiting_for_drain", "waitedSeconds": waited,
             "message": "Capacity is free, but no host has started this session yet: its "
@@ -1040,7 +1069,11 @@ async def create_session(
     queue_stall_reason: dict[str, Any] | None = None
     if record.status == "queued":
         try:
-            queue_stall_reason = (await _queue_stall_reasons([record], grace_s=0)).get(record.id)
+            # Against the FULL session list, as GET /api/sessions does, so the shared
+            # global-cap cause sees the real occupancy.
+            queue_stall_reason = (
+                await _queue_stall_reasons(await orch.list_sessions(), grace_s=0)
+            ).get(record.id)
         except Exception:
             log.warning("create_session: queue stall reason failed", exc_info=True)
 

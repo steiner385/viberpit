@@ -405,7 +405,71 @@ def test_grace_zero_reports_a_session_queued_a_second_ago():
                         await _queue_stall_reasons([rec]))
             fast, default = (client.portal.call(_run) if getattr(client, "portal", None)
                              else asyncio.run(_run()))
-        assert fast["q1"]["code"] == "waiting_for_drain"
+        assert fast["q1"]["code"] == "queued"
         assert "q1" not in default
     finally:
         os.unlink(tf.name)
+
+
+def test_just_queued_reason_never_claims_capacity_is_free():
+    """grace 0 = "just queued": it was queued because something is full."""
+    cases = {"global_cap": "slot", "host_capacity": "host"}
+    for kind, word in cases.items():
+        reasons = _list_with_queue_grace0(kind)
+        assert reasons["code"] == "queued"
+        assert "Capacity is free" not in reasons["message"]
+        assert word in reasons["message"]
+
+
+def _list_with_queue_grace0(kind):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from server.api.sessions import _queue_stall_reasons
+    from server.db import db_session
+    from server.db.models import Session as DbSession, SessionQueue
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        client = _build_client(_FakeOrch(), db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            async def _run():
+                async with db_session() as db:
+                    db.add(DbSession(id="q1", name="q1", account_name="a", cwd="/tmp",
+                                     status="queued"))
+                    db.add(SessionQueue(
+                        session_id="q1", priority=1, params={"queue_reason": kind},
+                        enqueued_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+                return await _queue_stall_reasons(
+                    [_make_record("q1", status="queued")], grace_s=0)
+            out = (client.portal.call(_run) if getattr(client, "portal", None)
+                   else asyncio.run(_run()))
+        return out["q1"]
+    finally:
+        os.unlink(tf.name)
+
+
+def test_no_usable_accounts_says_reauth_not_usage_ceiling():
+    from datetime import datetime
+
+    from server.sessions.selection import AllAccountsBusy
+
+    busy = AllAccountsBusy(datetime(2030, 1, 1, 10), "no_usable_accounts")
+    with patch("server.api.sessions.select_account", side_effect=busy):
+        reasons = _list_with_queue([_make_record("q1", status="queued")],
+                                   entries={"q1": (120, {"queue_reason": "account_limited"})})
+    assert reasons["q1"]["code"] == "account_limited"
+    assert "re-authentication" in reasons["q1"]["message"]
+    assert "usage ceiling" not in reasons["q1"]["message"]
+
+
+def test_a_failing_account_probe_degrades_only_that_entry():
+    al = {"queue_reason": "account_limited"}
+    pc = {"queue_reason": "product_capacity", "repo": "org/unregistered"}
+    with patch("server.api.sessions.select_account", side_effect=RuntimeError("boom")):
+        reasons = _list_with_queue(
+            [_make_record("q1", status="queued"), _make_record("q2", status="queued")],
+            entries={"q1": (600, al), "q2": (600, pc)})
+    assert reasons["q1"]["code"] == "waiting_for_drain"
+    assert reasons["q2"]["code"] == "waiting_for_drain"

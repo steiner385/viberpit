@@ -491,3 +491,37 @@ def test_start_now_failed_spawn_returns_409_start_failed():
         assert resp.json()["error"]["code"] == "start_failed"
     finally:
         os.unlink(tf.name)
+
+
+def test_queued_create_returns_an_accurate_reason():
+    """The 201 body of a queued create explains WHY, and never says capacity is free."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from server.db import db_session
+    from server.db.models import Session as DbSession, SessionQueue
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        client = _build_client(_QueueingOrch(), db_url)
+        # The real orchestrator's drain would consume the seeded entry.
+        with patch.dict(os.environ, _make_env(db_url)), patch.object(
+                SessionOrchestrator, "_maybe_start_queued", return_value=0), client:
+            async def _seed():
+                async with db_session() as db:
+                    db.add(DbSession(id="q-new", name="q", account_name="a", cwd="/tmp",
+                                     status="queued"))
+                    db.add(SessionQueue(session_id="q-new", priority=1,
+                                        params={"queue_reason": "product_capacity",
+                                                "repo": "org/unregistered"},
+                                        enqueued_at=datetime.now(timezone.utc)))
+            (client.portal.call(_seed) if getattr(client, "portal", None)
+             else asyncio.run(_seed()))
+            resp = client.post("/api/sessions", json={"initialPrompt": "hi"}, headers=_H)
+        assert resp.status_code == 201, resp.text
+        reason = resp.json()["queueStallReason"]
+        assert reason["code"] == "queued"
+        assert "Capacity is free" not in reason["message"]
+    finally:
+        os.unlink(tf.name)
