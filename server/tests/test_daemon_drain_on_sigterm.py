@@ -192,3 +192,40 @@ def test_local_client_adapts_orchestrator_drain_calls():
     assert asyncio.run(client.call("drain_status"))["state"] == "ready"
     with pytest.raises(Exception):
         asyncio.run(client.call("list_sessions"))
+
+
+@pytest.mark.asyncio
+async def test_host_shutdown_skips_the_drain(previous_handler):
+    orch = FakeOrchestrator(active=2)
+
+    async def stopping():
+        return True
+
+    uninstall = mod.install_drain_on_sigterm(
+        orch, drain=_fast_drain(turn_cap_s=5), host_stopping=stopping)
+    try:
+        _raise_sigterm()
+        await _wait_for(lambda: len(previous_handler) == 1)
+        assert orch.begin_calls == 0
+    finally:
+        uninstall()
+
+
+@pytest.mark.asyncio
+async def test_host_is_stopping_reads_systemctl(monkeypatch):
+    async def fake(out):
+        async def _exec(*a, **k):
+            class P:
+                async def communicate(self):
+                    return out, b""
+            return P()
+        return _exec
+
+    for out, want in ((b"stopping\n", True), (b"running\n", False), (b"degraded\n", False)):
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", await fake(out))
+        assert await mod.host_is_stopping() is want
+
+    async def boom(*a, **k):
+        raise FileNotFoundError
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boom)
+    assert await mod.host_is_stopping() is False
