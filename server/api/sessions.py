@@ -583,6 +583,10 @@ _JUST_QUEUED_MESSAGES = {
                          "a slot frees. Use Start now to override."),
     "runner_capacity": ("Backlog Runner capacity is full; this session starts when a slot "
                         "frees. Use Start now to override."),
+    # Reached when the edge's own probe already sees headroom again (a race with
+    # the create): still say why it queued, and never offer Start now for it.
+    "account_limited": ("Every account that can run this model is at its usage ceiling; "
+                        "this session starts automatically when quota frees."),
 }
 
 

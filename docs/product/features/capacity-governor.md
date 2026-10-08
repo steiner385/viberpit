@@ -187,8 +187,9 @@ assistant still refuse.
 - **Start now** — `POST /api/sessions/{id}/start-now` (the "Start now" button on a queued row) starts
   that one session immediately, over the global cap, host cap, product and runner caps, and product
   holds (e.g. PR-Doctor priority). It never overrides an account usage ceiling: that answers 409
-  `all_accounts_limited` with `earliestReset`, and the session stays queued. Every use is audited as
-  `session.queue_start_now`.
+  `all_accounts_limited` with `earliestReset`, and the session stays queued. Every start-now that runs
+  (the session started, or its spawn failed and ended it — 409 `start_failed`) is audited as
+  `session.queue_start_now` with its outcome; an account-limit refusal or a 404 is not.
 - **Diagnostics** — the session daemon logs every RPC handler exception as
   `rpc.error method=… type=… message=…` (INFO for typed refusals, WARNING otherwise), so a refusal's
   reason is in the journal.

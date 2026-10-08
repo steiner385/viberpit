@@ -421,6 +421,20 @@ def test_just_queued_reason_never_claims_capacity_is_free():
         assert word in reasons["message"]
 
 
+def test_just_queued_account_limited_whose_probe_races_to_headroom():
+    """An account-limited create whose edge probe already sees headroom again is
+    still described as account-limited — never with the global-cap copy (which
+    offers a Start now that cannot override an account limit)."""
+    from unittest.mock import MagicMock
+
+    with patch("server.api.sessions.select_account", return_value=MagicMock()):
+        reasons = _list_with_queue_grace0("account_limited")
+    assert reasons["code"] == "queued"
+    assert reasons["message"] == (
+        "Every account that can run this model is at its usage ceiling; this "
+        "session starts automatically when quota frees.")
+
+
 def _list_with_queue_grace0(kind):
     import asyncio
     from datetime import datetime, timedelta, timezone

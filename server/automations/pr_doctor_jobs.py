@@ -29,6 +29,7 @@ PHASES = ("queued", "cloning", "assessing", "spawning", "ready")
 # error so a new failure mode never masquerades as success.
 _TERMINAL = {
     "spawned": "ready", "sent": "ready",
+    # "ceiling": reachable only from pre-account_limited daemons — remove after rollout (#2857)
     "ceiling": "deferred", "transient": "deferred",
     "clone_failed": "error", "spawn_failed": "error", "failed": "error",
 }
