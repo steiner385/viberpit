@@ -102,6 +102,12 @@ function readErrorBody(body: unknown): {
   }
 }
 
+/** The server's own message from an `ApiRequestError` body, across the `error` /
+ *  `detail` envelopes (`readErrorBody`'s reading); undefined when it carries none. */
+export function apiErrorMessage(err: unknown): string | undefined {
+  return err instanceof ApiRequestError ? readErrorBody(err.body).message : undefined
+}
+
 export function describeCreateSessionFailure(err: unknown): CreateSessionFailure {
   if (err instanceof ApiRequestError) {
     const { code, message, model, effort, hostReasons, earliestReset } = readErrorBody(err.body)

@@ -83,6 +83,34 @@ describe('QueuedSection', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Account limit — starts automatically when quota frees')
   })
 
+  it('shows the re-auth copy for accounts_need_reauth', () => {
+    startNow.mockImplementationOnce((_v, opts) =>
+      opts.onError(new ApiRequestError(409, { error: { code: 'accounts_need_reauth', message: 'x' } })))
+    render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
+    expect(screen.getByRole('status')).toHaveTextContent(/re-authenticate/)
+  })
+
+  it("surfaces the server's message for start_failed", () => {
+    startNow.mockImplementationOnce((_v, opts) =>
+      opts.onError(new ApiRequestError(409, { error: { code: 'start_failed', message: 'boom' } })))
+    render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
+    expect(screen.getByRole('status')).toHaveTextContent('boom')
+  })
+
+  it('drops a row error once its stall reason changes', () => {
+    startNow.mockImplementationOnce((_v, opts) =>
+      opts.onError(new ApiRequestError(409, { error: { code: 'start_failed', message: 'boom' } })))
+    const a = { ...(qs('a', 1) as object), queueStallReason: { code: 'capacity_full', message: 'm' } }
+    const { rerender } = render(<MemoryRouter><QueuedSection sessions={[a as never]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
+    expect(screen.getByRole('status')).toBeInTheDocument()
+    const b = { ...a, queueStallReason: { code: 'account_limited', message: 'm' } }
+    rerender(<MemoryRouter><QueuedSection sessions={[b as never]} onOpen={() => {}} /></MemoryRouter>)
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('collapsing the section hides the wait explanation with the list', () => {
     render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: /Queued \(1\)/ }))

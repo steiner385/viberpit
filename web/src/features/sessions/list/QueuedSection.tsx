@@ -11,6 +11,7 @@ import { useQueueMove, useQueueCancel, useQueueStartNow } from '@/api/hooks'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
 import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
+import { REAUTH_MESSAGE, apiErrorMessage } from '@/features/sessions/createSessionFailure'
 import type { Session } from '@/api/types'
 
 interface QueuedSectionProps {
@@ -23,9 +24,11 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
   const { mutate: queueMove } = useQueueMove()
   const { mutate: queueCancel } = useQueueCancel()
   const { mutate: startNow } = useQueueStartNow()
-  const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
+  // Keyed by session id; each entry remembers the stall code it was raised
+  // under, so a row whose reason has since changed shows no stale error.
+  const [rowErrors, setRowErrors] = useState<Record<string, { text: string; code: string | null }>>({})
 
-  function handleStartNow(id: string) {
+  function handleStartNow(id: string, stallCode: string | null) {
     setRowErrors((prev) => {
       if (!(id in prev)) return prev
       const rest = { ...prev }
@@ -34,10 +37,13 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
     })
     startNow({ id }, {
       onError: (err) => {
-        const text = apiErrorCode(err) === 'all_accounts_limited'
+        const code = apiErrorCode(err)
+        const text = code === 'all_accounts_limited'
           ? 'Account limit — starts automatically when quota frees'
-          : extractMutationErrorMessage(err, "Couldn't start it")
-        setRowErrors((prev) => ({ ...prev, [id]: text }))
+          : code === 'accounts_need_reauth'
+            ? REAUTH_MESSAGE
+            : apiErrorMessage(err) ?? extractMutationErrorMessage(err, "Couldn't start it")
+        setRowErrors((prev) => ({ ...prev, [id]: { text, code: stallCode } }))
       },
     })
   }
@@ -158,7 +164,7 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                       <button
                         type="button"
                         aria-label={`Start ${session.name} now, over capacity limits`}
-                        onClick={() => handleStartNow(session.id)}
+                        onClick={() => handleStartNow(session.id, session.queueStallReason?.code ?? null)}
                         className={cn(
                           'rounded px-1.5 py-0.5 text-xs text-accent hover:underline',
                           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
@@ -179,9 +185,10 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                       <X size={14} aria-hidden />
                     </button>
                   </div>
-                  {rowErrors[session.id] && (
+                  {rowErrors[session.id]
+                    && rowErrors[session.id].code === (session.queueStallReason?.code ?? null) && (
                     <p role="status" className="basis-full text-xs text-danger">
-                      {rowErrors[session.id]}
+                      {rowErrors[session.id].text}
                     </p>
                   )}
                 </li>
