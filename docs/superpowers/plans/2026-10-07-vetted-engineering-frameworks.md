@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-07-vetted-engineering-frameworks.md`
 
-## Existing adoption and execution status (2026-10-07)
+## Existing adoption and execution status (2026-10-08)
 
 Impeccable already has practical pilots in **KinDash, FridgeSheet and ViberPit**.
 See [historical pilot evidence](../../engineering/frameworks/impeccable-pilot-evidence.md)
@@ -19,8 +19,22 @@ this evidence and incumbent design context; do not repeat first-use onboarding.
 PRs #2770, #2807 and #2808 delivered the initial lock, source verification and
 offline dependency verification. They did not complete every admission item.
 
-Task 4 next adds repeatable browser acceptance calibration, then controlled
-native-agent comparisons where historical evidence leaves a relevant gap. Task 6
+Task 4 has delivered browser acceptance calibration (#2809) and a restricted
+native-agent source-review comparison (#2827, #2840). The completed six-call
+subscription run detected both seeded defects with no false positives in either
+arm. It exercised selected reference text, not full Impeccable invocation, visual
+redesign, UI repair or a human assessment rubric; it does not establish a quality
+advantage or satisfy the full promotion criteria. See
+[comparison evidence](../../engineering/frameworks/impeccable-guidance-comparison.md).
+
+Task 3 now proceeds as an observe-only slice: expose applicability and evidence
+gaps in the existing SDLC surfaces before enforcing prerequisites. Missing trusted
+review receipts must remain missing or unknown; lock declarations and agent reports
+cannot satisfy review. Blocking transitions, authenticated evidence ingestion and
+merge-boundary enforcement remain subsequent work. Impeccable stays a candidate.
+
+Task 5 still needs actual native skill discovery/invocation, resume, rotation,
+remote execution and revocation/rollback evidence. Task 6
 assesses these existing deployments for standard enforcement; the backend-only
 and no-contract onboarding negative cases still need proof. Checklist items below
 remain incomplete unless their full exit criteria are demonstrated.
@@ -30,7 +44,7 @@ remain incomplete unless their full exit criteria are demonstrated.
 - Do not install an entire marketplace or update global account configuration as a shortcut. Approval applies to an immutable selected dependency closure.
 - `.agents/contract.json` and `.agents/agentctl.py` remain canonical for portable instructions and projections. Preserve Impeccable's `provider_built` distinction.
 - `server/sdlc/gates.py` remains the gate registry. Extend existing decisions and consumers; do not introduce a competing workflow engine or approval ladder.
-- `scripts/run_evals.py --kind agent` currently lists cases only. Never report this command's success as a behavioral evaluation pass.
+- `scripts/run_evals.py --kind agent` lists cases; execution requires explicit `--execute` and a supported executable case. Never report list-only success as a behavioral evaluation pass, and do not generalize the restricted source-review comparison to full native skill compatibility.
 - Check open PRs by issue and touched files before each implementation task. Search for existing schema, artifact, audit, and evidence storage before adding a model or helper.
 - Keep `.claude/REVIEW.md` categories, severity, and separation of duties. Subjective critique is advisory unless a project explicitly adopts a testable requirement.
 - Use failing tests before implementation. Run the repository's required lint/type/core/server gates for code changes, full web checks when touching the frontend, and live engine smoke tests for session integration. Follow the test-slot and environment-isolation instructions.
@@ -78,6 +92,24 @@ remain incomplete unless their full exit criteria are demonstrated.
 - Modify as needed: `server/api/sdlc.py`, existing artifact/audit persistence and migration/reconciliation tests
 
 **Interfaces:** A pure resolver takes project policy, task/change scope, effective lock digest, and evidence records; it returns applicable obligations, tier, status, and reason. Evidence identifies repository, revision, policy/framework digests, check/review scope, producer, artifacts, and finding dispositions.
+
+**Observe-only delivery boundary:** An opt-in initiative detail request
+(`GET /api/sdlc/initiatives/{slug}?includeFrameworkEvidence=true`) exposes framework
+observations in the existing guidance payload. A read-only diagnostic request
+(`POST /api/sdlc/initiatives/{slug}/framework-observations`) can compare submitted
+supporting claims with a GitHub-resolved PR head and author. Neither endpoint
+stores a review receipt, changes a transition, or accepts claims as attestations.
+Both require the existing API identity control.
+
+The repository default branch is resolved to a commit before reading its contract
+and selected lock. A PR cannot weaken these observations by changing its own lock.
+Git blob OIDs identify the declarations read; they are not the contract validator's
+framework digest or a claim that the installed package passed validation. Complete
+change scope and trusted framework evidence are not collected in this slice, so
+applicability remains unknown and evidence remains missing or untrusted. Candidate
+and revoked declarations stay visible. This intentionally does not satisfy the
+enforced exit proof below; applicability routing, trusted receipt ingestion,
+exceptions and blocking enforcement still need subsequent implementation.
 
 - [ ] Write `test_required_framework_evidence_blocks_transition`, `test_advisory_finding_does_not_block`, and `test_tolerance_cannot_skip_failed_evidence` before wiring new decisions.
 - [ ] Add negative cases for forged producer identity, author self-review, stale head, wrong repository, policy downgrade in the same PR, expired exception, and revoked framework.
