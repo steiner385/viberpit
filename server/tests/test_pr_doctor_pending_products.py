@@ -429,3 +429,118 @@ def test_own_operation_within_the_deadline_keeps_gating(monkeypatch, tmp_path):
         assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-08: a usage-stalled attached session must not reserve the product
+# (KinDash#18420 held KinDash from 09:37 to 13:08 ET behind a Codex session
+# paused on ``all_accounts_busy`` that could never stop or progress)
+# ---------------------------------------------------------------------------
+
+_STALLED = {"status": "needs_attention", "paused_reason": "all_accounts_busy"}
+
+
+async def _attached_wait(orch, target="o/r#7", sid="sess1"):
+    """What ``_pr_doctor_session_fix_owned`` emits when the target is still
+    attached to a live session."""
+    await orch._pr_doctor_ctx.emit(
+        "warn", f"{target} is still attached to session {sid}", kind="ownership_wait",
+        target=target, session_id=sid, detail={"attached_session": sid})
+
+
+async def _waiting_orch(monkeypatch, tmp_path, *, status, paused_reason=None):
+    orch = await _gated_orch(monkeypatch, tmp_path)
+    rec = orch._records["sess1"]
+    rec.status = status
+    rec.paused_reason = paused_reason
+    await _attached_wait(orch)
+    return orch, rec
+
+
+def test_a_wait_on_a_usage_stalled_attached_session_does_not_gate(monkeypatch, tmp_path, caplog):
+    import logging
+
+    async def run():
+        orch, _ = await _waiting_orch(monkeypatch, tmp_path, **_STALLED)
+        with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+            assert await orch._pr_doctor_pending_products() == {}
+        assert any("pr_doctor_gate" in r.getMessage() and "o/r#7" in r.getMessage()
+                   and "unclaimable=" in r.getMessage() for r in caplog.records)
+
+    asyncio.run(run())
+
+
+def test_a_wait_on_a_working_attached_session_keeps_gating(monkeypatch, tmp_path):
+    async def run():
+        orch, _ = await _waiting_orch(monkeypatch, tmp_path, status="in_progress")
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_a_wait_on_a_session_paused_for_a_non_usage_reason_keeps_gating(monkeypatch, tmp_path):
+    async def run():
+        orch, _ = await _waiting_orch(monkeypatch, tmp_path, status="needs_attention",
+                                      paused_reason="crash_cap")
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_a_stalled_session_that_recovers_re_gates_with_no_sticky_state(monkeypatch, tmp_path):
+    async def run():
+        orch, rec = await _waiting_orch(monkeypatch, tmp_path, **_STALLED)
+        assert await orch._pr_doctor_pending_products() == {}
+        rec.status, rec.paused_reason = "in_progress", None
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_a_wait_on_an_unknown_session_keeps_gating(monkeypatch, tmp_path):
+    """Evidence, never inference: a session nobody knows proves no stall."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        await _attached_wait(orch, sid="ghost")
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_the_attached_session_wait_names_a_usage_stall(monkeypatch, tmp_path):
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        rec = orch._records["sess1"]
+        rec.status, rec.paused_reason = _STALLED["status"], _STALLED["paused_reason"]
+
+        status, _, _ = await orch._pr_doctor_session_fix_owned(
+            "o/r", "feat/x", _stuck(), "failing_ci", rec, ownership_token="tok-1")
+        assert status == "transient"
+
+        event = (await orch._pr_doctor_ctx.list_events(kind="ownership_wait"))[0]
+        assert event["summary"] == (
+            "o/r#7 is waiting on session sess1, which is stalled on usage "
+            "(all_accounts_busy); hand its work to a session that can run, or archive it, "
+            "to let recovery start")
+        assert event["detail"]["attached_session"] == "sess1"
+        # D8: the predecessor is left exactly where it was.
+        assert "sess1" in orch._drivers and rec.status == "needs_attention"
+
+    asyncio.run(run())
+
+
+def test_the_attached_session_wait_keeps_its_text_for_a_working_session(monkeypatch, tmp_path):
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        rec = orch._records["sess1"]
+        rec.status = "in_progress"
+
+        await orch._pr_doctor_session_fix_owned(
+            "o/r", "feat/x", _stuck(), "failing_ci", rec, ownership_token="tok-1")
+
+        event = (await orch._pr_doctor_ctx.list_events(kind="ownership_wait"))[0]
+        assert event["summary"] == (
+            "o/r#7 is still attached to session sess1; stop its managed work before recovery")
+        assert event["detail"]["attached_session"] == "sess1"
+
+    asyncio.run(run())
