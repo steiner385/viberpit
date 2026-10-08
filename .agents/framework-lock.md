@@ -148,10 +148,11 @@ boundaries using disposable offline fixtures through the existing eval runner.
 
 ## Observe-only applicability and GitHub review records
 
-An optional `observation` object on a framework lock entry declares `mode: "observe"`,
-`trusted_github_reviewers` (an explicit list of GitHub login names), and `concerns`.
-Each concern must already belong to that entry and has `tier` (`deterministic`,
-`required_review`, or `advisory`), `include_paths`, and `exclude_paths` arrays.
+An optional `observation` object on a framework lock entry declares `mode`,
+`trusted_github_reviewers` (an explicit list of GitHub login names), `concerns`,
+and optionally `exceptions`. Each concern must already belong to that entry and
+has `tier` (`deterministic`, `required_review`, or `advisory`), `include_paths`,
+and `exclude_paths` arrays, plus an optional `mode` that overrides the entry's.
 Patterns are repository-relative segment globs: `*` and `?` stay inside a segment;
 `**` matches zero or more segments. Inclusions win. An exclusion is a skip only
 when every changed file is explicitly excluded and the scope is complete and
@@ -206,9 +207,50 @@ count. Raw review bodies and artifact details are not returned or logged.
 is not proof of model execution, independent agent identity, framework usage,
 artifact availability, correctness, deterministic-check success, or admission.
 Configured logins are policy authority, not cryptographic identity independent of
-GitHub. No deterministic receipt collector exists yet. All three tiers remain
-non-blocking, and candidate/rejected/revoked admission states are never promoted.
+GitHub. No deterministic receipt collector exists yet. In `observe` mode all
+three tiers remain non-blocking (see gate modes below), and
+candidate/rejected/revoked admission states are never promoted.
 Adding reviewer identities is a separately reviewed policy change.
+
+### Gate modes and exceptions
+
+`mode` is `observe` (never blocks), `evidence_required`, or `enforced`. A
+non-observe, non-advisory concern holds an SDLC artifact merge or artifact-stage
+advance when it applies to the PR and an applicable `required_review` has no
+current recorded review, or the concern is `deterministic` (no trusted runner
+receipts are ingested yet, so it is never satisfied). Unknown applicability
+blocks only under `enforced`; it needs triage, never an automatic skip. A
+`rejected` or `revoked` framework blocks only where its concern would already
+block on scope (applicable, or unknown under `enforced`), even with a recorded
+review; it never blocks out-of-scope changes. Advisory concerns never block, and
+no risk tolerance bypasses a block. A failed default-branch policy read, or a
+gating policy whose PR scope or reviews cannot be read, blocks as
+`framework evidence unreadable`.
+
+A review record is `stale` when it is well formed but bound to an older head,
+base, framework digest, policy digest or scope, and `invalid` when it is
+malformed, withdrawn (dismissed, minimized, changes requested), tied, edited by
+someone else, or names another repository.
+
+Each `exceptions` item (at most 50) has exactly `concern`, `pull_request`,
+`owner` (a GitHub login), `reason`, `expires_at` (ISO-8601 with a timezone) and
+`compensating_evidence`. Only one exception may name a given concern and PR. It
+waives a missing, stale, unknown-scope or revoked obligation for that concern on
+that PR until it expires. It does nothing when its owner is the PR author (a
+trailing `[bot]` is ignored when comparing) or the author is unknown. It never
+waives an invalid review record. Like the reviewer allowlist, exceptions come
+from the default branch, so a PR cannot except itself by editing the lock.
+ViberPit's own lock stays `observe`.
+
+Two prerequisites apply before any repository moves a concern out of `observe`:
+
+- Policy edits under `.agents/**` must be human-reviewed (CODEOWNERS plus branch
+  protection). An exception's `owner` is an unauthenticated string, so an
+  agent-authored lock PR could otherwise grant itself an exception or downgrade
+  a mode once merged.
+- An armed auto-merge is not re-checked when new commits land on the PR. The
+  merge-boundary required check (plan Task 6) closes that gap; the artifact-stage
+  advance re-check only catches it after merge.
 
 ### Regression pattern: review identifiers are not chronology
 

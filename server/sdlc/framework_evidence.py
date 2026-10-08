@@ -18,8 +18,63 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
+def _record_problem(review: dict, record: dict, entry: dict, concern: str,
+                    snapshot: FrameworkPolicySnapshot) -> str | None:
+    """None for a recorded review; ``stale`` for a well-formed record bound to
+    an older head/base/declaration/scope; ``withdrawn`` for a dismissed or
+    minimized record; ``invalid`` for anything malformed, objecting or edited
+    by someone else. Stale and withdrawn are an absence of current evidence;
+    invalid is a trusted reviewer's finding to fix."""
+    try:
+        # A dismissed or hidden record was withdrawn by a person: it is absent
+        # evidence (waivable), not a reviewer's objection to fix.
+        if review.get('state') == 'DISMISSED' or review.get('isMinimized', False):
+            return 'withdrawn'
+        if review.get('state') not in {'COMMENTED', 'APPROVED'}:
+            return 'invalid'
+        editor = (review.get('editor') or {}).get('login')
+        login = review['author']['login']
+        if (review.get('lastEditedAt') or editor is not None) and (not isinstance(editor, str) or editor.casefold() != login.casefold()):
+            return 'invalid'
+        bindings = {'version': 1, 'framework': entry['id'], 'concern': concern, 'repo': snapshot.repo}
+        moving = {'base_sha': snapshot.base_sha, 'head_sha': snapshot.head_sha,
+                  'framework_digest': snapshot.framework_digest, 'policy_digest': snapshot.policy_digest,
+                  'scope_digest': policy.scope_digest(snapshot.changed_paths)}
+        if (set(record) != set(bindings) | set(moving) | {'artifacts', 'findings'} or type(record.get('version')) is not int
+                or any(record.get(key) != value for key, value in bindings.items())):
+            return 'invalid'
+        artifacts = record['artifacts']
+        if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 20:
+            return 'invalid'
+        if any(not isinstance(a, dict) or set(a) != {'path', 'sha256'} or not policy.safe_path(a['path'])
+               or not isinstance(a['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', a['sha256']) for a in artifacts):
+            return 'invalid'
+        findings = record['findings']
+        if not isinstance(findings, list) or len(findings) > 100:
+            return 'invalid'
+        if any(not isinstance(f, dict) or set(f) != {'id', 'disposition'}
+               or not isinstance(f['id'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', f['id'])
+               or f['disposition'] not in {'fixed', 'accepted', 'not_applicable'} for f in findings):
+            return 'invalid'
+        if len({f['id'] for f in findings}) != len(findings):
+            return 'invalid'
+        if any(not isinstance(record[key], str) for key in moving):
+            return 'invalid'
+        if (review.get('commit') or {}).get('oid') != snapshot.head_sha:
+            return 'stale'
+        if any(value is None or record[key] != value for key, value in moving.items()):
+            return 'stale'
+        return None
+    except (KeyError, TypeError, ValueError):
+        return 'invalid'
+
+
 def review_observation(snapshot: FrameworkPolicySnapshot, entry: dict, concern: str) -> str:
-    """Validate an explicit attestation, not its substantive conclusions or usage."""
+    """Validate an explicit attestation, not its substantive conclusions or usage.
+
+    ``review_recorded`` > ``invalid`` > ``stale`` > ``missing`` across trusted
+    principals: one malformed record from a trusted reviewer is not excused by
+    another's merely outdated one."""
     from datetime import datetime
     if not snapshot.reviews_complete or not snapshot.scope_complete or not snapshot.changed_paths:
         return "missing"
@@ -34,7 +89,7 @@ def review_observation(snapshot: FrameworkPolicySnapshot, entry: dict, concern: 
         login = (review.get('author') or {}).get('login')
         if not isinstance(login, str) or login.casefold() not in trusted:
             continue
-        if not snapshot.author or login.casefold() == snapshot.author.casefold():
+        if not snapshot.author or policy.same_principal(login, snapshot.author):
             continue
         if not isinstance(body, str) or len(body) > 65536:
             invalid_order.add(login.casefold())
@@ -72,41 +127,17 @@ def review_observation(snapshot: FrameworkPolicySnapshot, entry: dict, concern: 
         if key not in latest or stamp > latest[key][0]:
             latest[key] = candidate
             latest_tied.discard(key)
+    problems = {'invalid'} if invalid_order else set()
     for principal, (_, _, review, record) in latest.items():
         if principal in invalid_order or principal in latest_tied:
+            problems.add('invalid')
             continue
-        try:
-            if review.get('state') not in {'COMMENTED', 'APPROVED'} or review.get('isMinimized', False):
-                continue
-            editor = (review.get('editor') or {}).get('login')
-            login = review['author']['login']
-            if (review.get('lastEditedAt') or editor is not None) and (not isinstance(editor, str) or editor.casefold() != login.casefold()):
-                continue
-            if (review.get('commit') or {}).get('oid') != snapshot.head_sha:
-                continue
-            bindings = {'version': 1, 'framework': entry['id'], 'concern': concern,
-                        'repo': snapshot.repo, 'base_sha': snapshot.base_sha, 'head_sha': snapshot.head_sha,
-                        'framework_digest': snapshot.framework_digest, 'policy_digest': snapshot.policy_digest,
-                        'scope_digest': policy.scope_digest(snapshot.changed_paths)}
-            if (set(record) != set(bindings) | {'artifacts', 'findings'} or type(record.get('version')) is not int
-                    or any(record.get(key) != value or value is None for key, value in bindings.items())):
-                continue
-            artifacts = record['artifacts']
-            if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 20:
-                continue
-            if any(not isinstance(a, dict) or set(a) != {'path', 'sha256'} or not policy.safe_path(a['path'])
-                   or not isinstance(a['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', a['sha256']) for a in artifacts):
-                continue
-            findings = record['findings']
-            if not isinstance(findings, list) or len(findings) > 100:
-                continue
-            if any(not isinstance(f, dict) or set(f) != {'id', 'disposition'}
-                   or not isinstance(f['id'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', f['id'])
-                   or f['disposition'] not in {'fixed', 'accepted', 'not_applicable'} for f in findings):
-                continue
-            if len({f['id'] for f in findings}) != len(findings):
-                continue
+        problem = _record_problem(review, record, entry, concern, snapshot)
+        if problem is None:
             return 'review_recorded'
-        except (KeyError, TypeError, ValueError):
-            continue
-    return 'missing' if not latest else 'invalid'
+        if problem != 'withdrawn':
+            problems.add(problem)
+    for status in ('invalid', 'stale'):
+        if status in problems:
+            return status
+    return 'missing'

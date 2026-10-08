@@ -641,7 +641,8 @@ async def _initiative_detail(
             load_policy_snapshot, ini.repo or "",
             pull_request=diagnostic.pullRequest if diagnostic else None)
         framework_evidence = observe_framework_evidence(
-            snapshot, [c.model_dump() for c in diagnostic.claims] if diagnostic else None)
+            snapshot, [c.model_dump() for c in diagnostic.claims] if diagnostic else None,
+            pull_request=diagnostic.pullRequest if diagnostic else None)
     result["guidance"] = guidance_to_wire(explain(ExplainContext(
         initiative=state, artifacts=artifact_views, mode=mode, tolerance=tolerance,
         configured_tolerance=str(policy.get("risk_tolerance") or "cautious"),

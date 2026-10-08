@@ -21,7 +21,7 @@ from typing import Any
 from server.sdlc.engine import (
     STAGE_ARTIFACT, Advance, ArtifactView, AwaitApproval, InitiativeView, Materialize,
     MergeArtifact, NeedsHuman, Propose, next_action)
-from server.sdlc.gates import auto_gate_record, effective_tolerance
+from server.sdlc.gates import FRAMEWORK_EVIDENCE_UNREADABLE, auto_gate_record, effective_tolerance
 from server.sdlc.prompts import artifact_path
 from server.pm.materialize import MaterializedDirectly
 
@@ -144,6 +144,9 @@ AdvanceStage = Callable[[str, str, str, dict], Awaitable[bool]]
 ArmAutoMerge = Callable[[str, str, int, str, dict], Awaitable[dict]]
 #: The process-wide kill switch (spec D9), read per tick.
 AutoresolveEnabled = Callable[[], bool]
+#: (repo, pr_number) → the framework gate's joined block reasons, or None when
+#: required framework evidence does not hold the artifact transition.
+ReadFrameworkGate = Callable[[str, int], Awaitable["str | None"]]
 
 
 def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
@@ -266,6 +269,7 @@ class SdlcSynthesizerLoop:
         advance_stage: AdvanceStage | None = None,
         autoresolve_enabled: AutoresolveEnabled | None = None,
         arm_auto_merge: ArmAutoMerge | None = None,
+        read_framework_gate: ReadFrameworkGate | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -313,6 +317,14 @@ class SdlcSynthesizerLoop:
         #: refusal is a GitHub-side fact (auto-merge disabled on the repo) an
         #: owner can flip without this process ever finding out.
         self._arm_refused: dict[str, float] = {}
+        #: Unwired = no framework gate (today's behaviour). Wired, it is asked
+        #: before an artifact merge or advance is executed.
+        self._read_framework_gate = read_framework_gate
+        #: (slug, pr_number, reason) already reported as `framework_blocked` —
+        #: one warn per distinct hold, not one per tick. A slug's entries are
+        #: dropped when its gate comes back clear, so the set stays bounded and
+        #: a later hold with the same reason is reported again.
+        self._framework_blocked: set[tuple[str, int, str]] = set()
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -365,7 +377,20 @@ class SdlcSynthesizerLoop:
             ini["artifact_layout"] = policy.get("artifact_layout")
             tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
             action = next_action(state, arts, mode, tolerance)
-            if isinstance(action, AwaitApproval) or (
+            checked = await self._framework_block(ini, state, action, artifacts)
+            block = checked[1] if checked is not None else None
+            slug = str(ini.get("slug") or "")
+            if checked is not None and block is None:
+                self._framework_blocked = {k for k in self._framework_blocked if k[0] != slug}
+            if checked is not None and block is not None:
+                action = next_action(state, arts, mode, tolerance, framework_block=block)
+                if (slug, checked[0], block) not in self._framework_blocked:
+                    self._framework_blocked.add((slug, checked[0], block))
+                    await self._emit("warn", f"{slug}: {block} — the {state.stage} artifact "
+                                     "is held until the evidence is recorded",
+                                     kind="framework_blocked", target=slug,
+                                     detail={"reasons": block})
+            if block is not None or isinstance(action, AwaitApproval) or (
                     isinstance(action, NeedsHuman)
                     and (state.status == "blocked" or state.stage == "build")):
                 counts["awaiting"] += 1
@@ -410,6 +435,38 @@ class SdlcSynthesizerLoop:
                     counts[outcome] += 1
             await self._enrich(artifacts)
         publish_observation(self._ctx, "sdlc_synthesizer_counts", counts)
+
+    async def _framework_block(self, ini: dict, state: InitiativeView, action: Any,
+                               artifacts: list[dict]) -> tuple[int, str | None] | None:
+        """``(pr_number, reason | None)`` from the framework gate for this tick's
+        artifact merge or artifact-stage advance; None when it was not asked —
+        only when the engine would act and the artifact has a PR to judge. An
+        already-armed PR is past this gate."""
+        if self._read_framework_gate is None:
+            return None
+        if isinstance(action, MergeArtifact):
+            kind = action.kind
+        elif isinstance(action, Advance) and state.stage in STAGE_ARTIFACT:
+            kind = STAGE_ARTIFACT[state.stage]
+        else:
+            return None
+        art = next((a for a in artifacts if a.get("kind") == kind), None)
+        if art is None or not art.get("pr_number"):
+            return None
+        if isinstance(action, MergeArtifact) and art.get("auto_merge_armed_at"):
+            return None
+        repo = str(ini.get("repo") or state.repo or "")
+        if not repo:
+            return None
+        pr = int(art["pr_number"])
+        try:
+            return pr, await self._read_framework_gate(repo, pr)
+        except Exception:
+            # Fail closed: a held artifact is a human tap; a silently passed
+            # obligation is not recoverable.
+            log.warning("sdlc_synthesizer.framework_gate_failed slug=%s",
+                        ini.get("slug"), exc_info=True)
+            return pr, FRAMEWORK_EVIDENCE_UNREADABLE
 
     async def _advance(self, ini: dict, state: InitiativeView, action: Advance,
                        tolerance: str) -> bool:

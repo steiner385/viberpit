@@ -27,14 +27,39 @@ redesign, UI repair or a human assessment rubric; it does not establish a qualit
 advantage or satisfy the full promotion criteria. See
 [comparison evidence](../../engineering/frameworks/impeccable-guidance-comparison.md).
 
-Task 3 remains observe-only. PR #2845 delivered pinned declaration reads and
+Task 3 began observe-only. PR #2845 delivered pinned declaration reads and
 untrusted-claim diagnostics. The next slice adds policy-based path applicability
 and explicit GitHub review attestations bound to the PR revisions and declaration
 digests. Lock declarations, ordinary approvals and agent reports cannot satisfy
 review. Trusted reviewer identities require explicit policy configuration; the
-initial ViberPit allowlist is empty. Blocking transitions, trusted deterministic
+initial ViberPit allowlist is empty. Trusted deterministic
 runner receipts and merge-boundary enforcement remain subsequent work. Impeccable
 stays a candidate.
+
+The gate-modes slice adds `observe`, `evidence_required` and `enforced` modes
+(entry default plus per-concern override) and declared exceptions bound to one
+concern and one PR, with an owner other than the PR author, an expiry and
+compensating evidence. A pure `framework_gate` decision holds SDLC artifact
+merges and artifact-stage advances when a non-observe obligation lacks
+evidence: required reviews need a current recorded review (a stale one blocks
+but may be excepted; an invalid one may not), deterministic concerns stay
+unsatisfied until trusted runner receipts are ingested, unknown scope blocks
+only when enforced, revoked frameworks block only where the concern would
+already block on scope (unless excepted), and advisory concerns never block. No
+risk tolerance bypasses the block. The synthesizer reads the policy from the
+default branch and the PR's scope and reviews before arming or advancing. A
+failed policy read, or a failed PR read once a gating obligation is known,
+blocks; the API observation applies the same rule. ViberPit's own lock stays
+`observe`, so nothing changes for it today. Build-stage advances and code PRs
+are not gated here; the merge-boundary required check is Task 6.
+
+Two prerequisites apply before any repository leaves `observe`. First, policy
+edits under `.agents/**` must be human-reviewed (CODEOWNERS plus branch
+protection): an exception's `owner` is an unauthenticated string, so an
+agent-authored lock PR could otherwise grant itself an exception or downgrade a
+mode. Second, an armed auto-merge is not re-checked when new commits land; the
+merge-boundary required check (Task 6) closes that, and the artifact-stage
+advance re-check only catches it after merge.
 
 Task 5 still needs actual native skill discovery/invocation, resume, rotation,
 remote execution and revocation/rollback evidence. Task 6
@@ -126,10 +151,10 @@ enforcement in this slice. Exceptions, trusted runner ingestion, native compatib
 and blocking enforcement still need subsequent implementation before the enforced
 exit proof below is met.
 
-- [ ] Write `test_required_framework_evidence_blocks_transition`, `test_advisory_finding_does_not_block`, and `test_tolerance_cannot_skip_failed_evidence` before wiring new decisions.
-- [ ] Add negative cases for forged producer identity, author self-review, stale head, wrong repository, policy downgrade in the same PR, expired exception, and revoked framework.
-- [ ] Wire prerequisites into existing stage decisions and explain output. Preserve current high-risk and release approvals.
-- [ ] Authenticate evidence ingestion and validate it server-side. Separate agent-authored supporting artifacts from trusted runner attestations.
+- [x] Write `test_required_framework_evidence_blocks_transition`, `test_advisory_finding_does_not_block`, and `test_tolerance_cannot_skip_failed_evidence` before wiring new decisions (`server/tests/test_framework_gate.py`, `framework-gate-modes` eval).
+- [x] Add negative cases for forged producer identity, author self-review, stale head, wrong repository, policy downgrade in the same PR, expired exception, and revoked framework (also self-issued and other-PR exceptions, and exceptions that cannot waive an invalid review).
+- [ ] Wire prerequisites into existing stage decisions and explain output. Preserve current high-risk and release approvals. *Partial:* `next_action(..., framework_block=)` and the synthesizer gate artifact merges and artifact-stage advances. Cautious approvals and the build-stage advance are unchanged. Explain output reports `blocking`, `gateReasons` and per-obligation `mode`/`blocking` in `frameworkEvidence`. The detail endpoint's `nextAction` and the explain step simulation do not yet take the block.
+- [ ] Authenticate evidence ingestion and validate it server-side. Separate agent-authored supporting artifacts from trusted runner attestations. *Still open:* GitHub review records are authenticated, but deterministic runner receipts are not ingested, so a `deterministic` concern in a non-observe mode always blocks.
 - [x] Add `framework-gate-evidence-integrity` to `scripts/run_evals.py` using a deterministic fixture/check with no live service dependency (initial observe-only coverage in #2845; extend with each trust boundary).
 - [x] Add the observe-only `framework-gate-receipts` case and `server/tests/test_framework_receipts.py`: independent reviewer/repository/revision bindings, conservative UI/process applicability, stale/self/wrong-repository rejection, and unchanged candidate state and stage decisions. This does not complete the blocking-gate tests above.
 

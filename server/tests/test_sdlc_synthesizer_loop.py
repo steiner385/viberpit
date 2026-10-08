@@ -119,7 +119,8 @@ class Recorder:
         return self.mode, {}
 
 
-def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True, clock=None):
+def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True, clock=None,
+          framework_gate=None):
     # `rec` doubles as the default fake ctx (it has `emit`): a test that omits
     # `ctx` can still inspect `rec.events`, matching every other Recorder seam.
     return SdlcSynthesizerLoop(
@@ -136,7 +137,8 @@ def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True, clock=None
         live_sessions=rec.live_sessions,
         advance_stage=rec.advance_stage if advance else None,
         autoresolve_enabled=rec.autoresolve_enabled,
-        arm_auto_merge=rec.arm_auto_merge if arm else None)
+        arm_auto_merge=rec.arm_auto_merge if arm else None,
+        read_framework_gate=framework_gate)
 
 
 def _ini(stage, status="active", **extra):
@@ -966,3 +968,112 @@ async def test_a_refused_arm_retries_after_the_ttl():
     kinds = [e.get("kind") for e in rec.events]
     assert kinds.count("gate_refused") == 1
     assert kinds.count("auto_resolved") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Framework evidence gate (vetted frameworks plan, Task 3)                     #
+# --------------------------------------------------------------------------- #
+
+class FrameworkGateSeam:
+    def __init__(self, result=None, error=None):
+        self.calls: list[tuple[str, int]] = []
+        self.result = result
+        self.error = error
+
+    async def __call__(self, repo, pr_number):
+        self.calls.append((repo, pr_number))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _merge_ready_rec():
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    return _merge_ready(rec)
+
+
+@pytest.mark.asyncio
+async def test_a_framework_block_holds_the_arm_and_warns_once():
+    rec = _merge_ready_rec()
+    seam = FrameworkGateSeam("impeccable/ui-design: required review missing")
+    loop = _loop(rec, framework_gate=seam)
+    await loop.tick()
+    await loop.tick()
+    assert rec.armed == []
+    assert seam.calls == [("o/r", 42), ("o/r", 42)]
+    blocked = [e for e in rec.events if e.get("kind") == "framework_blocked"]
+    assert len(blocked) == 1 and blocked[0]["level"] == "warn"
+    assert "required review missing" in blocked[0]["summary"]
+    counts = loop._ctx.sdlc_synthesizer_counts
+    assert (counts["awaiting"], counts["auto_resolved"]) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_framework_block_holds_an_artifact_advance():
+    rec = _merged_spec_at_design()
+    rec.policies = {"viberpit": {"risk_tolerance": "bold"}}
+    rec.autoresolve = True
+    seam = FrameworkGateSeam("impeccable/ui-design: required review missing")
+    await _loop(rec, framework_gate=seam).tick()
+    assert rec.advanced == []
+    assert seam.calls == [("o/r", 7)]
+    assert [e["kind"] for e in rec.events if e.get("kind") == "framework_blocked"] == ["framework_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_a_clear_framework_gate_lets_the_arm_proceed():
+    rec = _merge_ready_rec()
+    seam = FrameworkGateSeam(None)
+    await _loop(rec, framework_gate=seam).tick()
+    assert seam.calls == [("o/r", 42)]
+    assert rec.armed == [("a-1", "o/r", 42)]
+    assert not [e for e in rec.events if e.get("kind") == "framework_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_framework_seam_blocks_instead_of_passing():
+    rec = _merge_ready_rec()
+    loop = _loop(rec, framework_gate=FrameworkGateSeam(error=RuntimeError("boom")))
+    await loop.tick()
+    assert rec.armed == []
+    assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_framework_seam_is_not_consulted_for_an_armed_pr_or_cautious():
+    rec = _merge_ready_rec()
+    rec.artifacts["i-1"][0]["auto_merge_armed_at"] = "2026-09-16T00:00:00+00:00"
+    seam = FrameworkGateSeam("x")
+    await _loop(rec, framework_gate=seam).tick()
+    rec2 = _merge_ready_rec()
+    rec2.policies["prod"]["risk_tolerance"] = "cautious"
+    await _loop(rec2, framework_gate=seam).tick()
+    assert seam.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unwired_framework_seam_keeps_todays_behaviour():
+    rec = _merge_ready_rec()
+    await _loop(rec).tick()
+    assert rec.armed == [("a-1", "o/r", 42)]
+    assert not [e for e in rec.events if e.get("kind") == "framework_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_the_framework_warn_latch_rearms_after_a_clear_gate_and_per_pr():
+    rec = _merge_ready_rec()
+    seam = FrameworkGateSeam("impeccable/ui-design: required review missing")
+    loop = _loop(rec, framework_gate=seam)
+    rec.arm_result = {"armed": False, "error": "no"}   # keep the PR unarmed between ticks
+    await loop.tick()                                   # warn #1
+    rec.artifacts["i-1"][0]["pr_number"] = 43
+    await loop.tick()                                   # same reason, new PR: warn #2
+    seam.result = None
+    await loop.tick()                                   # clear: latch for the slug discarded
+    seam.result = "impeccable/ui-design: required review missing"
+    await loop.tick()                                   # warn #3
+    blocked = [e for e in rec.events if e.get("kind") == "framework_blocked"]
+    assert len(blocked) == 3
+    assert loop._framework_blocked == {("alpha", 43, "impeccable/ui-design: required review missing")}

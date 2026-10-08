@@ -5,17 +5,22 @@ All failures become explicit unavailable observations, never successful checks.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
+import logging
 import re
 from typing import Callable
 
-from server.sdlc.gates import FrameworkPolicySnapshot
+from server.sdlc.gates import FrameworkPolicySnapshot, framework_gate_for, has_gating_concern
 
 
 from server.sdlc.framework_policy import policy
 
 MAX_PAGES = 20
+
+log = logging.getLogger(__name__)
 
 
 def _sha(value: object) -> bool:
@@ -151,3 +156,24 @@ def load_policy_snapshot(repo: str, *, pull_request: int | None = None,
         # Never expose gh stderr, credentials or repository content on this read
         # surface. Cancellation (BaseException) continues to propagate.
         return snapshot
+
+
+async def read_framework_gate(repo: str, pull_request: int) -> str | None:
+    """The synthesizer's production framework-gate seam: joined block reasons
+    for *pull_request*, or None.
+
+    The policy-only read is cheap and settles every repository without a
+    gating concern (no contract, observe-only, advisory-only) without touching
+    the PR. ``framework_gate_for`` decides the rest, including the fail-closed
+    cases: a failed policy read, or a gating policy whose PR did not load.
+    """
+    policy_only = await asyncio.to_thread(load_policy_snapshot, repo)
+    pr_snapshot = None
+    if has_gating_concern(policy_only):
+        try:
+            pr_snapshot = await asyncio.to_thread(load_policy_snapshot, repo, pull_request=pull_request)
+        except Exception:
+            log.warning("framework_gate.read_failed repo=%s pr=%s", repo, pull_request, exc_info=True)
+    decision = framework_gate_for(policy_only, pr_snapshot, datetime.now(timezone.utc),
+                                  pull_request=pull_request)
+    return "; ".join(decision.reasons) if decision.blocking else None
