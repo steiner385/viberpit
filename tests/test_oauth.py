@@ -424,6 +424,21 @@ class TestHttpRequestRetry(unittest.TestCase):
         self.assertEqual(Config().retry_max_total_sec, oauth._DEFAULT_MAX_TOTAL_SEC)
 
 
+class TestNetworkDegradedLatch(unittest.TestCase):
+    def tearDown(self):
+        oauth._note_network(True)
+
+    def test_dns_failure_latches_and_any_response_clears(self):
+        err = urllib.error.URLError("[Errno -3] Temporary failure in name resolution")
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(oauth.TransientError):
+                oauth.http_request("GET", "https://x", max_retries=0)
+        self.assertTrue(oauth.network_degraded())
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp(200, b"{}")):
+            oauth.http_request("GET", "https://x", max_retries=0)
+        self.assertFalse(oauth.network_degraded())
+
+
 class TestNonIdempotentRetry(unittest.TestCase):
     def test_http_request_non_idempotent_does_not_retry_5xx(self):
         from unittest import mock

@@ -53,6 +53,24 @@ class AuthError(Exception):
         self.body = body
 
 
+# Host-level network outage latch (#2766). Set when an outbound call fails to reach the
+# network at all (DNS / connect: URLError), cleared the moment any HTTP response comes
+# back. Consumers (the stall watchdog) treat "degraded" as "silence is the network's, not
+# a wedge". Process-local on purpose: the refresher and the watchdog share the daemon.
+NETWORK_DEGRADED_TTL_S = 120.0
+_network_degraded_until: float = 0.0
+
+
+def network_degraded(*, now: float | None = None) -> bool:
+    """True while a recent outbound call failed at DNS/connect and none has succeeded since."""
+    return (time.monotonic() if now is None else now) < _network_degraded_until
+
+
+def _note_network(ok: bool) -> None:
+    global _network_degraded_until
+    _network_degraded_until = 0.0 if ok else time.monotonic() + NETWORK_DEGRADED_TTL_S
+
+
 def _truncate_body(body: bytes, limit: int = 2048) -> str:
     """Decode a response body to text, lossless-ish, truncated to `limit` chars."""
     return body[:limit].decode("latin-1", errors="replace")
@@ -147,8 +165,10 @@ def http_request(method: str, url: str, headers: dict | None = None,
         req = urllib.request.Request(url, method=method, headers=hdrs, data=data)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
+                _note_network(True)
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
+            _note_network(True)  # the server answered: the network is fine
             status, body = e.code, e.read()
             # Non-idempotent (single-use token POST): only retry edge rejects that
             # never reached the origin (403 Cloudflare 1010 / 429). A 5xx may mean
@@ -159,6 +179,8 @@ def http_request(method: str, url: str, headers: dict | None = None,
                 continue
             return status, body
         except (urllib.error.URLError, TimeoutError) as e:
+            if isinstance(e, urllib.error.URLError):  # DNS/connect; a bare timeout isn't proof
+                _note_network(False)
             # A network failure on a non-idempotent send is ambiguous (the request
             # may have been processed). Never resend — surface as transient so the
             # caller leaves account status unchanged, without consuming the token twice.

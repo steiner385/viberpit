@@ -19989,7 +19989,12 @@ class SessionOrchestrator:
                 # is alive, not wedged. Give it the extended timeout before treating the
                 # gap as a hang; past that longer window a genuine hang is still caught.
                 # Issue #185: throttled turns were interrupted as "Turn failed" under load.
-                throttled = driver.in_api_backoff or driver.account in quarantined
+                # A host-wide DNS/connect outage (#2766) is the same story: the CLI retries
+                # on its own but its connection-error api_error frames never reach the SDK
+                # stream, so in_api_backoff stays False. Recomposing on the same broken
+                # network cannot help.
+                throttled = (driver.in_api_backoff or driver.account in quarantined
+                             or _oauth.network_degraded())
                 timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
                 elapsed = now - driver.last_progress_at
                 if elapsed <= timeout:
