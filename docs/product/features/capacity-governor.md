@@ -169,5 +169,29 @@ availability budget (phase 3, gated on reliable quota readers); a queue-theoreti
   `"queued"` so a caller — including the assistant's `create_session` tool — can tell "queued" apart
   from "started" instead of getting an indistinguishable success shape either way.
 
+## Queueing and the Start now override
+
+Capacity refusals queue instead of failing. A session, manual or automation-launched, that hits the
+global active-session cap, a host's cap, a product's in-flight cap, the Backlog Runner cap, or — new —
+every eligible account being at its usage ceiling (`queue_reason="account_limited"`) is queued. An
+account-limited session starts automatically when an account has headroom: the queue drain re-checks
+quota before starting it, and if a spawn hits the ceiling anyway the session is re-queued as
+`account_limited` rather than ended. Only "no usable accounts / needs re-authentication" and the
+assistant still refuse.
+
+- **Why it is queued** — each queued session carries `queueStallReason`
+  (`{code, message, waitedSeconds?, earliestReset?}`), shown in the Queued section of the sessions list
+  and in the toast when a create comes back queued. Codes: `capacity_full`, `product_capacity_full`,
+  `runner_capacity_full`, `account_limited`, `queued` (just queued), `waiting_for_drain`,
+  `no_queue_entry`.
+- **Start now** — `POST /api/sessions/{id}/start-now` (the "Start now" button on a queued row) starts
+  that one session immediately, over the global cap, host cap, product and runner caps, and product
+  holds (e.g. PR-Doctor priority). It never overrides an account usage ceiling: that answers 409
+  `all_accounts_limited` with `earliestReset`, and the session stays queued. Every use is audited as
+  `session.queue_start_now`.
+- **Diagnostics** — the session daemon logs every RPC handler exception as
+  `rpc.error method=… type=… message=…` (INFO for typed refusals, WARNING otherwise), so a refusal's
+  reason is in the journal.
+
 **Evidence** — Spec: `docs/superpowers/specs/2026-09-19-capacity-governor-design.md`. Plan:
 `docs/superpowers/plans/2026-09-19-capacity-governor-phase1.md`.
