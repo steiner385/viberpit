@@ -23,8 +23,8 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from dataclasses import dataclass, replace as dataclass_replace
-from collections.abc import Coroutine, Sequence
+from dataclasses import dataclass, field, replace as dataclass_replace
+from collections.abc import Coroutine, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
@@ -371,6 +371,16 @@ def _naive_utc(dt):
         from datetime import timezone
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
+
+
+@dataclass(slots=True)
+class _PrDoctorOwnershipWaits:
+    """``SessionOrchestrator._pr_doctor_ownership_waits``: each target's newest
+    ``ownership_wait``, as a claim refusal (head SHA) or an attached-session
+    wait (session id)."""
+
+    refusals: dict[str, str] = field(default_factory=dict)
+    attached: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -15120,9 +15130,22 @@ class SessionOrchestrator:
             # A fresh recovery cannot borrow a predecessor's live actor. Native
             # handoff first proves stopped execution, then launches a successor.
             reason = f"still attached to live session {rec.id} — stop its managed work first"
+            if is_usage_stalled(rec.status, rec.paused_reason):
+                # A predecessor parked on usage never stops or progresses on its
+                # own (KinDash#18420, 2026-10-08) — say so, and how to clear it.
+                # D8: it is only named here, never stopped, released or archived.
+                summary = (f"{target} is waiting on session {rec.id}, which is stalled on usage "
+                           f"({rec.paused_reason or rec.status}); hand its work to a session that can run, "
+                           "or archive it, to let recovery start")
+            else:
+                summary = (f"{target} is still attached to session {rec.id}; "
+                           "stop its managed work before recovery")
+            # ``attached_session`` survives the event's ``session_id`` FK being
+            # dropped (``AutomationContext.emit``) and is what
+            # ``_pr_doctor_ownership_waits`` reads.
             await self._pr_doctor_ctx.emit(
-                "warn", f"{target} is still attached to session {rec.id}; stop its managed work before recovery",
-                kind="ownership_wait", target=target, session_id=rec.id)
+                "warn", summary, kind="ownership_wait", target=target, session_id=rec.id,
+                detail={"attached_session": rec.id})
             return "transient", None, reason
 
         # Resolve policy before any model or native work. create_session owns cloning.
@@ -16728,21 +16751,25 @@ class SessionOrchestrator:
                     seen.add((repo, info.head_ref))
         return list(seen)
 
-    async def _pr_doctor_claim_refusals(self) -> dict[str, str]:
-        """``target -> head_sha`` for every target whose NEWEST
-        ``ownership_wait`` event recorded a claim refusal
-        (``_pr_doctor_refusal_detail``).
+    async def _pr_doctor_ownership_waits(self) -> _PrDoctorOwnershipWaits:
+        """One pass over the newest ``ownership_wait`` event per target, split
+        by what that newest word says:
 
-        Newest-per-target, not any-match: a target whose latest
-        ``ownership_wait`` is the attached-live-session refusal
-        (``_pr_doctor_session_fix_owned``, which fires only AFTER a successful
-        claim) carries no ``claim_refused`` marker and must read as "live work
-        holds it" — the opposite of a refused claim. ``limit`` bounds this read
-        on the admission hot path: the pr-doctor feed is itself capped at 500
-        events and a refusing sweep re-emits every blocked target on every
-        tick, so the newest 200 always contain each target's latest word.
+        * ``refusals`` — ``target -> head_sha`` where it recorded a claim
+          refusal (``_pr_doctor_refusal_detail``).
+        * ``attached`` — ``target -> session_id`` where it is the
+          attached-live-session wait (``_pr_doctor_session_fix_owned``: no
+          ``claim_refused`` marker, an ``attached_session`` named). That wait
+          fires only AFTER a successful claim, so it reads as "live work holds
+          it" — the opposite of a refused claim — unless that session is
+          usage-stalled (``_pr_doctor_pending_products``).
+
+        Newest-per-target, not any-match. ``limit`` bounds this read on the
+        admission hot path: the pr-doctor feed is itself capped at 500 events
+        and a refusing sweep re-emits every blocked target on every tick, so
+        the newest 200 always contain each target's latest word.
         """
-        refusals: dict[str, str] = {}
+        waits = _PrDoctorOwnershipWaits()
         seen: set[str] = set()
         for event in await self._pr_doctor_ctx.list_events(kind="ownership_wait", limit=200):
             target = event.get("target")
@@ -16750,12 +16777,17 @@ class SessionOrchestrator:
                 continue
             seen.add(target)
             detail = event.get("detail")
-            if not isinstance(detail, dict) or not detail.get("claim_refused"):
+            if not isinstance(detail, dict):
                 continue
-            head_sha = detail.get("head_sha")
-            if isinstance(head_sha, str) and head_sha:
-                refusals[target] = head_sha
-        return refusals
+            if detail.get("claim_refused"):
+                head_sha = detail.get("head_sha")
+                if isinstance(head_sha, str) and head_sha:
+                    waits.refusals[target] = head_sha
+                continue
+            attached = detail.get("attached_session")
+            if isinstance(attached, str) and attached:
+                waits.attached[target] = attached
+        return waits
 
     @staticmethod
     def _pr_doctor_mechanical_stuck(operation) -> bool:
@@ -16808,6 +16840,44 @@ class SessionOrchestrator:
             return own_op_stuck
         return state.get("last_action_sha") != info.head_sha
 
+    async def _pr_doctor_attached_stall_state(
+            self, session_ids: Iterable[str]) -> dict[str, tuple[str, str | None]]:
+        """``session_id -> (status, paused_reason)`` for each attached
+        predecessor, as ``is_usage_stalled`` reads it.
+
+        The in-memory record wins (it is fresher on its own host). A session
+        this process holds no record for — a predecessor on another fleet
+        host — falls back to its shared ``sessions`` row, read in ONE batched
+        query because this is the admission hot path. An id known to neither
+        is absent from the result and keeps gating: evidence, never inference.
+
+        A failed DB read is contained HERE: the caller's blanket ``except``
+        would otherwise drop every product's reservation, including products
+        with no off-host predecessor. The unread ids stay absent and keep
+        gating.
+        """
+        state: dict[str, tuple[str, str | None]] = {}
+        missing: set[str] = set()
+        for sid in session_ids:
+            rec = self._records.get(sid)
+            if rec is not None:
+                state[sid] = (rec.status, rec.paused_reason)
+            else:
+                missing.add(sid)
+        if missing:
+            from sqlalchemy import select
+            try:
+                async with db_session() as db:
+                    rows = (await db.execute(
+                        select(DbSession.id, DbSession.status, DbSession.paused_reason)
+                        .where(DbSession.id.in_(missing)))).all()
+            except Exception:
+                log.warning("orchestrator.pr_doctor_stall_state_failed", exc_info=True)
+                return state
+            for sid, status, paused_reason in rows:
+                state[sid] = (status, paused_reason)
+        return state
+
     async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
         """Product slug -> the PR refs PR Doctor will actually act on (spec
         2026-09-21 pr-doctor-priority; #2202). Backlog Runner's admission gate
@@ -16830,6 +16900,17 @@ class SessionOrchestrator:
         checks run at dispatch time, so a target whose claim is refused is
         dropped here too (``_pr_doctor_claim_unclaimable``) — otherwise the
         product stays reserved for a PR nothing can pick up.
+
+        A claim that SUCCEEDED but then waits on an attached session is
+        dropped too when that session is usage-stalled
+        (``is_usage_stalled`` on its current record). KinDash#18420
+        (2026-10-08) held KinDash from 09:37 to 13:08 ET behind a Codex
+        session paused on ``all_accounts_busy`` with its only account at the
+        weekly limit: it could neither stop nor progress, and the reservation
+        refused every new Backlog Runner claim — a deadlock. Evidence only: a
+        working, idle, otherwise-paused or unknown session keeps gating, and
+        the check re-reads the record each call, so a recovered session
+        re-gates with no sticky state. The session itself is untouched (D8).
         """
         from server.automations import pr_doctor_engine as engine
         from server.pm.repo_project import owning_projects_by_repo
@@ -16837,9 +16918,13 @@ class SessionOrchestrator:
             mode = await self._pr_autofix_mode()
             config = await self._pr_doctor_config()
             states = await self._pr_doctor_ctx.list_target_states()
-            refusals = await self._pr_doctor_claim_refusals()
+            waits = await self._pr_doctor_ownership_waits()
+            refusals = waits.refusals
             gating: dict[str, list[str]] = {}
             unclaimable: dict[str, list[str]] = {}
+            # Gating targets waiting on an attached session: their stall state
+            # is resolved once, after the loop, for only these ids.
+            attached_waits: list[tuple[str, str, str]] = []
             for repo, branch in await self._pr_doctor_scope_pairs():
                 info = self._pr_doctor_info_for(repo, branch)
                 if info is None or engine.target_terminal(info):
@@ -16867,9 +16952,20 @@ class SessionOrchestrator:
                 if state.get("ownership_token") and refusals.get(target) == info.head_sha:
                     own_op_stuck = self._pr_doctor_mechanical_stuck(
                         await self._pr_doctor_claim_operation(state["ownership_token"]))
-                bucket = (unclaimable if self._pr_doctor_claim_unclaimable(
-                    state, refusals.get(target), info, own_op_stuck=own_op_stuck) else gating)
-                bucket.setdefault(repo, []).append(target)
+                if self._pr_doctor_claim_unclaimable(
+                        state, refusals.get(target), info, own_op_stuck=own_op_stuck):
+                    unclaimable.setdefault(repo, []).append(target)
+                elif (sid := waits.attached.get(target)) is not None:
+                    attached_waits.append((repo, target, sid))
+                else:
+                    gating.setdefault(repo, []).append(target)
+            if attached_waits:
+                stall_state = await self._pr_doctor_attached_stall_state(
+                    {sid for _, _, sid in attached_waits})
+                for repo, target, sid in attached_waits:
+                    row = stall_state.get(sid)
+                    stalled = row is not None and is_usage_stalled(*row)
+                    (unclaimable if stalled else gating).setdefault(repo, []).append(target)
             if not gating and not unclaimable:
                 return {}
             async with db_session() as db:

@@ -107,10 +107,15 @@ returning `{}`, same resilience posture as `states`/`accounting` in
 
 Per decision 5, each pending target is bucketed claimable vs unclaimable through
 `_pr_doctor_claim_unclaimable(state, refusals.get(target), info)`, reading
-`_pr_doctor_claim_refusals()` (newest `ownership_wait` event per target). Only the
+`_pr_doctor_ownership_waits()` (newest `ownership_wait` event per target). Only the
 claimable refs reach the returned mapping; any product with dropped targets is
 logged once per evaluation with both lists, since before #2202 nothing tied a
 runner "capacity reserved" skip to the PR Doctor refusal causing it.
+
+A claimable target whose newest `ownership_wait` is the attached-session wait
+(`detail.attached_session`) is also unclaimable when that session is usage-stalled
+(`is_usage_stalled`). The check reads the in-memory record first, then the shared
+`sessions` row in one batched read (2026-10-08, KinDash#18420).
 
 ### 2. `server/automations/product_admission.py`
 
