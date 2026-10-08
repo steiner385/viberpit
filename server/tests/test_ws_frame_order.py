@@ -28,6 +28,7 @@ import time
 import server.bridge.ws as wsmod
 from fastapi.testclient import TestClient
 from server.app import create_app
+from server.ipc.client import DaemonTimeout
 
 _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
@@ -397,3 +398,35 @@ def test_resupplied_open_turn_is_the_only_source_of_its_pending_permission():
         _open_turn_with_ask(ask), turn_active=True, turn_started_at=time.time())
     app = create_app(orchestrator=_BaseOrch(driver, path=None, registry=_Reg(pending)))
     _assert_ask_follows_prompt(_attach_and_collect(app, "permissionRequest"), "permissionRequest")
+
+
+# ---------------------------------------------------------------------------
+# A daemon blip on the attach's pending-ask RPCs must not abort the attach (#2816)
+# ---------------------------------------------------------------------------
+
+class _DaemonBlipOrch(_BaseOrch):
+    async def pending_permissions(self, session_id):
+        raise DaemonTimeout("pending_permissions timed out")
+
+    async def pending_questions(self, session_id):
+        raise DaemonTimeout("pending_questions timed out")
+
+
+def test_attach_survives_daemon_timeout_on_pending_ask_rpcs(tmp_path, caplog):
+    driver = _ScriptedDriver()
+    driver.open_stream = lambda: _BlockingStream([])  # type: ignore[method-assign]
+    app = create_app(orchestrator=_DaemonBlipOrch(driver, path=_write_transcript(tmp_path)))
+
+    with caplog.at_level("INFO", logger="server.bridge.ws"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                ws.send_text(json.dumps({"type": "attach", "sessionId": "s1"}))
+                flat, _raw = _collect_flat(
+                    ws, lambda f: any(e.get("type") == "status" and "state" in e for e in f),
+                    timeout=4.0)
+
+    types = [e.get("type") for e in flat]
+    # The later, independent steps (live status) still ran after the blip.
+    assert "replayComplete" in types and "status" in types, types
+    assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")
+                and "ws.work failed" in r.getMessage()]
