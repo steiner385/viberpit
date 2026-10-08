@@ -10,6 +10,24 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-07-vetted-engineering-frameworks.md`
 
+## Status: closed out 2026-10-08 — simplified, do not resume the remaining tasks
+
+The owner decided to keep framework adoption lightweight, so it adds no burden to CI/CD. Follow the spec's
+"Current direction: pin, skim, install" section for any new framework.
+
+- **Done and kept:** Tasks 1–2 (lock, provenance, dependency verification: #2770, #2807, #2808).
+- **Done and kept:** Task 3's observe/evidence/gate-mode machinery (#2845, #2850, #2861). It is dormant
+  because ViberPit's lock is `observe`.
+- **Done and kept:** Task 4's calibration and comparison runs (#2809, #2827, #2840).
+- **Not pursued:** the rest of Task 3 (trusted deterministic runner receipts, explain/`nextAction` simulation).
+- **Not pursued:** Task 4's remaining live/paid evals and Task 5's native engine matrix.
+- **Not pursued:** Task 6 (required merge check, CODEOWNERS, cross-project enforcement).
+- **Not pursued:** Tasks 7–8 (formal per-candidate admissions and paired evaluations) and Task 9 (standard
+  release channel).
+
+Unticked checkboxes below are a historical record, not a backlog. Agents must not pick them up without a new
+owner decision.
+
 ## Existing adoption and execution status (2026-10-08)
 
 Impeccable already has practical pilots in **KinDash, FridgeSheet and ViberPit**.
