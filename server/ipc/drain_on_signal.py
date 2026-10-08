@@ -20,6 +20,11 @@ handler that
    ``handle_exit``), which runs the ordinary graceful shutdown: lifespan teardown →
    ``orchestrator.stop()`` → children closed in order.
 
+During a HOST shutdown (reboot/poweroff) the drain is skipped: Postgres and the
+network go down under us, so the turns can never finish and the wait just burns the
+whole cap (2026-10-07, dobby: a reboot sat 3m09s on this daemon). ``host_is_stopping``
+asks systemd; a plain ``systemctl stop/restart viberpit-daemon`` still drains in full.
+
 A second SIGTERM while draining skips the wait (``systemctl kill -s TERM`` is the
 operator's escape hatch). The unit's ``TimeoutStopSec`` must cover the condense cap
 plus the shutdown budget — see ``deploy/ccswitch-daemon.service`` — and the unit must
@@ -42,6 +47,30 @@ from server.ipc.client import DaemonError
 log = logging.getLogger("server.ipc.drain_on_signal")
 
 DrainFn = Callable[[Any], Awaitable[str]]
+StoppingFn = Callable[[], Awaitable[bool]]
+
+
+async def host_is_stopping(*, timeout_s: float = 2.0) -> bool:
+    """True when systemd reports the whole system is shutting down.
+
+    ``systemctl is-system-running`` prints ``stopping`` once a reboot/poweroff/halt
+    transaction is under way, and nothing of the sort for a unit-level stop. Any
+    failure (no systemd, timeout) answers False: an unknown state keeps the drain.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "is-system-running",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except (OSError, ValueError):
+        return False
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout_s)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False
+    return out.decode(errors="replace").strip() == "stopping"
 
 
 class LocalDrainClient:
@@ -66,6 +95,7 @@ class LocalDrainClient:
 
 def install_drain_on_sigterm(orchestrator: Any, *, loop: asyncio.AbstractEventLoop | None = None,
                              drain: DrainFn = drain_and_wait,
+                             host_stopping: StoppingFn = host_is_stopping,
                              sig: int = signal.SIGTERM) -> Callable[[], None]:
     """Install the drain-then-shutdown SIGTERM handler; return its uninstaller.
 
@@ -105,6 +135,10 @@ def install_drain_on_sigterm(orchestrator: Any, *, loop: asyncio.AbstractEventLo
 
     async def _drain_then_hand_off() -> None:
         try:
+            if await host_stopping():
+                log.info("SIGTERM during host shutdown — skipping the drain")
+                _hand_off()
+                return
             busy = orchestrator.active_session_count()
             log.info("SIGTERM: draining %d in-flight turn(s) before shutdown", busy)
             result = await drain(LocalDrainClient(orchestrator))
