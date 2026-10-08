@@ -40,6 +40,7 @@ vi.mock('@/api/hooks', () => ({
   useDecisions: () => ({ data: undefined, isLoading: false, isError: false }),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueStartNow: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
@@ -293,10 +294,12 @@ describe('the all-limited banner', () => {
     return app
   }
 
+  // The dock's bar ALSO says it inline (role="alert"), because the banner can be
+  // cleared the same render — so these target the banner by its text, not the role.
   it('shows once every account is at its limit', async () => {
     const user = userEvent.setup()
     await raiseBanner(user)
-    expect(screen.getByRole('alert')).toHaveTextContent(/all accounts at limit/i)
+    expect(screen.getByText(/all accounts at limit/i)).toBeInTheDocument()
   })
 
   // There used to be a third exit here: opening the New Session dialog cleared
@@ -309,17 +312,17 @@ describe('the all-limited banner', () => {
   it('does not clear itself when the user dispatches again', async () => {
     const user = userEvent.setup()
     await raiseBanner(user)
-    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText(/all accounts at limit/i)).toBeInTheDocument()
 
     await user.type(screen.getByLabelText(/new session prompt/i), 'try again')
     await user.keyboard('{Enter}')
-    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText(/all accounts at limit/i)).toBeInTheDocument()
   })
 
   it('auto-clears once an account becomes selectable again', async () => {
     const user = userEvent.setup()
     const app = await raiseBanner(user)
-    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText(/all accounts at limit/i)).toBeInTheDocument()
 
     // A non-null rank means the ranker would pick this account: the banner is
     // stale. The shell clears it at render time, so any re-render suffices — a
@@ -327,7 +330,7 @@ describe('the all-limited banner', () => {
     setAccounts([account({ rank: 1 })])
     await act(async () => { await app.router.navigate('/sessions?tick=1') })
 
-    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/all accounts at limit/i)).not.toBeInTheDocument())
   })
 })
 

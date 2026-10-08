@@ -546,6 +546,14 @@ export function useQueueCancel() {
   })
 }
 
+export function useQueueStartNow() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean; status: string }, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<{ ok: boolean; status: string }>(`/sessions/${id}/start-now`, {}),
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useModelApproval() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; decision: 'approve' | 'deny'; model?: string }>({
