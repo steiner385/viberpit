@@ -207,6 +207,8 @@ def next_action(
     artifacts: list[ArtifactView],
     mode: str,
     tolerance: str,
+    *,
+    framework_block: str | None = None,
 ) -> StageAction:
     """Decide the next SDLC action for *initiative*. Pure + total.
 
@@ -215,7 +217,25 @@ def next_action(
     its legacy ``propose``/``auto``). ``tolerance`` is the product's
     ``risk_tolerance`` (``server/sdlc/gates.py:RISK_TOLERANCES``); the caller
     resolves it, this function only consults ``auto_resolves``.
+
+    ``framework_block`` is the caller's ``framework_gate`` reason for the
+    artifact PR: it turns an artifact merge or advance into ``NeedsHuman`` that
+    no tolerance can bypass. The build-stage ``stage.advance_built`` is not
+    gated here; code PRs are governed by the merge-boundary required check.
     """
+    action = _decide(initiative, artifacts, mode, tolerance)
+    if framework_block and (isinstance(action, MergeArtifact) or (
+            isinstance(action, Advance) and initiative.stage in STAGE_ARTIFACT)):
+        return NeedsHuman(reason=f"framework evidence required: {framework_block}")
+    return action
+
+
+def _decide(
+    initiative: InitiativeView,
+    artifacts: list[ArtifactView],
+    mode: str,
+    tolerance: str,
+) -> StageAction:
     # Terminal / override states first (checked before any stage logic).
     if initiative.stage == "done" or initiative.status == "done":
         return Done()

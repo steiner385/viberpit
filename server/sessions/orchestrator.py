@@ -1460,6 +1460,7 @@ class SessionOrchestrator:
         # mold as the intake loop; every seam is a thin adapter over db_session()
         # + the shared backlog helpers (healthy-account, ensure_clone, PR-poller).
         from server.automations.sdlc_synthesizer import SdlcSynthesizerLoop
+        from server.sdlc.framework_observe import read_framework_gate
         self._sdlc_synth_ctx = AutomationContext(
             "sdlc-synthesizer", create_session=self._automation_create_session)
         self._sdlc_synthesizer_loop = SdlcSynthesizerLoop(
@@ -1479,6 +1480,9 @@ class SessionOrchestrator:
             live_sessions=self._sdlc_live_artifact_sessions,
             advance_stage=self._sdlc_advance_stage,
             arm_auto_merge=self._sdlc_arm_auto_merge,
+            # Required framework evidence holds artifact merges/advances; the
+            # policy comes from each repo's default branch, never the PR.
+            read_framework_gate=read_framework_gate,
             # The process-wide kill switch (spec D9) is read per tick, not
             # captured at construction, so flipping the env and restarting the
             # daemon is the whole procedure — nothing else caches it.

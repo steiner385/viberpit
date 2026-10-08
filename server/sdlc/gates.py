@@ -165,18 +165,153 @@ class FrameworkPolicySnapshot:
     reviews_complete: bool = False
 
 
-def observe_framework_evidence(
-    snapshot: FrameworkPolicySnapshot, claims: list[dict] | None = None,
-) -> dict:
-    """Observe inventory and diagnose untrusted supporting claims, never gate.
+@dataclass(frozen=True)
+class FrameworkGate:
+    """Whether required framework evidence holds an SDLC artifact transition.
 
-    Submitted claims never authenticate. Explicit records collected through the
-    GitHub reader may attest a configured principal, but never authorize a gate.
-    Unknown scope cannot skip an obligation.
+    ``reasons`` are short, stable, sorted ``<framework>/<concern>: ...`` strings
+    so a feed event and a latch can key on them."""
+
+    blocking: bool
+    reasons: tuple[str, ...] = ()
+
+
+#: Admission states whose in-scope concerns must never pass a non-observe gate.
+_WITHDRAWN = frozenset({"rejected", "revoked"})
+
+#: THE block reason when a gating policy may apply but cannot be judged: the
+#: default-branch policy read failed, or the PR's scope/reviews did not load.
+FRAMEWORK_EVIDENCE_UNREADABLE = "framework evidence unreadable"
+
+
+def _exception_waives(entry: dict, concern: str, snapshot: FrameworkPolicySnapshot,
+                      now: datetime, pull_request: int | None) -> bool:
+    """A declared exception waives one concern on one PR until it expires, and
+    only when its owner is a known principal other than the PR author: an
+    author cannot excuse their own change."""
+    from server.sdlc.framework_policy import policy
+
+    author = snapshot.author
+    if pull_request is None or not author:
+        return False
+    when = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    for item in (entry.get("observation") or {}).get("exceptions", []):
+        if item["concern"] != concern or item["pull_request"] != pull_request:
+            continue
+        if policy.same_principal(item["owner"], author):
+            continue
+        if when < policy.parse_expiry(item["expires_at"]):
+            return True
+    return False
+
+
+def _obligations(snapshot: FrameworkPolicySnapshot, now: datetime, pull_request: int | None):
+    """THE per-obligation evaluation both the gate and the observation payload
+    read, so the displayed ``blocking`` can never disagree with the decision.
+
+    Yields ``(entry, concern, rule, mode, applicability, evidence_status,
+    block_reason)``; ``block_reason`` is None when the obligation does not block.
     """
     from server.sdlc.framework_policy import policy
     from server.sdlc.framework_evidence import review_observation
 
+    for entry in snapshot.frameworks:
+        for concern, rule in (entry.get("observation") or {}).get("concerns", {}).items():
+            mode = policy.effective_mode(entry, concern)
+            applicability = policy.applicability(rule, snapshot.changed_paths, snapshot.scope_complete)
+            status = "missing"
+            if rule["tier"] == "required_review" and applicability == "applicable":
+                status = review_observation(snapshot, entry, concern)
+            reason, waivable = None, True
+            # Only a loaded default-branch policy is authority; observe never
+            # blocks and advisory findings never masquerade as failures.
+            if snapshot.status == "loaded" and mode != "observe" and rule["tier"] != "advisory":
+                withdrawn = entry["state"] in _WITHDRAWN
+                if applicability == "unknown":
+                    # Unknown scope needs triage, never an automatic skip.
+                    if mode == "enforced":
+                        reason = "framework revoked" if withdrawn else "applicability unknown (needs triage)"
+                elif applicability == "applicable":
+                    if withdrawn:
+                        # Revocation never turns into a pass, even with a review.
+                        reason = "framework revoked"
+                    elif rule["tier"] == "deterministic":
+                        reason = "deterministic evidence unavailable (no trusted runner ingestion)"
+                    elif status == "invalid":
+                        # A trusted principal's malformed or withdrawn record is a
+                        # finding to fix, not an absence an exception may excuse.
+                        reason, waivable = "required review invalid", False
+                    elif status == "stale":
+                        reason = "required review stale"
+                    elif status != "review_recorded":
+                        reason = "required review missing"
+                if reason is not None and waivable and _exception_waives(
+                        entry, concern, snapshot, now, pull_request):
+                    reason = None
+            yield (entry, concern, rule, mode, applicability, status,
+                   None if reason is None else f"{entry['id']}/{concern}: {reason}")
+
+
+def framework_gate(snapshot: FrameworkPolicySnapshot, now: datetime, *,
+                   pull_request: int | None) -> FrameworkGate:
+    """Pure gate over default-branch declarations and the subject PR's scope and
+    reviews. ``no_contract``/``legacy_contract``/``unavailable`` know no
+    obligation, so they never block here; a loaded policy whose PR scope could
+    not be read reaches this as incomplete scope and blocks per mode."""
+    reasons = sorted({reason for *_, reason in _obligations(snapshot, now, pull_request)
+                      if reason is not None})
+    return FrameworkGate(blocking=bool(reasons), reasons=tuple(reasons))
+
+
+def _unread(snapshot: FrameworkPolicySnapshot) -> bool:
+    """A failed or moving PR read leaves no head or an empty, incomplete scope:
+    an unread subject, not an "unknown" one evidence_required may let through."""
+    return (snapshot.status != "loaded" or snapshot.head_sha is None
+            or (not snapshot.scope_complete and not snapshot.changed_paths))
+
+
+def framework_gate_for(policy_snapshot: FrameworkPolicySnapshot,
+                       pr_snapshot: FrameworkPolicySnapshot | None, now: datetime, *,
+                       pull_request: int) -> FrameworkGate:
+    """The gate for one subject PR, shared by the synthesizer seam and the API
+    observation so their ``blocking`` cannot disagree. A failed policy read, or
+    a gating policy whose PR evidence did not load, blocks rather than passes;
+    ``no_contract``/``legacy_contract`` are successful reads with no obligation.
+    """
+    if policy_snapshot.status == "unavailable":
+        return FrameworkGate(True, (FRAMEWORK_EVIDENCE_UNREADABLE,))
+    if not has_gating_concern(policy_snapshot):
+        return FrameworkGate(False)
+    if pr_snapshot is None or _unread(pr_snapshot):
+        return FrameworkGate(True, (FRAMEWORK_EVIDENCE_UNREADABLE,))
+    return framework_gate(pr_snapshot, now, pull_request=pull_request)
+
+
+def has_gating_concern(snapshot: FrameworkPolicySnapshot) -> bool:
+    """Whether a loaded policy configures any non-observe, non-advisory concern —
+    the only case worth a PR-scoped read."""
+    from server.sdlc.framework_policy import policy
+
+    return snapshot.status == "loaded" and any(
+        policy.effective_mode(entry, concern) != "observe" and rule["tier"] != "advisory"
+        for entry in snapshot.frameworks
+        for concern, rule in (entry.get("observation") or {}).get("concerns", {}).items())
+
+
+def observe_framework_evidence(
+    snapshot: FrameworkPolicySnapshot, claims: list[dict] | None = None, *,
+    now: datetime | None = None, pull_request: int | None = None,
+) -> dict:
+    """Inventory, diagnose untrusted supporting claims, and report the gate.
+
+    Submitted claims never authenticate. Explicit records collected through the
+    GitHub reader may attest a configured principal; whether that satisfies a
+    gate is ``framework_gate``'s decision, reported here, never re-derived.
+    Unknown scope cannot skip an obligation.
+    """
+    from server.sdlc.framework_policy import policy
+
+    now = now or datetime.now(timezone.utc)
     diagnostics = []
     selected = {entry["id"] for entry in snapshot.frameworks}
     for claim in claims or []:
@@ -194,20 +329,22 @@ def observe_framework_evidence(
         elif claim.get("policyRevision") != snapshot.policy_revision:
             reasons.append("stale_policy")
         reviewer = claim.get("reviewer")
-        if snapshot.author and isinstance(reviewer, str) and reviewer.casefold() == snapshot.author.casefold():
+        if snapshot.author and policy.same_principal(reviewer, snapshot.author):
             reasons.append("self_review")
         diagnostics.append({"framework": claim.get("framework"), "trusted": False,
                             "reasons": reasons})
+    by_entry: dict[str, list[dict]] = {}
+    modes: set[str] = set()
+    for entry, concern, rule, mode, applicability, status, reason in _obligations(
+            snapshot, now, pull_request):
+        modes.add(mode)
+        by_entry.setdefault(entry["id"], []).append(
+            {"concern": concern, "tier": rule["tier"], "mode": mode,
+             "applicability": applicability, "evidenceStatus": status,
+             "blocking": reason is not None})
     frameworks = []
     for entry in snapshot.frameworks:
-        obligations = []
-        for concern, rule in entry.get("observation", {}).get("concerns", {}).items():
-            applicability = policy.applicability(rule, snapshot.changed_paths, snapshot.scope_complete)
-            status = "missing"
-            if rule["tier"] == "required_review" and applicability == "applicable":
-                status = review_observation(snapshot, entry, concern)
-            obligations.append({"concern": concern, "tier": rule["tier"],
-                                "applicability": applicability, "evidenceStatus": status})
+        obligations = by_entry.get(entry["id"], [])
         row = {"id": entry["id"], "state": entry["state"], "concerns": entry["concerns"],
                "obligations": obligations}
         if not obligations:
@@ -216,8 +353,16 @@ def observe_framework_evidence(
         # Configured obligations are the sole source of concern-level statuses;
         # an aggregate would hide mixed tiers or contradict individual scopes.
         frameworks.append(row)
+    # With a subject PR the one snapshot is both policy and evidence, judged by
+    # the same rule the synthesizer applies before an artifact transition.
+    decision = (framework_gate(snapshot, now, pull_request=None) if pull_request is None
+                else framework_gate_for(snapshot, snapshot, now, pull_request=pull_request))
+    mode = "observe" if not modes else modes.pop() if len(modes) == 1 else "mixed"
+    reason = ("Observe only. " if mode == "observe" else
+              "Non-observe concerns gate SDLC artifact merges and advances. ")
     return {
-        "mode": "observe", "blocking": False, "policyStatus": snapshot.status,
+        "mode": mode, "blocking": decision.blocking, "gateReasons": list(decision.reasons),
+        "policyStatus": snapshot.status,
         "repo": snapshot.repo, "policyRevision": snapshot.policy_revision,
         "contractBlobOid": snapshot.contract_oid, "lockBlobOid": snapshot.lock_oid,
         "frameworkDigest": snapshot.framework_digest, "policyDigest": snapshot.policy_digest,
@@ -225,6 +370,6 @@ def observe_framework_evidence(
         "scopeComplete": snapshot.scope_complete,
         "scopeDigest": policy.scope_digest(snapshot.changed_paths) if snapshot.scope_complete else None,
         "reviewsComplete": snapshot.reviews_complete,
-        "reason": "Observe only. Recorded reviews attest configured GitHub principals, not execution, correctness or admission.",
+        "reason": reason + "Recorded reviews attest configured GitHub principals, not execution, correctness or admission.",
         "frameworks": frameworks, "claims": diagnostics,
     }

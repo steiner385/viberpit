@@ -1,5 +1,6 @@
 """Portable declaration policy; stdlib only, no execution of target repository code."""
 from __future__ import annotations
+from datetime import datetime
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -7,6 +8,11 @@ import re
 
 TIERS = {'deterministic', 'required_review', 'advisory'}
 STATES = {'candidate', 'sandbox', 'pilot', 'approved', 'rejected', 'revoked'}
+# Ordered weakest first. ``observe`` never blocks; ``evidence_required`` blocks
+# on missing evidence for applicable scope; ``enforced`` also blocks unknown scope.
+MODES = ('observe', 'evidence_required', 'enforced')
+_LOGIN = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?'
+_EXCEPTION_KEYS = {'concern', 'pull_request', 'owner', 'reason', 'expires_at', 'compensating_evidence'}
 
 
 def canonical_digest(value):
@@ -27,27 +33,83 @@ def safe_path(value, *, pattern=False):
             and not value.startswith('/') and all(p not in {'', '.', '..'} for p in value.split('/')))
 
 
+def parse_expiry(value):
+    """Timezone-aware expiry; a naive time has no unambiguous instant to expire at."""
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError('invalid exception expiry')
+    stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if stamp.tzinfo is None:
+        raise ValueError('invalid exception expiry')
+    return stamp
+
+
+def _text(value):
+    return isinstance(value, str) and 0 < len(value) <= 1000 and value == value.strip()
+
+
+def validate_exceptions(observation, concerns):
+    exceptions = observation.get('exceptions', [])
+    if not isinstance(exceptions, list) or len(exceptions) > 50:
+        raise ValueError('invalid observation exceptions')
+    seen = set()
+    for item in exceptions:
+        if (not isinstance(item, dict) or set(item) != _EXCEPTION_KEYS or item['concern'] not in concerns
+                or type(item['pull_request']) is not int or item['pull_request'] <= 0
+                or not isinstance(item['owner'], str) or not re.fullmatch(_LOGIN, item['owner'])
+                or not _text(item['reason']) or not _text(item['compensating_evidence'])):
+            raise ValueError('invalid observation exception')
+        parse_expiry(item['expires_at'])
+        key = (item['concern'], item['pull_request'])
+        if key in seen:
+            raise ValueError('duplicate observation exception')
+        seen.add(key)
+
+
 def validate_observation(entry):
     observation = entry.get('observation')
     if observation is None:
         return
-    if not isinstance(observation, dict) or set(observation) != {'mode', 'trusted_github_reviewers', 'concerns'} or observation['mode'] != 'observe':
+    required = {'mode', 'trusted_github_reviewers', 'concerns'}
+    if (not isinstance(observation, dict) or not required <= set(observation) <= required | {'exceptions'}
+            or observation['mode'] not in MODES):
         raise ValueError('invalid observation policy')
     reviewers = observation['trusted_github_reviewers']
     if (not isinstance(reviewers, list) or len(reviewers) > 100
-            or any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?', v) for v in reviewers)
+            or any(not isinstance(v, str) or not re.fullmatch(_LOGIN, v) for v in reviewers)
             or len({v.casefold() for v in reviewers}) != len(reviewers)):
         raise ValueError('invalid trusted GitHub reviewers')
     concerns = observation['concerns']
     if not isinstance(concerns, dict) or not concerns or not set(concerns) <= set(entry['concerns']):
         raise ValueError('invalid observation concerns')
     for rule in concerns.values():
-        if not isinstance(rule, dict) or set(rule) != {'tier', 'include_paths', 'exclude_paths'} or rule['tier'] not in TIERS:
+        keys = {'tier', 'include_paths', 'exclude_paths'}
+        if (not isinstance(rule, dict) or not keys <= set(rule) <= keys | {'mode'} or rule['tier'] not in TIERS
+                or rule.get('mode', 'observe') not in MODES):
             raise ValueError('invalid observation rule')
         for key in ('include_paths', 'exclude_paths'):
             paths = rule[key]
             if not isinstance(paths, list) or len(paths) > 100 or any(not safe_path(p, pattern=True) for p in paths) or len(set(paths)) != len(paths):
                 raise ValueError('invalid observation paths')
+    validate_exceptions(observation, concerns)
+
+
+def same_principal(left, right):
+    """Whether two GitHub logins name one principal. GraphQL reports bot authors
+    without the ``[bot]`` suffix that REST and configuration use, so strip it
+    before comparing. Only for conservative author checks (self-review,
+    self-issued exceptions); allowlist membership stays exact."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    return left.casefold().removesuffix('[bot]') == right.casefold().removesuffix('[bot]')
+
+
+def effective_mode(entry, concern):
+    """A concern's own mode overrides the entry default; unconfigured is observe."""
+    observation = entry.get('observation') or {}
+    rule = observation.get('concerns', {}).get(concern)
+    if rule is None:
+        return 'observe'
+    return rule.get('mode', observation['mode'])
 
 
 def validate_declarations(lock):

@@ -1,0 +1,5 @@
+id: framework-gate-modes
+description: Framework gate modes hold SDLC artifact merges and advances on missing required evidence; tolerance cannot bypass the block, advisory and observe concerns never block, exceptions are subject-bound, expiring, never self-issued and never waive invalid records, stale reviews block but may be excepted, revoked frameworks block only in scope until excepted, and unreadable policy or PR evidence blocks.
+kind: static
+tags: [sdlc, framework-evidence, security]
+check: 'python3 -m pytest server/tests/test_framework_gate.py .agents/tests/test_framework_policy.py -q'
