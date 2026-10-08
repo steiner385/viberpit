@@ -25,14 +25,27 @@ Not a human prompt:
 """
 from __future__ import annotations
 
-_PLUMBING_PREFIXES: tuple[str, ...] = (
+_LOCAL_COMMAND_PREFIXES: tuple[str, ...] = (
     "<local-command-caveat>",
     "<command-name>",
     "<local-command-stdout>",
     "<local-command-stderr>",
+)
+
+_PLUMBING_PREFIXES: tuple[str, ...] = (
+    *_LOCAL_COMMAND_PREFIXES,
     "<task-notification>",
     "[Request interrupted by user",
 )
+
+
+def is_local_command_text(text: str) -> bool:
+    """CLI control bookkeeping, which never starts a model response.
+
+    Unlike the broader transcript plumbing category, this excludes task
+    notifications: those can start autonomous model turns on the live stream.
+    """
+    return text.lstrip().startswith(_LOCAL_COMMAND_PREFIXES)
 
 
 def is_cli_plumbing_text(text: str) -> bool:

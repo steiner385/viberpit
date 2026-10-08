@@ -7,7 +7,9 @@ so the translator/driver are tested without spawning real `claude` or spending q
 from __future__ import annotations
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, StreamEvent, UserMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, StreamEvent, TextBlock, UserMessage
+
+from .transcript_entries import is_local_command_text
 
 # The SDK messages that belong to a model turn. Everything else on the stream is
 # bookkeeping the CLI emits BETWEEN turns, with no ResultMessage behind it: hook
@@ -24,7 +26,18 @@ TURN_MESSAGES: tuple[type, ...] = (UserMessage, AssistantMessage, StreamEvent, R
 
 
 def is_turn_message(msg: Any) -> bool:
-    """True when ``msg`` is part of a model turn (see ``TURN_MESSAGES``)."""
+    """True when ``msg`` is part of a model turn (see ``TURN_MESSAGES``).
+
+    set_model also emits UserMessage local-command stdout (verified with CLI
+    2.1.294 / SDK 0.2.105). It has no model response behind it: treating it as an
+    autonomous turn queues the next prompt forever (#2844). Keep task-notification
+    user messages, which really do start background continuations.
+    """
+    if isinstance(msg, UserMessage):
+        text = (msg.content if isinstance(msg.content, str) else
+                "\n".join(b.text for b in msg.content if isinstance(b, TextBlock)))
+        if is_local_command_text(text):
+            return False
     return isinstance(msg, TURN_MESSAGES)
 
 
