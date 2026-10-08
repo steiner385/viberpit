@@ -238,12 +238,18 @@ async def test_spawn_shaped_rpcs_use_extended_timeout():
     await ro.automation_consolidate("o/r", [1, 2])
     await ro.automation_trigger("pr-doctor", "o/r#1", "ci_failure")
     await ro.create_session(name="S")
+    await ro.resume_interrupted("s1")
+    await ro.reload_session("s1")
+    await ro.rotate_to_best("s1")
 
     assert SPAWN_RPC_TIMEOUT > 30.0
     by_method = dict(calls)
     assert by_method["automation_consolidate"] == SPAWN_RPC_TIMEOUT
     assert by_method["automation_trigger"] == SPAWN_RPC_TIMEOUT
     assert by_method["create_session"] == SPAWN_RPC_TIMEOUT
+    # Driver-rebuilding RPCs are spawn-shaped too (#2818).
+    for m in ("resume_interrupted", "reload_session", "rotate_to_best"):
+        assert by_method[m] == SPAWN_RPC_TIMEOUT
 
 
 @pytest.mark.asyncio

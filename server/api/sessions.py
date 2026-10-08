@@ -44,7 +44,7 @@ from server.sessions.orchestrator import (
 )
 from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
-from server.ipc.client import DaemonError, DaemonUnavailable
+from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
 from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
@@ -404,6 +404,17 @@ async def _session_is_archived(orch, session_id: str) -> bool:
     """
     archived = await orch.list_archived()
     return any(a.get("id") == session_id for a in archived)
+
+
+async def _session_still_interrupted(orch, session_id: str) -> bool:
+    """Whether ``session_id`` is still flagged interrupted-by-restart — reconciles a
+    timed-out resume RPC whose daemon-side work may have completed. A missing record
+    or a failed re-read counts as still interrupted (never claim success unproven)."""
+    try:
+        rec = await orch.get_session(session_id)
+    except Exception:  # noqa: BLE001 — reconciliation is best-effort
+        return True
+    return rec is None or bool(getattr(rec, "interrupted_by_restart", False))
 
 
 # Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs with no
@@ -1260,6 +1271,17 @@ async def batch_resume_sessions(
     for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
         try:
             result = await orch.resume_interrupted(session_id, identity)
+        except DaemonTimeout as exc:
+            # The daemon keeps rebuilding the driver after the edge gives up, so a
+            # slow resume usually still lands. Re-read the record: no longer
+            # interrupted ⇒ resumed. Expected under load — INFO, not an auto-error.
+            if exc.outcome_unknown and not await _session_still_interrupted(orch, session_id):
+                log.info("batch resume of %s timed out but the session resumed", session_id)
+                result = "resumed"
+            else:
+                log.info("batch resume of %s timed out; still pending", session_id)
+                failed.append({"id": session_id, "error": "resume timed out; still pending"})
+                continue
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
             log.warning("batch resume failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})

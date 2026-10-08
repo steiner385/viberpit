@@ -763,19 +763,22 @@ class RemoteOrchestrator:
         """Proxy the owning daemon's resume_interrupted (re-attach + nudge a
         restart-interrupted session). Returns "resumed" / "skipped:<reason>" / "no_driver"."""
         return await self._client.call(
-            "resume_interrupted", session_id=session_id, identity=identity)
+            "resume_interrupted", timeout=SPAWN_RPC_TIMEOUT,
+            session_id=session_id, identity=identity)
 
     async def reload_session(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
         """Proxy the owning daemon's reload_session (rebuild the driver in place).
         Returns "reloaded" / "reloading" / "skipped:<reason>" / "no_driver"."""
         return await self._client.call(
-            "reload_session", session_id=session_id, identity=identity)
+            "reload_session", timeout=SPAWN_RPC_TIMEOUT,
+            session_id=session_id, identity=identity)
 
     async def rotate_to_best(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
         """Proxy the owning daemon's rotate_to_best (move to the next best account).
         Returns "rotated" / "skipped:<reason>" / "no_driver"."""
         return await self._client.call(
-            "rotate_to_best", session_id=session_id, identity=identity)
+            "rotate_to_best", timeout=SPAWN_RPC_TIMEOUT,
+            session_id=session_id, identity=identity)
 
     async def set_account_pin(self, session_id: str, pinned: bool) -> str:
         """Proxy the owning daemon's set_account_pin. Returns "pinned" / "unpinned" /
