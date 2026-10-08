@@ -1417,6 +1417,34 @@ def test_an_earlier_stage_raising_still_sweeps_and_still_reports_the_failure(tmp
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("exc, warns", [
+    (ConnectionRefusedError(111, "Connection refused"), False),
+    (ValueError("bad sql (injected)"), True),
+])
+def test_tick_failure_logs_warning_only_for_non_transient_errors(tmp_path, caplog, exc, warns):
+    """A DB connect blip must not file an auto-error (#2797); real defects still do."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'transient.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, _rec, ctx = build_loop(candidates=[], config=make_config())
+
+        async def boom():
+            raise exc
+
+        loop._reconcile_dangling = boom  # type: ignore[method-assign]
+        with caplog.at_level("INFO", logger="server.automations.backlog_runner"):
+            await loop.tick()
+
+        failed = [r for r in caplog.records if "tick_failed" in r.getMessage()]
+        assert failed
+        assert any(r.levelno >= logging.WARNING for r in failed) is warns
+        assert getattr(ctx, "last_refresh_failed_at", None) is not None
+
+    asyncio.run(run())
+
+
 def test_restart_safety_counts_existing_rows(tmp_path):
     """A fresh loop counts existing origin='backlog-runner' rows via count_in_flight."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"

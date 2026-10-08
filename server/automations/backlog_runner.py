@@ -13,7 +13,9 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from viberpit.worktrees import DISK_EXHAUSTION_MARKERS
+from server.aio import caused_by_cancellation, current_task_cancelling
 from server.db.models import DECISION_PROPOSED_CAUSE, NOT_NEEDED_CAUSE
+from server.db.transient import is_transient_db_failure
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_github import closeout_hold_reason, escalation_detail
@@ -881,9 +883,19 @@ class BacklogRunnerLoop:
         async with self._lock:
             try:
                 await self._refill_and_sweep()
-            except Exception:  # pragma: no cover — defensive: a tick must never crash the loop
+            except Exception as exc:  # pragma: no cover — defensive: a tick must never crash the loop
+                if caused_by_cancellation(exc) and current_task_cancelling():
+                    # Our own cancellation, wrapped by asyncpg mid-handshake:
+                    # propagate it (cancel rule, #1164).
+                    raise asyncio.CancelledError() from exc
                 observation_failed(self._ctx)
-                log.warning("backlog_runner.tick_failed", exc_info=True)
+                if is_transient_db_failure(exc):
+                    # A connect-level blip (DB restarting); the next tick retries,
+                    # so it is not an auto-error (#2797, same shape as #2752).
+                    log.info("backlog_runner.tick_failed (transient DB: %s)",
+                             type(exc).__name__)
+                else:
+                    log.warning("backlog_runner.tick_failed", exc_info=True)
 
     # -- refill ------------------------------------------------------------- #
 
