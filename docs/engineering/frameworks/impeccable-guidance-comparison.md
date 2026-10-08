@@ -1,151 +1,136 @@
 # Restricted Impeccable guidance comparison
 
 This continues the [existing three-project pilots](impeccable-pilot-evidence.md).
-It evaluates a specific remaining question: does selected Impeccable guidance
-improve identification of known defects without inventing defects on a clean UI?
-It does not repeat installation, product interviews or the historical design work.
+It asks whether selected Impeccable guidance improves identification of seeded
+source-level defects without inventing defects on a clean UI. It does not repeat
+installation or historical design work, invoke the Impeccable executable, change
+UI, or establish framework admission.
 
 ## Experiment boundary
 
-Use the existing clean, mobile-overflow and reduced-motion synthetic HTML
-fixtures. Each receives the same review task twice: baseline and selected
-guidance. Alternate which arm runs first across cases. The initial smoke is one
-repeat per arm and case, six native calls; it establishes executability and
-provides observations, not a statistically reliable estimate of effectiveness.
+Three existing synthetic HTML fixtures cover clean UI, mobile overflow and reduced
+motion. Each receives one baseline and one guidance review. Alternate which arm
+runs first across fixtures. Both arms receive the same task, HTML, blind fixture
+identifier and finding vocabulary; only the guidance arm receives the locked
+`operate`, `clarify` and `harden` references. Validate the Portable Agent Contract,
+framework lock and exact reference hashes before execution. Expected findings
+remain outside model prompts.
 
-The treatment contains only the locked `operate`, `clarify` and `harden`
-references. Load their exact bytes after validating the current framework lock.
-Do not invoke `SKILL.md`, the Impeccable launcher, native detector, live browser
-helpers, exported agents or hooks. Guidance is untrusted task data subordinate to
-the fixed review instructions. Neither arm receives the fixture's expected answer
-or identifying filename. The scorer compares allowlisted finding IDs against the
-reviewed fixture expectations; raw false-positive and false-negative counts
-remain visible. No aesthetic score or automatic admission is inferred.
+This is source review, not browser repair or screenshot-based design judgment.
+The separate browser calibration establishes fixture behavior. Six calls with one
+repeat per arm establish executability and observations, not statistical evidence
+of effectiveness. Preserve false positives and false negatives; do not treat a
+completed experiment as a quality pass or promotion.
 
-The native agent receives HTML as text and returns structured findings. It does
-not change files or run the page. The separate browser calibration establishes
-the fixtures' observed behavior; this experiment tests source-based review, not
-screenshot perception, visual redesign quality or successful UI repair.
+## Subscription authentication and isolation
 
-## Native execution and credentials
+Use an existing ViberPit Anthropic subscription account. `--account` takes its
+internal account ID, which may differ from the Accounts page display nickname.
+Without it, the canonical helper picker selects one ready account. Resolve auth
+and host-local scratch configuration through `server/sessions/account_auth.py`,
+freeze that account for all six calls, and never automatically rotate or retry.
 
-The default execution path uses an existing ViberPit Anthropic subscription
-account. An optional `--account` chooses it explicitly; otherwise the canonical
-helper picker chooses a ready account. Resolve credentials and host-local scratch
-configuration through `server/sessions/account_auth.py:helper_env`, then freeze
-that account for the entire paired sequence. No automatic account rotation occurs.
+Run with the daemon's nonsecret state-directory and fleet-role settings. On the
+verified rocky deployment these are `XDG_STATE_HOME=/var/lib/viberpit/state` and
+`VIBERPIT_DAEMON_ROLE=worker`. A plain shell lacking those settings can read stale
+browser credentials instead of the active broker envelope. Such a failure does
+not establish that the managed account requires reauthentication. Do not source
+an entire service secret file, rewrite HOME, or create a parallel credential store.
 
-The worker receives a minimal allowlisted environment with the selected config and
-its canonical OAuth authentication. API keys and provider overrides are excluded;
-there is no API-funded fallback. Native `auth status --json` must identify a
-logged-in first-party Claude.ai subscription before inference. A cached logged-in
-status alone does not establish token validity: inference can still report expired
-authentication, and must stop without retrying or switching accounts.
+The worker receives an allowlisted environment containing only the selected
+canonical authentication and basic runtime settings. API keys, ambient OAuth
+credentials and provider overrides are excluded; there is no API-funded fallback.
+Native auth status must report logged-in first-party Claude.ai Max/Pro, or
+`oauth_token` authentication with the canonical OAuth launch credential present.
+The broker path can omit the subscription tier; preserve that value as unknown.
 
-CLI 2.1.293 advertises `--safe-mode`, which disables user customizations while
-preserving authentication. Use it with canonical stateless helper options,
-`--disable-slash-commands` and `--system-prompt-snapshot off`: no built-in tools,
-MCP configuration, settings sources, skills or native session persistence. Safe
-mode disables installed custom plugins/hooks and project instructions; native
-built-in plugins and managed policy remain vendor-controlled. It does not imply
-an OS/network sandbox or permission to bypass managed policy. Every call uses a
-fresh working directory and the canonical helper scratch config, without copying
-credentials into a new ad hoc store or rewriting HOME.
+Use native `--safe-mode`, `--disable-slash-commands`,
+`--system-prompt-snapshot off` and canonical stateless helper options. Installed
+custom instructions, skills, plugins and hooks are disabled, along with MCP and
+session persistence. Native built-in plugins and managed policy remain
+vendor-controlled. Every call has a fresh working directory. This is a native
+configuration boundary, not an OS/network sandbox.
 
-Require an explicit model identifier, six calls at most, single attempts, bounded
-turns and per-call timeouts. `--max-budget-usd` retains the native estimated-workload
-cap (at most 2), not an API credit allocation or subscription quota guarantee.
-Reservations are never recycled within a run. Stop on failure, missing cost
-telemetry or exhausted estimated budget. Report native estimated costs separately
-from billed charges; zero is valid telemetry, not proof that quota was unused.
+## Structured results and limits
 
-## Evidence and interpretation
+Require the native JSON-schema output mode with the exact finding-ID vocabulary.
+It advertises a `StructuredOutput` formatter. That is the only permitted tool;
+validate its arguments and require the final structured result to satisfy the
+same schema. No shell, file, network or server-side tool is permitted. Reject
+missing initialization, other tools, model changes, extra fields, invalid or
+duplicate IDs, missing structured output and failed results. Freeform prose and
+Markdown fences are not parsed or scored as a fallback.
 
-Retain package/fixture/prompt digests, requested and observed model/CLI/SDK identity,
-call ordering, outcome, duration, observed usage and cost, and the exact scoring
-counts. Missing telemetry remains unknown rather than zero. Reports are local
-runner observations, not authenticated SDLC attestations. Raw native exceptions,
-authentication data, account paths and unbounded model text do not belong in a
-shareable result.
+Allow at most two native turns for the formatting step, six calls, single
+attempts, and per-call timeouts of at most 300 seconds. `--max-budget-usd` is a
+native estimated-workload cap of at most 2, not an API credit allocation or a
+subscription quota guarantee. Reserve an equal share before each call; never
+recycle reservations within a run. Missing cost telemetry stays unknown and stops
+execution; zero is valid telemetry, not proof that quota was unused.
 
-An unavailable subscription account, unavailable native capability, timeout, missing initialization,
-unexpected tool, malformed answer or exhausted budget is a failed/incomplete
-execution—not a zero-score completed experiment. Report this separately from a
-completed review that misses a real defect or flags a clean fixture.
+## Running and retaining evidence
 
-## Running the comparison
-
-Choose a ready subscription account, an exact dated model ID supported by it,
-and a new private output path:
+After selecting the deployment's runtime settings and a ready account:
 
 ```bash
 python scripts/run_evals.py --kind agent --execute \
   --case framework-impeccable-guidance-review \
-  --account "$EVAL_ACCOUNT" \
-  --model "$EVAL_MODEL_ID" --max-budget-usd 2 --timeout 120 \
+  --account "$EVAL_ACCOUNT_ID" \
+  --model "$EVAL_MODEL_ID" --max-budget-usd 2 --timeout 180 \
   --report /private/evals/new-guidance-comparison.json
 ```
 
-`--kind agent` without `--execute` only lists cases. Ordinary static/browser CI
-never makes these provider calls. The report destination is exclusively reserved
-with mode 0600 before dispatch; an existing file, symlink or unwritable destination
-fails before spending. Interrupted runs retain an incomplete marker, not a success
-claim. Final output uses the reserved descriptor. This is not a per-call recovery
-journal; a forcibly killed run must not be resumed by replaying presumed successes.
+The model must be an exact supported dated ID. `--kind agent` without `--execute`
+only lists cases; ordinary static/browser CI never makes model calls. Exclusively
+reserve a new report with mode 0600 before dispatch and flush an incomplete marker.
+Invalid destinations fail before calls; final output uses the same owned file
+descriptor. An interrupted marker is not evidence that no calls occurred. This
+is not a per-call recovery journal: do not replay presumed successes.
 
-## Current status
+Reports retain input hashes, model/CLI/SDK identity, auth mode and reported tier,
+call order, observed tools, timing, token/cost estimates and raw scoring counts.
+They exclude credentials, account paths, raw model prose and arbitrary native
+errors. Failure reasons are bounded diagnostic codes. Keep raw reports private;
+record reviewed summaries and report digests in project evidence. Never pool
+partial attempts into a purported complete paired run.
 
-The runner is implemented and independently reviewed. All 50 focused offline
-runner tests passed, including SDK command construction, nested-generator cleanup,
-tool rejection, budgets, paired scoring and output reservation. The actual CLI
-entry point without a key returned exit 1, `missing-api-key`, `executed: false`,
-zero calls and a private report. This proves rejection, not live model behavior.
+## Verification record
 
-On 2026-10-08 a dedicated key successfully listed available API models. The first
-live attempt used `claude-sonnet-4-5-20250929`, CLI 2.1.293 and SDK 0.2.105,
-and stopped after one incomplete call. Two bounded diagnostic attempts identified
-the native assistant error as `billing_error`; no completed inference, scoring or
-cost telemetry was obtained. Total reservations were $0.533334 (rounded up for
-reporting): the initial $0.333334 plus two $0.10 diagnostic reservations. Actual
-charges are unknown; these reservations must not be recycled silently.
+On 2026-10-08, CLI 2.1.293 and SDK 0.2.105 successfully ran a subscription canary
+using the canonical broker credential. With marker instructions in both
+`CLAUDE.md` and `AGENTS.md`, the answer was `NONE`, and the synthetic SessionStart
+hook did not run. Initialization advertised no tools, MCP servers, skills or
+slash commands. Native built-in plugins remained visible as documented.
+This is observed evidence for that version and configuration, not every future
+vendor release. The canary's native estimated cost was $0.00444.
 
-After API credits were added, a successful native result exposed an exact JSON
-code fence around the findings. The parser now accepts that single envelope while
-retaining strict schema, finding-ID and duplicate validation; 61 focused tests and
-independent review passed. A diagnostic successful call reported $0.0582865.
+An initial subscription comparison completed four reviews, then stopped at an
+invalid JSON response. Guidance produced a false positive on the clean fixture;
+both arms identified mobile overflow. Preserve that incomplete attempt separately.
+A subsequent native structured-output probe correctly returned `reduced-motion`
+through `StructuredOutput`, with two turns and estimated cost $0.0376413. This
+motivated requiring schema output instead of relying on formatting instructions.
 
-A subsequent paired attempt completed three calls: baseline and guidance both
-returned no findings on the clean fixture, and guidance found the seeded mobile
-overflow. Their reported costs totaled $0.22745715. The fourth call (overflow
-baseline) failed without usable cost telemetry, and execution stopped before the
-reduced-motion pair. This is partial execution evidence, not a completed comparison
-or an effectiveness result. Successful calls established real native inference,
-identity checks, tool-free execution, parsing and scoring; failure diagnosis and a
-complete paired run remain outstanding. The runner now emits allowlisted failure
-reasons (including invalid JSON) while keeping arbitrary native diagnostics
-redacted; all 79 focused tests pass.
+The fresh structured-output subscription run completed all six calls on
+2026-10-08 with `claude-sonnet-4-5-20250929`, CLI 2.1.293, SDK
+0.2.105, stable broker OAuth identity metadata and only the native
+formatter advertised. Each arm found both seeded defects with zero false
+positives and zero false negatives. The clean fixture produced no findings.
 
-Across all attempts, total reservations are $1.656667 (rounded up), reported costs
-are $0.28574365, and failed-call costs remain unknown. API-funded work has stopped; these historical reservations are not reused by
-the subscription experiment. Impeccable remains candidate. The earlier
-browser calibration and historical pilots remain separate evidence.
+| Arm | True positives | False positives | False negatives | Native estimated cost |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 2 | 0 | 0 | $0.1133963 |
+| Guidance | 2 | 0 | 0 | $0.1957119 |
 
-## Subscription transition
+The private report's SHA-256 is
+`1dbca82420a003e8b7c52eddce61e917785789de51b282f0f43fb6c9c844aa45`.
+The runner digest in that report matches the verified implementation. The report
+retains all six call observations and input digests; it is not pooled with earlier
+attempts. Earlier API-funded experiments and the first incomplete subscription
+attempt remain excluded from these totals.
 
-The user requested subscription-backed execution on 2026-10-08. The actual CLI
-reported Claude.ai / firstParty / Max authentication for a canonical ready account.
-A safe-mode canary probe initialized without tools, MCP servers or slash commands;
-the synthetic SessionStart hook did not run. Native built-in plugins remained
-visible, as documented by safe mode. Two eligible accounts then reported expired
-OAuth authentication before successful inference, so instruction isolation and
-complete paired execution are not yet verified. Reauthentication and a successful
-canary probe remain prerequisites to claiming a clean subscription baseline.
-
-The subscription migration passes 105 focused tests plus the existing eval-runner
-tests and independent review. Offline tests cover API-key and ambient OAuth
-exclusion, native subscription status, absent/lapsed broker envelopes, fixed
-account selection, no automatic fallback, and the safe-mode launch options.
-
-The updated CLI entry point was exercised with the available account state and
-stopped with `unverified-subscription-auth`, `executed: false`, before inference.
-This verifies rejection only; reauthenticated successful inference is still pending.
+All 125 focused tests, independent review, Ruff, mypy, static evals and the
+Portable Agent Contract check passed. This establishes executable, isolated
+subscription comparison, not statistical evidence that guidance improves quality.
+Impeccable stays candidate; this harness does not enable hooks or enforce its
+design judgment.
