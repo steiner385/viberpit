@@ -99,7 +99,7 @@ def test_timeout_reaps_browser_process_group(tmp_path):
     for _ in range(100):
         try:
             state = Path(f"/proc/{pid}/stat").read_text().split()[2]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):  # procfs may raise ESRCH mid-read
             break
         if state == "Z":  # dead, waiting for the container's init to reap
             break
