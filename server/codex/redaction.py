@@ -128,6 +128,11 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
     from server.codex import protocol as _p
     from server.codex.driver import CodexRunnerUnavailable
     from server.codex.external_auth import ExternalAuthUnavailable
+    from server.codex.manager import (
+        CodexRunnerMissingError,
+        CodexStartError,
+        CodexUnavailableError,
+    )
 
     return (
         (_p.CodexRequestTimeout, "timeout"),
@@ -146,6 +151,11 @@ def _protocol_categories() -> tuple[tuple[type[BaseException], str], ...]:
         # which also covers unrelated policy-transition failures) so it no
         # longer collapses onto `runtime_error` (#1971).
         (CodexRunnerUnavailable, "runner_unavailable"),
+        # `CodexRunnerManager.ensure()` failures: all plain RuntimeErrors, so
+        # `codex.replay.runner_unavailable` read `runtime_error` (#2823).
+        (CodexUnavailableError, "codex_unavailable"),
+        (CodexStartError, "start_failed"),
+        (CodexRunnerMissingError, "runner_missing"),
     )
 
 
