@@ -536,12 +536,14 @@ async def test_remote_orchestrator_certify_harvested_complete_rpc():
 @pytest.mark.asyncio
 async def test_remote_orchestrator_resume_interrupted_rpc():
     """RemoteOrchestrator.resume_interrupted must proxy to the daemon and return its result."""
-    from server.sessions.remote import RemoteOrchestrator
+    from server.sessions.remote import SPAWN_RPC_TIMEOUT, RemoteOrchestrator
     client = _FakeClient("resumed")
     ro = RemoteOrchestrator(client)
     result = await ro.resume_interrupted("s1", "system")
     assert result == "resumed"
-    assert client.last_call == ("resume_interrupted", {"session_id": "s1", "identity": "system"})
+    assert client.last_call == (
+        "resume_interrupted",
+        {"session_id": "s1", "identity": "system", "timeout": SPAWN_RPC_TIMEOUT})
 
 
 def test_every_remote_method_is_classified():
