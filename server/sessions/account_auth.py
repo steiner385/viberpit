@@ -13,7 +13,8 @@ Never logs the token value: ``crypto.read_oauth_token`` returns a secret.
 prompt-refiner/autopilot-decider/pr-intent/model-pick/backlog-grouping/nudge-composer) that have
 only a ``CLAUDE_CONFIG_DIR``, not an account name (issue #751). It reverse-maps config_dir ->
 account via ``adopt._map_account`` — the same reverse mapping process adoption already uses — and
-is the ONLY place any of those nine sites builds its SDK env; a new call site must go through it
+is the ONLY place any of those nine sites builds its SDK env (async code wraps the call in
+``account_store_io``, which runs it off the event loop); a new call site must go through it
 rather than reintroducing the bare ``{**os.environ, "CLAUDE_CONFIG_DIR": config_dir}`` construction
 this module replaces.
 
@@ -31,15 +32,27 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from viberpit import accounts as _accounts
 from viberpit import credential_envelope, crypto
 from viberpit.config import load_config
 from viberpit import paths as _paths
+from server.aio import BlockingIOTimeout, run_blocking_io
+from server.config import env_float
 from server.sessions.adopt import _map_account
 from server.sessions.scratch_config import helper_config_dir
 
 log = logging.getLogger(__name__)
+
+# Budget for one ``account_store_io`` read of the shared account store from async code. That
+# store is an sshfs mount on a session host; past this the read is abandoned and the caller's
+# next tick retries, instead of the read parking the loop (#2852).
+ACCOUNT_STORE_IO_TIMEOUT_S = env_float("VIBERPIT_ACCOUNT_STORE_IO_TIMEOUT_S", 30.0, minimum=0.1)
+
+_T = TypeVar("_T")
+_RAISE: Any = object()  # account_store_io's "no default given" marker
 
 
 def oauth_env_for(account: str) -> dict[str, str]:
@@ -107,3 +120,27 @@ def helper_env(
         log.debug("helper_env: account lookup failed for config_dir=%s: %s", config_dir, exc)
         return env
     return env
+
+
+async def account_store_io(fn: Callable[..., _T], *args: Any, default: Any = _RAISE, **kwargs: Any) -> _T:
+    """Run ``fn(*args, **kwargs)``, a blocking read of the account store, off the event loop.
+
+    For async code calling ``helper_env``, ``pick_helper_config_dir`` and other readers of the
+    manifest, ledger or setup-tokens. On a session host those live on the sshfs account store,
+    and calling one inline parked rocky's daemon loop for 88 s inside ``open()``, starving every
+    RPC including ``creds_sync`` (#2852). Callers pass their OWN reference to *fn* so a test's
+    patch of that name still applies.
+
+    Past ``ACCOUNT_STORE_IO_TIMEOUT_S`` this returns *default* if one was given (the fail-open
+    pickers pass ``default=None``) and otherwise raises ``BlockingIOTimeout``, a ``TimeoutError``.
+    Every caller is a best-effort helper that already treats an exception as "skip this tick".
+    """
+    try:
+        return await run_blocking_io(lambda: fn(*args, **kwargs),
+                                     timeout=ACCOUNT_STORE_IO_TIMEOUT_S,
+                                     phase=getattr(fn, "__name__", "account_store_io"))
+    except BlockingIOTimeout as exc:
+        if default is _RAISE:
+            raise
+        log.info("account store read slow (%s); continuing without it this tick", exc)
+        return default  # type: ignore[no-any-return]

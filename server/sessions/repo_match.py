@@ -27,7 +27,7 @@ from server.db import db_session
 from server.db.clock import db_utc_now
 from server.db.models import Session
 from server.pm.fenced_json import FencedJsonError, extract_fenced_json
-from server.sessions.account_auth import helper_env
+from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 from server.sessions.types import ASSISTANT_KIND
@@ -175,7 +175,7 @@ async def suggest_repo(
         return None
 
     timeout = _timeout if _timeout is not None else _timeout_s()
-    config_dir = _config_dir or pick_helper_config_dir() or os.environ.get("CLAUDE_CONFIG_DIR", "")
+    config_dir = _config_dir or await account_store_io(pick_helper_config_dir, default=None) or os.environ.get("CLAUDE_CONFIG_DIR", "")
     cwd = _cwd or helper_cwd()
 
     try:
@@ -188,7 +188,7 @@ async def suggest_repo(
             model="haiku",
             system_prompt=_SYSTEM,
             cwd=cwd,
-            env=helper_env(config_dir),
+            env=await account_store_io(helper_env, config_dir),
             **stateless_helper_options(),
             **(await asyncio.to_thread(cli_path_kwargs)),
         )

@@ -33,7 +33,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Final
 
-from server.sessions.account_auth import helper_env
+from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
 from server.sessions.claude_bin import cli_path_kwargs
 from server.time_iso import iso_utc
@@ -373,7 +373,7 @@ async def propose_groups(
             model="sonnet",
             system_prompt=_GROUPING_SYSTEM,
             cwd=cwd,
-            env=helper_env(config_dir),
+            env=await account_store_io(helper_env, config_dir),
             **stateless_helper_options(),
             thinking={"type": "adaptive"},
             effort=GROUPING_EFFORT,

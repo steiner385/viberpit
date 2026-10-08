@@ -46,7 +46,7 @@ import json
 import logging
 import os
 
-from .account_auth import helper_env
+from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs
 from .helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 
@@ -123,7 +123,8 @@ async def completion_awaits_user(
         options = None
         if query_fn is None:
             cfg = config_dir if config_dir is not None else (
-                os.environ.get("CLAUDE_CONFIG_DIR") or pick_helper_config_dir())
+                os.environ.get("CLAUDE_CONFIG_DIR")
+                or await account_store_io(pick_helper_config_dir, default=None))
             if not cfg:
                 return True  # no usable account — degrade to the heuristic's verdict
             config_dir = cfg
@@ -131,7 +132,7 @@ async def completion_awaits_user(
             query_fn = query
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=helper_cwd(),
-                env=helper_env(config_dir),
+                env=await account_store_io(helper_env, config_dir),
                 **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)

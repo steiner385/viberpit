@@ -162,6 +162,17 @@ also declares `Requires=tailscaled.service`, so it won't even start before the t
 manual remount above is for the case where the mount has actually gone away (e.g. dobby rebooted,
 or the sshfs process itself died) rather than just stalled.
 
+**A stalled mount must not stall the daemon (#2852).** A read on a stalled sshfs mount parks in the
+kernel until the mount answers. If async code made that read inline, it froze the daemon's event loop
+with it. On 2026-10-07 the goal sweep's `helper_env` parked the loop for 88 s in `open()` on the account
+manifest, so every RPC timed out, `creds_sync` included. Async code now wraps account-store reads in
+`account_store_io` (`server/sessions/account_auth.py`), which runs them on a daemon thread. That read is
+abandoned after `VIBERPIT_ACCOUNT_STORE_IO_TIMEOUT_S` (default 30 s), and no more than eight are parked at
+once. `server/tests/test_account_store_off_loop.py` fails if a new async caller of `helper_env`,
+`pick_helper_config_dir` or `_autopilot_helper_config_dir` skips the wrapper. To find a remaining
+culprit, read the `loop_lag stall dump` in the daemon journal. Its main-thread stack names the blocking
+call.
+
 ### 4.1 Codex state must never live on these mounts
 
 `codex app-server` keeps SQLite + WAL, thread state and shell history under

@@ -15,13 +15,18 @@ even if I am cancelled, THEN propagate my cancellation" (issue #2726).
 
 ``caused_by_cancellation`` is the single implementation of "is this concrete
 exception really a driver-wrapped ``CancelledError``?" (issues #1950, #2751).
+
+``run_blocking_io`` is the single implementation of "do this blocking read off the
+loop, and give up after a deadline even if the read never returns" (issue #2852).
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
+import threading
 import time
-from collections.abc import Awaitable, Coroutine, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from typing import Any, TypeVar
 
 _T = TypeVar("_T")
@@ -182,6 +187,73 @@ async def run_to_completion(coro: Coroutine[Any, Any, _T], *, name: str) -> _T:
             task.exception()
         raise asyncio.CancelledError
     return task.result()
+
+
+class BlockingIOTimeout(TimeoutError):
+    """``run_blocking_io`` gave up: the call overran its budget or the cap was full."""
+
+
+# In-flight ceiling for run_blocking_io. A stalled sshfs mount parks every call in
+# the kernel until the mount recovers, and the call cannot be interrupted, so each
+# timed-out call strands its thread. The cap turns a long stall into fast failures
+# instead of an unbounded pile of parked threads.
+_BLOCKING_IO_CAP = 8
+_blocking_io_slots = threading.BoundedSemaphore(_BLOCKING_IO_CAP)
+
+
+async def run_blocking_io(
+    fn: Callable[..., _T], *args: Any, timeout: float, phase: str,
+) -> _T:
+    """Run blocking *fn* off the event loop for at most *timeout* seconds.
+
+    For synchronous reads of the shared account store, which on a session host is
+    an sshfs mount. A stalled mount once parked the daemon's loop for 88 s inside
+    ``open()`` and starved every RPC, including ``creds_sync`` (issue #2852).
+
+    ``asyncio.to_thread`` keeps the loop alive but is not enough here, for two
+    reasons. Its default executor has non-daemon workers that interpreter exit
+    joins, so one read stuck in the kernel stalls daemon shutdown until systemd's
+    SIGKILL. The pool is also shared, so a stall fills it and queues every other
+    ``to_thread`` caller behind the mount. Each call here runs on its own daemon
+    thread instead, and at most ``_BLOCKING_IO_CAP`` run at once.
+
+    Raises ``BlockingIOTimeout`` when *fn* overruns *timeout* (the thread is
+    abandoned and finishes or fails on its own) or when the cap is already full.
+    *fn*'s own exception is re-raised. Context variables (log binding) propagate.
+    """
+    slots = _blocking_io_slots  # release the semaphore this call took, even if it is swapped
+    if not slots.acquire(blocking=False):
+        raise BlockingIOTimeout(f"{phase}: {_BLOCKING_IO_CAP} blocking reads already in flight")
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[_T] = loop.create_future()
+    ctx = contextvars.copy_context()
+
+    def _settle(ok: bool, value: Any) -> None:
+        if fut.done():
+            return  # the caller timed out or was cancelled first
+        if ok:
+            fut.set_result(value)
+        else:
+            fut.set_exception(value)
+
+    def _worker() -> None:
+        try:
+            result = ctx.run(fn, *args)
+            outcome: tuple[bool, Any] = (True, result)
+        except BaseException as exc:  # noqa: BLE001 — handed to the awaiting coroutine
+            outcome = (False, exc)
+        finally:
+            slots.release()
+        try:
+            loop.call_soon_threadsafe(_settle, *outcome)
+        except RuntimeError:
+            pass  # the loop closed while this call was parked in the kernel
+
+    threading.Thread(target=_worker, name=f"blocking-io:{phase}", daemon=True).start()
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except TimeoutError:
+        raise BlockingIOTimeout(f"{phase}: no answer within {timeout:.1f}s") from None
 
 
 async def cancel_and_reap(

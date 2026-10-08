@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 
-from .account_auth import helper_env
+from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .permissions import to_sdk_permission_mode
 
@@ -144,7 +144,7 @@ async def real_suggestion_factory(cwd, config_dir, account=None, *, system_promp
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .suggestions import SUGGEST_SYSTEM_PROMPT
-    env = helper_env(config_dir, account)
+    env = await account_store_io(helper_env, config_dir, account)
     model = os.environ.get("VIBERPIT_SUGGEST_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
@@ -171,7 +171,7 @@ async def real_summary_factory(cwd, config_dir, account=None):
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .summaries import SUMMARY_SYSTEM_PROMPT
-    env = helper_env(config_dir, account)
+    env = await account_store_io(helper_env, config_dir, account)
     model = os.environ.get("VIBERPIT_SUMMARY_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,

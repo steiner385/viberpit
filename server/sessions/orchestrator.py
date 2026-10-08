@@ -85,7 +85,7 @@ from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, 
 from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.sessions import adopt as _adopt
 from server.sessions.helper_call import helper_cwd
-from server.sessions.account_auth import oauth_env_for
+from server.sessions.account_auth import account_store_io, oauth_env_for
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, restore_from_archive
@@ -7875,8 +7875,10 @@ class SessionOrchestrator:
             # helper identity, which falls back to the helper picker.
             from server.sessions.helper_call import pick_helper_config_dir
             acct = await self._backlog_healthy_account()
-            config_dir = (self._autopilot_helper_config_dir(acct) if acct is not None
-                          else pick_helper_config_dir())
+            config_dir = (
+                await account_store_io(self._autopilot_helper_config_dir, acct, default=None)
+                if acct is not None
+                else await account_store_io(pick_helper_config_dir, default=None))
             try:
                 proposed = await propose_groups(rest, config, _config_dir=config_dir)
             except GroupingModelError:
@@ -14014,7 +14016,7 @@ class SessionOrchestrator:
         # 14 days to 2026-09-11), so this salvage never once ran.
         intent = await classify_pr_intent(
             transcript_tail, goal_text,
-            _config_dir=self._autopilot_helper_config_dir(rec.account))
+            _config_dir=await account_store_io(self._autopilot_helper_config_dir, rec.account, default=None))
         if not (intent.resolved and intent.confidence == "high"):
             return None
         rec.pr_resolution = intent.reason
@@ -14295,7 +14297,7 @@ class SessionOrchestrator:
     async def _autopilot_decide(self, ctx):
         """Wrap the one-shot LLM decider, passing an engine-safe config dir."""
         from server.automations.autopilot_decider import decide
-        cfg_dir = self._autopilot_helper_config_dir(ctx.account)
+        cfg_dir = await account_store_io(self._autopilot_helper_config_dir, ctx.account, default=None)
         return await decide(ctx, _config_dir=cfg_dir)
 
     async def _autopilot_refresh_pr_facts(self, session_id: str):
@@ -14329,7 +14331,7 @@ class SessionOrchestrator:
         from server.automations import nudge_composer
         rich_tail = await self._autopilot_transcript_tail(
             ctx.session_id, turns=20, max_entries=40, max_chars=2500, tool_chars=400)
-        cfg_dir = self._autopilot_helper_config_dir(ctx.account)
+        cfg_dir = await account_store_io(self._autopilot_helper_config_dir, ctx.account, default=None)
         recent = [str(e.get("text", "")) for e in (ctx.ledger or {}).get("recent_nudges", [])]
         return await nudge_composer.compose_nudge(
             ctx, intent_hint=decision.prompt,
@@ -15735,7 +15737,7 @@ class SessionOrchestrator:
         local heuristic).
         """
         from server.sessions.helper_call import pick_helper_config_dir
-        config_dir = pick_helper_config_dir()
+        config_dir = await account_store_io(pick_helper_config_dir, default=None)
         if config_dir is None:
             return None
         return await generate_title(prompts, config_dir=config_dir, cwd=rec.cwd)
@@ -15861,7 +15863,7 @@ class SessionOrchestrator:
             # org-denied one fails every call as the opaque "error result: success"
             # (#1841, sibling of #1817). None = no live Anthropic account; keep the
             # prior goal rather than fire a call certain to fail.
-            cfg_dir = self._autopilot_helper_config_dir(rec.account)
+            cfg_dir = await account_store_io(self._autopilot_helper_config_dir, rec.account, default=None)
             if cfg_dir is None:
                 return None
             from server.sessions.goal_inference import infer_goal
@@ -19937,7 +19939,7 @@ class SessionOrchestrator:
             events = await self.transcript_events(session_id, max_turns=20)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
-            cfg_dir = self._autopilot_helper_config_dir(rec.account)
+            cfg_dir = await account_store_io(self._autopilot_helper_config_dir, rec.account, default=None)
             if cfg_dir is None:
                 self._summaries[session_id] = (signature, time.monotonic(), "")
                 return

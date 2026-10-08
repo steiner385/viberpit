@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from server.auth.middleware import current_identity
 from server.automations.model_pick import assess_model
+from server.sessions.account_auth import account_store_io
 from server.sessions.helper_call import pick_helper_config_dir, pick_helper_openai_account
 from server.sessions.prompt_refiner import refine_prompt
 from server.sessions.repo_match import recent_repo_vocabulary, suggest_repo
@@ -55,7 +56,7 @@ async def assess_dispatch(
     _identity=Depends(current_identity),
 ) -> AssessResponse:
     """Assess model tier and refine prompt in parallel. Fail-open on either."""
-    config_dir = pick_helper_config_dir()
+    config_dir = await account_store_io(pick_helper_config_dir, default=None)
     model, refined = await asyncio.gather(
         assess_model(body.prompt, _config_dir=config_dir),
         refine_prompt(body.prompt, _config_dir=config_dir),
@@ -101,8 +102,8 @@ async def repo_check_dispatch(
     """Does the draft prompt look like work for a different repository? Fail-open."""
     try:
         vocab = await recent_repo_vocabulary()
-        suggestion = await suggest_repo(
-            body.prompt, body.repo, vocab, _config_dir=pick_helper_config_dir())
+        config_dir = await account_store_io(pick_helper_config_dir, default=None)
+        suggestion = await suggest_repo(body.prompt, body.repo, vocab, _config_dir=config_dir)
     except Exception:
         # Both helpers are fail-open already; this is the belt to their braces so
         # a dispatch-bar hint can never turn into a 500.

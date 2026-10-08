@@ -10,7 +10,7 @@ import logging
 import os
 from pathlib import Path
 
-from server.sessions.account_auth import helper_env
+from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
 
@@ -86,7 +86,7 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
                 model="sonnet", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
-                env=helper_env(config_dir),
+                env=await account_store_io(helper_env, config_dir),
                 **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
         query_fn = _query_fn or _default_sdk_query_fn()
         parts: list[str] = []
