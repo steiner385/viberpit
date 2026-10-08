@@ -24,7 +24,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -382,8 +382,9 @@ def test_session_get_404_for_unknown():
 # ---------------------------------------------------------------------------
 
 
-def test_post_sessions_409_when_all_busy():
-    """POST /api/sessions returns 409 with earliestReset when all accounts are at ceiling."""
+def test_post_sessions_queues_when_all_busy():
+    """Every account at its ceiling: POST /api/sessions QUEUES the session
+    (``account_limited``, user decision 2026-10-08) instead of refusing it."""
     reset_dt = datetime.now(timezone.utc) + timedelta(hours=2)
 
     from viberpit.selector import AllAccountsBusy
@@ -409,29 +410,58 @@ def test_post_sessions_409_when_all_busy():
                     headers=IDENTITY_HEADERS,
                 )
 
-    assert response.status_code == 409, response.text
-    data = response.json()
-    assert "error" in data
-    assert data["error"]["code"] == "all_accounts_limited"
-    assert "earliestReset" in data
-    assert data["earliestReset"] is not None
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "queued"
 
 
-def test_post_sessions_409_null_earliest_reset():
-    """POST /api/sessions returns 409 with null earliestReset when reset time is unknown."""
+def test_post_sessions_409_serializes_earliest_reset():
+    """A lagging daemon's at-ceiling refusal carries its reset time to the client."""
     from viberpit.selector import AllAccountsBusy
 
+    reset_dt = datetime(2030, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
     with temp_env():
-        with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
-             patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            mock_pick.side_effect = AllAccountsBusy(None, kind="at_ceiling")
-
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
                 sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
+            orch.create_session = AsyncMock(  # type: ignore[method-assign]
+                side_effect=AllAccountsBusy(reset_dt, kind="at_ceiling"))
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                response = client.post(
+                    "/api/sessions",
+                    json={"name": "Blocked"},
+                    headers=IDENTITY_HEADERS,
+                )
+
+    assert response.status_code == 409, response.text
+    data = response.json()
+    assert data["error"]["code"] == "all_accounts_limited"
+    from server.time_iso import iso_utc
+    assert data["earliestReset"] == iso_utc(reset_dt)
+
+
+def test_post_sessions_409_null_earliest_reset():
+    """A daemon that still refuses at the ceiling (a lagging fleet host, pre-queueing
+    code) surfaces as 409 all_accounts_limited with a null earliestReset when the
+    reset time is unknown."""
+    from viberpit.selector import AllAccountsBusy
+
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                poll_interval=9999.0,
+            )
+            orch.create_session = AsyncMock(  # type: ignore[method-assign]
+                side_effect=AllAccountsBusy(None, kind="at_ceiling"))
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
 
@@ -444,6 +474,7 @@ def test_post_sessions_409_null_earliest_reset():
 
     assert response.status_code == 409
     data = response.json()
+    assert data["error"]["code"] == "all_accounts_limited"
     assert data["earliestReset"] is None
 
 

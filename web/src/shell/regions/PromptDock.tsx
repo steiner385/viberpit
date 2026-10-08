@@ -14,7 +14,7 @@ import { NAV_BY_ID } from '@/shell/navDefs'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { sessionOpenState } from '@/session/sessionNavState'
 import type { SessionListState } from '@/features/sessions/useSessionListState'
-import { describeCreateSessionFailure } from '@/features/sessions/createSessionFailure'
+import { createSessionFailureMessage, describeCreateSessionFailure } from '@/features/sessions/createSessionFailure'
 
 export interface PromptDockProps {
   /**
@@ -222,6 +222,9 @@ function NewSessionBar({
             if (session.usageUnverified) {
               toast("Couldn't verify account usage — started anyway.")
             }
+            if (session.status === 'queued') {
+              toast(`Queued — ${session.queueStallReason?.message ?? 'waiting for capacity. Use Start now in the queue to override.'}`)
+            }
             openSession(session.id, initialPrompt)
             resolve()
           },
@@ -230,15 +233,16 @@ function NewSessionBar({
           // keeps the richer branch — the same call the list column made in Task 9.
           //
           // The reading is `describeCreateSessionFailure`, shared with the New
-          // Session dialog. "All accounts limited" is the shell banner's to show,
-          // so the bar is told nothing; everything else is said inline in the bar
-          // (`useCreateSession` opts out of the global toast, so this IS the
-          // user's only copy of the message).
+          // Session dialog. "All accounts limited" also raises the shell banner,
+          // but that is a bonus: `AppShell` may clear it the same render whenever
+          // any account ranks, so the bar must say it itself. Everything is said
+          // inline in the bar (`useCreateSession` opts out of the global toast,
+          // so this IS the user's only copy of the message).
           onError: (err) => {
             const failure = describeCreateSessionFailure(err)
             if (failure.kind === 'all-limited') {
               onAllLimited(failure.earliestReset)
-              reject(err)
+              reject(new DispatchError(createSessionFailureMessage(failure)))
               return
             }
             reject(new DispatchError(failure.message))

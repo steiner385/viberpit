@@ -46,9 +46,10 @@ from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
-from server.sessions.engine import AgentEngine, AgentEngineUnavailable
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
+from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
-from server.sessions.selection import AllAccountsBusy
+from server.sessions.selection import AllAccountsBusy, select_account
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -573,7 +574,25 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
 QUEUE_WAIT_GRACE_S = 60.0
 
 
-async def _queue_stall_reasons(records: list) -> dict[str, dict[str, Any]]:
+_JUST_QUEUED_MESSAGES = {
+    "global_cap": ("Every active-session slot is in use; this session starts when one "
+                   "frees. Use Start now to override."),
+    "host_capacity": ("Every host is at its session cap; this session starts when one "
+                      "has room. Use Start now to override."),
+    "product_capacity": ("This product is at its in-flight cap; this session starts when "
+                         "a slot frees. Use Start now to override."),
+    "runner_capacity": ("Backlog Runner capacity is full; this session starts when a slot "
+                        "frees. Use Start now to override."),
+    # Reached when the edge's own probe already sees headroom again (a race with
+    # the create): still say why it queued, and never offer Start now for it.
+    "account_limited": ("Every account that can run this model is at its usage ceiling; "
+                        "this session starts automatically when quota frees."),
+}
+
+
+async def _queue_stall_reasons(
+    records: list, *, grace_s: float = QUEUE_WAIT_GRACE_S,
+) -> dict[str, dict[str, Any]]:
     """``{session id: why it is still queued}`` for every queued record that has
     waited — never None for one of those (incident 2026-10-06: ten sessions sat
     queued for 14 h with free hosts and accounts and ``queueStallReason: null``,
@@ -593,13 +612,15 @@ async def _queue_stall_reasons(records: list) -> dict[str, dict[str, Any]]:
     if shared is not None:
         return {r.id: shared for r in queued}
     try:
-        return await _per_session_stall_reasons(queued)
+        return await _per_session_stall_reasons(queued, grace_s=grace_s)
     except Exception:
         log.warning("list_sessions: per-session queue stall reasons failed", exc_info=True)
         return {}
 
 
-async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
+async def _per_session_stall_reasons(
+    queued: list, *, grace_s: float = QUEUE_WAIT_GRACE_S,
+) -> dict[str, dict[str, Any]]:
     from datetime import timezone
     from sqlalchemy import select
     from server.automations.context import AutomationContext
@@ -615,12 +636,14 @@ async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
             select(SessionQueue).where(SessionQueue.session_id.in_([r.id for r in queued])))).all()}
     context = AutomationContext("backlog-runner")
     product_status: dict[str, tuple[str | None, int | None, int | None]] = {}
+    # One read-only account probe per (engine, quota model): N queued sessions, one probe.
+    account_probe: dict[tuple[Any, str | None], AllAccountsBusy | None] = {}
     out: dict[str, dict[str, Any]] = {}
     for record in queued:
         entry = entries.get(record.id)
         since = _aware(entry.enqueued_at if entry is not None
                        else getattr(record, "created_at", None))
-        if since is None or (now - since).total_seconds() < QUEUE_WAIT_GRACE_S:
+        if since is None or (now - since).total_seconds() < grace_s:
             continue
         waited = int((now - since).total_seconds())
         if entry is None:
@@ -651,6 +674,46 @@ async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
                                "in-flight or pipeline cap) is full, so this dispatch waits "
                                "for a slot."}
                 continue
+        elif kind == "account_limited" and not params.get("account"):
+            limit: AllAccountsBusy | None = None
+            try:
+                engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+                model = quota_model(params.get("model"), engine=engine)
+                if (engine, model) not in account_probe:
+                    try:
+                        # Read-only probe, as SessionOrchestrator._account_headroom_or_raise;
+                        # no `exclude`: the edge holds no quarantine state.
+                        await asyncio.to_thread(
+                            select_account, reserve=False, engine=engine, model=model)
+                        account_probe[(engine, model)] = None
+                    except AllAccountsBusy as busy:
+                        account_probe[(engine, model)] = busy
+                limit = account_probe[(engine, model)]
+            except Exception:
+                # Degrade only this entry: its reason falls through, the rest stay.
+                log.warning("queue stall reason: account probe failed for %s",
+                            record.id, exc_info=True)
+            if limit is not None:
+                reset = iso_utc(limit.earliest_reset)
+                if limit.kind == "no_usable_accounts":
+                    why = ("No account that can run this model is usable (accounts need "
+                           "re-authentication), so this session waits")
+                else:
+                    why = ("Every account that can run this model is at its usage "
+                           "ceiling, so this session waits for quota")
+                out[record.id] = {
+                    "code": "account_limited", "waitedSeconds": waited, "earliestReset": reset,
+                    "message": (why + (f" (earliest reset {reset})" if reset else "")
+                                + ". It starts automatically; Start now cannot override "
+                                  "an account limit.")}
+                continue
+        if grace_s <= 0:
+            # Just queued: it was queued BECAUSE something is full, so never claim
+            # "capacity is free". Say which gate held it.
+            out[record.id] = {
+                "code": "queued", "waitedSeconds": waited,
+                "message": _JUST_QUEUED_MESSAGES.get(kind, _JUST_QUEUED_MESSAGES["global_cap"])}
+            continue
         out[record.id] = {
             "code": "waiting_for_drain", "waitedSeconds": waited,
             "message": "Capacity is free, but no host has started this session yet: its "
@@ -967,27 +1030,8 @@ async def create_session(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="model blocked by policy")
     except AllAccountsBusy as exc:
-        if exc.kind == "no_usable_accounts":
-            return JSONResponse(
-                status_code=status.HTTP_409_CONFLICT,
-                content={
-                    "error": {
-                        "code": "accounts_need_reauth",
-                        "message": "No usable accounts — one or more need re-authentication",
-                    },
-                },
-            )
-        reset_iso = iso_utc(exc.earliest_reset)
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "error": {
-                    "code": "all_accounts_limited",
-                    "message": "All accounts are at or above the usage ceiling",
-                },
-                "earliestReset": reset_iso,
-            },
-        )
+        return _all_accounts_busy_response(
+            exc, limited_message="All accounts are at or above the usage ceiling")
 
     if _resolved_tool_allowlist is not None:
         # Recorded, not enforced: this column has zero readers today (see the
@@ -1025,10 +1069,23 @@ async def create_session(
             except Exception:
                 log.warning("create_session: session_queue_positions fetch failed", exc_info=True)
 
+    # Best-effort and grace-free: the caller learns WHY it queued in the same response.
+    queue_stall_reason: dict[str, Any] | None = None
+    if record.status == "queued":
+        try:
+            # Against the FULL session list, as GET /api/sessions does, so the shared
+            # global-cap cause sees the real occupancy.
+            queue_stall_reason = (
+                await _queue_stall_reasons(await orch.list_sessions(), grace_s=0)
+            ).get(record.id)
+        except Exception:
+            log.warning("create_session: queue stall reason failed", exc_info=True)
+
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content=_record_to_dict(record, repo=await _resolve_repo(record),
-                                queue_position=queue_position),
+                                queue_position=queue_position,
+                                queue_stall_reason=queue_stall_reason),
     )
 
 
@@ -1519,6 +1576,91 @@ async def queue_cancel_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
         )
+
+
+def _all_accounts_busy_response(exc: AllAccountsBusy, *, limited_message: str) -> JSONResponse:
+    """The 409 for an ``AllAccountsBusy``: ``accounts_need_reauth`` when no account is
+    usable at all, else ``all_accounts_limited`` with the ``earliestReset``."""
+    if exc.kind == "no_usable_accounts":
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "accounts_need_reauth",
+                    "message": "No usable accounts — one or more need re-authentication",
+                },
+            },
+        )
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "error": {"code": "all_accounts_limited", "message": limited_message},
+            "earliestReset": iso_utc(exc.earliest_reset),
+        },
+    )
+
+
+async def _queue_reason_of(session_id: str) -> str | None:
+    """The ``queue_reason`` the dispatcher recorded on a session's queue entry, for
+    the audit trail. Best-effort: None when there is no entry or it cannot be read."""
+    from server.sessions import session_queue as sq
+    try:
+        entry = await sq.entry_for(session_id)
+    except Exception:
+        log.warning("queue_start_now: queue entry unreadable id=%s", session_id, exc_info=True)
+        return None
+    if entry is None:
+        return None
+    return str((entry.params or {}).get("queue_reason", "global_cap"))
+
+
+@router.post("/{session_id}/start-now")
+async def queue_start_now(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Start a queued session now, over slot caps and product holds (never over an
+    account usage ceiling — that 409s with earliestReset and the session stays queued)."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None or record.status != "queued":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
+    # Read before the start: a started session's queue entry is gone.
+    queue_reason = await _queue_reason_of(session_id)
+    try:
+        outcome = await orch.start_queued_now(session_id)
+    except AllAccountsBusy as exc:
+        return _all_accounts_busy_response(
+            exc, limited_message="Every account is at its usage ceiling; this session "
+                                 "starts automatically when quota frees.")
+    if outcome == "not_queued":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
+    # Committed by get_db on a normal return, as for session.create.
+    await record_audit(
+        db=db,
+        type="session.queue_start_now",
+        identity=identity,
+        detail={"session_id": session_id, "queue_reason": queue_reason, "outcome": outcome},
+    )
+    if outcome == "failed":
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "start_failed",
+                    "message": "The session could not start and was ended; see the daemon log.",
+                },
+            },
+        )
+    return {"ok": True, "status": outcome}
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

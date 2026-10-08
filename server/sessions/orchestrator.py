@@ -3636,17 +3636,43 @@ class SessionOrchestrator:
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason=queue_reason or "global_cap")
-            return await self._spawn_session(
-                session_id, name=name, account=account, initial_prompt=initial_prompt,
-                cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
-                identity=identity, permission_mode=permission_mode,
-                attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-                origin=origin, origin_ref=origin_ref, model=model,
-                reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display, parent_session_id=parent_session_id,
-                autopilot_paused=autopilot_paused,
-                auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+            try:
+                return await self._spawn_session(
+                    session_id, name=name, account=account, initial_prompt=initial_prompt,
+                    cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
+                    identity=identity, permission_mode=permission_mode,
+                    attachment_ids=attachment_ids, name_is_auto=name_is_auto,
+                    origin=origin, origin_ref=origin_ref, model=model,
+                    reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+            except AllAccountsBusy as busy:
+                # Wait for quota rather than refuse — for people AND automations
+                # (2026-10-08). Re-auth is not a wait (it never clears on its own), and
+                # the assistant never queues (it is exempt from every cap). The refused
+                # spawn raised before its driver/record/row existed and already gave
+                # back its worktree + display (_release_prespawn_resources), so the
+                # queued row starts clean. A claimed launch (ownership_token) needs
+                # nothing extra: like a wait_for_slot -> runner_capacity queue, the
+                # returned queued record is bound to the reservation below.
+                if busy.kind != "at_ceiling" or is_assistant_kind(kind):
+                    raise
+                log.info("session.create id=%s every account at its ceiling — queueing "
+                         "(account_limited, earliest_reset=%s)", session_id, busy.earliest_reset)
+                return await self._enqueue_session(
+                    session_id, name=name, account=account,
+                    initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
+                    branch=branch, repo=repo, identity=identity,
+                    permission_mode=permission_mode, attachment_ids=attachment_ids,
+                    name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
+                    model=model, reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                    queue_reason="account_limited")
 
         if ownership_token is None:
             return await launch()
@@ -4311,10 +4337,62 @@ class SessionOrchestrator:
             log.exception("session.model_approval_hold_restore_failed id=%s",
                           session_id)
 
-    async def _maybe_start_queued(self) -> int:
+    async def _account_headroom_or_raise(self, params: dict) -> None:
+        """Raise AllAccountsBusy while no account could take this queued entry.
+
+        A read-only probe (reserve=False): an availability check must never burn a
+        reservation window. An entry pinned to an account skips the probe, since
+        select_account is not what spawns it."""
+        if params.get("account"):
+            return
+        engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+        await asyncio.to_thread(
+            select_account, reserve=False,
+            exclude=self._recovery.quarantined(now=self._clock()),
+            engine=engine, model=quota_model(params.get("model"), engine=engine))
+
+    async def _memoized_account_headroom(
+            self, params: dict, memo: dict[tuple, AllAccountsBusy | None]) -> None:
+        """``_account_headroom_or_raise`` memoised per (engine, quota model) for one
+        drain pass: N queued entries for one model cost one select_account read.
+
+        Only an AllAccountsBusy answer is memoised (raised again for every entry of
+        that key); any other probe failure propagates un-memoised so the caller's
+        fall-through-to-spawn handling applies per entry."""
+        if params.get("account"):
+            return
+        engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+        key = (engine, quota_model(params.get("model"), engine=engine))
+        if key in memo:
+            cached = memo[key]
+            if cached is not None:
+                raise cached
+            return
+        try:
+            await self._account_headroom_or_raise(params)
+        except AllAccountsBusy as exc:
+            memo[key] = exc
+            raise
+        memo[key] = None
+
+    async def _maybe_start_queued(
+            self, force: str | None = None,
+            ceiling_out: dict[str, AllAccountsBusy] | None = None) -> int:
         """Start queued sessions while capacity allows. Serialised by a lock so
         concurrent teardown paths can't double-start one entry. Returns count
         started.
+
+        ``force`` names one queued session to take FIRST, over the global cap, this
+        host's cap and the product/runner capacity holds ("Start now", a person's
+        explicit override, 2026-10-08). The account ceiling is never overridden.
+        After the forced entry the drain continues under the normal gates.
+
+        Every unpinned entry's account headroom is probed (read-only, memoised per
+        engine/model for this pass) BEFORE its spawn, whatever its queue reason.
+        An entry left queued for the account ceiling — by that probe or by its
+        spawn's own select_account — is recorded in ``ceiling_out`` (sid → the
+        AllAccountsBusy that refused it) when the caller passes a dict; that is how
+        "Start now" tells a ceiling refusal from "left for another host".
 
         Start failure → row leaves the queue, session is marked ``ended`` (not
         ``needs_attention``).  Rationale: a failed-to-start session holds no
@@ -4347,7 +4425,24 @@ class SessionOrchestrator:
         # this drain (like `foreign`) whenever their product is STILL at its cap —
         # never removed, so the next drain (or a cap_changed refresh) re-tries them.
         capacity_full: set[str] = set()
+        # One headroom read per (engine, quota model) for this pass.
+        headroom_memo: dict[tuple, AllAccountsBusy | None] = {}
+
+        async def _left_for_ceiling(sid: str, queue_reason: str,
+                                    exc: AllAccountsBusy) -> None:
+            # Only a slot-cap entry is re-labelled: its own gate (global/host cap)
+            # is not re-checked per entry, so account_limited is what explains the
+            # wait and makes later drains probe it. A product/runner entry KEEPS
+            # its label — that label is what makes every later drain re-check its
+            # hold (in-flight cap, PR-Doctor priority) before starting it.
+            if queue_reason in ("global_cap", "host_capacity"):
+                await sq.set_queue_reason(sid, "account_limited")
+            capacity_full.add(sid)
+            if ceiling_out is not None:
+                ceiling_out[sid] = exc
+
         enabled_hosts = await self._enabled_host_names()
+        forcing_done = force is None
         async with self._queue_drain_lock:
             # THIS host's own cap (``Host.max_sessions``), the number the fleet ranker
             # refuses dispatch on. The global gate below is fleet-wide and, on a worker,
@@ -4358,14 +4453,23 @@ class SessionOrchestrator:
             # overtake a caller that was already past its own checks.
             local_cap = await self._local_host_cap()
             while True:
-                if self._active_session_count() >= await self._max_active_sessions():
-                    break
-                if local_cap is not None and await self.owned_active_session_count() >= local_cap:
-                    log.debug("session_queue.host_full host=%s cap=%d — leaving the "
-                              "queue for a host with headroom", self_host_name(), local_cap)
-                    break
-                entry = await sq.next_entry(exclude=foreign | capacity_full)
+                forcing = not forcing_done
+                if not forcing:
+                    if self._active_session_count() >= await self._max_active_sessions():
+                        break
+                    if local_cap is not None and await self.owned_active_session_count() >= local_cap:
+                        log.debug("session_queue.host_full host=%s cap=%d — leaving the "
+                                  "queue for a host with headroom", self_host_name(), local_cap)
+                        break
+                    entry = await sq.next_entry(exclude=foreign | capacity_full)
+                else:
+                    # "Start now": the named entry, over every slot gate (user override,
+                    # 2026-10-08). Taken once; the loop then drains normally.
+                    forcing_done = True
+                    entry = await sq.entry_for(force) if force is not None else None
                 if entry is None:
+                    if forcing:
+                        continue
                     break
                 sid, params = entry.session_id, dict(entry.params)
                 queue_reason = params.pop("queue_reason", "global_cap")
@@ -4425,23 +4529,47 @@ class SessionOrchestrator:
                         foreign.add(sid)
                         continue
                     in_mem.host = self_host_name()
-                if queue_reason == "product_capacity" and params.get("repo"):
-                    from server.automations.product_admission import repo_capacity_status
-                    _slug, _count, _cap = await repo_capacity_status(
-                        params["repo"], context=self._backlog_ctx)
-                    if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
-                        capacity_full.add(sid)
-                        log.debug("session_queue.product_capacity_full id=%s product=%s "
-                                  "%d/%d — left queued", sid, _slug, _count, _cap)
+                # The product/runner holds are slot gates a person may override
+                # ("Start now"); the account headroom probe below is NOT.
+                if not forcing:
+                    if queue_reason == "product_capacity" and params.get("repo"):
+                        from server.automations.product_admission import repo_capacity_status
+                        _slug, _count, _cap = await repo_capacity_status(
+                            params["repo"], context=self._backlog_ctx)
+                        if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
+                            capacity_full.add(sid)
+                            log.debug("session_queue.product_capacity_full id=%s product=%s "
+                                      "%d/%d — left queued", sid, _slug, _count, _cap)
+                            continue
+                    if queue_reason == "runner_capacity" and params.get("repo"):
+                        from server.automations.product_admission import queued_claim_slot_free
+                        if not await queued_claim_slot_free(
+                                params["repo"], session_id=sid, context=self._backlog_ctx,
+                                pr_doctor_pending=self._pr_doctor_pending_products):
+                            capacity_full.add(sid)
+                            log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
+                            continue
+                # Account headroom, for EVERY unpinned entry whatever its reason
+                # (never overridable, so outside the forcing gate): spawning into a
+                # ceiling only builds a worktree to tear it down, and the at-spawn
+                # re-label below used to turn a product/runner entry into
+                # account_limited, so a later drain started it past its hold.
+                try:
+                    await self._memoized_account_headroom(params, headroom_memo)
+                except AllAccountsBusy as busy:
+                    if busy.kind == "at_ceiling" or queue_reason == "account_limited":
+                        await _left_for_ceiling(sid, queue_reason, busy)
+                        log.debug("session_queue.account_limited id=%s reason=%s — "
+                                  "left queued", sid, queue_reason)
                         continue
-                if queue_reason == "runner_capacity" and params.get("repo"):
-                    from server.automations.product_admission import queued_claim_slot_free
-                    if not await queued_claim_slot_free(
-                            params["repo"], session_id=sid, context=self._backlog_ctx,
-                            pr_doctor_pending=self._pr_doctor_pending_products):
-                        capacity_full.add(sid)
-                        log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
-                        continue
+                    # no_usable_accounts on a slot-queued entry: the spawn's own
+                    # select_account decides (it ends the session, as before).
+                except Exception:
+                    # A probe that cannot answer is not a "no": fall through to
+                    # the spawn, whose own select_account is authoritative —
+                    # never let one failed read abort the whole drain.
+                    log.warning("session_queue.account_probe_failed id=%s", sid,
+                                exc_info=True)
                 self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:
                 # the spawn overwrites it with its pre-seeded active record (and
@@ -4465,6 +4593,34 @@ class SessionOrchestrator:
                     foreign.add(sid)
                     continue
                 except Exception as exc:
+                    if isinstance(exc, AllAccountsBusy) and exc.kind == "at_ceiling":
+                        # Every account hit its ceiling between the slot freeing and
+                        # this spawn reserving one (a probe race, or an entry queued
+                        # for another reason that was never probed). That is a wait,
+                        # not a failure: ending it here is the silent disappearance
+                        # account_limited exists to prevent. The spawn raised before
+                        # its pre-seeded record / driver / row write and released its
+                        # worktree + display (_release_prespawn_resources); keep the
+                        # row 'queued' and the entry in place. A slot-cap entry is
+                        # re-labelled account_limited; a product/runner entry keeps
+                        # its label so its hold is still honoured once quota frees
+                        # (every drain probes headroom regardless). Later entries of
+                        # this engine/model skip straight to the same answer.
+                        # (no_usable_accounts never clears by itself — it falls
+                        # through to 'ended'.)
+                        if getattr(self._records.get(sid), "status", None) != "queued":
+                            in_mem.status = "queued"
+                            self._records[sid] = in_mem
+                        if not params.get("account"):
+                            _eng = parse_agent_engine(params.get("engine"),
+                                                      legacy_default=True)
+                            headroom_memo[(_eng, quota_model(params.get("model"),
+                                                             engine=_eng))] = exc
+                        await _left_for_ceiling(sid, queue_reason, exc)
+                        log.info("session_queue.account_limited_at_spawn id=%s was=%s "
+                                 "earliest_reset=%s — left queued", sid, queue_reason,
+                                 exc.earliest_reset)
+                        continue
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
                     # leaving it would wedge the head of the queue forever. The
@@ -4881,6 +5037,36 @@ class SessionOrchestrator:
     async def maybe_start_queued(self) -> int:
         """Public wrapper for _maybe_start_queued. RPC names must not start with '_'."""
         return await self._maybe_start_queued()
+
+    async def start_queued_now(self, session_id: str) -> str:
+        """Start one queued session immediately, over the global cap, this host's cap
+        and product/runner caps (a person's explicit override). An account ceiling is
+        NOT overridden: AllAccountsBusy propagates and the session stays queued.
+
+        Returns "started", "not_queued" (no entry, or the entry was left for its
+        owning host) or "failed" (the spawn failed and the session was ended)."""
+        from server.sessions import session_queue as sq
+        entry = await sq.entry_for(session_id)
+        if entry is None:
+            return "not_queued"
+        entry_params = dict(entry.params or {})
+        log.info("session_queue.start_now id=%s reason=%s", session_id,
+                 entry_params.get("queue_reason", "global_cap"))
+        # The drain probes account headroom for the forced entry too (the ceiling
+        # is never overridden) and records an entry it left queued for the
+        # ceiling — by its probe or by its spawn's select_account — here. Whatever
+        # label the entry keeps, that is a refusal, not "not queued".
+        ceiling: dict[str, AllAccountsBusy] = {}
+        await self._maybe_start_queued(force=session_id, ceiling_out=ceiling)
+        refused = ceiling.get(session_id)
+        if refused is not None:
+            raise AllAccountsBusy(refused.earliest_reset, refused.kind)
+        rec = self._records.get(session_id)
+        if rec is not None and rec.status not in ("queued", "ended"):
+            return "started"
+        if rec is not None and rec.status == "ended":
+            return "failed"
+        return "not_queued"
 
     async def _spawn_session(
         self,
@@ -13414,6 +13600,8 @@ class SessionOrchestrator:
                                     detail={"fireAt": ref, "scheduled": True}, **kwargs)
             return True
         except AllAccountsBusy:
+            # The at_ceiling case: reachable only from pre-account_limited daemons — remove after rollout (#2857).
+            # (no_usable_accounts still raises from a current daemon and lands here.)
             # Transient: leave the watermark so the firing retries within grace.
             await ctx.emit("info", f"scheduled run deferred — all accounts busy ({name})",
                            kind="skipped", target=ref)
@@ -14980,6 +15168,7 @@ class SessionOrchestrator:
             # Distinguish genuine ceiling (all accounts exhausted) from a transient
             # reservation or reauth block so the caller and UI give accurate feedback.
             if exc.kind == "at_ceiling":
+                # reachable only from pre-account_limited daemons — remove after rollout (#2857)
                 await self._pr_doctor_ctx.emit(
                     "warn", f"spawn deferred for {target}: all accounts at/above usage ceiling",
                     kind="spawn_failed", target=target)
@@ -15181,6 +15370,8 @@ class SessionOrchestrator:
                     model=model,
                     detail=detail)
             except AllAccountsBusy:
+                # The at_ceiling case: reachable only from pre-account_limited daemons — remove after rollout (#2857).
+                # (no_usable_accounts still raises from a current daemon and lands here.)
                 await self._pr_doctor_ctx.emit(
                     "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
                     kind="spawn_failed", target=target)

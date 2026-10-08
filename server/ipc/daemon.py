@@ -339,7 +339,17 @@ def create_daemon_app() -> FastAPI:
         try:
             result = await fn(params)
             return JSONResponse({"result": result})
-        except Exception as exc:  # noqa: BLE001 — surface handler errors as an envelope
+        except Exception as exc:  # surface handler errors as an envelope
+            # Every refusal used to leave only "500" in the journal (2026-10-08: a
+            # create failed on both hosts and nothing said why). Typed refusals the
+            # edge reconstructs (they carry error_data) are expected — INFO; anything
+            # else is a handler defect — WARNING with the traceback.
+            if getattr(exc, "error_data", None) is not None:
+                log.info("rpc.error method=%s type=%s message=%s",
+                         method, type(exc).__name__, exc)
+            else:
+                log.warning("rpc.error method=%s type=%s message=%s",
+                            method, type(exc).__name__, exc, exc_info=True)
             err = {"type": type(exc).__name__, "message": str(exc)}
             # A typed exception can carry structured state the edge needs (e.g.
             # AllAccountsBusy.earliest_reset); ``error_data`` rides the envelope so

@@ -184,7 +184,7 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
 # state (must run on the owning host). Pinned by a completeness test (Task 4a).
 _PER_SESSION: frozenset[str] = frozenset({
     "get_session", "send_prompt", "ensure_driver", "session_queue_move",
-    "session_queue_cancel", "cancel_queued", "archive_session", "permanent_delete",
+    "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
     "stop_subagent",

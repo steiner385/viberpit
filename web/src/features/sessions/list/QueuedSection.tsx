@@ -5,10 +5,14 @@
 // (NEVER nested inside the row's open button — a11y rule).
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
 import { ArrowUp, ArrowDown, ChevronsUp, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useQueueMove, useQueueCancel } from '@/api/hooks'
+import { useQueueMove, useQueueCancel, useQueueStartNow } from '@/api/hooks'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
+import { apiErrorCode } from '@/api/client'
+import { extractMutationErrorMessage } from '@/api/queryClient'
+import { REAUTH_MESSAGE, apiErrorMessage } from '@/features/sessions/createSessionFailure'
 import type { Session } from '@/api/types'
 
 interface QueuedSectionProps {
@@ -20,6 +24,34 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { mutate: queueMove } = useQueueMove()
   const { mutate: queueCancel } = useQueueCancel()
+  const { mutate: startNow } = useQueueStartNow()
+  // Keyed by session id; each entry remembers the stall code it was raised
+  // under, so a row whose reason has since changed shows no stale error.
+  const [rowErrors, setRowErrors] = useState<Record<string, { text: string; code: string | null }>>({})
+
+  function handleStartNow(id: string, stallCode: string | null) {
+    setRowErrors((prev) => {
+      if (!(id in prev)) return prev
+      const rest = { ...prev }
+      delete rest[id]
+      return rest
+    })
+    startNow({ id }, {
+      onError: (err) => {
+        const code = apiErrorCode(err)
+        const text = code === 'all_accounts_limited'
+          ? 'Account limit — starts automatically when quota frees'
+          : code === 'accounts_need_reauth'
+            ? REAUTH_MESSAGE
+            : apiErrorMessage(err) ?? extractMutationErrorMessage(err, "Couldn't start it")
+        setRowErrors((prev) => ({ ...prev, [id]: { text, code: stallCode } }))
+        // start_failed means the server ENDED the session: the refetch drops it
+        // from the queue and the row (with its error line) unmounts, so the row
+        // error alone would vanish unseen. A toast outlives the row.
+        if (code === 'start_failed') toast.error(`Couldn't start it: ${text}`)
+      },
+    })
+  }
 
   // Pre-sorted by the host (brief says caller sorts), but sort defensively here too.
   const sorted = [...sessions].sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
@@ -50,7 +82,7 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
           {/* C6: the queue is the global cap's overflow; say so and point at the
               stack. Collapses with the list — it's part of what the header hides. */}
           <p className="px-1 pb-1 text-xs text-ink-muted">
-            Waiting for a free slot under the global cap.{' '}
+            Waiting for capacity.{' '}
             <Link to={deliveryPath('capacity')} className="text-accent hover:underline">See capacity</Link>
           </p>
           <ul className="space-y-1 py-1">
@@ -61,7 +93,7 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                 <li
                   key={session.id}
                   className={cn(
-                    'relative flex items-center gap-2 rounded-lg border px-2 py-2',
+                    'relative flex flex-wrap items-center gap-2 rounded-lg border px-2 py-2',
                     'border-edge',
                     'bg-surface',
                   )}
@@ -83,6 +115,11 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                     {session.repo && (
                       <div className="text-xs text-ink-muted truncate">
                         {session.repo}
+                      </div>
+                    )}
+                    {session.queueStallReason?.message && (
+                      <div className="text-xs text-ink-muted line-clamp-2">
+                        {session.queueStallReason.message}
                       </div>
                     )}
                   </button>
@@ -128,6 +165,19 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                     >
                       <ArrowDown size={14} aria-hidden />
                     </button>
+                    {session.queueStallReason?.code !== 'account_limited' && (
+                      <button
+                        type="button"
+                        aria-label={`Start ${session.name} now, over capacity limits`}
+                        onClick={() => handleStartNow(session.id, session.queueStallReason?.code ?? null)}
+                        className={cn(
+                          'rounded px-1.5 py-0.5 text-xs text-accent hover:underline',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                        )}
+                      >
+                        Start now
+                      </button>
+                    )}
                     <button
                       type="button"
                       aria-label="Remove from queue"
@@ -140,6 +190,12 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
                       <X size={14} aria-hidden />
                     </button>
                   </div>
+                  {rowErrors[session.id]
+                    && rowErrors[session.id].code === (session.queueStallReason?.code ?? null) && (
+                    <p role="status" className="basis-full text-xs text-danger">
+                      {rowErrors[session.id].text}
+                    </p>
+                  )}
                 </li>
               )
             })}

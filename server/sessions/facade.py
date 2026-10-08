@@ -152,6 +152,7 @@ class InProcessOrchestratorAdapter:
     async def session_queue_move(self, *a, **k): return await _maybe_await(self._orch.session_queue_move(*a, **k))
     async def session_queue_cancel(self, *a, **k): return await _maybe_await(self._orch.session_queue_cancel(*a, **k))
     async def session_queue_positions(self, *a, **k): return await _maybe_await(self._orch.session_queue_positions(*a, **k))
+    async def start_queued_now(self, *a, **k): return await _maybe_await(self._orch.start_queued_now(*a, **k))
     async def maybe_start_queued(self, *a, **k): return await _maybe_await(self._orch.maybe_start_queued(*a, **k))
     async def run_command(self, *a, **k): return await _maybe_await(self._orch.run_command(*a, **k))
     async def list_sessions(self, *a, **k): return await _maybe_await(self._orch.list_sessions(*a, **k))

@@ -30,6 +30,7 @@ _PR_STATUS_MAP = {
     "spawned": ("ok", "Spawned fix session"),
     "sent": ("ok", "Sent fix prompt to live session"),
     "updated": ("ok", "Branch updated — CI will re-run"),
+    # "ceiling": reachable only from pre-account_limited daemons — remove after rollout (#2857)
     "ceiling": ("warn", "All accounts at/above usage ceiling — try later"),
     "transient": ("warn", "Session busy — try again shortly"),
     "not_actionable": ("warn", "PR is no longer actionable"),

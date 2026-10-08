@@ -14,6 +14,7 @@ vi.mock('@/api/hooks', () => ({
   useDecisions: () => ({ data: undefined, isLoading: false, isError: false }),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueStartNow: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator

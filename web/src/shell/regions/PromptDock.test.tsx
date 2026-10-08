@@ -105,6 +105,12 @@ const fakePost = vi.fn(async (path: string, body?: unknown): Promise<unknown> =>
 
 // `ApiRequestError` stays REAL: the 409 branch below narrows on `err.status`,
 // and a stubbed error class would let a broken narrowing pass.
+const toastMock = vi.hoisted(() => vi.fn())
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>()
+  return { ...actual, toast: Object.assign(toastMock, actual.toast) }
+})
+
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return {
@@ -512,6 +518,41 @@ describe('PromptDock — dispatch', () => {
     // DesktopShell had this branch and Dashboard did not — the union keeps it,
     // so the phone layout gains the banner instead of silently swallowing 409.
     await waitFor(() => expect(onAllLimited).toHaveBeenCalledWith('2026-09-03T18:00:00Z'))
+  })
+
+  it('also says "all accounts limited" inline in the bar — the banner may be cleared the same render', async () => {
+    const user = userEvent.setup()
+    POST_SESSIONS = async () => {
+      throw new ApiRequestError(409, {
+        error: { code: 'all_accounts_limited' },
+        earliestReset: '2026-09-03T18:00:00Z',
+      })
+    }
+    renderAt('/sessions', { onAllLimited: vi.fn() })
+
+    await user.type(await screen.findByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/usage limit/)
+  })
+
+  it('toasts why a queued session is waiting', async () => {
+    const user = userEvent.setup()
+    toastMock.mockClear()
+    POST_SESSIONS = async () =>
+      session({
+        id: 'q-1',
+        status: 'queued',
+        queueStallReason: { code: 'account_limited', message: 'M' },
+      })
+    renderAt('/sessions')
+
+    await user.type(await screen.findByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.stringMatching(/Queued.*M/)),
+    )
   })
 
   it('keeps the draft when creation fails, and says why inline in the bar', async () => {
