@@ -992,7 +992,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # live path uses — so the re-emit can't drift from it (it previously
                 # hardcoded plan=False, dropping the plan flag for a pending ExitPlanMode
                 # approval).
-                for p in await orchestrator.pending_permissions(session_id):
+                # A daemon blip (DaemonTimeout ⊂ DaemonUnavailable) must not abort the
+                # remaining steps — they are independent and the condition self-heals.
+                try:
+                    pending_perms = await orchestrator.pending_permissions(session_id)
+                except DaemonUnavailable:
+                    log.info("ws.attach: pending permissions unavailable for %s "
+                             "(daemon blip)", session_id)
+                    pending_perms = []
+                for p in pending_perms:
                     out_q.put_nowait({**PermissionRequest(
                         p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
                         p["input"], plan=(p["tool"] == "ExitPlanMode"), items=p.get("items"),
@@ -1002,7 +1010,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # Re-emit any pending AskUserQuestion events for this session. Mirrors
                 # the permission re-emit above so a refresh/reattach while the model is
                 # blocked in _handle_ask_user_question never silently hangs.
-                for q in await orchestrator.pending_questions(session_id):
+                try:
+                    pending_qs = await orchestrator.pending_questions(session_id)
+                except DaemonUnavailable:
+                    log.info("ws.attach: pending questions unavailable for %s "
+                             "(daemon blip)", session_id)
+                    pending_qs = []
+                for q in pending_qs:
                     out_q.put_nowait({**ev.Question(
                         question_id=q["question_id"],
                         turn_id=q["turn_id"],
