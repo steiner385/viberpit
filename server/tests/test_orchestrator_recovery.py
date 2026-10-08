@@ -214,6 +214,28 @@ def test_check_stalls_interrupts_wedged_turn():
     assert interrupted == [True]
 
 
+def test_check_stalls_extends_timeout_during_host_network_outage(monkeypatch):
+    from viberpit import oauth
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 0.0
+        async def interrupt(self, *, keep_queue=False):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    monkeypatch.setattr(oauth, "network_degraded", lambda **_: True)
+    # Past STALL_TIMEOUT but inside STALL_TIMEOUT_THROTTLED: not a wedge (#2766).
+    asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT + 1))
+    assert interrupted == []
+    asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT_THROTTLED + 1))
+    assert interrupted == [True]
+
+
 def test_check_stalls_escalates_zombie_to_recompose_after_cap():
     """A turn the watchdog already interrupted but that stayed wedged (the SDK ignored
     the interrupt: turn_active flipped False yet the drain never completed and progress
